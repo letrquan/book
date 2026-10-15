@@ -15,6 +15,7 @@ import {
   composeToolErrorDetail,
   composeToolRow,
   deriveToolPresentation,
+  EXPANDED_OUTPUT_MAX_LINES,
   toolErrorDetailOptions,
   type ToolPresentation,
 } from '../tool-presentation.js';
@@ -336,32 +337,53 @@ function ToolCallBlockInner({
       elapsed,
     });
   }, [elapsed, rowGrid, isFileChild, mutationSummary, presentation]);
-  // A failure's message goes under the row, on the grid the row was laid out on.
-  const errorDetail = useMemo(() => {
+  // The output block under the row renders exactly when this holds. It draws a command's stdout in
+  // full, so an expanded error detail must not draw the same lines again.
+  const rendersOutputBlock = isExpanded && Boolean(result?.content) && !isDiffOutput(name, result);
+  // The detail shows everything only while its row is itself expanded: the ids that ask for it are
+  // never removed, so a row folded back (a click, or Ctrl+O out of detailed mode) must fold it too.
+  const showFullError = showAllToolOutput && isExpanded;
+  // A failure's message goes under the row, on the grid the row was laid out on. The collapsed
+  // detail is always composed: its hint says whether the row has lines to reveal.
+  const errorDetails = useMemo(() => {
     if (!inlineError?.trim()) return undefined;
-    // A result with an exit code carries a command's output; its message keeps its lines.
-    const options = toolErrorDetailOptions(result);
-    const detail = isFileChild
-      ? composeToolErrorDetail(
-          { title: '', target: undefined },
-          inlineError,
-          nestedGrid(rowGrid),
-          options,
-        )
-      : composeToolErrorDetail(presentation, inlineError, rowGrid, options);
-    // A command that failed with no output has nothing to show: the row says `exit N`.
-    return detail.lines.length > 0 || detail.note ? detail : undefined;
-  }, [inlineError, isFileChild, presentation, result, rowGrid]);
+    const compose = (expanded: boolean) => {
+      // A result with an exit code carries a command's output; its message keeps its lines.
+      const options = {
+        ...toolErrorDetailOptions(result),
+        expanded,
+        stdoutShownBelow: rendersOutputBlock,
+      };
+      const detail = isFileChild
+        ? composeToolErrorDetail(
+            { title: '', target: undefined },
+            inlineError,
+            nestedGrid(rowGrid),
+            options,
+          )
+        : composeToolErrorDetail(presentation, inlineError, rowGrid, options);
+      // A command that failed with no output has nothing to show: the row says `exit N`.
+      return detail.lines.length > 0 || detail.note ? detail : undefined;
+    };
+    return {
+      collapsed: compose(false),
+      expanded: showFullError ? compose(true) : undefined,
+    };
+  }, [inlineError, isFileChild, presentation, rendersOutputBlock, result, rowGrid, showFullError]);
+  const errorDetail = showFullError ? errorDetails?.expanded : errorDetails?.collapsed;
+  // A failure whose collapsed detail hides lines can be expanded even when the row's own output
+  // has nothing to reveal: stderr is not in `result.content`.
+  const expandable = presentation.hasHiddenContent || Boolean(errorDetails?.collapsed?.hint);
 
   useLayoutEffect(() => {
     if (!registry || !toolId) return;
     return registry.register({
       id: toolId,
       element: summaryRef,
-      expandable: presentation.hasHiddenContent,
+      expandable,
       expanded: isExpanded,
     });
-  }, [isExpanded, presentation.hasHiddenContent, registry, toolId]);
+  }, [expandable, isExpanded, registry, toolId]);
 
   if (screenReader) {
     return (
@@ -506,7 +528,7 @@ function OutputBlock({
   const display = useMemo(
     () =>
       prepareToolOutputDisplay(output, {
-        maxLines: showAllToolOutput ? 2000 : success ? 6 : 10,
+        maxLines: showAllToolOutput ? EXPANDED_OUTPUT_MAX_LINES : success ? 6 : 10,
         maxLineWidth: contentWidth,
         hint: showAllToolOutput ? undefined : 'Ctrl+E',
         strategy: showAllToolOutput ? 'head' : success ? 'head-tail' : 'tail',

@@ -49,8 +49,8 @@ function configuredChecks(ctx: ToolContext): Record<string, string> {
   return result;
 }
 
-function fail(error: string): ToolResult {
-  return toolFailure(error);
+function fail(error: string, details?: Record<string, unknown>): ToolResult {
+  return toolFailure(error, details ? { details } : {});
 }
 
 /**
@@ -101,7 +101,7 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
 
   return new Promise((resolve) => {
     const settle = (
-      error: (Error & { killed?: boolean; signal?: string | null }) | null,
+      error: (Error & { killed?: boolean; signal?: string | null; code?: unknown }) | null,
       stdout: string,
       stderr: string,
     ): void => {
@@ -125,6 +125,9 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
               command,
               decision.gitDirReadOnly,
             ),
+            // The transcript's `exit N` and the command-output layout read this, as for Bash.
+            // A spawn failure's `code` is a string such as `ENOENT`, and records nothing.
+            typeof error.code === 'number' ? { exitCode: error.code } : undefined,
           ),
         );
         return;
