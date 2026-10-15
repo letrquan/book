@@ -1683,7 +1683,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('+ new marker');
   });
 
-  it('caps a long default-expanded file mutation and shows it whole under show-all', () => {
+  it('caps a long default-expanded file mutation at 20 rows and shows it whole under show-all', () => {
     const changedRows = Array.from({ length: 100 }, (_, index) => `+new ${index + 1}`);
     const message: Message = {
       ...msg('a1', 'assistant', ''),
@@ -1705,10 +1705,12 @@ describe('ChatPanel Ink rendering', () => {
 
     expect(output).toMatch(/Edit\s+1 file\s+\+100 -1/);
     expect(output).toMatch(/└ src\/a\.ts\s+\+100 -1/);
-    expect(output).toContain('+ new 30');
-    expect(output).toContain('+ new 100');
-    expect(output).not.toContain('+ new 50');
-    expect(output).toContain('… 22 lines hidden (Ctrl+E)');
+    // The compact transcript previews the first 20 rows: `- old` and `+ new 1` to `+ new 19`.
+    expect(output).toContain('- old');
+    expect(output).toContain('+ new 19');
+    expect(output).not.toContain('+ new 20');
+    expect(output).not.toContain('+ new 100');
+    expect(output).toContain('… +81 lines (Ctrl+E)');
 
     const all = render(
       withTheme(
@@ -1717,7 +1719,7 @@ describe('ChatPanel Ink rendering', () => {
     );
     const allOutput = frame(all.lastFrame);
     expect(allOutput).toContain('+ new 100');
-    expect(allOutput).not.toContain('lines hidden');
+    expect(allOutput).not.toContain('… +');
   });
 
   it('groups adjacent mutations into a Codex-style changed-files summary', () => {
