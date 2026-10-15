@@ -1,12 +1,7 @@
 import { realpathSync } from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
 import type { ResolvedSettings } from './settings.js';
-import type {
-  PermissionDecision,
-  PermissionResult,
-  ReadOnlyRoot,
-  ToolCall,
-} from './types/tools.js';
+import type { PermissionDecision, PermissionResult, ToolCall } from './types/tools.js';
 import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex, globWalkPlan } from './tools/glob-regex.js';
@@ -47,12 +42,6 @@ export interface PermissionVerdict {
    */
   outsideWorkspace?: boolean;
   /**
-   * Set instead, on a target a root *serves* but whose subpath the tools exclude. A different
-   * reason and a different remedy from {@link outsideWorkspace}: the directory is reachable and
-   * this path under it is not, so naming a directory to add would be a dead end.
-   */
-  excludedPath?: boolean;
-  /**
    * Set instead, on a Glob whose pattern the matcher cannot read at all (too long, or nested groups
    * deeper than the matcher compiles). Not a place: the walk would not have started, so there is no
    * directory to serve or to add, and the refusal carries the matcher's own reason.
@@ -74,10 +63,15 @@ export interface WorkspaceScope {
   /** The root after following links, when the caller has resolved it once; resolved here if not. */
   realRoot?: string;
   /**
-   * Directories outside the workspace that the Read tool may open (Book's memory directory),
-   * exactly as `ToolContext.readOnlyRoots`, so a Read is judged by the rule the tool applies.
+   * Paths outside the workspace that the Read tool may open (Book's memory directory), exactly
+   * as `ToolContext.readOnlyRoots`, so a Read is judged by the rule the tool applies.
    */
-  readOnlyRoots?: readonly (string | ReadOnlyRoot)[];
+  readOnlyRoots?: readonly string[];
+  /**
+   * Book's memory directory as a Glob and Grep search root, exactly as
+   * `ToolContext.memorySearchRoot`: a search into it is judged as one the tool can serve.
+   */
+  memorySearchRoot?: string;
   /**
    * Honored `additionalDirectories`, as the resolved real roots the file tools resolve against
    * (`ToolContext.additionalRoots`). Read+write: a read is auto-allowed exactly as a workspace
@@ -548,6 +542,7 @@ function resolvedPathScope(scope: WorkspaceScope): ResolvedPathScope {
   const rootsFor = (includeReadOnly: boolean): PathRoots => ({
     workspaceRoot: scope.root,
     readOnlyRoots: includeReadOnly ? scope.readOnlyRoots : undefined,
+    memorySearchRoot: scope.memorySearchRoot,
     additionalRoots: scope.additionalRoots,
   });
   // Fixed for the evaluation: the roots that hold a home directory of their own, and so may serve a
@@ -776,7 +771,7 @@ function globTarget(pattern: string, paths: ResolvedPathScope): ReadToolTargetRe
 
 /** What a Read, Glob or Grep call reaches; see {@link readToolTarget}. */
 type ReadToolTarget =
-  'servable' | 'outside' | 'guarded' | 'hidden' | 'none' | { target: 'invalid'; reason: string };
+  'servable' | 'outside' | 'guarded' | 'none' | { target: 'invalid'; reason: string };
 
 /** {@link ReadToolTarget} with the matcher's reason carried beside an unreadable pattern. */
 type ReadToolTargetResult =
@@ -786,8 +781,7 @@ type ReadToolTargetResult =
  * What a Read, Glob or Grep call reaches, judged the way the tool judges it: `servable` (the tool
  * can serve it), `outside` (no root contains it, so no approval could make the tool open it),
  * `guarded` (Book's own local settings, or a root that holds a home directory, which keep asking),
- * `hidden` (a root that excludes this subpath, the memory inbox, which also keeps asking), or
- * `none` (no target to judge; the tool rejects the call itself). A Glob whose pattern the matcher
+ * or `none` (no target to judge; the tool rejects the call itself). A Glob whose pattern the matcher
  * cannot read is `{ target: 'invalid', reason }`, which is refused with that reason rather than as
  * an unreachable path.
  */
@@ -800,7 +794,7 @@ function readToolTarget(
     const raw = pathArgument(toolName, args);
     if (!raw) return 'none';
     const detail = paths.detail(raw, true);
-    if (!('path' in detail)) return detail.reason === 'excluded' ? 'hidden' : 'outside';
+    if (!('path' in detail)) return 'outside';
     return paths.isGuarded(detail.path.canonicalPath) ? 'guarded' : 'servable';
   }
   if (toolName === 'Glob') {
@@ -814,11 +808,11 @@ function readToolTarget(
     // an unreachable path gives.
     return globTarget(pattern, paths);
   }
-  // Grep: no path, or `.`, searches the workspace. Grep never reads Book's memory directory.
+  // Grep: no path, or `.`, searches the workspace; a path may name the memory directory.
   const raw = typeof args.path === 'string' ? args.path.trim() : '';
   if (raw === '' || raw === '.') return 'servable';
   const detail = paths.detail(raw, false);
-  if (!('path' in detail)) return detail.reason === 'excluded' ? 'hidden' : 'outside';
+  if (!('path' in detail)) return 'outside';
   if (paths.isGuarded(detail.path.canonicalPath)) return 'guarded';
   // The scope is a directory: guarding only the directory path itself would let `Grep
   // {path: "/home"}` print lines from `~/.ssh` without naming a file under it.
@@ -1107,22 +1101,15 @@ export function evaluatePermissionDetail(
     return { decision: 'refuse', source: 'default', outsideWorkspace: true };
   }
 
-  // A target a root serves but excludes — Book's memory inbox. The tool refuses it whatever the
-  // user said, so a prompt here is a question with no possible answer, and the `hidden` verdict
-  // that already knew as much used to fall through to the default `ask` (#305 item 3). Refused
-  // with its own code, because the remedy is not a directory: the parent is served already.
-  if (readTarget === 'hidden') {
-    return { decision: 'refuse', source: 'default', excludedPath: true };
-  }
-
   // No rule matched — default to asking.
   return { decision: 'ask', source: 'default' };
 }
 
 /**
- * Tools that never prompt: the agent's own memory, its checklist, and the advisor
- * the user chose with `/advisor` (it reads the conversation and acts on nothing). A `deny`
- * rule still blocks them and an `ask` rule still asks, and `dontAsk` does not
- * refuse them, since it only refuses what it would have had to ask about.
+ * Tools that never prompt: the agent's checklist, and the advisor the user chose with
+ * `/advisor` (it reads the conversation and acts on nothing). A `deny` rule still blocks
+ * them and an `ask` rule still asks, and `dontAsk` does not refuse them, since it only
+ * refuses what it would have had to ask about. (A write into the memory directory is
+ * allowed separately, with source `memory`.)
  */
-export const ALWAYS_ALLOWED_TOOLS = new Set(['MemorySave', 'TodoWrite', 'Advisor']);
+export const ALWAYS_ALLOWED_TOOLS = new Set(['TodoWrite', 'Advisor']);

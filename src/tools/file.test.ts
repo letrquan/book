@@ -737,51 +737,15 @@ describe('readOnlyRoots', () => {
     expect(r2.structuredError?.message).toMatch(/outside workspace/i);
   });
 
-  it('refuses read of excluded subpaths under a read-only root', async () => {
-    ctx.readOnlyRoots = [{ root: readOnlyDir, exclude: ['.inbox'] }];
+  it('reads a dot-entry under the memory directory, which nothing excludes any more', async () => {
+    const legacyInbox = join(readOnlyDir, '.inbox');
+    mkdirSync(legacyInbox, { recursive: true });
+    writeFileSync(join(legacyInbox, 'x.md'), 'an old candidate');
+    ctx.readOnlyRoots = [readOnlyDir];
 
-    const approved = join(readOnlyDir, 'approved.md');
-    writeFileSync(approved, 'approved fact');
-
-    const inbox = join(readOnlyDir, '.inbox');
-    mkdirSync(join(inbox, 'discarded'), { recursive: true });
-    const inboxFile = join(inbox, 'x.md');
-    writeFileSync(inboxFile, 'unapproved candidate');
-    const discardedFile = join(inbox, 'discarded', 'x.md');
-    writeFileSync(discardedFile, 'discarded candidate');
-
-    // Approved file under root succeeds
-    const rApproved = await read.execute({ filePath: approved }, ctx);
-    expect(rApproved.status).toBe('success');
-    expect(rApproved.content).toContain('approved fact');
-
-    // Files in excluded .inbox and .inbox/discarded fail with Path outside workspace
-    const rInbox = await read.execute({ filePath: inboxFile }, ctx);
-    expect(rInbox.status).toBe('error');
-    expect(rInbox.structuredError?.message).toMatch(/outside workspace/i);
-
-    const rDiscarded = await read.execute({ filePath: discardedFile }, ctx);
-    expect(rDiscarded.status).toBe('error');
-    expect(rDiscarded.structuredError?.message).toMatch(/outside workspace/i);
-  });
-
-  it('refuses the inbox when the memory root sits inside the workspace, or through a symlink', async () => {
-    // Running Book in $HOME puts ~/.book/projects/<p>/memory inside the workspace.
-    const memory = join(ctx.workspaceRoot, '.book', 'memory');
-    mkdirSync(join(memory, '.inbox'), { recursive: true });
-    const candidate = join(memory, '.inbox', 'x.md');
-    writeFileSync(candidate, 'quarantined candidate');
-    ctx.readOnlyRoots = [{ root: memory, exclude: ['.inbox'] }];
-
-    const direct = await read.execute({ filePath: candidate }, ctx);
-    expect(direct.status, candidate).toBe('error');
-
-    const throughLink = join(memory, 'in');
-    // A junction needs no privilege on Windows, where a directory symlink does; elsewhere the type
-    // is ignored and this is an ordinary symlink.
-    symlinkSync(join(memory, '.inbox'), throughLink, 'junction');
-    const linked = await read.execute({ filePath: join(throughLink, 'x.md') }, ctx);
-    expect(linked.status, join(throughLink, 'x.md')).toBe('error');
+    const r = await read.execute({ filePath: join(legacyInbox, 'x.md') }, ctx);
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('an old candidate');
   });
 
   it('refuses relative ../x.md path even when readOnlyRoots is configured', async () => {
@@ -790,6 +754,63 @@ describe('readOnlyRoots', () => {
     const r = await read.execute({ filePath: '../x.md' }, ctx);
     expect(r.status).toBe('error');
     expect(r.structuredError?.message).toMatch(/outside workspace/i);
+  });
+});
+
+describe('memorySearchRoot', () => {
+  let memory: string;
+
+  beforeEach(() => {
+    memory = mkdtempSync(join(tmpdir(), 'book-memory-search-'));
+    writeFileSync(join(memory, 'build.md'), 'run pnpm install\n');
+    writeFileSync(join(memory, '.format'), 'pnpm marker\n');
+    mkdirSync(join(memory, '.inbox'), { recursive: true });
+    writeFileSync(join(memory, '.inbox', 'pending.md'), 'pnpm candidate\n');
+    ctx.memorySearchRoot = memory;
+  });
+
+  afterEach(() => {
+    rmSync(memory, { recursive: true, force: true });
+    delete ctx.memorySearchRoot;
+  });
+
+  it('globs the memory directory with an absolute pattern, leaving dot-entries out', async () => {
+    const r = await glob.execute({ pattern: join(memory, '**', '*') }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain(join(memory, 'build.md'));
+    expect(r.content).not.toContain('.format');
+    expect(r.content).not.toContain('pending.md');
+  });
+
+  it('greps the memory directory by path, labelling a match with the path Read accepts', async () => {
+    const r = await grep.execute({ pattern: 'pnpm', path: memory }, ctx);
+
+    expect(r.status).toBe('success');
+    expect(r.content).toContain(join(memory, 'build.md'));
+    expect(r.content).toContain('run pnpm install');
+    expect(r.content).not.toContain('pnpm marker');
+    expect(r.content).not.toContain('pnpm candidate');
+  });
+
+  it('does not search the memory directory without the root', async () => {
+    delete ctx.memorySearchRoot;
+
+    const g = await grep.execute({ pattern: 'pnpm', path: memory }, ctx);
+    expect(g.status).toBe('error');
+    expect(g.structuredError?.message).toMatch(/outside workspace/i);
+
+    const r = await glob.execute({ pattern: join(memory, '*.md') }, ctx);
+    expect(r.content).toContain('No files found');
+  });
+
+  it('keeps a relative pattern in the workspace', async () => {
+    writeFileSync(join(dir, 'local.md'), 'workspace copy\n');
+
+    const r = await glob.execute({ pattern: '*.md' }, ctx);
+
+    expect(r.content).toContain('local.md');
+    expect(r.content).not.toContain('build.md');
   });
 });
 

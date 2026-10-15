@@ -190,12 +190,7 @@ export async function runHeadless(
   /** The session SessionStart ran for, so a run that throws on abort still ends it. */
   let startedSessionId: string | undefined;
   const agentSession = new AgentSession({
-    // The transcript is the rendered conversation and still carries the tool
-    // records compaction summarized out of the context history, so prefer it
-    // when a resume supplies both.
-    runtime: new SessionRuntime({
-      history: opts.transcript?.length ? opts.transcript : opts.history,
-    }),
+    runtime: new SessionRuntime(),
   });
   /**
    * Stop the run's children, background shells and timers. SessionEnd runs after this,

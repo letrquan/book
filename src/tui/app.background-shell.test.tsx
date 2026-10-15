@@ -66,7 +66,6 @@ function config(): AgentConfig {
         ...DEFAULT_SETTINGS.memory,
         enabled: false,
         autoSave: false,
-        requireApproval: true,
       },
       ui: { ...DEFAULT_SETTINGS.ui, startupAnimation: false },
     },

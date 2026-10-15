@@ -82,11 +82,62 @@ describe('isWorkStep', () => {
   });
 });
 
+/** An assistant turn with one file-writing call and its result, whose files are `mutations`. */
+function writing(
+  name: string,
+  mutations: Array<{ memory?: true }>,
+  status: 'success' | 'error' = 'success',
+): Message {
+  const fileMutations = mutations.map((mutation) => ({
+    kind: 'update' as const,
+    filePath: 'x.md',
+    addedLines: 1,
+    removedLines: 0,
+    ...mutation,
+  }));
+  return {
+    ...assistant('w1', [name]),
+    toolResults: [
+      {
+        version: 2,
+        toolCallId: 'w1-0',
+        status,
+        content: '',
+        artifacts: { fileMutation: fileMutations[0], fileMutations },
+      },
+    ],
+  } as Message;
+}
+
+describe('a memory write', () => {
+  it('hands back, like the memory tool did, and is not a step', () => {
+    for (const name of ['Write', 'Edit', 'MultiEdit', 'ApplyPatch']) {
+      const message = writing(name, [{ memory: true }]);
+      expect(handsBack(message), name).toBe(true);
+      expect(isWorkStep(message), name).toBe(false);
+    }
+  });
+
+  it('is an ordinary step when the file is not a memory file, the write failed, or it has not finished', () => {
+    expect(handsBack(writing('Write', [{}]))).toBe(false);
+    expect(isWorkStep(writing('Write', [{}]))).toBe(true);
+    expect(handsBack(writing('Write', [{ memory: true }], 'error'))).toBe(false);
+    expect(handsBack(assistant('a1', ['Write']))).toBe(false);
+    expect(isWorkStep(assistant('a1', ['Write']))).toBe(true);
+  });
+
+  it('stays a step when a patch changes a memory file and a workspace file together', () => {
+    expect(handsBack(writing('ApplyPatch', [{ memory: true }, {}]))).toBe(false);
+    expect(isWorkStep(writing('ApplyPatch', [{ memory: true }, {}]))).toBe(true);
+  });
+});
+
 describe('handsBack', () => {
-  it('is true for a question, a plan for approval and a memory save', () => {
+  it('is true for a question and a plan for approval', () => {
     expect(handsBack(assistant('a1', ['AskUserQuestion']))).toBe(true);
     expect(handsBack(assistant('a1', ['ExitPlanMode']))).toBe(true);
-    expect(handsBack(assistant('a1', ['MemorySave']))).toBe(true);
+    // The retired memory tool is an ordinary call now.
+    expect(handsBack(assistant('a1', ['MemorySave']))).toBe(false);
   });
 
   it('is false for plan bookkeeping and for work', () => {

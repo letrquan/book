@@ -10,7 +10,6 @@ import type {
 import type { ProviderMessage, ProviderResponseMetadata } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
 import type {
-  ReadOnlyRoot,
   ToolCall,
   ToolResult,
   ToolContext,
@@ -63,11 +62,7 @@ import { realWorkspaceRoot } from '../tools/path-utils.js';
 import { memoryWriteScope } from '../memory-store.js';
 import { observeFile } from '../tools/file-provenance.js';
 import { homeGuards, resolveAdditionalRoots, rootHoldsHome } from '../additional-roots.js';
-import {
-  excludedPathRefusal,
-  invalidPatternRefusal,
-  outsideWorkspaceRefusal,
-} from './refusal-remedies.js';
+import { invalidPatternRefusal, outsideWorkspaceRefusal } from './refusal-remedies.js';
 import {
   isToolDefinitionAllowed,
   parseCapabilityRules,
@@ -403,7 +398,7 @@ export async function runAgentLoop(
   const hasPartialOutput = (): boolean => assistantOutputProduced;
   const retry = config.retry;
   const ownsRuntime = !options?.runtime;
-  const runtime = options?.runtime ?? new SessionRuntime({ history });
+  const runtime = options?.runtime ?? new SessionRuntime();
   runtime.toolExecutionScheduler.setLimit(config.settings.toolExecution.maxConcurrent);
   /**
    * The managed child this loop is, named for an operator notice: the profile or role first,
@@ -636,15 +631,13 @@ export async function runAgentLoop(
   });
 
   const initialMode = mode as PermissionMode;
-  // Read may open the memory directory (minus its inbox) and, below, every file this
-  // session clipped a result into: a clip notice's "Full output: <path>" (#248). Never the
-  // whole tool-output directory, which holds every project's clipped output. The earlier
-  // prompts' files come from the runtime, so a notice the model was given one turn ago
-  // stays readable for the rest of the session.
-  const readOnlyRoots: Array<string | ReadOnlyRoot> = [
-    ...(config.memoryContext?.dir
-      ? [{ root: config.memoryContext.dir, exclude: ['.inbox'] } as const]
-      : []),
+  // Read may open the memory directory and, below, every file this session clipped a result
+  // into: a clip notice's "Full output: <path>" (#248). Never the whole tool-output directory,
+  // which holds every project's clipped output. The earlier prompts' files come from the
+  // runtime, so a notice the model was given one turn ago stays readable for the rest of the
+  // session.
+  const readOnlyRoots: string[] = [
+    ...(config.memoryContext?.dir ? [config.memoryContext.dir] : []),
     ...runtime.clippedOutputPaths,
   ];
   /**
@@ -718,6 +711,9 @@ export async function runAgentLoop(
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
     readOnlyRoots,
+    // Glob and Grep search the memory directory too, subagents included: read-only memory is
+    // read by whoever loaded it.
+    memorySearchRoot: config.memoryContext?.dir,
     additionalRoots,
     memoryWrite,
     env: process.env as Record<string, string>,
@@ -749,7 +745,6 @@ export async function runAgentLoop(
     onAgentEvent: callbacks.onAgentEvent,
     onHookEvent: callbacks.onHookEvent,
     onNotice: callbacks.onNotice,
-    usedToolNames: runtime.usedToolNames,
     runtime,
     conversation: () =>
       pendingTurn ? [...newHistory, pendingTurnMessage(pendingTurn)] : newHistory,
@@ -2731,6 +2726,7 @@ export async function runAgentLoop(
             root: toolContext.workspaceRoot,
             realRoot: workspaceRealRoot,
             readOnlyRoots: toolContext.readOnlyRoots,
+            memorySearchRoot: toolContext.memorySearchRoot,
             additionalRoots,
             memoryWrite: toolContext.memoryWrite,
             // A home directory, or anything containing one, keeps the prompt even where it was
@@ -2762,7 +2758,7 @@ export async function runAgentLoop(
         }
 
         // A Read, Glob or Grep the tool itself refuses (outside the workspace and every honored
-        // root, or under a subpath a root excludes) is not a permission question: no rule and no
+        // root) is not a permission question: no rule and no
         // mode make the file tools serve it, so no prompt is raised and no "Always allow" rule is
         // written for a call that could never work. The model gets a blocked result naming the
         // remedy instead (#305 item 3).
@@ -2771,12 +2767,11 @@ export async function runAgentLoop(
             skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'permission_denied');
           }
           log.debug('refused a read the tool cannot serve', { tool: canonName });
-          // Three refusals, three messages: an unservable path is fixed by adding its directory, an
-          // excluded one is not, and a pattern the matcher cannot read is fixed by writing another
-          // pattern — naming a directory for either of the last two would be a dead end.
-          const refusal = verdict.excludedPath
-            ? excludedPathRefusal(canonName, call, { toolCallId: call.id })
-            : verdict.unreadablePattern !== undefined
+          // Two refusals, two messages: an unservable path is fixed by adding its directory, and a
+          // pattern the matcher cannot read is fixed by writing another pattern — naming a
+          // directory for the second would be a dead end.
+          const refusal =
+            verdict.unreadablePattern !== undefined
               ? invalidPatternRefusal(canonName, call, verdict.unreadablePattern, {
                   toolCallId: call.id,
                 })
@@ -2981,7 +2976,6 @@ export async function runAgentLoop(
 
       const executeToolCall = async (entry: PreparedLoopCall): Promise<ToolResult> => {
         const toolStartMs = clock.monotonicNowMs();
-        runtime.usedToolNames.add(entry.canonName);
         log.debug('tool start', {
           name: entry.canonName,
           id: entry.call.id,

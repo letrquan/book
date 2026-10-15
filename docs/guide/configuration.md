@@ -407,9 +407,7 @@ output.
   },
   "memory": {
     "enabled": true,
-    "autoSave": true,
-    "requireApproval": false,
-    "quarantineExternal": true
+    "autoSave": true
   },
   "ui": {
     "showThinking": true,
@@ -443,7 +441,9 @@ output.
 }
 ```
 
-Memory lives in `<BOOK_HOME>/projects/<slug>/memory/` (`~/.book/projects/<slug>/memory/` by default), where `<slug>` is the path of the git repository root with path separators and any character other than letters, digits, `.`, `_` and `-` turned into `-`. A linked worktree uses its main checkout's root, and a workspace outside a repository uses its own path, so subdirectories and worktrees of one repository share one memory. A directory under the old, workspace-path key is moved there on first run. `memory.enabled` controls loading and reading the project memory index at session start (the first 200 lines or 25,000 bytes of `MEMORY.md`, with a warning line when it is cut); `memory.autoSave` controls whether the model may write memories via `MemorySave` (omitting the tool and save spec when false); `memory.requireApproval` (default `false`) routes model writes to `.inbox/` for review via `/memory inbox` rather than saving directly to the approved store; `memory.quarantineExternal` (default `true`) routes memories written in sessions that read external content — a web fetch or search, an MCP tool, or agent-produced text from `Task`/`AgentRead`/`AgentGet`/`AgentWait` — to the inbox regardless of requireApproval.
+Memory lives in `<BOOK_HOME>/projects/<slug>/memory/` (`~/.book/projects/<slug>/memory/` by default), where `<slug>` is the path of the git repository root with path separators and any character other than letters, digits, `.`, `_` and `-` turned into `-`. A linked worktree uses its main checkout's root, and a workspace outside a repository uses its own path, so subdirectories and worktrees of one repository share one memory. A directory under the old, workspace-path key is moved there on first run. `memory.enabled` controls loading and reading the project memory index at session start (the first 200 lines or 25,000 bytes of `MEMORY.md`, with a warning line when it is cut); `memory.autoSave` controls whether the model may write memory: the model writes it with `Write`/`Edit`/`MultiEdit`/`ApplyPatch`, and with `autoSave` off those tools are refused in the memory directory ("memory is read-only in this session"), the prompt drops the save instructions, and the index still loads. A `deny` rule that covers a write to a memory file does the same to the prompt, for that rule's tools. Those are the only two memory keys.
+
+Three memory keys were removed with the approval inbox, the external-content quarantine and background extraction: `memory.requireApproval`, `memory.quarantineExternal` and the `memory.extraction` block. They are no longer read. A settings file that still carries one loads without error, and `book doctor` names the key and what to do about it. A permission rule that names the retired `MemorySave` tool (`MemorySave`, `MemorySave(*)`) matches nothing now and is reported the same way; to restrict memory writes, write a rule on `Write`, `Edit`, `MultiEdit` or `ApplyPatch` for the memory directory, or set `memory.autoSave` to `false`. An `.inbox/` directory an old version left in the memory directory is not read or deleted.
 
 `agents.checkTimeoutMs` caps one `Check` run (default 120 s, maximum 2 h). A check that exceeds it
 is killed and reported as `check_timed_out` — explicitly _not_ as a failing check, so an agent does

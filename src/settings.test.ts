@@ -32,11 +32,11 @@ describe('settings schema defaults', () => {
   it('fills the inner defaults of a nested object given as {}', () => {
     const parsed = bookSettingsSchema.parse({
       sandbox: {},
-      memory: { extraction: {} },
+      memory: {},
       agents: { ui: {}, routing: {} },
     });
     expect(parsed.sandbox).toEqual(DEFAULT_SETTINGS.sandbox);
-    expect(parsed.memory.extraction).toEqual(DEFAULT_SETTINGS.memory.extraction);
+    expect(parsed.memory).toEqual(DEFAULT_SETTINGS.memory);
     expect(parsed.agents.ui).toEqual({ enabled: true });
     expect(parsed.agents.routing).toEqual({ inlineSearchBudget: 3, exploreReminder: true });
   });
@@ -44,7 +44,7 @@ describe('settings schema defaults', () => {
   it('fills the defaults a partial nested object leaves out', () => {
     const parsed = bookSettingsSchema.parse({
       sandbox: { filesystem: { allowWrite: ['/tmp'] }, network: {} },
-      memory: { extraction: { idleHours: 1 } },
+      memory: { autoSave: false },
       retry: { maxAttempts: 5 },
       hooks: { SessionStart: [{ command: 'echo hi' }] },
     });
@@ -55,10 +55,7 @@ describe('settings schema defaults', () => {
       allowGitWrites: false,
     });
     expect(parsed.sandbox.network).toEqual({ allowedDomains: [], deniedDomains: [] });
-    expect(parsed.memory.extraction).toEqual({
-      ...DEFAULT_SETTINGS.memory.extraction,
-      idleHours: 1,
-    });
+    expect(parsed.memory).toEqual({ ...DEFAULT_SETTINGS.memory, autoSave: false });
     expect(parsed.retry).toEqual({ ...DEFAULT_SETTINGS.retry, maxAttempts: 5 });
     expect(parsed.hooks.SessionStart).toEqual([{ command: 'echo hi', env: {} }]);
     expect(parsed.hooks.Stop).toEqual([]);

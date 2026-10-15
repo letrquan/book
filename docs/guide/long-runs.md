@@ -319,12 +319,11 @@ open `/config` and choose **Compact model** (shortcut `C`), or run
 `/config compact-model 9router/ag/gemini-3.6-flash-high` (or `/config compactModel=...`). Both
 reach the same place — the typed form is the menu row, not a separate write.
 
-`compactEffort` sets the reasoning effort of the requests made on the compact model: the reducer,
-memory extraction, and the deferred-compaction judge when its catalog refuses the `low` it asks
+`compactEffort` sets the reasoning effort of the requests made on the compact model: the reducer
+and the deferred-compaction judge when its catalog refuses the `low` it asks
 for. Left unset, they run at the session's effort capped at `medium`. A checkpoint does not need
 minutes of reasoning, and at `--effort max` on a slow route the reducer's request produced no byte
-for long enough that the proxy dropped it, ten times over. Extraction answers inside a
-4,000-token limit that a reply at `max` could spend on reasoning alone. When the compact model's
+for long enough that the proxy dropped it, ten times over. When the compact model's
 catalog lists effort levels and that level is not one of them, it is clamped down to the highest
 listed level below it, never back up to the session's effort. A catalog with no level at or below
 it, or one with `effort: false`, gets no effort at all, except that an explicit `compactEffort`
@@ -343,14 +342,7 @@ The summarizer's and the judge's requests are also retried at most twice, instea
 `retry.maxAttempts`, and `retry.watchdog` does not lift that cap. Both have a fallback: an empty
 summary is asked for once more and then gives way to the deterministic checkpoint, as does a failed
 summarizer when the request cannot be sent without a compaction, and a failed judge leaves the
-verdict inconclusive, so the checkpoint is committed anyway. Memory extraction keeps the session's retry
-policy, because it gives up on a session after three failed starts. A reply that ended at the output
-limit is kept when it is one JSON object and nothing else. An empty reply, or one cut off
-mid-answer, counts as a failed start rather than as the session read, and a session given up on is
-recorded as `truncated` when its last reply was cut off (`provider-failed` otherwise). On that retry
-policy one session's call can outlast the extraction lock's 30-minute lifetime, so a run keeps its
-lock fresh while it lasts, for at most two hours on any one session; a run whose lock another Book
-session took over writes nothing more.
+verdict inconclusive, so the checkpoint is committed anyway.
 
 `toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
 

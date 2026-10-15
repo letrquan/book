@@ -544,8 +544,7 @@ export function clampEffortToCatalog(
  * The effort of a request on the compact model. A checkpoint does not need
  * minutes of reasoning, and at `--effort max` on a slow route the reducer's
  * request produced no byte for long enough that the proxy dropped it, ten times
- * over (#214). Memory extraction answers inside a 4,000-token output limit,
- * which a reply at `max` can spend on reasoning alone. The target is
+ * over (#214). The target is
  * `compactEffort`, or else the session's effort capped at `medium`, clamped to
  * the compact model's catalog: it never falls back to the uncapped session effort.
  */
@@ -599,7 +598,7 @@ export function compactsOnSessionModel(
 
 /**
  * The compact model's config, for every request made on it: the compaction
- * reducer, the deferred-compaction judge and memory extraction. It is routed to
+ * reducer and the deferred-compaction judge. It is routed to
  * `compactModel` when one is set, without changing the active agent model, and
  * carries the capped, catalog-clamped effort of `compactModelEffort`. It keeps
  * the session's retry policy; the reducer and the judge add their retry caps
@@ -716,9 +715,7 @@ export function resolveAdvisorModelConfig(config: AgentConfig): AgentConfig | un
  * The reducer's and the judge's config: the compact model's, retried at most
  * twice with the watchdog off. Both fall back when the model path fails -- the
  * reducer to the deterministic checkpoint, the judge to an inconclusive verdict
- * that commits the checkpoint anyway -- so more attempts only delay that. Memory
- * extraction keeps the session's retry policy: it gives up on a session after
- * three failed starts, and the cap made that happen sooner on a flaky route.
+ * that commits the checkpoint anyway -- so more attempts only delay that.
  */
 export function resolveReducerModelConfig(config: AgentConfig): AgentConfig {
   const resolved = resolveCompactModelConfig(config);

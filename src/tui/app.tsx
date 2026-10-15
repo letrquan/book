@@ -2272,10 +2272,8 @@ export function App({
           setMemoryAutoSave(effect.enabled);
           flashNotice(
             effect.enabled
-              ? liveConfig.settings.memory.requireApproval
-                ? 'Memory writes on · new memories wait in /memory inbox'
-                : 'Memory writes on · saved directly, external content to /memory inbox'
-              : 'Memory writes off · approved memory still loads',
+              ? 'Memory writes on · the model saves memory files directly'
+              : 'Memory writes off · memory still loads',
             'done',
             5_000,
           );

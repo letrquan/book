@@ -25,16 +25,35 @@ export function delegatesWork(message: Message): boolean {
   return Boolean(message.toolCalls?.some((call) => call.name === 'AgentSpawn'));
 }
 
-/** Calls that hand the conversation back to you, or save a memory: not in a catalog category of their own. */
-const HAND_BACK_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'MemorySave']);
+/** Calls that hand the conversation back to you: not in a catalog category of their own. */
+const HAND_BACK_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
+
+/**
+ * Whether a call is a write that saved a memory file: it succeeded, and every file it changed is in
+ * the memory directory. Read from the result, not the call, because a memory file is written with
+ * the ordinary file tools and only the result knows where it landed.
+ */
+function savedMemory(message: Message, call: { id: string }): boolean {
+  const result = message.toolResults?.find((candidate) => candidate.toolCallId === call.id);
+  if (result?.status !== 'success') return false;
+  const mutations =
+    result.artifacts?.fileMutations ??
+    (result.artifacts?.fileMutation ? [result.artifacts.fileMutation] : []);
+  return mutations.length > 0 && mutations.every((mutation) => mutation.memory === true);
+}
+
+/** Whether a call hands the conversation back to you, or saves a memory. */
+function handsBackCall(message: Message, call: { id: string; name: string }): boolean {
+  return HAND_BACK_TOOLS.has(call.name) || savedMemory(message, call);
+}
 
 /**
  * Whether a call leaves the prose before it an answer: task bookkeeping (by
  * catalog category, so a new task tool is covered without editing this list)
  * and the calls that hand the conversation back to you.
  */
-function isNonStepTool(name: string): boolean {
-  return categoryFor(name) === 'tasks' || HAND_BACK_TOOLS.has(name);
+function isNonStepTool(message: Message, call: { id: string; name: string }): boolean {
+  return categoryFor(call.name) === 'tasks' || handsBackCall(message, call);
 }
 
 /**
@@ -46,7 +65,7 @@ function isNonStepTool(name: string): boolean {
 export function isWorkStep(message: Message): boolean {
   if (message.role !== 'assistant' || message.kind === 'local' || message.localCommand)
     return false;
-  return (message.toolCalls ?? []).some((call) => !isNonStepTool(call.name));
+  return (message.toolCalls ?? []).some((call) => !isNonStepTool(message, call));
 }
 
 /**
@@ -56,7 +75,7 @@ export function isWorkStep(message: Message): boolean {
  * landmarks, like your own turns.
  */
 export function handsBack(message: Message): boolean {
-  return (message.toolCalls ?? []).some((call) => HAND_BACK_TOOLS.has(call.name));
+  return (message.toolCalls ?? []).some((call) => handsBackCall(message, call));
 }
 
 /**
