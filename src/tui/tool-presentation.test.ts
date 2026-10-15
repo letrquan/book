@@ -8,6 +8,8 @@ import {
   shouldExpandTool,
 } from './tool-presentation.js';
 import {
+  EXPANDED_OUTPUT_MAX_LINES,
+  TOOL_ERROR_EXPANDED_MAX_ROWS,
   composeToolErrorDetail,
   composeToolRow,
   estimateToolErrorDetailRows,
@@ -493,7 +495,7 @@ describe('composeToolErrorDetail with a failed command', () => {
 
   it('keeps the last four lines of a long failure, one row each, behind a count of the rest', () => {
     const detail = composeToolErrorDetail(row, source(40).join('\n'), grid, command);
-    expect(detail.hint).toBe('… +36 lines');
+    expect(detail.hint).toBe('… +36 lines (Ctrl+E)');
     expect(detail.lines).toEqual([assertion(37), assertion(38), assertion(39), assertion(40)]);
     for (const line of detail.lines) expect(displayWidth(line)).toBeLessThanOrEqual(room);
   });
@@ -514,7 +516,7 @@ describe('composeToolErrorDetail with a failed command', () => {
     const stderr = 'Error: boom\n    at A\n    at B\n    at C\n\nNode.js v22';
     const detail = composeToolErrorDetail(row, stderr, grid, command);
     expect(detail.lines).toEqual(['    at A', '    at B', '    at C', 'Node.js v22']);
-    expect(detail.hint).toBe('… +1 line');
+    expect(detail.hint).toBe('… +1 line (Ctrl+E)');
 
     const spaced = composeToolErrorDetail(
       row,
@@ -523,7 +525,7 @@ describe('composeToolErrorDetail with a failed command', () => {
       command,
     );
     expect(spaced.lines).toEqual(['two', 'three', 'four', 'five']);
-    expect(spaced.hint).toBe('… +1 line');
+    expect(spaced.hint).toBe('… +1 line (Ctrl+E)');
   });
 
   it('truncates a long line to its row instead of wrapping it', () => {
@@ -556,7 +558,7 @@ describe('composeToolErrorDetail with a failed command', () => {
       ...command,
       stdout: `${stdout}\n\n`,
     });
-    expect(detail.hint).toBe('… +8 lines');
+    expect(detail.hint).toBe('… +8 lines (Ctrl+E)');
     expect(detail.lines).toEqual(source(12).slice(8));
     expect(detail.lines.join('\n')).not.toContain('Exit code');
   });
@@ -592,7 +594,7 @@ describe('composeToolErrorDetail with a failed command', () => {
         command,
       );
       expect(detail.lines).toEqual(source(10).slice(6));
-      expect(detail.hint).toBe('… +6 lines');
+      expect(detail.hint).toBe('… +6 lines (Ctrl+E)');
       expect(detail.note).toHaveLength(2);
       expect(detail.note![0]!.startsWith('Note: the repository')).toBe(true);
       expect(detail.note![1]!.endsWith('…')).toBe(true);
@@ -630,6 +632,149 @@ describe('composeToolErrorDetail with a failed command', () => {
     });
   });
 
+  describe('expanded', () => {
+    const expanded = { ...command, expanded: true };
+    const note =
+      'Note: the repository git directory is read-only inside the sandbox, so git cannot write ' +
+      'to it here. Do not retry the command or change sandbox settings yourself; tell the user ' +
+      'it has to run outside the sandbox.';
+
+    it('shows every line of a long failure, one row each, in order, with no hint', () => {
+      const detail = composeToolErrorDetail(row, source(40).join('\n'), grid, expanded);
+      expect(detail.hint).toBeUndefined();
+      expect(detail.lines).toEqual(source(40));
+      for (const line of detail.lines) expect(displayWidth(line)).toBeLessThanOrEqual(room);
+    });
+
+    it('neutralises an escape byte inside a line', () => {
+      const lines = source(40);
+      lines[10] = 'bad \u001b[31mred\u001b[0m line';
+      const detail = composeToolErrorDetail(row, lines.join('\n'), grid, expanded);
+      expect(detail.lines).toHaveLength(40);
+      for (const line of detail.lines) expect(line.match(CONTROL_CHARACTERS)).toBeNull();
+      expect(detail.lines[10]).toBe('bad  [31mred [0m line');
+    });
+
+    it('continues a long line on the rows after it, losing none of it', () => {
+      const long = 'abcdefghij'.repeat(Math.ceil((room * 3) / 10)).slice(0, room * 3);
+      const detail = composeToolErrorDetail(row, `short\n${long}`, grid, expanded);
+      expect(detail.lines).toHaveLength(4);
+      expect(detail.lines[0]).toBe('short');
+      expect(detail.lines.slice(1)).toHaveLength(3);
+      expect(detail.lines.slice(1).join('')).toBe(long);
+      for (const line of detail.lines) expect(displayWidth(line)).toBeLessThanOrEqual(room);
+      // The collapsed detail still cuts it to one row.
+      const collapsed = composeToolErrorDetail(row, `short\n${long}`, grid, command);
+      expect(collapsed.lines).toHaveLength(2);
+      expect(collapsed.lines[1]!.endsWith('…')).toBe(true);
+    });
+
+    it('wraps CJK and emoji by display width', () => {
+      const long = '漢字🙂'.repeat(room);
+      const detail = composeToolErrorDetail(row, long, grid, expanded);
+      expect(detail.lines.length).toBeGreaterThan(1);
+      expect(detail.lines.join('')).toBe(long);
+      for (const line of detail.lines) expect(displayWidth(line)).toBeLessThanOrEqual(room);
+    });
+
+    it('keeps the last rows of wrapped output within the bound, and counts the hidden lines', () => {
+      const wide = (n: number) => `${n}`.padStart(4, '0') + 'x'.repeat(room * 2 - 4);
+      const lines = Array.from({ length: 1500 }, (_, i) => wide(i + 1));
+      const detail = composeToolErrorDetail(row, lines.join('\n'), grid, expanded);
+      expect(detail.lines).toHaveLength(EXPANDED_OUTPUT_MAX_LINES);
+      expect(detail.lines.at(-1)).toBe(lines.at(-1)!.slice(room));
+      expect(detail.lines.slice(-2).join('')).toBe(lines.at(-1));
+      // 2000 rows hold 1000 whole lines; the 500 before them are hidden.
+      expect(detail.hint).toBe('… +500 lines');
+      expect(rows(detail)).toBeLessThanOrEqual(TOOL_ERROR_EXPANDED_MAX_ROWS);
+    });
+
+    it('counts a line the bound cuts into as hidden, and keeps its last rows', () => {
+      const long = 'y'.repeat(room * 2500);
+      const detail = composeToolErrorDetail(row, `first\n${long}`, grid, expanded);
+      expect(detail.lines).toHaveLength(EXPANDED_OUTPUT_MAX_LINES);
+      expect(detail.hint).toBe('… +2 lines');
+      expect(detail.lines.every((line) => line === 'y'.repeat(room))).toBe(true);
+    });
+
+    it('shows no stdout fallback when the output block draws that stdout below', () => {
+      const stdout = source(12).join('\n');
+      const detail = composeToolErrorDetail(row, 'Exit code: 1', grid, {
+        ...expanded,
+        stdout,
+        stdoutShownBelow: true,
+      });
+      expect(detail.lines).toEqual([]);
+      expect(detail.hint).toBeUndefined();
+      const withNote = composeToolErrorDetail(row, 'Exit code: 1\nNote: run it outside.', grid, {
+        ...expanded,
+        stdout,
+        stdoutShownBelow: true,
+      });
+      expect(withNote.lines).toEqual([]);
+      expect(withNote.note).toEqual(['Note: run it outside.']);
+    });
+
+    it('keeps the collapsed stdout tail and real stderr even when stdout shows below', () => {
+      const stdout = source(12).join('\n');
+      const collapsed = composeToolErrorDetail(row, 'Exit code: 1', grid, {
+        ...command,
+        stdout,
+        stdoutShownBelow: true,
+      });
+      expect(collapsed.lines).toEqual(source(12).slice(8));
+      expect(collapsed.hint).toBe('… +8 lines (Ctrl+E)');
+      const stderr = composeToolErrorDetail(row, 'Exit code: 1\nboom', grid, {
+        ...expanded,
+        stdout,
+        stdoutShownBelow: true,
+      });
+      expect(stderr.lines).toEqual(['Exit code: 1', 'boom']);
+    });
+
+    it('keeps the last 2000 lines and counts the rest, naming no key', () => {
+      const detail = composeToolErrorDetail(row, source(2500).join('\n'), grid, expanded);
+      expect(detail.hint).toBe('… +500 lines');
+      expect(detail.lines).toHaveLength(EXPANDED_OUTPUT_MAX_LINES);
+      expect(detail.lines[0]).toBe(assertion(501));
+      expect(detail.lines.at(-1)).toBe(assertion(2500));
+    });
+
+    it('shows stdout in full when the message is only the exit code', () => {
+      const detail = composeToolErrorDetail(row, 'Exit code: 1', grid, {
+        ...expanded,
+        stdout: `${source(12).join('\n')}\n\n`,
+      });
+      expect(detail.hint).toBeUndefined();
+      expect(detail.lines).toEqual(source(12));
+    });
+
+    it('still ends with the sandbox note, wrapped to two rows', () => {
+      const detail = composeToolErrorDetail(
+        row,
+        `${source(20).join('\n')}\n${note}`,
+        grid,
+        expanded,
+      );
+      expect(detail.hint).toBeUndefined();
+      expect(detail.lines).toEqual(source(20));
+      expect(detail.note!.length).toBeGreaterThan(0);
+      expect(detail.note!.length).toBeLessThanOrEqual(2);
+      expect(detail.note![0]!.startsWith('Note: the repository')).toBe(true);
+    });
+
+    it('wraps prose past two rows, to at most 2000', () => {
+      const prose = 'word '.repeat(200);
+      const collapsed = composeToolErrorDetail(row, prose, grid);
+      expect(collapsed.lines).toHaveLength(2);
+      const detail = composeToolErrorDetail(row, prose, grid, { expanded: true });
+      expect(detail.lines.length).toBeGreaterThan(2);
+      expect(detail.lines.join(' ')).toBe(prose.trim());
+      const huge = composeToolErrorDetail(row, 'word '.repeat(60_000), grid, { expanded: true });
+      expect(huge.lines).toHaveLength(EXPANDED_OUTPUT_MAX_LINES);
+    });
+  });
+
   describe('the row budget', () => {
     const output = `${source(10).join('\n')}\nNote: ${'word '.repeat(80)}`;
 
@@ -648,7 +793,7 @@ describe('composeToolErrorDetail with a failed command', () => {
       const plain = source(10).join('\n');
       const at = (maxRows: number) =>
         composeToolErrorDetail(row, plain, grid, { ...command, maxRows });
-      expect(at(5).hint).toBe('… +6 lines');
+      expect(at(5).hint).toBe('… +6 lines (Ctrl+E)');
       expect(at(4).hint).toBeUndefined();
       expect(at(4).lines).toEqual(source(10).slice(6));
       expect(at(2).lines).toEqual(source(10).slice(8));
@@ -1011,8 +1156,82 @@ describe('exit code metadata', () => {
   });
 });
 
+describe('exit code metadata of a BashOutput read', () => {
+  const args = { shell_id: 'shell-1' };
+  const read = (shell: Record<string, unknown>, output = 'a\nb\nc') =>
+    result({ output, data: { shell: { id: 'shell-1', ...shell }, output: 'a', remaining: 0 } });
+
+  it('names the non-zero exit code of a shell that finished, leaving the row a success', () => {
+    for (const status of ['exited', 'failed', 'killed', 'timed_out', 'lost']) {
+      const presentation = deriveToolPresentation(
+        'BashOutput',
+        args,
+        read({ status, exitCode: 2 }),
+      );
+      expect(presentation.metadata).toContain('exit 2');
+      expect(presentation.metadata).not.toContain('failed');
+      expect(presentation.status).toBe('success');
+    }
+  });
+
+  it('names the code on a result the registry enriched, ahead of the duration', () => {
+    const enriched = enrichToolResultPresentation(
+      { ...read({ status: 'exited', exitCode: 2 }), metrics: { durationMs: 7 } },
+      'BashOutput',
+      args,
+    );
+    expect(deriveToolPresentation('BashOutput', args, enriched).metadata).toEqual([
+      'exit 2',
+      '7ms',
+    ]);
+  });
+
+  it('adds nothing for a shell still running, or a clean exit', () => {
+    for (const shell of [
+      { status: 'running', exitCode: 2 },
+      { status: 'running' },
+      { status: 'starting', exitCode: null },
+      { status: 'exited', exitCode: 0 },
+      { status: 'exited', exitCode: null },
+      { status: 'exited' },
+      { status: 'exited', exitCode: '2' },
+    ]) {
+      const { metadata } = deriveToolPresentation('BashOutput', args, read(shell));
+      expect(metadata.join(' ')).not.toMatch(/exit/);
+    }
+  });
+
+  it('adds nothing when the result carries no shell record', () => {
+    for (const data of [undefined, null, 'x', {}, { shell: null }, { shell: 'x' }]) {
+      const { metadata } = deriveToolPresentation(
+        'BashOutput',
+        args,
+        result({ output: 'a', data }),
+      );
+      expect(metadata.join(' ')).not.toMatch(/exit/);
+    }
+  });
+
+  it('is only for BashOutput', () => {
+    const { metadata } = deriveToolPresentation(
+      'Bash',
+      { command: 'x' },
+      read({ status: 'exited', exitCode: 2 }),
+    );
+    expect(metadata.join(' ')).not.toMatch(/exit/);
+  });
+});
+
 describe('composeToolRow meta width of a failed row', () => {
   const grid = transcriptGrid(100);
+
+  it('widens the meta column for a BashOutput row that names its exit code', () => {
+    const row = composeToolRow(
+      { title: 'Shell output', target: 'shell-1', metadata: ['exit 255', '12 lines', '1m 12s'] },
+      grid,
+    );
+    expect(row.meta).toBe('exit 255 · 12 lines · 1m 12s');
+  });
 
   it('widens the meta column for a row that names its exit code', () => {
     const row = composeToolRow(

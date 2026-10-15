@@ -67,6 +67,18 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A failed command's whole error is reachable, and `Check` and `BashOutput` rows show their exit
+  code** (#470). The detail under a failed command's row kept its last four lines under a dimmed
+  `… +N lines`, and no key showed the rest: Ctrl+E ignored it, in compact mode and after Ctrl+O. The
+  hint now reads `… +N lines (Ctrl+E)`, and expanding the row (Ctrl+E, or Ctrl+O then Ctrl+E) shows
+  every line of the output, up to the last 2000 rows (a longer output says how many lines it cut,
+  naming no key); a line wider than the row continues on the rows after it instead of being cut.
+  The error folds back to its tail when the row is collapsed again, a command that printed only to
+  stdout shows that stdout once, and a failure whose stderr is hidden can be expanded by a click.
+  A prose failure wraps past two rows when expanded. A failed
+  `Check` now records its exit code, so its row reads `failed · exit 3` like a `Bash` row does (a
+  timed-out check is not a failing check and has none). A `BashOutput` row for a background shell
+  that finished with a non-zero exit shows `exit N`; the read still counts as a success.
 - **A failed Bash call's error detail keeps its last lines and its exit code** (#457). The detail
   under the tool row folded stderr into one paragraph, kept its start, and stopped after two rows,
   so a failing test run showed its first assertion and never its verdict. A failed command's
