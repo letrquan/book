@@ -4,11 +4,14 @@ import { cleanup, render } from 'ink-testing-library';
 import { Box } from 'ink';
 import { act } from 'react';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
-import { ToolCallBlock } from './ToolCallBlock.js';
+import { ToolCallBlock, ToolExpandTargetContext } from './ToolCallBlock.js';
 import { ToolRowInteractionContext } from './tool-row-interactions.js';
 import { displayWidth } from './word-wrap.js';
 import type { FileMutationSummary, ToolResult } from '../../types/tools.js';
 import { enrichToolResultPresentation, toolFailure, toolSuccess } from '../../tools/result.js';
+import { workloadRows } from '../../test/tool-expand-workload.js';
+import { toolRowHidesContent } from '../tool-expansion.js';
+import { shouldDefaultExpandTool } from '../tool-presentation.js';
 
 function successResult(
   toolCallId: string,
@@ -1340,5 +1343,160 @@ describe('ToolCallBlock plan rows', () => {
 
   it('checks a finished plan', () => {
     expect(planFrame(['completed', 'completed'])).toMatch(/✓ Steps\s+2 of 2 done/);
+  });
+});
+
+describe('ToolCallBlock Ctrl+E hint', () => {
+  const rows = workloadRows();
+  const byId = (id: string) => rows.find((row) => row.call.id === id)!;
+
+  function renderRow(
+    id: string,
+    props: {
+      target?: string | null;
+      transcriptMode?: 'compact' | 'detailed';
+      isExpanded?: boolean;
+    } = {},
+  ): string {
+    const row = byId(id);
+    const { target, transcriptMode = 'compact' } = props;
+    const isExpanded = props.isExpanded ?? shouldDefaultExpandTool(row.call.name, row.result);
+    const block = (
+      <ToolCallBlock
+        toolId={row.call.id}
+        name={row.call.name}
+        args={row.call.arguments}
+        result={row.result}
+        isExpanded={isExpanded}
+        transcriptMode={transcriptMode}
+        terminalWidth={100}
+        reducedMotion
+      />
+    );
+    return frame(
+      render(
+        withTheme(
+          target === undefined ? (
+            block
+          ) : (
+            <ToolExpandTargetContext.Provider value={target}>
+              {block}
+            </ToolExpandTargetContext.Provider>
+          ),
+        ),
+      ).lastFrame,
+    );
+  }
+
+  it.each([
+    ['a diff', 'write-new', '… +140 lines'],
+    ['a capped edit', 'edit-long', '… +180 lines'],
+    ['a failed command', 'bash-fail', '… +36 lines'],
+  ])('drops the key from %s footer when another row is the target', (_name, id, footer) => {
+    const rendered = renderRow(id, { target: 'some-other-row' });
+    expect(rendered).toContain(footer);
+    expect(rendered).not.toContain('Ctrl+E');
+  });
+
+  it('drops the key from an output footer when another row is the target', () => {
+    const output = Array.from({ length: 8 }, (_, i) => `line ${i + 1}`).join('\n');
+    const render1 = (target: string) =>
+      frame(
+        render(
+          withTheme(
+            <ToolExpandTargetContext.Provider value={target}>
+              <ToolCallBlock
+                toolId="out-1"
+                name="Bash"
+                args={{ command: 'seq 8' }}
+                result={successResult('out-1', output)}
+                isExpanded
+                reducedMotion
+              />
+            </ToolExpandTargetContext.Provider>,
+          ),
+        ).lastFrame,
+      );
+    expect(render1('other')).toContain('… +2 lines');
+    expect(render1('other')).not.toContain('Ctrl+E');
+    expect(render1('out-1')).toContain('… +2 lines (Ctrl+E)');
+  });
+
+  it.each([
+    ['a diff', 'write-new', '… +140 lines (Ctrl+E)'],
+    ['a capped edit', 'edit-long', '… +180 lines (Ctrl+E)'],
+    ['a failed command', 'bash-fail', '… +36 lines (Ctrl+E)'],
+  ])('names the key in %s footer when the row is the target', (_name, id, footer) => {
+    expect(renderRow(id, { target: id })).toContain(footer);
+  });
+
+  it('keeps the key on every footer when no target is known', () => {
+    expect(renderRow('write-new')).toContain('… +140 lines (Ctrl+E)');
+  });
+
+  it('names no key when the target is null', () => {
+    expect(renderRow('write-new', { target: null })).not.toContain('Ctrl+E');
+  });
+
+  it.each([
+    ['write-new', '… +'],
+    ['bash-fail', '… +36 lines (Ctrl+E)'],
+  ])('keeps the key on %s in the detailed transcript whoever the target is', (id, footer) => {
+    const rendered = renderRow(id, {
+      target: 'some-other-row',
+      transcriptMode: 'detailed',
+      isExpanded: true,
+    });
+    expect(rendered).toContain(footer);
+    expect(rendered).toContain('(Ctrl+E)');
+  });
+
+  it("agrees with the target's predicate: a footer is drawn exactly where a row hides content", () => {
+    const output = Array.from({ length: 30 }, (_, i) => `row ${i}`).join('\n');
+    const extra = [
+      { id: 'bash-long', content: output, expanded: true },
+      { id: 'bash-short', content: 'a\nb', expanded: true },
+      { id: 'bash-folded', content: output, expanded: false },
+    ].map(({ id, content, expanded }) => ({
+      call: { id, name: 'Bash', arguments: { command: 'cmd' } },
+      result: successResult(id, content),
+      expanded,
+    }));
+    const cases = [
+      ...rows.map((row) => ({
+        call: row.call,
+        result: row.result,
+        expanded: shouldDefaultExpandTool(row.call.name, row.result),
+      })),
+      ...extra,
+    ];
+    for (const { call, result, expanded } of cases) {
+      const rendered = frame(
+        render(
+          withTheme(
+            <ToolCallBlock
+              toolId={call.id}
+              name={call.name}
+              args={call.arguments}
+              result={result}
+              isExpanded={expanded}
+              transcriptMode="compact"
+              terminalWidth={100}
+              reducedMotion
+            />,
+          ),
+        ).lastFrame,
+      );
+      const hides = toolRowHidesContent({
+        name: call.name,
+        args: call.arguments,
+        result,
+        isExpanded: expanded,
+        transcriptMode: 'compact',
+        terminalWidth: 100,
+        showAllToolOutput: false,
+      });
+      expect([call.id, rendered.includes('… +')]).toEqual([call.id, hides]);
+    }
   });
 });
