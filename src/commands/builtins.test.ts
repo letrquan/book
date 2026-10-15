@@ -9,7 +9,7 @@ import {
   type BuiltinCommandContext,
 } from './builtins.js';
 import { defaultConfig } from '../test/fixtures.js';
-import { loadConfig } from '../config.js';
+import { loadConfig, resolveAdvisorModelConfig } from '../config.js';
 import {
   persistWorkspaceProviderChoice,
   workspaceProviderFingerprint,
@@ -951,17 +951,18 @@ describe('/advisor', () => {
       return { home, workspace };
     }
 
-    it('refuses /advisor <workspace-provider>/<model> while pending, naming the command', () => {
+    // The id is the user's own selection: while the provider is pending it names none of theirs,
+    // so it is a plain model id on the default endpoint, never the repository's origin (#418).
+    it('accepts /advisor <workspace-provider>/<model> while pending as a plain id, not the workspace origin', () => {
       const { workspace } = workspaceConfig();
+      const config = loadConfig(workspace);
 
-      const effect = registry.execute(
-        'advisor',
-        'lab/adv',
-        context({ runtimeConfig: loadConfig(workspace) }),
-      );
+      const effect = registry.execute('advisor', 'lab/adv', context({ runtimeConfig: config }));
 
-      expect(effect).toMatchObject({ type: 'local-message', isError: true });
-      expect(effect).toHaveProperty('content', expect.stringContaining('book trust provider lab'));
+      expect(effect).toEqual({ type: 'set-advisor', model: 'lab/adv' });
+      const resolved = resolveAdvisorModelConfig({ ...config, advisorModel: 'lab/adv' });
+      expect(resolved?.baseUrl).not.toBe(declaration.baseURL);
+      expect(resolved?.baseUrl).toBe('https://api.openai.com/v1');
     });
 
     it('accepts it once the provider is approved', () => {

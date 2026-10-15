@@ -1,8 +1,7 @@
-import { z } from 'zod';
-import { readFileSync, existsSync } from 'fs';
-import { isAbsolute, join, relative, resolve } from 'path';
-import { homedir } from 'os';
+import { readFileSync } from 'fs';
 import type { AgentConfig, RetryConfig } from './types/runtime.js';
+import { legacyConfigPath, legacyConfigSchema, parseLegacyConfig } from './legacy-config.js';
+import { parseSecretReference, resolveSecretFilePath } from './secret-reference.js';
 import {
   emptyWorkspaceProviderGate,
   resolveSettingsWithProviderGate,
@@ -11,10 +10,13 @@ import {
   applySettingsEnvOverrides,
 } from './settings-loader.js';
 import {
+  environmentModelSelections,
   evaluateLegacyBaseUrl,
-  workspaceProviderRefusal,
+  providerPrefixOf,
+  withEnvironmentSelections,
   WorkspaceProviderRefusalError,
   type LegacyBaseUrlGate,
+  type WithheldModelSelection,
 } from './provider-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { hadRemovedAuthConfiguration } from './settings-removed.js';
@@ -22,7 +24,6 @@ import type { SettingsResolutionPaths } from './settings-loader.js';
 import {
   ADVISOR_OFF_VALUE,
   DEFAULT_SETTINGS,
-  unboundedInt,
   type CompactStrategy,
   type ResolvedSettings,
 } from './settings.js';
@@ -31,71 +32,33 @@ import { EFFORT_LEVELS, getAvailableEffortLevels, isEffortLevel } from './comman
 import { createModelWindowStore, type ModelWindowStore } from './model-window-store.js';
 import { resolveShell } from './shell-selection.js';
 
-/** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 /** Conservative per-request output budget when a model provides no metadata. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 64_000;
 
-/**
- * Any string `new URL()` accepts, returned unchanged: what Zod 3's `.url()` checked. Zod 4's
- * `z.url()` also trims the value and strips whitespace inside it, which would change the base URL
- * a `.bookrc.json` names.
- */
-const legacyUrlSchema = z.string().check((ctx) => {
-  if (!URL.canParse(ctx.value)) {
-    ctx.issues.push({ code: 'invalid_format', format: 'url', input: ctx.value });
-  }
-});
-
-export const legacyConfigSchema = z.object({
-  model: z.string().optional(),
-  baseUrl: legacyUrlSchema.optional(),
-  maxTurns: unboundedInt().min(1).optional(),
-  maxTokens: unboundedInt().min(1000).optional(),
-  autoCompactEnabled: z.boolean().optional(),
-  animation: z
-    .object({
-      typewriterSpeed: z.number().int().min(1).max(50).default(3),
-      spinnerStyle: z.enum(['braille', 'dots']).default('braille'),
-    })
-    .optional(),
-  accessibility: z
-    .object({
-      screenReader: z.boolean().default(false),
-      reducedMotion: z.boolean().default(false),
-    })
-    .optional(),
-});
+export { legacyConfigSchema };
 
 /**
- * Try to load a legacy .bookrc.json file from the workspace root.
- * Returns partial config if found, null otherwise. Emits a deprecation warning.
+ * Try to load a legacy .bookrc.json file (v0.1.0 format, deprecated) from the workspace root.
+ * Returns partial config if found, null otherwise. Emits a deprecation warning. The parse is
+ * `parseLegacyConfig`, which `book trust` and doctor share, so they fingerprint what this reads.
  */
 function loadLegacyConfig(workspace: string): Partial<AgentConfig> | null {
-  const path = join(workspace, '.bookrc.json');
-  if (!existsSync(path)) return null;
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf-8'));
-    const parsed = legacyConfigSchema.parse(raw);
-    console.warn(
-      '⚠  .bookrc.json is deprecated. Move your settings to .book/settings.json (project), ' +
-        '.book/settings.local.json (local overrides), or ~/.book/settings.json (user).',
-    );
-    return {
-      model: parsed.model,
-      baseUrl: parsed.baseUrl,
-      maxTurns: parsed.maxTurns,
-      maxTokens: parsed.maxTokens,
-      autoCompactEnabled: parsed.autoCompactEnabled,
-      animation: parsed.animation,
-      accessibility: parsed.accessibility,
-    };
-  } catch (e) {
-    if (e instanceof SyntaxError) {
-      throw new Error(`Invalid JSON in config file: ${path}`);
-    }
-    throw e;
-  }
+  const parsed = parseLegacyConfig(workspace);
+  if (!parsed) return null;
+  console.warn(
+    '⚠  .bookrc.json is deprecated. Move your settings to .book/settings.json (project), ' +
+      '.book/settings.local.json (local overrides), or ~/.book/settings.json (user).',
+  );
+  return {
+    model: parsed.model,
+    baseUrl: parsed.baseUrl,
+    maxTurns: parsed.maxTurns,
+    maxTokens: parsed.maxTokens,
+    autoCompactEnabled: parsed.autoCompactEnabled,
+    animation: parsed.animation,
+    accessibility: parsed.accessibility,
+  };
 }
 
 export interface LoadConfigOptions {
@@ -212,8 +175,24 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const effortExplicit = Boolean(
     options?.effortOverride || process.env.BOOK_EFFORT || settings.effort,
   );
-  const rawModel =
-    options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
+  // A legacy `.bookrc.json` `model` is a workspace layer's selection, and the lowest: it applies
+  // only when nothing above it names a model. Naming a withheld workspace provider, it gives way
+  // to the default, as a `model` in a settings layer gives way to the trusted layers' (#418).
+  const withheldIds = new Set(providerGate.withheld);
+  const selectedModel = options?.modelOverride || process.env.BOOK_MODEL || settings.model;
+  const legacyPrefix =
+    selectedModel || legacy?.model === undefined ? undefined : providerPrefixOf(legacy.model);
+  const withheldLegacyModel: WithheldModelSelection | undefined =
+    legacy?.model !== undefined && legacyPrefix !== undefined && withheldIds.has(legacyPrefix)
+      ? {
+          key: 'model',
+          value: legacy.model,
+          providerId: legacyPrefix,
+          path: legacyConfigPath(resolvedWorkspace),
+          fallback: undefined,
+        }
+      : undefined;
+  const rawModel = selectedModel || (withheldLegacyModel ? undefined : legacy?.model) || 'gpt-4o';
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
   const advisorModel = process.env.BOOK_ADVISOR_MODEL || settings.advisorModel;
   const compactEffort = settings.compactEffort;
@@ -274,7 +253,19 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     defaultApiKey,
     defaultBaseUrl,
     defaultBaseUrlExplicit: Boolean(process.env.BOOK_BASE_URL),
-    workspaceProviderGate: { ...providerGate, legacyBaseUrl: legacyBaseUrlGate },
+    workspaceProviderGate: {
+      ...providerGate,
+      withheldSelections: withheldLegacyModel
+        ? [...providerGate.withheldSelections, withheldLegacyModel]
+        : providerGate.withheldSelections,
+      // What `--model` and the environment chose counts too: those outrank every settings layer.
+      unaffectedSelections: withEnvironmentSelections(
+        providerGate.unaffectedSelections,
+        environmentModelSelections(options?.modelOverride),
+        withheldIds,
+      ),
+      legacyBaseUrl: legacyBaseUrlGate,
+    },
     defaultProvider,
     autoCompactEnabled: settings.autoCompactEnabled ?? legacy?.autoCompactEnabled ?? true,
     workspace: resolvedWorkspace,
@@ -293,8 +284,18 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     modelWindowStore: options?.modelWindowStore ?? createModelWindowStore(),
   };
 
-  config = applyModelDefaults(resolveModelProviderConfig(config, rawModel));
-  config.modelProviderWarning = describeUnresolvedProviderPrefix(settings.provider, rawModel);
+  // Every source of `rawModel` is the user's, or a workspace's that is not withheld: the loader
+  // replaced a withheld workspace selection above. One naming a withheld provider is therefore
+  // the user's own vendor-namespaced id, and resolves as the plain fallback.
+  config = applyModelDefaults(
+    resolveModelProviderConfig(config, rawModel, { trustedSelection: true }),
+  );
+  // A withheld provider's prefix is reported as such, not as an unconfigured one.
+  const rawPrefix = providerPrefixOf(rawModel);
+  config.modelProviderWarning =
+    rawPrefix !== undefined && withheldIds.has(rawPrefix)
+      ? undefined
+      : describeUnresolvedProviderPrefix(settings.provider, rawModel.trim());
 
   if (!config.apiKey && !options?.allowMissingApiKey) {
     // Someone whose only credential was a subscription profile arrives here
@@ -453,27 +454,50 @@ function isWithheldWorkspaceProvider(config: AgentConfig, providerId: string): b
   );
 }
 
-/** Resolve "provider/model" strings through settings.provider, OpenCode-style. */
+/** How a caller knows where a model id came from; see {@link resolveModelProviderConfig}. */
+export interface ModelResolutionOptions {
+  /**
+   * The id is one the user chose (`--model`, `BOOK_MODEL`, their own settings, a model picked in
+   * the session), or a workspace one the loader has already vetted. An id of that kind whose
+   * prefix names only a withheld workspace provider is a vendor-namespaced model id the workspace
+   * happens to share a prefix with, and resolves as the plain fallback.
+   */
+  trustedSelection?: boolean;
+}
+
+/**
+ * Resolve "provider/model" strings through settings.provider, OpenCode-style.
+ *
+ * An id whose prefix names a provider the workspace declared and the user has not approved is not
+ * "no provider" when the id came from a workspace-controlled place (an agent definition's `model`,
+ * a model-chosen spawn argument): that throws {@link WorkspaceProviderRefusalError} naming the
+ * command that decides it. The user's own selections opt out with `trustedSelection` (#418).
+ *
+ * The id is read trimmed, by `providerPrefixOf`, the same function the loader's gate uses to find
+ * the provider an id names, so the two cannot disagree.
+ */
 export function resolveModelProviderConfig(
   config: AgentConfig,
   rawModel = config.model,
+  options: ModelResolutionOptions = {},
 ): AgentConfig {
-  const slash = rawModel.indexOf('/');
-  if (slash <= 0) return plainModelConfig(config, rawModel);
-  if (slash === rawModel.length - 1) {
-    throw new Error(`Invalid model "${rawModel}". Expected "provider/model".`);
+  const selection = rawModel.trim();
+  const providerId = providerPrefixOf(selection);
+  if (providerId === undefined) return plainModelConfig(config, selection);
+  if (providerId.length === selection.length - 1) {
+    throw new Error(`Invalid model "${selection}". Expected "provider/model".`);
   }
 
-  const providerId = rawModel.slice(0, slash);
-  const model = rawModel.slice(slash + 1);
+  const model = selection.slice(providerId.length + 1);
   // Own properties only: `constructor/x` names no provider, however `{}` answers for it.
   if (!Object.hasOwn(config.settings.provider, providerId)) {
-    // A provider the workspace declared and the user has not approved is not "no provider": the
-    // plain fallback would send the id to the default endpoint with BOOK_API_KEY (#418).
-    if (isWithheldWorkspaceProvider(config, providerId)) {
-      throw new WorkspaceProviderRefusalError(providerId, rawModel);
+    // A provider the workspace declared and the user has not approved is not "no provider" for an
+    // id the workspace controls: the plain fallback would send it to the default endpoint with
+    // BOOK_API_KEY (#418).
+    if (!options.trustedSelection && isWithheldWorkspaceProvider(config, providerId)) {
+      throw new WorkspaceProviderRefusalError(providerId, selection, config.workspace);
     }
-    return plainModelConfig(config, rawModel);
+    return plainModelConfig(config, selection);
   }
   const provider = config.settings.provider[providerId];
 
@@ -488,7 +512,7 @@ export function resolveModelProviderConfig(
     apiKey,
     baseUrl,
     model,
-    modelSelection: rawModel,
+    modelSelection: selection,
     modelInfo: provider.models[model],
     provider: provider.type,
   };
@@ -585,7 +609,9 @@ export function resolveCompactModelConfig(config: AgentConfig): AgentConfig {
   const compactModel = config.compactModel?.trim() || config.settings.compactModel?.trim();
   const resolved = compactsOnSessionModel(config)
     ? config
-    : applyModelDefaults(resolveModelProviderConfig(config, compactModel!));
+    : applyModelDefaults(
+        resolveModelProviderConfig(config, compactModel!, { trustedSelection: true }),
+      );
   const effort = compactModelEffort(resolved);
   // A level was chosen by `compactEffort` or for the session. A level a managed child's catalog
   // merely listed is sent to the child's model, but is not a choice the compact model inherits.
@@ -636,15 +662,14 @@ export function advisorModelRefusal(config: AgentConfig, advisorModel: string): 
     return `advisor model "${id}" is not a model id; use <provider>/<model>`;
   }
   const slash = id.indexOf('/');
-  // Refused, not thrown: the advisor reports why instead of failing the consult (#418).
-  if (slash > 0 && isWithheldWorkspaceProvider(config, id.slice(0, slash))) {
-    return workspaceProviderRefusal(id.slice(0, slash), id);
-  }
   if (id === config.modelSelection || id === config.model) return undefined;
   const providers = config.settings.provider;
   if (slash > 0 && Object.hasOwn(providers, id.slice(0, slash))) return undefined;
   if (config.defaultBaseUrlExplicit) return undefined;
-  const resolved = resolveModelProviderConfig(config, id);
+  // The advisor id is the user's own selection (the loader replaced a workspace one naming a
+  // withheld provider), so a prefix that names one resolves as the plain fallback and meets the
+  // check below like any other unconfigured prefix (#418).
+  const resolved = resolveModelProviderConfig(config, id, { trustedSelection: true });
   if (sameEndpoint(resolved.baseUrl, config.baseUrl) && resolved.apiKey === config.apiKey) {
     return undefined;
   }
@@ -668,7 +693,9 @@ export function resolveAdvisorModelConfig(config: AgentConfig): AgentConfig | un
   const resolved =
     advisorModel === config.modelSelection || advisorModel === config.model
       ? config
-      : applyModelDefaults(resolveModelProviderConfig(config, advisorModel));
+      : applyModelDefaults(
+          resolveModelProviderConfig(config, advisorModel, { trustedSelection: true }),
+        );
   // Up to `high`: at `xhigh` or `max` a thinking advisor can spend its whole output cap
   // reasoning and hand back no advice at all.
   const capped =
@@ -723,27 +750,15 @@ export function resolveReducerModelConfig(config: AgentConfig): AgentConfig {
  */
 export function resolveSecret(raw: string | undefined, workspace: string): string | undefined {
   if (!raw) return undefined;
-  const envMatch = raw.match(/^\{env:([^}]+)\}$/);
-  if (envMatch) return process.env[envMatch[1]];
+  const reference = parseSecretReference(raw);
+  if (reference.kind === 'env') return process.env[reference.name];
+  if (reference.kind === 'literal') return raw;
 
-  const fileMatch = raw.match(/^\{file:([^}]+)\}$/);
-  if (!fileMatch) return raw;
-
-  const p = fileMatch[1];
-  let path: string;
-  if (p.startsWith('~/')) {
-    path = join(homedir(), p.slice(2));
-  } else if (isAbsolute(p)) {
-    path = p;
-  } else {
-    const root = resolve(workspace);
-    path = resolve(root, p);
-    const rel = relative(root, path);
-    if (rel.startsWith('..') || isAbsolute(rel)) return undefined;
-  }
+  const file = resolveSecretFilePath(reference.path, workspace);
+  if (!file.readable) return undefined;
 
   try {
-    return readFileSync(path, 'utf-8').trim();
+    return readFileSync(file.path, 'utf-8').trim();
   } catch {
     return undefined;
   }

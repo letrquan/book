@@ -108,8 +108,11 @@ describe('runMainAction — withheld-provider notices on the interactive launch 
     await runMainAction(interactiveOptions(workspace));
 
     const notices = rendered.props?.startupNotices as string[] | undefined;
-    expect(notices?.join('\n')).toContain('`book trust provider evil`');
-    expect(notices?.join('\n')).toContain('`book trust provider .bookrc.json`');
+    // The commands name the launched workspace, which is not the current directory.
+    expect(notices?.join('\n')).toContain(`\`book trust provider evil --workspace ${workspace}\``);
+    expect(notices?.join('\n')).toContain(
+      `\`book trust provider .bookrc.json --workspace ${workspace}\``,
+    );
     // Each line keeps its advice, and nothing is also written above the TUI.
     expect(stderr.join('\n')).not.toContain('book trust provider');
   });
@@ -134,7 +137,7 @@ describe('runMainAction — withheld-provider notices on the interactive launch 
     await runMainAction(interactiveOptions(workspace, { scrollback: true }));
 
     expect(scrollback.runs).toBe(1);
-    expect(stderr.join('\n')).toContain('`book trust provider evil`');
+    expect(stderr.join('\n')).toContain(`\`book trust provider evil --workspace ${workspace}\``);
     expect(rendered.props).toBeUndefined();
   });
 });

@@ -217,7 +217,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     // them written here; only the scrollback mode, which keeps the terminal's history, prints.
     const providerNotices =
       options.print === undefined && config.workspaceProviderGate
-        ? collectWithheldProviderNotices(config.workspaceProviderGate)
+        ? collectWithheldProviderNotices(config.workspaceProviderGate, config.workspace)
         : [];
     if (options.scrollback) {
       for (const notice of providerNotices) console.warn(notice);

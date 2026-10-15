@@ -22,7 +22,13 @@ import {
   SettingsRepository,
 } from '../settings-repository.js';
 import { resolveBookHome } from '../book-home.js';
-import { ADVISOR_OFF_VALUE, type SkillActivation, type SkillExecution } from '../settings.js';
+import {
+  ADVISOR_OFF_VALUE,
+  providerConfigSchema,
+  type ProviderConfig,
+  type SkillActivation,
+  type SkillExecution,
+} from '../settings.js';
 import { blockedWorkspaceSettingWrite } from '../settings-scope.js';
 
 const LOCAL_DIR = '.book';
@@ -74,6 +80,20 @@ export function readSettingsLocal(workspace: string): Record<string, unknown> {
 /** Read the user-global ~/.book/settings.json as a plain object. */
 export function readSettingsGlobal(): Record<string, unknown> {
   return readSettingsAt(globalSettingsPath());
+}
+
+/**
+ * One provider as the user-global file holds it, or undefined when the file has none (or an
+ * invalid one). What a save of that provider builds on: the resolved provider also carries values
+ * a workspace layer merged in, which must never be written back into the user's own file.
+ */
+export function readUserProvider(providerId: string): ProviderConfig | undefined {
+  const registry = readSettingsGlobal().provider;
+  if (typeof registry !== 'object' || registry === null || Array.isArray(registry))
+    return undefined;
+  if (!Object.hasOwn(registry, providerId)) return undefined;
+  const parsed = providerConfigSchema.safeParse((registry as Record<string, unknown>)[providerId]);
+  return parsed.success ? parsed.data : undefined;
 }
 
 /**
@@ -169,6 +189,10 @@ export function removeUserSettingClearingLocal(
  * outranks it. Without that the repository's advisor came back at the next launch, because
  * nothing this command is allowed to edit outranked the file it may not (#418). The checked-in
  * file itself is never touched, and nothing is written to the workspace when none declares one.
+ *
+ * The `off` is not permanent: the loader honours it only while a checked-in layer still declares
+ * an advisor (`withoutStaleAdvisorOff` in `settings-loader.ts`), and `/advisor <model>` clears it
+ * along with any other local advisor value.
  */
 export function turnOffAdvisorModel(workspace: string): { ok: boolean; error?: string } {
   const removed = removeUserSettingClearingLocal(workspace, 'advisorModel');

@@ -11,8 +11,9 @@
  * Two rules close that, in the shapes the other repository-input gates already use:
  *
  * - A provider id a **trusted** layer (the user file, a `--settings` file) defines keeps the
- *   trusted layer's origin and key. A workspace layer's `baseURL`, `baseUrl` and `apiKey` for that
- *   id are dropped before merging; its `models` and `type` entries still merge.
+ *   trusted layer's origin, key and protocol. A workspace layer's `baseURL`, `baseUrl`, `apiKey`
+ *   and `type` for that id are dropped before merging (`type` decides how the key is sent: as a
+ *   bearer token, or as `x-api-key` to `/v1/messages`); only its `models` entries still merge.
  * - A provider id **only workspace layers define** is held back until the user approves it in the
  *   user-global trust store (`workspace-trust.ts`), against a fingerprint of its declared type,
  *   origin and key reference. Changing any of those re-withholds it. An approved one is merged in,
@@ -22,10 +23,10 @@
  * reporting hosts call the same functions, so what is enforced and what is reported cannot drift.
  */
 import { createHash } from 'crypto';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
 import type { ProviderConfig, WorkspaceProviderChoice } from './settings.js';
 import { renderUntrustedText } from './hook-approvals.js';
+import { parseSecretReference, resolveSecretFilePath } from './secret-reference.js';
+import { providerTrustCommand } from './trust-command.js';
 import { updateWorkspaceTrust } from './workspace-trust.js';
 
 /** A provider entry as a settings file wrote it: every key optional, nothing defaulted. */
@@ -34,11 +35,18 @@ export type ProviderDeclaration = Partial<ProviderConfig>;
 /** One settings layer's `provider` map. */
 export type ProviderMap = Readonly<Record<string, ProviderDeclaration>>;
 
-/** The decision-store key for a legacy `.bookrc.json` `baseUrl`, which is not a provider. */
+/**
+ * The decision-store key for a legacy `.bookrc.json` `baseUrl`, which is not a provider. The id is
+ * reserved: a workspace provider literally named this is never approvable (see
+ * {@link WorkspaceProviderPartition.reserved}), so it cannot share the legacy decision.
+ */
 export const LEGACY_BASE_URL_ID = '.bookrc.json';
 
-/** The keys of a provider entry that choose where a request goes or which key it carries. */
-const OVERRIDE_KEYS = ['baseURL', 'baseUrl', 'apiKey'] as const;
+/**
+ * The keys of a provider entry that choose where a request goes, which key it carries or how that
+ * key is sent. Everything but `models`, which sends nothing anywhere.
+ */
+const OVERRIDE_KEYS = ['baseURL', 'baseUrl', 'apiKey', 'type'] as const;
 
 /** `__proto__` parses as an ordinary own key but assigning it would reach the prototype setter. */
 function usableId(id: string): boolean {
@@ -111,12 +119,12 @@ export function providerIdsOf(layers: readonly Pick<ProviderLayer, 'providers'>[
 export interface DroppedProviderOverride {
   path: string;
   providerId: string;
-  /** Which of `baseURL`, `baseUrl` and `apiKey` the layer wrote. */
+  /** Which of `baseURL`, `baseUrl`, `apiKey` and `type` the layer wrote. */
   keys: string[];
 }
 
 /**
- * The origin and key overrides a workspace layer wrote for a trusted provider. Pure:
+ * The origin, key and protocol overrides a workspace layer wrote for a trusted provider. Pure:
  * {@link withoutWorkspaceProviderOverrides} drops exactly these, and a report can list them.
  */
 export function droppedProviderOverrides(
@@ -136,7 +144,7 @@ export function droppedProviderOverrides(
 
 /**
  * A workspace layer's provider map as the merge may see it: only the ids a trusted layer defines,
- * and for those only `models` and `type`. Workspace-only ids are not here — they reach the
+ * and for those only `models`. Workspace-only ids are not here — they reach the
  * resolved settings through {@link partitionWorkspaceProviders} or not at all.
  */
 export function withoutWorkspaceProviderOverrides(
@@ -186,6 +194,16 @@ export interface WorkspaceProviderPartition {
   pending: WorkspaceProviderEntry[];
   /** Explicitly refused: withheld, and not re-offered. */
   rejected: WorkspaceProviderEntry[];
+  /**
+   * A provider named {@link LEGACY_BASE_URL_ID}: that id is where the decision about a legacy
+   * `baseUrl` lives, so a decision recorded under it could not tell the two apart. Withheld
+   * whatever the trust store holds, and never offered for approval.
+   */
+  reserved: WorkspaceProviderEntry[];
+}
+
+export function emptyWorkspaceProviderPartition(): WorkspaceProviderPartition {
+  return { approved: [], pending: [], rejected: [], reserved: [] };
 }
 
 /**
@@ -211,31 +229,87 @@ export function partitionWorkspaceProviders(
     }
   }
 
-  const partition: WorkspaceProviderPartition = { approved: [], pending: [], rejected: [] };
+  const partition = emptyWorkspaceProviderPartition();
   for (const [id, { declaration, layers }] of merged) {
     const typed = declaration as ProviderDeclaration;
     const fingerprint = workspaceProviderFingerprint(typed);
     const entry: WorkspaceProviderEntry = { id, declaration: typed, fingerprint, layers };
-    const state = evaluateDecision(decisions, id, fingerprint);
-    partition[state].push(entry);
+    if (id === LEGACY_BASE_URL_ID) partition.reserved.push(entry);
+    else partition[evaluateDecision(decisions, id, fingerprint)].push(entry);
   }
   return partition;
 }
 
-/** The model-selection keys a settings layer may carry. */
+/** Every id only workspace layers declare, in any state. */
+export function declaredProviderIds(partition: WorkspaceProviderPartition): string[] {
+  return [
+    ...partition.approved,
+    ...partition.pending,
+    ...partition.rejected,
+    ...partition.reserved,
+  ].map((entry) => entry.id);
+}
+
+/** The declared ids that are not in effect: pending, rejected or reserved. */
+export function withheldProviderIds(partition: WorkspaceProviderPartition): string[] {
+  return [...partition.pending, ...partition.rejected, ...partition.reserved].map(
+    (entry) => entry.id,
+  );
+}
+
+/** The model-selection keys a settings layer may carry at its top level. */
 export const MODEL_SELECTION_KEYS = ['model', 'compactModel', 'advisorModel'] as const;
 export type ModelSelectionKey = (typeof MODEL_SELECTION_KEYS)[number];
+
+/** The slot label of one agent profile's `model`, as a report names it. */
+export function profileModelKey(profile: string): string {
+  return `agents.profiles.${profile}.model`;
+}
+
+/** The profile a {@link profileModelKey} label names, or undefined for a top-level key. */
+export function profileOfModelKey(key: string): string | undefined {
+  return /^agents\.profiles\.(.+)\.model$/.exec(key)?.[1];
+}
+
+/** What a settings document says about models, for {@link modelSelectionsOf}. */
+export interface ModelSelectionSource {
+  model?: string;
+  compactModel?: string;
+  advisorModel?: string;
+  agents?: unknown;
+}
+
+/**
+ * Every model selection a settings document makes, by slot label: the three top-level keys and
+ * each agent profile's `model`. A profile model reaches a spawn as surely as `model` reaches the
+ * session, so it is gated by the same rule.
+ */
+export function modelSelectionsOf(
+  settings: ModelSelectionSource,
+): Partial<Record<string, string | undefined>> {
+  const selections: Partial<Record<string, string | undefined>> = {};
+  for (const key of MODEL_SELECTION_KEYS) selections[key] = settings[key];
+  const profiles = isPlainObject(settings.agents) ? settings.agents.profiles : undefined;
+  if (isPlainObject(profiles)) {
+    for (const [name, profile] of Object.entries(profiles)) {
+      if (!usableId(name) || !isPlainObject(profile)) continue;
+      if (typeof profile.model === 'string') selections[profileModelKey(name)] = profile.model;
+    }
+  }
+  return selections;
+}
 
 /** One layer's model selections, with whether the layer is trusted. */
 export interface ModelSelectionLayer {
   path: string;
   trusted: boolean;
-  selections: Partial<Record<ModelSelectionKey, string | undefined>>;
+  selections: Partial<Record<string, string | undefined>>;
 }
 
 /** A model selection a workspace layer made that names a withheld workspace provider. */
 export interface WithheldModelSelection {
-  key: ModelSelectionKey;
+  /** The slot: `model`, `compactModel`, `advisorModel` or `agents.profiles.<name>.model`. */
+  key: string;
   value: string;
   providerId: string;
   /** The workspace layer the value came from. */
@@ -244,11 +318,59 @@ export interface WithheldModelSelection {
   fallback: string | undefined;
 }
 
-/** The `<provider>` of a `<provider>/<model>` id, or undefined for a bare or malformed one. */
+/**
+ * A model selection the user's own settings, `--model` or the environment made, whose prefix
+ * names only a withheld workspace provider. It is unaffected: it resolves as it would had the
+ * workspace not declared that provider. Approving the provider is what would change that.
+ */
+export interface UnaffectedModelSelection {
+  key: string;
+  value: string;
+  providerId: string;
+  /** Where it came from: a settings path, `--model` or an environment variable. */
+  source: string;
+}
+
+/**
+ * The `<provider>` of a `<provider>/<model>` id, or undefined for a bare or malformed one.
+ *
+ * The one place a model id is split, for the loader's gate and for `resolveModelProviderConfig`
+ * alike, so the two cannot disagree about which provider an id names. The id is read trimmed: a
+ * caller that resolves it must use the trimmed id too (`resolveModelProviderConfig` does).
+ */
 export function providerPrefixOf(model: string): string | undefined {
   const trimmed = model.trim();
   const slash = trimmed.indexOf('/');
   return slash > 0 ? trimmed.slice(0, slash) : undefined;
+}
+
+interface SelectionWinner {
+  value: string;
+  layer: ModelSelectionLayer;
+  trustedValue: string | undefined;
+}
+
+/** The slots a set of layers makes selections in: the top-level keys first, then profiles. */
+function selectionSlots(layers: readonly ModelSelectionLayer[]): string[] {
+  const slots = new Set<string>(MODEL_SELECTION_KEYS);
+  for (const layer of layers) for (const key of Object.keys(layer.selections)) slots.add(key);
+  return [...slots];
+}
+
+/** The last layer to set `key` (the merge keeps its value) and the last trusted layer's value. */
+function winnerOf(
+  layers: readonly ModelSelectionLayer[],
+  key: string,
+): SelectionWinner | undefined {
+  let winner: Pick<SelectionWinner, 'value' | 'layer'> | undefined;
+  let trustedValue: string | undefined;
+  for (const layer of layers) {
+    const value = layer.selections[key];
+    if (value === undefined) continue;
+    if (layer.trusted) trustedValue = value;
+    winner = { value, layer };
+  }
+  return winner && { ...winner, trustedValue };
 }
 
 /**
@@ -264,15 +386,8 @@ export function withheldModelSelections(
   withheldIds: ReadonlySet<string>,
 ): WithheldModelSelection[] {
   const withheld: WithheldModelSelection[] = [];
-  for (const key of MODEL_SELECTION_KEYS) {
-    let winner: { value: string; layer: ModelSelectionLayer } | undefined;
-    let trustedValue: string | undefined;
-    for (const layer of layers) {
-      const value = layer.selections[key];
-      if (value === undefined) continue;
-      winner = { value, layer };
-      if (layer.trusted) trustedValue = value;
-    }
+  for (const key of selectionSlots(layers)) {
+    const winner = winnerOf(layers, key);
     if (!winner || winner.layer.trusted) continue;
     const providerId = providerPrefixOf(winner.value);
     if (providerId === undefined || !withheldIds.has(providerId)) continue;
@@ -281,10 +396,76 @@ export function withheldModelSelections(
       value: winner.value,
       providerId,
       path: winner.layer.path,
-      fallback: trustedValue,
+      fallback: winner.trustedValue,
     });
   }
   return withheld;
+}
+
+/**
+ * The model selections a trusted layer made last whose prefix names only a withheld workspace
+ * provider. The counterpart of {@link withheldModelSelections}: those fall back, these stay, and
+ * the user is told that nothing they chose moved.
+ */
+export function unaffectedModelSelections(
+  layers: readonly ModelSelectionLayer[],
+  withheldIds: ReadonlySet<string>,
+): UnaffectedModelSelection[] {
+  const unaffected: UnaffectedModelSelection[] = [];
+  for (const key of selectionSlots(layers)) {
+    const winner = winnerOf(layers, key);
+    if (!winner?.layer.trusted) continue;
+    const providerId = providerPrefixOf(winner.value);
+    if (providerId === undefined || !withheldIds.has(providerId)) continue;
+    unaffected.push({ key, value: winner.value, providerId, source: winner.layer.path });
+  }
+  return unaffected;
+}
+
+/** A selection the command line or the environment made, which outranks every settings layer. */
+export interface EnvironmentSelection {
+  key: ModelSelectionKey;
+  value: string | undefined;
+  /** `--model`, `BOOK_MODEL`, … */
+  source: string;
+}
+
+/** The selections `--model` and the `BOOK_*` model variables make, in the order they outrank. */
+export function environmentModelSelections(
+  modelOverride: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): EnvironmentSelection[] {
+  return [
+    {
+      key: 'model',
+      value: modelOverride || env.BOOK_MODEL,
+      source: modelOverride ? '--model' : 'BOOK_MODEL',
+    },
+    { key: 'compactModel', value: env.BOOK_COMPACT_MODEL, source: 'BOOK_COMPACT_MODEL' },
+    { key: 'advisorModel', value: env.BOOK_ADVISOR_MODEL, source: 'BOOK_ADVISOR_MODEL' },
+  ];
+}
+
+/**
+ * {@link unaffectedModelSelections} as the session sees them: a selection `--model` or an
+ * environment variable made replaces the settings layers' value for its key, so the layers' entry
+ * for that key gives way to the one that is actually in effect.
+ */
+export function withEnvironmentSelections(
+  unaffected: readonly UnaffectedModelSelection[],
+  environment: readonly EnvironmentSelection[],
+  withheldIds: ReadonlySet<string>,
+): UnaffectedModelSelection[] {
+  const set = environment.filter((selection) => selection.value);
+  const overridden = new Set<string>(set.map((selection) => selection.key));
+  const result = unaffected.filter((selection) => !overridden.has(selection.key));
+  for (const { key, value, source } of set) {
+    const providerId = providerPrefixOf(value!);
+    if (providerId !== undefined && withheldIds.has(providerId)) {
+      result.push({ key, value: value!, providerId, source });
+    }
+  }
+  return result;
 }
 
 /** The legacy `.bookrc.json` `baseUrl`, and whether the user approved it. */
@@ -296,64 +477,158 @@ export interface LegacyBaseUrlGate {
 /**
  * What the provider gate did to one resolution (#418), for the config that carries it and for the
  * hosts that report it. Computed from the layer files themselves, never read back from a settings
- * key a workspace layer could write.
+ * key a workspace layer could write. Build one with {@link createWorkspaceProviderGate}.
  */
 export interface WorkspaceProviderGate {
   /** Provider ids only workspace layers define: they never inherit a key. */
   declared: string[];
-  /** The subset of {@link declared} that is withheld (pending or rejected). */
+  /** The subset of {@link declared} that is withheld (pending, rejected or reserved). */
   withheld: string[];
   /** The same ids sorted by the user's decision on the declaration as written. */
   partition: WorkspaceProviderPartition;
-  /** Origin and key overrides a workspace layer wrote for a trusted provider; all dropped. */
+  /** Origin, key and protocol overrides a workspace layer wrote for a trusted provider; dropped. */
   droppedOverrides: DroppedProviderOverride[];
   /** Model selections that fell back to the trusted layers' value. */
   withheldSelections: WithheldModelSelection[];
+  /** The user's own selections that name only a withheld provider, and so are unaffected. */
+  unaffectedSelections: UnaffectedModelSelection[];
   /** The legacy `.bookrc.json` `baseUrl`, when the workspace has one. */
   legacyBaseUrl?: LegacyBaseUrlGate;
 }
 
 /**
- * The `baseUrl` a legacy `.bookrc.json` declares, read without the deprecation warning or the
- * rest of the schema. Undefined when the file is absent, unreadable or names no usable URL, which
- * is when {@link evaluateLegacyBaseUrl} has nothing to decide either.
+ * The one constructor of a gate: `declared` and `withheld` are derived from the partition here,
+ * so they cannot name different providers than the partition sorts.
  */
-export function readLegacyBaseUrl(workspace: string): string | undefined {
-  const path = join(workspace, '.bookrc.json');
-  if (!existsSync(path)) return undefined;
+export function createWorkspaceProviderGate(parts: {
+  partition: WorkspaceProviderPartition;
+  droppedOverrides?: DroppedProviderOverride[];
+  withheldSelections?: WithheldModelSelection[];
+  unaffectedSelections?: UnaffectedModelSelection[];
+  legacyBaseUrl?: LegacyBaseUrlGate;
+}): WorkspaceProviderGate {
+  return {
+    declared: declaredProviderIds(parts.partition),
+    withheld: withheldProviderIds(parts.partition),
+    partition: parts.partition,
+    droppedOverrides: parts.droppedOverrides ?? [],
+    withheldSelections: parts.withheldSelections ?? [],
+    unaffectedSelections: parts.unaffectedSelections ?? [],
+    legacyBaseUrl: parts.legacyBaseUrl,
+  };
+}
+
+/** The most of an untrusted value a line shows: enough for any real host, path or name. */
+const DISCLOSURE_LIMIT = 1024;
+
+/**
+ * How a declared origin reads in a disclosure: its parsed protocol, host and port, in full, never
+ * the text as written. The written text can hide the real host behind a long run of characters
+ * (`https://api.openai.com:` + filler + `@evil.example`), which a truncating renderer then cuts
+ * off. A URL carrying userinfo, or not parsing as a URL at all, is flagged.
+ */
+export function describeOrigin(raw: string | undefined): string {
+  if (raw === undefined) return '(no baseURL: the default endpoint)';
+  let url: URL;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
-    const baseUrl = isPlainObject(parsed) ? parsed.baseUrl : undefined;
-    return typeof baseUrl === 'string' && URL.canParse(baseUrl) ? baseUrl : undefined;
+    url = new URL(raw);
   } catch {
-    return undefined;
+    return `${renderUntrustedText(raw)} [!] not a valid URL`;
   }
+  const origin = renderUntrustedText(`${url.protocol}//${url.host}`, DISCLOSURE_LIMIT);
+  return url.username !== '' || url.password !== ''
+    ? `${origin} [!] the URL has userinfo before the host; requests go to the host shown`
+    : origin;
 }
 
 /**
- * How a declared `apiKey` reads in a disclosure: the reference text of a `{env:…}` or `{file:…}`
- * reference, or a note that a literal is present. Never a resolved value, and a literal is never
- * echoed: it may be a real credential.
+ * How a declared `apiKey` reads in a disclosure: the variable an `{env:…}` reference names, the
+ * file a `{file:…}` reference opens (normalised: `~` expanded and `..` resolved, in full), or a
+ * note that a literal is present. Never a resolved value, and a literal is never echoed: it may
+ * be a real credential.
  */
-export function describeApiKeyDeclaration(apiKey: string | undefined): string {
+export function describeApiKeyDeclaration(apiKey: string | undefined, workspace: string): string {
   if (apiKey === undefined) return 'none';
-  if (/^\{(?:env|file):[^}]+\}$/.test(apiKey)) return renderUntrustedText(apiKey);
+  const reference = parseSecretReference(apiKey);
+  if (reference.kind === 'env') {
+    const name = renderUntrustedText(reference.name, DISCLOSURE_LIMIT);
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(reference.name)
+      ? `environment variable ${name}`
+      : `environment variable ${name} [!] not a valid variable name`;
+  }
+  if (reference.kind === 'file') {
+    const file = resolveSecretFilePath(reference.path, workspace);
+    const path = renderUntrustedText(file.path, DISCLOSURE_LIMIT);
+    return file.readable
+      ? `file ${path}`
+      : `file ${path} [!] outside the workspace, so it would not be read`;
+  }
   return 'a literal key (not shown)';
 }
 
 /** One provider as a decision is asked for it: id, declared origin and key reference. */
-export function describeWorkspaceProvider(entry: WorkspaceProviderEntry): string {
+export function describeWorkspaceProvider(
+  entry: WorkspaceProviderEntry,
+  workspace: string,
+  routed: readonly UnaffectedModelSelection[] = [],
+): string[] {
   const origin = entry.declaration.baseURL ?? entry.declaration.baseUrl;
-  return (
-    `${renderUntrustedText(entry.id, 64)}  ` +
-    `${origin === undefined ? '(no baseURL: the default endpoint)' : renderUntrustedText(origin)}  ` +
-    `key: ${describeApiKeyDeclaration(entry.declaration.apiKey)}`
-  );
+  const lines = [
+    `${renderUntrustedText(entry.id, 64)}  ${describeOrigin(origin)}  ` +
+      `key: ${describeApiKeyDeclaration(entry.declaration.apiKey, workspace)}`,
+  ];
+  if (routed.length > 0) {
+    const named = routed
+      .map(
+        (selection) =>
+          `${selection.key} "${renderUntrustedText(selection.value)}" ` +
+          `(from ${renderUntrustedText(selection.source)})`,
+      )
+      .join(', ');
+    lines.push(
+      `[!] approving it also routes your own selections with this prefix to ${describeOrigin(origin)}: ` +
+        `${named}`,
+    );
+  }
+  return lines;
 }
 
-/** The legacy `baseUrl` as a decision is asked for it: it receives `BOOK_API_KEY`. */
-export function describeLegacyBaseUrl(baseUrl: string): string {
-  return `${LEGACY_BASE_URL_ID}  ${renderUntrustedText(baseUrl)}  key: BOOK_API_KEY would be sent here`;
+/** What approving a legacy `baseUrl` would send there; see {@link describeLegacyBaseUrl}. */
+export interface LegacyApprovalContext {
+  /** The resolved providers: the user's, and any approved workspace ones. */
+  providers: Readonly<Record<string, ProviderDeclaration>>;
+  workspace: string;
+}
+
+/**
+ * The legacy `baseUrl` as a decision is asked for it. An approved one becomes the default
+ * endpoint (`defaultBaseUrl`), so the disclosure names everything the default endpoint receives:
+ * `BOOK_API_KEY`, the key of every provider that sets no `baseURL` of its own, and every model id
+ * that names no provider.
+ */
+export function describeLegacyBaseUrl(baseUrl: string, context?: LegacyApprovalContext): string[] {
+  const lines = [
+    `${LEGACY_BASE_URL_ID}  ${describeOrigin(baseUrl)}  would become the default endpoint`,
+  ];
+  lines.push('  approving it sends there: BOOK_API_KEY');
+  if (context) {
+    const keyless = Object.entries(context.providers)
+      .filter(([, provider]) => provider.baseURL === undefined && provider.baseUrl === undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(
+        ([id, provider]) =>
+          `${renderUntrustedText(id, 64)} (key: ${describeApiKeyDeclaration(provider.apiKey, context.workspace)})`,
+      );
+    lines.push(
+      keyless.length === 0
+        ? '  approving it sends there: no provider key (every configured provider sets its own baseURL)'
+        : `  approving it sends there: the requests and key of each provider with no baseURL: ${keyless.join(', ')}`,
+    );
+  }
+  lines.push(
+    '  approving it sends there: every plain model id (gpt-4o) and every <vendor>/<model> id that names no configured provider',
+  );
+  return lines;
 }
 
 /** One dropped override as a report reads it, without a leading marker. */
@@ -361,8 +636,9 @@ export function describeDroppedOverride(dropped: DroppedProviderOverride): strin
   return (
     `${dropped.keys.join(', ')} for provider "${renderUntrustedText(dropped.providerId, 64)}" in ` +
     `${renderUntrustedText(dropped.path)} ignored: you defined that provider yourself, so a ` +
-    'workspace file cannot change where its key goes. `book trust provider` does not apply to ' +
-    'it; to use another origin or key, set it in your own settings (~/.book/settings.json).'
+    'workspace file cannot change where its key goes or how it is sent. `book trust provider` ' +
+    'does not apply to it; to use another origin, key or type, set it in your own settings ' +
+    '(~/.book/settings.json).'
   );
 }
 
@@ -380,15 +656,41 @@ export function describeWithheldSelection(selection: WithheldModelSelection): st
   );
 }
 
+/** One unaffected selection as a report reads it, without a leading marker. */
+export function describeUnaffectedSelection(selection: UnaffectedModelSelection): string {
+  const id = renderUntrustedText(selection.providerId, 64);
+  return (
+    `provider "${id}" declared by the workspace is withheld; your ${selection.key} ` +
+    `"${renderUntrustedText(selection.value)}" (from ${renderUntrustedText(selection.source)}) ` +
+    'is unaffected and resolves as it would had the workspace not declared that provider.'
+  );
+}
+
+/** A provider the workspace named with the reserved legacy id, as a report reads it. */
+export function describeReservedProvider(entry: WorkspaceProviderEntry): string {
+  return (
+    `workspace provider "${renderUntrustedText(entry.id, 64)}" from ` +
+    `${entry.layers.map((layer) => renderUntrustedText(layer)).join(', ')} ignored: that id is ` +
+    `reserved for the decision about a legacy ${LEGACY_BASE_URL_ID} baseUrl, so it can never be ` +
+    'approved. Rename the provider.'
+  );
+}
+
 /**
  * Why a request on `rawModel` may not be made: its provider is declared by the workspace and the
- * user has not approved it. The id is repository-authored text on its way to a terminal.
+ * user has not approved it. The id is repository-authored text on its way to a terminal, and into
+ * a command the user may paste: the command is built by {@link providerTrustCommand}.
  */
-export function workspaceProviderRefusal(providerId: string, rawModel: string): string {
+export function workspaceProviderRefusal(
+  providerId: string,
+  rawModel: string,
+  workspace: string,
+): string {
   const id = renderUntrustedText(providerId, 64);
+  const { command, note } = providerTrustCommand(workspace, providerId);
   return (
     `Model "${renderUntrustedText(rawModel)}" names provider "${id}", which is declared by the ` +
-    `workspace and has not been approved. It needs \`book trust provider ${id}\` before Book ` +
+    `workspace and has not been approved. It needs \`${command}\`${note} before Book ` +
     'sends it a request or resolves its key.'
   );
 }
@@ -402,8 +704,9 @@ export class WorkspaceProviderRefusalError extends Error {
   constructor(
     readonly providerId: string,
     rawModel: string,
+    workspace: string,
   ) {
-    super(workspaceProviderRefusal(providerId, rawModel));
+    super(workspaceProviderRefusal(providerId, rawModel, workspace));
     this.name = 'WorkspaceProviderRefusalError';
   }
 }

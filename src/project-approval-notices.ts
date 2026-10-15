@@ -16,11 +16,15 @@ import { partitionProjectAllowRules } from './permission-approvals.js';
 import {
   describeApiKeyDeclaration,
   describeDroppedOverride,
+  describeOrigin,
+  describeReservedProvider,
+  describeUnaffectedSelection,
   describeWithheldSelection,
   LEGACY_BASE_URL_ID,
   type WorkspaceProviderGate,
 } from './provider-approvals.js';
 import { renderUntrustedText } from './hook-approvals.js';
+import { providerTrustCommand } from './trust-command.js';
 import {
   formatIgnoredWorkspaceSandboxKey,
   ignoredWorkspaceSandboxKeys,
@@ -49,11 +53,24 @@ export interface WithheldProjectDeclarations {
  * decides it. A provider the user rejected is not reported again, as a rejected hook is not, and
  * neither is a model selection that fell back because of one: the user already decided.
  */
-export function collectWithheldProviderNotices(gate: WorkspaceProviderGate): string[] {
+export function collectWithheldProviderNotices(
+  gate: WorkspaceProviderGate,
+  workspace: string,
+): string[] {
   const notices: string[] = [];
+  // Every command a notice suggests is built here: a provider id is repository-authored, and
+  // pasting one unquoted would run whatever a hostile id spells.
+  const approveCommand = (id: string): string => {
+    const { command, note } = providerTrustCommand(workspace, id);
+    return `\`${command}\`${note}`;
+  };
 
   for (const dropped of gate.droppedOverrides) {
     notices.push(`⚠  ${describeDroppedOverride(dropped)}`);
+  }
+
+  for (const entry of gate.partition.reserved) {
+    notices.push(`⚠  ${describeReservedProvider(entry)}`);
   }
 
   const pendingIds = new Set(gate.partition.pending.map((entry) => entry.id));
@@ -61,27 +78,35 @@ export function collectWithheldProviderNotices(gate: WorkspaceProviderGate): str
     const id = renderUntrustedText(entry.id, 64);
     const origin = entry.declaration.baseURL ?? entry.declaration.baseUrl;
     notices.push(
-      `⚠  Ignoring workspace-declared provider "${id}" (${
-        origin === undefined ? 'default endpoint' : renderUntrustedText(origin)
-      }, key: ${describeApiKeyDeclaration(entry.declaration.apiKey)}) from ` +
+      `⚠  Ignoring workspace-declared provider "${id}" (${describeOrigin(origin)}, key: ${describeApiKeyDeclaration(
+        entry.declaration.apiKey,
+        workspace,
+      )}) from ` +
         `${entry.layers.map((layer) => renderUntrustedText(layer)).join(', ')}: it requires ` +
-        `approval. Run \`book trust provider ${id}\` to review and approve it.`,
+        `approval. Run ${approveCommand(entry.id)} to review and approve it.`,
     );
   }
 
   for (const selection of gate.withheldSelections) {
     if (!pendingIds.has(selection.providerId)) continue;
     notices.push(
-      `⚠  ${describeWithheldSelection(selection)} Run ` +
-        `\`book trust provider ${renderUntrustedText(selection.providerId, 64)}\` to approve it.`,
+      `⚠  ${describeWithheldSelection(selection)} Run ${approveCommand(selection.providerId)} ` +
+        'to approve it.',
     );
+  }
+
+  // The user's own selections that merely share a prefix with a withheld provider are not
+  // changed; saying so once is what tells them the withheld provider is not what they chose.
+  for (const selection of gate.unaffectedSelections) {
+    if (!pendingIds.has(selection.providerId)) continue;
+    notices.push(`⚠  ${describeUnaffectedSelection(selection)}`);
   }
 
   if (gate.legacyBaseUrl?.state === 'pending') {
     notices.push(
       `⚠  Ignoring baseUrl "${renderUntrustedText(gate.legacyBaseUrl.baseUrl)}" from ` +
         `${LEGACY_BASE_URL_ID}: it would receive BOOK_API_KEY, so it requires approval. Run ` +
-        `\`book trust provider ${LEGACY_BASE_URL_ID}\` to review and approve it.`,
+        `${approveCommand(LEGACY_BASE_URL_ID)} to review and approve it.`,
     );
   }
 
@@ -101,7 +126,7 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
   // `--no-settings` reads no layer, so the gate holds nothing but the legacy `.bookrc.json`
   // `baseUrl`, which is ignored until approved whether or not a settings layer was read.
   const providerNotices = input.providerGate
-    ? collectWithheldProviderNotices(input.providerGate)
+    ? collectWithheldProviderNotices(input.providerGate, input.workspace)
     : [];
   if (!input.settingsEnabled) return providerNotices;
 

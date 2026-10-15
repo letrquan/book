@@ -1,6 +1,7 @@
 import { readFileSync, existsSync, realpathSync } from 'fs';
 import { join, normalize, resolve } from 'path';
 import {
+  ADVISOR_OFF_VALUE,
   bookSettingsSchema,
   DEFAULT_SETTINGS,
   HOOK_EVENTS,
@@ -15,10 +16,16 @@ import { collectDeclaredDirectories, partitionProjectDirectories } from './addit
 import { partitionProjectAllowRules } from './permission-approvals.js';
 import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
 import {
+  createWorkspaceProviderGate,
   droppedProviderOverrides,
+  emptyWorkspaceProviderPartition,
+  modelSelectionsOf,
   partitionWorkspaceProviders,
+  profileOfModelKey,
   providerIdsOf,
+  unaffectedModelSelections,
   withheldModelSelections,
+  withheldProviderIds,
   withoutWorkspaceProviderOverrides,
   type ModelSelectionLayer,
   type ProviderLayer,
@@ -554,13 +561,24 @@ export function isUserSettingsFile(path: string, paths: SettingsResolutionPaths 
 export type { WorkspaceProviderGate };
 
 export function emptyWorkspaceProviderGate(): WorkspaceProviderGate {
-  return {
-    declared: [],
-    withheld: [],
-    partition: { approved: [], pending: [], rejected: [] },
-    droppedOverrides: [],
-    withheldSelections: [],
-  };
+  return createWorkspaceProviderGate({ partition: emptyWorkspaceProviderPartition() });
+}
+
+/**
+ * The advisor `off` a local layer wrote, which outranks a lower layer's advisor, is honoured only
+ * while a checked-in workspace layer still declares one (`/advisor off` writes it for exactly
+ * that case). Once the repository stops declaring an advisor, the `off` is stale and would keep
+ * outranking the user's own, so the layer is read without it.
+ */
+function withoutStaleAdvisorOff(
+  local: BookSettings | null,
+  project: BookSettings | null,
+): BookSettings | null {
+  if (!local || project?.advisorModel !== undefined) return local;
+  if (local.advisorModel?.trim().toLowerCase() !== ADVISOR_OFF_VALUE) return local;
+  const rest = { ...local };
+  delete rest.advisorModel;
+  return rest;
 }
 
 export function resolveSettings(
@@ -589,7 +607,7 @@ export function resolveSettingsWithProviderGate(
   // Skipped when it is the user file itself, as it is for a workspace at `$HOME` (#429).
   const project = sameFile(projectPath, userPath) ? null : loadSettingsFile(projectPath);
   const localPath = paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json');
-  const local = loadSettingsFile(localPath);
+  const local = withoutStaleAdvisorOff(loadSettingsFile(localPath), project);
   const override = overridePath ? loadSettingsFile(overridePath) : null;
 
   const trustedProviderIds = providerIdsOf([
@@ -691,21 +709,29 @@ export function resolveSettingsWithProviderGate(
   for (const { id, declaration } of providerPartition.approved) {
     resolved.provider[id] = declaration as BookSettings['provider'][string];
   }
-  const withheldProviders = [...providerPartition.pending, ...providerPartition.rejected].map(
-    (entry) => entry.id,
-  );
-  // A `model`, `compactModel` or `advisorModel` a workspace layer set for a withheld provider
-  // gives way to what the trusted layers alone say.
+  const withheldProviders = new Set(withheldProviderIds(providerPartition));
+  // A `model`, `compactModel`, `advisorModel` or agent-profile `model` a workspace layer set for a
+  // withheld provider gives way to what the trusted layers alone say.
   const selectionLayers: ModelSelectionLayer[] = [
-    { path: userPath, trusted: true, selections: user ?? {} },
-    { path: projectPath, trusted: false, selections: project ?? {} },
-    { path: localPath, trusted: false, selections: local ?? {} },
-    { path: overridePath ?? '', trusted: true, selections: override ?? {} },
+    { path: userPath, trusted: true, selections: modelSelectionsOf(user ?? {}) },
+    { path: projectPath, trusted: false, selections: modelSelectionsOf(project ?? {}) },
+    { path: localPath, trusted: false, selections: modelSelectionsOf(local ?? {}) },
+    { path: overridePath ?? '', trusted: true, selections: modelSelectionsOf(override ?? {}) },
   ];
-  const withheldSelections = withheldModelSelections(selectionLayers, new Set(withheldProviders));
+  const withheldSelections = withheldModelSelections(selectionLayers, withheldProviders);
   for (const { key, fallback } of withheldSelections) {
-    if (fallback === undefined) delete resolved[key];
-    else resolved[key] = fallback;
+    const profile = profileOfModelKey(key);
+    if (profile === undefined) {
+      const topLevel = key as 'model' | 'compactModel' | 'advisorModel';
+      if (fallback === undefined) delete resolved[topLevel];
+      else resolved[topLevel] = fallback;
+      continue;
+    }
+    const entry = resolved.agents.profiles[profile];
+    if (!entry) continue;
+    if (fallback === undefined) delete entry.model;
+    else entry.model = fallback;
+    if (Object.keys(entry).length === 0) delete resolved.agents.profiles[profile];
   }
 
   // Every decision source is in place now, so the withheld repository rules can
@@ -758,17 +784,12 @@ export function resolveSettingsWithProviderGate(
   }
 
   const settings = bookSettingsSchema.parse(resolved) as ResolvedSettings;
-  const providerGate: WorkspaceProviderGate = {
-    declared: [
-      ...providerPartition.approved,
-      ...providerPartition.pending,
-      ...providerPartition.rejected,
-    ].map((entry) => entry.id),
-    withheld: withheldProviders,
+  const providerGate = createWorkspaceProviderGate({
     partition: providerPartition,
     droppedOverrides: droppedProviderOverrides(workspaceProviderLayers, trustedProviderIds),
     withheldSelections,
-  };
+    unaffectedSelections: unaffectedModelSelections(selectionLayers, withheldProviders),
+  });
   return { settings, providerGate };
 }
 

@@ -267,7 +267,7 @@ describe('SDK runtime event bridge', () => {
 
     const report = warnings.join('\n');
     expect(report).toContain('Ignoring workspace-declared provider "evil"');
-    expect(report).toContain('`book trust provider evil`');
+    expect(report).toContain(`\`book trust provider evil --workspace ${sessionFixture.root}\``);
   });
 
   // headless.ts writes a run record into the shared <BOOK_HOME>/runs on every query, so

@@ -253,16 +253,23 @@ Work aimed at running an objective unattended for days rather than hours. All of
   shell the body runs rather than its prose, so editing what runs re-asks under the same name.
 - Provider origins, key inheritance and secret references declared by a workspace are gated
   (#418). A workspace layer (`.book/settings.json`, `.book/settings.local.json`, legacy
-  `.bookrc.json`) cannot change `baseURL`, `baseUrl` or `apiKey` on a provider the user's own
-  settings define: the override is dropped and reported. A provider only a workspace declares is
-  withheld until `book trust provider <id>` approves a fingerprint of its type, origin and `apiKey`
-  text (`workspaceProviders` in `~/.book/trust.json`, store v4); it never inherits `BOOK_API_KEY`
-  or the session key, and its `{env:}` / `{file:}` reference is not resolved before approval. A
-  workspace `model`, `compactModel` or `advisorModel` naming a withheld provider falls back to the
-  user's value with a notice, while `--model`, `BOOK_MODEL`, agent and profile models and
-  `AgentSpawn` fail naming the command. A legacy `.bookrc.json` `baseUrl` needs
-  `book trust provider .bookrc.json`. Print mode, the SDK and the TUI report each of these, and
-  `book doctor` lists every workspace provider with its state.
+  `.bookrc.json`) cannot change `baseURL`, `baseUrl`, `apiKey` or `type` on a provider the user's
+  own settings define: the override is dropped and reported (only `models` merge). A provider only
+  a workspace declares is withheld until `book trust provider <id>` approves a fingerprint of its
+  type, origin and `apiKey` text (`workspaceProviders` in `~/.book/trust.json`, store v4); it never
+  inherits `BOOK_API_KEY` or the session key, and its `{env:}` / `{file:}` reference is not
+  resolved before approval. The listing shows the parsed origin and the variable or normalised
+  file a key reference names, in full. A workspace `model`, `compactModel`, `advisorModel`,
+  agent-profile `model` or legacy `.bookrc.json` `model` naming a withheld provider falls back to
+  the user's value with a notice, while an agent definition's `model:` and `AgentSpawn` fail
+  naming the command; the user's own selection with that prefix (`--model`, `BOOK_MODEL`, their
+  settings) is unaffected and resolves as the plain fallback, which approving the provider would
+  change (the listing names those selections). A provider named `.bookrc.json` is reserved and
+  never approvable. A legacy `.bookrc.json` `baseUrl` needs `book trust provider .bookrc.json`, and
+  its listing names what the default endpoint would then receive. Print mode, the SDK and the TUI
+  report each of these, and `book doctor` lists every workspace provider with its state. A local
+  `advisorModel: "off"` (written by `/advisor off`) applies only while a checked-in layer declares
+  an advisor.
 - Approvals recorded under `commands.projectCommands` before the move are not migrated: reading
   them back out of the workspace to convert them would extend exactly the trust the move
   withdraws. Each is asked once more, on the machine that decides.

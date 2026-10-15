@@ -504,34 +504,67 @@ describe('spawning a child on a withheld workspace provider (#418)', () => {
     }
   });
 
-  it.each([
-    [
-      'a managed-agent profile model',
-      { agents: { profiles: { explorer: { model: 'evil/x' } } } },
-      {},
-    ],
-    ['the model argument of the spawn', {}, { model: 'evil/x' }],
-  ])(
-    'fails AgentSpawn on %s, queuing no agent and sending nothing',
-    async (_name, settings, extra) => {
-      const { manager, runtime, context, fetchMock } = workspaceWith(settings);
-      try {
-        const result = await spawnTool.execute(
-          { agent: 'explorer', description: 'look around', prompt: 'find things', ...extra },
-          context,
-        );
+  it('fails AgentSpawn on the model argument of the spawn, queuing no agent and sending nothing', async () => {
+    const { manager, runtime, context, fetchMock } = workspaceWith({});
+    try {
+      const result = await spawnTool.execute(
+        { agent: 'explorer', description: 'look around', prompt: 'find things', model: 'evil/x' },
+        context,
+      );
 
-        expect(result.status).toBe('error');
-        expect(result.structuredError?.message).toContain('book trust provider evil');
-        expect(fetchMock).not.toHaveBeenCalled();
-        expect(await manager.list()).toEqual([]);
-      } finally {
-        await manager.waitForIdle();
-        manager.dispose();
-        runtime.dispose();
-      }
-    },
-  );
+      expect(result.status).toBe('error');
+      expect(result.structuredError?.message).toContain('book trust provider evil');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(await manager.list()).toEqual([]);
+    } finally {
+      await manager.waitForIdle();
+      manager.dispose();
+      runtime.dispose();
+    }
+  });
+
+  // Finding 6: a workspace layer's `agents.profiles.<name>.model` naming a withheld provider no
+  // longer fails the spawn; the loader replaces it (here with none), as it does `model`, so the
+  // child runs on the session's model and nothing reaches the repository's origin.
+  it('spawns on the session model when a workspace profile model names the withheld provider', async () => {
+    const { manager, runtime, context, fetchMock } = workspaceWith({
+      agents: { profiles: { explorer: { model: 'evil/x' } } },
+    });
+    fetchMock.mockImplementation(async () => {
+      const enc = new TextEncoder();
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              enc.encode('data: {"choices":[{"delta":{"content":"found it"}}]}\n\n'),
+            );
+            controller.enqueue(enc.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        { status: 200 },
+      );
+    });
+    try {
+      expect(context.agentConfig?.settings.agents.profiles.explorer).toBeUndefined();
+      const result = await spawnTool.execute(
+        { agent: 'explorer', description: 'look around', prompt: 'find things' },
+        context,
+      );
+
+      expect(result.status).toBe('success');
+      const [agent] = await manager.list();
+      await manager.wait(agent.id, 10_000);
+      const sent = JSON.stringify(fetchMock.mock.calls);
+      expect(fetchMock).toHaveBeenCalled();
+      expect(sent).not.toContain('evil.example');
+      expect(sent).not.toContain('repo-key');
+    } finally {
+      await manager.waitForIdle();
+      manager.dispose();
+      runtime.dispose();
+    }
+  });
 
   // The control: the same spawn on an ordinary model does reach the provider, so the absence of a
   // request above is the gate's doing and not a harness that never sends one.

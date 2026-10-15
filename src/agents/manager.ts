@@ -1614,7 +1614,13 @@ export class AgentManager {
           autoCompactEnabled: true,
           memoryContext: undefined,
         },
-        spawnChoice ? { effort: spawnChoice, effortExplicit: true } : resolvedProfile,
+        spawnChoice
+          ? {
+              effort: spawnChoice,
+              effortExplicit: true,
+              modelTrusted: resolvedProfile.modelTrusted,
+            }
+          : resolvedProfile,
         record.resolvedModel,
       );
       if (record.effort !== agentConfig.effort) {

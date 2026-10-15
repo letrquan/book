@@ -1,5 +1,6 @@
-import { resolve } from 'path';
 import { loadConfig } from '../config.js';
+import { renderUntrustedText } from '../hook-approvals.js';
+import { providerTrustCommand, trustCommandText } from '../trust-command.js';
 import { getPackageVersion } from '../version-info.js';
 import { collectAgentDiagnostics } from '../agents/diagnostics.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
@@ -7,9 +8,6 @@ import { discoverAgents } from '../subagent-discovery.js';
 import { resolveBookHome } from '../book-home.js';
 import type { HookEntry } from '../settings.js';
 import type { AgentConfig } from '../types/runtime.js';
-
-/** Characters every supported shell passes through without quoting. */
-const SHELL_SAFE_BARE = /^[A-Za-z0-9_@%+=:,./\\-]+$/;
 
 /**
  * How much a settings layer named by `settingsLayers` is trusted, in the terms
@@ -25,40 +23,12 @@ const WORKSPACE_LAYER_TRUST: Record<string, 'trusted' | 'repository' | 'local'> 
 };
 
 /**
- * Render one argument for a command the user will paste into their own shell.
- *
- * It has to survive both a POSIX shell and `cmd.exe`, where single quotes are
- * literal — the reason the old `book config set … '<json>'` suggestion reached
- * validation as a string on Windows and failed. Double quotes are the one form
- * both accept, so anything needing quotes gets those; a value carrying a
- * character neither can quote verbatim gets no one-liner at all.
+ * One "here is how to grant it" line, naming the workspace doctor actually diagnosed (see
+ * `trustCommandText`), or a fallback when the path defeats quoting.
  */
-function shellArgument(value: string): string | null {
-  if (SHELL_SAFE_BARE.test(value)) return value;
-  if (/["`$\n\r]/.test(value) || value.endsWith('\\')) return null;
-  return `"${value}"`;
-}
-
-/**
- * A `book trust …` command targeting the workspace doctor actually diagnosed.
- *
- * `book trust` defaults to `process.cwd()`, so a suggestion printed by
- * `book doctor --workspace <repo>` run from elsewhere would otherwise record
- * the decision in the wrong project. Returns null when the path cannot be
- * quoted safely; the caller then tells the user where to run it instead.
- */
-function trustCommandLine(workspace: string, rest: string): string | null {
-  if (resolve(workspace) === resolve(process.cwd())) return `book trust ${rest}`;
-  const quoted = shellArgument(workspace);
-  return quoted === null ? null : `book trust ${rest} --workspace ${quoted}`;
-}
-
-/** One "here is how to grant it" line, or a fallback when the path defeats quoting. */
 function approvalHint(label: string, workspace: string, rest: string): string {
-  const command = trustCommandLine(workspace, rest);
-  return command === null
-    ? `${label} book trust ${rest} (run it from ${workspace})`
-    : `${label} ${command}`;
+  const { command, note } = trustCommandText(workspace, rest);
+  return `${label} ${command}${note}`;
 }
 
 function formatRelativeTime(timestamp: number, now = Date.now()): string {
@@ -369,44 +339,63 @@ export async function runDoctorCommand(
 
   // A provider names where a request goes and which credential rides along, so one only the
   // workspace declares is withheld until the user decides on that exact declaration (#418).
-  // Listed in every state, with the shape of its key but never a value: a `{file:…}` or `{env:…}`
-  // reference is shown as written and never resolved, and a literal is not echoed at all.
+  // Listed in every state. The origin is the parsed protocol, host and port, in full; a key
+  // reference is shown as the variable it names or the normalised file it opens, never resolved,
+  // and a literal is not echoed at all. Every command printed is quoted for the user's shell.
   const providerGate = config.workspaceProviderGate;
   if (providerGate) {
     const {
       describeDroppedOverride,
       describeLegacyBaseUrl,
+      describeReservedProvider,
+      describeUnaffectedSelection,
       describeWithheldSelection,
       describeWorkspaceProvider,
     } = await import('../provider-approvals.js');
-    const providerGroups = [
-      { mark: '[x]', suffix: '', entries: providerGate.partition.approved },
-      { mark: '[-]', suffix: ' (rejected)', entries: providerGate.partition.rejected },
-      { mark: '[!]', suffix: ' (not in effect)', entries: providerGate.partition.pending },
-    ];
+    const STATE_MARKS = {
+      approved: { mark: '[x]', suffix: '' },
+      rejected: { mark: '[-]', suffix: ' (rejected)' },
+      pending: { mark: '[!]', suffix: ' (not in effect)' },
+    } as const;
+    const providerGroups = (['approved', 'rejected', 'pending'] as const).map((state) => ({
+      ...STATE_MARKS[state],
+      state,
+      entries: providerGate.partition[state],
+    }));
     const legacy = providerGate.legacyBaseUrl;
-    const legacyMark =
-      legacy?.state === 'approved' ? '[x]' : legacy?.state === 'rejected' ? '[-]' : '[!]';
-    const legacySuffix =
-      legacy?.state === 'approved'
-        ? ''
-        : legacy?.state === 'rejected'
-          ? ' (rejected)'
-          : ' (not in effect)';
     const anyPending = providerGate.partition.pending.length > 0 || legacy?.state === 'pending';
     if (providerGate.declared.length > 0 || legacy) {
       console.log('Workspace-declared providers (require approval):');
       for (const group of providerGroups) {
         for (const entry of group.entries) {
-          console.log(`  ${group.mark} ${describeWorkspaceProvider(entry)}${group.suffix}`);
+          const routed =
+            group.state === 'pending'
+              ? providerGate.unaffectedSelections.filter((s) => s.providerId === entry.id)
+              : [];
+          const [first, ...rest] = describeWorkspaceProvider(entry, config.workspace, routed);
+          console.log(`  ${group.mark} ${first}${group.suffix}`);
+          for (const line of rest) console.log(`        ${line}`);
           console.log(`        declared in: ${entry.layers.join(', ')}`);
         }
       }
-      if (legacy) {
-        console.log(`  ${legacyMark} ${describeLegacyBaseUrl(legacy.baseUrl)}${legacySuffix}`);
+      for (const entry of providerGate.partition.reserved) {
+        console.log(`  [!] ${describeReservedProvider(entry)}`);
       }
-      if (providerGate.partition.pending.length > 0) {
-        console.log(approvalHint('  Approve one:', config.workspace, 'provider <id>'));
+      if (legacy) {
+        const { mark, suffix } = STATE_MARKS[legacy.state];
+        const [first, ...rest] = describeLegacyBaseUrl(legacy.baseUrl, {
+          providers: settings.provider,
+          workspace: config.workspace,
+        });
+        console.log(`  ${mark} ${first}${suffix}`);
+        for (const line of rest) console.log(`      ${line}`);
+      }
+      for (const entry of providerGate.partition.pending) {
+        // The command is on a line of its own: the id is repository-authored, and a line copied
+        // whole must not carry it into the shell beside the command.
+        const { command, note } = providerTrustCommand(config.workspace, entry.id);
+        console.log(`  Approve ${renderUntrustedText(entry.id, 64)}:`);
+        console.log(`    ${command}${note}`);
       }
       if (legacy?.state === 'pending') {
         console.log(
@@ -432,6 +421,13 @@ export async function runDoctorCommand(
       console.log('Withheld model selections:');
       for (const selection of providerGate.withheldSelections) {
         console.log(`  [!] ${describeWithheldSelection(selection)}`);
+      }
+      console.log();
+    }
+    if (providerGate.unaffectedSelections.length > 0) {
+      console.log('Your model selections that share a prefix with a withheld provider:');
+      for (const selection of providerGate.unaffectedSelections) {
+        console.log(`  [x] ${describeUnaffectedSelection(selection)}`);
       }
       console.log();
     }

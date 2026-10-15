@@ -39,6 +39,7 @@ import {
   hookFingerprint,
   partitionProjectHooks,
   persistProjectHookChoice,
+  renderUntrustedText,
 } from '../hook-approvals.js';
 import {
   collectDeclaredDirectories,
@@ -51,16 +52,20 @@ import {
   partitionProjectAllowRules,
   persistProjectAllowRuleChoice,
 } from '../permission-approvals.js';
+import { readLegacyBaseUrl } from '../legacy-config.js';
 import {
   describeLegacyBaseUrl,
+  describeReservedProvider,
   describeWorkspaceProvider,
+  environmentModelSelections,
   evaluateLegacyBaseUrl,
   LEGACY_BASE_URL_ID,
   legacyBaseUrlFingerprint,
   persistWorkspaceProviderChoice,
-  readLegacyBaseUrl,
+  withEnvironmentSelections,
   type WorkspaceProviderState,
 } from '../provider-approvals.js';
+import { providerTrustCommand, trustCommandText } from '../trust-command.js';
 import {
   isUserSettingsFile,
   loadSettingsFile,
@@ -251,47 +256,78 @@ export async function runTrustCommand(
       id: string;
       fingerprint: string;
       state: WorkspaceProviderState;
-      line: string;
+      /** What approving it would do, first line then detail. */
+      lines: string[];
     }
+    // The user's own selections that share a prefix with a withheld provider: approving the
+    // provider routes them to its origin, so the listing names them.
+    const unaffected = withEnvironmentSelections(
+      providerGate.unaffectedSelections,
+      environmentModelSelections(undefined),
+      new Set(providerGate.withheld),
+    );
     const candidates: ProviderCandidate[] = (['approved', 'pending', 'rejected'] as const).flatMap(
       (state) =>
         providerGate.partition[state].map((entry) => ({
           id: entry.id,
           fingerprint: entry.fingerprint,
           state,
-          line: describeWorkspaceProvider(entry),
+          lines: describeWorkspaceProvider(
+            entry,
+            workspace,
+            unaffected.filter((selection) => selection.providerId === entry.id),
+          ),
         })),
     );
+    // Parsed by the loader's own parser, so the fingerprint is the one the loader checks.
     const legacyBaseUrl = readLegacyBaseUrl(workspace);
     if (legacyBaseUrl !== undefined) {
       candidates.push({
         id: LEGACY_BASE_URL_ID,
         fingerprint: legacyBaseUrlFingerprint(legacyBaseUrl),
         state: evaluateLegacyBaseUrl(settings.workspaceProviders, legacyBaseUrl),
-        line: describeLegacyBaseUrl(legacyBaseUrl),
+        lines: describeLegacyBaseUrl(legacyBaseUrl, { providers: settings.provider, workspace }),
       });
     }
     const pending = candidates.filter((candidate) => candidate.state === 'pending');
+    const printCandidate = (candidate: ProviderCandidate, prefix: string) => {
+      const [first, ...rest] = candidate.lines;
+      console.log(`${prefix}${first}`);
+      for (const line of rest) console.log(`      ${line}`);
+    };
     const push = (candidate: ProviderCandidate) => {
       // Approving sends the user's requests, and the key a reference names, to the origin shown,
       // so that is what gets shown before the decision is recorded.
-      if (!options.reject) console.log(`  ${candidate.line}`);
+      if (!options.reject) printCandidate(candidate, '  ');
       decisions.push({
         key: candidate.id,
         label: candidate.id,
         fingerprint: candidate.fingerprint,
       });
     };
+    // A provider named like the legacy decision's key can never be approved (see the partition),
+    // so it is reported rather than offered.
+    const reserved = providerGate.partition.reserved.map(
+      (entry) => `  [!] ${describeReservedProvider(entry)}`,
+    );
 
     if (listsProviders) {
+      for (const line of reserved) console.log(line);
       if (pending.length === 0) {
         console.log(`No workspace-declared providers are awaiting a decision in ${workspace}.`);
         return;
       }
       console.log(`Workspace-declared providers awaiting a decision in ${workspace}:`);
-      for (const candidate of pending) console.log(`  [!] ${candidate.line}`);
-      console.log('Approve one: book trust provider <id>   (add --reject to refuse)');
-      console.log('Approve all: book trust provider --all-pending');
+      for (const candidate of pending) printCandidate(candidate, '  [!] ');
+      // The id is repository-authored: it is quoted for the shell, or left off the line when it
+      // cannot be quoted, so a copied command cannot run what a hostile id spells.
+      for (const candidate of pending) {
+        const { command, note } = providerTrustCommand(workspace, candidate.id);
+        console.log(`Approve ${renderUntrustedText(candidate.id, 64)}:`);
+        console.log(`  ${command}${note}`);
+      }
+      const all = trustCommandText(workspace, 'provider --all-pending');
+      console.log(`Approve all: ${all.command}${all.note}   (add --reject to refuse)`);
       return;
     }
     if (options.allPending) {
@@ -304,10 +340,13 @@ export async function runTrustCommand(
       const candidate = candidates.find((known) => known.id === target);
       if (!candidate) {
         // A typo would otherwise record a decision that matches no provider.
-        const known = candidates.map((entry) => `  ${entry.id}  (${entry.state})`).join('\n');
+        const known = candidates
+          .map((entry) => `  ${renderUntrustedText(entry.id, 64)}  (${entry.state})`)
+          .join('\n');
         return fail(
-          `book trust provider: ${workspace} declares no provider "${target}".` +
-            (known ? `\nDeclared by the workspace:\n${known}` : '\nNothing is declared.'),
+          `book trust provider: ${workspace} declares no provider "${target}" that can be decided.` +
+            (known ? `\nDeclared by the workspace:\n${known}` : '\nNothing is declared.') +
+            (reserved.length > 0 ? `\n${reserved.join('\n')}` : ''),
         );
       }
       push(candidate);

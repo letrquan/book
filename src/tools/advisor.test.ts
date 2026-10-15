@@ -323,37 +323,55 @@ describe('Advisor tool', () => {
       ).toBe(true);
     }
 
-    it.each([
-      ['a workspace advisorModel', { advisorModel: 'lab/adv' }, undefined],
-      ['BOOK_ADVISOR_MODEL', {}, 'lab/adv'],
-    ])(
-      'sends nothing while it is pending (%s), and consults it once approved',
-      async (_name, extra, env) => {
-        const { home, workspace, fetchMock } = setup(
-          { provider: { lab: declaration }, ...extra },
-          env,
-        );
+    it('sends nothing for a workspace advisorModel while it is pending, and consults it once approved', async () => {
+      const { home, workspace, fetchMock } = setup({
+        provider: { lab: declaration },
+        advisorModel: 'lab/adv',
+      });
 
-        const pending = await consult(workspace);
-        expect(pending.result.status).toBe('error');
-        expect(pending.result.structuredError?.code).toBe('advisor_unconfigured');
-        expect(fetchMock).not.toHaveBeenCalled();
-        expect(pending.conversation).not.toHaveBeenCalled();
-        if (env)
-          expect(pending.result.structuredError?.message).toContain('book trust provider lab');
+      const pending = await consult(workspace);
+      expect(pending.result.status).toBe('error');
+      expect(pending.result.structuredError?.code).toBe('advisor_unconfigured');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(pending.conversation).not.toHaveBeenCalled();
 
-        await approve(workspace, home);
-        const approved = await consult(workspace);
+      await approve(workspace, home);
+      const approved = await consult(workspace);
 
-        expect(approved.conversation).toHaveBeenCalled();
-        expect(fetchMock).toHaveBeenCalled();
-        const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-        expect(String(url)).toContain('advisor-origin.example');
-        // Keyless means keyless: the session's key does not follow the repository's origin.
-        expect(JSON.stringify(init.headers ?? {})).not.toContain('sk-main-session-key');
-        expect(approved.result.structuredError?.message ?? '').not.toContain('book trust provider');
-      },
-    );
+      expect(approved.conversation).toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalled();
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(String(url)).toContain('advisor-origin.example');
+      // Keyless means keyless: the session's key does not follow the repository's origin.
+      expect(JSON.stringify(init.headers ?? {})).not.toContain('sk-main-session-key');
+      expect(approved.result.structuredError?.message ?? '').not.toContain('book trust provider');
+    });
+
+    // The user's own BOOK_ADVISOR_MODEL is theirs even when its prefix collides with a provider
+    // id the repository chose: while it is pending the id is a plain model name on the default
+    // endpoint, and only approving the provider sends it to the repository's origin.
+    it('sends the transcript of the own BOOK_ADVISOR_MODEL only to the default endpoint while the provider is pending', async () => {
+      const { home, workspace, fetchMock } = setup({ provider: { lab: declaration } }, 'lab/adv');
+
+      const pending = await consult(workspace);
+      expect(pending.conversation).toHaveBeenCalled();
+      const urls = (fetchMock.mock.calls as unknown as [string, RequestInit][]).map(([url]) =>
+        String(url),
+      );
+      expect(urls.length).toBeGreaterThan(0);
+      for (const url of urls) {
+        expect(url).toContain('api.openai.com');
+        expect(url).not.toContain('advisor-origin.example');
+      }
+
+      fetchMock.mockClear();
+      await approve(workspace, home);
+      await consult(workspace);
+
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(String(url)).toContain('advisor-origin.example');
+      expect(JSON.stringify(init.headers ?? {})).not.toContain('sk-main-session-key');
+    });
   });
 
   it('does not invite a retry of a consult the provider refused', async () => {

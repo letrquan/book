@@ -20,6 +20,7 @@ import {
   persistSkillsEnabledLocal,
   readSettingsLocal,
   readSettingsGlobal,
+  readUserProvider,
   removeProviderLocal,
   removeProviderGlobal,
   clearLocalSettings,
@@ -580,5 +581,77 @@ describe('global scope (~/.book/settings.json)', () => {
       expect(reload()).toBeUndefined();
       expect(existsSync(join(dir, '.book'))).toBe(false);
     });
+
+    // Finding 9: the `off` it writes is not permanent.
+    it("stops outranking the user's own advisor once the repository drops its declaration", () => {
+      persistSettingGlobal('advisorModel', 'user/adv');
+      writeProject({ advisorModel: 'project/adv' });
+      expect(turnOffAdvisorModel(dir).ok).toBe(true);
+      expect(readSettingsLocal(dir).advisorModel).toBe('off');
+      expect(reload()).toBeUndefined();
+
+      // The user sets their own advisor some way that does not clear the local layer.
+      persistSettingGlobal('advisorModel', 'user/adv2');
+      // Still off while the checked-in file declares one...
+      expect(reload()).toBeUndefined();
+
+      // ...and the user's value applies once it stops.
+      writeProject({ model: 'gpt-4o' });
+      expect(reload()).toBe('user/adv2');
+
+      // Leave the shared user file as the sibling tests expect to find it.
+      expect(turnOffAdvisorModel(dir).ok).toBe(true);
+    });
+  });
+});
+
+describe('readUserProvider', () => {
+  let savedBookHome: string | undefined;
+  beforeEach(() => {
+    savedBookHome = process.env.BOOK_HOME;
+    process.env.BOOK_HOME = join(dir, 'book-home');
+  });
+  afterEach(() => {
+    if (savedBookHome === undefined) delete process.env.BOOK_HOME;
+    else process.env.BOOK_HOME = savedBookHome;
+  });
+
+  it('reads the provider as the user file holds it, not as a workspace merged it', () => {
+    persistSettingsGlobal({
+      'provider.work': {
+        type: 'openai',
+        baseURL: 'https://user.example/v1',
+        apiKey: 'k',
+        models: { m: { label: 'M' } },
+      },
+    });
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(
+      join(dir, '.book', 'settings.json'),
+      JSON.stringify({ provider: { work: { type: 'anthropic', models: { extra: {} } } } }),
+    );
+
+    // The resolved provider carries the workspace's models; the user's entry does not.
+    expect(Object.keys(resolveSettings(dir).provider.work.models).sort()).toEqual(['extra', 'm']);
+    expect(readUserProvider('work')).toEqual({
+      type: 'openai',
+      baseURL: 'https://user.example/v1',
+      apiKey: 'k',
+      models: { m: { label: 'M' } },
+    });
+  });
+
+  it('is undefined for an absent provider, an inherited property name and an invalid entry', () => {
+    mkdirSync(join(dir, 'book-home'), { recursive: true });
+    // Written directly: the repository would refuse to save a provider this invalid.
+    writeFileSync(
+      join(dir, 'book-home', 'settings.json'),
+      JSON.stringify({ provider: { bad: { type: 'nope' }, ok: {} } }),
+    );
+
+    expect(readUserProvider('ok')).toEqual({ type: 'openai', models: {} });
+    expect(readUserProvider('missing')).toBeUndefined();
+    expect(readUserProvider('constructor')).toBeUndefined();
+    expect(readUserProvider('bad')).toBeUndefined();
   });
 });

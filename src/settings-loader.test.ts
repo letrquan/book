@@ -2011,5 +2011,130 @@ describe('workspace-declared providers (#418)', () => {
 
       expect(load(override).settings.model).toBe('evil/cli');
     });
+
+    // Finding 4(a): the winner is the user's own, so it is left alone and reported as unaffected.
+    it("leave a trusted layer's selection that shares the prefix alone, and report it", () => {
+      writeUserLayer({ model: 'evil/vendor-model' });
+      writeWorkspaceLayer('settings.json', { provider: { evil } });
+      const override = join(userDir, 'override.json');
+      writeFileSync(override, JSON.stringify({ compactModel: 'evil/c' }));
+
+      const { settings, providerGate } = load(override);
+      expect(settings.model).toBe('evil/vendor-model');
+      expect(settings.compactModel).toBe('evil/c');
+      expect(providerGate.withheldSelections).toEqual([]);
+      expect(providerGate.unaffectedSelections).toEqual([
+        expect.objectContaining({ key: 'model', value: 'evil/vendor-model', providerId: 'evil' }),
+        expect.objectContaining({ key: 'compactModel', source: override }),
+      ]);
+    });
+
+    // Finding 6
+    it("fall back for a workspace agent-profile model, keeping the profile's other keys", () => {
+      writeUserLayer({ agents: { profiles: { explorer: { model: 'user/e' } } } });
+      writeWorkspaceLayer('settings.json', {
+        provider: { evil },
+        agents: {
+          profiles: {
+            explorer: { model: 'evil/e', effort: 'low' },
+            patcher: { model: 'evil/p' },
+            validator: { model: 'ok/v' },
+          },
+        },
+      });
+
+      const { settings, providerGate } = load();
+      expect(settings.agents.profiles).toEqual({
+        explorer: { model: 'user/e', effort: 'low' },
+        validator: { model: 'ok/v' },
+      });
+      expect(providerGate.withheldSelections.map((s) => s.key)).toEqual([
+        'agents.profiles.explorer.model',
+        'agents.profiles.patcher.model',
+      ]);
+    });
+
+    it("leave a trusted profile model, and an approved provider's, alone", () => {
+      writeUserLayer({ agents: { profiles: { explorer: { model: 'evil/e' } } } });
+      writeWorkspaceLayer('settings.json', {
+        provider: { evil },
+        agents: { profiles: { patcher: { model: 'evil/p' } } },
+      });
+      expect(load().settings.agents.profiles.explorer.model).toBe('evil/e');
+
+      decide('evil', evil, 'approved');
+      expect(load().settings.agents.profiles.patcher.model).toBe('evil/p');
+    });
+  });
+
+  // Finding 5: a provider named like the legacy decision key is reserved.
+  it('sorts a provider named `.bookrc.json` into reserved, whatever the store holds', () => {
+    writeWorkspaceLayer('settings.json', { provider: { '.bookrc.json': evil } });
+    decide('.bookrc.json', evil, 'approved');
+
+    const { settings, providerGate } = load();
+    expect(settings.provider).toEqual({});
+    expect(providerGate.partition.reserved.map((entry) => entry.id)).toEqual(['.bookrc.json']);
+    expect(providerGate.partition.approved).toEqual([]);
+    expect(providerGate.declared).toEqual(['.bookrc.json']);
+    expect(providerGate.withheld).toEqual(['.bookrc.json']);
+  });
+
+  // Finding 8
+  it('drops a `type` override of a trusted provider and reports it', () => {
+    writeUserLayer({ provider: { work: { baseURL: 'https://user.example/v1', apiKey: 'k' } } });
+    writeWorkspaceLayer('settings.json', { provider: { work: { type: 'anthropic' } } });
+
+    const { settings, providerGate } = load();
+    expect(settings.provider.work.type).toBe('openai');
+    expect(providerGate.droppedOverrides).toEqual([
+      { path: join(dir, '.book', 'settings.json'), providerId: 'work', keys: ['type'] },
+    ]);
+  });
+});
+
+// Finding 9: `/advisor off` writes `advisorModel: "off"` to the local layer so that it outranks an
+// advisor a checked-in file declares. That `off` must not outlive the declaration.
+describe('a local advisorModel "off"', () => {
+  const writeLayer = (name: 'settings.json' | 'settings.local.json', settings: unknown) => {
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(join(dir, '.book', name), JSON.stringify(settings));
+  };
+  const writeUser = (settings: unknown) => {
+    mkdirSync(join(userDir, '.book'), { recursive: true });
+    writeFileSync(join(userDir, '.book', 'settings.json'), JSON.stringify(settings));
+  };
+  const load = () => resolveSettings(dir, undefined, { home: userDir });
+
+  it('outranks the advisor while a checked-in layer still declares one', () => {
+    writeUser({ advisorModel: 'user/adv' });
+    writeLayer('settings.json', { advisorModel: 'repo/adv' });
+    writeLayer('settings.local.json', { advisorModel: 'off' });
+
+    expect(load().advisorModel).toBe('off');
+  });
+
+  it("is ignored once the repository stops declaring one, so the user's own value applies", () => {
+    writeUser({ advisorModel: 'user/adv' });
+    writeLayer('settings.json', { model: 'gpt-4o' });
+    writeLayer('settings.local.json', { advisorModel: 'off', maxTurns: 3 });
+
+    const settings = load();
+    expect(settings.advisorModel).toBe('user/adv');
+    // Only the stale key is dropped from the layer.
+    expect(settings.maxTurns).toBe(3);
+  });
+
+  it('is ignored with no checked-in file at all, whatever its case', () => {
+    writeUser({ advisorModel: 'user/adv' });
+    writeLayer('settings.local.json', { advisorModel: 'OFF' });
+
+    expect(load().advisorModel).toBe('user/adv');
+  });
+
+  it('leaves a local advisor that is a real model alone', () => {
+    writeLayer('settings.local.json', { advisorModel: 'local/adv' });
+
+    expect(load().advisorModel).toBe('local/adv');
   });
 });
