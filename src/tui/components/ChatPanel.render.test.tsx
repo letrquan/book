@@ -2088,7 +2088,7 @@ describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
     expect(output).not.toContain('thought');
   });
 
-  it('keeps a finished thought that precedes a lone, unfolded call', () => {
+  it('hides the thought of a lone, unfolded call too (#470)', () => {
     const view = render(
       withTheme(
         <ChatPanel
@@ -2104,11 +2104,11 @@ describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
       ),
     );
     const output = frame(view.lastFrame);
-    expect(output).toContain('▸ thought · 2 lines');
+    expect(output).not.toContain('thought');
     expect(output).toMatch(/Read\s+a\.js/);
   });
 
-  it('keeps the thought of a step that speaks, even when its run folds', () => {
+  it('keeps the prose of a step that speaks but not its thought, when its run folds', () => {
     const head: Message = {
       ...msg('a1', 'assistant', '<think>first line\nsecond line</think>Let me look around.'),
       toolCalls: [{ id: 'a1-call', name: 'Read', arguments: { file_path: 'a.js' } }],
@@ -2132,11 +2132,11 @@ describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
     );
     const output = frame(view.lastFrame);
     expect(output).toContain('Let me look around.');
-    expect(output).toContain('▸ thought · 2 lines');
+    expect(output).not.toContain('thought');
     expect(output).toMatch(/Read\s+a\.js, b\.js/);
   });
 
-  it('keeps the thought of a reasoned step that runs a command', () => {
+  it('hides the thought of a reasoned step that runs a command (#470)', () => {
     const read = reasonedTurn('a1', { name: 'Read', arguments: { file_path: 'a.js' } }, 'think');
     const bash: Message = {
       ...msg('a2', 'assistant', '<think>first line\nsecond line</think>'),
@@ -2158,13 +2158,13 @@ describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
       ),
     );
     const output = frame(view.lastFrame);
-    // The lone read keeps its thought, and so does the step that ran the command.
-    expect(output.match(/▸ thought · 2 lines/g)).toHaveLength(2);
+    // The lone read and the step that ran the command both go without their thoughts.
+    expect(output).not.toContain('thought');
     expect(output).toContain('npm test');
     expect(output).not.toMatch(/Read\s+a\.js, b\.js/);
   });
 
-  it('keeps the thought of a message whose quiet group is followed by an edit', () => {
+  it('hides the thought of a message whose quiet group is followed by an edit (#470)', () => {
     const turn: Message = {
       ...msg('p1', 'assistant', '<think>first line\nsecond line</think>'),
       toolCalls: [
@@ -2194,7 +2194,7 @@ describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
       ),
     );
     const output = frame(view.lastFrame);
-    expect(output).toContain('▸ thought · 2 lines');
+    expect(output).not.toContain('thought');
     expect(output).toMatch(/Read\s+a\.js, b\.js/);
   });
 
@@ -2296,5 +2296,72 @@ describe('ChatPanel quiet tool runs with read-only shell commands (#459)', () =>
     const output = frame(view.lastFrame);
     expect(output).toMatch(/Bash\s+cat src\/a\.js/);
     expect(output).toMatch(/Bash\s+ls src/);
+  });
+});
+
+describe('ChatPanel hides a tool step’s thought in compact mode (#470)', () => {
+  const step = (id: string, command: string, prose = ''): Message => ({
+    ...msg(id, 'assistant', `<think>weigh ${id}\nthen go</think>${prose}`),
+    toolCalls: [{ id: `${id}-call`, name: 'Bash', arguments: { command } }],
+    toolResults: [successResult(`${id}-call`, 'output')],
+  });
+  const answer: Message = msg('a9', 'assistant', '<think>sum up\nand finish</think>All three ran.');
+  const session: Message[] = [
+    msg('u1', 'user', 'run them'),
+    step('a1', 'seq 1 3'),
+    step('a2', 'seq 1 4'),
+    step('a3', 'seq 1 5', 'Step 3 is next: count to five.'),
+    answer,
+  ];
+  const show = (transcriptMode: 'compact' | 'detailed') =>
+    frame(
+      render(
+        withTheme(
+          <ChatPanel
+            messages={session}
+            terminalWidth={100}
+            transcriptMode={transcriptMode}
+            showThinking
+            reducedMotion
+          />,
+        ),
+      ).lastFrame,
+    ).split('\n');
+
+  it('draws no thought row for a tool step, and keeps the final answer’s', () => {
+    const lines = show('compact');
+
+    expect(lines.filter((line) => line.includes('thought'))).toEqual([
+      expect.stringContaining('▸ thought · 2 lines'),
+    ]);
+    expect(lines.join('\n')).not.toContain('weigh a1');
+    expect(lines.join('\n')).toContain('All three ran.');
+  });
+
+  it('sits a thoughtless step against the rows before it, with no blank or doubled blank rows', () => {
+    const lines = show('compact');
+    const first = lines.findIndex((line) => /Bash\s+seq 1 3/.test(line));
+    const second = lines.findIndex((line) => /Bash\s+seq 1 4/.test(line));
+
+    expect(first).toBeGreaterThan(-1);
+    expect(second).toBe(first + 1);
+    expect(lines.join('\n')).not.toMatch(/\n\n\n/);
+  });
+
+  it('keeps one blank row above the prose of a step, and none between it and its row', () => {
+    const lines = show('compact');
+    const prose = lines.findIndex((line) => line.includes('Step 3 is next'));
+    const tool = lines.findIndex((line) => /Bash\s+seq 1 5/.test(line));
+
+    expect(lines[prose - 1]).toBe('');
+    expect(lines[prose - 2]).not.toBe('');
+    expect(tool).toBe(prose + 1);
+  });
+
+  it('keeps every thought in the detailed transcript', () => {
+    const output = show('detailed').join('\n');
+
+    expect(output.match(/Thought - 2 lines/g)).toHaveLength(4);
+    expect(output).toMatch(/Bash\s+seq 1 3/);
   });
 });

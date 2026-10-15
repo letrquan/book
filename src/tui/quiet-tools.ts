@@ -23,12 +23,13 @@ import {
  * joins a run one call at a time, through `classifyReadOnlyShellCommand`: a
  * conservative parser that accepts only a command it can prove read-only (`cat`,
  * `rg`, `ls`, `find` without actions, ...) and rejects expansion, redirection,
- * background jobs and every wrapper. No `git` command is on its allow-list: a
- * plain `git ...` carries none of the hardening Book's own Git tools apply, so a
- * repository's config or attributes can make it run a program. Anything the
- * parser cannot prove keeps its own row, as does a read-only command that failed,
- * ran in the background (or was moved there at its timeout) or names a path
- * outside the workspace.
+ * background jobs and every wrapper. Read-only `git` (`status`, `log`, `diff`,
+ * `show`, `grep`, `ls-files` and `branch` in its listing forms) is on its
+ * allow-list, so it folds like Book's own Git tools do; folding only changes how
+ * a command that already ran is drawn. Anything the parser cannot prove keeps its
+ * own row, as does a read-only command that failed (`git diff --exit-code`
+ * exiting 1 included), ran in the background (or was moved there at its timeout)
+ * or names a path outside the workspace.
  */
 export const QUIET_TOOLS: ReadonlySet<string> = new Set([
   'Read',
@@ -205,6 +206,10 @@ export function isQuietInvocation(
   return !result || result.status === 'success' || noMatchSearch;
 }
 
+function isAssistantTurn(message: Message): boolean {
+  return message.role === 'assistant' && !message.localCommand;
+}
+
 /**
  * Whether a message carries markdown prose: the one kind of text that breaks a
  * quiet run. Judged on `content`, the way AgentMessage splits it: routers that
@@ -229,6 +234,18 @@ export function hasReasoning(message: Message): boolean {
 }
 
 /**
+ * Whether the compact transcript hides this message's thoughts: any assistant
+ * step that calls a tool, quiet or not. The thought behind a call is process,
+ * and the row it led to says what happened. A message with no call is an answer
+ * and keeps its thought row. Detailed mode and screen readers keep every thought;
+ * the caller applies that. This is the one rule for both a summary row that
+ * absorbs a thought and a tool row that stands alone.
+ */
+export function hidesThoughtsInCompact(message: Message): boolean {
+  return isAssistantTurn(message) && (message.toolCalls?.length ?? 0) > 0;
+}
+
+/**
  * Whether the message has at least one call and every one of them may fold into
  * a summary. A pending, failed, pinned, outside-the-workspace, mutating, command
  * or delegating call makes it false.
@@ -239,10 +256,6 @@ export function allCallsQuiet(message: Message, context: QuietToolContext): bool
     calls.length > 0 &&
     calls.every((call) => isQuietInvocation(call, resultFor(message, call.id), message, context))
   );
-}
-
-function isAssistantTurn(message: Message): boolean {
-  return message.role === 'assistant' && !message.localCommand;
 }
 
 /**
@@ -284,8 +297,10 @@ export interface CollapsedTimeline<T> {
   /** For a merged entry, keyed by its (first) id: every message folded into it, in order. */
   sourceIds: ReadonlyMap<string, readonly string[]>;
   /**
-   * Ids of the entries whose thoughts are absorbed into a quiet summary row, so
-   * the compact transcript does not draw them.
+   * Ids of the entries whose thoughts a quiet summary row stands in for. The
+   * compact transcript hides every tool step's thought
+   * ({@link hidesThoughtsInCompact}), so each of these is hidden by that rule too;
+   * this says which of them the summary row replaces.
    */
   absorbedThoughts: ReadonlySet<string>;
 }
@@ -496,6 +511,8 @@ export function summarizeQuietRun(
       for (const part of parts) {
         if (part.kind === 'read') addFile(part.path);
         else if (part.kind === 'search') patterns.push(part.query ?? part.path ?? 'search');
+        // A git status or log is a lookup, named by its subcommand rather than `Bash`.
+        else if (part.kind === 'lookup') others.push(part.target);
         else {
           listings += 1;
           // A listing that names no path is of the current directory.

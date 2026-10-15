@@ -76,6 +76,43 @@ const accepted: Array<[string, ReadOnlyShellPart[]]> = [
   ['cat "my file.txt"', [{ kind: 'read', path: 'my file.txt' }]],
   ['cat my\\ file.txt  ', [{ kind: 'read', path: 'my file.txt' }]],
   ['rg "a|b" src', [{ kind: 'search', query: 'a|b', path: 'src' }]],
+  // Read-only git, with `-C <dir>` and the pager options accepted before the subcommand.
+  ['git status', [{ kind: 'lookup', target: 'git status' }]],
+  ['git -C src status', [{ kind: 'lookup', target: 'git status', path: 'src' }]],
+  ['git --no-pager log --oneline -5', [{ kind: 'lookup', target: 'git log' }]],
+  ['git -P --no-optional-locks status', [{ kind: 'lookup', target: 'git status' }]],
+  ['git diff HEAD~1 -- src/a.js', [{ kind: 'lookup', target: 'git diff', path: 'src/a.js' }]],
+  ['git diff --stat', [{ kind: 'lookup', target: 'git diff' }]],
+  ['git diff --exit-code', [{ kind: 'lookup', target: 'git diff' }]],
+  ['git log main..feature', [{ kind: 'lookup', target: 'git log' }]],
+  ['git log -n 5 --author=me', [{ kind: 'lookup', target: 'git log' }]],
+  ['git show HEAD:src/a.js', [{ kind: 'lookup', target: 'git show', path: 'src/a.js' }]],
+  ['git show', [{ kind: 'lookup', target: 'git show' }]],
+  ['git branch', [{ kind: 'lookup', target: 'git branch' }]],
+  ['git branch -a', [{ kind: 'lookup', target: 'git branch' }]],
+  ['git branch -r -vv', [{ kind: 'lookup', target: 'git branch' }]],
+  ['git branch --show-current', [{ kind: 'lookup', target: 'git branch' }]],
+  ['git branch --contains HEAD~2', [{ kind: 'lookup', target: 'git branch' }]],
+  ['git branch --merged', [{ kind: 'lookup', target: 'git branch' }]],
+  ['git branch --no-merged main', [{ kind: 'lookup', target: 'git branch' }]],
+  ['git branch --sort=-committerdate', [{ kind: 'lookup', target: 'git branch' }]],
+  ["git branch --format='%(refname)'", [{ kind: 'lookup', target: 'git branch' }]],
+  ["git branch --list 'f*'", [{ kind: 'lookup', target: 'git branch' }]],
+  ['git branch -a --list feature/*', [{ kind: 'lookup', target: 'git branch' }]],
+  ['git grep -n TODO src', [{ kind: 'search', query: 'TODO', path: 'src' }]],
+  ['git grep -n -A 3 TODO -- src', [{ kind: 'search', query: 'TODO', path: 'src' }]],
+  ['git grep -e foo -e bar', [{ kind: 'search', query: 'foo' }]],
+  ['git ls-files', [{ kind: 'list' }]],
+  ['git ls-files src', [{ kind: 'list', path: 'src' }]],
+  ['git status | head -5', [{ kind: 'lookup', target: 'git status' }]],
+  ['git log --oneline | sort | uniq -c | tail -n 3', [{ kind: 'lookup', target: 'git log' }]],
+  [
+    'git status && git log -1',
+    [
+      { kind: 'lookup', target: 'git status' },
+      { kind: 'lookup', target: 'git log' },
+    ],
+  ],
 ];
 
 const rejected: Array<[string, string]> = [
@@ -138,40 +175,66 @@ const rejected: Array<[string, string]> = [
   ['rg pre inline', 'rg --pre=./x foo'],
   ['rg search-zip', 'rg -z foo'],
   ['rg search-zip long', 'rg --search-zip foo'],
-  // A plain `git ...` in a shell carries none of the hardening Book's own Git tools apply
-  // (GIT_HARDENING_ARGS, HARDENED_DIFF_ARGS and --no-show-signature in src/tools/git.ts), so
-  // the repository's core.fsmonitor, diff.external, textconv drivers, gpg.program and
-  // clean/smudge filters can run a program. It cannot be proven read-only from its text.
-  ['git status', 'git status'],
-  ['git diff', 'git diff --stat'],
-  ['git diff path', 'git diff -- src/a.js'],
-  ['git log', 'git log --oneline -5'],
-  ['git show', 'git show HEAD:src/a.js'],
-  ['git branch', 'git branch -a'],
-  ['git branch bare', 'git branch'],
-  ['git ls-files', 'git ls-files'],
+  // Read-only git folds, but only the listed subcommands and global options; the rest keeps its row.
   ['git rev-parse', 'git rev-parse HEAD'],
-  ['git grep', 'git grep -n TODO -- src'],
   ['git blame', 'git blame -L 1,5 src/a.js'],
-  ['git after a pipe', 'cat a.js | git status'],
-  ['git in a pipeline', 'git log --oneline | sort | uniq -c | tail -n 3'],
-  ['git branch create', 'git branch new-branch'],
+  ['git branch create', 'git branch new-feature'],
+  ['git branch create with -a', 'git branch -a new-feature'],
   ['git branch delete', 'git branch -d old'],
+  ['git branch force delete', 'git branch -D old'],
   ['git branch move', 'git branch -m a b'],
-  ['git branch list with pattern', "git branch --list 'f*'"],
+  ['git branch move capital', 'git branch -M a b'],
+  ['git branch copy', 'git branch -c a b'],
+  ['git branch copy long', 'git branch --copy a b'],
+  ['git branch delete long', 'git branch --delete old'],
+  ['git branch delete abbreviation', 'git branch --del old'],
+  ['git branch delete in a cluster', 'git branch -vd old'],
+  ['git branch set upstream', 'git branch --set-upstream-to=origin/main'],
+  ['git branch set upstream short', 'git branch -u origin/main'],
+  ['git branch unset upstream', 'git branch --unset-upstream'],
+  ['git branch edit description', 'git branch --edit-description'],
+  ['git branch force', 'git branch -f main HEAD~1'],
+  ['git branch track', 'git branch --track x origin/x'],
+  ['git branch no-track', 'git branch --no-track'],
+  ['git branch pattern without --list', 'git branch -a feature'],
   ['git config option', 'git -c core.pager=x log'],
-  ['git -C', 'git -C .. log'],
+  ['git config-env option', 'git --config-env=core.pager=X log'],
+  ['git exec-path', 'git --exec-path=/tmp status'],
+  ['git exec-path bare', 'git --exec-path status'],
+  ['git git-dir', 'git --git-dir=/x status'],
+  ['git work-tree', 'git --work-tree=/x status'],
+  ['git namespace', 'git --namespace=x status'],
+  ['git super-prefix', 'git --super-prefix=x/ status'],
+  ['git -C without a directory', 'git -C'],
+  ['git -C attached', 'git -Csrc status'],
+  ['git no subcommand', 'git'],
+  ['git only options', 'git --no-pager'],
   ['git commit', 'git commit -m x'],
   ['git checkout', 'git checkout main'],
   ['git push', 'git push'],
-  ['git diff output', 'git diff --output=x'],
+  ['git pull', 'git pull'],
+  ['git stash list', 'git stash list'],
+  ['git config', 'git config user.name'],
+  ['git alias', 'git st'],
+  ['git redirect', 'git status > out.txt'],
+  ['git substitution', 'git log $(cat f)'],
+  ['git background', 'git status &'],
+  ['git diff output', 'git diff --output=/tmp/x'],
+  ['git diff output separate', 'git diff --output /tmp/x'],
   ['git diff output abbreviation', 'git diff --out=x'],
+  ['git diff orderfile', 'git diff -O/tmp/order'],
   ['git diff ext-diff', 'git diff --ext-diff'],
-  ['git diff no-index', 'git diff --no-index /etc/a /etc/b'],
-  ['git log output', 'git log --output x'],
+  ['git log output', 'git log --output=x'],
+  ['git log output after a path', 'git log --oneline --output x'],
   ['git show output', 'git show --output=x'],
-  ['git outside path', 'git diff -- ../x'],
-  ['git absolute path', 'git show /etc/passwd'],
+  ['git status output', 'git status --output=x'],
+  ['git grep open in pager', 'git grep -O TODO'],
+  ['git grep open in pager attached', 'git grep -Oless TODO'],
+  ['git grep open in pager in a cluster', 'git grep -nO TODO'],
+  ['git grep open in pager long', 'git grep --open-files-in-pager=less TODO'],
+  ['git pathspec magic', "git diff -- ':(top)x'"],
+  ['git pathspec exclude', "git log -- ':!node_modules'"],
+  ['git show index blob', 'git show :0:src/a.js'],
   ['npm', 'npm test'],
   ['rm', 'rm -rf x'],
   ['touch', 'touch x'],
@@ -302,5 +365,58 @@ describe('shellCommandPaths', () => {
       'a',
       'b',
     ]);
+  });
+});
+
+describe('git paths', () => {
+  const pathsOf = (command: string) => shellCommandPaths(classifyReadOnlyShellCommand(command)!);
+
+  it('reports the directory of -C', () => {
+    expect(pathsOf('git -C ../other status')).toEqual(['../other']);
+  });
+
+  it('resolves a later -C against the earlier one', () => {
+    expect(pathsOf('git -C a -C ../b status')).toEqual(['a', 'b']);
+    expect(pathsOf('git -C a -C /abs status')).toEqual(['a', '/abs']);
+  });
+
+  it('reports pathspecs after --', () => {
+    expect(pathsOf('git diff -- ../outside')).toEqual(['../outside']);
+    expect(pathsOf('git log -- src/a.js lib/b.js')).toEqual(['src/a.js', 'lib/b.js']);
+  });
+
+  it('reports the operands of diff --no-index', () => {
+    expect(pathsOf('git diff --no-index /etc/a /etc/b')).toEqual(['/etc/a', '/etc/b']);
+  });
+
+  it('reports path operands of ls-files and grep', () => {
+    expect(pathsOf('git ls-files ../x')).toEqual(['../x']);
+    expect(pathsOf('git grep TODO ../x')).toEqual(['../x']);
+    // With `-f` there is no pattern operand, so every operand is ambiguous: a path.
+    expect(pathsOf('git grep -f ../pats src')).toEqual(['src', '../pats']);
+    expect(pathsOf('git ls-files -X ../ignore')).toEqual(['../ignore']);
+  });
+
+  it('resolves the operands against the -C directory', () => {
+    expect(pathsOf('git -C src diff -- a.js')).toEqual(['src', 'src/a.js']);
+    expect(pathsOf('git -C src diff -- ../../x')).toEqual(['src', '../x']);
+  });
+
+  it('does not report revision operands', () => {
+    expect(pathsOf('git log HEAD~2')).toEqual([]);
+    expect(pathsOf('git log main..feature')).toEqual([]);
+    expect(pathsOf('git diff abc1234 HEAD')).toEqual([]);
+    expect(pathsOf('git show HEAD:src/a.js')).toEqual(['src/a.js']);
+    expect(pathsOf('git show HEAD:../x')).toEqual(['../x']);
+  });
+
+  it('treats an ambiguous operand as a path', () => {
+    expect(pathsOf('git diff main')).toEqual(['main']);
+    expect(pathsOf('git diff /etc/passwd')).toEqual(['/etc/passwd']);
+  });
+
+  it('refuses a glob that could reach the parent', () => {
+    expect(classifyReadOnlyShellCommand("git ls-files '.*/x'")).toBeUndefined();
+    expect(classifyReadOnlyShellCommand("git -C '.*' status")).toBeUndefined();
   });
 });

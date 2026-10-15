@@ -7,6 +7,7 @@ import {
   allCallsQuiet,
   hasProse,
   hasReasoning,
+  hidesThoughtsInCompact,
   createShellPartsMemo,
   isQuietInvocation,
   continuesQuietRun,
@@ -103,6 +104,35 @@ describe('hasReasoning', () => {
     expect(hasReasoning(assistant('m', '<think></think>', []))).toBe(false);
     expect(hasReasoning({ ...assistant('m', '', []), reasoningContent: '  \n' })).toBe(false);
     expect(hasReasoning(assistant('m', 'Reading the loader.', []))).toBe(false);
+  });
+});
+
+describe('hidesThoughtsInCompact (#470)', () => {
+  it('hides the thoughts of any assistant step that calls a tool', () => {
+    for (const name of ['Read', 'Bash', 'Edit', 'TodoWrite', 'AgentSpawn']) {
+      expect(hidesThoughtsInCompact(assistant('m', '<think>x</think>', [call('a', name)]))).toBe(
+        true,
+      );
+    }
+    expect(
+      hidesThoughtsInCompact({
+        ...assistant('m', 'Next, the edit.', [call('a', 'Edit')]),
+        reasoningContent: 'x',
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps the thoughts of an answer, which calls nothing', () => {
+    expect(hidesThoughtsInCompact(assistant('m', '<think>x</think>Done.', []))).toBe(false);
+    expect(hidesThoughtsInCompact({ ...assistant('m', 'Done.', []), toolCalls: undefined })).toBe(
+      false,
+    );
+  });
+
+  it('is for assistant steps only', () => {
+    expect(
+      hidesThoughtsInCompact({ ...assistant('m', '', [call('a', 'Read')]), role: 'user' }),
+    ).toBe(false);
   });
 });
 
@@ -527,11 +557,127 @@ describe('read-only shell commands (#459)', () => {
     expect(quiet(bash('c', 'find src -type f'))).toBe(true);
   });
 
-  it('keeps a git command on its own row', () => {
-    // Plain `git ...` runs whatever program the repository's config names.
-    for (const command of ['git status', 'git diff --stat', 'git log -5', 'git show HEAD']) {
+  it('folds read-only git (#470)', () => {
+    for (const command of [
+      'git status',
+      'git diff --stat',
+      'git log -5',
+      'git show HEAD',
+      'git branch -a',
+      'git grep -n TODO src',
+      'git ls-files src',
+      'git -C src status',
+      'git status | head -5',
+    ]) {
+      expect(quiet(bash('g', command))).toBe(true);
+    }
+  });
+
+  it('keeps git that changes something, or names a path outside the workspace, on its own row', () => {
+    for (const command of [
+      'git commit -m x',
+      'git branch new-feature',
+      'git -c core.pager=x log',
+      'git diff --output=/tmp/x',
+      'git -C ../other status',
+      'git diff -- ../outside',
+      'git diff --no-index /etc/a /etc/b',
+      'git show HEAD:../x',
+    ]) {
       expect(quiet(bash('g', command))).toBe(false);
     }
+  });
+
+  const exitOne: ToolResult = {
+    version: 2,
+    toolCallId: 'g',
+    status: 'error',
+    content: '',
+    structuredError: {
+      code: 'exit',
+      message: 'Exit code: 1',
+      retryable: false,
+      details: { exitCode: 1 },
+    },
+  };
+
+  it('keeps a failed git command, a background one and one that moved there on its own row', () => {
+    // `git diff --exit-code` exits 1 when there is a difference: a failure, not a search.
+    expect(quiet(bash('g', 'git diff --exit-code'), exitOne)).toBe(false);
+    expect(quiet(bash('g', 'git status', { run_in_background: true }))).toBe(false);
+    const moved: ToolResult = { ...ok('g'), data: { backgrounded: true } };
+    expect(quiet(bash('g', 'git log'), moved)).toBe(false);
+  });
+
+  it('folds a git grep that found nothing, like any other search', () => {
+    expect(quiet(bash('g', 'git grep TODO'), exitOne)).toBe(true);
+    expect(quiet(bash('g', 'git status'), exitOne)).toBe(false);
+  });
+
+  it('collapses a Read, a git status and a git grep into one entry', () => {
+    const turns = [
+      assistant('m1', '', [call('a', 'Read', { file_path: 'src/a.js' })]),
+      assistant('m2', '', [bash('b', 'git status')]),
+      assistant('m3', '', [bash('c', 'git grep TODO')]),
+    ];
+    const { entries } = createQuietCollapser()(turns, context);
+    expect(entries).toHaveLength(1);
+    const merged = entries[0] as Message;
+    expect(merged.toolCalls).toHaveLength(3);
+    const summary = summarizeQuietRun(
+      merged.toolCalls!.map((toolCall) => ({ call: toolCall, result: ok(toolCall.id) })),
+      context,
+    );
+    expect(summary).toEqual({
+      title: 'Read',
+      target: 'a.js',
+      metadata: ['1 file', '1 search', '1 lookup'],
+      running: false,
+    });
+  });
+
+  it('keeps a failed git diff --exit-code on its own row', () => {
+    const failedDiff = assistant('m2', '', [bash('b', 'git diff --exit-code')], [failed('b')]);
+    const turns = [
+      assistant('m1', '', [call('a', 'Read', { file_path: 'src/a.js' })]),
+      failedDiff,
+      assistant('m3', '', [bash('c', 'git status')]),
+    ];
+    expect(createQuietCollapser()(turns, context).entries).toHaveLength(3);
+  });
+
+  it('words a git run: grep is a search on its pattern, ls-files a listing, the rest lookups', () => {
+    expect(
+      summarizeQuietRun(
+        [
+          { call: bash('a', 'git grep -n TODO src'), result: ok('a') },
+          { call: bash('b', 'git ls-files src'), result: ok('b') },
+          { call: bash('c', 'git status'), result: ok('c') },
+          { call: bash('d', 'git log -3'), result: ok('d') },
+        ],
+        context,
+      ),
+    ).toEqual({
+      title: 'Search',
+      target: 'TODO',
+      metadata: ['1 search', '1 listing', '2 lookups'],
+      running: false,
+    });
+    // With nothing else to name, the target is the git subcommand, not `Bash`.
+    expect(
+      summarizeQuietRun(
+        [
+          { call: bash('a', 'git status'), result: ok('a') },
+          { call: bash('b', 'git diff --stat'), result: ok('b') },
+        ],
+        context,
+      ),
+    ).toEqual({
+      title: 'Check',
+      target: 'git status, git diff',
+      metadata: ['2 lookups'],
+      running: false,
+    });
   });
 
   it('keeps a command that timed out into a background shell on its own row', () => {

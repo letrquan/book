@@ -39,6 +39,7 @@ import { ManagedAgentActivityBlock } from './ManagedAgentActivityBlock.js';
 import { QuietToolRun } from './QuietToolRun.js';
 import {
   groupQuietInvocations,
+  hidesThoughtsInCompact,
   summarizeQuietRun,
   type QuietRunSummary,
   type QuietToolContext,
@@ -88,12 +89,6 @@ interface AgentMessageProps {
    * from the messages (`messagesFollowedByWork`).
    */
   continuesTurn?: boolean;
-  /**
-   * The quiet collapser absorbed this entry's thoughts into a summary row
-   * (ChatPanel reads it from `absorbedThoughts`), so the compact transcript does
-   * not draw them.
-   */
-  absorbThoughts?: boolean;
 }
 
 const NO_EXPANSION_OVERRIDES = new Map<string, boolean>();
@@ -473,7 +468,6 @@ export function AgentMessageInner({
   trimTrailingSpacing = false,
   quietTools,
   continuesTurn = false,
-  absorbThoughts = false,
 }: AgentMessageProps) {
   const theme = useTheme();
   const { toolRowGap, toolBlockGap } = useDensityMetrics();
@@ -572,10 +566,12 @@ export function AgentMessageInner({
     }
     return byIndex.size > 0 ? byIndex : undefined;
   }, [message, quietTools, screenReader, topLevelInvocations]);
-  // The collapser decides which thoughts a summary row absorbs; it knows every
-  // member of a run and its calls. A thought still streaming has no call yet,
-  // hence no summary row, and renders as it always has.
-  const foldsThoughts = Boolean(quietRows && absorbThoughts);
+  // The compact transcript does not draw a thought that leads to a tool call,
+  // whether the row is quiet or not; detailed mode and screen readers keep it. A
+  // thought still streaming has no call yet, so it renders as it always has and
+  // goes once the call lands.
+  const foldsThoughts =
+    !screenReader && transcriptMode === 'compact' && hidesThoughtsInCompact(message);
   const thoughtsShown = showThinking && !foldsThoughts;
   // Whether the content box draws anything. An empty `<think></think>` draws
   // nothing, so it must not buy the tool block below it a blank row either.
@@ -999,7 +995,6 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     prev.trimTrailingSpacing === next.trimTrailingSpacing &&
     prev.quietTools === next.quietTools &&
     prev.continuesTurn === next.continuesTurn &&
-    prev.absorbThoughts === next.absorbThoughts &&
     prev.reducedMotion === next.reducedMotion &&
     prev.screenReader === next.screenReader &&
     prev.terminalWidth === next.terminalWidth

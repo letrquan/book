@@ -16,6 +16,8 @@ import {
   createQuietCollapser,
   createShellPartsMemo,
   groupQuietInvocations,
+  hasProse,
+  hidesThoughtsInCompact,
   type QuietToolContext,
 } from '../quiet-tools.js';
 import { WelcomeScreen, type RecentChapter } from './WelcomeScreen.js';
@@ -450,11 +452,17 @@ export function ChatPanelInner({
                 : undefined;
             const next = visibleTimeline[index + 1];
             const nextEntryIsUser = Boolean(next && 'role' in next && next.role === 'user');
+            // A step that opens on its tool rows, its thought hidden and no prose
+            // above them, sits against the rows before it, the same as a step
+            // with no thought (which the merge folds into the entry before it).
+            const opensOnToolRows =
+              quietTools !== undefined && hidesThoughtsInCompact(message) && !hasProse(message);
             const followsToolCall = Boolean(
               previous &&
               'role' in previous &&
               previous.role === 'assistant' &&
-              previous.toolCalls?.length,
+              previous.toolCalls?.length &&
+              !opensOnToolRows,
             );
             row = (
               <Box
@@ -500,7 +508,6 @@ export function ChatPanelInner({
                   trimTrailingSpacing={nextEntryIsUser}
                   quietTools={quietTools}
                   continuesTurn={followedByWork.has(message.id)}
-                  absorbThoughts={displayTimeline.absorbedThoughts.has(message.id)}
                 />
               </Box>
             );
