@@ -1708,7 +1708,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('+ new 30');
     expect(output).toContain('+ new 100');
     expect(output).not.toContain('+ new 50');
-    expect(output).toContain('… +22 lines (Ctrl+E)');
+    expect(output).toContain('… 22 lines hidden (Ctrl+E)');
 
     const all = render(
       withTheme(
@@ -1717,7 +1717,7 @@ describe('ChatPanel Ink rendering', () => {
     );
     const allOutput = frame(all.lastFrame);
     expect(allOutput).toContain('+ new 100');
-    expect(allOutput).not.toContain('… +');
+    expect(allOutput).not.toContain('lines hidden');
   });
 
   it('groups adjacent mutations into a Codex-style changed-files summary', () => {

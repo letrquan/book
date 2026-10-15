@@ -290,13 +290,13 @@ describe('ToolCallBlock', () => {
     expect(rendered).toContain('- old');
     expect(rendered).toContain('+ new 50');
     expect(rendered).toContain('+ new 100');
-    expect(rendered).not.toContain('rows omitted');
-    expect(rendered).not.toContain('… +');
+    expect(rendered).not.toContain('lines omitted');
+    expect(rendered).not.toContain('lines hidden');
     expect(rendered).not.toContain('filePath:');
     expect(rendered).not.toContain('oldString:');
     expect(rendered).not.toContain('newString:');
     expect(rendered).not.toContain('replaceAll:');
-    expect(rendered).not.toContain('rows omitted');
+    expect(rendered).not.toContain('lines omitted');
   });
 
   describe('capped diffs', () => {
@@ -370,11 +370,51 @@ describe('ToolCallBlock', () => {
       );
       const rendered = frame(view.lastFrame);
 
-      expect(rendered).toContain('… +121 lines (Ctrl+E)');
       expect(rendered).toContain('- old 39');
       expect(rendered).not.toContain('- old 40');
       expect(rendered).toContain('+ new 100');
       expect(rendered).not.toContain('+ new 50');
+      expect(rendered).toContain('… 121 lines hidden (Ctrl+E)');
+      expect(rendered).toContain('⋮ 121 lines omitted');
+    });
+
+    it('renders a multi-file creation with real file headers and no head preview', () => {
+      const fileBlock = (name: string) => [
+        `--- ${name}`,
+        `+++ ${name}`,
+        '@@ -0,0 +1,15 @@',
+        ...Array.from({ length: 15 }, (_, index) => `+${name} line ${index + 1}`),
+      ];
+      const output = [...fileBlock('a.js'), ...fileBlock('b.js')].join('\n');
+      const result: ToolResult = {
+        version: 2,
+        toolCallId: 'call-multi-create',
+        status: 'success',
+        content: output,
+        artifacts: {
+          fileMutations: ['a.js', 'b.js'].map((filePath) => ({
+            kind: 'create' as const,
+            filePath,
+            addedLines: 15,
+            removedLines: 0,
+          })),
+        },
+      };
+      const view = render(
+        withTheme(
+          <ToolCallBlock name="ApplyPatch" args={{}} result={result} isExpanded reducedMotion />,
+        ),
+      );
+      const rendered = frame(view.lastFrame);
+
+      expect(rendered).toContain('--- b.js');
+      expect(rendered).toContain('+++ b.js');
+      expect(rendered).not.toMatch(/[-+] [-+]{2} b\.js/);
+      expect(rendered).not.toMatch(/[-+] [-+]{2} a\.js/);
+      // All 30 lines fit the change-focused budget, so there is no head cut.
+      expect(rendered).toContain('+ b.js line 15');
+      expect(rendered).not.toContain('lines (Ctrl+E)');
+      expect(rendered).not.toContain('lines hidden');
     });
   });
 
@@ -455,7 +495,7 @@ describe('ToolCallBlock', () => {
     expect(rendered.split('\n')).toHaveLength(1);
   });
 
-  it('wraps complete created-file diff lines when expanded', () => {
+  it('wraps complete created-file diff lines when expanded under show-all', () => {
     const content = `start-${'x'.repeat(80)}-created-end`;
     const width = 42;
     const view = render(
@@ -470,6 +510,7 @@ describe('ToolCallBlock', () => {
             removedLines: 0,
           })}
           isExpanded
+          showAllToolOutput
           reducedMotion
           terminalWidth={width}
         />,

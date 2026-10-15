@@ -257,7 +257,7 @@ export function PermissionButtons({
   // the fixed region under the transcript, so a payload taller than the
   // terminal pushes its own buttons off the top of the screen.
   const rowBudget = Math.max(COLLAPSED_DIFF_ROWS, Math.floor(terminalRows) - RESERVED_ROWS);
-  // A change-focused diff draws a `⋮ n rows omitted` marker between every run
+  // A change-focused diff draws a `⋮ n lines omitted` marker between every run
   // of selected rows, so in the worst case each budgeted row costs two on
   // screen; the diff budget is the row budget halved.
   const expandedDiffRows = Math.floor(rowBudget / 2);

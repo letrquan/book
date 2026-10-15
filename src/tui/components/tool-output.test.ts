@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatByteSize, formatToolOutputFooter, prepareToolOutputDisplay } from './tool-output.js';
+import { formatToolOutputFooter, prepareToolOutputDisplay } from './tool-output.js';
 import { displayWidth } from './word-wrap.js';
 
 describe('prepareToolOutputDisplay', () => {
@@ -48,7 +48,6 @@ describe('prepareToolOutputDisplay', () => {
     const display = prepareToolOutputDisplay(output, { maxLines: 1, maxLineWidth: 120 });
 
     expect(display.totalChars).toBe(output.length);
-    expect(display.totalBytes).toBe(7);
     expect(display.footer).toBe('… +1 line');
   });
 
@@ -62,7 +61,6 @@ describe('prepareToolOutputDisplay', () => {
 
     expect(display.lines).toEqual(['line 1', 'line 2', 'line 9', 'line 10']);
     expect(display.hiddenLines).toBe(6);
-    expect(display.hiddenBytes).toBeGreaterThan(0);
   });
 
   it('prioritizes final error lines with a tail preview', () => {
@@ -108,13 +106,5 @@ describe('formatToolOutputFooter', () => {
     expect(formatToolOutputFooter({ hiddenLines: 1, truncatedLines: 1, hint: 'Ctrl+E' })).toBe(
       '… +1 line, 1 long line shortened (Ctrl+E)',
     );
-  });
-});
-
-describe('formatByteSize', () => {
-  it('formats byte and kilobyte sizes compactly', () => {
-    expect(formatByteSize(512)).toBe('512 B');
-    expect(formatByteSize(1536)).toBe('1.5 KB');
-    expect(formatByteSize(12 * 1024)).toBe('12 KB');
   });
 });

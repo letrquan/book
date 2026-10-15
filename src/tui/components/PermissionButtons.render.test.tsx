@@ -428,7 +428,7 @@ describe('PermissionButtons payload', () => {
     expect(mentions(frame, 'notes.txt')).toBe(1);
   });
 
-  it('summarises a cut diff as +N lines with the D hint', async () => {
+  it('summarises a cut diff as N lines hidden with the D hint', async () => {
     const root = makeWorkspace({});
     const content = Array.from({ length: 60 }, (_, index) => `line ${index + 1}`).join('\n');
     const view = render(
@@ -447,7 +447,7 @@ describe('PermissionButtons payload', () => {
       ),
     );
     const frame = await frameContaining(view, '+ line 1');
-    expect(frame).toMatch(/… \+\d+ lines \(D shows more\)/);
+    expect(frame).toMatch(/… \d+ lines hidden \(D shows more\)/);
     expect(frame).not.toContain('B omitted');
   });
 

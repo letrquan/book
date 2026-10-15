@@ -44,7 +44,7 @@ export interface DiffSpan {
 }
 
 export interface ParsedDiffLine {
-  /** Original source row, retained for exact byte accounting and compatibility. */
+  /** Original source row, unmodified; it forms the React key of the rendered row. */
   text: string;
   content: string;
   marker: '+' | '-' | ' ' | '@' | '\\';
@@ -173,7 +173,21 @@ export function parseDiffLines(output: string): ParsedDiffLine[] {
   let oldLine: number | undefined;
   let newLine: number | undefined;
   let inHunk = false;
-  const rows = output.split('\n').map((text): ParsedDiffLine => {
+  const lines = output.split('\n');
+  // Inside a hunk a `--- ` / `+++ ` pair followed by a hunk header opens the next file's diff
+  // (an ApplyPatch that adds several files joins them), so it is not a removed/added line.
+  const isFileHeaderStart = (index: number): boolean =>
+    lines[index]?.startsWith('--- ') === true &&
+    lines[index + 1]?.startsWith('+++ ') === true &&
+    lines[index + 2]?.startsWith('@@') === true;
+  const rows = lines.map((text, index): ParsedDiffLine => {
+    if (inHunk && isFileHeaderStart(index)) {
+      // Leaving the hunk lets the `+++ ` line that follows parse as metadata too.
+      inHunk = false;
+      oldLine = undefined;
+      newLine = undefined;
+      return { text, content: text, marker: ' ', kind: 'meta' };
+    }
     const hunk = parseHunkPosition(text);
     if (hunk) {
       inHunk = true;
@@ -313,6 +327,24 @@ function expandSpanTabs(spans: readonly DiffSpan[], tabSize = 4): DiffSpan[] {
   return output;
 }
 
+/** One row of spans cut to `width` columns, ending in `…` when anything was dropped. */
+function truncateSpans(spans: readonly DiffSpan[], width: number): DiffSpan[] {
+  const expanded = expandSpanTabs(spans);
+  const full = expanded.map((span) => span.text).join('');
+  const cut = truncateDisplay(full, width);
+  if (cut === full) return expanded;
+  let remaining = cut.endsWith('…') ? cut.length - 1 : cut.length;
+  const kept: DiffSpan[] = [];
+  for (const span of expanded) {
+    if (remaining <= 0) break;
+    const text = span.text.slice(0, remaining);
+    remaining -= text.length;
+    kept.push({ ...span, text });
+  }
+  if (cut.endsWith('…')) kept.push({ text: '…', kind: 'plain' });
+  return kept;
+}
+
 function wrapSpans(spans: readonly DiffSpan[], width: number): DiffSpan[][] {
   const lines: DiffSpan[][] = [[]];
   let lineWidth = 0;
@@ -395,6 +427,8 @@ function selectPreviewIndices(rows: readonly ParsedDiffLine[], limit: number): n
 interface SelectedDiffRow {
   row: ParsedDiffLine;
   sourceIndex: number;
+  /** Content lines (add/del/ctx) omitted between the previous shown row and this one. */
+  gapLines: number;
 }
 
 function selectRenderedRows(
@@ -415,10 +449,16 @@ function selectRenderedRows(
     (total, row, index) => total + (isContentRow(row) && !selected.has(index) ? 1 : 0),
     0,
   );
-  return {
-    rows: indices.map((sourceIndex) => ({ row: rows[sourceIndex], sourceIndex })),
-    hiddenLines,
-  };
+  let previous = -1;
+  const selectedRows = indices.map((sourceIndex): SelectedDiffRow => {
+    let gapLines = 0;
+    for (let index = previous + 1; index < sourceIndex; index++) {
+      if (isContentRow(rows[index])) gapLines++;
+    }
+    previous = sourceIndex;
+    return { row: rows[sourceIndex], sourceIndex, gapLines };
+  });
+  return { rows: selectedRows, hiddenLines };
 }
 
 function lineNumber(value: number | undefined, width: number): string {
@@ -452,8 +492,15 @@ export function DiffBlock({
     [collapsed, maxRows, parsed, preview],
   );
   const language = inferDiffLanguage(filePath);
-  const maxOld = Math.max(1, ...parsed.map((row) => row.oldLineNumber ?? 0));
-  const maxNew = Math.max(1, ...parsed.map((row) => row.newLineNumber ?? 0));
+  // A loop, not a spread: a diff of hundreds of thousands of rows overflows the call stack.
+  let maxOld = 1;
+  let maxNew = 1;
+  for (const row of parsed) {
+    if (row.oldLineNumber !== undefined && row.oldLineNumber > maxOld) maxOld = row.oldLineNumber;
+    if (row.newLineNumber !== undefined && row.newLineNumber > maxNew) maxNew = row.newLineNumber;
+  }
+  // A head preview is a row budget: each content line is one terminal row, cut with `…`.
+  const oneRowPerLine = collapsed && preview === 'head';
   const narrow = terminalWidth < 36;
   const oldWidth = Math.max(1, Math.min(String(maxOld).length, narrow ? 3 : 6));
   const newWidth = Math.max(1, Math.min(String(maxNew).length, narrow ? 3 : 6));
@@ -461,35 +508,40 @@ export function DiffBlock({
   const fixedWidth = 2 + 1 + oldWidth + 1 + newWidth + 1 + 2;
   const contentWidth = Math.max(1, Math.floor(terminalWidth) - fixedWidth);
 
+  const hiddenNoun = selected.hiddenLines === 1 ? 'line' : 'lines';
+  // A head preview hides only what trails it; a change-focused one hides rows around and
+  // between the changes, so it reports a total rather than a count after the last row.
+  const hiddenLabel = oneRowPerLine
+    ? `+${selected.hiddenLines} ${hiddenNoun}`
+    : `${selected.hiddenLines} ${hiddenNoun} hidden`;
+
   return (
     <Box flexDirection="column">
-      {selected.rows.map(({ row, sourceIndex }, index) => {
-        const previousSourceIndex = selected.rows[index - 1]?.sourceIndex;
-        // A head preview is contiguous content: the header it skips is not a gap.
-        const gapRows =
-          collapsed && preview === 'head'
-            ? 0
-            : previousSourceIndex === undefined
-              ? sourceIndex
-              : sourceIndex - previousSourceIndex - 1;
+      {selected.rows.map(({ row, sourceIndex, gapLines }) => {
         const backgroundColor =
           row.kind === 'add' ? theme.diffAdded : row.kind === 'del' ? theme.diffRemoved : undefined;
         // A hunk header is a signpost, not content: quiet, and never the accent.
         const foregroundColor = row.kind === 'hunk' ? theme.inactive : theme.text;
         const rawContent = expandTabs(row.content);
-        const wrappedSpans = row.spans ? wrapSpans(row.spans, contentWidth) : undefined;
+        const wrappedSpans = row.spans
+          ? oneRowPerLine
+            ? [truncateSpans(row.spans, contentWidth)]
+            : wrapSpans(row.spans, contentWidth)
+          : undefined;
         const wrappedContent = wrappedSpans
           ? wrappedSpans.map((spans) => spans.map((span) => span.text).join(''))
-          : hardWrapLine(rawContent, contentWidth);
+          : oneRowPerLine
+            ? [truncateDisplay(rawContent, contentWidth)]
+            : hardWrapLine(rawContent, contentWidth);
 
         return (
           <Fragment key={`${sourceIndex}-${row.text}`}>
-            {gapRows > 0 ? (
+            {gapLines > 0 ? (
               <Box marginLeft={2}>
                 <Text color={theme.subtle} dimColor>
                   │{' '}
                   {truncateDisplay(
-                    `⋮ ${gapRows} ${gapRows === 1 ? 'row' : 'rows'} omitted`,
+                    `⋮ ${gapLines} ${gapLines === 1 ? 'line' : 'lines'} omitted`,
                     Math.max(4, terminalWidth - 4),
                   )}
                 </Text>
@@ -573,7 +625,7 @@ export function DiffBlock({
           <Text color={theme.subtle} dimColor>
             │{' '}
             {truncateDisplay(
-              `… +${selected.hiddenLines} ${selected.hiddenLines === 1 ? 'line' : 'lines'}${collapsed && expandHint ? ` (${expandHint})` : ''}`,
+              `… ${hiddenLabel}${collapsed && expandHint ? ` (${expandHint})` : ''}`,
               Math.max(4, terminalWidth - 4),
             )}
           </Text>

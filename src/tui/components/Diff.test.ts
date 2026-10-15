@@ -96,6 +96,44 @@ describe('parseDiffLines', () => {
     expect(lines[2]).toMatchObject({ kind: 'add', content: '++new flag' });
   });
 
+  it('parses the second file header of a multi-file creation diff as a header', () => {
+    const output = [
+      '--- a.js',
+      '+++ a.js',
+      '@@ -0,0 +1,2 @@',
+      '+a1',
+      '+a2',
+      '--- b.js',
+      '+++ b.js',
+      '@@ -0,0 +1,1 @@',
+      '+b1',
+    ].join('\n');
+    const lines = parseDiffLines(output);
+
+    expect(lines.map((line) => line.kind)).toEqual([
+      'meta',
+      'meta',
+      'hunk',
+      'add',
+      'add',
+      'meta',
+      'meta',
+      'hunk',
+      'add',
+    ]);
+    // The second file's numbering restarts at its own hunk header.
+    expect(lines[8]).toMatchObject({ newLineNumber: 1 });
+  });
+
+  it('keeps a deleted line that starts with two dashes as a deletion without a following +++', () => {
+    const lines = parseDiffLines('@@ -1,2 +1,1 @@\n--- not a header\n keep');
+    expect(lines[1]).toMatchObject({ kind: 'del', content: '-- not a header' });
+
+    const withAdd = parseDiffLines('@@ -1,2 +1,2 @@\n--- not a header\n+replacement\n keep');
+    expect(withAdd[1]).toMatchObject({ kind: 'del' });
+    expect(withAdd[2]).toMatchObject({ kind: 'add' });
+  });
+
   it('calculates bounded token-level spans for adjacent replacements', () => {
     const lines = parseDiffLines(
       '@@ -1 +1 @@\n-const count = total + 1;\n+const count = subtotal + 2;',
@@ -136,7 +174,7 @@ describe('DiffBlock', () => {
     expect(rendered).toContain('@@ -1,8 +1,8 @@');
     expect(rendered).toContain('+ new 2');
     expect(rendered).toContain('- old 4');
-    expect(rendered).not.toContain('rows omitted');
+    expect(rendered).not.toContain('lines omitted');
   });
 
   it('keeps changes from every hunk while trimming low-value context', () => {
@@ -155,8 +193,10 @@ describe('DiffBlock', () => {
     expect(rendered).toContain('+ new value 2');
     expect(rendered).toContain('- old value 3');
     expect(rendered).not.toContain('context before 1-10');
-    expect(rendered).toContain('rows omitted');
-    expect(rendered).toMatch(/… \+\d+ lines \(Ctrl\+E\)/);
+    // Each gap counts content lines (the unit the footer uses), never hunk headers.
+    expect(rendered).toMatch(/⋮ \d+ lines omitted/);
+    expect(rendered).not.toContain('rows omitted');
+    expect(rendered).toMatch(/… \d+ lines hidden \(Ctrl\+E\)/);
     expect(rendered).not.toContain('B omitted');
   });
 
@@ -184,7 +224,7 @@ describe('DiffBlock', () => {
     expect(rendered).toContain('+ line 10');
     expect(rendered).not.toContain('+ line 11');
     expect(rendered).not.toContain('@@');
-    expect(rendered).not.toContain('rows omitted');
+    expect(rendered).not.toContain('omitted');
     expect(rendered).toContain('… +140 lines (Ctrl+E)');
   });
 
@@ -202,6 +242,67 @@ describe('DiffBlock', () => {
     expect(rendered).not.toContain('… +');
   });
 
+  it('keeps each head-preview line on one terminal row, however long', () => {
+    const output = [
+      '@@ -0,0 +1,3 @@',
+      ...Array.from({ length: 3 }, (_, index) => `+${String(index + 1).repeat(5000)}`),
+    ].join('\n');
+    const view = render(
+      withTheme(
+        React.createElement(DiffBlock, {
+          output,
+          collapsed: true,
+          preview: 'head',
+          maxRows: NEW_FILE_PREVIEW_ROWS,
+          terminalWidth: 60,
+        }),
+      ),
+    );
+    const rows = frame(view.lastFrame)
+      .split('\n')
+      .filter((row) => row.trim().length > 0);
+
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(row).toContain('…');
+      expect(displayWidth(row)).toBeLessThanOrEqual(60);
+    }
+  });
+
+  it('shows a long new-file line whole when show-all leaves the preview off', () => {
+    const output = ['@@ -0,0 +1,1 @@', `+${'x'.repeat(300)}`].join('\n');
+    const view = render(
+      withTheme(React.createElement(DiffBlock, { output, preview: 'head', terminalWidth: 60 })),
+    );
+    const rows = frame(view.lastFrame)
+      .split('\n')
+      .filter((row) => row.trim().length > 0);
+
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows.join('').match(/x/g)).toHaveLength(300);
+  });
+
+  it('renders a 200,000-row pure-addition diff collapsed in head mode', () => {
+    const output = [
+      '@@ -0,0 +1,200000 @@',
+      ...Array.from({ length: 200000 }, (_, index) => `+line ${index + 1}`),
+    ].join('\n');
+    const view = render(
+      withTheme(
+        React.createElement(DiffBlock, {
+          output,
+          collapsed: true,
+          preview: 'head',
+          maxRows: NEW_FILE_PREVIEW_ROWS,
+        }),
+      ),
+    );
+    const rendered = frame(view.lastFrame);
+
+    expect(rendered).toContain('+ line 10');
+    expect(rendered).toContain('… +199990 lines (Ctrl+E)');
+  });
+
   it('caps an edit diff longer than 80 rows with a line-count footer', () => {
     const output = [
       '@@ -1,200 +1,200 @@',
@@ -210,11 +311,12 @@ describe('DiffBlock', () => {
     ].join('\n');
     const view = render(withTheme(React.createElement(DiffBlock, { output, collapsed: true })));
     const lines = frame(view.lastFrame).split('\n');
-    const footer = lines.filter((row) => row.includes('… +'));
+    const footer = lines.filter((row) => row.includes('lines hidden'));
 
     // 80 shown rows, of which one is the hunk header: 79 of 200 content lines.
     expect(footer).toHaveLength(1);
-    expect(footer[0]).toContain('… +121 lines (Ctrl+E)');
+    expect(footer[0]).toContain('… 121 lines hidden (Ctrl+E)');
+    expect(lines.some((row) => row.includes('⋮ 121 lines omitted'))).toBe(true);
     expect(lines.filter((row) => /[-+] (old|new) \d+/.test(row))).toHaveLength(79);
   });
 
@@ -229,7 +331,7 @@ describe('DiffBlock', () => {
 
     expect(rendered).toContain('- old 40');
     expect(rendered).toContain('+ new 39');
-    expect(rendered).not.toContain('… +');
+    expect(rendered).not.toContain('lines hidden');
   });
 
   it('uses the singular for one hidden line and drops the parentheses without a hint', () => {

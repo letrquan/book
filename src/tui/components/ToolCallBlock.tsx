@@ -314,6 +314,9 @@ function ToolCallBlockInner({
     () => getFileMutationDisplaySummary(name, args, result),
     [args, name, result],
   );
+  // Only one new file reads as a head preview; several joined files keep the change-focused one.
+  const previewsNewFileHead =
+    mutationSummary?.kind === 'create' && (mutationSummary.fileCount ?? 1) <= 1;
   const isFileChild = summaryVariant === 'file-child';
   // A child row sits under an aggregate heading that already named the verb, so
   // it drops the label column and renders on the nested grid.
@@ -428,8 +431,8 @@ function ToolCallBlockInner({
           output={result.content}
           filePath={presentation.filePath}
           collapsed={!showAllToolOutput}
-          preview={mutationSummary?.kind === 'create' ? 'head' : 'changes'}
-          maxRows={mutationSummary?.kind === 'create' ? NEW_FILE_PREVIEW_ROWS : undefined}
+          preview={previewsNewFileHead ? 'head' : 'changes'}
+          maxRows={previewsNewFileHead ? NEW_FILE_PREVIEW_ROWS : undefined}
           terminalWidth={blockWidth}
         />
       ) : isExpanded && result?.content ? (
