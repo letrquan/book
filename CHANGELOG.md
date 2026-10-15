@@ -78,7 +78,8 @@ All notable changes to this project are documented in this file.
   A prose failure wraps past two rows when expanded. A failed
   `Check` now records its exit code, so its row reads `failed · exit 3` like a `Bash` row does (a
   timed-out check is not a failing check and has none). A `BashOutput` row for a background shell
-  that finished with a non-zero exit shows `exit N`; the read still counts as a success.
+  that finished with a non-zero exit shows `exit N`; the read still counts as a success, but it no
+  longer folds into the quiet-run summary, so the `exit N` stays on its own row.
 - **A failed Bash call's error detail keeps its last lines and its exit code** (#457). The detail
   under the tool row folded stderr into one paragraph, kept its start, and stopped after two rows,
   so a failing test run showed its first assertion and never its verdict. A failed command's

@@ -461,6 +461,66 @@ describe('groupQuietInvocations', () => {
   });
 });
 
+describe('a call that reports a non-zero exit code (#470)', () => {
+  const message = assistant('m', '', []);
+  const shellRead = (id: string, shell: unknown): ToolResult => ({
+    ...ok(id),
+    data: { shell, output: '', remaining: 0 },
+  });
+  const rowsFor = (result: ToolResult) =>
+    groupQuietInvocations(
+      [
+        { call: call('r', 'Read'), result: ok('r') },
+        { call: call('b', 'BashOutput', { shell_id: 'x' }), result },
+      ],
+      message,
+      NONE,
+    );
+
+  it('keeps a BashOutput read of a shell that exited non-zero on its own row', () => {
+    const result = shellRead('b', { status: 'exited', exitCode: 2 });
+    expect(isQuietInvocation(call('b', 'BashOutput'), result, message, NONE)).toBe(false);
+    expect(rowsFor(result)).toEqual([
+      { kind: 'single', index: 0 },
+      { kind: 'single', index: 1 },
+    ]);
+  });
+
+  it('folds a BashOutput read of a shell that exited 0', () => {
+    expect(rowsFor(shellRead('b', { status: 'exited', exitCode: 0 }))).toEqual([
+      { kind: 'quiet', indices: [0, 1] },
+    ]);
+  });
+
+  it('folds a BashOutput read of a running shell, or one with no usable shell record', () => {
+    for (const shell of [
+      { status: 'running', exitCode: 2 },
+      { status: 'exited', exitCode: Number.NaN },
+      { status: 'exited' },
+      null,
+      'exited',
+      undefined,
+    ]) {
+      expect(rowsFor(shellRead('b', shell))).toEqual([{ kind: 'quiet', indices: [0, 1] }]);
+    }
+    expect(rowsFor({ ...ok('b'), data: null })).toEqual([{ kind: 'quiet', indices: [0, 1] }]);
+    expect(rowsFor({ ...ok('b'), data: 'text' })).toEqual([{ kind: 'quiet', indices: [0, 1] }]);
+  });
+
+  it('keeps a result whose structured error carries a non-zero exit code', () => {
+    const withExit = (exitCode: unknown): ToolResult => ({
+      ...ok('b'),
+      structuredError: { code: 'exit', message: 'boom', retryable: false, details: { exitCode } },
+    });
+    const exits = (exitCode: unknown) =>
+      isQuietInvocation(call('b', 'Read'), withExit(exitCode), message, NONE);
+    expect(exits(3)).toBe(false);
+    expect(exits(0)).toBe(true);
+    expect(exits(Number.NaN)).toBe(true);
+    expect(exits('3')).toBe(true);
+  });
+});
+
 describe('summarizeQuietRun', () => {
   it('names the files read and counts files and searches', () => {
     const summary = summarizeQuietRun([

@@ -1,7 +1,9 @@
 import { basename, isAbsolute, relative, resolve } from 'path';
+import { isTerminalShellStatus } from '../jobs/shell-manager.js';
 import { splitReasoningParts } from '../reasoning-tags.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import type { Message } from '../types/messages.js';
+import type { BackgroundShellStatus } from '../types/runtime.js';
 import type { ToolCall, ToolResult } from '../types/tools.js';
 import { isWorkStep } from './components/transcript-messages.js';
 import {
@@ -170,6 +172,30 @@ function isNoMatchSearch(parts: readonly ReadOnlyShellPart[], result: ToolResult
   return error?.details?.exitCode === 1 && error.message.trim() === NO_STDERR_EXIT_ONE;
 }
 
+function isNonZeroExit(value: unknown): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value !== 0;
+}
+
+/**
+ * Whether a result reports a non-zero exit code, which is news a summary would bury: a BashOutput
+ * read of a background shell that finished non-zero (the read succeeded; `exit N` is the news,
+ * see `bashOutputExitMetadata` in tool-presentation.ts), or, defensively, any result whose
+ * structured error records one. `data` is persisted and unknown here, so every step is checked.
+ */
+function reportsNonZeroExit(name: string, result: ToolResult | undefined): boolean {
+  if (!result) return false;
+  if (isNonZeroExit(result.structuredError?.details?.exitCode)) return true;
+  if (name !== 'BashOutput') return false;
+  const shell = (result.data as { shell?: unknown } | null | undefined)?.shell;
+  if (typeof shell !== 'object' || shell === null) return false;
+  const { status, exitCode } = shell as { status?: unknown; exitCode?: unknown };
+  return (
+    typeof status === 'string' &&
+    isTerminalShellStatus(status as BackgroundShellStatus) &&
+    isNonZeroExit(exitCode)
+  );
+}
+
 function resultFor(message: Message, toolCallId: string): ToolResult | undefined {
   return message.toolResults?.find((result) => result.toolCallId === toolCallId);
 }
@@ -179,7 +205,8 @@ function resultFor(message: Message, toolCallId: string): ToolResult | undefined
  *
  * A running call may: it joins the run and the summary carries the spinner, so
  * the row does not appear and then vanish when the call finishes. A finished
- * call must have succeeded; a failure, a refusal or a cancellation is news.
+ * call must have succeeded; a failure, a refusal or a cancellation is news, and so
+ * is a result that reports a non-zero exit code.
  */
 export function isQuietInvocation(
   call: ToolCall,
@@ -204,6 +231,8 @@ export function isQuietInvocation(
   if (message.nestedToolInvocations?.some((nested) => nested.parentTraceId === call.id)) {
     return false;
   }
+  // The no-match search is a Bash call whose exit 1 is the normal outcome; it is exempt.
+  if (!noMatchSearch && reportsNonZeroExit(name, result)) return false;
   return !result || result.status === 'success' || noMatchSearch;
 }
 
