@@ -55,7 +55,23 @@ drove saved), the `MEMORY.md` index against its 200-line and 25,000-byte load li
 directory, and whether the model may write. `/memory delete <file>` removes a memory file and
 every `MEMORY.md` line linking to it; `/memory path` prints the directory; `/memory on` and
 `/memory off` turn the model's writes on and off (`memory.autoSave`). The model writes memory
-itself, with the file tools; there is no inbox to review. `/help` is generated from the command registry: every visible built-in, in
+itself, with the file tools; there is no inbox to review. `/memory consolidate [focus]` runs one
+agent pass over the memory directory in the current session, so you watch its edits as ordinary
+tool rows: it merges near-duplicates (deleting the extra files with `rm`), rewrites or deletes a
+memory the code or a newer memory contradicts, turns relative dates into absolute ones, checks
+that what a memory names still exists, and prunes `MEMORY.md` (one `- [Title](file.md) — hook`
+line per file, under 150 characters, no dangling pointer, within 200 lines and 25,000 bytes). It
+also reconciles feedback and project memories with `CLAUDE.md` / `AGENTS.md`: a memory that
+contradicts them is deleted or rewritten to agree, and one that is clearly newer is never allowed
+to edit them — it gets the line `Contradicts CLAUDE.md — verify which is current.` and is listed in
+the summary for you to resolve. Optional focus text narrows the pass (`/memory consolidate the
+build notes`). The pass runs with a narrow tool set: `Read`, `Glob` and `Grep` anywhere, `Write`,
+`Edit` and `MultiEdit` for `*.md` files in the memory directory, and `Bash` for a plain
+`rm <memory dir>/<file>.md` only; `ApplyPatch`, MCP tools and everything else are refused, and the
+memory write guard still applies (secrets, the `learnings` ownership rule, the provenance stamp). It
+is refused, with no prompt sent, when memory is disabled, when the model cannot write memory in
+this session (`memory.autoSave` off, or a `deny` rule on memory writes), in plan mode, or when the
+directory holds no memory files. `/help` is generated from the command registry: every visible built-in, in
 groups, with its visible aliases, followed by your custom commands. `/release-notes` lists the
 installed version's changes from the CHANGELOG that ships with Book, one line each.
 
@@ -120,11 +136,11 @@ same `allowed-tools` and `model` frontmatter enforcement as the TUI — it is ne
 model as literal text. What differs is only what a host with no interactive surface is allowed to
 do with the result:
 
-| Command                                                                              | In print mode                                                                     |
-| ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `/init`, `/security-review`, any `.book/commands/*.md`                               | Run as the prompt for that turn                                                   |
-| `/review` (and `/review --help`)                                                     | Performed by the host itself; see [Code review](agents-and-review.md#code-review) |
-| Everything else — session controls, pickers, panels, `/config`, `/export`, `/memory` | Refused with an error listing what _is_ supported, and exit code 1                |
+| Command                                                                                          | In print mode                                                                     |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `/init`, `/security-review`, `/memory consolidate`, any `.book/commands/*.md`                    | Run as the prompt for that turn                                                   |
+| `/review` (and `/review --help`)                                                                 | Performed by the host itself; see [Code review](agents-and-review.md#code-review) |
+| Everything else — session controls, pickers, panels, `/config`, `/export`, other `/memory` forms | Refused with an error listing what _is_ supported, and exit code 1                |
 
 Refusal happens _before_ the command's own code runs, so a command with a side effect (`/config`
 writes `settings.local.json`, `/export` writes a file, `/memory delete` removes a memory) can never

@@ -163,7 +163,6 @@ describe('hidesThoughtsInCompact (#470)', () => {
       'TaskUpdate',
       'AskUserQuestion',
       'ExitPlanMode',
-      'MemorySave',
     ]) {
       const answer = assistant('m', '<think>x</think>All done.', [call('a', name)]);
       expect(hidesThoughtsInCompact(answer)).toBe(isWorkStep(answer));

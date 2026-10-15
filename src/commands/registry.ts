@@ -31,6 +31,13 @@ export interface CommandDefinition<Context, Effect> {
    */
   nonInteractive?: boolean;
   /**
+   * The first words of the arguments (`consolidate` for `/memory consolidate …`) that a host with
+   * no interactive surface may run on a command that is otherwise refused there. Declared like
+   * `nonInteractive`, so the gate never guesses from what an argument string happens to produce;
+   * every other form of the command stays refused.
+   */
+  nonInteractiveSubcommands?: readonly string[];
+  /**
    * Handled by the interactive TUI itself, before this registry is consulted. It is listed in
    * the TUI's menu and help, and nowhere else: print mode and the SDK resolve the name as if no
    * built-in had it, and the model's command listing leaves it out.

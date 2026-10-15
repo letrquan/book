@@ -31,7 +31,7 @@ import { toolResultModelContent } from '../tools/result.js';
 import { unparsedArgumentsText } from '../tools/unparsed-arguments.js';
 import { resolveContextLimit, resolveEditFormat, type EditFormat } from '../models.js';
 import { memoryWriteScope } from '../memory-store.js';
-import { evaluatePermission } from '../permissions.js';
+import { denyRulesRefuseMemoryWrites } from '../memory-access.js';
 
 interface StaticDiscovery {
   fingerprint: string;
@@ -218,30 +218,6 @@ async function gitContext(workspace: string, signal?: AbortSignal): Promise<stri
   const short = status.output.trim();
   const changed = !short || short === '(no output)' ? 0 : short.split('\n').filter(Boolean).length;
   return `branch ${branchName}, ${changed === 0 ? 'clean' : `${changed} changed file${changed === 1 ? '' : 's'}`}`;
-}
-
-/**
- * Whether the user's `deny` rules would refuse the model a write to a memory file. Asked of the real
- * permission evaluator, with the memory directory as the write root, so a rule spelled as a glob
- * or a relative path counts exactly as it does when the write is made.
- */
-function denyRulesRefuseMemoryWrites(config: AgentConfig, memoryDir: string): boolean {
-  if (config.settings.permissions.deny.length === 0) return false;
-  const decision = evaluatePermission(
-    'Write',
-    { filePath: join(memoryDir, 'x.md'), content: '' },
-    config.settings,
-    {
-      workspace: {
-        root: config.workspace,
-        memoryWrite: { root: memoryDir },
-        judgeReads: false,
-        refuseUnreachableReads: false,
-        autoAllowReads: false,
-      },
-    },
-  );
-  return decision === 'deny';
 }
 
 const MEMORY_FORMAT = (dir: string, index: string): string =>

