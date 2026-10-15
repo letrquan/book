@@ -23,6 +23,7 @@ import { writeFileAtomic } from './settings-repository.js';
 import { permissionRuleMatchesCall } from './permissions.js';
 import { resolveBookHome } from './book-home.js';
 import { looksLikeSecretOrUnfit } from './secret-detect.js';
+import { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES } from './memory-limits.js';
 import type { SessionDriver } from './types/runtime.js';
 
 export const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
@@ -236,8 +237,7 @@ export interface SaveMemoryResult {
   error?: string;
 }
 
-export const DEFAULT_MAX_INDEX_LINES = 200;
-export const MAX_INDEX_BYTES = 25_000;
+export { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES };
 const INDEX_FILE = 'MEMORY.md';
 const INBOX_DIR = '.inbox';
 const DISCARDED_DIR = 'discarded';

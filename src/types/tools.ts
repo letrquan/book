@@ -348,6 +348,16 @@ export interface ToolContext {
    * managed child and a subagent see the same roots as their parent.
    */
   additionalRoots?: readonly string[];
+  /**
+   * The project memory directory as a *write* root, for the root agent only. Set by the agent loop
+   * when memory is enabled with `autoSave` on, and never copied into a subagent or managed child:
+   * a Task subagent runs in `bypassPermissions`, so the field's absence is what keeps it out of
+   * memory. Write, Edit, MultiEdit and ApplyPatch then reach `*.md` files in `root` (see
+   * `resolveMutationPath`), through the guard in `memory-write-guard.ts`.
+   *
+   * `scope` is `learnings` when another agent drives the session. `sessionId` stamps provenance.
+   */
+  memoryWrite?: { root: string; scope: 'learnings' | 'full'; sessionId?: string };
   env: Record<string, string>;
   /** Explicit environment overrides safe to persist for opt-in persistent jobs. */
   envOverrides?: Record<string, string>;

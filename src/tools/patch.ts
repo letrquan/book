@@ -7,6 +7,7 @@ import type {
 import { throwIfAborted } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { observeFile, requireFreshObservation } from './file-provenance.js';
+import { checkMemoryWrite, withMemoryWarnings } from '../memory-write-guard.js';
 import { pathOutsideWorkspaceResult, resolveMutationPath } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
 import {
@@ -296,6 +297,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
     filePath: string;
     canonicalPath: string;
     relativePath: string;
+    memory?: true;
   }>;
   const canonicalKeys = entries.map((entry) =>
     process.platform === 'win32' ? entry.canonicalPath.toLowerCase() : entry.canonicalPath,
@@ -310,6 +312,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
     entries.map((entry) => entry.canonicalPath),
     async () => {
       const staged: StagedFile[] = [];
+      const memoryWarnings: string[] = [];
       try {
         for (const entry of entries) {
           throwIfAborted(ctx.signal);
@@ -344,8 +347,14 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
                 code: 'patch_conflict',
                 remediation: 'Use Update File for an existing file.',
               });
-            const afterText =
+            let afterText =
               entry.operation.lines.join('\n') + (entry.operation.lines.length > 0 ? '\n' : '');
+            if (entry.memory) {
+              const checked = checkMemoryWrite(ctx, entry.filePath, afterText, null);
+              if (!checked.ok) return checked.failure;
+              afterText = checked.content ?? afterText;
+              memoryWarnings.push(...checked.warnings);
+            }
             const { stats } = await renderDiffWithStatsAsync('', afterText, 3, ctx.signal);
             staged.push({
               operation: entry.operation,
@@ -363,6 +372,10 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
                 code: 'patch_conflict',
                 remediation: 'Reread the workspace and regenerate the patch.',
               });
+            if (entry.memory) {
+              const checked = checkMemoryWrite(ctx, entry.filePath, null, before.text);
+              if (!checked.ok) return checked.failure;
+            }
             staged.push({
               operation: entry.operation,
               absolutePath: entry.filePath,
@@ -398,7 +411,13 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
                   },
                 },
               );
-            const afterText = applied.text;
+            let afterText = applied.text;
+            if (entry.memory) {
+              const checked = checkMemoryWrite(ctx, entry.filePath, afterText, before.text);
+              if (!checked.ok) return checked.failure;
+              afterText = checked.content ?? afterText;
+              memoryWarnings.push(...checked.warnings);
+            }
             const { stats } = await renderDiffWithStatsAsync(before.text, afterText, 3, ctx.signal);
             staged.push({
               operation: entry.operation,
@@ -511,7 +530,10 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
             );
         }
         const result = toolSuccess(
-          diffs.join('\n') || 'Patch applied successfully (no textual change)',
+          withMemoryWarnings(
+            diffs.join('\n') || 'Patch applied successfully (no textual change)',
+            memoryWarnings,
+          ),
           {
             data: {
               files: mutations.map((mutation) => mutation.filePath),
@@ -542,12 +564,15 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
         // are the part the model cannot re-derive.
         return {
           ...result,
-          maskedPlaceholder: `${staged
-            .map(
-              (file, order) =>
-                `${order === 0 ? 'Created' : 'created'} ${file.relativePath} (${file.mutation.addedLines} lines, ${file.afterBytes?.byteLength ?? 0} bytes)`,
-            )
-            .join('; ')}.`,
+          maskedPlaceholder: withMemoryWarnings(
+            `${staged
+              .map(
+                (file, order) =>
+                  `${order === 0 ? 'Created' : 'created'} ${file.relativePath} (${file.mutation.addedLines} lines, ${file.afterBytes?.byteLength ?? 0} bytes)`,
+              )
+              .join('; ')}.`,
+            memoryWarnings,
+          ),
         };
       } catch (error) {
         const code = errorCodeFor(error);

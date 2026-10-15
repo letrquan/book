@@ -333,6 +333,28 @@ still blocks them in every mode. A `permissions.ask` rule that names one prompts
 `acceptEdits`, refuses the call in `dontAsk`, and, as for every tool, is not consulted in `auto` or
 `bypassPermissions`.
 
+**Memory writes.** `Write`, `Edit`, `MultiEdit` and `ApplyPatch` may write `*.md` files in the
+project's memory directory without a prompt, in `default`, `acceptEdits`, `auto` and `dontAsk`. A
+`deny` or `ask` rule you wrote still wins, and plan mode still blocks every mutating tool. Only the
+main agent gets this, and only with `memory.enabled` and `memory.autoSave` on: a subagent or managed
+child cannot write there, and with `autoSave` off memory is read-only. The path must be absolute,
+end in `.md`, and sit under no dot-directory (`.inbox/`, `.git/`) and no symlink. An `ApplyPatch`
+that also names a file outside the memory directory goes through the normal prompt. Every such write
+passes a guard before it lands:
+
+- Text that looks like a secret is refused (`memory_secret_rejected`).
+- In a session another agent drives, a topic file needs a `metadata.type` of `project` or
+  `reference` (`memory_type_not_allowed`), and only files marked `driver: agent` may be changed or
+  deleted, and index lines for any other file kept (`memory_owned_by_person`).
+- A topic file with frontmatter is stamped with `metadata.originSessionId` (kept if present),
+  `metadata.modified`, and, in a session another agent drives, `metadata.driver: agent`. The rest of
+  the file is left byte-for-byte as written.
+- Warnings, which never refuse: a topic file over 4,096 bytes, a `MEMORY.md` over 200 lines or 25,000
+  bytes, and an index entry whose file does not exist.
+
+`MEMORY.md` counts as read once it loads whole, so the first `Edit` of it needs no `Read`; a cut
+index must be read first.
+
 **Workspace reads.** In `default` and `acceptEdits`, a `Read`, `Glob` or `Grep` that the tool can
 serve runs without a prompt: a target inside the workspace, or for `Read` inside Book's memory
 directory (but not its inbox). The target is resolved the way the tool resolves it: `..` is applied

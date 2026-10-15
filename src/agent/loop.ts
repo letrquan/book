@@ -60,6 +60,8 @@ import {
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { realWorkspaceRoot } from '../tools/path-utils.js';
+import { memoryWriteScope } from '../memory-store.js';
+import { observeFile } from '../tools/file-provenance.js';
 import { homeGuards, resolveAdditionalRoots, rootHoldsHome } from '../additional-roots.js';
 import {
   excludedPathRefusal,
@@ -695,10 +697,29 @@ export async function runAgentLoop(
    * the agent works under can recommend breaking them.
    */
   let sentSystemPrompt = '';
+  /**
+   * The memory directory as a write root: the root agent only, and only when memory is on with
+   * `autoSave`. A subagent or managed child never gets it (a Task subagent runs in
+   * `bypassPermissions`, so the missing field is what keeps it out of memory).
+   */
+  const memoryWriteMode = memoryWriteScope(config);
+  const memoryWrite: ToolContext['memoryWrite'] =
+    config.memoryContext?.dir &&
+    memoryWriteMode !== 'none' &&
+    !options?.isSubagent &&
+    !options?.agentId
+      ? {
+          root: config.memoryContext.dir,
+          scope: memoryWriteMode,
+          sessionId:
+            options?.sessionId ?? options?.runContext?.sessionId ?? options?.parentSessionId,
+        }
+      : undefined;
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
     readOnlyRoots,
     additionalRoots,
+    memoryWrite,
     env: process.env as Record<string, string>,
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,
@@ -743,6 +764,22 @@ export async function runAgentLoop(
     isSubagent: options?.isSubagent,
   });
   toolContext.toolDiscovery = toolSurface;
+  // MEMORY.md was in the prompt, so the model has "read" it: seed the ledger and its first Edit
+  // needs no Read. Only a whole index, and once per loaded snapshot: a cut one has to be Read, and
+  // a later turn must not claim a file the model has not seen since it changed.
+  const memoryContext = config.memoryContext;
+  if (
+    memoryWrite &&
+    memoryContext?.indexFile &&
+    memoryContext.indexLoaded &&
+    !memoryContext.wasLineTruncated &&
+    !memoryContext.wasByteTruncated
+  ) {
+    if (runtime.memoryIndexSeededFor !== memoryContext) {
+      runtime.memoryIndexSeededFor = memoryContext;
+      await observeFile(toolContext, memoryContext.indexFile, 'read').catch(() => undefined);
+    }
+  }
   const appliedSkillRestrictions = new Map<string, () => void>();
   const disposeSkillRestrictions = (): void => {
     for (const dispose of appliedSkillRestrictions.values()) dispose();
@@ -2695,6 +2732,7 @@ export async function runAgentLoop(
             realRoot: workspaceRealRoot,
             readOnlyRoots: toolContext.readOnlyRoots,
             additionalRoots,
+            memoryWrite: toolContext.memoryWrite,
             // A home directory, or anything containing one, keeps the prompt even where it was
             // honored: that is the whole of what `additionalDirectories` widens, and a home holds
             // SSH and provider keys and Book's own trust store.
@@ -2808,7 +2846,8 @@ export async function runAgentLoop(
             // mode, so `dontAsk` — which refuses what it cannot ask about —
             // has nothing to refuse. A `deny` rule already returned above, and
             // an `ask` rule still lands on the deny below rather than a prompt.
-            const autoAllowed = ALWAYS_ALLOWED_TOOLS.has(canonName);
+            // A write into the memory directory is allowed the same way (`source: 'memory'`).
+            const autoAllowed = ALWAYS_ALLOWED_TOOLS.has(canonName) || verdict.source === 'memory';
             if (
               !userRuleAsked &&
               (forceSkillPermission || effectiveMode !== 'dontAsk' || autoAllowed) &&

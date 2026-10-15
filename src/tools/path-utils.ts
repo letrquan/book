@@ -1,5 +1,5 @@
-import { existsSync, realpathSync } from 'fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
+import { existsSync, lstatSync, realpathSync } from 'fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import type { ReadOnlyRoot, ToolResult } from '../types/tools.js';
 import { toolFailure } from './result.js';
 
@@ -92,6 +92,12 @@ export interface ResolvedReadablePath {
    * spelling rather than one relative to some other root.
    */
   inWorkspace: boolean;
+  /**
+   * Set when the path was served by the memory write root (`PathRoots.memoryWrite`): a `*.md` file
+   * inside Book's project memory directory. A write tool must run it through
+   * `checkMemoryWrite` before it changes the file.
+   */
+  memory?: true;
 }
 
 /** The roots a file tool may serve, in the order it tries them. */
@@ -107,6 +113,11 @@ export interface PathRoots {
    * MultiEdit, NotebookEdit or ApplyPatch may change.
    */
   additionalRoots?: readonly string[];
+  /**
+   * Book's project memory directory as a write root (`ToolContext.memoryWrite`). Only
+   * {@link resolveMutationPath} reads it, and only for an absolute `*.md` path.
+   */
+  memoryWrite?: { root: string };
 }
 
 /** The entries of a read-only root list, which carry exclusions, as a plain array. */
@@ -186,11 +197,22 @@ export function resolveReadablePath(
  * write up under it. Reporting the root-relative form instead would make the Read that licensed
  * the write and the write itself consult two different keys, and every honored write would report
  * `file_not_observed`.
+ *
+ * The memory write root (`PathRoots.memoryWrite`) is the one other place a write may land, and it
+ * is narrower than the rest: see {@link resolveMemoryWritePath}. It is tried **first**, not after
+ * the workspace: a workspace that holds the memory directory (Book run from `$HOME`) would
+ * otherwise serve a memory file through the plain workspace branch and skip the memory guard
+ * (secret check, `learnings` ownership, provenance stamp). A path the memory rules refuse falls
+ * through to the workspace and the honored roots exactly as before.
  */
 export function resolveMutationPath(
   context: PathRoots,
   inputPath: string,
 ): ResolvedReadablePath | null {
+  const memory = context.memoryWrite
+    ? resolveMemoryWritePath(context.workspaceRoot, context.memoryWrite.root, inputPath)
+    : null;
+  if (memory) return memory;
   const inWorkspace = resolveWorkspacePath(context.workspaceRoot, inputPath);
   if (inWorkspace) return { ...inWorkspace, root: context.workspaceRoot, inWorkspace: true };
   if (!isAbsolute(inputPath)) return null;
@@ -201,6 +223,71 @@ export function resolveMutationPath(
     return { ...match, relativePath: rel.replace(/\\/g, '/'), root, inWorkspace: false };
   }
   return null;
+}
+
+/**
+ * Whether anything between the memory root and `filePath` (the file included) is a symbolic link,
+ * a dangling one too. Checked with `lstat` on the path as written, because the canonical form has
+ * already followed a link and would hide it.
+ */
+function hasLinkBelow(root: string, filePath: string): boolean {
+  let current = root;
+  for (const segment of relative(root, filePath).split(sep)) {
+    current = join(current, segment);
+    try {
+      if (lstatSync(current).isSymbolicLink()) return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // Nothing exists from here down, so nothing below can be a link.
+      if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The memory write root's resolution: an **absolute** path to a `*.md` file inside the memory
+ * directory, with no dot-segment below the root (`.inbox/`, `.git/`) and no symbolic link anywhere
+ * on the way down. A relative path never anchors here, so a bare `notes.md` stays a workspace file.
+ *
+ * `relativePath` is the workspace-relative spelling, as for an honored root, so the observation
+ * ledger's keys line up with a Read of the same file.
+ */
+function resolveMemoryWritePath(
+  workspaceRoot: string,
+  memoryRoot: string,
+  inputPath: string,
+): ResolvedReadablePath | null {
+  if (!isAbsolute(inputPath)) return null;
+  const filePath = resolve(inputPath);
+  if (!basename(filePath).toLowerCase().endsWith('.md')) return null;
+  const lexicalRoot = resolve(memoryRoot);
+  const canonicalRoot = canonicalizePath(lexicalRoot);
+  const canonicalPath = canonicalizePath(filePath);
+  if (canonicalPath === canonicalRoot || isOutside(canonicalRoot, canonicalPath)) return null;
+  // The path as written must itself sit under the root (in either spelling of it), or a link above
+  // the root would be what carried it there.
+  const writtenRoot = [lexicalRoot, canonicalRoot].find((root) => !isOutside(root, filePath));
+  if (!writtenRoot) return null;
+  const below = relative(writtenRoot, filePath).split(sep);
+  if (below.some((segment) => segment.startsWith('.'))) return null;
+  if (
+    relative(canonicalRoot, canonicalPath)
+      .split(sep)
+      .some((s) => s.startsWith('.'))
+  )
+    return null;
+  if (hasLinkBelow(writtenRoot, filePath)) return null;
+  const rel = relative(resolve(workspaceRoot), filePath);
+  return {
+    filePath,
+    canonicalPath,
+    relativePath: rel.replace(/\\/g, '/'),
+    root: memoryRoot,
+    inWorkspace: false,
+    memory: true,
+  };
 }
 
 /**

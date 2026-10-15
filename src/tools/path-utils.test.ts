@@ -6,6 +6,7 @@ import {
   canonicalizePath,
   isBookLocalSettingsPath,
   realWorkspaceRoot,
+  resolveMutationPath,
   resolveReadablePath,
   resolveReadablePathDetail,
   resolveWorkspacePath,
@@ -235,5 +236,82 @@ describe('resolveWorkspacePath', () => {
     const match = resolveWorkspacePath(workspace, join(workspace, 'link', 'inside.txt'));
 
     expect(match?.canonicalPath).toBe(join(realWorkspaceRoot(workspace), 'real', 'inside.txt'));
+  });
+});
+
+describe('resolveMutationPath with a memory write root', () => {
+  let memory: string;
+
+  beforeEach(() => {
+    memory = tempDir('book-pathutils-mem-');
+    writeFileSync(join(memory, 'MEMORY.md'), '# index\n');
+  });
+
+  const withMemory = (): PathRoots => roots({ memoryWrite: { root: memory } });
+
+  it('serves an absolute *.md path as a memory target, in the workspace-relative spelling', () => {
+    const resolved = resolveMutationPath(withMemory(), join(memory, 'topic.md'));
+    expect(resolved).toMatchObject({
+      filePath: join(memory, 'topic.md'),
+      root: memory,
+      inWorkspace: false,
+      memory: true,
+    });
+    expect(resolved?.relativePath.startsWith('..')).toBe(true);
+    // A nested file and a case-insensitive extension are served too.
+    expect(resolveMutationPath(withMemory(), join(memory, 'sub', 'a.MD'))?.memory).toBe(true);
+    expect(resolveMutationPath(withMemory(), join(memory, 'MEMORY.md'))?.memory).toBe(true);
+  });
+
+  it('refuses everything the rules exclude', () => {
+    mkdirSync(join(memory, '.inbox'));
+    mkdirSync(join(memory, 'real'));
+    writeFileSync(join(memory, 'real', 'x.md'), 'x\n');
+    writeFileSync(join(outside, 'target.md'), 'target\n');
+    symlinkSync(join(outside, 'target.md'), join(memory, 'linked.md'));
+    symlinkSync(join(memory, 'real'), join(memory, 'dirlink'));
+    symlinkSync(join(outside, 'nowhere.md'), join(memory, 'dangling.md'));
+    const refused = [
+      'topic.md', // relative: never anchors to the memory root
+      join(memory, 'notes.txt'),
+      join(memory, 'topic.md.bak'),
+      join(memory, '.inbox', 'pending.md'),
+      join(memory, '.hidden', 'a.md'),
+      join(memory, '.dot.md'),
+      join(memory, 'linked.md'),
+      join(memory, 'dirlink', 'x.md'),
+      join(memory, 'dangling.md'),
+      join(memory, '..', 'escape.md'),
+      join(outside, 'target.md'),
+    ];
+    for (const path of refused) {
+      expect(resolveMutationPath(withMemory(), path)?.memory, path).toBeUndefined();
+    }
+    // Outside the workspace and every honored root, so nothing serves it at all.
+    expect(resolveMutationPath(withMemory(), join(memory, 'linked.md'))).toBeNull();
+    expect(resolveMutationPath(withMemory(), join(memory, '.inbox', 'pending.md'))).toBeNull();
+  });
+
+  it('serves nothing in the memory directory without the root (a subagent)', () => {
+    expect(resolveMutationPath(roots(), join(memory, 'topic.md'))).toBeNull();
+  });
+
+  it('keeps the guard when the workspace holds the memory directory', () => {
+    const inside = join(workspace, 'mem');
+    mkdirSync(inside);
+    const resolved = resolveMutationPath(
+      roots({ memoryWrite: { root: inside } }),
+      join(inside, 'topic.md'),
+    );
+    expect(resolved?.memory).toBe(true);
+    expect(resolved?.relativePath).toBe('mem/topic.md');
+    // A dot-directory there falls back to the ordinary workspace branch.
+    mkdirSync(join(inside, '.inbox'));
+    const plain = resolveMutationPath(
+      roots({ memoryWrite: { root: inside } }),
+      join(inside, '.inbox', 'a.md'),
+    );
+    expect(plain?.inWorkspace).toBe(true);
+    expect(plain?.memory).toBeUndefined();
   });
 });

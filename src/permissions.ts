@@ -15,6 +15,7 @@ import {
   canonicalizePath,
   isBookLocalSettingsPath,
   isUnderRoot,
+  resolveMutationPath,
   resolveReadablePathDetail,
   resolveWorkspacePath,
   type PathRoots,
@@ -38,7 +39,7 @@ export interface ParsedRule {
 export interface PermissionVerdict {
   decision: 'allow' | 'deny' | 'ask' | 'refuse';
   matchedRule?: string;
-  source?: 'allow' | 'deny' | 'ask' | 'default' | 'sandbox' | 'workspace';
+  source?: 'allow' | 'deny' | 'ask' | 'default' | 'sandbox' | 'workspace' | 'memory';
   /**
    * Set on a Read, Glob or Grep whose target the tool itself refuses (outside the workspace and
    * every honored root): no approval can make it work, so the loop blocks it instead of prompting.
@@ -83,6 +84,12 @@ export interface WorkspaceScope {
    * read is, and a write goes through the ordinary permission flow for its mode.
    */
   additionalRoots?: readonly string[];
+  /**
+   * Book's project memory directory as a write root (`ToolContext.memoryWrite`), set for the root
+   * agent only. A Write, Edit, MultiEdit or ApplyPatch whose every target resolves into it as a
+   * memory file is allowed with source `memory`, after the user's deny, ask and allow rules.
+   */
+  memoryWrite?: { root: string };
   /**
    * The real paths of the home directories under which a read keeps asking, resolved once per run
    * (`homeGuards()`). A read outside every root is refused; a read inside one of these is served,
@@ -822,6 +829,42 @@ function hasReadAdjudication(lists: ParsedRuleLists): boolean {
   );
 }
 
+/** The file tools that may write into the memory directory. */
+const MEMORY_WRITE_TOOLS: ReadonlySet<string> = new Set([
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'ApplyPatch',
+]);
+
+/**
+ * Whether a call is a write whose every target is a memory file the memory write root serves.
+ * ApplyPatch can name several files, and one that is not a memory target sends the whole patch
+ * through the ordinary flow.
+ */
+function writesOnlyMemory(
+  tool: string,
+  args: Record<string, unknown>,
+  scope: WorkspaceScope | undefined,
+): boolean {
+  if (!scope?.memoryWrite || !MEMORY_WRITE_TOOLS.has(tool)) return false;
+  const roots: PathRoots = {
+    workspaceRoot: scope.root,
+    additionalRoots: scope.additionalRoots,
+    memoryWrite: scope.memoryWrite,
+  };
+  const targets =
+    tool === 'ApplyPatch'
+      ? patchOperations(args).map((operation) => operation.path)
+      : [pathArgument(tool, args)];
+  return (
+    targets.length > 0 &&
+    targets.every(
+      (target) => target !== undefined && resolveMutationPath(roots, target)?.memory === true,
+    )
+  );
+}
+
 /**
  * Evaluate permission rules against a tool call. Rules are evaluated in
  * CC's order: deny → ask → allow. First match wins.
@@ -905,6 +948,7 @@ export function evaluatePermissionDetail(
     ) {
       return { decision: 'allow', matchedRule: firstCompatible, source: 'allow' };
     }
+    if (writesOnlyMemory('ApplyPatch', args, scope)) return { decision: 'allow', source: 'memory' };
     return { decision: 'ask', source: 'default' };
   }
 
@@ -969,6 +1013,11 @@ export function evaluatePermissionDetail(
       return { decision: 'allow', matchedRule: entry.text, source: 'allow' };
     }
   }
+
+  // A write into the memory directory needs no prompt: the guard in `memory-write-guard.ts` judges
+  // its content. Every rule the user wrote outranks this, as for a read, so a `deny` or `ask` on
+  // Write has already returned above.
+  if (writesOnlyMemory(tool, args, scope)) return { decision: 'allow', source: 'memory' };
 
   // `sandbox.autoAllowBashIfSandboxed` is evaluated last, and only in place of
   // the *default* ask. Every user-written rule outranks it: a matching `deny`
