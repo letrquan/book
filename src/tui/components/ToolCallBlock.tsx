@@ -22,6 +22,7 @@ import {
   composeToolRow,
   deriveToolPresentation,
   EXPAND_KEY,
+  mutationDiffPreviewInput,
   showsErrorMessage,
   toolOutputContentWidth,
   toolOutputDisplay,
@@ -44,11 +45,11 @@ import type { ToolResult } from '../../types/tools.js';
 
 /**
  * The id of the tool row Ctrl+E acts on, computed once by `selectExpandTargetId` in app.tsx. In
- * the compact transcript only that row's truncated footer names the key. Without a provider
- * (`undefined`) no target is known and every row names it; a provider holding `null` says no row
- * is the target.
+ * the compact transcript only that row's truncated footer names the key. The default is "no
+ * target" (`null`): a compact row outside a provider names no key, because it cannot know that
+ * Ctrl+E would act on it. The detailed transcript names the key on every footer regardless.
  */
-export const ToolExpandTargetContext = createContext<string | null | undefined>(undefined);
+export const ToolExpandTargetContext = createContext<string | null>(null);
 
 interface ToolCallBlockProps {
   toolId?: string;
@@ -297,9 +298,7 @@ function ToolCallBlockInner({
   // Ctrl+E in the detailed transcript shows everything, so every footer names it. In the compact
   // one it expands the target row only: the others keep the footer and drop the key.
   const expandHint =
-    transcriptMode === 'detailed' ||
-    expandTargetId === undefined ||
-    (toolId !== undefined && expandTargetId === toolId)
+    transcriptMode === 'detailed' || (toolId !== undefined && expandTargetId === toolId)
       ? EXPAND_KEY
       : '';
   const summaryRef = useRef<DOMElement>(null);
@@ -336,9 +335,9 @@ function ToolCallBlockInner({
   );
   // One new file previews its first lines; any other diff is previewed as mutationDiffPreview
   // says: the compact transcript's first rows in order, the detailed one's change-focused rows.
-  const createsSingleNewFile =
-    mutationSummary?.kind === 'create' && (mutationSummary.fileCount ?? 1) <= 1;
-  const diffPreview = mutationDiffPreview({ createsSingleNewFile, transcriptMode, screenReader });
+  const diffPreview = mutationDiffPreview(
+    mutationDiffPreviewInput(mutationSummary, { transcriptMode, screenReader }),
+  );
   const isFileChild = summaryVariant === 'file-child';
   // A child row sits under an aggregate heading that already named the verb, so
   // it drops the label column and renders on the nested grid.

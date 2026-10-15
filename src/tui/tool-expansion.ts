@@ -1,6 +1,7 @@
 import type { Message } from '../types/messages.js';
-import type { ToolResult } from '../types/tools.js';
+import type { NestedToolInvocation, ToolCall, ToolResult } from '../types/tools.js';
 import { diffPreviewOmittedRows, mutationDiffPreview } from './components/Diff.js';
+import { getCompletedTimelineWindow } from './components/ChatPanel.js';
 import {
   getFileMutationDisplaySummary,
   isRenderableFileMutationDiff,
@@ -10,10 +11,12 @@ import {
   countNestedToolInvocations,
   indexNestedToolInvocations,
   selectLatestToolId,
+  type NestedToolChildren,
 } from './tool-traces.js';
 import {
   composeResultErrorDetail,
   deriveToolPresentation,
+  mutationDiffPreviewInput,
   shouldDefaultExpandTool,
   shouldExpandTool,
   showsErrorMessage,
@@ -36,7 +39,8 @@ export interface ToolRowPreviewInput {
   /** The row is shown in full: it is in the transcript's show-all set. */
   showAllToolOutput: boolean;
   isPending?: boolean;
-  nestedActivityCount?: number;
+  /** A count, or a function that makes it: only a failure's detail needs it, so it is lazy. */
+  nestedActivityCount?: number | (() => number);
 }
 
 /**
@@ -53,7 +57,8 @@ export function toolRowHidesContent(input: ToolRowPreviewInput): boolean {
   const screenReader = input.screenReader ?? false;
   if (screenReader || !result) return false;
 
-  const blockWidth = indentedGrid(transcriptGrid(input.terminalWidth ?? 80)).content;
+  const rowGrid = indentedGrid(transcriptGrid(input.terminalWidth ?? 80));
+  const blockWidth = rowGrid.content;
   const mutationSummary = getFileMutationDisplaySummary(name, args, result);
   // AgentMessage draws a mutation's row as a child under its group heading.
   const isFileChild = mutationSummary !== undefined;
@@ -63,16 +68,18 @@ export function toolRowHidesContent(input: ToolRowPreviewInput): boolean {
   // whole self only once the row is both expanded and shown in full.
   const inlineError = showsErrorMessage(result) ? result.structuredError?.message : undefined;
   if (inlineError?.trim() && !(showAllToolOutput && isExpanded)) {
+    const { nestedActivityCount = 0 } = input;
     const presentation = deriveToolPresentation(name, args, result, {
       isPending: input.isPending ?? false,
-      nestedActivityCount: input.nestedActivityCount ?? 0,
+      nestedActivityCount:
+        typeof nestedActivityCount === 'function' ? nestedActivityCount() : nestedActivityCount,
       unparsedArguments: input.unparsedArguments,
     });
     const detail = composeResultErrorDetail({
       presentation,
       message: inlineError,
       result,
-      rowGrid: indentedGrid(transcriptGrid(input.terminalWidth ?? 80)),
+      rowGrid,
       isFileChild,
       expanded: false,
       stdoutShownBelow: isExpanded && Boolean(result.content) && !isDiff,
@@ -83,13 +90,9 @@ export function toolRowHidesContent(input: ToolRowPreviewInput): boolean {
   if (!isExpanded || showAllToolOutput) return false;
 
   if (isDiff) {
-    const createsSingleNewFile =
-      mutationSummary?.kind === 'create' && (mutationSummary.fileCount ?? 1) <= 1;
-    const { preview, maxRows } = mutationDiffPreview({
-      createsSingleNewFile,
-      transcriptMode,
-      screenReader,
-    });
+    const { preview, maxRows } = mutationDiffPreview(
+      mutationDiffPreviewInput(mutationSummary, { transcriptMode, screenReader }),
+    );
     return (
       diffPreviewOmittedRows(result.content, { terminalWidth: blockWidth, preview, maxRows }) > 0
     );
@@ -111,6 +114,11 @@ export interface ExpandTargetInput {
   transcriptMode: TranscriptMode;
   /** The terminal width the transcript is drawn at. */
   terminalWidth: number;
+  /**
+   * The terminal height. ChatPanel draws only the newest `getCompletedTimelineWindow` entries,
+   * so the target is looked for in no more messages than that.
+   */
+  terminalHeight: number;
   screenReader?: boolean;
   /** The user's explicit expansions and collapses, by tool id. */
   expansionOverrides: ReadonlyMap<string, boolean>;
@@ -120,64 +128,189 @@ export interface ExpandTargetInput {
   focusedToolId: string | null;
   /** The active (running) tool: `selectExpandedToolId`. */
   automaticToolId: string | null;
+  /**
+   * A turn is in progress. A tool call without a result is only active then; an aborted turn
+   * leaves one behind, and it must not take the target for the rest of the session.
+   */
+  running: boolean;
 }
+
+/**
+ * `toolRowHidesContent` answers, by result object and then by the inputs that change the answer.
+ *
+ * The answer also depends on the call's name and arguments, which belong to the call that owns the
+ * result and never change, and on a failure's nested-activity count, which the footer's hint does
+ * not depend on. The result object is the identity: `appendToolResultToMessage` and
+ * `appendNestedToolInvocationToMessage` (hooks/streaming-state.ts) replace a result with a new
+ * object when it changes and never mutate one, so a cached answer cannot go stale. The selector
+ * runs on every streamed batch; this keeps it from re-parsing the diffs and outputs of rows that
+ * did not change.
+ */
+const hidesContentCache = new WeakMap<ToolResult, Map<string, boolean>>();
+
+function cachedToolRowHidesContent(input: ToolRowPreviewInput & { result: ToolResult }): boolean {
+  const key = [
+    input.terminalWidth ?? 80,
+    input.transcriptMode,
+    input.screenReader ? 1 : 0,
+    input.isExpanded ? 1 : 0,
+    input.showAllToolOutput ? 1 : 0,
+  ].join('|');
+  let answers = hidesContentCache.get(input.result);
+  if (!answers) {
+    answers = new Map();
+    hidesContentCache.set(input.result, answers);
+  }
+  let hides = answers.get(key);
+  if (hides === undefined) {
+    hides = toolRowHidesContent(input);
+    answers.set(key, hides);
+  }
+  return hides;
+}
+
+/** Columns a nested row gives up to its indentation, per level (AgentMessage's NestedToolRows). */
+const NESTED_INDENT = 2;
+const NESTED_MIN_WIDTH = 12;
 
 /**
  * The tool row Ctrl+E acts on, and the one row whose truncated footer names the key.
  *
- * Compact transcript, in order: the active tool; the focused tool while it is not yet shown in
- * full; the newest top-level row whose preview hides content; the latest tool. Showing a row in
- * full takes it out of the third rule, so the next press moves to the next one up. Nested
- * subagent invocations are never the newest truncated row. The detailed transcript keeps the old
- * order, which does not look at previews: Ctrl+E there shows everything.
+ * Compact transcript, in order: the running tool, while a turn is in progress; the focused tool
+ * while it still hides content; the newest top-level row whose preview hides content; the latest
+ * tool. Showing a row in full takes it out of the third rule, so the next press moves to the
+ * next one up. Nested subagent invocations are never the newest truncated row. The detailed
+ * transcript keeps the old order, which does not look at previews: Ctrl+E there shows everything.
+ *
+ * The preview rules look only at the newest `getCompletedTimelineWindow(terminalHeight)`
+ * messages: those are the rows ChatPanel draws, so a footer that names the key is always on screen.
  */
 export function selectExpandTargetId({
   messages,
   transcriptMode,
   terminalWidth,
+  terminalHeight,
   screenReader = false,
   expansionOverrides,
   showAllToolOutputIds,
   focusedToolId,
   automaticToolId,
+  running,
 }: ExpandTargetInput): string | null {
-  if (automaticToolId) return automaticToolId;
+  if (running && automaticToolId) return automaticToolId;
   if (transcriptMode === 'detailed') return focusedToolId ?? selectLatestToolId(messages);
-  if (focusedToolId && !showAllToolOutputIds.has(focusedToolId)) return focusedToolId;
 
-  for (let index = messages.length - 1; index >= 0; index--) {
+  const firstVisible = Math.max(0, messages.length - getCompletedTimelineWindow(terminalHeight));
+
+  const hidesContent = (
+    call: ToolCall,
+    result: ToolResult | undefined,
+    width: number,
+    nestedActivityCount: () => number,
+  ): boolean =>
+    result !== undefined &&
+    cachedToolRowHidesContent({
+      name: call.name,
+      args: call.arguments,
+      result,
+      unparsedArguments: call.unparsedArguments,
+      isExpanded: shouldExpandTool({
+        mode: transcriptMode,
+        toolId: call.id,
+        automaticToolId: null,
+        defaultExpanded: shouldDefaultExpandTool(call.name, result),
+        expansionOverrides,
+        screenReader,
+      }),
+      transcriptMode,
+      screenReader,
+      terminalWidth: width,
+      showAllToolOutput: showAllToolOutputIds.has(call.id),
+      nestedActivityCount,
+    });
+
+  // The focused row wins only while it still hides content, given how it is drawn now: a click
+  // that folded a default-expanded diff back, or a row shown in full, has nothing left to reveal.
+  if (focusedToolId) {
+    for (let index = messages.length - 1; index >= firstVisible; index--) {
+      const message = messages[index]!;
+      if (message.role !== 'assistant') continue;
+      const call = message.toolCalls?.find((candidate) => candidate.id === focusedToolId);
+      if (call) {
+        const result = message.toolResults?.find((candidate) => candidate.toolCallId === call.id);
+        const countNested = () =>
+          countNestedToolInvocations(
+            indexNestedToolInvocations(message.nestedToolInvocations ?? []),
+            call.id,
+          );
+        if (hidesContent(call, result, terminalWidth, countNested)) return focusedToolId;
+        break;
+      }
+      const invocation = message.nestedToolInvocations?.find(
+        (candidate) => candidate.traceId === focusedToolId,
+      );
+      if (invocation) {
+        const width = Math.max(
+          NESTED_MIN_WIDTH,
+          terminalWidth - nestedDepth(message.nestedToolInvocations!, invocation) * NESTED_INDENT,
+        );
+        // Its row is keyed by its trace id, not by its call's id.
+        const hides = hidesContent(
+          { ...invocation.call, id: invocation.traceId },
+          invocation.result,
+          width,
+          () =>
+            countNestedToolInvocations(
+              indexNestedToolInvocations(message.nestedToolInvocations ?? []),
+              invocation.traceId,
+            ),
+        );
+        if (hides) return focusedToolId;
+        break;
+      }
+    }
+  }
+
+  for (let index = messages.length - 1; index >= firstVisible; index--) {
     const message = messages[index]!;
     if (message.role !== 'assistant') continue;
     const calls = message.toolCalls ?? [];
-    const nestedChildren = indexNestedToolInvocations(message.nestedToolInvocations ?? []);
+    if (calls.length === 0) continue;
+    const results = new Map(
+      (message.toolResults ?? []).map((result) => [result.toolCallId, result]),
+    );
+    // Built only when a failed row's detail needs a count.
+    let nested: NestedToolChildren | undefined;
+    const nestedOf = (): NestedToolChildren =>
+      (nested ??= indexNestedToolInvocations(message.nestedToolInvocations ?? []));
     for (let callIndex = calls.length - 1; callIndex >= 0; callIndex--) {
       const call = calls[callIndex]!;
       // Shown in full already: Ctrl+E has nothing more to reveal there, even when a click has
       // since folded the row back.
       if (showAllToolOutputIds.has(call.id)) continue;
-      const result = message.toolResults?.find((candidate) => candidate.toolCallId === call.id);
-      if (!result) continue;
-      const hides = toolRowHidesContent({
-        name: call.name,
-        args: call.arguments,
-        result,
-        unparsedArguments: call.unparsedArguments,
-        isExpanded: shouldExpandTool({
-          mode: transcriptMode,
-          toolId: call.id,
-          automaticToolId,
-          defaultExpanded: shouldDefaultExpandTool(call.name, result),
-          expansionOverrides,
-          screenReader,
-        }),
-        transcriptMode,
-        screenReader,
-        terminalWidth,
-        showAllToolOutput: false,
-        nestedActivityCount: countNestedToolInvocations(nestedChildren, call.id),
-      });
-      if (hides) return call.id;
+      const result = results.get(call.id);
+      const countNested = () => countNestedToolInvocations(nestedOf(), call.id);
+      if (hidesContent(call, result, terminalWidth, countNested)) {
+        return call.id;
+      }
     }
   }
   return selectLatestToolId(messages);
+}
+
+/** How many levels below a top-level row an invocation sits: a direct child is 1. */
+function nestedDepth(
+  invocations: readonly NestedToolInvocation[],
+  invocation: NestedToolInvocation,
+): number {
+  const byTraceId = new Map(invocations.map((candidate) => [candidate.traceId, candidate]));
+  let depth = 1;
+  let parent = byTraceId.get(invocation.parentTraceId);
+  const seen = new Set([invocation.traceId]);
+  while (parent && !seen.has(parent.traceId)) {
+    seen.add(parent.traceId);
+    depth++;
+    parent = byTraceId.get(parent.parentTraceId);
+  }
+  return depth;
 }

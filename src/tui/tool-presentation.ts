@@ -20,7 +20,10 @@ import {
   toolRowTargetOffset,
   type TranscriptGrid,
 } from './layout.js';
-import { isRenderableFileMutationDiff } from './file-mutation-display.js';
+import {
+  isRenderableFileMutationDiff,
+  type FileMutationDisplaySummary,
+} from './file-mutation-display.js';
 import { networkPolicyRefusal } from '../tools/web-policy.js';
 
 export type TranscriptMode = 'compact' | 'detailed';
@@ -779,6 +782,23 @@ export function composeToolRow(
 
 /** The key that shows a truncated row in full. */
 export const EXPAND_KEY = 'Ctrl+E';
+
+/**
+ * What `mutationDiffPreview` is given for a mutation row. One new file previews its first lines;
+ * any other diff is previewed by transcript mode. The one copy of that rule: the row draws its
+ * diff from it and the Ctrl+E target asks whether the same diff hides rows.
+ */
+export function mutationDiffPreviewInput(
+  mutationSummary: Pick<FileMutationDisplaySummary, 'kind' | 'fileCount'> | undefined,
+  view: { transcriptMode: TranscriptMode; screenReader: boolean },
+): { createsSingleNewFile: boolean; transcriptMode: TranscriptMode; screenReader: boolean } {
+  return {
+    createsSingleNewFile:
+      mutationSummary?.kind === 'create' && (mutationSummary.fileCount ?? 1) <= 1,
+    transcriptMode: view.transcriptMode,
+    screenReader: view.screenReader,
+  };
+}
 
 /** Most rows a failure's message takes under its tool row. */
 export const TOOL_ERROR_MAX_LINES = 2;

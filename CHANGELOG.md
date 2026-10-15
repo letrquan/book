@@ -71,8 +71,8 @@ All notable changes to this project are documented in this file.
   (#470). In the compact transcript every cut diff, output and failed-command footer read
   `(Ctrl+E)`, but the key expanded the latest row, so a 150-line `Write` followed by a capped `Edit`
   advertised the key on the `Write` and a second press changed nothing. Ctrl+E now expands the
-  running tool, else the row you clicked while it is still cut, else the newest row whose preview
-  hides lines; each press moves up to the next truncated row, and only that row's footer shows
+  running tool while a turn is in progress, else the row you clicked while it is still cut, else the
+  newest row on screen whose preview hides lines; each press moves up to the next truncated row, and only that row's footer shows
   `(Ctrl+E)` (the others read `… +140 lines`). The detailed transcript is unchanged: Ctrl+E shows
   everything and every footer names it.
 - **A failed command's whole error is reachable, and `Check` and `BashOutput` rows show their exit

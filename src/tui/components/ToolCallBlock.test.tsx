@@ -49,6 +49,13 @@ function withTheme(children: React.ReactElement): React.ReactElement {
   return <ThemeContext.Provider value={DEFAULT_THEME}>{children}</ThemeContext.Provider>;
 }
 
+/** A compact row names the Ctrl+E key only inside a provider whose target is that row. */
+function asTarget(toolId: string, block: React.ReactElement): React.ReactElement {
+  return (
+    <ToolExpandTargetContext.Provider value={toolId}>{block}</ToolExpandTargetContext.Provider>
+  );
+}
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -106,13 +113,17 @@ describe('ToolCallBlock', () => {
     const output = Array.from({ length: 8 }, (_, i) => `line ${i + 1}`).join('\n');
     const view = render(
       withTheme(
-        <ToolCallBlock
-          name="Bash"
-          args={{ command: 'seq 8' }}
-          result={successResult('call-1', output)}
-          isExpanded
-          reducedMotion
-        />,
+        asTarget(
+          'call-1',
+          <ToolCallBlock
+            toolId="call-1"
+            name="Bash"
+            args={{ command: 'seq 8' }}
+            result={successResult('call-1', output)}
+            isExpanded
+            reducedMotion
+          />,
+        ),
       ),
     );
 
@@ -311,19 +322,23 @@ describe('ToolCallBlock', () => {
 
     function writeBlock(showAllToolOutput: boolean) {
       return withTheme(
-        <ToolCallBlock
-          name="Write"
-          args={{ filePath: 'src/new.ts' }}
-          result={successResult('call-create', newFileDiff, {
-            kind: 'create',
-            filePath: 'src/new.ts',
-            addedLines: 150,
-            removedLines: 0,
-          })}
-          isExpanded
-          showAllToolOutput={showAllToolOutput}
-          reducedMotion
-        />,
+        asTarget(
+          'call-create',
+          <ToolCallBlock
+            toolId="call-create"
+            name="Write"
+            args={{ filePath: 'src/new.ts' }}
+            result={successResult('call-create', newFileDiff, {
+              kind: 'create',
+              filePath: 'src/new.ts',
+              addedLines: 150,
+              removedLines: 0,
+            })}
+            isExpanded
+            showAllToolOutput={showAllToolOutput}
+            reducedMotion
+          />,
+        ),
       );
     }
 
@@ -360,19 +375,23 @@ describe('ToolCallBlock', () => {
       props: { transcriptMode?: 'compact' | 'detailed'; showAllToolOutput?: boolean } = {},
     ) {
       return withTheme(
-        <ToolCallBlock
-          name="Edit"
-          args={{ filePath: 'src/a.ts' }}
-          result={successResult('call-edit-long', longEditOutput, {
-            kind: 'update',
-            filePath: 'src/a.ts',
-            addedLines: 100,
-            removedLines: 100,
-          })}
-          isExpanded
-          reducedMotion
-          {...props}
-        />,
+        asTarget(
+          'call-edit-long',
+          <ToolCallBlock
+            toolId="call-edit-long"
+            name="Edit"
+            args={{ filePath: 'src/a.ts' }}
+            result={successResult('call-edit-long', longEditOutput, {
+              kind: 'update',
+              filePath: 'src/a.ts',
+              addedLines: 100,
+              removedLines: 100,
+            })}
+            isExpanded
+            reducedMotion
+            {...props}
+          />,
+        ),
       );
     }
 
@@ -427,18 +446,22 @@ describe('ToolCallBlock', () => {
       ].join('\n');
       const view = render(
         withTheme(
-          <ToolCallBlock
-            name="Edit"
-            args={{ filePath: 'src/a.ts', replaceAll: true }}
-            result={successResult('call-rename', output, {
-              kind: 'update',
-              filePath: 'src/a.ts',
-              addedLines: 12,
-              removedLines: 12,
-            })}
-            isExpanded
-            reducedMotion
-          />,
+          asTarget(
+            'call-rename',
+            <ToolCallBlock
+              toolId="call-rename"
+              name="Edit"
+              args={{ filePath: 'src/a.ts', replaceAll: true }}
+              result={successResult('call-rename', output, {
+                kind: 'update',
+                filePath: 'src/a.ts',
+                addedLines: 12,
+                removedLines: 12,
+              })}
+              isExpanded
+              reducedMotion
+            />,
+          ),
         ),
       );
       const rendered = frame(view.lastFrame);
@@ -516,7 +539,17 @@ describe('ToolCallBlock', () => {
       };
       const view = render(
         withTheme(
-          <ToolCallBlock name="ApplyPatch" args={{}} result={result} isExpanded reducedMotion />,
+          asTarget(
+            'call-multi-compact',
+            <ToolCallBlock
+              toolId="call-multi-compact"
+              name="ApplyPatch"
+              args={{}}
+              result={result}
+              isExpanded
+              reducedMotion
+            />,
+          ),
         ),
       );
       const rendered = frame(view.lastFrame);
@@ -1009,14 +1042,18 @@ describe('ToolCallBlock failures', () => {
       { command: 'bash scripts/fail.sh' },
     );
     const raw = colourFrame(
-      <ToolCallBlock
-        name="Bash"
-        args={{ command: 'bash scripts/fail.sh' }}
-        result={result}
-        isExpanded={false}
-        terminalWidth={100}
-        reducedMotion
-      />,
+      asTarget(
+        'fail-1',
+        <ToolCallBlock
+          toolId="fail-1"
+          name="Bash"
+          args={{ command: 'bash scripts/fail.sh' }}
+          result={result}
+          isExpanded={false}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
     );
     const rendered = stripAnsi(raw);
     const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
@@ -1082,15 +1119,19 @@ describe('ToolCallBlock failures', () => {
     );
     const rendered = stripAnsi(
       colourFrame(
-        <ToolCallBlock
-          name="Bash"
-          args={{ command: 'bash scripts/fail.sh' }}
-          result={result}
-          isExpanded={false}
-          showAllToolOutput
-          terminalWidth={100}
-          reducedMotion
-        />,
+        asTarget(
+          'fail-1',
+          <ToolCallBlock
+            toolId="fail-1"
+            name="Bash"
+            args={{ command: 'bash scripts/fail.sh' }}
+            result={result}
+            isExpanded={false}
+            showAllToolOutput
+            terminalWidth={100}
+            reducedMotion
+          />,
+        ),
       ),
     );
     const lines = rendered
@@ -1114,15 +1155,19 @@ describe('ToolCallBlock failures', () => {
     const draw = (isExpanded: boolean) =>
       stripAnsi(
         colourFrame(
-          <ToolCallBlock
-            name="Bash"
-            args={{ command: 'npm test' }}
-            result={result}
-            isExpanded={isExpanded}
-            showAllToolOutput
-            terminalWidth={100}
-            reducedMotion
-          />,
+          asTarget(
+            'npm-1',
+            <ToolCallBlock
+              toolId="npm-1"
+              name="Bash"
+              args={{ command: 'npm test' }}
+              result={result}
+              isExpanded={isExpanded}
+              showAllToolOutput
+              terminalWidth={100}
+              reducedMotion
+            />,
+          ),
         ),
       );
     const rendered = draw(true);
@@ -1222,14 +1267,18 @@ describe('ToolCallBlock failures', () => {
       { command: 'npm test' },
     );
     const raw = colourFrame(
-      <ToolCallBlock
-        name="Bash"
-        args={{ command: 'npm test' }}
-        result={result}
-        isExpanded={false}
-        terminalWidth={100}
-        reducedMotion
-      />,
+      asTarget(
+        'npm-1',
+        <ToolCallBlock
+          toolId="npm-1"
+          name="Bash"
+          args={{ command: 'npm test' }}
+          result={result}
+          isExpanded={false}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
     );
     const rendered = stripAnsi(raw);
     const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
@@ -1430,8 +1479,16 @@ describe('ToolCallBlock Ctrl+E hint', () => {
     expect(renderRow(id, { target: id })).toContain(footer);
   });
 
-  it('keeps the key on every footer when no target is known', () => {
-    expect(renderRow('write-new')).toContain('… +140 lines (Ctrl+E)');
+  it('names no key in the compact transcript outside a provider', () => {
+    // With no provider nothing says Ctrl+E acts on this row, so it must not claim the key.
+    const rendered = renderRow('write-new');
+    expect(rendered).toContain('… +140 lines');
+    expect(rendered).not.toContain('Ctrl+E');
+  });
+
+  it('names the key in the detailed transcript outside a provider', () => {
+    const rendered = renderRow('write-new', { transcriptMode: 'detailed', isExpanded: true });
+    expect(rendered).toContain('(Ctrl+E)');
   });
 
   it('names no key when the target is null', () => {
