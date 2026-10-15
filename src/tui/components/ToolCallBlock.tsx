@@ -2,7 +2,7 @@ import { Text, Box, type DOMElement } from 'ink';
 import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Spinner } from './Spinner.js';
 import { useTheme } from '../theme.js';
-import { DiffBlock } from './Diff.js';
+import { DiffBlock, NEW_FILE_PREVIEW_ROWS } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { highlightCode } from './syntax-highlight.js';
 import { prepareToolOutputDisplay } from './tool-output.js';
@@ -427,6 +427,9 @@ function ToolCallBlockInner({
         <DiffBlock
           output={result.content}
           filePath={presentation.filePath}
+          collapsed={!showAllToolOutput}
+          preview={mutationSummary?.kind === 'create' ? 'head' : 'changes'}
+          maxRows={mutationSummary?.kind === 'create' ? NEW_FILE_PREVIEW_ROWS : undefined}
           terminalWidth={blockWidth}
         />
       ) : isExpanded && result?.content ? (
@@ -480,7 +483,7 @@ function OutputBlock({
       prepareToolOutputDisplay(output, {
         maxLines: showAllToolOutput ? 2000 : success ? 6 : 10,
         maxLineWidth: contentWidth,
-        hint: showAllToolOutput ? undefined : 'Ctrl+E shows all',
+        hint: showAllToolOutput ? undefined : 'Ctrl+E',
         strategy: showAllToolOutput ? 'head' : success ? 'head-tail' : 'tail',
       }),
     [contentWidth, output, showAllToolOutput, success],

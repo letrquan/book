@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatByteSize, prepareToolOutputDisplay } from './tool-output.js';
+import { formatByteSize, formatToolOutputFooter, prepareToolOutputDisplay } from './tool-output.js';
 import { displayWidth } from './word-wrap.js';
 
 describe('prepareToolOutputDisplay', () => {
@@ -12,8 +12,7 @@ describe('prepareToolOutputDisplay', () => {
     expect(display.totalLines).toBe(8);
     expect(display.hiddenLines).toBe(3);
     expect(display.truncated).toBe(true);
-    expect(display.footer).toContain('3 more lines hidden');
-    expect(display.footer).toContain('8 lines');
+    expect(display.footer).toBe('… +3 lines');
   });
 
   it('does not mark short output as truncated', () => {
@@ -40,7 +39,7 @@ describe('prepareToolOutputDisplay', () => {
     expect(display.lines[0]).toBe('🙂🙂🙂…');
     expect(displayWidth(display.lines[0])).toBeLessThanOrEqual(7);
     expect(display.truncated).toBe(true);
-    expect(display.footer).toContain('1 long line shortened');
+    expect(display.footer).toBe('… 1 long line shortened');
   });
 
   it('reports total character counts', () => {
@@ -50,7 +49,7 @@ describe('prepareToolOutputDisplay', () => {
 
     expect(display.totalChars).toBe(output.length);
     expect(display.totalBytes).toBe(7);
-    expect(display.footer).toContain('7 B total');
+    expect(display.footer).toBe('… +1 line');
   });
 
   it('uses head-and-tail previews for successful noisy output', () => {
@@ -76,6 +75,39 @@ describe('prepareToolOutputDisplay', () => {
 
     expect(display.lines).toEqual(['warning', 'fatal: failed']);
     expect(display.hiddenLines).toBe(2);
+  });
+});
+
+describe('formatToolOutputFooter', () => {
+  it('summarises hidden lines with the hint', () => {
+    expect(formatToolOutputFooter({ hiddenLines: 97, truncatedLines: 0, hint: 'Ctrl+E' })).toBe(
+      '… +97 lines (Ctrl+E)',
+    );
+  });
+
+  it('adds shortened lines before the hint', () => {
+    expect(formatToolOutputFooter({ hiddenLines: 97, truncatedLines: 3, hint: 'Ctrl+E' })).toBe(
+      '… +97 lines, 3 long lines shortened (Ctrl+E)',
+    );
+  });
+
+  it('reports only shortened lines when none are hidden', () => {
+    expect(formatToolOutputFooter({ hiddenLines: 0, truncatedLines: 2, hint: 'Ctrl+E' })).toBe(
+      '… 2 long lines shortened (Ctrl+E)',
+    );
+  });
+
+  it('drops the parentheses without a hint', () => {
+    expect(formatToolOutputFooter({ hiddenLines: 5, truncatedLines: 0 })).toBe('… +5 lines');
+    expect(formatToolOutputFooter({ hiddenLines: 0, truncatedLines: 1, hint: '' })).toBe(
+      '… 1 long line shortened',
+    );
+  });
+
+  it('uses singular forms', () => {
+    expect(formatToolOutputFooter({ hiddenLines: 1, truncatedLines: 1, hint: 'Ctrl+E' })).toBe(
+      '… +1 line, 1 long line shortened (Ctrl+E)',
+    );
   });
 });
 

@@ -11,12 +11,20 @@ interface DiffProps {
   collapsed?: boolean;
   /** Row budget for the collapsed preview; defaults to the transcript's. */
   maxRows?: number;
-  /** Key hint appended to the omission footer while collapsed. */
+  /**
+   * Which rows the collapsed preview keeps. `changes` (default) keeps every
+   * hunk's changed rows plus nearby context; `head` keeps the first `maxRows`
+   * content lines and no hunk header, which suits a new file.
+   */
+  preview?: 'changes' | 'head';
+  /** Key hint shown in the omission footer while collapsed; empty for none. */
   expandHint?: string;
   terminalWidth?: number;
 }
 
 const COLLAPSED_ROWS = 80;
+/** Content lines the transcript previews of a newly created file. */
+export const NEW_FILE_PREVIEW_ROWS = 10;
 const COLLAPSED_CONTEXT_ROWS = 2;
 const MAX_WORD_TOKENS = 200;
 const MAX_WORD_LINE_LENGTH = 2000;
@@ -328,8 +336,17 @@ function wrapSpans(spans: readonly DiffSpan[], width: number): DiffSpan[][] {
   return lines;
 }
 
-function rowByteSize(row: ParsedDiffLine, index: number, total: number): number {
-  return Buffer.byteLength(`${row.text}${index < total - 1 ? '\n' : ''}`, 'utf8');
+function isContentRow(row: ParsedDiffLine): boolean {
+  return row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx';
+}
+
+/** The first `limit` content lines; hunk headers and file metadata are skipped. */
+function selectHeadIndices(rows: readonly ParsedDiffLine[], limit: number): number[] {
+  const indices: number[] = [];
+  for (let index = 0; index < rows.length && indices.length < limit; index++) {
+    if (isContentRow(rows[index])) indices.push(index);
+  }
+  return indices;
 }
 
 function selectPreviewIndices(rows: readonly ParsedDiffLine[], limit: number): number[] {
@@ -384,20 +401,23 @@ function selectRenderedRows(
   rows: readonly ParsedDiffLine[],
   collapsed: boolean,
   limit: number,
-): { rows: SelectedDiffRow[]; hiddenRows: number; hiddenBytes: number } {
-  const rowBytes = rows.map((row, index) => rowByteSize(row, index, rows.length));
-  const indices = collapsed
-    ? selectPreviewIndices(rows, Math.max(1, Math.floor(limit)))
-    : rows.map((_, index) => index);
+  preview: 'changes' | 'head',
+): { rows: SelectedDiffRow[]; hiddenLines: number } {
+  const rowLimit = Math.max(1, Math.floor(limit));
+  const indices = !collapsed
+    ? rows.map((_, index) => index)
+    : preview === 'head'
+      ? selectHeadIndices(rows, rowLimit)
+      : selectPreviewIndices(rows, rowLimit);
   const selected = new Set(indices);
-  const hiddenBytes = rowBytes.reduce(
-    (total, bytes, index) => total + (selected.has(index) ? 0 : bytes),
+  // Hunk headers and metadata are signposts, not content: only lines count.
+  const hiddenLines = rows.reduce(
+    (total, row, index) => total + (isContentRow(row) && !selected.has(index) ? 1 : 0),
     0,
   );
   return {
     rows: indices.map((sourceIndex) => ({ row: rows[sourceIndex], sourceIndex })),
-    hiddenRows: rows.length - indices.length,
-    hiddenBytes,
+    hiddenLines,
   };
 }
 
@@ -421,14 +441,15 @@ export function DiffBlock({
   filePath,
   collapsed = false,
   maxRows = COLLAPSED_ROWS,
-  expandHint = 'Ctrl+E shows all',
+  preview = 'changes',
+  expandHint = 'Ctrl+E',
   terminalWidth = 80,
 }: DiffProps) {
   const theme = useTheme();
   const parsed = useMemo(() => parseDiffLines(output), [output]);
   const selected = useMemo(
-    () => selectRenderedRows(parsed, collapsed, maxRows),
-    [collapsed, maxRows, parsed],
+    () => selectRenderedRows(parsed, collapsed, maxRows, preview),
+    [collapsed, maxRows, parsed, preview],
   );
   const language = inferDiffLanguage(filePath);
   const maxOld = Math.max(1, ...parsed.map((row) => row.oldLineNumber ?? 0));
@@ -444,8 +465,13 @@ export function DiffBlock({
     <Box flexDirection="column">
       {selected.rows.map(({ row, sourceIndex }, index) => {
         const previousSourceIndex = selected.rows[index - 1]?.sourceIndex;
+        // A head preview is contiguous content: the header it skips is not a gap.
         const gapRows =
-          previousSourceIndex === undefined ? sourceIndex : sourceIndex - previousSourceIndex - 1;
+          collapsed && preview === 'head'
+            ? 0
+            : previousSourceIndex === undefined
+              ? sourceIndex
+              : sourceIndex - previousSourceIndex - 1;
         const backgroundColor =
           row.kind === 'add' ? theme.diffAdded : row.kind === 'del' ? theme.diffRemoved : undefined;
         // A hunk header is a signpost, not content: quiet, and never the accent.
@@ -542,12 +568,12 @@ export function DiffBlock({
           </Fragment>
         );
       })}
-      {selected.hiddenRows > 0 || selected.hiddenBytes > 0 ? (
+      {selected.hiddenLines > 0 ? (
         <Box marginLeft={2}>
           <Text color={theme.subtle} dimColor>
             │{' '}
             {truncateDisplay(
-              `… ${selected.hiddenRows} ${selected.hiddenRows === 1 ? 'row' : 'rows'} and ${selected.hiddenBytes} B omitted${collapsed && expandHint ? `; ${expandHint}` : ''}`,
+              `… +${selected.hiddenLines} ${selected.hiddenLines === 1 ? 'line' : 'lines'}${collapsed && expandHint ? ` (${expandHint})` : ''}`,
               Math.max(4, terminalWidth - 4),
             )}
           </Text>

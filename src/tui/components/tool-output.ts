@@ -61,14 +61,7 @@ export function prepareToolOutputDisplay(
   const hiddenBytes = Math.max(0, totalBytes - visibleBytes);
   const truncated = hiddenLines > 0 || truncatedLines > 0;
   const footer = truncated
-    ? formatToolOutputFooter({
-        totalLines: rawLines.length,
-        totalBytes,
-        hiddenLines,
-        hiddenBytes,
-        truncatedLines,
-        hint,
-      })
+    ? formatToolOutputFooter({ hiddenLines, truncatedLines, hint })
     : undefined;
 
   return {
@@ -105,28 +98,19 @@ function selectVisibleLineIndices(
   return Array.from({ length: maxLines }, (_, index) => index);
 }
 
-function formatToolOutputFooter({
-  totalLines,
-  totalBytes,
+/** `… +N lines, M long lines shortened (hint)`; each part appears only when it applies. */
+export function formatToolOutputFooter({
   hiddenLines,
-  hiddenBytes,
   truncatedLines,
   hint,
 }: {
-  totalLines: number;
-  totalBytes: number;
   hiddenLines: number;
-  hiddenBytes: number;
   truncatedLines: number;
   hint?: string;
 }): string {
   const parts: string[] = [];
-  if (hiddenLines > 0)
-    parts.push(
-      `${hiddenLines} more ${hiddenLines === 1 ? 'line' : 'lines'} hidden, ${hiddenBytes} B`,
-    );
+  if (hiddenLines > 0) parts.push(`+${hiddenLines} ${hiddenLines === 1 ? 'line' : 'lines'}`);
   if (truncatedLines > 0)
     parts.push(`${truncatedLines} long ${truncatedLines === 1 ? 'line' : 'lines'} shortened`);
-  const summary = `${totalLines} ${totalLines === 1 ? 'line' : 'lines'}, ${formatByteSize(totalBytes)} total`;
-  return `… ${parts.join(', ')} (${summary}${hint ? `; ${hint}` : ''})`;
+  return `… ${parts.join(', ')}${hint ? ` (${hint})` : ''}`;
 }
