@@ -6,16 +6,24 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **Compact mode hides a tool step's thought, and read-only git through `Bash` folds** (#470). An
+  assistant step that calls a tool no longer draws its `▸ thought · N lines` row in the compact
+  transcript, whether the row is quiet or not (Ctrl+O shows it, and so does screen-reader mode); a
+  final answer, a turn that only updates the task list or hands the turn back (`TodoWrite`,
+  `AskUserQuestion`), a step whose call waits for your approval, and a thought still streaming keep
+  theirs. `git status`, `log`, `diff`, `show`,
+  `grep`, `ls-files` and listing-only `git branch`, with only `-C <dir>`, `--no-pager`, `-P` and
+  `--no-optional-locks` before the subcommand, now fold into quiet runs like Book's own Git tools
+  (`-c`, `--output`, `grep -O`, a `--format` that asks for a signature, aliases and every path
+  outside the workspace keep their row).
 - **The compact transcript folds read-only shell commands into the quiet-run summary** (#459). A
   model that explores through the shell (`cat src/a.js`, `rg TODO src`, `ls src`) no longer draws a
   row per command: a conservative parser, modelled on OpenAI Codex's `parse_command.rs`, folds a
   `Bash` call like a read when it can prove the whole command read-only (no redirection, expansion,
   background job, wrapper, pager, follow mode or mutating flag) and it succeeded (a search that found nothing and exited 1 counts), ran in the
   foreground (not moved to a background shell at its timeout) and stays inside the workspace. Any
-  option that names a file counts as a path, and a glob that could expand to `..` keeps the row. No
-  `git` command folds (a plain `git …` carries none of the hardening Book's own Git tools apply, so
-  a repository's config or attributes can make it run a program), and neither does `ack`, which
-  reads a project-level `.ackrc`. The summary counts shell reads with `Read`'s files, shell searches
+  option that names a file counts as a path, and a glob that could expand to `..` keeps the row.
+  `ack` does not fold, because it reads a project-level `.ackrc`. The summary counts shell reads with `Read`'s files, shell searches
   with the searches, and listings as `N listings`. Anything else keeps its own row.
 - **Memory is keyed by the git repository root, and a cut `MEMORY.md` says so.** Linked worktrees
   and subdirectories of one repository now share one memory (before, each path got its own, so a
@@ -70,7 +78,8 @@ All notable changes to this project are documented in this file.
   A prose failure wraps past two rows when expanded. A failed
   `Check` now records its exit code, so its row reads `failed · exit 3` like a `Bash` row does (a
   timed-out check is not a failing check and has none). A `BashOutput` row for a background shell
-  that finished with a non-zero exit shows `exit N`; the read still counts as a success.
+  that finished with a non-zero exit shows `exit N`; the read still counts as a success, but it no
+  longer folds into the quiet-run summary, so the `exit N` stays on its own row.
 - **A failed Bash call's error detail keeps its last lines and its exit code** (#457). The detail
   under the tool row folded stderr into one paragraph, kept its start, and stopped after two rows,
   so a failing test run showed its first assertion and never its verdict. A failed command's

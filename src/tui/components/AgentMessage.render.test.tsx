@@ -128,6 +128,216 @@ describe('AgentMessage empty reasoning blocks', () => {
 });
 
 /**
+ * A thought before a tool call is hidden in compact mode (#470).
+ *
+ * The rule is "this step calls a tool", not "this row is quiet": a Bash or Edit
+ * step reasons just as much as a Read does, and its row says what came of it. An
+ * answer has no call, so its thought stays. Ctrl+O and screen readers keep every
+ * thought, and so does the one still streaming before its call lands.
+ */
+describe('AgentMessage thoughts before a tool call (#470)', () => {
+  const bashCall = { id: 'bash-1', name: 'Bash', arguments: { command: 'seq 1 3' } };
+  const bashResult = {
+    version: 2,
+    toolCallId: 'bash-1',
+    status: 'success',
+    content: '1\n2\n3',
+  } as ToolResult;
+
+  function toolStep(
+    how: 'think' | 'native',
+    prose = '',
+    calls: Message['toolCalls'] = [bashCall],
+  ): Message {
+    return {
+      ...assistant(how === 'think' ? `<think>weigh it\nthen go</think>${prose}` : prose, calls),
+      ...(how === 'native' ? { reasoningContent: 'weigh it\nthen go' } : {}),
+      toolResults: [bashResult],
+    };
+  }
+
+  function view(
+    message: Message,
+    props: {
+      transcriptMode?: 'compact' | 'detailed';
+      screenReader?: boolean;
+      isStreaming?: boolean;
+      showThinking?: boolean;
+      pendingPermission?: PendingPermissionRequest;
+    } = {},
+  ): string {
+    const { lastFrame } = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <AgentMessage
+          message={message}
+          isStreaming={props.isStreaming ?? false}
+          showThinking={props.showThinking ?? true}
+          transcriptMode={props.transcriptMode ?? 'compact'}
+          screenReader={props.screenReader}
+          pendingPermission={props.pendingPermission}
+          reducedMotion
+          terminalWidth={80}
+        />
+      </ThemeContext.Provider>,
+    );
+    return stripAnsi(lastFrame());
+  }
+
+  it.each(['think', 'native'] as const)(
+    'draws the tool row and no thought row in compact mode (%s)',
+    (how) => {
+      const frame = view(toolStep(how));
+
+      expect(frame).toContain('seq 1 3');
+      expect(frame).not.toContain('thought');
+      expect(frame).not.toContain('weigh it');
+      // Nothing above the row: it sits where a step with no thought puts it.
+      expect(frame.split('\n')[0]).toContain('seq 1 3');
+    },
+  );
+
+  it.each(['think', 'native'] as const)(
+    'keeps the thought row in the detailed transcript (%s)',
+    (how) => {
+      const frame = view(toolStep(how), { transcriptMode: 'detailed' });
+
+      expect(frame).toContain('seq 1 3');
+      expect(frame).toContain('Thought - 2 lines');
+    },
+  );
+
+  it.each(['think', 'native'] as const)('keeps every thought for a screen reader (%s)', (how) => {
+    const frame = view(toolStep(how), { screenReader: true });
+
+    expect(frame).toContain('seq 1 3');
+    expect(frame).toContain('Thought');
+  });
+
+  it('still hides it for showThinking=false in detailed mode', () => {
+    const frame = view(toolStep('think'), { transcriptMode: 'detailed', showThinking: false });
+
+    expect(frame).toContain('seq 1 3');
+    expect(frame).not.toContain('Thought');
+  });
+
+  it.each(['think', 'native'] as const)(
+    'keeps the thought row of a final answer with no tool call (%s)',
+    (how) => {
+      const answer: Message = {
+        ...assistant(
+          how === 'think' ? '<think>weigh it\nthen go</think>The answer is 3.' : 'The answer is 3.',
+        ),
+        ...(how === 'native' ? { reasoningContent: 'weigh it\nthen go' } : {}),
+      };
+      const frame = view(answer);
+
+      expect(frame).toContain('▸ thought · 2 lines');
+      expect(frame).toContain('The answer is 3.');
+    },
+  );
+
+  it('keeps the prose of a tool step, with no thought row and no blank row before the tool', () => {
+    const lines = view(toolStep('think', 'Step 6 is next: rename the helper.')).split('\n');
+    const prose = lines.findIndex((line) => line.includes('Step 6 is next'));
+    const tool = lines.findIndex((line) => line.includes('seq 1 3'));
+
+    expect(lines.some((line) => line.includes('thought'))).toBe(false);
+    // The prose is the first row: the hidden thought leaves no blank row behind.
+    expect(prose).toBe(0);
+    expect(tool).toBe(prose + 1);
+  });
+
+  it('keeps the same spacing for a step whose thought is native', () => {
+    const lines = view(toolStep('native', 'Step 6 is next: rename the helper.')).split('\n');
+
+    expect(lines[0]).toContain('Step 6 is next');
+    expect(lines[1]).toContain('seq 1 3');
+  });
+
+  it('draws the same rows as a step that never reasoned', () => {
+    const quiet = view(toolStep('think'));
+    const never = view({ ...toolStep('think'), content: '' });
+
+    expect(quiet).toBe(never);
+  });
+
+  it.each(['think', 'native'] as const)(
+    'keeps the thought of an answer that ends with a task-list update (%s)',
+    (how) => {
+      const todo = { id: 'todo-1', name: 'TodoWrite', arguments: { todos: [] } };
+      const answer: Message = {
+        ...assistant(how === 'think' ? '<think>weigh it\nthen go</think>All done.' : 'All done.', [
+          todo,
+        ]),
+        ...(how === 'native' ? { reasoningContent: 'weigh it\nthen go' } : {}),
+        toolResults: [],
+      };
+      const frame = view(answer);
+
+      expect(frame).toContain('▸ thought · 2 lines');
+      expect(frame).toContain('All done.');
+    },
+  );
+
+  it('keeps the thought of a turn that asks a question', () => {
+    const asking: Message = {
+      ...assistant('<think>weigh it\nthen go</think>', [
+        { id: 'ask-1', name: 'AskUserQuestion', arguments: { questions: [] } },
+      ]),
+      toolResults: [],
+    };
+
+    expect(view(asking)).toContain('▸ thought · 2 lines');
+  });
+
+  it.each(['think', 'native'] as const)(
+    'shows the thought while the prompt for its call is open, and hides it once the call runs (%s)',
+    (how) => {
+      const running: Message = { ...toolStep(how), toolResults: [] };
+      const waiting = view(running, { pendingPermission: { toolCall: bashCall } });
+
+      expect(waiting).toContain('▸ thought · 2 lines');
+      expect(waiting).toContain('seq 1 3');
+      // The same step with no prompt open: the call was approved and runs.
+      const approved = view(running);
+      expect(approved).not.toContain('thought');
+      // A prompt for another call does not bring it back.
+      const other = view(running, {
+        pendingPermission: { toolCall: { id: 'bash-2', name: 'Bash', arguments: {} } },
+      });
+      expect(other).not.toContain('thought');
+    },
+  );
+
+  it('keeps a thought that is still streaming while no tool call has landed', () => {
+    const thinking = assistant('<think>weigh it\nthen go</think>');
+    const frame = view(thinking, { isStreaming: true });
+
+    expect(frame).toContain('Thinking');
+    expect(frame).toContain('then go');
+  });
+
+  it('shows the native reasoning of a streaming message with no call yet', () => {
+    const frame = view(
+      { ...assistant(''), reasoningContent: 'weigh it\nthen go' },
+      { isStreaming: true },
+    );
+
+    expect(frame).toContain('Thinking');
+    expect(frame).toContain('weigh it');
+  });
+
+  it('hides a streaming thought once the call lands, and the row shows the activity', () => {
+    const running: Message = { ...toolStep('think'), toolResults: [] };
+    const frame = view(running, { isStreaming: true });
+
+    expect(frame).not.toContain('Thinking');
+    expect(frame).not.toContain('weigh it');
+    expect(frame).toContain('seq 1 3');
+  });
+});
+
+/**
  * A step of work versus the answer.
  *
  * Five rows per action — a thought, a blank, the sentence before acting, a
@@ -215,13 +425,14 @@ describe('AgentMessage work steps', () => {
   }
 
   it('draws a step as one unit, with no blank rows inside it', () => {
+    // The thought behind the call is not drawn (#470): the sentence and the tool
+    // row are the whole step.
     const lines = stripAnsi(stepFrame()).split('\n');
-    const thought = lines.findIndex((line) => line.includes('thought'));
     const narration = lines.findIndex((line) => line.includes(NARRATION));
     const tool = lines.findIndex((line, index) => index > narration && line.trim().length > 0);
 
-    expect(thought).toBeGreaterThanOrEqual(0);
-    expect(lines.slice(thought + 1, narration)).toEqual([]);
+    expect(lines.some((line) => line.includes('thought'))).toBe(false);
+    expect(narration).toBe(0);
     expect(lines.slice(narration + 1, tool)).toEqual([]);
   });
 
@@ -351,7 +562,7 @@ describe('AgentMessage work steps', () => {
   it('draws the collapsed thought row at reading weight, not the terminal faint attribute', () => {
     // SGR 2 on an already-muted grey put this row near 2.5:1 — below any
     // threshold a long read survives.
-    const thought = stepFrame()
+    const thought = answerFrame({ content: 'The answer.', reasoningContent: 'check config' })
       .split('\n')
       .find((line) => stripAnsi(line).includes('thought'))!;
 
