@@ -49,7 +49,13 @@ controls (`/agents`, `/agent`), config (`/model`, `/providers`,
 (`/status`, `/mcp`, `/cost`, `/usage` with `/stats` as an alias, `/context`, `/diff`, `/skills`,
 `/memory`), local output and reload (`/export`, `/reload-skills`), release/support
 (`/release-notes`, `/feedback`), agent prompts (`/init`, `/security-review`), and code review
-(`/review`, see below). `/help` is generated from the command registry: every visible built-in, in
+(`/review`, see below). `/memory` shows what Book remembers for this repository: each memory
+file from its frontmatter (type, and "from a delegated run" for what a session another agent
+drove saved), the `MEMORY.md` index against its 200-line and 25,000-byte load limits, the
+directory, and whether the model may write. `/memory delete <file>` removes a memory file and
+every `MEMORY.md` line linking to it; `/memory path` prints the directory; `/memory on` and
+`/memory off` turn the model's writes on and off (`memory.autoSave`). The model writes memory
+itself, with the file tools; there is no inbox to review. `/help` is generated from the command registry: every visible built-in, in
 groups, with its visible aliases, followed by your custom commands. `/release-notes` lists the
 installed version's changes from the CHANGELOG that ships with Book, one line each.
 
@@ -121,7 +127,7 @@ do with the result:
 | Everything else — session controls, pickers, panels, `/config`, `/export`, `/memory` | Refused with an error listing what _is_ supported, and exit code 1                |
 
 Refusal happens _before_ the command's own code runs, so a command with a side effect (`/config`
-writes `settings.local.json`, `/export` writes a file, `/memory approve` mutates memory) can never
+writes `settings.local.json`, `/export` writes a file, `/memory delete` removes a memory) can never
 half-fire in a host that cannot show its result. A `/name` that is not a command at all is still
 forwarded to the model verbatim, so an ordinary prompt like `book -p "/etc/hosts is a file"` is
 unaffected. A `.book/commands/*.md` command whose shell substitution has not been approved is
@@ -217,9 +223,8 @@ refuses. A prefix that matches no configured provider (`/advisor antropic/x`) is
 warning, and any other id that is not in your model list is saved with a note. So name the provider:
 `/advisor <provider>/<model>`. See "Model ids and provider prefixes" in the configuration guide. The
 consultation is billed to the session at the advisor model's rates, and `/cost` lists it, and the
-goal checks, as their own lines. Advice is another model's text, so after a consultation a
-`MemorySave` goes to the memory inbox, as it does after `Task`. Like `TodoWrite`, the tool needs no
-permission prompt (an explicit `deny` or `ask` rule naming it still applies).
+goal checks, as their own lines. Like `TodoWrite`, the tool needs no permission prompt (an
+explicit `deny` or `ask` rule naming it still applies).
 
 Unlike Claude Code, whose advisor is a server-side tool available only on Anthropic's API, Book's
 runs client-side, so any provider and any model can be the advisor. For Claude models, `/advisor`

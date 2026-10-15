@@ -32,8 +32,7 @@ All notable changes to this project are documented in this file.
   old workspace-path key is moved on first run, or merged into the new one with `-2`, `-3`
   suffixes on a name collision. `MEMORY.md` now loads its first 200 lines and 25,000 bytes, and a
   `> WARNING:` line at the end of the loaded index names how much was cut off and where. The
-  `/memory status` report, `book doctor` and the `MemorySave` consolidation nudge (from 20,000
-  bytes) count bytes as well as lines.
+  `/memory status` report and `book doctor` count bytes as well as lines.
 - **`/goal <condition>`: keep working until a condition holds**, modelled on Claude Code's command.
   Each time the agent stops without calling a tool, the compact model reads the transcript and
   judges the condition with Claude Code's evaluator prompt. An unmet verdict returns its reason to
@@ -296,6 +295,47 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Breaking: the model writes memory with the file tools, and `MemorySave` is gone.** Memory is
+  now one Markdown file per fact in the memory directory (`name`, `description` and
+  `metadata.type` frontmatter, a `Why:` and `How to apply:` line for feedback and project
+  memories, `[[links]]` to related ones), written with `Write`, `Edit`, `MultiEdit` or `ApplyPatch`
+  through the guard added with the memory write root. The model owns `MEMORY.md` as well: it adds
+  one `- [Title](file.md) — hook` line after each file, updates a file that already covers a fact
+  instead of adding another, and deletes a wrong memory with `rm`. The system prompt's memory
+  section is rewritten around that (a `write` variant in a `full` and a `learnings` flavour, and a
+  `read-only` variant for a subagent, `memory.autoSave: false`, or a `deny` rule that refuses a
+  memory write; no memory section when memory is off). The `memory saved: <file>` notice, and a
+  `memory deleted: <file>` one for an `ApplyPatch` delete, now come from the file tools; a memory
+  write keeps the hand-back look in the TUI, and its row names the file `memory/<name>.md` instead
+  of `../home/.book/projects/<slug>/memory/<name>.md`. `Glob` and `Grep` now search the memory
+  directory (never its dot-entries), a subagent included.
+- **Breaking: the memory inbox, the external-content quarantine, supersede history and background
+  extraction are removed.** `/memory inbox`, `/memory approve` and `/memory discard` are gone;
+  `/memory` keeps `status`, `path`, `on`, `off` and `delete <file>`, and `delete` now also removes
+  every `MEMORY.md` line linking to the file. Nothing is held back for review any more, a session
+  that read the web or an MCP server writes memory like any other, and an overwrite or a delete is
+  final. An existing inbox, superseded file or extraction file is dropped by the migration below.
+  `/memory status` and `book doctor` show the memory count, the legacy count (files a migration
+  that could not run left in the old layout) and the index against both limits. Entries in the session
+  state block and the `runtime.usedToolNames` tool history that served quarantine are removed with
+  them. The settings `memory.requireApproval`, `memory.quarantineExternal` and `memory.extraction`
+  are no longer read, and neither is a permission rule that names `MemorySave`: a document that
+  still has one loads, and `book doctor` reports each by key. `memory.enabled` and
+  `memory.autoSave` stay.
+- **Breaking: an existing memory store is migrated once, with a backup.** The first session that
+  loads a directory still in the old layout (files named `YYYY-MM-DD-<type>-<title>-<hash>.md` with
+  top-level `type` / `status` frontmatter, an `.inbox/`, extraction state, a typed index) copies the
+  whole directory, dot-entries included and symlinks skipped, to `memory.legacy-<YYYYMMDD>/` beside
+  `memory/` (`-2`, `-3`, … if that name exists). If the copy fails nothing changes and the next
+  session tries again. Each approved file is then rewritten in place as `<slug>.md` with `name`,
+  `description` (its old index hook, else its first body line) and `metadata` (`type`,
+  `originSessionId`, `modified`, `evidence`, and `driver: agent` where the old file said so; a
+  migrated delegated-run file stays agent-owned), and `MEMORY.md` is rewritten as
+  `- [Title](slug.md) — description` lines after the hand-written lines it held. Superseded,
+  pending and discarded files, the inbox, and the extraction state and lock files are not carried
+  over; they survive only in the backup. A `.format` file marks the directory as migrated.
+  While the backup exists, `/memory status` and `book doctor` say where it is: "Migrated to the new
+  memory format; the old files are in `<path>`."
 - **The transcript caps file diffs and its output footers are short** (#456, #458). A newly created
   file previews only its first 10 lines, one terminal row each, with no hunk header. Ctrl+E shows
   the whole of the current (latest or selected) row's output, not every row. A cut of a new file or

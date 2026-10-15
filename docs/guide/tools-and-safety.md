@@ -260,8 +260,8 @@ The benchmark requires configured provider credentials and is not part of CI.
 a teaching session followed by a probe in a fresh session. The workspace is reset between the two,
 so a probe can pass only through memory, never by reading what the teaching session edited.
 Teaching and probe run in separate homes: the probe gets only its own memory directory (approved
-files and `MEMORY.md`, no inbox, no sessions, no other project), and a probe that inspects
-processes, the eval sources, transcripts or the inbox is reported as contaminated and never counted
+files and `MEMORY.md`, no dot-entry, no sessions, no other project), and a probe that inspects
+processes, the eval sources, transcripts or an old inbox is reported as contaminated and never counted
 as a pass. Every item also runs with memory disabled (the baseline) on the same probe. Items cover explicit and
 implicit saves, corrections, a buried convention, scoped requests and keyword traps that must _not_
 be saved, facts already in `CLAUDE.md`, update, forget, and poisoned web and repository content.
@@ -327,7 +327,7 @@ Modes differ only in what happens to calls that no `deny` rule matched:
 | `dontAsk`           | Refused except for the tools below that never prompt — the mode never prompts, and a user `allow` rule does not exempt a call |
 | `bypassPermissions` | Run without a prompt                                                                                                          |
 
-Some tools never prompt. `MemorySave`, `TodoWrite` (the agent's checklist) and `Advisor` (offered
+Some tools never prompt. `TodoWrite` (the agent's checklist) and `Advisor` (offered
 only once you choose a model with `/advisor`; it sends the conversation to that model) are always
 allowed,
 and `ToolSearch`, `EnterPlanMode` and the managed-agent lifecycle tools (every `Agent*` tool except
@@ -341,9 +341,13 @@ project's memory directory without a prompt, in `default`, `acceptEdits`, `auto`
 `deny` or `ask` rule you wrote still wins, and plan mode still blocks every mutating tool. Only the
 main agent gets this, and only with `memory.enabled` and `memory.autoSave` on: a subagent or managed
 child cannot write there, and with `autoSave` off memory is read-only. The path must be absolute,
-end in `.md`, and sit under no dot-directory (`.inbox/`, `.git/`) and no symlink. An `ApplyPatch`
-that also names a file outside the memory directory goes through the normal prompt. Every such write
-passes a guard before it lands:
+end in `.md`, and sit under no dot-directory (`.git/`, an old `.inbox/`) and no symlink. An `ApplyPatch`
+that also names a file outside the memory directory goes through the normal prompt. Each successful
+write announces itself (`memory saved: <file>`, or `memory deleted: <file>` for an `ApplyPatch`
+delete; an edit of `MEMORY.md` alone says nothing), and the tool row names the file relative to the
+memory directory (`memory/<file>.md`). The model deletes a memory with `rm` under the ordinary `Bash`
+permission; `Bash` has no memory guard, so that path, like `echo >`, is not checked. Every write
+through a file tool passes a guard before it lands:
 
 - Text that looks like a secret is refused (`memory_secret_rejected`).
 - In a session another agent drives, a topic file needs a `metadata.type` of `project` or
@@ -359,8 +363,9 @@ passes a guard before it lands:
 index must be read first.
 
 **Workspace reads.** In `default` and `acceptEdits`, a `Read`, `Glob` or `Grep` that the tool can
-serve runs without a prompt: a target inside the workspace, or for `Read` inside Book's memory
-directory (but not its inbox). The target is resolved the way the tool resolves it: `..` is applied
+serve runs without a prompt: a target inside the workspace, or inside Book's memory directory (for
+`Glob` and `Grep`, an absolute `path` or pattern into it; neither lists a dot-entry such as
+`.format`, and every agent that has the memory loaded can search it, a subagent included). The target is resolved the way the tool resolves it: `..` is applied
 and symlinks and junctions are followed, so a link inside the workspace that points out of it still
 asks. A `Grep` with no `path` searches the workspace, and so does a relative `Glob` pattern: a
 `pattern` is anchored to the workspace the same way a relative `Read` path is, and an absolute
@@ -421,12 +426,6 @@ and in `dontAsk`, which refused these anyway. What changed there is the kind of 
 be `permission_denied`, whose remedy says to add an allow rule, and no rule or mode can make `Read`
 serve a path outside every root. `dontAsk` still refuses a _workspace_ read with no allow rule, as
 before; only an outside target now gets the refusal that names the directory that would serve it.
-
-**Under an excluded subpath.** A path a root serves but whose subpath the file tools exclude — Book's
-own memory inbox — is refused the same way, for the same reason, with its own code
-`path_excluded` and a message that says the path is excluded. The two refusals are not
-interchangeable: the remedy for an outside target is a directory to add, and there is nothing to add
-for one the tools never open. Everything outside the excluded subpath stays served.
 
 **Writes in an approved directory.** An approved `additionalDirectories` entry is a root for the
 write tools too: `Write`, `Edit`, `MultiEdit`, `ApplyPatch` and `NotebookEdit` accept an absolute

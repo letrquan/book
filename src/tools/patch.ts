@@ -7,8 +7,12 @@ import type {
 import { throwIfAborted } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { observeFile, requireFreshObservation } from './file-provenance.js';
-import { checkMemoryWrite, withMemoryWarnings } from '../memory-write-guard.js';
-import { pathOutsideWorkspaceResult, resolveMutationPath } from './path-utils.js';
+import { checkMemoryWrite, noticeMemoryWrite, withMemoryWarnings } from '../memory-write-guard.js';
+import {
+  mutationDisplayPath,
+  pathOutsideWorkspaceResult,
+  resolveMutationPath,
+} from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
 import {
   readTextSnapshot,
@@ -43,6 +47,8 @@ interface StagedFile {
   absolutePath: string;
   writePath: string;
   relativePath: string;
+  /** The file is in the memory directory, so a notice follows the commit. */
+  memory?: true;
   before: TextSnapshot;
   afterBytes?: Buffer;
   afterText?: string;
@@ -264,13 +270,14 @@ export function applyHunks(
 }
 
 function mutationFromDiff(
-  relativePath: string,
+  target: { displayPath: string; memory?: true },
   kind: FileMutationSummary['kind'],
   stats: { addedLines: number; removedLines: number },
 ): FileMutationSummary {
   return {
     kind,
-    filePath: relativePath,
+    filePath: target.displayPath,
+    ...(target.memory ? { memory: true as const } : {}),
     addedLines: stats.addedLines,
     removedLines: stats.removedLines,
   };
@@ -288,7 +295,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
   const paths = parsed.operations.map((operation) => operation.path);
   const resolved = parsed.operations.map((operation) => {
     const result = resolveMutationPath(ctx, operation.path);
-    return result ? { operation, ...result } : null;
+    return result ? { operation, ...result, displayPath: mutationDisplayPath(result) } : null;
   });
   if (resolved.some((entry) => !entry))
     return pathOutsideWorkspaceResult(paths[resolved.findIndex((entry) => !entry)]);
@@ -297,6 +304,8 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
     filePath: string;
     canonicalPath: string;
     relativePath: string;
+    /** `relativePath`, or `memory/<name>.md` for a memory file. */
+    displayPath: string;
     memory?: true;
   }>;
   const canonicalKeys = entries.map((entry) =>
@@ -361,10 +370,11 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
               absolutePath: entry.filePath,
               writePath: entry.canonicalPath,
               relativePath: entry.relativePath,
+              memory: entry.memory,
               before,
               afterText,
               afterBytes: Buffer.from(afterText, 'utf8'),
-              mutation: mutationFromDiff(entry.relativePath, 'create', stats),
+              mutation: mutationFromDiff(entry, 'create', stats),
             });
           } else if (entry.operation.kind === 'delete') {
             if (!before.exists)
@@ -381,10 +391,12 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
               absolutePath: entry.filePath,
               writePath: entry.filePath,
               relativePath: entry.relativePath,
+              memory: entry.memory,
               before,
               mutation: {
                 kind: 'delete',
-                filePath: entry.relativePath,
+                filePath: entry.displayPath,
+                ...(entry.memory ? { memory: true as const } : {}),
                 addedLines: 0,
                 removedLines: linesOf(before.text).length,
               },
@@ -424,10 +436,11 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
               absolutePath: entry.filePath,
               writePath: entry.canonicalPath,
               relativePath: entry.relativePath,
+              memory: entry.memory,
               before,
               afterText,
               afterBytes: restoreTextEncoding(afterText, before),
-              mutation: mutationFromDiff(entry.relativePath, 'update', stats),
+              mutation: mutationFromDiff(entry, 'update', stats),
             });
           }
         }
@@ -528,6 +541,15 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
                 file.operation.kind === 'add' ? 'create' : 'edit',
               ),
             );
+        }
+        for (const file of staged) {
+          if (file.memory) {
+            noticeMemoryWrite(
+              ctx,
+              file.absolutePath,
+              file.operation.kind === 'delete' ? 'deleted' : 'saved',
+            );
+          }
         }
         const result = toolSuccess(
           withMemoryWarnings(

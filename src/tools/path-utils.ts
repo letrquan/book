@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, realpathSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
-import type { ReadOnlyRoot, ToolResult } from '../types/tools.js';
+import type { ToolResult } from '../types/tools.js';
 import { toolFailure } from './result.js';
 
 /**
@@ -103,7 +103,12 @@ export interface ResolvedReadablePath {
 /** The roots a file tool may serve, in the order it tries them. */
 export interface PathRoots {
   workspaceRoot: string;
-  readOnlyRoots?: readonly (string | ReadOnlyRoot)[];
+  readOnlyRoots?: readonly string[];
+  /**
+   * Book's project memory directory as a search root (`ToolContext.memorySearchRoot`), for the
+   * tools that walk a tree: a path in it is served unless a dot-entry lies between it and the root.
+   */
+  memorySearchRoot?: string;
   /**
    * Honored `additionalDirectories` (#300), as resolved real roots. Tried after the workspace, and
    * only for an absolute path: a relative path stays workspace-anchored.
@@ -120,57 +125,61 @@ export interface PathRoots {
   memoryWrite?: { root: string };
 }
 
-/** The entries of a read-only root list, which carry exclusions, as a plain array. */
-function readOnlyEntries(roots: PathRoots): Array<string | ReadOnlyRoot> {
-  return [...(roots.readOnlyRoots ?? []), ...(roots.additionalRoots ?? [])];
-}
-
 /**
- * Why a path no tool may serve it: `excluded` when it fell under a root that hides it (Book's
- * memory inbox, `.book/settings.local.json`'s directory), or `unreachable` when no root contains
- * it at all. Only the second is a refusal whose remedy is to widen the roots; the first has a
- * narrower one, and a prompt is the right answer for it.
+ * Which resolved file the read tools may serve, or `unreachable` when no root contains it — the
+ * refusal whose remedy is to widen the roots.
  */
-export type UnreachablePathReason = 'excluded' | 'unreachable';
-
-export type ReadablePathDetail = { path: ResolvedReadablePath } | { reason: UnreachablePathReason };
+export type ReadablePathDetail = { path: ResolvedReadablePath } | { reason: 'unreachable' };
 
 /**
  * Which resolved file the read tools may serve, and why not when they may not.
  *
- * The workspace is tried first, then the read-only roots, then the honored `additionalDirectories`
- * — the same order {@link resolveReadablePath} has always used, with the extra roots appended.
- * Only an absolute path reaches the roots outside the workspace, so a relative path never
- * re-anchors to one.
+ * The workspace is tried first, then the read-only roots, then the honored `additionalDirectories`,
+ * then the memory search root — the same order {@link resolveReadablePath} has always used, with
+ * the extra roots appended. Only an absolute path reaches the roots outside the workspace, so a
+ * relative path never re-anchors to one. The root that matched travels with the answer, so a
+ * caller labelling or re-searching the file does not have to work out which of the roots it was
+ * found under by comparing paths again.
  *
- * The distinction the single `null` used to hide matters now that a call the tool cannot serve is
- * refused instead of prompted for: a path under a hidden subpath keeps its prompt, while a path
- * no root contains is refused outright and the refusal names the remedy.
+ * A call the tool cannot serve is refused instead of prompted for, and the refusal names the
+ * remedy, which is why the answer says so rather than being a bare `null`.
  */
 export function resolveReadablePathDetail(
   context: PathRoots,
   inputPath: string,
 ): ReadablePathDetail {
-  const entries = readOnlyEntries(context);
-  const rejected = (match: ResolvedReadablePath): ReadablePathDetail =>
-    isExcludedPath(match.canonicalPath, entries) ? { reason: 'excluded' } : { path: match };
-
-  // The exclusion applies whichever root matched: a memory directory inside the workspace
-  // (running in $HOME) must not expose its inbox through the workspace branch. The root that
-  // matched travels with the answer, so a caller labelling or re-searching the file does not have
-  // to work out which of the roots it was found under by comparing paths again.
   const wsMatch = resolveWorkspacePath(context.workspaceRoot, inputPath);
   if (wsMatch) {
-    return rejected({ ...wsMatch, root: context.workspaceRoot, inWorkspace: true });
+    return { path: { ...wsMatch, root: context.workspaceRoot, inWorkspace: true } };
   }
 
   if (!isAbsolute(inputPath)) return { reason: 'unreachable' };
-  for (const entry of entries) {
-    const root = typeof entry === 'string' ? entry : entry.root;
+  for (const root of [...(context.readOnlyRoots ?? []), ...(context.additionalRoots ?? [])]) {
     const match = resolveWorkspacePath(root, inputPath);
-    if (match) return rejected({ ...match, root, inWorkspace: false });
+    if (match) return { path: { ...match, root, inWorkspace: false } };
   }
-  return { reason: 'unreachable' };
+  const memory = context.memorySearchRoot
+    ? resolveMemorySearchPath(context.memorySearchRoot, inputPath)
+    : null;
+  return memory ? { path: memory } : { reason: 'unreachable' };
+}
+
+/**
+ * A path inside the memory search root, unless a dot-entry (`.format`, a backup directory) lies
+ * between the root and the file, in either spelling of the path.
+ */
+function resolveMemorySearchPath(
+  memoryRoot: string,
+  inputPath: string,
+): ResolvedReadablePath | null {
+  const match = resolveWorkspacePath(memoryRoot, inputPath);
+  if (!match) return null;
+  const fromRoot = relative(canonicalizePath(resolve(memoryRoot)), match.canonicalPath);
+  const segments = [...match.relativePath.split('/'), ...fromRoot.split(sep)];
+  if (segments.some((segment) => segment.startsWith('.') && segment !== '.' && segment !== '..')) {
+    return null;
+  }
+  return { ...match, root: memoryRoot, inWorkspace: false };
 }
 
 export function resolveReadablePath(
@@ -291,25 +300,14 @@ function resolveMemoryWritePath(
 }
 
 /**
- * Whether a resolved path falls under an excluded subpath of a read-only root (the memory
- * inbox). Checked on the canonical path — after symlinks — and case-folded where the file
- * system folds case, so `.INBOX/` or a link into `.inbox` cannot slip past it.
+ * How a mutation's file is named in its summary (the tool row and the diff): the workspace-relative
+ * path, except that a memory file is `memory/<name>.md`, relative to the memory directory — its
+ * workspace-relative spelling is `../home/.book/projects/<slug>/memory/x.md`.
  */
-function isExcludedPath(
-  canonicalPath: string,
-  roots: readonly (string | ReadOnlyRoot)[] | undefined,
-): boolean {
-  const fold = (p: string) => (process.platform === 'linux' ? p : p.toLowerCase());
-  const target = fold(canonicalPath);
-  for (const entry of roots ?? []) {
-    if (typeof entry === 'string' || !entry.exclude?.length) continue;
-    const base = fold(canonicalizePath(entry.root));
-    for (const sub of entry.exclude) {
-      const dir = fold(join(base, sub));
-      if (target === dir || target.startsWith(`${dir}${sep}`)) return true;
-    }
-  }
-  return false;
+export function mutationDisplayPath(resolved: ResolvedReadablePath): string {
+  if (!resolved.memory) return resolved.relativePath;
+  const below = relative(canonicalizePath(resolve(resolved.root)), resolved.canonicalPath);
+  return `memory/${below.split(sep).join('/')}`;
 }
 
 /**
@@ -434,8 +432,9 @@ export function isBookLocalSettingsUnderRoots(
   options: { directory?: boolean } = {},
 ): boolean {
   if (!hasBookLocalSettingsShape(path, options)) return false;
-  return [roots.workspaceRoot, ...readOnlyEntries(roots)].some((root) => {
-    const entryRoot = typeof root === 'string' ? root : root.root;
-    return isBookLocalSettingsPath(path, entryRoot, options);
-  });
+  return [
+    roots.workspaceRoot,
+    ...(roots.readOnlyRoots ?? []),
+    ...(roots.additionalRoots ?? []),
+  ].some((root) => isBookLocalSettingsPath(path, root, options));
 }

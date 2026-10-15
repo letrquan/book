@@ -96,7 +96,6 @@ function config(): AgentConfig {
         ...DEFAULT_SETTINGS.memory,
         enabled: false,
         autoSave: false,
-        requireApproval: true,
       },
       retry: {
         ...DEFAULT_SETTINGS.retry,

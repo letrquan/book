@@ -151,7 +151,10 @@ export interface NestedToolObserver {
 
 export interface FileMutationSummary {
   kind: 'create' | 'update' | 'delete';
+  /** Workspace-relative; a memory file is `memory/<name>.md`, relative to the memory directory. */
   filePath: string;
+  /** The file is in the project memory directory (`ToolContext.memoryWrite`). */
+  memory?: true;
   addedLines: number;
   removedLines: number;
 }
@@ -327,19 +330,20 @@ export interface ToolDefinition {
   execute: (args: Record<string, unknown>, context: ToolContext) => Promise<ToolResult>;
 }
 
-export interface ReadOnlyRoot {
-  root: string;
-  /** Subpaths relative to root that must not be read (e.g. ['.inbox']). */
-  exclude?: readonly string[];
-}
-
 export interface ToolContext {
   workspaceRoot: string;
   /**
-   * Directories outside the workspace that the Read tool may read;
-   * today only the project memory directory.
+   * Paths outside the workspace that the Read tool may read: the project memory directory and
+   * the files this session clipped a result into.
    */
-  readOnlyRoots?: readonly (string | ReadOnlyRoot)[];
+  readOnlyRoots?: readonly string[];
+  /**
+   * The project memory directory as a *search* root: Glob and Grep reach the files in it (an
+   * absolute pattern or `path`), as Read does through `readOnlyRoots`. Set for every agent that
+   * can read memory, a subagent included. A dot-entry below it (`.format`, a backup) stays out of
+   * a search's results.
+   */
+  memorySearchRoot?: string;
   /**
    * Honored `additionalDirectories`, as resolved real roots the file tools may serve alongside
    * the workspace: Read, Glob and Grep reach them, and so do the write tools' root check. A read
@@ -422,8 +426,6 @@ export interface ToolContext {
   onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
   /** Host sink for one-line informational notices (e.g. memory saved). */
   onNotice?: (notice: string) => void;
-  /** Canonical tool names invoked so far in this session. */
-  usedToolNames?: Set<string>;
   /** Per-session capability/discovery controller installed by the agent loop. */
   toolDiscovery?: ToolDiscoveryContext;
   /** Mutable resources owned by the current session, separate from configuration. */

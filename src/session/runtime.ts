@@ -4,7 +4,6 @@ import type { AgentTask, BackgroundShellStore } from '../types/runtime.js';
 import type { Todo } from '../tools/todo.js';
 import type { FileObservation, ToolDiscoveryState } from '../types/tools.js';
 import { AgentContextCache } from '../agent/context.js';
-import { refusedBeforeRun } from '../tools/pre-execution-codes.js';
 import { ToolExecutionScheduler } from '../tools/execution-scheduler.js';
 import { RunAccounting } from './run-accounting.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
@@ -15,38 +14,7 @@ import type { ResolvedSettings, SkillSettings } from '../settings.js';
 import { createSandbox, type Sandbox } from '../sandbox.js';
 import { SkillWatcher } from '../skill-watcher.js';
 import type { DiscoverSkillsOptions } from '../skills.js';
-import type { Message } from '../types/messages.js';
 import type { ActiveGoal } from '../types/goal.js';
-
-/**
- * Canonical names of the tools a conversation actually ran.
- *
- * `usedToolNames` gates memory quarantine: a conversation that fetched the web,
- * called an MCP tool, or delegated to an agent must count as external even when
- * the runtime is rebuilt for it (a resume, a rewind, a clear). A recorded call
- * counts only when its result is there and was not refused — a `blocked` result
- * is a denied, skipped, or plan-mode-refused call, which read nothing.
- */
-export function toolNamesFromHistory(messages: Message[]): Set<string> {
-  const ran = new Set(
-    messages.flatMap((message) =>
-      (message.toolResults ?? [])
-        // Blocked calls and every result refused before the tool ran — an unknown or
-        // inactive tool, arguments the schema or the JSON parser refused, a call the
-        // abort or a stream that ended first cancelled — read nothing. The live path
-        // (executeToolCall) never counts them either.
-        .filter((result) => result.status !== 'blocked' && !refusedBeforeRun(result))
-        .map((result) => result.toolCallId),
-    ),
-  );
-  const tools = new Set<string>();
-  for (const message of messages) {
-    for (const call of message.toolCalls ?? []) {
-      if (call.name && ran.has(call.id)) tools.add(call.name);
-    }
-  }
-  return tools;
-}
 
 export interface SessionRuntimeOptions {
   tasks?: AgentTask[];
@@ -62,12 +30,6 @@ export interface SessionRuntimeOptions {
   skillRegistry?: SkillRegistry;
   /** Skill root discovery options, shared by the registry and the watcher so they agree. */
   skillDiscoveryOptions?: DiscoverSkillsOptions;
-  /**
-   * The conversation this runtime is being built for. Its tool calls seed
-   * `usedToolNames`, so every runtime built for a loaded, resumed, or rewound
-   * conversation knows what that conversation already read.
-   */
-  history?: Message[];
   /**
    * Whether this runtime is the session's long-lived one. `false` marks a runtime that is disposed
    * when one run ends — a Task subagent's, a managed agent's — and so may not adopt a timed-out
@@ -141,13 +103,6 @@ export class SessionRuntime {
    */
   readonly ownsSessionShells: boolean;
   /**
-   * Canonical names of tools executed in this conversation, seeded from the
-   * conversation it was built for. A runtime is replaced rather than cleared
-   * when the host projects a different conversation, so this only ever grows
-   * within one conversation.
-   */
-  readonly usedToolNames: Set<string>;
-  /**
    * Files this session's tool output was clipped into, as absolute paths.
    *
    * Owned by the session rather than by one `runAgentLoop` call, because a clip
@@ -188,7 +143,6 @@ export class SessionRuntime {
     this.skillRegistry = options.skillRegistry;
     this.skillDiscoveryOptions = options.skillDiscoveryOptions ?? {};
     this.ownsSessionShells = options.ownsSessionShells ?? true;
-    this.usedToolNames = toolNamesFromHistory(options.history ?? []);
   }
 
   /**

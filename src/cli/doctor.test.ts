@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { homedir, tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { shellArgument } from '../trust-command.js';
 import { runDoctorCommand } from './doctor.js';
 import { updateWorkspaceTrust } from '../workspace-trust.js';
@@ -588,9 +596,11 @@ describe('runDoctorCommand project-declared hooks', () => {
 
 describe('runDoctorCommand memory health', () => {
   it('reports memory health line, counts, index lines, and last write', async () => {
-    const { getProjectMemoryDir, writeMemoryCandidate } = await import('../memory-store.js');
+    const { getProjectMemoryDir } = await import('../memory-store.js');
     const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome });
     mkdirSync(memoryDir, { recursive: true });
+    // Marked as already in the current layout, so the legacy file below is listed, not migrated.
+    writeFileSync(join(memoryDir, '.format'), '2\n');
     writeFileSync(
       join(memoryDir, 'MEMORY.md'),
       '- [Convention](conv.md) — project convention\n- [Rule](rule.md) — rule\n',
@@ -598,32 +608,58 @@ describe('runDoctorCommand memory health', () => {
     );
     writeFileSync(
       join(memoryDir, 'conv.md'),
-      '---\ntype: project\nstatus: approved\n---\n# Convention\nUse pnpm.',
+      '---\nname: conv\ndescription: Use pnpm\nmetadata:\n  type: project\n---\nUse pnpm.',
       'utf-8',
     );
-    writeMemoryCandidate(
-      workspace,
-      {
-        type: 'user',
-        title: 'User likes short answers',
-        body: 'User likes short answers.',
-        source: 'auto',
-      },
-      { bookRoot: bookHome },
+    // A file the old save tool retired still loads, and doctor says it is legacy.
+    writeFileSync(
+      join(memoryDir, 'rule.md'),
+      '---\ntype: project\nstatus: superseded\n---\n# Rule\nOld.',
+      'utf-8',
     );
 
     const output = await doctorOutput();
 
     expect(output).toContain('Memory:');
     expect(output).not.toContain('Health:');
-    expect(output).toContain('Approved memories: 1');
-    expect(output).toContain('Inbox candidates:  1');
+    expect(output).toContain('Memories:          2');
+    expect(output).toContain('Legacy superseded: 1');
+    expect(output).not.toContain('Inbox');
     expect(output).toContain('Index lines:       2 / 200');
     expect(output).toContain('Index bytes:       ');
     expect(output).toContain(' / 25,000');
     expect(output).not.toContain('Index cut:');
-    expect(output).toContain('Superseded:        0');
     expect(output).toMatch(/Last write:\s+\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('migrates a legacy store on the way and names its backup once', async () => {
+    const { getProjectMemoryDir } = await import('../memory-store.js');
+    const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome });
+    mkdirSync(memoryDir, { recursive: true });
+    writeFileSync(
+      join(memoryDir, '2026-01-01-project-rule-aaaaaaaa.md'),
+      '---\ntype: project\nstatus: approved\n---\n\n# Rule\n\nUse rules.\n',
+      'utf-8',
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('Memories:          1');
+    const notice = output.match(
+      /Migrated to the new memory format; the old files are in (\S+memory\.legacy-\d{8})\./,
+    );
+    expect(notice).not.toBeNull();
+    expect(dirname(notice![1])).toBe(dirname(memoryDir));
+    expect(existsSync(join(notice![1], '2026-01-01-project-rule-aaaaaaaa.md'))).toBe(true);
+    expect(output.match(/Migrated to the new memory format/g)).toHaveLength(1);
+  });
+
+  it('says nothing about a backup when the store was never migrated', async () => {
+    const { getProjectMemoryDir } = await import('../memory-store.js');
+    const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome });
+    mkdirSync(memoryDir, { recursive: true });
+
+    expect(await doctorOutput()).not.toContain('Migrated to the new memory format');
   });
 
   it('says when MEMORY.md is over a limit and only part of it loads', async () => {

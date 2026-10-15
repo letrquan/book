@@ -14,7 +14,7 @@ import {
   persistWorkspaceProviderChoice,
   workspaceProviderFingerprint,
 } from '../provider-approvals.js';
-import { saveMemory } from '../memory-store.js';
+import { getProjectMemoryDir } from '../memory-store.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../models.js';
 
 function context(overrides: Partial<BuiltinCommandContext> = {}): BuiltinCommandContext {
@@ -695,11 +695,15 @@ describe('built-in command contract', () => {
       type: 'set-memory-auto-save',
       enabled: true,
     });
-    expect(registry.execute('memory', 'unknown', context())).toEqual({
+    const usage = {
       type: 'local-message',
-      content:
-        'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|delete <file>|on|off|path]',
-    });
+      content: 'Usage: /memory [status|delete <file>|on|off|path]',
+    };
+    expect(registry.execute('memory', 'unknown', context())).toEqual(usage);
+    // The inbox is gone, and its commands with it.
+    for (const retired of ['inbox', 'approve 1', 'discard 1']) {
+      expect(registry.execute('memory', retired, context()), retired).toEqual(usage);
+    }
   });
 
   it('reports and deletes memories from the store on disk', () => {
@@ -708,29 +712,24 @@ describe('built-in command contract', () => {
     const previousBookHome = process.env.BOOK_HOME;
     process.env.BOOK_HOME = bookHome;
     try {
-      const first = saveMemory(
-        workspace,
-        {
-          type: 'project',
-          title: 'Build command',
-          body: 'Use npm run build.',
-          origin: 'model-tool',
-          externalContext: false,
-        },
-        { slug: 'build-cmd.md' },
+      // Files as the model writes them: new frontmatter, and the old layout side by side.
+      const memoryDir = getProjectMemoryDir(workspace);
+      mkdirSync(memoryDir, { recursive: true });
+      writeFileSync(join(memoryDir, '.format'), '2\n'); // already migrated: the old file stays as is
+      const first = join(memoryDir, 'build-cmd.md');
+      const second = join(memoryDir, 'terse.md');
+      writeFileSync(
+        first,
+        '---\nname: build-cmd\ndescription: Build command\nmetadata:\n  type: project\n---\nUse npm run build.\n',
       );
-      const second = saveMemory(
-        workspace,
-        {
-          type: 'user',
-          title: 'Prefers terse output',
-          body: 'Keep answers short.',
-          origin: 'model-tool',
-          externalContext: false,
-        },
-        { slug: 'terse.md' },
+      writeFileSync(
+        second,
+        '---\ntype: user\nstatus: approved\n---\n# Prefers terse output\nShort.\n',
       );
-      expect(first.ok && second.ok).toBe(true);
+      writeFileSync(
+        join(memoryDir, 'MEMORY.md'),
+        '- [Build command](build-cmd.md) — how to build\n- [Terse](terse.md) — short answers\nA hand-written note.\n',
+      );
 
       const registry = createBuiltinCommandRegistry();
 
@@ -740,21 +739,25 @@ describe('built-in command contract', () => {
       expect(status).toEqual(
         expect.objectContaining({
           type: 'local-message',
-          content: expect.stringContaining('Build command (project)'),
+          content: expect.stringContaining('- Build command (project) — build-cmd.md'),
         }),
       );
       expect(status).toEqual(
         expect.objectContaining({
-          content: expect.stringContaining('Prefers terse output (user)'),
+          content: expect.stringContaining('- Terse (user) — terse.md'),
         }),
       );
 
       expect(registry.execute('memory', 'delete terse.md', context({ workspace }))).toEqual({
         type: 'local-message',
-        content: `Deleted memory → \`${second.path}\``,
+        content: `Deleted memory → \`${second}\``,
         refreshMemory: true,
       });
-      expect(existsSync(second.path!)).toBe(false);
+      expect(existsSync(second)).toBe(false);
+      // The file's index line goes with it; every other line stays as it was.
+      expect(readFileSync(join(memoryDir, 'MEMORY.md'), 'utf8')).toBe(
+        '- [Build command](build-cmd.md) — how to build\nA hand-written note.\n',
+      );
 
       // A file name only. `1` is not an index into the listing `/memory status`
       // printed: a model write between the two commands can shift it, and the
@@ -764,14 +767,14 @@ describe('built-in command contract', () => {
         content: '✕ Memory file not found: 1.md',
         refreshMemory: false,
       });
-      expect(existsSync(first.path!)).toBe(true);
+      expect(existsSync(first)).toBe(true);
 
       expect(registry.execute('memory', 'delete', context({ workspace }))).toEqual({
         type: 'local-message',
         content: '✕ Usage: /memory delete <file>',
         refreshMemory: false,
       });
-      expect(existsSync(first.path!)).toBe(true);
+      expect(existsSync(first)).toBe(true);
     } finally {
       if (previousBookHome === undefined) delete process.env.BOOK_HOME;
       else process.env.BOOK_HOME = previousBookHome;

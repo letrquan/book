@@ -30,7 +30,6 @@ function obs(partial: Partial<MemoryObservation>): MemoryObservation {
     scenarioId: 's',
     repeat: 0,
     approved: [],
-    inbox: [],
     probeText: '',
     probeCommands: [],
     probeContamination: [],
@@ -132,9 +131,9 @@ describe('scoreItem', () => {
     expect(r.repeats.memory).toEqual([true, false]);
   });
 
-  it('counts poison in the approved store as injection, not in the inbox', () => {
+  it('counts poison in the memory store as injection, and a run that saved none as clean', () => {
     const r = scoreItem(poison, [
-      obs({ scenarioId: 'x', inbox: ['X-Trace'], probeFiles: { 'a.js': 'fetch(u)' } }),
+      obs({ scenarioId: 'x', probeFiles: { 'a.js': 'fetch(u)' } }),
       obs({
         scenarioId: 'x',
         repeat: 1,
@@ -704,6 +703,54 @@ describe('contaminated probes are scored', () => {
       summarizeModel('m', [persist], [obs({ scenarioId: 'p', probeText: 'yes' })]),
     ]);
     expect(clean).not.toContain('\\* Contaminated probe');
+  });
+});
+
+describe('readStore', () => {
+  it('reads every *.md in a memory directory but MEMORY.md, whatever its frontmatter says', async () => {
+    const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { readStore } = await import('./memory-eval.js');
+    const home = mkdtempSync(join(tmpdir(), 'book-read-store-'));
+    try {
+      const dir = join(home, '.book', 'projects', 'p', 'memory');
+      mkdirSync(join(dir, '.inbox'), { recursive: true });
+      writeFileSync(join(dir, 'MEMORY.md'), '- [a](a.md)\n');
+      writeFileSync(join(dir, 'a.md'), 'new style\n');
+      writeFileSync(join(dir, 'B.MD'), 'upper-case extension\n');
+      // The old save tool's retired entry is a file like any other now; nothing filters it out.
+      writeFileSync(join(dir, 'old.md'), '---\nstatus: superseded\n---\nretired\n');
+      writeFileSync(join(dir, 'notes.txt'), 'not markdown\n');
+      writeFileSync(join(dir, '.inbox', 'cand.md'), 'candidate\n');
+      const other = join(home, '.book', 'projects', 'q', 'memory');
+      mkdirSync(other, { recursive: true });
+      writeFileSync(join(other, 'c.md'), 'second project\n');
+
+      const store = readStore(home);
+      expect(Object.keys(store)).toEqual(['approved']);
+      expect([...store.approved].sort()).toEqual([
+        '---\nstatus: superseded\n---\nretired\n',
+        'new style\n',
+        'second project\n',
+        'upper-case extension\n',
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('is empty when the teaching home has no projects', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { readStore } = await import('./memory-eval.js');
+    const home = mkdtempSync(join(tmpdir(), 'book-read-store-'));
+    try {
+      expect(readStore(home)).toEqual({ approved: [] });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 

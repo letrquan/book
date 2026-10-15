@@ -10,28 +10,21 @@ import {
   realpathSync,
   renameSync,
   rmdirSync,
+  rmSync,
   statSync,
   unlinkSync,
-  writeFileSync,
   type Stats,
 } from 'fs';
-import { createHash } from 'crypto';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import { createDebugLogger } from './debug-log.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { writeFileAtomic } from './settings-repository.js';
-import { permissionRuleMatchesCall } from './permissions.js';
 import { resolveBookHome } from './book-home.js';
-import { looksLikeSecretOrUnfit } from './secret-detect.js';
 import { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES } from './memory-limits.js';
 import type { SessionDriver } from './types/runtime.js';
 
-export const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
-export type MemoryType = (typeof MEMORY_TYPES)[number];
-export type MemoryStatus = 'approved' | 'pending' | 'discarded' | 'superseded';
-export type MemoryOrigin = 'model-tool' | 'extraction' | 'user-text';
-
-export const MAX_BODY_CHARS = 1600;
+const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
+type MemoryType = (typeof MEMORY_TYPES)[number];
 
 export function sanitizeMemorySlug(rawSlug: string): string | null {
   const cleaned = rawSlug
@@ -57,9 +50,9 @@ function lastSlugSegment(raw: string): string {
  * Resolve a raw slug to the one file it names inside the memory directory.
  *
  * The last path segment is taken first, so a path-like slug (`memory/build-cmd.md`,
- * an absolute path) names its file instead of being pasted onto `dir`. This is the
- * only place a slug is sanitized: every caller passes raw model or user input and
- * gets back a resolved filename, or the reason it cannot be used.
+ * an absolute path) names its file instead of being pasted onto `dir`. Used by
+ * `/memory delete`, which passes raw user input and gets back a resolved filename,
+ * or the reason it cannot be used.
  */
 export function memoryFileForSlug(
   dir: string,
@@ -79,30 +72,16 @@ export function memoryFileForSlug(
   return { filename, target };
 }
 
-/** Whether a permission rule list names MemorySave (a bare `MemorySave` or a pattern on it). */
-export function rulesNameMemorySave(rules: readonly string[]): boolean {
-  return rules.some((rule) =>
-    permissionRuleMatchesCall(rule, { id: 'memory', name: 'MemorySave', arguments: {} }),
-  );
-}
-
-export function isMemorySaveAvailable(settings?: {
-  memory?: { enabled?: boolean; autoSave?: boolean };
-}): boolean {
-  if (!settings?.memory) return true;
-  return settings.memory.enabled !== false && settings.memory.autoSave !== false;
-}
-
 /**
- * What the model may write to memory in this session — the one rule the catalog, the prompt, the
- * tool and `/memory status` all read:
+ * What the model may write to memory in this session — the one rule the prompt, the guard and
+ * `/memory status` all read:
  *
  * - `none`: the settings turn model writes off.
  * - `learnings`: another agent drives the session. Its task prompt is that agent's per-task
  *   contract — saving from it is how a spec's "Ground rules" became permanent repository memory —
  *   but what the run learned by doing the work (a decision and its reason, an outcome with a
- *   lesson, a verified fact) is worth keeping. So only `DELEGATED_MEMORY_TYPES`, marked
- *   `driver: agent`, and only delegated entries may be changed or deleted.
+ *   lesson, a verified fact) is worth keeping. So only `project` and `reference` memories, marked
+ *   `driver: agent`, and only delegated files may be changed or deleted.
  * - `full`: a person drives it.
  */
 export type MemoryWriteScope = 'none' | 'learnings' | 'full';
@@ -111,45 +90,26 @@ export function memoryWriteScope(config: {
   settings?: { memory?: { enabled?: boolean; autoSave?: boolean } };
   sessionDriver?: SessionDriver;
 }): MemoryWriteScope {
-  if (!isMemorySaveAvailable(config.settings)) return 'none';
+  const memory = config.settings?.memory;
+  if (memory && (memory.enabled === false || memory.autoSave === false)) return 'none';
   return config.sessionDriver === 'agent' ? 'learnings' : 'full';
-}
-
-export function canModelWriteMemory(config: Parameters<typeof memoryWriteScope>[0]): boolean {
-  return memoryWriteScope(config) !== 'none';
-}
-
-/** The types a session another agent drives may save: what it learned, never a person's preferences. */
-export const DELEGATED_MEMORY_TYPES: readonly MemoryType[] = ['project', 'reference'];
-
-export function sanitizeMemoryTitle(rawTitle: string): string {
-  return rawTitle
-    .replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
-    .replace(/[[\]()]/g, '')
-    .replace(/^[\s#]+/, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 120)
-    .trim();
-}
-
-export function shouldRejectMemoryText(text: string): string | null {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return 'empty';
-  if (trimmed.length > MAX_BODY_CHARS * 2) return 'too long';
-  return looksLikeSecretOrUnfit(trimmed);
 }
 
 export interface MemoryFileSummary {
   name: string;
   path: string;
   type?: MemoryType;
-  status?: MemoryStatus;
   title?: string;
-  created?: string;
-  updated?: string;
+  /** The frontmatter `description`: what the memory is for, in a line. */
+  description?: string;
   size: number;
   driver?: SessionDriver;
+  /**
+   * The file still carries the retired `status: superseded` frontmatter of the old save tool. It
+   * is no longer retired by anything, so it loads like any other file; `/memory status` lists it
+   * as legacy.
+   */
+  legacySuperseded?: boolean;
 }
 
 export interface LoadedMemoryContext {
@@ -169,76 +129,17 @@ export interface LoadedMemoryContext {
   /** The loaded index; ends with a warning marker when it was cut. */
   indexText: string;
   files: MemoryFileSummary[];
-  candidates: MemoryFileSummary[];
-}
-
-export interface MemoryCandidate {
-  type: MemoryType;
-  title: string;
-  body: string;
-  origin: MemoryOrigin;
-  source?: 'auto' | 'manual';
-  confidence?: 'low' | 'medium' | 'high';
-  tags?: string[];
-  sessionId?: string;
-  externalContext: boolean;
-  evidence?: string[];
-  targetSlug?: string;
-  /** File name of an approved memory this one replaces; it is kept on disk, out of the index. */
-  supersedes?: string;
-  /** `agent` when a session another agent drove saved it (a delegated run's learning). */
-  driver?: SessionDriver;
-}
-
-export interface MemoryWriteInput extends Partial<MemoryCandidate> {
-  supersededBy?: string;
-  type: MemoryType;
-  title: string;
-  body: string;
-  status?: MemoryStatus;
-  created?: string;
-  targetSlug?: string;
 }
 
 export interface MemoryStoreOptions {
   bookRoot?: string;
-  now?: Date;
   maxIndexLines?: number;
-  dir?: string;
-}
-
-export interface MemoryWriteResult {
-  ok: boolean;
-  path?: string;
-  /** Approve only: the memory this approval retired, or why a recorded retirement was skipped. */
-  retired?: string;
-  retireSkipped?: string;
-  error?: string;
-}
-
-export interface SaveMemoryOptions extends MemoryStoreOptions {
-  requireApproval?: boolean;
-  quarantineExternal?: boolean;
-  slug?: string;
-}
-
-export interface SaveMemoryResult {
-  ok: boolean;
-  path?: string;
-  indexLine?: string;
-  /** Lines in MEMORY.md after the write — the model is asked to consolidate near the load limit. */
-  indexLineCount?: number;
-  /** Bytes in MEMORY.md after the write — the byte limit is the second load limit. */
-  indexByteCount?: number;
-  /** File name of the memory this save retired (superseded). */
-  retired?: string;
-  status: MemoryStatus;
-  quarantined?: boolean;
-  error?: string;
 }
 
 export { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES };
 const INDEX_FILE = 'MEMORY.md';
+// Only the move from the old cwd-keyed directory still knows these: an existing inbox is carried
+// over untouched, and left for the migration to back up.
 const INBOX_DIR = '.inbox';
 const DISCARDED_DIR = 'discarded';
 
@@ -471,8 +372,8 @@ function mergeLegacyMemoryDir(oldDir: string, newDir: string): void {
     for (const name of files) moveKeepingBoth(join(oldDir, sub), targetDir, name);
   }
   mergeLegacyIndex(oldDir, newDir, renamed);
-  // Best effort: only an empty directory goes. `.extraction-state.json` and `.extraction.lock`
-  // stay, so the old directory is usually left holding just those.
+  // Best effort: only an empty directory goes. The old extraction state and lock files stay, so
+  // the old directory is usually left holding just those.
   for (const leftover of [
     join(oldDir, INBOX_DIR, DISCARDED_DIR),
     join(oldDir, INBOX_DIR),
@@ -531,28 +432,461 @@ export function migrateLegacyMemoryDir(workspace: string, opts?: MemoryStoreOpti
   }
 }
 
-export function getMemoryInboxDir(workspace: string, opts?: MemoryStoreOptions): string {
-  return opts?.dir
-    ? join(opts.dir, INBOX_DIR)
-    : join(getProjectMemoryDir(workspace, opts), INBOX_DIR);
+// -- the one-time move from the old file layout -------------------------------------------------
+
+/** Written once a directory is in the current layout; its content is the layout's version. */
+const FORMAT_FILE = '.format';
+const FORMAT_VERSION = '2';
+const BACKUP_PREFIX = 'memory.legacy-';
+const BACKUP_NAME = /^memory\.legacy-(\d{8})(?:-(\d+))?$/;
+const SLUG_MAX = 60;
+/** A converted file's frontmatter `description`. */
+const DESCRIPTION_MAX = 150;
+/** A converted index line, link included; longer than this is too long to scan. */
+const INDEX_LINE_MAX = 200;
+const TITLE_MAX = 120;
+const DROPPED_STATUSES = new Set(['superseded', 'pending', 'discarded']);
+
+/** What the old inbox and extraction left in the directory. */
+const isLegacyLeftover = (name: string): boolean =>
+  name === INBOX_DIR || /^\.extraction[-.]/.test(name);
+
+interface LegacyFile {
+  /** The top-level frontmatter keys, values as written (trimmed). */
+  keys: Map<string, string>;
+  /** The lines under each key that are not a `key:` line of their own (a list's items). */
+  extra: Map<string, string[]>;
+  body: string;
 }
 
-export function getMemoryExtractionStatePath(workspace: string, opts?: MemoryStoreOptions): string {
-  return join(getProjectMemoryDir(workspace, opts), '.extraction-state.json');
+/**
+ * The frontmatter of a memory file as the old layout wrote it: only keys at column 0 count, so a
+ * current file's `metadata.type` is not mistaken for a legacy top-level `type`.
+ */
+function parseLegacyFile(text: string): LegacyFile | null {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  if (lines[0].trim() !== '---') return null;
+  const close = lines.indexOf('---', 1);
+  if (close < 0) return null;
+  const keys = new Map<string, string>();
+  const extra = new Map<string, string[]>();
+  let current: string | null = null;
+  for (const line of lines.slice(1, close)) {
+    const key = /^([A-Za-z][\w-]*)[ \t]*:[ \t]*(.*)$/.exec(line);
+    if (key) {
+      current = key[1];
+      keys.set(current, key[2].trim());
+      extra.set(current, []);
+    } else if (current && line.trim() !== '' && !line.startsWith('#')) {
+      extra.get(current)?.push(line);
+    }
+  }
+  return { keys, extra, body: lines.slice(close + 1).join('\n') };
 }
 
-export function getMemoryExtractionLockPath(workspace: string, opts?: MemoryStoreOptions): string {
-  return join(getProjectMemoryDir(workspace, opts), '.extraction.lock');
+const unquote = (value: string): string => value.replace(/^(["'])(.*)\1$/, '$2').trim();
+
+const stripControls = (text: string): string => text.replace(/[\x00-\x1f\x7f]/g, '').trim();
+
+/**
+ * `text` shortened to at most `max` characters, ending with `…` when anything was cut. The cut
+ * is only ever between words, and never inside a backtick code span: a cut that lands in an
+ * unclosed span backs up to before its opening backtick. When no whole word fits (one long word)
+ * the result is just `…`; a half word would say less than nothing.
+ */
+export function shortenAtWord(text: string, max: number): string {
+  if (text.length <= max) return text;
+  if (max < 1) return '';
+  let end = max - 1; // room for the ellipsis
+  for (;;) {
+    const atBoundary = end === 0 || /\s/.test(text[end]) || /\s/.test(text[end - 1]);
+    if (!atBoundary) {
+      end = Math.max(0, text.slice(0, end).search(/\s\S*$/));
+      continue;
+    }
+    const ticks = text.slice(0, end).split('`').length - 1;
+    if (ticks % 2 === 1) {
+      end = text.lastIndexOf('`', end - 1);
+      continue;
+    }
+    break;
+  }
+  const kept = text.slice(0, end).trimEnd();
+  return `${kept}…`;
+}
+
+/** A YAML plain scalar when `value` is safe as one, otherwise a double-quoted one. */
+function yamlValue(value: string): string {
+  const risky =
+    value === '' ||
+    /^[\s\-?:,[\]{}#&*!|>'"%@`]/.test(value) ||
+    /:(\s|$)|\s#|\s$/.test(value) ||
+    /^(?:true|false|null|yes|no|on|off|~|[-+]?[\d.]+)$/i.test(value);
+  return risky ? JSON.stringify(value) : value;
+}
+
+/** A kebab-case slug cut to `max` characters at a `-` (a lone longer word is cut hard). */
+function capSlug(slug: string, max: number): string {
+  if (slug.length <= max) return slug;
+  const cut = slug.slice(0, max);
+  const whole = slug[max] === '-' ? cut : cut.slice(0, Math.max(cut.lastIndexOf('-'), 0) || max);
+  return whole.replace(/-+$/, '');
+}
+
+function kebabSlug(text: string): string {
+  return capSlug(
+    text
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, ''),
+    SLUG_MAX,
+  );
+}
+
+/** What is left of `YYYY-MM-DD-<type>-<title>-<hash>.md` without the date, type and hash. */
+function titleFromLegacyName(name: string): string {
+  return name
+    .replace(/\.md$/i, '')
+    .replace(/^\d{4}-\d{2}-\d{2}-/, '')
+    .replace(/^(?:user|feedback|project|reference)-/, '')
+    .replace(/-(?=[a-f]*\d)[0-9a-f]{6,12}$/, '')
+    .replace(/-+/g, ' ')
+    .trim();
+}
+
+const OLD_ENTRY_TAIL = /^\s*—\s*[^—]*?\s*—\s*\d{4}-\d{2}-\d{2}(?:\s*—\s*(.*))?$/;
+
+/** An old index line (`- [Title](file) — type — YYYY-MM-DD — hook`), as its target and hook. */
+function parseIndexEntry(line: string): { target: string; hook: string; old: boolean } | null {
+  const entry = /^- \[[^\]]*\]\(([^()]+)\)(.*)$/.exec(line);
+  if (!entry) return null;
+  const target = entry[1].replace(/^\.\//, '').toLowerCase();
+  const old = OLD_ENTRY_TAIL.exec(entry[2]);
+  if (old) return { target, hook: old[1] ?? '', old: true };
+  return { target, hook: entry[2].replace(/^\s*—\s*/, ''), old: false };
+}
+
+/**
+ * `- [Title](file) — hook`, at most `INDEX_LINE_MAX` characters: the title stays whole (up to
+ * `TITLE_MAX`) and the hook gives way first; a title the link leaves no room for is shortened and
+ * the hook dropped.
+ */
+function indexLine(title: string, file: string, description: string): string {
+  const plain = title.replace(/[[\]()]/g, '').trim() || file;
+  const linkCost = 6 + file.length; // `- [` + `](` + `)` around the file name
+  let shown = shortenAtWord(plain, Math.min(TITLE_MAX, INDEX_LINE_MAX - linkCost));
+  if (shown === '…') shown = file;
+  const head = `- [${shown}](${file})`;
+  const room = INDEX_LINE_MAX - head.length - 3;
+  const hook = room > 1 ? shortenAtWord(description, room) : '';
+  return hook && hook !== '…' ? `${head} — ${hook}` : head;
+}
+
+interface ConvertedMemory {
+  oldName: string;
+  slug: string;
+  title: string;
+  description: string;
+  content: string;
+  modifiedMs: number;
+}
+
+function legacyModifiedMs(file: LegacyFile, name: string, mtimeMs: number): number {
+  const stamped = Date.parse(unquote(file.keys.get('updated') || file.keys.get('created') || ''));
+  if (!Number.isNaN(stamped)) return stamped;
+  const named = Date.parse(/^\d{4}-\d{2}-\d{2}/.exec(name)?.[0] ?? '');
+  return Number.isNaN(named) ? mtimeMs : named;
+}
+
+/** The current-layout text of one legacy file, with the title and description it was given. */
+function convertLegacyFile(
+  name: string,
+  file: LegacyFile,
+  hook: string | undefined,
+  slug: (title: string) => string,
+  mtimeMs: number,
+): ConvertedMemory {
+  const lines = file.body.split('\n');
+  let start = 0;
+  while (start < lines.length && lines[start].trim() === '') start++;
+  let heading: string | undefined;
+  if (start < lines.length && /^#\s+\S/.test(lines[start])) {
+    heading = lines[start]
+      .replace(/^#\s+/, '')
+      .replace(/^Candidate:\s*/i, '')
+      .trim();
+    start++;
+  }
+  const body = lines
+    .slice(start)
+    .join('\n')
+    .replace(/^(?:[ \t]*\n)+/, '')
+    .trimEnd();
+  const title = heading || titleFromLegacyName(name) || 'Memory';
+  const firstLine = body.split('\n').find((line) => line.trim() !== '') ?? '';
+  const description = shortenAtWord(
+    stripControls(hook ?? '') || stripControls(firstLine) || stripControls(title),
+    DESCRIPTION_MAX,
+  );
+  const finalSlug = slug(title);
+
+  const value = (key: string): string => unquote(file.keys.get(key) ?? '');
+  const meta: string[] = [];
+  if (value('type')) meta.push(`  type: ${yamlValue(value('type'))}`);
+  if (value('sessionId')) meta.push(`  originSessionId: ${yamlValue(value('sessionId'))}`);
+  const modified = value('updated') || value('created');
+  if (modified) meta.push(`  modified: ${yamlValue(modified)}`);
+  if (value('driver') === 'agent') meta.push('  driver: agent');
+  const evidence = file.keys.get('evidence') ?? '';
+  const evidenceLines = file.extra.get('evidence') ?? [];
+  if (evidence !== '') {
+    meta.push(`  evidence: ${evidence}`);
+  } else if (evidenceLines.length > 0) {
+    meta.push('  evidence:');
+    for (const line of evidenceLines) {
+      const item = /^\s*-\s+(.*)$/.exec(line)?.[1]?.trim();
+      meta.push(
+        item === undefined
+          ? `  ${line}`
+          : `    - ${/^(["']).*\1$/.test(item) ? item : yamlValue(item)}`,
+      );
+    }
+  }
+
+  const content =
+    [
+      '---',
+      `name: ${finalSlug}`,
+      `description: ${yamlValue(description)}`,
+      ...(meta.length > 0 ? ['metadata:', ...meta] : []),
+      '---',
+      ...(body ? [body] : []),
+    ].join('\n') + '\n';
+  return {
+    oldName: name,
+    slug: finalSlug,
+    title,
+    description,
+    content,
+    modifiedMs: legacyModifiedMs(file, name, mtimeMs),
+  };
+}
+
+function localDateStamp(now: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+}
+
+/** Copy the regular files and directories under `source`; a link is never followed, nor copied. */
+function copyTreeWithoutLinks(source: string, target: string): void {
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const from = join(source, entry.name);
+    const to = join(target, entry.name);
+    if (entry.isDirectory()) {
+      mkdirSync(to);
+      copyTreeWithoutLinks(from, to);
+    } else if (entry.isFile()) {
+      copyFileSync(from, to, constants.COPYFILE_EXCL);
+    }
+  }
+}
+
+/** Copy `dir` to a fresh `memory.legacy-<YYYYMMDD>[-n]` beside it; throws, leaving nothing behind, on failure. */
+function backUpMemoryDir(dir: string): string {
+  const stamp = localDateStamp(new Date());
+  for (let n = 1; n <= 1000; n++) {
+    const target = join(dirname(dir), `${BACKUP_PREFIX}${stamp}${n === 1 ? '' : `-${n}`}`);
+    try {
+      mkdirSync(target);
+    } catch (e) {
+      if (errorCode(e) === 'EEXIST') continue;
+      throw e;
+    }
+    try {
+      copyTreeWithoutLinks(dir, target);
+      return target;
+    } catch (e) {
+      rmSync(target, { recursive: true, force: true });
+      throw e;
+    }
+  }
+  throw new Error('too many memory backups for one day');
+}
+
+/** The newest `memory.legacy-*` backup beside `dir`, or null when the migration left none. */
+export function findLegacyMemoryBackup(dir: string): string | null {
+  try {
+    const found = readdirSync(dirname(dir), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && BACKUP_NAME.test(entry.name))
+      .map((entry) => {
+        const [, date, n] = BACKUP_NAME.exec(entry.name) ?? [];
+        return { name: entry.name, date, n: Number(n ?? 1) };
+      })
+      .sort((a, b) => a.date.localeCompare(b.date) || a.n - b.n);
+    const newest = found.at(-1);
+    return newest ? join(dirname(dir), newest.name) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function legacyBackupNotice(backup: string): string {
+  return `Migrated to the new memory format; the old files are in ${backup}.`;
+}
+
+/** The new MEMORY.md: hand-written lines kept, then one pointer line per converted file. */
+function migratedIndexLines(
+  oldText: string | null,
+  converted: ConvertedMemory[],
+  droppedNames: Set<string>,
+): string[] {
+  const byTarget = new Map(converted.map((c) => [`${c.slug}.md`, c]));
+  // An old name that is also a new slug is the same file, converted in place.
+  for (const c of converted) byTarget.set(c.oldName.toLowerCase(), c);
+  const kept: string[] = [];
+  const ordered: ConvertedMemory[] = [];
+  for (const raw of oldText?.split('\n') ?? []) {
+    const line = raw.replace(/\r$/, '');
+    if (/^#\s*Book memory index\s*$/i.test(line)) continue;
+    const entry = parseIndexEntry(line);
+    if (!entry) {
+      kept.push(line);
+      continue;
+    }
+    const match = byTarget.get(entry.target);
+    if (match) {
+      if (!ordered.includes(match)) ordered.push(match);
+    } else if (!droppedNames.has(entry.target) && !entry.old) {
+      kept.push(line);
+    }
+  }
+  const missing = converted
+    .filter((c) => !ordered.includes(c))
+    .sort((a, b) => b.modifiedMs - a.modifiedMs || b.oldName.localeCompare(a.oldName));
+
+  const tidy: string[] = [];
+  for (const line of kept) {
+    if (line.trim() === '' && (tidy.length === 0 || tidy[tidy.length - 1].trim() === '')) continue;
+    tidy.push(line);
+  }
+  while (tidy.length > 0 && tidy[tidy.length - 1].trim() === '') tidy.pop();
+  return [
+    ...tidy,
+    ...[...ordered, ...missing].map((c) => indexLine(c.title, `${c.slug}.md`, c.description)),
+  ];
+}
+
+function migrateFormat(dir: string): void {
+  if (!lstatIfPresent(dir)?.isDirectory()) return; // absent, a file, or a link: never followed
+  const marker = join(dir, FORMAT_FILE);
+  if (lstatIfPresent(marker)?.isFile() && readFileSync(marker, 'utf-8').trim() === FORMAT_VERSION) {
+    return;
+  }
+
+  // Detect. Links are skipped throughout: nothing is read, converted or removed through one.
+  const everything = readdirSync(dir, { withFileTypes: true });
+  const entries = everything.filter((e) => !e.isSymbolicLink());
+  const leftovers = entries.filter((e) => isLegacyLeftover(e.name)).map((e) => e.name);
+  const legacy: Array<{ name: string; file: LegacyFile; mtimeMs: number }> = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.name.startsWith('.') || !isMemoryTopicFile(entry.name)) continue;
+    const path = join(dir, entry.name);
+    const file = parseLegacyFile(readFileSync(path, 'utf-8'));
+    if (file && (file.keys.has('status') || file.keys.has('type'))) {
+      legacy.push({ name: entry.name, file, mtimeMs: statSync(path).mtimeMs });
+    }
+  }
+  if (legacy.length === 0 && leftovers.length === 0) {
+    writeFileAtomic(marker, `${FORMAT_VERSION}\n`);
+    return;
+  }
+
+  // Everything is read before the backup, and the backup is made before anything changes.
+  const indexPath = join(dir, INDEX_FILE);
+  const indexStat = lstatIfPresent(indexPath);
+  const oldIndex = indexStat?.isFile() ? readFileSync(indexPath, 'utf-8') : null;
+  const hooks = new Map<string, string>();
+  for (const line of oldIndex?.split('\n') ?? []) {
+    const entry = parseIndexEntry(line.replace(/\r$/, ''));
+    if (entry && !hooks.has(entry.target)) hooks.set(entry.target, entry.hook);
+  }
+  const backup = backUpMemoryDir(dir);
+  log.info(`memory backed up to ${backup}`);
+
+  // Every name in the directory is taken (a file never lands on another's name), and so is
+  // MEMORY.md on a case-insensitive file system.
+  const taken = new Set(everything.map((e) => e.name.toLowerCase()));
+  taken.add(INDEX_FILE.toLowerCase());
+  const converted: ConvertedMemory[] = [];
+  const dropped = new Set<string>();
+  for (const { name, file, mtimeMs } of legacy.sort((a, b) => a.name.localeCompare(b.name))) {
+    const status = unquote(file.keys.get('status') ?? '').toLowerCase();
+    if (DROPPED_STATUSES.has(status)) {
+      dropped.add(name.toLowerCase());
+      continue;
+    }
+    const own = name.toLowerCase();
+    const claim = (title: string): string => {
+      const base =
+        kebabSlug(title) ||
+        kebabSlug(titleFromLegacyName(name)) ||
+        kebabSlug(unquote(file.keys.get('type') ?? '')) ||
+        'memory';
+      for (let n = 1; ; n++) {
+        const suffix = n === 1 ? '' : `-${n}`;
+        const slug = `${capSlug(base, SLUG_MAX - suffix.length)}${suffix}`;
+        const lower = `${slug}.md`;
+        if (!taken.has(lower) || lower === own) {
+          taken.add(lower);
+          return slug;
+        }
+      }
+    };
+    converted.push(convertLegacyFile(name, file, hooks.get(own) || undefined, claim, mtimeMs));
+  }
+
+  for (const c of converted) {
+    writeFileAtomic(join(dir, `${c.slug}.md`), c.content);
+    if (`${c.slug}.md` !== c.oldName) unlinkSync(join(dir, c.oldName));
+  }
+  for (const name of dropped) {
+    const original = legacy.find((l) => l.name.toLowerCase() === name)?.name;
+    if (original) unlinkSync(join(dir, original));
+  }
+  for (const name of leftovers) rmSync(join(dir, name), { recursive: true, force: true });
+
+  if (indexStat === null || indexStat.isFile()) {
+    const lines = migratedIndexLines(oldIndex, converted, dropped);
+    if (oldIndex !== null || lines.length > 0) {
+      writeFileAtomic(indexPath, lines.length > 0 ? `${lines.join('\n')}\n` : '');
+    }
+  } else {
+    log.warn('MEMORY.md is not a regular file; it was left as it is');
+  }
+  writeFileAtomic(marker, `${FORMAT_VERSION}\n`);
+}
+
+/**
+ * Bring a memory directory still in the old layout (`status` / `type` frontmatter, an inbox,
+ * extraction state, a typed index) to the current one, once. The whole directory is copied to
+ * `memory.legacy-<date>/` first; if that fails nothing is changed. Approved files become
+ * `<slug>.md` with `name` / `description` / `metadata`; superseded, pending and discarded files,
+ * the inbox and the extraction files are dropped (they survive only in the backup); `MEMORY.md`
+ * is rewritten in the pointer format. A `.format` file records that it is done. Never throws,
+ * never blocks the session: a failure is logged, and the next load tries again.
+ */
+export function migrateLegacyMemoryFormat(dir: string): void {
+  try {
+    migrateFormat(dir);
+  } catch (e) {
+    log.warn('memory format migration failed', e);
+  }
 }
 
 function isMemoryType(value: unknown): value is MemoryType {
   return typeof value === 'string' && (MEMORY_TYPES as readonly string[]).includes(value);
-}
-
-function isMemoryStatus(value: unknown): value is MemoryStatus {
-  return (
-    value === 'approved' || value === 'pending' || value === 'discarded' || value === 'superseded'
-  );
 }
 
 function titleFromBody(body: string): string | undefined {
@@ -560,28 +894,32 @@ function titleFromBody(body: string): string | undefined {
   return firstHeading?.replace(/^#\s+/, '').trim();
 }
 
+/**
+ * One file's listing entry. `parseFrontmatter` reads a nested `metadata:` block's children as
+ * top-level keys, so `metadata.type` (the current layout) and a top-level `type` (the legacy
+ * layout) come out as the same key.
+ */
 function summarizeMemoryFile(path: string, name = basename(path)): MemoryFileSummary | null {
   try {
     const st = statSync(path);
     if (!st.isFile()) return null;
-    const raw = readFileSync(path, 'utf-8');
-    const { body, frontmatter } = parseFrontmatter(raw);
-    const proposedTitle =
-      typeof frontmatter.proposedTitle === 'string' ? frontmatter.proposedTitle : undefined;
+    const { body, frontmatter } = parseFrontmatter(readFileSync(path, 'utf-8'));
     const title =
-      proposedTitle ??
-      (typeof frontmatter.title === 'string' ? frontmatter.title : undefined) ??
-      titleFromBody(body);
+      (typeof frontmatter.title === 'string' && frontmatter.title) ||
+      titleFromBody(body) ||
+      (typeof frontmatter.name === 'string' && frontmatter.name) ||
+      undefined;
     return {
       name,
       path,
       type: isMemoryType(frontmatter.type) ? frontmatter.type : undefined,
-      status: isMemoryStatus(frontmatter.status) ? frontmatter.status : undefined,
       title,
-      created: typeof frontmatter.created === 'string' ? frontmatter.created : undefined,
-      updated: typeof frontmatter.updated === 'string' ? frontmatter.updated : undefined,
+      ...(typeof frontmatter.description === 'string' && frontmatter.description.trim()
+        ? { description: frontmatter.description.trim() }
+        : {}),
       size: st.size,
       ...(frontmatter.driver === 'agent' ? { driver: 'agent' as const } : {}),
+      ...(frontmatter.status === 'superseded' ? { legacySuperseded: true as const } : {}),
     };
   } catch {
     return null;
@@ -594,49 +932,15 @@ export function listMemoryFiles(workspace: string, opts?: MemoryStoreOptions): M
   const files: MemoryFileSummary[] = [];
   try {
     for (const entry of readdirSync(dir).sort()) {
-      if (!entry.toLowerCase().endsWith('.md')) continue;
-      if (entry.toLowerCase() === INDEX_FILE.toLowerCase()) continue; // MEMORY.md is the index, not an approved memory file.
-      const full = join(dir, entry);
-      const summary = summarizeMemoryFile(full, entry);
-      // A superseded memory stays on disk as history but is no longer an active entry.
-      if (summary && summary.status !== 'superseded') files.push(summary);
-    }
-  } catch {
-    return files;
-  }
-  return files;
-}
-
-export function listMemoryCandidates(
-  workspace: string,
-  opts?: MemoryStoreOptions,
-): MemoryFileSummary[] {
-  const dir = getMemoryInboxDir(workspace, opts);
-  if (!existsSync(dir)) return [];
-  const files: MemoryFileSummary[] = [];
-  try {
-    for (const entry of readdirSync(dir).sort()) {
-      if (!entry.endsWith('.md')) continue;
-      const full = join(dir, entry);
-      const summary = summarizeMemoryFile(full, entry);
+      // MEMORY.md is the index, not a memory file; a dot-entry is not one either.
+      if (entry.startsWith('.') || !isMemoryTopicFile(entry)) continue;
+      const summary = summarizeMemoryFile(join(dir, entry), entry);
       if (summary) files.push(summary);
     }
   } catch {
     return files;
   }
   return files;
-}
-
-// Deliberately cheaper than listMemoryCandidates(): readdir only, no frontmatter parse.
-export function countMemoryCandidates(workspace: string, opts?: MemoryStoreOptions): number {
-  const dir = getMemoryInboxDir(workspace, opts);
-  if (!existsSync(dir)) return 0;
-  try {
-    return readdirSync(dir).filter((entry) => !entry.startsWith('.') && entry.endsWith('.md'))
-      .length;
-  } catch {
-    return 0;
-  }
 }
 
 interface IndexLoad {
@@ -661,8 +965,8 @@ function countNonEmptyLines(text: string): number {
 /**
  * What the model gets of MEMORY.md: the first `maxLines` lines, then cut again at the last
  * newline within `MAX_INDEX_BYTES` (at the last whole character when line 1 alone is longer).
- * The index is newest first, so the oldest entries are what a cut drops — and the marker says so
- * instead of letting them vanish silently.
+ * The cut drops the end of the file, and the marker says so instead of letting entries vanish
+ * silently.
  */
 function cutIndex(raw: string, maxLines: number): IndexLoad {
   const trimmed = raw.trim();
@@ -717,9 +1021,11 @@ export function loadMemoryContext(
   workspace: string,
   opts?: MemoryStoreOptions,
 ): LoadedMemoryContext {
-  // Before anything is read: a directory keyed the old way moves to the git-root key first.
+  // Before anything is read: a directory keyed the old way moves to the git-root key first,
+  // and then the files in it are brought to the current layout.
   migrateLegacyMemoryDir(workspace, opts);
   const dir = getProjectMemoryDir(workspace, opts);
+  migrateLegacyMemoryFormat(dir);
   const maxIndexLines = opts?.maxIndexLines ?? DEFAULT_MAX_INDEX_LINES;
   const result: LoadedMemoryContext = {
     dir,
@@ -732,7 +1038,6 @@ export function loadMemoryContext(
     wasByteTruncated: false,
     indexText: '',
     files: [],
-    candidates: [],
   };
 
   if (!existsSync(dir)) return result;
@@ -758,14 +1063,14 @@ export function loadMemoryContext(
   }
 
   result.files = listMemoryFiles(workspace, opts);
-  result.candidates = listMemoryCandidates(workspace, opts);
   return result;
 }
 
 export interface MemoryHealth {
-  approvedCount: number;
-  supersededCount: number;
-  inboxCount: number;
+  /** Memory files (every `*.md` but MEMORY.md), legacy superseded ones included. */
+  fileCount: number;
+  /** Files that still carry the retired `status: superseded` frontmatter. */
+  legacySupersededCount: number;
   indexLineCount: number;
   /** UTF-8 size of the trimmed MEMORY.md. */
   indexByteCount: number;
@@ -779,39 +1084,22 @@ export interface MemoryHealth {
 export function getNewestMemoryWriteTime(memoryDir: string): Date | null {
   if (!existsSync(memoryDir)) return null;
   let newestMs = 0;
-
-  function scanEntries(dir: string, isInbox: boolean): void {
-    let entries: string[];
+  let entries: string[];
+  try {
+    entries = readdirSync(memoryDir);
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (entry.startsWith('.')) continue;
     try {
-      entries = readdirSync(dir);
+      const st = lstatSync(join(memoryDir, entry));
+      if (st.isSymbolicLink() || !st.isFile()) continue;
+      if (st.mtimeMs > newestMs) newestMs = st.mtimeMs;
     } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      if (entry.startsWith('.')) {
-        if (!isInbox && entry === INBOX_DIR) {
-          scanEntries(join(dir, entry), true);
-        }
-        continue;
-      }
-      if (isInbox && entry === DISCARDED_DIR) {
-        continue;
-      }
-      const full = join(dir, entry);
-      try {
-        const st = lstatSync(full);
-        if (st.isSymbolicLink()) continue;
-        if (st.isFile()) {
-          if (st.mtimeMs > newestMs) newestMs = st.mtimeMs;
-        }
-      } catch {
-        // ignore unreadable entries
-      }
+      // ignore unreadable entries
     }
   }
-
-  scanEntries(memoryDir, false);
   return newestMs > 0 ? new Date(newestMs) : null;
 }
 
@@ -821,31 +1109,24 @@ export function getMemoryHealth(
 ): MemoryHealth {
   const dir =
     typeof workspaceOrContext === 'string'
-      ? (opts?.dir ?? getProjectMemoryDir(workspaceOrContext, opts))
+      ? getProjectMemoryDir(workspaceOrContext, opts)
       : workspaceOrContext.dir;
-  const workspace = typeof workspaceOrContext === 'string' ? workspaceOrContext : '';
 
-  let approvedCount = 0;
-  let supersededCount = 0;
+  let fileCount = 0;
+  let legacySupersededCount = 0;
   if (existsSync(dir)) {
     try {
       for (const entry of readdirSync(dir)) {
         // Same rule as listMemoryFiles, so Health agrees with the listing.
-        if (
-          !entry.toLowerCase().endsWith('.md') ||
-          entry.toLowerCase() === INDEX_FILE.toLowerCase()
-        )
-          continue;
+        if (entry.startsWith('.') || !isMemoryTopicFile(entry)) continue;
         const full = join(dir, entry);
         try {
           const st = lstatSync(full);
           if (st.isSymbolicLink() || !st.isFile()) continue;
           const summary = summarizeMemoryFile(full, entry);
-          if (summary && (summary.status === 'approved' || summary.status === undefined)) {
-            approvedCount++;
-          } else if (summary?.status === 'superseded') {
-            supersededCount++;
-          }
+          if (!summary) continue;
+          fileCount++;
+          if (summary.legacySuperseded) legacySupersededCount++;
         } catch {
           // ignore unreadable file
         }
@@ -855,9 +1136,6 @@ export function getMemoryHealth(
     }
   }
 
-  const inboxCount = countMemoryCandidates(workspace, { ...opts, dir });
-
-  // Counted the way a save counts it, so Health and the pressure warning agree.
   let indexLineCount = 0;
   let indexByteCount = 0;
   let wasLineTruncated = false;
@@ -878,227 +1156,16 @@ export function getMemoryHealth(
     // unreadable index
   }
 
-  const lastWrite = getNewestMemoryWriteTime(dir);
   return {
-    approvedCount,
-    supersededCount,
-    inboxCount,
+    fileCount,
+    legacySupersededCount,
     indexLineCount,
     indexByteCount,
     wasLineTruncated,
     wasByteTruncated,
-    lastWrite,
+    lastWrite: getNewestMemoryWriteTime(dir),
   };
 }
-
-function safeTitle(title: string): string {
-  return (
-    title
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 60) || 'memory'
-  );
-}
-
-function shortHash(input: string): string {
-  return createHash('sha256').update(input).digest('hex').slice(0, 8);
-}
-
-function formatTags(tags: string[] | undefined): string {
-  if (!tags?.length) return '';
-  return `tags:\n${tags.map((tag) => `- ${tag}`).join('\n')}\n`;
-}
-
-function renderMemoryMarkdown(input: MemoryWriteInput, status: MemoryStatus, now: Date): string {
-  const created = input.created ?? now.toISOString();
-  const updated = now.toISOString();
-  const sanitizedTitle = sanitizeMemoryTitle(input.title);
-  const title = status === 'pending' ? `Candidate: ${sanitizedTitle}` : sanitizedTitle;
-  const origin: MemoryOrigin = input.origin ?? 'user-text';
-  const source = input.source ?? (origin === 'user-text' ? 'manual' : 'auto');
-  const externalContext = input.externalContext ?? false;
-
-  // Build frontmatter fields, dropping optional ones that are absent so we
-  // don't rely on a blanket ''.filter() that would also strip the blank
-  // spacer lines between the closing fence, the heading, and the body.
-  const fm: string[] = [
-    `type: ${input.type}`,
-    `status: ${status}`,
-    `origin: ${origin}`,
-    `source: ${source}`,
-    `externalContext: ${externalContext}`,
-    `created: ${created}`,
-    `updated: ${updated}`,
-  ];
-  if (input.sessionId) fm.push(`sessionId: ${input.sessionId}`);
-  // Only the delegated case is marked: a person's memories keep the shape they always had.
-  if (input.driver === 'agent') fm.push('driver: agent');
-  if (input.evidence?.length) {
-    fm.push(`evidence:\n${input.evidence.map((e) => `- ${e}`).join('\n')}`);
-  }
-  // Already a resolved file name: `memoryFileForSlug` sanitized it (and
-  // `readMemoryFile` did the same for a candidate read back from disk).
-  if (input.targetSlug) fm.push(`targetSlug: ${input.targetSlug}`);
-  if (input.supersedes) fm.push(`supersedes: ${input.supersedes}`);
-  if (input.supersededBy) fm.push(`supersededBy: ${input.supersededBy}`);
-  if ('confidence' in input && input.confidence) fm.push(`confidence: ${input.confidence}`);
-  if (status === 'pending') fm.push(`proposedTitle: ${sanitizedTitle}`);
-  if (input.tags?.length) {
-    fm.push(formatTags(input.tags).trimEnd());
-  }
-  return ['---', ...fm, '---', '', `# ${title}`, '', input.body.trim(), ''].join('\n');
-}
-
-export function writeMemoryCandidate(
-  workspace: string,
-  candidate: MemoryWriteInput,
-  opts?: MemoryStoreOptions,
-): MemoryWriteResult {
-  try {
-    const title = sanitizeMemoryTitle(candidate.title);
-    if (!title) {
-      return { ok: false, error: 'title must not be empty after sanitizing.' };
-    }
-    const now = opts?.now ?? new Date();
-    const inbox = getMemoryInboxDir(workspace, opts);
-    mkdirSync(inbox, { recursive: true });
-    const stamp = now.toISOString().replace(/[-:.]/g, '').slice(0, 15);
-    const hash = shortHash(`${candidate.type}\n${title}\n${candidate.body}\n${now.toISOString()}`);
-    const filename = `${stamp}-cand-${safeTitle(title)}-${hash}.md`;
-    const path = join(inbox, filename);
-    writeFileSync(path, renderMemoryMarkdown({ ...candidate, title }, 'pending', now), 'utf-8');
-    return { ok: true, path };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-function resolveCandidatePath(
-  workspace: string,
-  candidateFile: string,
-  opts?: MemoryStoreOptions,
-): string | null {
-  const inbox = resolve(getMemoryInboxDir(workspace, opts));
-  const raw = isAbsolute(candidateFile) ? candidateFile : join(inbox, candidateFile);
-  const resolved = resolve(raw);
-  const rel = relative(inbox, resolved);
-  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null;
-  return resolved;
-}
-
-function activeMemoryFilename(
-  input: { type: MemoryType; title: string; body: string },
-  now: Date,
-): string {
-  const date = now.toISOString().slice(0, 10);
-  const hash = shortHash(`${input.type}\n${input.title}\n${input.body}`);
-  return `${date}-${input.type}-${safeTitle(input.title)}-${hash}.md`;
-}
-
-/** A slug read back from frontmatter: last path segment, then sanitized (as on write). */
-function frontmatterSlug(raw: string | undefined): string | undefined {
-  return raw?.trim() ? (sanitizeMemorySlug(lastSlugSegment(raw.trim())) ?? undefined) : undefined;
-}
-
-export function readMemoryFile(
-  path: string,
-): (MemoryCandidate & { created?: string; updated?: string; status?: MemoryStatus }) | null {
-  try {
-    const raw = readFileSync(path, 'utf-8');
-    const { body, frontmatter } = parseFrontmatter(raw);
-    if (!isMemoryType(frontmatter.type)) return null;
-    const rawProposed =
-      typeof frontmatter.proposedTitle === 'string' ? frontmatter.proposedTitle : undefined;
-    const proposedTitle = rawProposed ? sanitizeMemoryTitle(rawProposed) || undefined : undefined;
-    // `||`, not `??`: a title that sanitizes to '' falls through to the next source.
-    const heading = titleFromBody(body)?.replace(/^Candidate:\s*/i, '');
-    const title =
-      proposedTitle ||
-      (typeof frontmatter.title === 'string' ? sanitizeMemoryTitle(frontmatter.title) : '') ||
-      (heading ? sanitizeMemoryTitle(heading) : '') ||
-      basename(path, '.md');
-    const tags = Array.isArray(frontmatter.tags)
-      ? frontmatter.tags.filter((t): t is string => typeof t === 'string')
-      : undefined;
-    const evidence = Array.isArray(frontmatter.evidence)
-      ? frontmatter.evidence.filter((e): e is string => typeof e === 'string')
-      : undefined;
-    const cleanBody = body.replace(/^#\s+[^\n]*\n+/i, '').trim() || body.trim();
-    const origin: MemoryOrigin =
-      frontmatter.origin === 'model-tool' ||
-      frontmatter.origin === 'extraction' ||
-      frontmatter.origin === 'user-text'
-        ? frontmatter.origin
-        : 'user-text';
-    const source: 'auto' | 'manual' =
-      frontmatter.source === 'manual' || frontmatter.source === 'auto'
-        ? frontmatter.source
-        : origin === 'user-text'
-          ? 'manual'
-          : 'auto';
-    const externalContext =
-      frontmatter.externalContext === true || frontmatter.externalContext === 'true';
-    const sessionId = typeof frontmatter.sessionId === 'string' ? frontmatter.sessionId : undefined;
-    const rawTargetSlug =
-      typeof frontmatter.targetSlug === 'string' ? frontmatter.targetSlug : undefined;
-    // The last path segment, the same rule `memoryFileForSlug` applies on write:
-    // a legacy `targetSlug: notes/build` names a file in the memory directory,
-    // and sanitizing alone would glue the segments together.
-    const targetSlug = frontmatterSlug(rawTargetSlug);
-    const status = isMemoryStatus(frontmatter.status) ? frontmatter.status : undefined;
-    const created = typeof frontmatter.created === 'string' ? frontmatter.created : undefined;
-    const updated = typeof frontmatter.updated === 'string' ? frontmatter.updated : undefined;
-    const supersedes = frontmatterSlug(
-      typeof frontmatter.supersedes === 'string' ? frontmatter.supersedes : undefined,
-    );
-    return {
-      supersedes,
-      type: frontmatter.type,
-      title,
-      body: cleanBody,
-      origin,
-      source,
-      externalContext,
-      sessionId,
-      evidence,
-      targetSlug,
-      status,
-      confidence:
-        frontmatter.confidence === 'low' ||
-        frontmatter.confidence === 'medium' ||
-        frontmatter.confidence === 'high'
-          ? frontmatter.confidence
-          : undefined,
-      tags,
-      created,
-      updated,
-      ...(frontmatter.driver === 'agent' ? { driver: 'agent' as const } : {}),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function parseCandidateFile(path: string): (MemoryCandidate & { created?: string }) | null {
-  return readMemoryFile(path);
-}
-
-/**
- * Characters index text must not carry: control characters, and `[]()<>` — an entry is parsed
- * by its `](file)` link, and the index is embedded in a <memory-index> block.
- */
-const INDEX_UNSAFE = /[\x00-\x1f\x7f-\x9f[\]()<>]/g;
-
-/** The first line of a memory's body — the fact itself — as a short index hook. */
-function indexHook(body: string): string {
-  const first =
-    body.trim().split('\n')[0]?.replace(INDEX_UNSAFE, ' ').replace(/\s+/g, ' ').trim() ?? '';
-  return first.length > 100 ? `${first.slice(0, 100)}…` : first;
-}
-
-const sameFile = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** The file an index entry links to; undefined for the header or any free-form line. */
 function indexEntryFile(line: string): string | undefined {
@@ -1124,271 +1191,21 @@ function writeIndexLines(dir: string, lines: string[]): void {
 }
 
 /**
- * The index lines that still describe a loadable memory. Entries whose file is gone or
- * superseded are pruned on every rewrite — so a line a failed write left behind does not load
- * forever — and so are entries for the files in `drop`.
+ * Drop every MEMORY.md line that links to `filename` (a user's `/memory delete`). The index is the
+ * model's own, so every other line stays exactly as it is, and an index with no such line is not
+ * rewritten at all.
  */
-function liveIndexLines(dir: string, lines: string[], drop: readonly string[]): string[] {
-  return lines.filter((line) => {
+function removeIndexEntries(dir: string, filename: string): void {
+  const indexPath = join(dir, INDEX_FILE);
+  if (!lstatIfPresent(indexPath)?.isFile()) return;
+  const raw = readFileSync(indexPath, 'utf-8');
+  const target = filename.toLowerCase();
+  const lines = raw.split('\n');
+  const kept = lines.filter((line) => {
     const file = indexEntryFile(line);
-    if (!file) return true;
-    if (drop.some((name) => sameFile(name, file))) return false;
-    const path = join(dir, file);
-    if (!existsSync(path)) return false;
-    return summarizeMemoryFile(path, file)?.status !== 'superseded';
+    return file === undefined || file.replace(/^\.\//, '').toLowerCase() !== target;
   });
-}
-
-/** Drop a file's line from MEMORY.md; no index means nothing to drop (and none is created). */
-function removeIndexEntry(dir: string, filename: string): void {
-  if (!existsSync(join(dir, INDEX_FILE))) return;
-  writeIndexLines(dir, liveIndexLines(dir, readIndexLines(dir), [filename]));
-}
-
-/**
- * Write or replace a file's line in MEMORY.md in one read-modify-write, also dropping the line
- * of a memory it supersedes; returns the line and the index's entry count.
- */
-function updateMemoryIndex(
-  dir: string,
-  title: string,
-  filename: string,
-  type: MemoryType,
-  now: Date,
-  body: string,
-  supersedes?: string,
-): { entry: string; lineCount: number; byteCount: number } {
-  const hook = indexHook(body);
-  const entry = `- [${title}](${filename}) — ${type} — ${now.toISOString().slice(0, 10)}${hook && hook !== title ? ` — ${hook}` : ''}`;
-  const drop = supersedes ? [filename, supersedes] : [filename];
-  let lines = liveIndexLines(dir, readIndexLines(dir), drop);
-  if (lines.length === 0) {
-    lines = ['# Book memory index', entry];
-  } else if (lines[0].startsWith('#')) {
-    lines = [lines[0], entry, ...lines.slice(1)];
-  } else {
-    lines = [entry, ...lines];
-  }
-  writeIndexLines(dir, lines);
-  return { entry, lineCount: lines.length, byteCount: Buffer.byteLength(lines.join('\n')) };
-}
-
-/** Set frontmatter fields in place, leaving every other field, the headings and the body as they are. */
-function setFrontmatterFields(raw: string, fields: Record<string, string>): string {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(raw);
-  const entries = Object.entries(fields);
-  if (!match) {
-    return `---\n${entries.map(([k, v]) => `${k}: ${v}`).join('\n')}\n---\n\n${raw}`;
-  }
-  let frontmatter = match[1];
-  for (const [key, value] of entries) {
-    const line = new RegExp(`^${key}:.*$`, 'm');
-    frontmatter = line.test(frontmatter)
-      ? frontmatter.replace(line, `${key}: ${value}`)
-      : `${frontmatter}\n${key}: ${value}`;
-  }
-  return `---\n${frontmatter}\n---\n${raw.slice(match[0].length)}`;
-}
-
-/**
- * Retire a memory another replaced: only its status, `supersededBy` and `updated` change, so the
- * file stays intact as history. Best effort, after the index already dropped its line — if the
- * rewrite fails, the file stays `approved` on disk, and the next index write prunes it anyway.
- */
-function markSuperseded(dir: string, oldFilename: string, byFilename: string, now: Date): void {
-  try {
-    const target = join(dir, oldFilename);
-    if (isSymlink(target)) return;
-    const raw = readFileSync(target, 'utf-8');
-    writeFileAtomic(
-      target,
-      setFrontmatterFields(raw, {
-        status: 'superseded',
-        supersededBy: byFilename,
-        updated: now.toISOString(),
-      }),
-    );
-  } catch {
-    // see above
-  }
-}
-
-/**
- * Resolve a `supersedes` slug to the on-disk name of an active memory other than `own`. A name
- * that matches no file, or one already superseded, is an error the caller reports — never a
- * silent no-op that leaves two versions loading.
- */
-function resolveSupersedes(
-  dir: string,
-  raw: string | undefined,
-  own: string | undefined,
-): { filename?: string } | { error: string } {
-  if (!raw?.trim()) return {};
-  const named = memoryFileForSlug(dir, raw);
-  if ('error' in named) return { error: `supersedes: ${named.error}` };
-  // The on-disk spelling: a case-insensitive file system finds `Deploy.md` for `deploy.md`,
-  // and the index and frontmatter must name the file exactly as it is.
-  let actual: string | undefined;
-  try {
-    actual = readdirSync(dir).find((f) => sameFile(f, named.filename));
-  } catch {
-    actual = undefined;
-  }
-  if (!actual || isSymlink(join(dir, actual))) {
-    return {
-      error: `supersedes: no memory file ${named.filename}. Use the file name from <memory-index>.`,
-    };
-  }
-  if (own && sameFile(actual, own)) return {};
-  const current = summarizeMemoryFile(join(dir, actual), actual);
-  if (current?.status === 'superseded') {
-    return {
-      error: `supersedes: ${actual} is already superseded; supersede its replacement instead.`,
-    };
-  }
-  return { filename: actual };
-}
-
-/** True for a symlink, dangling or not: `existsSync` follows links, `lstat` does not. */
-function isSymlink(path: string): boolean {
-  try {
-    return lstatSync(path).isSymbolicLink();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Where an approved memory lands — the named slug's file, or a generated name — with the
- * original creation time when it updates an entry. Refuses a symlinked target, including a
- * dangling one, which `writeFileSync` would follow out of the memory directory.
- */
-function approvedTarget(
-  dir: string,
-  input: { type: MemoryType; title: string },
-  slug: string | undefined,
-  now: Date,
-): { filename: string; target: string; existingCreated?: string } | { error: string } {
-  const named = slug?.trim() ? memoryFileForSlug(dir, slug) : null;
-  if (named && 'error' in named) return { error: named.error };
-  const filename = named?.filename ?? activeMemoryFilename(input as MemoryCandidate, now);
-  const target = named?.target ?? join(dir, filename);
-  if (isSymlink(target)) return { error: 'Refusing to overwrite symlinked memory file.' };
-  const existingCreated = named && existsSync(target) ? readMemoryFile(target)?.created : undefined;
-  return { filename, target, existingCreated };
-}
-
-export function saveMemory(
-  workspace: string,
-  candidate: MemoryWriteInput,
-  opts?: SaveMemoryOptions,
-): SaveMemoryResult {
-  const quarantineExternal = opts?.quarantineExternal ?? true;
-  const isQuarantined = candidate.externalContext === true && quarantineExternal;
-  const requireApproval = (opts?.requireApproval ?? false) || isQuarantined;
-  const title = sanitizeMemoryTitle(candidate.title);
-  if (!title) {
-    return {
-      ok: false,
-      error: 'title must not be empty after sanitizing.',
-      status: requireApproval ? 'pending' : 'approved',
-      quarantined: isQuarantined,
-    };
-  }
-
-  if (requireApproval) {
-    const rawSlug = opts?.slug?.trim()
-      ? opts.slug
-      : candidate.targetSlug?.trim()
-        ? candidate.targetSlug
-        : undefined;
-    let targetSlug: string | undefined;
-    if (rawSlug) {
-      const named = memoryFileForSlug(getProjectMemoryDir(workspace, opts), rawSlug);
-      if ('error' in named) {
-        return { ok: false, error: named.error, status: 'pending', quarantined: isQuarantined };
-      }
-      targetSlug = named.filename;
-    }
-    // Resolved against the entry's own target; re-checked when the candidate is approved.
-    const retire = resolveSupersedes(
-      getProjectMemoryDir(workspace, opts),
-      candidate.supersedes,
-      targetSlug,
-    );
-    if ('error' in retire) {
-      return { ok: false, error: retire.error, status: 'pending', quarantined: isQuarantined };
-    }
-    const candidateInput: MemoryWriteInput = {
-      ...candidate,
-      title,
-      targetSlug,
-      supersedes: retire.filename,
-    };
-    const writeResult = writeMemoryCandidate(workspace, candidateInput, opts);
-    if (!writeResult.ok) {
-      return { ok: false, error: writeResult.error, status: 'pending', quarantined: isQuarantined };
-    }
-    return { ok: true, path: writeResult.path, status: 'pending', quarantined: isQuarantined };
-  }
-
-  try {
-    const now = opts?.now ?? new Date();
-    const dir = getProjectMemoryDir(workspace, opts);
-    mkdirSync(dir, { recursive: true });
-
-    const placed = approvedTarget(dir, { ...candidate, title }, opts?.slug, now);
-    if ('error' in placed) return { ok: false, error: placed.error, status: 'approved' };
-    const { filename, target, existingCreated } = placed;
-    // Against the real target, generated name included, so a save never retires itself.
-    const retire = resolveSupersedes(dir, candidate.supersedes, filename);
-    if ('error' in retire) return { ok: false, error: retire.error, status: 'approved' };
-    // Fail before writing anything when the index cannot be read, rather than leave a memory
-    // on disk that no index line will ever load.
-    readIndexLines(dir);
-    const memoryInput: MemoryWriteInput = {
-      ...candidate,
-      title,
-      supersedes: retire.filename,
-      created: existingCreated ?? candidate.created,
-    };
-    writeFileSync(target, renderMemoryMarkdown(memoryInput, 'approved', now), 'utf-8');
-    const index = updateMemoryIndex(
-      dir,
-      title,
-      filename,
-      candidate.type,
-      now,
-      candidate.body,
-      memoryInput.supersedes,
-    );
-    if (memoryInput.supersedes) markSuperseded(dir, memoryInput.supersedes, filename, now);
-    return {
-      ok: true,
-      path: target,
-      indexLine: index.entry,
-      indexLineCount: index.lineCount,
-      indexByteCount: index.byteCount,
-      retired: memoryInput.supersedes,
-      status: 'approved',
-    };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e), status: 'approved' };
-  }
-}
-
-/**
- * Who wrote an existing memory entry: `agent` for a delegated run's, `human` for any other, and
- * null when there is no such entry. A delegated run may change only its own kind of entry.
- */
-export function memoryEntryDriver(
-  workspace: string,
-  slug: string,
-  opts?: MemoryStoreOptions,
-): SessionDriver | null {
-  const named = memoryFileForSlug(getProjectMemoryDir(workspace, opts), slug);
-  if ('error' in named || !existsSync(named.target)) return null;
-  return readMemoryFile(named.target)?.driver === 'agent' ? 'agent' : 'human';
+  if (kept.length !== lines.length) writeFileAtomic(indexPath, kept.join('\n'));
 }
 
 export function deleteMemoryEntry(
@@ -1401,7 +1218,7 @@ export function deleteMemoryEntry(
     const named = memoryFileForSlug(dir, slug);
     if ('error' in named) return { ok: false, error: named.error };
     const { filename, target } = named;
-    if (!existsSync(target)) {
+    if (!lstatIfPresent(target)) {
       return { ok: false, error: `Memory file not found: ${filename}` };
     }
     if (lstatSync(target).isSymbolicLink()) {
@@ -1410,101 +1227,11 @@ export function deleteMemoryEntry(
 
     unlinkSync(target);
     try {
-      removeIndexEntry(dir, filename);
+      removeIndexEntries(dir, filename);
     } catch {
-      // The file is gone either way; a stale index line points at nothing and is dropped by the
-      // next index write.
+      // The file is gone either way; a stale index line points at nothing.
     }
     return { ok: true, path: target };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-export function approveMemoryCandidate(
-  workspace: string,
-  candidateFile: string,
-  opts?: MemoryStoreOptions,
-): MemoryWriteResult {
-  try {
-    const candidatePath = resolveCandidatePath(workspace, candidateFile, opts);
-    if (!candidatePath)
-      return { ok: false, error: 'Candidate path must stay inside the memory inbox.' };
-    if (!existsSync(candidatePath))
-      return { ok: false, error: `Candidate not found: ${candidateFile}` };
-    if (lstatSync(candidatePath).isSymbolicLink())
-      return { ok: false, error: 'Refusing to approve symlinked candidate.' };
-
-    const candidate = parseCandidateFile(candidatePath);
-    if (!candidate)
-      return { ok: false, error: 'Candidate has invalid or missing memory frontmatter.' };
-
-    const now = opts?.now ?? new Date();
-    const dir = getProjectMemoryDir(workspace, opts);
-    mkdirSync(dir, { recursive: true });
-
-    if (!candidate.title.trim()) return { ok: false, error: 'Candidate has an empty title.' };
-    const placed = approvedTarget(dir, candidate, candidate.targetSlug, now);
-    if ('error' in placed) return { ok: false, error: placed.error };
-    const { filename, target, existingCreated } = placed;
-
-    // A candidate's `supersedes` was resolved when it was saved; re-check it now, since the
-    // target may have gone or be the entry being approved.
-    const retire = resolveSupersedes(dir, candidate.supersedes, filename);
-    const supersedes = 'error' in retire ? undefined : retire.filename;
-    const retireSkipped = 'error' in retire ? retire.error : undefined;
-    const memoryInput: MemoryWriteInput = {
-      ...candidate,
-      supersedes,
-      created: existingCreated ?? candidate.created,
-    };
-    const rendered = renderMemoryMarkdown(memoryInput, 'approved', now);
-    // Move the candidate to discarded BEFORE writing the approved file and
-    // updating the index, so a rename failure cannot leave an orphan approved
-    // memory + index entry behind on disk. If the rename throws, nothing has
-    // been committed yet and the caller can safely retry.
-    // An unreadable index fails the approval here, while the candidate is still in the inbox.
-    readIndexLines(dir);
-    renameSync(candidatePath, join(getDiscardedDir(workspace, opts), basename(candidatePath)));
-    writeFileSync(target, rendered, 'utf-8');
-    updateMemoryIndex(
-      dir,
-      candidate.title,
-      filename,
-      candidate.type,
-      now,
-      candidate.body,
-      supersedes,
-    );
-    if (supersedes) markSuperseded(dir, supersedes, filename, now);
-    return { ok: true, path: target, retired: supersedes, retireSkipped };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-function getDiscardedDir(workspace: string, opts?: MemoryStoreOptions): string {
-  const dir = join(getMemoryInboxDir(workspace, opts), DISCARDED_DIR);
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-export function discardMemoryCandidate(
-  workspace: string,
-  candidateFile: string,
-  opts?: MemoryStoreOptions,
-): MemoryWriteResult {
-  try {
-    const candidatePath = resolveCandidatePath(workspace, candidateFile, opts);
-    if (!candidatePath)
-      return { ok: false, error: 'Candidate path must stay inside the memory inbox.' };
-    if (!existsSync(candidatePath))
-      return { ok: false, error: `Candidate not found: ${candidateFile}` };
-    if (lstatSync(candidatePath).isSymbolicLink())
-      return { ok: false, error: 'Refusing to discard symlinked candidate.' };
-    const discardedPath = join(getDiscardedDir(workspace, opts), basename(candidatePath));
-    renameSync(candidatePath, discardedPath);
-    return { ok: true, path: discardedPath };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

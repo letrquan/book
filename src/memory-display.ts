@@ -4,12 +4,11 @@ import {
   type LoadedMemoryContext,
   DEFAULT_MAX_INDEX_LINES,
   MAX_INDEX_BYTES,
+  findLegacyMemoryBackup,
+  legacyBackupNotice,
   getMemoryHealth,
-  getMemoryInboxDir,
   memoryWriteScope,
-  listMemoryCandidates,
   loadMemoryContext,
-  readMemoryFile,
   type MemoryStoreOptions,
 } from './memory-store.js';
 
@@ -35,44 +34,6 @@ export function getMemoryIndex(workspace: string, opts?: MemoryStoreOptions): Me
     indexLineCount: ctx.indexLineCount,
     files: ctx.files.map((file) => ({ name: file.name, size: file.size })),
   };
-}
-
-export function buildMemoryInboxReport(input: MemoryReportInput): string {
-  const candidates = listMemoryCandidates(input.workspace, input);
-  if (candidates.length === 0) {
-    return [
-      'Memory inbox: no pending candidates.',
-      '',
-      `Inbox: \`${getMemoryInboxDir(input.workspace, input)}\``,
-      '',
-      'New auto-memory candidates appear here for review before they are loaded.',
-    ].join('\n');
-  }
-
-  const lines = ['Memory inbox candidates:', ''];
-  candidates.forEach((candidate, i) => {
-    lines.push(
-      `${i + 1}. ${candidate.title ?? candidate.name} (${candidate.type ?? 'unknown'}) — ${candidate.name}`,
-    );
-    // What approving would do, so the review is not blind: the text, which approved entry it
-    // replaces, and whether it came from a session that read external content.
-    const full = readMemoryFile(candidate.path);
-    if (!full) return;
-    if (full.externalContext) {
-      lines.push('   ⚠ saved in a session that read external content (web, MCP, or another agent)');
-    }
-    if (full.targetSlug) lines.push(`   replaces existing: \`${full.targetSlug}\``);
-    if (full.supersedes) {
-      lines.push(
-        `   retires existing: \`${full.supersedes}\` (kept on disk, removed from the index)`,
-      );
-    }
-    const preview = full.body.replace(/\s+/g, ' ').trim();
-    lines.push(`   ${preview.length > 200 ? `${preview.slice(0, 200)}…` : preview}`);
-  });
-  lines.push('');
-  lines.push('Use /memory approve <number-or-file> or /memory discard <number-or-file>.');
-  return lines.join('\n');
 }
 
 const formatCount = (n: number): string => n.toLocaleString('en-US');
@@ -102,6 +63,17 @@ export function describeIndexLoad(
   return `${sizes} — cut (${cuts.join('; ')}); the model sees a warning where it stops`;
 }
 
+/** The link text of each `MEMORY.md` line, by the file it links to. */
+function indexTitles(indexText: string): Map<string, string> {
+  const titles = new Map<string, string>();
+  for (const line of indexText.split('\n')) {
+    const link = /^\s*[-*]\s+\[([^\]]+)\]\(([^()]+)\)/.exec(line);
+    const target = link?.[2].replace(/^\.\//, '');
+    if (link && target && !titles.has(target)) titles.set(target, link[1].trim());
+  }
+  return titles;
+}
+
 export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string): string {
   const input: MemoryReportInput =
     typeof inputOrWorkspace === 'string' ? { workspace: inputOrWorkspace } : inputOrWorkspace;
@@ -111,52 +83,44 @@ export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string):
   const ctx = loadMemoryContext(input.workspace, input);
   const settings = input.settings;
   const enabled = settings?.memory.enabled ?? true;
-  const requireApproval = settings?.memory.requireApproval ?? false;
   const health = getMemoryHealth(ctx, input);
   const lastWrite = health.lastWrite ? health.lastWrite.toISOString() : 'never';
 
-  // One line per fact. The report used to print the memory directory twice
-  // (Location, Path), a Loading line, an Approval line the writes line already
-  // implied, and a pending count the health line already held.
-  const quarantineExternal = settings?.memory.quarantineExternal ?? true;
   const scope = memoryWriteScope({ settings, sessionDriver: input.sessionDriver });
   const modelWrites =
     scope === 'none'
       ? 'disabled'
       : scope === 'learnings'
         ? 'learnings only (session driven by another agent: project/reference, never its instructions)'
-        : requireApproval
-          ? 'enabled (to inbox, needs approval)'
-          : quarantineExternal
-            ? 'enabled (direct to store; to inbox after external content)'
-            : 'enabled (direct to store)';
+        : 'enabled (files in the memory directory)';
   const lines: string[] = [
     `Memory: ${enabled ? 'loaded each session' : 'not loaded'} · model writes ${modelWrites}`,
-    `Health: ${health.approvedCount} approved, ${health.supersededCount} superseded, ${health.inboxCount} inbox, ${health.indexLineCount}/${DEFAULT_MAX_INDEX_LINES} index lines, last write: ${lastWrite}`,
+    `Health: ${health.fileCount} ${health.fileCount === 1 ? 'memory' : 'memories'}, ${health.indexLineCount}/${DEFAULT_MAX_INDEX_LINES} index lines, last write: ${lastWrite}`,
   ];
   if (ctx.indexFile) {
     lines.push(`Index: ${describeIndexLoad(ctx)}`);
   }
   lines.push(`Location: \`${ctx.dir}\``);
-  if (health.inboxCount > 0 || ctx.candidates.length > 0) {
-    lines.push(`Inbox: \`${getMemoryInboxDir(input.workspace, input)}\``);
-  }
+  const backup = findLegacyMemoryBackup(ctx.dir);
+  if (backup) lines.push(legacyBackupNotice(backup));
 
-  const approvedFiles = ctx.files.filter((file) => file.name !== 'MEMORY.md');
   lines.push('');
-  if (approvedFiles.length === 0) {
-    lines.push('No approved memories yet.');
+  if (ctx.files.length === 0) {
+    lines.push('No memories yet.');
   } else {
-    for (const file of approvedFiles) {
+    const titles = indexTitles(ctx.indexText);
+    for (const file of ctx.files) {
+      // The index line's title, else the description: the slug is the file, shown after it.
+      const title = titles.get(file.name) ?? file.description ?? file.title ?? file.name;
       // A delegated run's learning is marked, so the user can tell it apart and prune it.
       const from = file.driver === 'agent' ? ' · from a delegated run' : '';
-      lines.push(`- ${file.title ?? file.name} (${file.type ?? 'unknown'}${from}) — ${file.name}`);
+      // The retired save tool's superseded files load like any other now.
+      const legacy = file.legacySuperseded ? ' · legacy, superseded' : '';
+      lines.push(`- ${title} (${file.type ?? 'unknown'}${from}${legacy}) — ${file.name}`);
     }
   }
 
   lines.push('');
-  lines.push(
-    '`/memory inbox` · `approve <n|file>` · `discard <n|file>` · `delete <file>` · `on` · `off`',
-  );
+  lines.push('`/memory path` · `delete <file>` · `on` · `off`');
   return lines.join('\n');
 }

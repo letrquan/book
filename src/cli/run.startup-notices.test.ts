@@ -31,7 +31,6 @@ vi.mock('../mcp-host.js', () => ({
     }
   },
 }));
-vi.mock('../memory-extract.js', () => ({ runMemoryExtraction: async () => ({}) }));
 vi.mock('./ink-scroll-renderer.js', () => ({ installInkScrollRenderer: async () => {} }));
 vi.mock('./frame-buffer.js', () => ({ installFrameCapture: async () => {} }));
 vi.mock('./ink-frame-throttle.js', () => ({ installInkFrameThrottle: async () => true }));

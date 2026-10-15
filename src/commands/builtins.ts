@@ -15,15 +15,8 @@ import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js
 import { EFFORT_USAGE, isEffortLevel, type EffortLevel } from './effort.js';
 import { redactSettingValue } from '../settings-redaction.js';
 import { formatSettingsKeyHelp } from '../settings-repository.js';
-import { buildMemoryInboxReport, buildMemoryReport } from '../memory-display.js';
-import {
-  approveMemoryCandidate,
-  deleteMemoryEntry,
-  discardMemoryCandidate,
-  getProjectMemoryDir,
-  listMemoryCandidates,
-  type MemoryFileSummary,
-} from '../memory-store.js';
+import { buildMemoryReport } from '../memory-display.js';
+import { deleteMemoryEntry, getProjectMemoryDir } from '../memory-store.js';
 import {
   costReport,
   failureTotal,
@@ -261,12 +254,6 @@ interface LiveSetting {
   effect: (value: unknown, context: BuiltinCommandContext) => BuiltinCommandEffect;
 }
 
-/** What an approval retired: the entry it replaces, or why a recorded retirement was skipped. */
-function retirement(result: { retired?: string; retireSkipped?: string }): string {
-  if (result.retireSkipped) return ` (nothing retired: ${result.retireSkipped})`;
-  return result.retired ? ` (retired \`${result.retired}\`)` : '';
-}
-
 function textOf(value: unknown): string {
   return typeof value === 'string' ? value.trim() : String(value);
 }
@@ -451,16 +438,6 @@ function scopeFlagFor(scope: SettingsScope): string {
   return scope === 'user' ? '--global' : `--${scope}`;
 }
 
-/** A `<n|file>` argument: an index into a listing, or the name itself. */
-function resolveMemoryTarget(list: MemoryFileSummary[], raw: string): string | undefined {
-  if (!raw) return undefined;
-  const index = Number(raw);
-  if (Number.isInteger(index) && index >= 1 && index <= list.length) {
-    return list[index - 1].name;
-  }
-  return raw;
-}
-
 function memoryCommandEffect(
   rawArguments: string,
   context: BuiltinCommandContext,
@@ -477,12 +454,6 @@ function memoryCommandEffect(
       }),
     };
   }
-  if (rawArguments === 'inbox') {
-    return {
-      type: 'local-message',
-      content: buildMemoryInboxReport({ workspace: context.workspace }),
-    };
-  }
   if (rawArguments === 'path') {
     return { type: 'local-message', content: `\`${getProjectMemoryDir(context.workspace)}\`` };
   }
@@ -492,29 +463,9 @@ function memoryCommandEffect(
   if (rawArguments === 'off' || rawArguments === 'auto-save off') {
     return { type: 'set-memory-auto-save', enabled: false };
   }
-  if (rawArguments.startsWith('approve ') || rawArguments.startsWith('discard ')) {
-    const approve = rawArguments.startsWith('approve ');
-    const target = resolveMemoryTarget(
-      listMemoryCandidates(context.workspace),
-      rawArguments.slice(approve ? 'approve '.length : 'discard '.length).trim(),
-    );
-    const result = target
-      ? approve
-        ? approveMemoryCandidate(context.workspace, target)
-        : discardMemoryCandidate(context.workspace, target)
-      : { ok: false as const, error: 'Missing candidate id or filename.' };
-    return {
-      type: 'local-message',
-      content: result.ok
-        ? `${approve ? 'Approved' : 'Discarded'} memory candidate → \`${result.path}\`${retirement(result)}`
-        : `✕ ${result.error}`,
-      refreshMemory: result.ok && approve,
-    };
-  }
   if (rawArguments === 'delete' || rawArguments.startsWith('delete ')) {
-    // A file name only: numbering can shift between `/memory status` and this
-    // command — a model write lands in the store mid-session — and deleting the
-    // wrong entry is not a mistake the user can see coming.
+    // A file name only: a model write can change the store mid-session, and deleting the
+    // wrong file is not a mistake the user can see coming. The file's MEMORY.md line goes too.
     const target = rawArguments.slice('delete'.length).trim();
     const result = target
       ? deleteMemoryEntry(context.workspace, target)
@@ -527,8 +478,7 @@ function memoryCommandEffect(
   }
   return {
     type: 'local-message',
-    content:
-      'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|delete <file>|on|off|path]',
+    content: 'Usage: /memory [status|delete <file>|on|off|path]',
   };
 }
 
@@ -964,7 +914,7 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   {
     name: 'memory',
     description: 'Manage auto-memory',
-    argumentHint: '[status|inbox|approve|discard|delete|on|off|path]',
+    argumentHint: '[status|delete|on|off|path]',
     execute: ({ rawArguments }, context) => memoryCommandEffect(rawArguments, context),
   },
   {

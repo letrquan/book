@@ -50,8 +50,6 @@ export interface SessionStateInput {
    * Restating the outstanding set every turn is the grounding that stops it.
    */
   outstandingAgents?: Array<{ label: string; status: string }>;
-  /** Number of pending auto-memory candidates in the inbox. */
-  pendingMemoryCandidates?: number;
 }
 
 function todoLines(todos: NonNullable<SessionStateInput['todos']>): string[] {
@@ -110,9 +108,6 @@ export function renderSessionState(input: SessionStateInput): string {
     ...(elapsed ? [`- Running for: ${elapsed}`] : []),
     ...(input.git ? [`- Git: ${input.git}`] : []),
     ...(input.planMode ? [PLAN_MODE_LINE] : []),
-    ...(input.pendingMemoryCandidates && input.pendingMemoryCandidates > 0
-      ? [`- Pending memory candidates: ${input.pendingMemoryCandidates} — /memory inbox`]
-      : []),
     ...(stale.length
       ? [`- Stale since checkpoint: ${stale.join(', ')} — reread before exact reliance`]
       : []),
