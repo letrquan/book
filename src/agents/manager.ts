@@ -20,6 +20,7 @@ import { finalAnswerText } from '../agent/final-answer.js';
 import { runCompact, usagePressureTokens } from '../agent/compact.js';
 import { runHooks } from '../hooks.js';
 import { discoverAgents } from '../subagent-discovery.js';
+import { WorkspaceProviderRefusalError } from '../provider-approvals.js';
 import { createRegistry } from '../tools/registry-core.js';
 import { createCapabilityRegistry, describeCapabilities } from './capabilities.js';
 import { checkWorktreeCapacity } from './resource-governor.js';
@@ -906,8 +907,11 @@ export class AgentManager {
         resolvedProfile,
         resolvedProfile.resolvedModel,
       ).effort;
-    } catch {
-      // Reported when the run resolves the model.
+    } catch (error) {
+      // A provider the user has not approved is a decision waiting for them, not a model id that
+      // does not resolve: fail the spawn with the command that decides it, not a queued agent
+      // that fails later (#418). Any other id is reported when the run resolves the model.
+      if (error instanceof WorkspaceProviderRefusalError) throw error;
     }
 
     let plan = request.planId ? this.plans.get(request.planId) : undefined;
@@ -1610,7 +1614,13 @@ export class AgentManager {
           autoCompactEnabled: true,
           memoryContext: undefined,
         },
-        spawnChoice ? { effort: spawnChoice, effortExplicit: true } : resolvedProfile,
+        spawnChoice
+          ? {
+              effort: spawnChoice,
+              effortExplicit: true,
+              modelTrusted: resolvedProfile.modelTrusted,
+            }
+          : resolvedProfile,
         record.resolvedModel,
       );
       if (record.effort !== agentConfig.effort) {

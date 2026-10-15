@@ -216,7 +216,7 @@ describe('Advisor tool', () => {
       dirs.push(home, workspace);
       mkdirSync(join(workspace, '.book'));
       writeFileSync(
-        join(workspace, '.book', 'settings.local.json'),
+        join(home, 'settings.json'),
         JSON.stringify({
           model: 'anthropic/claude-sonnet-5-5',
           advisorModel: 'claude',
@@ -248,6 +248,129 @@ describe('Advisor tool', () => {
       expect(result.structuredError?.code).toBe('advisor_unconfigured');
       expect(result.structuredError?.retryable).toBe(false);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // #418. A provider only the workspace declares is not in `settings.provider` until approved, so
+  // a keyless one the advisor names gets no request and no transcript, and is used once approved.
+  describe('naming a workspace-declared provider (#418)', () => {
+    const saved = Object.fromEntries(
+      ['BOOK_API_KEY', 'BOOK_BASE_URL', 'BOOK_HOME', 'BOOK_MODEL', 'BOOK_ADVISOR_MODEL'].map(
+        (name) => [name, process.env[name]],
+      ),
+    );
+    const dirs: string[] = [];
+    const origin = 'https://advisor-origin.example/v1';
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    });
+
+    function setup(workspaceSettings: Record<string, unknown>, env?: string) {
+      const home = mkdtempSync(join(tmpdir(), 'book-advisor-home-'));
+      const workspace = mkdtempSync(join(tmpdir(), 'book-advisor-ws-'));
+      dirs.push(home, workspace);
+      mkdirSync(join(workspace, '.book'));
+      writeFileSync(
+        join(home, 'settings.json'),
+        JSON.stringify({ model: 'plain-main', provider: {} }),
+      );
+      writeFileSync(join(workspace, '.book', 'settings.json'), JSON.stringify(workspaceSettings));
+      process.env.BOOK_HOME = home;
+      process.env.BOOK_API_KEY = 'sk-main-session-key';
+      delete process.env.BOOK_BASE_URL;
+      delete process.env.BOOK_MODEL;
+      if (env === undefined) delete process.env.BOOK_ADVISOR_MODEL;
+      else process.env.BOOK_ADVISOR_MODEL = env;
+      const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      return { home, workspace, fetchMock };
+    }
+
+    const declaration = { type: 'openai', baseURL: origin } as const;
+
+    async function consult(workspace: string) {
+      const conversation = vi.fn(() => [message('user', 'a secret transcript')]);
+      const [tool] = createAdvisorTools();
+      const result = await tool.execute(
+        {},
+        {
+          workspaceRoot: workspace,
+          env: {},
+          agentConfig: loadConfig(workspace),
+          conversation,
+        },
+      );
+      return { result, conversation };
+    }
+
+    async function approve(workspace: string, home: string) {
+      const { persistWorkspaceProviderChoice, workspaceProviderFingerprint } =
+        await import('../provider-approvals.js');
+      expect(
+        persistWorkspaceProviderChoice(
+          workspace,
+          'lab',
+          workspaceProviderFingerprint(declaration),
+          'approved',
+          join(home, 'trust.json'),
+        ).ok,
+      ).toBe(true);
+    }
+
+    it('sends nothing for a workspace advisorModel while it is pending, and consults it once approved', async () => {
+      const { home, workspace, fetchMock } = setup({
+        provider: { lab: declaration },
+        advisorModel: 'lab/adv',
+      });
+
+      const pending = await consult(workspace);
+      expect(pending.result.status).toBe('error');
+      expect(pending.result.structuredError?.code).toBe('advisor_unconfigured');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(pending.conversation).not.toHaveBeenCalled();
+
+      await approve(workspace, home);
+      const approved = await consult(workspace);
+
+      expect(approved.conversation).toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalled();
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(String(url)).toContain('advisor-origin.example');
+      // Keyless means keyless: the session's key does not follow the repository's origin.
+      expect(JSON.stringify(init.headers ?? {})).not.toContain('sk-main-session-key');
+      expect(approved.result.structuredError?.message ?? '').not.toContain('book trust provider');
+    });
+
+    // The user's own BOOK_ADVISOR_MODEL is theirs even when its prefix collides with a provider
+    // id the repository chose: while it is pending the id is a plain model name on the default
+    // endpoint, and only approving the provider sends it to the repository's origin.
+    it('sends the transcript of the own BOOK_ADVISOR_MODEL only to the default endpoint while the provider is pending', async () => {
+      const { home, workspace, fetchMock } = setup({ provider: { lab: declaration } }, 'lab/adv');
+
+      const pending = await consult(workspace);
+      expect(pending.conversation).toHaveBeenCalled();
+      const urls = (fetchMock.mock.calls as unknown as [string, RequestInit][]).map(([url]) =>
+        String(url),
+      );
+      expect(urls.length).toBeGreaterThan(0);
+      for (const url of urls) {
+        expect(url).toContain('api.openai.com');
+        expect(url).not.toContain('advisor-origin.example');
+      }
+
+      fetchMock.mockClear();
+      await approve(workspace, home);
+      await consult(workspace);
+
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(String(url)).toContain('advisor-origin.example');
+      expect(JSON.stringify(init.headers ?? {})).not.toContain('sk-main-session-key');
     });
   });
 

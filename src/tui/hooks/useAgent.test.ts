@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { resolveModelProviderConfig } from '../../config.js';
 import type { RetryPhase, AgentConfig } from '../../types/runtime.js';
 import {
   didSendMessageComplete,
@@ -8,6 +9,17 @@ import {
 import type { AgentSessionSendResult } from '../../session/agent-session.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from '../../settings.js';
 import { defaultConfig } from '../../test/fixtures.js';
+import {
+  emptyWorkspaceProviderGate,
+  resolveSettingsWithProviderGate,
+} from '../../settings-loader.js';
+import {
+  persistWorkspaceProviderChoice,
+  workspaceProviderFingerprint,
+} from '../../provider-approvals.js';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 // Simulate the retry state machine from useAgent.
 // This is a pure-function test of the state transitions without React rendering.
@@ -251,6 +263,7 @@ describe('provider removal runtime resolution', () => {
       activeGateway(),
       settings({ model: 'project-model' }),
       'gateway',
+      emptyWorkspaceProviderGate(),
     );
 
     expect(result.activeModel).toBe('project-model');
@@ -266,6 +279,7 @@ describe('provider removal runtime resolution', () => {
       activeGateway(),
       settings({ model: 'user-global-model' }),
       'gateway',
+      emptyWorkspaceProviderGate(),
     );
 
     expect(result.activeModel).toBe('user-global-model');
@@ -273,7 +287,12 @@ describe('provider removal runtime resolution', () => {
   });
 
   it('falls back to gpt-4o when no configured model remains', () => {
-    const result = resolveConfigAfterProviderRemoval(activeGateway(), settings(), 'gateway');
+    const result = resolveConfigAfterProviderRemoval(
+      activeGateway(),
+      settings(),
+      'gateway',
+      emptyWorkspaceProviderGate(),
+    );
 
     expect(result.activeModel).toBe('gpt-4o');
     expect(result.config.model).toBe('gpt-4o');
@@ -285,6 +304,7 @@ describe('provider removal runtime resolution', () => {
       activeGateway(),
       settings({ model: 'gateway/missing' }),
       'gateway',
+      emptyWorkspaceProviderGate(),
     );
 
     expect(result.activeModel).toBe('gpt-4o');
@@ -303,7 +323,12 @@ describe('provider removal runtime resolution', () => {
     });
     const nextSettings = settings({ model: 'project-model' });
 
-    const result = resolveConfigAfterProviderRemoval(current, nextSettings, 'gateway');
+    const result = resolveConfigAfterProviderRemoval(
+      current,
+      nextSettings,
+      'gateway',
+      emptyWorkspaceProviderGate(),
+    );
 
     expect(result.activeModel).toBe('session-model');
     expect(result.switched).toBe(false);
@@ -329,7 +354,12 @@ describe('provider removal runtime resolution', () => {
       },
     });
 
-    const result = resolveConfigAfterProviderRemoval(activeGateway(), nextSettings, 'gateway');
+    const result = resolveConfigAfterProviderRemoval(
+      activeGateway(),
+      nextSettings,
+      'gateway',
+      emptyWorkspaceProviderGate(),
+    );
 
     expect(result.inheritedProviderRevealed).toBe(true);
     expect(result.activeModel).toBe('gateway/inherited-model');
@@ -345,5 +375,98 @@ describe('provider removal runtime resolution', () => {
       }),
     );
     expect(result.config.modelInfo?.label).toBe('Inherited');
+  });
+
+  // Finding 3: settings are re-read here, and the gate computed at launch describes the settings
+  // from before the removal.
+  describe('when the removed provider shared its id with an approved workspace one', () => {
+    const wsProvider = { type: 'openai', baseURL: 'https://workspace.example/v1' } as const;
+    let root: string;
+
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), 'book-removal-'));
+    });
+    afterEach(() => {
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    function reread(userSettings: Record<string, unknown>) {
+      const workspace = join(root, 'ws');
+      const home = join(root, 'home');
+      mkdirSync(join(workspace, '.book'), { recursive: true });
+      mkdirSync(join(home, '.book'), { recursive: true });
+      writeFileSync(
+        join(workspace, '.book', 'settings.json'),
+        JSON.stringify({ provider: { team: wsProvider } }),
+      );
+      writeFileSync(join(home, '.book', 'settings.json'), JSON.stringify(userSettings));
+      // The user approved the workspace's declaration earlier, before defining their own.
+      persistWorkspaceProviderChoice(
+        workspace,
+        'team',
+        workspaceProviderFingerprint(wsProvider),
+        'approved',
+        join(home, '.book', 'trust.json'),
+      );
+      return resolveSettingsWithProviderGate(workspace, undefined, { home });
+    }
+
+    // What the session holds from launch: the user's own `team`, which shadowed the workspace's.
+    const launchTime = () =>
+      activeGateway({
+        modelSelection: 'team/m',
+        defaultApiKey: 'user-bookkey',
+        workspaceProviderGate: emptyWorkspaceProviderGate(),
+        settings: settings({
+          model: 'team/m',
+          provider: {
+            team: { type: 'openai', baseURL: 'https://user.example/v1', apiKey: 'k', models: {} },
+          },
+        }),
+      });
+
+    it('sends no inherited key to the workspace origin the removal revealed', () => {
+      const { settings: next, providerGate } = reread({ model: 'team/m' });
+      expect(next.provider.team.baseURL).toBe('https://workspace.example/v1');
+      expect(providerGate.declared).toEqual(['team']);
+
+      const result = resolveConfigAfterProviderRemoval(launchTime(), next, 'team', providerGate);
+
+      expect(result.config.baseUrl).toBe('https://workspace.example/v1');
+      // Not BOOK_API_KEY, and not the key the user's own provider carried.
+      expect(result.config.apiKey).toBe('');
+      expect(result.config.workspaceProviderGate?.declared).toEqual(['team']);
+    });
+
+    it('stores the recomputed gate with the settings, so later switches see it too', () => {
+      const { settings: next, providerGate } = reread({ model: 'team/m' });
+
+      const { config } = resolveConfigAfterProviderRemoval(
+        launchTime(),
+        next,
+        'team',
+        providerGate,
+      );
+
+      expect(config.settings).toBe(next);
+      expect(config.workspaceProviderGate).toMatchObject({ declared: ['team'], withheld: [] });
+      expect(resolveModelProviderConfig(config, 'team/other').apiKey).toBe('');
+    });
+
+    it('keeps the legacy baseUrl decision the launch computed', () => {
+      const { settings: next, providerGate } = reread({});
+      const current = launchTime();
+      current.workspaceProviderGate = {
+        ...emptyWorkspaceProviderGate(),
+        legacyBaseUrl: { baseUrl: 'https://legacy.example/v1', state: 'pending' },
+      };
+
+      const { config } = resolveConfigAfterProviderRemoval(current, next, 'team', providerGate);
+
+      expect(config.workspaceProviderGate?.legacyBaseUrl).toEqual({
+        baseUrl: 'https://legacy.example/v1',
+        state: 'pending',
+      });
+    });
   });
 });

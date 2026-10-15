@@ -55,11 +55,12 @@ import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-l
 import { loadMemoryContext } from '../../memory-store.js';
 import {
   readSettingsGlobal,
+  readUserProvider,
   removeProviderGlobal,
   persistAgentProfileModel,
   persistSettingsGlobal,
   persistUserSettingClearingLocal,
-  removeUserSettingClearingLocal,
+  turnOffAdvisorModel,
   persistPermissionRuleLocal,
   removePermissionRuleLocal,
   persistSkillActivationLocal,
@@ -74,8 +75,13 @@ import {
   type SkillActivation,
   type SkillExecution,
 } from '../../settings.js';
-import { resolveSettings, applySettingsEnvOverrides } from '../../settings-loader.js';
-import { providerConfigFromDraft, type ProviderSaveRequest } from '../model-options.js';
+import {
+  applySettingsEnvOverrides,
+  emptyWorkspaceProviderGate,
+  resolveSettingsWithProviderGate,
+} from '../../settings-loader.js';
+import type { WorkspaceProviderGate } from '../../provider-approvals.js';
+import { providerConfigForSave, type ProviderSaveRequest } from '../model-options.js';
 import type { ProviderRemovalResult } from '../components/ModelPicker.js';
 import { updateEffortLevel } from '../../commands/effort.js';
 import { seedObservationLedger } from '../../tools/file-provenance.js';
@@ -98,6 +104,7 @@ const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
+import { startupNoticeMessages } from '../startup-notices.js';
 
 export function didSendMessageComplete(result: AgentSessionSendResult): boolean {
   return result.status === 'completed';
@@ -125,6 +132,12 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
   snapshotStore?: RewindSnapshotStoreInterface;
   /** Live extra tools (e.g. MCP) merged into each per-send registry. */
   additionalTools?: () => ToolDefinition[];
+  /**
+   * Warnings about this launch, shown once as local rows after the loaded transcript. Not
+   * persisted and not part of the model's context, so a resumed session shows the current
+   * launch's and never an earlier one's.
+   */
+  startupNotices?: readonly string[];
 }
 
 function providerIdFromSelection(selection: string): string | undefined {
@@ -164,10 +177,19 @@ function readOwnedProviders(): {
   return { ids, modelCounts };
 }
 
+/**
+ * The session's config once settings have been re-read after a provider was removed.
+ *
+ * `providerGate` is the gate computed with those same settings, and it replaces the launch-time
+ * one on the config: removing a user provider that shares an id with an approved workspace one
+ * reveals the workspace's entry, which must then be treated as workspace-declared (no inherited
+ * `BOOK_API_KEY`), and a gate from before the removal would say it is the user's.
+ */
 export function resolveConfigAfterProviderRemoval(
   current: AgentConfig,
   settings: ResolvedSettings,
   providerId: string,
+  providerGate: WorkspaceProviderGate,
 ): {
   config: AgentConfig;
   activeModel: string;
@@ -184,7 +206,18 @@ export function resolveConfigAfterProviderRemoval(
   const activeProviderRemoved = providerIdFromSelection(currentSelection) === providerId;
   const nextSelection = activeProviderRemoved ? effectiveDefault : currentSelection;
   const next = applyModelDefaults(
-    resolveModelProviderConfig({ ...current, settings }, nextSelection),
+    resolveModelProviderConfig(
+      {
+        ...current,
+        settings,
+        workspaceProviderGate: {
+          ...providerGate,
+          legacyBaseUrl: current.workspaceProviderGate?.legacyBaseUrl,
+        },
+      },
+      nextSelection,
+      { trustedSelection: true },
+    ),
   );
   const activeModel = next.modelSelection ?? next.model;
 
@@ -290,7 +323,11 @@ function summarizeGoal(goal: ActiveGoal | undefined): GoalSummary | undefined {
 export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const initialTranscript = session.transcript ?? session.history;
   const initialContext = session.contextHistory ?? session.history;
-  const [messages, setMessages] = useState<Message[]>(initialTranscript);
+  const [messages, setMessages] = useState<Message[]>(() =>
+    session.startupNotices?.length
+      ? [...initialTranscript, ...startupNoticeMessages(session.startupNotices)]
+      : initialTranscript,
+  );
   const [compactBoundaries, setCompactBoundaries] = useState<CompactBoundary[]>(
     session.compactBoundaries ?? [],
   );
@@ -419,7 +456,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const streamingIdRef = useRef<string | null>(null);
   // What the streaming message holds (see StreamOutput), tracked as events arrive.
   const streamOutputRef = useRef<StreamOutput>(freshStreamOutput());
-  const messagesRef = useRef<Message[]>(initialTranscript);
+  const messagesRef = useRef<Message[]>(messages);
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
   const sessionNameRef = useRef(session.sessionName);
@@ -2089,7 +2126,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     (name: string, options: { persist?: boolean } = {}) => {
       let next: AgentConfig;
       try {
-        next = applyModelDefaults(resolveModelProviderConfig(liveConfigRef.current, name));
+        // A model the user picked: a prefix that names only a withheld workspace provider is a
+        // vendor-namespaced id, resolved as the plain fallback.
+        next = applyModelDefaults(
+          resolveModelProviderConfig(liveConfigRef.current, name, { trustedSelection: true }),
+        );
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
@@ -2108,9 +2149,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const providerId = request.providerId;
       let savedProvider;
       try {
-        const existing = liveConfigRef.current.settings.provider[providerId];
+        // Built on the user's own entry, not the resolved one: that holds what a workspace layer
+        // merged in, and none of it belongs in ~/.book/settings.json.
         savedProvider = providerConfigSchema.parse(
-          providerConfigFromDraft(request, existing, request.replaceModels),
+          providerConfigForSave(request, readUserProvider(providerId)),
         );
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -2144,7 +2186,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           },
         };
         return activate
-          ? applyModelDefaults(resolveModelProviderConfig(withProvider, selection))
+          ? applyModelDefaults(
+              resolveModelProviderConfig(withProvider, selection, { trustedSelection: true }),
+            )
           : withProvider;
       });
       const nextOwnedProviders = {
@@ -2177,15 +2221,21 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // under, not the files' contents: resolving without the environment's
         // override put the file's value back into `liveConfig`, so `/config`
         // showed a splash state this session was not launched with.
-        resolvedSettings = applySettingsEnvOverrides(
-          config.settingsContext?.noSettings
-            ? structuredClone(DEFAULT_SETTINGS)
-            : resolveSettings(config.workspace, config.settingsContext?.overridePath),
-        );
+        // The gate is recomputed with the settings it describes and stored with them: a gate
+        // from launch would not know that the provider just removed was shadowing a workspace
+        // one (#418).
+        const reread = config.settingsContext?.noSettings
+          ? {
+              settings: structuredClone(DEFAULT_SETTINGS),
+              providerGate: emptyWorkspaceProviderGate(),
+            }
+          : resolveSettingsWithProviderGate(config.workspace, config.settingsContext?.overridePath);
+        resolvedSettings = applySettingsEnvOverrides(reread.settings);
         resolvedRuntime = resolveConfigAfterProviderRemoval(
           liveConfigRef.current,
           resolvedSettings,
           providerId,
+          reread.providerGate,
         );
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -2275,7 +2325,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     (model: string | null) => {
       const result = model
         ? persistUserSettingClearingLocal(config.workspace, 'advisorModel', model)
-        : removeUserSettingClearingLocal(config.workspace, 'advisorModel');
+        : turnOffAdvisorModel(config.workspace);
       if (!result.ok) return result;
       setLiveConfig((current) => ({
         ...current,

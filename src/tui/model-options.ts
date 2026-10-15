@@ -181,3 +181,23 @@ export function providerConfigFromDraft(
   if (draft.apiKey) config.apiKey = draft.apiKey;
   return config;
 }
+
+/**
+ * The provider entry a save writes to the user-global settings file.
+ *
+ * `own` is the user file's entry for the id, never the merged one: the picker lists the resolved
+ * providers, which hold values a workspace layer contributed (its `models`, and once its `type`),
+ * and persisting those would copy repository-authored values into the user's own file. A refresh
+ * or a hand-typed model only changes the catalog, so it keeps the type, origin and key `own` has
+ * and ignores the ones the request carries. The wizard, which the user fills in, writes what it
+ * was given.
+ */
+export function providerConfigForSave(
+  request: ProviderSaveRequest,
+  own: ProviderConfig | undefined,
+): ProviderConfig {
+  const catalogOnly = Boolean(request.replaceModels || request.manual);
+  const draft: ProviderSaveRequest =
+    own && catalogOnly ? { ...request, type: own.type, baseURL: '', apiKey: '' } : request;
+  return providerConfigFromDraft(draft, own, request.replaceModels);
+}

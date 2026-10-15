@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { panelContentWidth, panelGrid } from './layout.js';
+import { isStartupNotice } from './startup-notices.js';
 import { GlobalKeyHandler } from './global-key-handler.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
@@ -270,6 +271,11 @@ interface AppProps {
     snapshotStore?: RewindSnapshotStoreInterface;
   };
   redrawViewport?: () => void;
+  /**
+   * Warnings about this launch (a repository's withheld provider, for one), shown once as local
+   * rows. They are not saved to the session and not sent to the model.
+   */
+  startupNotices?: readonly string[];
 }
 
 const QUEUED_SEND_NOTICE = 'Sending queued follow-up...';
@@ -321,6 +327,7 @@ export function App({
   redrawViewport: wipeViewport,
   interactiveAssets,
   mcp,
+  startupNotices,
 }: AppProps) {
   const {
     messages,
@@ -405,6 +412,7 @@ export function App({
     ...session,
     permissionMode,
     additionalTools: mcp ? () => mcp.getToolDefinitions() : undefined,
+    startupNotices,
   });
 
   const managedAgentManager = useMemo(
@@ -645,7 +653,8 @@ export function App({
   // The title page's contents: this workspace's recent sessions, newest first.
   // Only read while the transcript is empty, which is the only time the title
   // page shows; the listing comes from the store's in-memory index.
-  const transcriptEmpty = messages.length === 0;
+  // The launch's own notices sit below the title page and do not replace it.
+  const transcriptEmpty = messages.every(isStartupNotice);
   // The title page's contents. Listing reads the session index synchronously,
   // and a stale index loads every session file, so it waits for the first
   // paint: someone with hundreds of sessions sees the title page at once and
@@ -2632,7 +2641,7 @@ export function App({
   // during startup would otherwise promise a conversation and hand back an
   // empty one.
   const resumeCommand =
-    session.store && messages.length > 0 ? `book --resume ${sessionId}` : undefined;
+    session.store && !messages.every(isStartupNotice) ? `book --resume ${sessionId}` : undefined;
   // The boundary cannot lean on the global handler below: that handler is still
   // mounted with whatever state it held when the render blew up, so it swallows
   // Ctrl+C behind `ownsModalInput` if a picker was open and spends it on

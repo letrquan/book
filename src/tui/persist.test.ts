@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveSettings } from '../settings-loader.js';
+import { configuredAdvisorModel, loadConfig } from '../config.js';
+import {
+  persistWorkspaceProviderChoice,
+  workspaceProviderFingerprint,
+} from '../provider-approvals.js';
 import {
   persistSettingLocal,
   persistSettingsLocal,
@@ -15,9 +20,11 @@ import {
   persistSkillsEnabledLocal,
   readSettingsLocal,
   readSettingsGlobal,
+  readUserProvider,
   removeProviderLocal,
   removeProviderGlobal,
   clearLocalSettings,
+  turnOffAdvisorModel,
 } from './persist.js';
 
 let dir: string;
@@ -359,11 +366,27 @@ describe('removeProviderLocal', () => {
     // An absent user layer, so the machine's own ~/.book/settings.json cannot take part.
     const restarted = resolveSettings(dir, undefined, {
       userSettingsPath: join(dir, 'no-user-settings.json'),
+      trustStorePath: join(dir, 'trust.json'),
     });
 
     expect(restarted.model).toBe('project-model');
-    expect(restarted.provider.gateway.apiKey).toBe('project-key');
-    expect(restarted.provider.gateway.models).toEqual({ inherited: { label: 'Inherited' } });
+    // A provider only the project layer declares stays withheld until approved (#418), so the
+    // revealed lower-layer entry is checked once its declaration has been approved.
+    expect(restarted.provider.gateway).toBeUndefined();
+    const declaration = { type: 'openai', apiKey: 'project-key' } as const;
+    persistWorkspaceProviderChoice(
+      dir,
+      'gateway',
+      workspaceProviderFingerprint(declaration),
+      'approved',
+      join(dir, 'trust.json'),
+    );
+    const approved = resolveSettings(dir, undefined, {
+      userSettingsPath: join(dir, 'no-user-settings.json'),
+      trustStorePath: join(dir, 'trust.json'),
+    });
+    expect(approved.provider.gateway.apiKey).toBe('project-key');
+    expect(approved.provider.gateway.models).toEqual({ inherited: { label: 'Inherited' } });
     expect(readSettingsLocal(dir)).toEqual({});
   });
 });
@@ -496,5 +519,139 @@ describe('global scope (~/.book/settings.json)', () => {
   it('clearLocalSettings is a no-op when the local file is absent', () => {
     expect(clearLocalSettings(dir, ['model']).ok).toBe(true);
     expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(false);
+  });
+
+  // #418. `/advisor off` removes the user layer's key and the local layer's, but a checked-in
+  // `.book/settings.json` that declares an advisor then came back at the next launch: the loader
+  // reads it as the project layer, and nothing the command wrote outranked it.
+  describe('turnOffAdvisorModel', () => {
+    const writeProject = (settings: Record<string, unknown>) => {
+      mkdirSync(join(dir, '.book'), { recursive: true });
+      writeFileSync(join(dir, '.book', 'settings.json'), JSON.stringify(settings));
+    };
+    const reload = () => {
+      const saved = process.env.BOOK_ADVISOR_MODEL;
+      delete process.env.BOOK_ADVISOR_MODEL;
+      try {
+        return configuredAdvisorModel(loadConfig(dir, { allowMissingApiKey: true }));
+      } finally {
+        if (saved !== undefined) process.env.BOOK_ADVISOR_MODEL = saved;
+      }
+    };
+
+    it('leaves no advisor after a reload although the project settings declare one', () => {
+      persistSettingGlobal('advisorModel', 'user/adv');
+      writeProject({ advisorModel: 'project/adv' });
+      expect(reload()).toBe('project/adv');
+
+      expect(turnOffAdvisorModel(dir)).toEqual({ ok: true });
+
+      expect(reload()).toBeUndefined();
+      expect(readSettingsGlobal().advisorModel).toBeUndefined();
+      // The checked-in file is the repository's: it is not edited.
+      expect(JSON.parse(readFileSync(join(dir, '.book', 'settings.json'), 'utf-8'))).toEqual({
+        advisorModel: 'project/adv',
+      });
+    });
+
+    it('overrides an advisor the local layer declares too', () => {
+      writeProject({ advisorModel: 'project/adv' });
+      persistSettingLocal(dir, 'advisorModel', 'local/adv');
+
+      expect(turnOffAdvisorModel(dir).ok).toBe(true);
+
+      expect(reload()).toBeUndefined();
+    });
+
+    it('writes nothing to the workspace when no workspace layer declares an advisor', () => {
+      persistSettingGlobal('advisorModel', 'user/adv');
+      writeProject({ model: 'gpt-4o' });
+
+      expect(turnOffAdvisorModel(dir).ok).toBe(true);
+
+      expect(reload()).toBeUndefined();
+      expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(false);
+    });
+
+    it('is a plain removal for a workspace with no settings files at all', () => {
+      persistSettingGlobal('advisorModel', 'user/adv');
+
+      expect(turnOffAdvisorModel(dir).ok).toBe(true);
+
+      expect(reload()).toBeUndefined();
+      expect(existsSync(join(dir, '.book'))).toBe(false);
+    });
+
+    // Finding 9: the `off` it writes is not permanent.
+    it("stops outranking the user's own advisor once the repository drops its declaration", () => {
+      persistSettingGlobal('advisorModel', 'user/adv');
+      writeProject({ advisorModel: 'project/adv' });
+      expect(turnOffAdvisorModel(dir).ok).toBe(true);
+      expect(readSettingsLocal(dir).advisorModel).toBe('off');
+      expect(reload()).toBeUndefined();
+
+      // The user sets their own advisor some way that does not clear the local layer.
+      persistSettingGlobal('advisorModel', 'user/adv2');
+      // Still off while the checked-in file declares one...
+      expect(reload()).toBeUndefined();
+
+      // ...and the user's value applies once it stops.
+      writeProject({ model: 'gpt-4o' });
+      expect(reload()).toBe('user/adv2');
+
+      // Leave the shared user file as the sibling tests expect to find it.
+      expect(turnOffAdvisorModel(dir).ok).toBe(true);
+    });
+  });
+});
+
+describe('readUserProvider', () => {
+  let savedBookHome: string | undefined;
+  beforeEach(() => {
+    savedBookHome = process.env.BOOK_HOME;
+    process.env.BOOK_HOME = join(dir, 'book-home');
+  });
+  afterEach(() => {
+    if (savedBookHome === undefined) delete process.env.BOOK_HOME;
+    else process.env.BOOK_HOME = savedBookHome;
+  });
+
+  it('reads the provider as the user file holds it, not as a workspace merged it', () => {
+    persistSettingsGlobal({
+      'provider.work': {
+        type: 'openai',
+        baseURL: 'https://user.example/v1',
+        apiKey: 'k',
+        models: { m: { label: 'M' } },
+      },
+    });
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(
+      join(dir, '.book', 'settings.json'),
+      JSON.stringify({ provider: { work: { type: 'anthropic', models: { extra: {} } } } }),
+    );
+
+    // The resolved provider carries the workspace's models; the user's entry does not.
+    expect(Object.keys(resolveSettings(dir).provider.work.models).sort()).toEqual(['extra', 'm']);
+    expect(readUserProvider('work')).toEqual({
+      type: 'openai',
+      baseURL: 'https://user.example/v1',
+      apiKey: 'k',
+      models: { m: { label: 'M' } },
+    });
+  });
+
+  it('is undefined for an absent provider, an inherited property name and an invalid entry', () => {
+    mkdirSync(join(dir, 'book-home'), { recursive: true });
+    // Written directly: the repository would refuse to save a provider this invalid.
+    writeFileSync(
+      join(dir, 'book-home', 'settings.json'),
+      JSON.stringify({ provider: { bad: { type: 'nope' }, ok: {} } }),
+    );
+
+    expect(readUserProvider('ok')).toEqual({ type: 'openai', models: {} });
+    expect(readUserProvider('missing')).toBeUndefined();
+    expect(readUserProvider('constructor')).toBeUndefined();
+    expect(readUserProvider('bad')).toBeUndefined();
   });
 });

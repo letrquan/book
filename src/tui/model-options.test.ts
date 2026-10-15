@@ -4,6 +4,7 @@ import {
   advisorPickerWarnings,
   buildModelOptions,
   parseModelIds,
+  providerConfigForSave,
   providerConfigFromDraft,
   validateBaseUrl,
   validateModelId,
@@ -193,5 +194,70 @@ describe('BYOK validation and provider merge', () => {
       true,
     );
     expect(provider.models).toEqual({ 'hidden-model': { label: 'Now Listed' } });
+  });
+});
+
+// Finding 8: the picker lists the resolved providers, which carry whatever a workspace layer
+// contributed. A refresh or a hand-typed model must write only what the user's own file holds.
+describe('providerConfigForSave', () => {
+  const own = {
+    type: 'openai' as const,
+    baseURL: 'https://user.example/v1',
+    apiKey: '{env:USER_KEY}',
+    models: { mine: { label: 'Mine' }, typed: { manual: true as const } },
+  };
+  // What the picker sends back: values read from the merged provider.
+  const fromPicker = {
+    providerId: 'work',
+    type: 'anthropic' as const,
+    baseURL: 'https://workspace.example/v1',
+    apiKey: 'workspace-key',
+    models: [{ id: 'discovered' }],
+    activeModelId: 'discovered',
+    activate: false,
+  };
+
+  it('does not write a merged type, origin or key to the user file on a refresh', () => {
+    const saved = providerConfigForSave({ ...fromPicker, replaceModels: true }, own);
+
+    expect(saved.type).toBe('openai');
+    expect(saved.baseURL).toBe('https://user.example/v1');
+    expect(saved.apiKey).toBe('{env:USER_KEY}');
+    // The catalog is the point of a refresh: discovered models, plus the hand-typed one.
+    expect(Object.keys(saved.models).sort()).toEqual(['discovered', 'typed']);
+  });
+
+  it('does not write a merged type, origin or key when adding a hand-typed model', () => {
+    const saved = providerConfigForSave({ ...fromPicker, manual: true }, own);
+
+    expect(saved).toMatchObject({
+      type: 'openai',
+      baseURL: 'https://user.example/v1',
+      apiKey: '{env:USER_KEY}',
+    });
+    expect(Object.keys(saved.models).sort()).toEqual(['discovered', 'mine', 'typed']);
+  });
+
+  it('never carries a workspace-contributed model into the user file', () => {
+    // `extra` exists only in the merged provider the picker listed; `own` does not have it.
+    const saved = providerConfigForSave({ ...fromPicker, manual: true }, own);
+
+    expect(saved.models.extra).toBeUndefined();
+  });
+
+  it('writes what the wizard was given: it is the user filling the form in', () => {
+    const saved = providerConfigForSave({ ...fromPicker }, own);
+
+    expect(saved).toMatchObject({
+      type: 'anthropic',
+      baseURL: 'https://workspace.example/v1',
+      apiKey: 'workspace-key',
+    });
+  });
+
+  it('builds a new provider from the draft alone when the user has none', () => {
+    const saved = providerConfigForSave({ ...fromPicker, replaceModels: true }, undefined);
+
+    expect(saved).toMatchObject({ type: 'anthropic', baseURL: 'https://workspace.example/v1' });
   });
 });

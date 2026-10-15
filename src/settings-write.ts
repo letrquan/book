@@ -46,6 +46,8 @@ const TRUST_OWNED_KEYS: Record<string, string> = {
   // top-level; `WORKSPACE_FORBIDDEN_PATHS` names it as `['', 'projectDirectories']` for the same
   // reason (#300).
   projectDirectories: 'Record it with: book trust dir <path>',
+  // Root-level for the same reason as `projectDirectories` (#418).
+  workspaceProviders: 'Record it with: book trust provider <id>',
 };
 
 /**

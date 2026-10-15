@@ -251,14 +251,34 @@ Work aimed at running an objective unattended for days rather than hours. All of
   one at a time; `book config set` refuses all four paths — plus `shell` —
   rather than writing a value nothing reads. Command decisions are keyed by command name and validated by a fingerprint over the
   shell the body runs rather than its prose, so editing what runs re-asks under the same name.
+- Provider origins, key inheritance and secret references declared by a workspace are gated
+  (#418). A workspace layer (`.book/settings.json`, `.book/settings.local.json`, legacy
+  `.bookrc.json`) cannot change `baseURL`, `baseUrl`, `apiKey` or `type` on a provider the user's
+  own settings define: the override is dropped and reported (only `models` merge). A provider only
+  a workspace declares is withheld until `book trust provider <id>` approves a fingerprint of its
+  type, origin and `apiKey` text (`workspaceProviders` in `~/.book/trust.json`, store v4); it never
+  inherits `BOOK_API_KEY` or the session key, and its `{env:}` / `{file:}` reference is not
+  resolved before approval. The listing shows the parsed origin and the variable or normalised
+  file a key reference names, in full. A workspace `model`, `compactModel`, `advisorModel`,
+  agent-profile `model` or legacy `.bookrc.json` `model` naming a withheld provider falls back to
+  the user's value with a notice, while an agent definition's `model:` and `AgentSpawn` fail
+  naming the command; the user's own selection with that prefix (`--model`, `BOOK_MODEL`, their
+  settings) is unaffected and resolves as the plain fallback, which approving the provider would
+  change (the listing names those selections). A provider named `.bookrc.json` is reserved and
+  never approvable. A legacy `.bookrc.json` `baseUrl` needs `book trust provider .bookrc.json`, and
+  its listing names what the default endpoint would then receive. Print mode, the SDK and the TUI
+  report each of these, and `book doctor` lists every workspace provider with its state. A local
+  `advisorModel: "off"` (written by `/advisor off`) applies only while a checked-in layer declares
+  an advisor.
 - Approvals recorded under `commands.projectCommands` before the move are not migrated: reading
   them back out of the workspace to convert them would extend exactly the trust the move
   withdraws. Each is asked once more, on the machine that decides.
 - Except for the `shell` key, the local layer is otherwise ungated. Its own
   `hooks.<event>` entries, allow rules, and env run as if the user had written them, because
   distrusting a Git-tracked local layer needs provenance
-  the synchronous resolver cannot currently obtain. Provider blocks, project instructions, and a
-  checked-in `settings.local.json` must still be reviewed before opening an untrusted workspace.
+  the synchronous resolver cannot currently obtain. Project instructions and a checked-in
+  `settings.local.json` must still be reviewed before opening an untrusted workspace; provider
+  origins and key references are no longer part of that review (next bullet).
   The `sandbox.*` keys are the one exception (issue 373): both workspace layers may only
   **tighten** them, so a clone that force-adds `.book/settings.local.json` can no longer switch off
   a sandbox the user enabled, exclude every command with `excludedCommands: ["*"]`, widen
@@ -273,7 +293,9 @@ Work aimed at running an objective unattended for days rather than hours. All of
   and neither `src/hook-approvals.ts` nor `src/permission-approvals.ts` has an importer anywhere
   under `src/tui/`. Print/headless and SDK runs report what they are skipping; the TUI is silent,
   so the mode most likely to open an unfamiliar repository is the one mode that discloses nothing
-  about what that repository declared.
+  about what that repository declared. Withheld providers are the exception: the interactive
+  launch hands their notices to the TUI, which shows them once as warning rows below the title
+  page (not saved to the session, not sent to the model).
 - The Windows shell ladder changes which interpreter parses a command, not what a command is
   allowed to do: `permissions` rules still match the command string the model wrote, so a rule
   written for one shell's syntax does not describe another's. The bubblewrap sandbox is unaffected

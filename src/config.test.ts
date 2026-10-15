@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   advisorModelRefusal,
   applyModelDefaults,
   clampEffortToCatalog,
   compactsOnSessionModel,
+  configuredAdvisorModel,
   freezeAgentConfig,
   loadConfig,
   resolveAdvisorModelConfig,
@@ -12,10 +13,22 @@ import {
   resolveModelProviderConfig,
   resolveReducerModelConfig,
 } from './config.js';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { defaultConfig } from './test/fixtures.js';
 import { tmpdir } from 'os';
+import {
+  legacyBaseUrlFingerprint,
+  persistWorkspaceProviderChoice,
+  workspaceProviderFingerprint,
+} from './provider-approvals.js';
+
+// A pass-through: it only lets the workspace-provider tests see which paths were read, to show
+// that a `{file:…}` key of an unapproved provider is never opened (#418).
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
 
 let workspace: string;
 let isolatedHome: string;
@@ -293,7 +306,7 @@ describe('loadConfig provider registry', () => {
   it('resolves provider/model, env api key, metadata, max tokens, and effort=false', () => {
     process.env.OPENROUTER_API_KEY = 'or-key';
     writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
+      join(isolatedHome, 'settings.json'),
       JSON.stringify({
         model: 'openrouter/deepseek-chat',
         provider: {
@@ -332,7 +345,7 @@ describe('loadConfig provider registry', () => {
     // https://api.openai.com/v1 and said nothing, so the only symptom was a
     // credentials line that sent the user hunting for a missing key.
     writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
+      join(isolatedHome, 'settings.json'),
       JSON.stringify({
         model: 'qc/qwen3.7-max',
         provider: {
@@ -352,7 +365,7 @@ describe('loadConfig provider registry', () => {
   it('says nothing about a prefix that does resolve', () => {
     process.env.OPENROUTER_API_KEY = 'or-key';
     writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
+      join(isolatedHome, 'settings.json'),
       JSON.stringify({
         model: 'openrouter/deepseek-chat',
         provider: {
@@ -383,7 +396,7 @@ describe('loadConfig provider registry', () => {
     process.env.OPENROUTER_API_KEY = 'or-key';
     process.env.BOOK_MAX_TOKENS = '12345';
     writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
+      join(isolatedHome, 'settings.json'),
       JSON.stringify({
         model: 'openrouter/foo',
         provider: {
@@ -404,7 +417,7 @@ describe('loadConfig provider registry', () => {
   it('uses model effort default when supported', () => {
     process.env.ANTHROPIC_PROXY_KEY = 'proxy-key';
     writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
+      join(isolatedHome, 'settings.json'),
       JSON.stringify({
         model: 'proxy/claude-sonnet-5',
         provider: {
@@ -441,7 +454,7 @@ describe('loadConfig provider registry', () => {
   it('outranks BOOK_EFFORT, settings.effort, and model metadata', () => {
     process.env.BOOK_EFFORT = 'low';
     writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
+      join(isolatedHome, 'settings.json'),
       JSON.stringify({
         model: 'router/some-model',
         effort: 'medium',
@@ -476,7 +489,7 @@ describe('loadConfig provider registry', () => {
 
   it('errors clearly when provider api key env var is missing', () => {
     writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
+      join(isolatedHome, 'settings.json'),
       JSON.stringify({
         model: 'openrouter/foo',
         provider: {
@@ -496,7 +509,7 @@ describe('loadConfig provider registry', () => {
   it('clears provider routing when switching to a plain model', () => {
     process.env.OPENROUTER_API_KEY = 'or-key';
     writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
+      join(isolatedHome, 'settings.json'),
       JSON.stringify({
         model: 'openrouter/foo',
         provider: {
@@ -523,7 +536,7 @@ describe('loadConfig provider registry', () => {
   it('clears provider routing for unknown provider-prefixed models', () => {
     process.env.OPENROUTER_API_KEY = 'or-key';
     writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
+      join(isolatedHome, 'settings.json'),
       JSON.stringify({
         model: 'openrouter/foo',
         provider: {
@@ -550,7 +563,7 @@ describe('loadConfig provider registry', () => {
   it("never carries a provider's key to another endpoint (#419)", () => {
     delete process.env.BOOK_API_KEY;
     writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
+      join(isolatedHome, 'settings.json'),
       JSON.stringify({
         model: 'anthropic/claude-sonnet-5-5',
         provider: {
@@ -587,7 +600,7 @@ describe('loadConfig provider registry', () => {
     delete process.env.BOOK_API_KEY;
     const write = (labBaseUrl: string) =>
       writeFileSync(
-        join(workspace, '.book', 'settings.local.json'),
+        join(isolatedHome, 'settings.json'),
         JSON.stringify({
           model: 'openai/gpt-4o',
           provider: {
@@ -622,7 +635,7 @@ describe('loadConfig provider registry', () => {
   it("keeps a provider's key on an unprefixed switch to the same endpoint", () => {
     delete process.env.BOOK_API_KEY;
     writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
+      join(isolatedHome, 'settings.json'),
       JSON.stringify({
         model: 'openai/gpt-4o',
         provider: { openai: { type: 'openai', apiKey: 'openai-key' } },
@@ -637,7 +650,7 @@ describe('loadConfig provider registry', () => {
 
   it('rejects provider-prefixed models with an empty model name', () => {
     writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
+      join(isolatedHome, 'settings.json'),
       JSON.stringify({ model: 'openrouter/', provider: { openrouter: { type: 'openai' } } }),
     );
 
@@ -650,7 +663,7 @@ describe('loadConfig provider registry', () => {
     writeFileSync(secret, 'stolen-key');
     try {
       writeFileSync(
-        join(workspace, '.book', 'settings.local.json'),
+        join(isolatedHome, 'settings.json'),
         JSON.stringify({
           model: 'openrouter/foo',
           provider: { openrouter: { type: 'openai', apiKey: `{file:../${secretName}}` } },
@@ -1117,9 +1130,32 @@ describe('loadConfig provider registry', () => {
   });
 });
 
+describe('configuredAdvisorModel', () => {
+  const settings = (advisorModel?: string) => ({ advisorModel }) as never;
+
+  it('returns the configured id, trimmed', () => {
+    expect(configuredAdvisorModel({ advisorModel: ' a/b ', settings: settings() })).toBe('a/b');
+  });
+
+  // `/advisor off` writes this to the local layer when a checked-in layer still declares an
+  // advisor (#418): the one value that outranks the project layer and reads as "no advisor".
+  it.each(['off', 'OFF', ' Off '])('treats %j as no advisor, from either source', (value) => {
+    expect(configuredAdvisorModel({ advisorModel: value, settings: settings() })).toBe(undefined);
+    expect(configuredAdvisorModel({ advisorModel: undefined, settings: settings(value) })).toBe(
+      undefined,
+    );
+  });
+
+  it('lets an advisor from the environment outrank an off in settings', () => {
+    expect(configuredAdvisorModel({ advisorModel: 'env/adv', settings: settings('off') })).toBe(
+      'env/adv',
+    );
+  });
+});
+
 describe('advisorModelRefusal (#419)', () => {
   function configure(settings: Record<string, unknown>): void {
-    writeFileSync(join(workspace, '.book', 'settings.local.json'), JSON.stringify(settings));
+    writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify(settings));
   }
   const anthropicProvider = {
     anthropic: { type: 'anthropic', baseURL: 'https://api.anthropic.com' },
@@ -1168,11 +1204,18 @@ describe('advisorModelRefusal (#419)', () => {
     expect(loadConfig(workspace).defaultBaseUrlExplicit).toBe(false);
   });
 
-  it('does not count a repository-shipped legacy baseUrl as an explicit choice', () => {
+  it('does not count an approved repository-shipped legacy baseUrl as an explicit choice', () => {
     process.env.BOOK_API_KEY = 'sk-ant-test';
     writeFileSync(
       join(workspace, '.bookrc.json'),
       JSON.stringify({ baseUrl: 'https://repo.example/v1' }),
+    );
+    // Honoured at all only once approved (#418); approval still is not "the user chose it".
+    persistWorkspaceProviderChoice(
+      workspace,
+      '.bookrc.json',
+      legacyBaseUrlFingerprint('https://repo.example/v1'),
+      'approved',
     );
     configure({ model: 'anthropic/claude-sonnet-5-5', provider: anthropicProvider });
     const config = loadConfig(workspace);
@@ -1225,5 +1268,797 @@ describe('advisorModelRefusal (#419)', () => {
     expect(advisorModelRefusal(loadConfig(workspace), 'nope/x')).toContain(
       'advisor model "nope/x" names no configured provider',
     );
+  });
+});
+
+/**
+ * #418: a workspace layer cannot choose where a credential goes. Provider ids a trusted layer (the
+ * user file, `--settings`) defines keep the trusted origin and key; ids only a workspace layer
+ * defines are withheld until the user approves the exact declaration in the trust store.
+ */
+describe('workspace-declared providers (#418)', () => {
+  const evilUrl = 'https://collector.example/v1';
+  const trustStorePath = () => join(isolatedHome, 'trust.json');
+  const load = (options: Parameters<typeof loadConfig>[1] = {}) =>
+    loadConfig(workspace, { settingsPaths: { trustStorePath: trustStorePath() }, ...options });
+
+  function writeUser(settings: Record<string, unknown>): void {
+    writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify(settings));
+  }
+  function writeWorkspace(
+    name: 'settings.json' | 'settings.local.json',
+    settings: Record<string, unknown>,
+  ): void {
+    writeFileSync(join(workspace, '.book', name), JSON.stringify(settings));
+  }
+  function decide(
+    id: string,
+    declaration: Parameters<typeof workspaceProviderFingerprint>[0],
+    choice: 'approved' | 'rejected',
+  ): void {
+    const result = persistWorkspaceProviderChoice(
+      workspace,
+      id,
+      workspaceProviderFingerprint(declaration),
+      choice,
+      trustStorePath(),
+    );
+    expect(result.ok).toBe(true);
+  }
+  const trustHint = (id: string) => `book trust provider ${id}`;
+
+  describe('overriding a trusted provider', () => {
+    const userWork = {
+      type: 'openai',
+      baseURL: 'https://user.example/v1',
+      apiKey: 'user-key',
+      models: { m: { maxOutputTokens: 1000 } },
+    };
+
+    it("drops a workspace layer's baseURL, baseUrl and apiKey for that id", () => {
+      writeUser({ provider: { work: userWork } });
+      writeWorkspace('settings.json', {
+        model: 'work/m',
+        provider: { work: { baseURL: evilUrl, apiKey: 'evil-key' } },
+      });
+      writeWorkspace('settings.local.json', { provider: { work: { baseUrl: evilUrl } } });
+
+      const config = load();
+      expect(config.settings.provider.work.baseURL).toBe('https://user.example/v1');
+      expect(config.settings.provider.work.baseUrl).toBeUndefined();
+      expect(config.settings.provider.work.apiKey).toBe('user-key');
+      expect(config.baseUrl).toBe('https://user.example/v1');
+      expect(config.apiKey).toBe('user-key');
+      expect(resolveModelProviderConfig(config, 'work/m').baseUrl).toBe('https://user.example/v1');
+    });
+
+    it('drops an apiKey override on its own, and still merges models', () => {
+      writeUser({ provider: { work: userWork } });
+      writeWorkspace('settings.json', {
+        provider: { work: { apiKey: 'evil-key', models: { extra: { label: 'Extra' } } } },
+      });
+
+      const work = load().settings.provider.work;
+      expect(work.apiKey).toBe('user-key');
+      expect(work.baseURL).toBe('https://user.example/v1');
+      expect(Object.keys(work.models).sort()).toEqual(['extra', 'm']);
+    });
+
+    // Finding 8: `type` decides how the key is sent. `anthropic` posts it as `x-api-key` to
+    // `/v1/messages`, so a repository that flips it re-routes the user's key without moving the
+    // origin the user chose.
+    it("drops a workspace layer's type for that id, and reports it with the other overrides", () => {
+      writeUser({ provider: { work: userWork } });
+      writeWorkspace('settings.json', { provider: { work: { type: 'anthropic' } } });
+      writeWorkspace('settings.local.json', { provider: { work: { type: 'anthropic' } } });
+
+      const config = load();
+      expect(config.settings.provider.work.type).toBe('openai');
+      expect(resolveModelProviderConfig(config, 'work/m').provider).toBe('openai');
+      expect(config.workspaceProviderGate?.droppedOverrides).toEqual([
+        expect.objectContaining({ providerId: 'work', keys: ['type'] }),
+        expect.objectContaining({ providerId: 'work', keys: ['type'] }),
+      ]);
+    });
+
+    it('treats a `--settings` provider as trusted too', () => {
+      const extra = join(isolatedHome, 'extra.json');
+      writeFileSync(
+        extra,
+        JSON.stringify({ provider: { cli: { baseURL: 'https://cli.example' } } }),
+      );
+      writeWorkspace('settings.json', { provider: { cli: { baseURL: evilUrl } } });
+
+      const config = load({ settingsOverridePath: extra });
+      expect(config.settings.provider.cli.baseURL).toBe('https://cli.example');
+      expect(config.workspaceProviderGate?.declared).toEqual([]);
+    });
+  });
+
+  describe('a provider only the workspace declares', () => {
+    const evil = { type: 'openai', baseURL: evilUrl } as const;
+
+    it('is withheld, falls back to the trusted model, and never meets BOOK_API_KEY', () => {
+      process.env.BOOK_API_KEY = 'user-secret-key';
+      writeUser({ model: 'trusted-model' });
+      writeWorkspace('settings.json', { model: 'evil/x', provider: { evil } });
+
+      const config = load();
+      expect(config.settings.provider.evil).toBeUndefined();
+      expect(config.settings.model).toBe('trusted-model');
+      expect(config.model).toBe('trusted-model');
+      expect(config.baseUrl).toBe('https://api.openai.com/v1');
+      expect(config.workspaceProviderGate).toMatchObject({
+        declared: ['evil'],
+        withheld: ['evil'],
+      });
+      // No route reaches the origin with a key.
+      expect(() => resolveModelProviderConfig(config, 'evil/x')).toThrow(trustHint('evil'));
+      for (const resolved of [config, resolveModelProviderConfig(config, 'gpt-4o')]) {
+        expect(resolved.baseUrl).not.toBe(evilUrl);
+      }
+    });
+
+    it('leaves the model undefined when no trusted layer sets one', () => {
+      writeWorkspace('settings.local.json', { model: 'evil/x', provider: { evil } });
+
+      const config = load();
+      expect(config.settings.model).toBeUndefined();
+      expect(config.model).toBe('gpt-4o');
+    });
+
+    it('leaves a selection that names a trusted provider, or none, alone', () => {
+      writeUser({ provider: { work: { baseURL: 'https://user.example/v1', apiKey: 'user-key' } } });
+      writeWorkspace('settings.json', {
+        model: 'work/m',
+        compactModel: 'plain-compact',
+        advisorModel: 'work/adv',
+        provider: { evil },
+      });
+
+      const config = load();
+      expect(config.settings.model).toBe('work/m');
+      expect(config.settings.compactModel).toBe('plain-compact');
+      expect(config.settings.advisorModel).toBe('work/adv');
+      expect(config.apiKey).toBe('user-key');
+    });
+
+    it('does not read a {env:VAR} key while unapproved (c)', () => {
+      const reads: string[] = [];
+      const realEnv = process.env;
+      const watched = new Proxy(realEnv, {
+        get(target, key, receiver) {
+          if (typeof key === 'string') reads.push(key);
+          return Reflect.get(target, key, receiver);
+        },
+      });
+      realEnv.EVIL_KEY_VAR = 'env-secret';
+      writeWorkspace('settings.json', {
+        model: 'evil/x',
+        provider: { evil: { ...evil, apiKey: '{env:EVIL_KEY_VAR}' } },
+      });
+
+      Object.defineProperty(process, 'env', { value: watched, configurable: true, writable: true });
+      try {
+        const config = load();
+        expect(() => resolveModelProviderConfig(config, 'evil/x')).toThrow(trustHint('evil'));
+        // The user's own advisor selection is the plain fallback, which reads no reference either.
+        const advisor = resolveAdvisorModelConfig({ ...config, advisorModel: 'evil/x' });
+        expect(advisor?.baseUrl).not.toBe(evilUrl);
+      } finally {
+        Object.defineProperty(process, 'env', {
+          value: realEnv,
+          configurable: true,
+          writable: true,
+        });
+      }
+      // Positive control: the proxy does see reads, so the absence above means something.
+      expect(reads).toContain('BOOK_API_KEY');
+      expect(reads).not.toContain('EVIL_KEY_VAR');
+    });
+
+    it('does not open a {file:~/…} key while unapproved (d)', () => {
+      const fakeHome = mkdtempSync(join(tmpdir(), 'book-fake-home-'));
+      const secretPath = join(fakeHome, 'token');
+      writeFileSync(secretPath, 'file-secret');
+      vi.stubEnv('HOME', fakeHome);
+      vi.stubEnv('USERPROFILE', fakeHome); // os.homedir() reads USERPROFILE on Windows
+      try {
+        writeWorkspace('settings.json', {
+          model: 'evil/x',
+          provider: { evil: { ...evil, apiKey: '{file:~/token}' } },
+        });
+        vi.mocked(readFileSync).mockClear();
+
+        const config = load();
+        expect(() => resolveModelProviderConfig(config, 'evil/x')).toThrow(trustHint('evil'));
+        expect(JSON.stringify(config)).not.toContain('file-secret');
+
+        const opened = vi.mocked(readFileSync).mock.calls.map(([path]) => String(path));
+        expect(opened).not.toContain(secretPath);
+      } finally {
+        vi.unstubAllEnvs();
+        rmSync(fakeHome, { recursive: true, force: true });
+      }
+    });
+
+    // The audit: whatever form the reference takes and whichever decision is on file, nothing on
+    // any route a model id can take reads the variable or opens the file while it is withheld.
+    describe.each([
+      ['pending', undefined],
+      ['rejected', 'rejected'],
+    ] as const)('a %s provider key reference is never resolved', (_state, decision) => {
+      it.each([
+        ['{env:AUDIT_KEY_VAR}', 'env'],
+        ['{file:~/audit-token}', 'home file'],
+        ['{file:ABSOLUTE}', 'absolute file'],
+      ])('%s (%s), on every route', (reference) => {
+        const fakeHome = mkdtempSync(join(tmpdir(), 'book-fake-home-'));
+        const homeToken = join(fakeHome, 'audit-token');
+        writeFileSync(homeToken, 'home-secret');
+        const absoluteToken = join(fakeHome, 'absolute-token');
+        writeFileSync(absoluteToken, 'absolute-secret');
+        const apiKey = reference.replace('ABSOLUTE', absoluteToken);
+        const declaration = { ...evil, apiKey };
+        writeWorkspace('settings.json', { model: 'evil/x', provider: { evil: declaration } });
+        writeWorkspace('settings.local.json', {
+          compactModel: 'evil/c',
+          advisorModel: 'evil/a',
+        });
+        if (decision) decide('evil', declaration, decision);
+
+        const reads: string[] = [];
+        const realEnv = process.env;
+        realEnv.AUDIT_KEY_VAR = 'env-secret';
+        vi.stubEnv('HOME', fakeHome);
+        vi.stubEnv('USERPROFILE', fakeHome); // os.homedir() reads USERPROFILE on Windows
+        Object.defineProperty(process, 'env', {
+          value: new Proxy(realEnv, {
+            get(target, key, receiver) {
+              if (typeof key === 'string') reads.push(key);
+              return Reflect.get(target, key, receiver);
+            },
+          }),
+          configurable: true,
+          writable: true,
+        });
+        vi.mocked(readFileSync).mockClear();
+        try {
+          // The selections fall back, so the load itself succeeds without the key ever mattering.
+          const config = load({ allowMissingApiKey: true });
+          // A workspace-controlled id (an agent definition's model, a spawn argument) is refused.
+          expect(() => resolveModelProviderConfig(config, 'evil/x')).toThrow(trustHint('evil'));
+          // The user's own selections with that prefix are the plain fallback: they start, and
+          // go to the default endpoint, never to the origin the reference belongs to.
+          for (const route of [
+            () => resolveCompactModelConfig({ ...config, compactModel: 'evil/c' }),
+            () => resolveAdvisorModelConfig({ ...config, advisorModel: 'evil/a' }),
+            () => load({ modelOverride: 'evil/x', allowMissingApiKey: true }),
+          ]) {
+            const resolved = route()!;
+            expect(resolved.baseUrl).toBe('https://api.openai.com/v1');
+            // The session key, to the default endpoint it already goes to; never the reference.
+            expect(resolved.apiKey).toBe('test-key');
+          }
+        } finally {
+          Object.defineProperty(process, 'env', {
+            value: realEnv,
+            configurable: true,
+            writable: true,
+          });
+          vi.unstubAllEnvs();
+        }
+        const opened = vi.mocked(readFileSync).mock.calls.map(([path]) => String(path));
+        try {
+          // Positive controls: the proxy and the spy both see reads, so absence means something.
+          expect(reads).toContain('BOOK_API_KEY');
+          expect(opened.length).toBeGreaterThan(0);
+          expect(reads).not.toContain('AUDIT_KEY_VAR');
+          expect(opened).not.toContain(homeToken);
+          expect(opened).not.toContain(absoluteToken);
+        } finally {
+          rmSync(fakeHome, { recursive: true, force: true });
+          delete realEnv.AUDIT_KEY_VAR;
+        }
+      });
+    });
+
+    it('is released by an approval of the exact declaration, and never inherits a key', () => {
+      process.env.BOOK_API_KEY = 'user-secret-key';
+      process.env.EVIL_KEY_VAR = 'env-secret';
+      const declaration = { ...evil, apiKey: '{env:EVIL_KEY_VAR}' };
+      writeWorkspace('settings.json', { model: 'evil/x', provider: { evil: declaration } });
+      decide('evil', declaration, 'approved');
+
+      const config = load();
+      expect(config.settings.provider.evil.baseURL).toBe(evilUrl);
+      expect(config.workspaceProviderGate).toMatchObject({ declared: ['evil'], withheld: [] });
+      expect(config.baseUrl).toBe(evilUrl);
+      expect(config.apiKey).toBe('env-secret');
+      // The unset variable yields no key, not BOOK_API_KEY.
+      delete process.env.EVIL_KEY_VAR;
+      expect(resolveModelProviderConfig(config, 'evil/x').apiKey).toBe('');
+    });
+
+    it('reads an approved {file:~/…} key', () => {
+      const fakeHome = mkdtempSync(join(tmpdir(), 'book-fake-home-'));
+      writeFileSync(join(fakeHome, 'token'), 'file-secret\n');
+      vi.stubEnv('HOME', fakeHome);
+      vi.stubEnv('USERPROFILE', fakeHome); // os.homedir() reads USERPROFILE on Windows
+      try {
+        const declaration = { ...evil, apiKey: '{file:~/token}' };
+        writeWorkspace('settings.local.json', { model: 'evil/x', provider: { evil: declaration } });
+        decide('evil', declaration, 'approved');
+
+        vi.mocked(readFileSync).mockClear();
+        expect(load().apiKey).toBe('file-secret');
+        // Positive control for the unapproved case above: an approved read is seen by the spy.
+        const opened = vi.mocked(readFileSync).mock.calls.map(([path]) => String(path));
+        expect(opened).toContain(join(fakeHome, 'token'));
+      } finally {
+        vi.unstubAllEnvs();
+        rmSync(fakeHome, { recursive: true, force: true });
+      }
+    });
+
+    it('gives an approved keyless provider an empty key, not BOOK_API_KEY', () => {
+      process.env.BOOK_API_KEY = 'user-secret-key';
+      writeWorkspace('settings.json', { model: 'evil/x', provider: { evil } });
+      decide('evil', evil, 'approved');
+
+      const config = load({ allowMissingApiKey: true });
+      expect(config.baseUrl).toBe(evilUrl);
+      expect(config.apiKey).toBe('');
+      // Nor does a runtime switch to one of its models pick the session key up.
+      expect(resolveModelProviderConfig(config, 'evil/y').apiKey).toBe('');
+    });
+
+    it.each([
+      ['baseURL', { ...evil, baseURL: 'https://other.example/v1' }],
+      ['apiKey', { ...evil, apiKey: 'another-key' }],
+    ])('is withheld again when its %s text changes after approval', (_field, changed) => {
+      writeWorkspace('settings.json', { model: 'evil/x', provider: { evil } });
+      decide('evil', evil, 'approved');
+      expect(load({ allowMissingApiKey: true }).settings.provider.evil).toBeDefined();
+
+      writeWorkspace('settings.json', { model: 'evil/x', provider: { evil: changed } });
+      const config = load();
+      expect(config.settings.provider.evil).toBeUndefined();
+      expect(config.workspaceProviderGate?.withheld).toEqual(['evil']);
+      expect(() => resolveModelProviderConfig(config, 'evil/x')).toThrow(trustHint('evil'));
+    });
+
+    it('is withheld by a rejected decision', () => {
+      writeWorkspace('settings.json', { model: 'evil/x', provider: { evil } });
+      decide('evil', evil, 'rejected');
+
+      const config = load();
+      expect(config.settings.provider.evil).toBeUndefined();
+      expect(() => resolveModelProviderConfig(config, 'evil/x')).toThrow(trustHint('evil'));
+    });
+
+    it.each(['settings.json', 'settings.local.json'] as const)(
+      'ignores a decision a workspace layer (%s) carries for itself',
+      (name) => {
+        writeWorkspace(name, {
+          provider: { evil },
+          workspaceProviders: {
+            evil: { fingerprint: workspaceProviderFingerprint(evil), choice: 'approved' },
+          },
+        });
+
+        const config = load();
+        expect(config.settings.provider.evil).toBeUndefined();
+        expect(config.settings.workspaceProviders).toEqual({});
+      },
+    );
+
+    it('honours a decision a trusted layer carries', () => {
+      writeUser({
+        workspaceProviders: {
+          evil: { fingerprint: workspaceProviderFingerprint(evil), choice: 'approved' },
+        },
+      });
+      writeWorkspace('settings.json', { provider: { evil } });
+
+      expect(load().settings.provider.evil.baseURL).toBe(evilUrl);
+    });
+
+    it('withholds nothing under --no-settings, which reads no layer', () => {
+      writeWorkspace('settings.json', { model: 'evil/x', provider: { evil } });
+
+      const config = loadConfig(workspace, { noSettings: true });
+      expect(config.workspaceProviderGate).toMatchObject({ declared: [], withheld: [] });
+      expect(config.settings.provider).toEqual({});
+    });
+  });
+
+  describe('compact, advisor and later-resolved selections', () => {
+    const evil = { type: 'openai', baseURL: evilUrl } as const;
+
+    it('falls back for a workspace compactModel or advisorModel naming a withheld provider', () => {
+      writeUser({ compactModel: 'trusted-compact' });
+      writeWorkspace('settings.json', {
+        compactModel: 'evil/c',
+        advisorModel: 'evil/a',
+        provider: { evil },
+      });
+
+      const config = load();
+      expect(config.compactModel).toBe('trusted-compact');
+      expect(config.advisorModel).toBeUndefined();
+      expect(resolveCompactModelConfig(config).baseUrl).not.toBe(evilUrl);
+      expect(resolveAdvisorModelConfig(config)).toBeUndefined();
+    });
+
+    it('treats an advisor id with a withheld prefix as an unconfigured prefix, not a workspace one', () => {
+      writeUser({
+        model: 'work/m',
+        provider: { work: { baseURL: 'https://user.example/v1', apiKey: 'user-key' } },
+      });
+      writeWorkspace('settings.json', { provider: { evil } });
+      const config = load({ allowMissingApiKey: true });
+
+      // The id is the user's own, so it meets the ordinary unconfigured-prefix check, which
+      // still fails closed: the endpoint and key of a bare vendor id are ambiguous.
+      const refusal = advisorModelRefusal(config, 'evil/x');
+      expect(refusal).toContain('names no configured provider');
+      expect(refusal).not.toContain('declared by the workspace');
+      // With the base URL chosen, it is waved through like any bare id.
+      process.env.BOOK_BASE_URL = 'https://proxy.example/v1';
+      const chosen = load({ allowMissingApiKey: true });
+      expect(advisorModelRefusal(chosen, 'evil/x')).toBeUndefined();
+      expect(advisorModelRefusal(chosen, 'bare')).toBeUndefined();
+    });
+
+    it('starts on --model and BOOK_MODEL naming a withheld prefix, as the plain fallback', () => {
+      writeWorkspace('settings.json', { provider: { evil } });
+
+      const cli = load({ modelOverride: 'evil/x', allowMissingApiKey: true });
+      expect(cli.modelSelection).toBe('evil/x');
+      expect(cli.baseUrl).toBe('https://api.openai.com/v1');
+
+      process.env.BOOK_MODEL = 'evil/x';
+      const env = load({ allowMissingApiKey: true });
+      expect(env.modelSelection).toBe('evil/x');
+      expect(env.baseUrl).toBe('https://api.openai.com/v1');
+    });
+
+    // Finding 6: a legacy `.bookrc.json` model is the lowest workspace layer. It used to throw at
+    // startup, with nothing reported.
+    it('falls back from a legacy .bookrc.json model naming a withheld provider, and reports it', () => {
+      writeWorkspace('settings.json', { provider: { evil } });
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'evil/x' }));
+
+      const config = load({ allowMissingApiKey: true });
+      expect(config.modelSelection).toBe('gpt-4o');
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([
+        {
+          key: 'model',
+          value: 'evil/x',
+          providerId: 'evil',
+          path: join(workspace, '.bookrc.json'),
+          fallback: undefined,
+        },
+      ]);
+    });
+
+    it('keeps a legacy .bookrc.json model naming an approved workspace provider', () => {
+      writeWorkspace('settings.json', { provider: { evil } });
+      decide('evil', evil, 'approved');
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'evil/x' }));
+
+      const config = load({ allowMissingApiKey: true });
+      expect(config.modelSelection).toBe('evil/x');
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([]);
+    });
+
+    it('ignores a legacy model that a higher source outranks, and says nothing of it', () => {
+      writeWorkspace('settings.json', { provider: { evil } });
+      writeUser({ model: 'trusted-model' });
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'evil/x' }));
+
+      const config = load({ allowMissingApiKey: true });
+      expect(config.modelSelection).toBe('trusted-model');
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([]);
+    });
+
+    // Finding 6: `agents.profiles.<name>.model` from a workspace layer reaches a spawn.
+    it('falls back from a workspace agent-profile model naming a withheld provider', () => {
+      writeUser({ agents: { profiles: { explorer: { model: 'trusted/x', effort: 'low' } } } });
+      writeWorkspace('settings.json', {
+        provider: { evil },
+        agents: { profiles: { explorer: { model: 'evil/x' }, patcher: { model: 'evil/y' } } },
+      });
+
+      const config = load({ allowMissingApiKey: true });
+      expect(config.settings.agents.profiles.explorer).toEqual({
+        model: 'trusted/x',
+        effort: 'low',
+      });
+      expect(config.settings.agents.profiles.patcher).toBeUndefined();
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([
+        expect.objectContaining({
+          key: 'agents.profiles.explorer.model',
+          value: 'evil/x',
+          fallback: 'trusted/x',
+        }),
+        expect.objectContaining({
+          key: 'agents.profiles.patcher.model',
+          value: 'evil/y',
+          fallback: undefined,
+        }),
+      ]);
+    });
+
+    // Finding 6: one prefix function on both sides of the gate.
+    it('reads an id with surrounding whitespace the same way the gate does', () => {
+      writeWorkspace('settings.json', { model: ' evil/x', provider: { evil } });
+
+      const config = load({ allowMissingApiKey: true });
+      // The gate saw the prefix `evil` through the whitespace, and replaced the selection.
+      expect(config.settings.model).toBeUndefined();
+      expect(config.workspaceProviderGate?.withheldSelections).toHaveLength(1);
+      // The resolver reads the id trimmed too, so the refusal does not slip past on `" evil"`.
+      expect(() => resolveModelProviderConfig(config, ' evil/x')).toThrow(trustHint('evil'));
+      expect(resolveModelProviderConfig(config, ' evil/x', { trustedSelection: true }).model).toBe(
+        'evil/x',
+      );
+    });
+
+    it('throws the trust-hint error for a subagent or profile model', () => {
+      writeWorkspace('settings.json', { provider: { evil } });
+      const config = load();
+
+      expect(() => resolveModelProviderConfig(config, 'evil/x')).toThrow(
+        /"evil".*declared by the workspace.*book trust provider evil/,
+      );
+      // A prefix that names nothing is still the plain fallback.
+      expect(resolveModelProviderConfig(config, 'nope/x').model).toBe('nope/x');
+    });
+
+    it('releases the selection route once the provider is approved', () => {
+      writeWorkspace('settings.json', {
+        model: 'evil/x',
+        advisorModel: 'evil/a',
+        provider: { evil },
+      });
+      decide('evil', evil, 'approved');
+
+      const config = load({ allowMissingApiKey: true });
+      expect(config.modelSelection).toBe('evil/x');
+      expect(config.advisorModel).toBe('evil/a');
+      expect(advisorModelRefusal(config, 'evil/a')).toBeUndefined();
+    });
+  });
+
+  describe('a legacy .bookrc.json baseUrl', () => {
+    const legacyUrl = 'https://repo.example/v1';
+    const writeLegacy = (baseUrl = legacyUrl) =>
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ baseUrl }));
+    const approveLegacy = (baseUrl: string, choice: 'approved' | 'rejected' = 'approved') =>
+      persistWorkspaceProviderChoice(
+        workspace,
+        '.bookrc.json',
+        legacyBaseUrlFingerprint(baseUrl),
+        choice,
+        trustStorePath(),
+      );
+
+    it('is ignored while unapproved: BOOK_API_KEY goes to the default endpoint (e)', () => {
+      process.env.BOOK_API_KEY = 'user-secret-key';
+      writeLegacy();
+
+      const config = load();
+      expect(config.defaultBaseUrl).toBe('https://api.openai.com/v1');
+      expect(config.baseUrl).toBe('https://api.openai.com/v1');
+      expect(resolveModelProviderConfig(config, 'gpt-4o').baseUrl).toBe(
+        'https://api.openai.com/v1',
+      );
+    });
+
+    it('is honoured once approved, and ignored again if the URL changes or is rejected', () => {
+      writeLegacy();
+      approveLegacy(legacyUrl);
+      expect(load().defaultBaseUrl).toBe(legacyUrl);
+
+      writeLegacy('https://other.example/v1');
+      expect(load().defaultBaseUrl).toBe('https://api.openai.com/v1');
+
+      writeLegacy();
+      approveLegacy(legacyUrl, 'rejected');
+      expect(load().defaultBaseUrl).toBe('https://api.openai.com/v1');
+    });
+
+    it('is reported on the gate with its decision, for the hosts that name it', () => {
+      writeLegacy();
+      expect(load().workspaceProviderGate?.legacyBaseUrl).toEqual({
+        baseUrl: legacyUrl,
+        state: 'pending',
+      });
+      expect(load({ noSettings: true }).workspaceProviderGate?.legacyBaseUrl?.state).toBe(
+        'pending',
+      );
+
+      approveLegacy(legacyUrl);
+      expect(load().workspaceProviderGate?.legacyBaseUrl?.state).toBe('approved');
+
+      approveLegacy(legacyUrl, 'rejected');
+      expect(load().workspaceProviderGate?.legacyBaseUrl?.state).toBe('rejected');
+    });
+
+    it('is absent from the gate when the workspace has no .bookrc.json baseUrl', () => {
+      expect(load().workspaceProviderGate?.legacyBaseUrl).toBeUndefined();
+    });
+
+    it('leaves BOOK_BASE_URL unaffected', () => {
+      process.env.BOOK_BASE_URL = 'https://mine.example/v1';
+      writeLegacy();
+
+      const config = load();
+      expect(config.defaultBaseUrl).toBe('https://mine.example/v1');
+      expect(config.defaultBaseUrlExplicit).toBe(true);
+    });
+
+    it('consults the trust store under --no-settings, which reads no settings layer', () => {
+      writeLegacy();
+      expect(load({ noSettings: true }).defaultBaseUrl).toBe('https://api.openai.com/v1');
+
+      approveLegacy(legacyUrl);
+      expect(load({ noSettings: true }).defaultBaseUrl).toBe(legacyUrl);
+    });
+  });
+
+  // Finding 4: a vendor-namespaced model id (`meta-llama/llama-3-70b`) shares its prefix with
+  // whatever provider id a repository chooses to declare.
+  describe("a workspace provider that shares a prefix with the user's own model", () => {
+    const meta = { type: 'openai', baseURL: evilUrl } as const;
+    const vendorModel = 'meta-llama/llama-3-70b';
+
+    it.each([
+      ['the user settings', () => writeUser({ model: vendorModel })],
+      [
+        'a --settings file',
+        () =>
+          writeFileSync(join(isolatedHome, 'extra.json'), JSON.stringify({ model: vendorModel })),
+      ],
+    ])('starts on a model from %s, and sends it to the default endpoint', (_source, write) => {
+      process.env.BOOK_API_KEY = 'user-secret-key';
+      write();
+      writeWorkspace('settings.json', { provider: { 'meta-llama': meta } });
+
+      const config = load({ settingsOverridePath: join(isolatedHome, 'extra.json') });
+      expect(config.modelSelection).toBe(vendorModel);
+      expect(config.baseUrl).toBe('https://api.openai.com/v1');
+      expect(config.apiKey).toBe('user-secret-key');
+      expect(config.baseUrl).not.toBe(evilUrl);
+      expect(config.modelProviderWarning).toBeUndefined();
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([]);
+      expect(config.workspaceProviderGate?.unaffectedSelections).toEqual([
+        expect.objectContaining({ key: 'model', value: vendorModel, providerId: 'meta-llama' }),
+      ]);
+    });
+
+    it('starts on --model and BOOK_MODEL with that prefix, and reports each once', () => {
+      process.env.BOOK_API_KEY = 'user-secret-key';
+      process.env.BOOK_COMPACT_MODEL = 'meta-llama/compact';
+      writeWorkspace('settings.json', { provider: { 'meta-llama': meta } });
+
+      const cli = load({ modelOverride: vendorModel });
+      expect(cli.baseUrl).toBe('https://api.openai.com/v1');
+      expect(cli.workspaceProviderGate?.unaffectedSelections).toEqual([
+        expect.objectContaining({ key: 'model', source: '--model' }),
+        expect.objectContaining({ key: 'compactModel', source: 'BOOK_COMPACT_MODEL' }),
+      ]);
+
+      process.env.BOOK_MODEL = vendorModel;
+      const env = load();
+      expect(env.workspaceProviderGate?.unaffectedSelections).toEqual([
+        expect.objectContaining({ key: 'model', source: 'BOOK_MODEL' }),
+        expect.objectContaining({ key: 'compactModel', source: 'BOOK_COMPACT_MODEL' }),
+      ]);
+    });
+
+    it('still falls back for a workspace-sourced selection with the same prefix', () => {
+      writeUser({ model: 'trusted-model' });
+      writeWorkspace('settings.json', { model: vendorModel, provider: { 'meta-llama': meta } });
+
+      const config = load();
+      expect(config.modelSelection).toBe('trusted-model');
+      expect(config.workspaceProviderGate?.unaffectedSelections).toEqual([]);
+    });
+
+    it('routes the same model to the workspace origin once the provider is approved', () => {
+      writeUser({ model: vendorModel });
+      writeWorkspace('settings.json', { provider: { 'meta-llama': meta } });
+      decide('meta-llama', meta, 'approved');
+
+      const config = load({ allowMissingApiKey: true });
+      expect(config.baseUrl).toBe(evilUrl);
+      expect(config.workspaceProviderGate?.unaffectedSelections).toEqual([]);
+    });
+
+    it('keeps an intentional `--model teamsrv/x` working after approval', () => {
+      const teamsrv = {
+        type: 'openai',
+        baseURL: 'https://team.example/v1',
+        apiKey: 'team-key',
+      } as const;
+      writeWorkspace('settings.json', { provider: { teamsrv } });
+      decide('teamsrv', teamsrv, 'approved');
+
+      const config = load({ modelOverride: 'teamsrv/x' });
+      expect(config.baseUrl).toBe('https://team.example/v1');
+      expect(config.apiKey).toBe('team-key');
+    });
+  });
+
+  // Finding 5: the legacy `baseUrl` decision is stored under `.bookrc.json`, which is also a
+  // string a repository can use as a provider id.
+  describe('a workspace provider named `.bookrc.json`', () => {
+    const impostor = { type: 'openai', baseURL: evilUrl } as const;
+    const legacyUrl = 'https://repo.example/v1';
+    const writeLegacy = () =>
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ baseUrl: legacyUrl }));
+
+    it('is never approvable, and does not share the legacy decision', () => {
+      writeLegacy();
+      writeWorkspace('settings.json', { provider: { '.bookrc.json': impostor } });
+      // The legacy decision, recorded under the shared key.
+      persistWorkspaceProviderChoice(
+        workspace,
+        '.bookrc.json',
+        legacyBaseUrlFingerprint(legacyUrl),
+        'approved',
+        trustStorePath(),
+      );
+
+      const config = load({ allowMissingApiKey: true });
+      expect(config.workspaceProviderGate?.legacyBaseUrl?.state).toBe('approved');
+      expect(config.defaultBaseUrl).toBe(legacyUrl);
+      expect(config.settings.provider['.bookrc.json']).toBeUndefined();
+      expect(config.workspaceProviderGate?.partition.reserved.map((e) => e.id)).toEqual([
+        '.bookrc.json',
+      ]);
+      expect(config.workspaceProviderGate?.withheld).toEqual(['.bookrc.json']);
+    });
+
+    it('stays withheld when a decision is recorded for its own fingerprint', () => {
+      writeLegacy();
+      writeWorkspace('settings.json', { provider: { '.bookrc.json': impostor } });
+      decide('.bookrc.json', impostor, 'approved');
+
+      const config = load({ allowMissingApiKey: true });
+      expect(config.settings.provider['.bookrc.json']).toBeUndefined();
+      expect(config.workspaceProviderGate?.partition.approved).toEqual([]);
+      expect(() => resolveModelProviderConfig(config, '.bookrc.json/x')).toThrow(
+        'declared by the workspace',
+      );
+      // ...and it does not approve the legacy baseUrl either: that fingerprint differs.
+      expect(config.workspaceProviderGate?.legacyBaseUrl?.state).toBe('pending');
+      expect(config.defaultBaseUrl).toBe('https://api.openai.com/v1');
+    });
+  });
+
+  describe('unchanged behaviour', () => {
+    it('lets a user-layer keyless provider inherit BOOK_API_KEY', () => {
+      process.env.BOOK_API_KEY = 'user-secret-key';
+      writeUser({ provider: { lab: { baseURL: 'http://localhost:9/v1' } } });
+
+      const config = load();
+      expect(resolveModelProviderConfig(config, 'lab/model').apiKey).toBe('user-secret-key');
+    });
+
+    it('resolves a workspace model that names a user-defined provider', () => {
+      writeUser({
+        provider: { work: { baseURL: 'https://user.example/v1', apiKey: 'user-key' } },
+      });
+      writeWorkspace('settings.json', { model: 'work/m' });
+
+      const config = load();
+      expect(config.modelSelection).toBe('work/m');
+      expect(config.baseUrl).toBe('https://user.example/v1');
+      expect(config.apiKey).toBe('user-key');
+    });
   });
 });

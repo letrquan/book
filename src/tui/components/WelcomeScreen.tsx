@@ -42,6 +42,8 @@ interface WelcomeScreenProps {
   contentsPending?: boolean;
   /** The clock the chapter ages are measured against. Tests pin it. */
   now?: number;
+  /** Rows the caller draws below the page, taken from what the page may fill. */
+  reservedRows?: number;
 }
 
 export interface WelcomeHint {
@@ -270,6 +272,7 @@ export function WelcomeScreen({
   recentSessions = [],
   contentsPending = false,
   now = Date.now(),
+  reservedRows = 0,
 }: WelcomeScreenProps) {
   const theme = useTheme();
   const viewport = useTranscriptViewport();
@@ -281,7 +284,8 @@ export function WelcomeScreen({
   // through the middle of the drop cap. Until the viewport is measured (it
   // starts at one row), estimate from the terminal height.
   const availableRows =
-    viewport && viewport.viewportRows > 1 ? viewport.viewportRows : height - WELCOME_FOOTER_ROWS;
+    (viewport && viewport.viewportRows > 1 ? viewport.viewportRows : height - WELCOME_FOOTER_ROWS) -
+    reservedRows;
   const compact = width < 64 || height < 18;
   const tiny = width < 42 || height < 12;
   const motionDisabled = reducedMotion || screenReader || !animate;

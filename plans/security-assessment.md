@@ -181,6 +181,13 @@ Combined with project-layer `provider.*` merging and `provider.baseURL` selectin
 remote endpoint of its choosing. The existing relative-path guard shows this was already considered;
 it stops one case short of the exposure.
 
+**Status: addressed by #418.** A workspace layer can no longer change `baseURL`, `baseUrl` or
+`apiKey` on a provider the user's own settings define; a provider only a workspace declares is
+withheld until `book trust provider <id>` approves a fingerprint of its origin and key reference;
+it never inherits `BOOK_API_KEY` or the session key; and an unapproved provider's `{env:}` /
+`{file:}` reference is never resolved. A legacy `.bookrc.json` `baseUrl` is gated the same way.
+Regression test 5 is covered by `src/config.test.ts` and `src/settings-loader.test.ts`.
+
 Required remediation:
 
 - Bind credentials to approved HTTPS origins and confirm origin changes.

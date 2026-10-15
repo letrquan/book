@@ -14,6 +14,18 @@ import { collectDeclaredDirectories, partitionProjectDirectories } from './addit
 import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
 import {
+  describeApiKeyDeclaration,
+  describeDroppedOverride,
+  describeOrigin,
+  describeReservedProvider,
+  describeUnaffectedSelection,
+  describeWithheldSelection,
+  LEGACY_BASE_URL_ID,
+  type WorkspaceProviderGate,
+} from './provider-approvals.js';
+import { renderUntrustedText } from './hook-approvals.js';
+import { providerTrustCommand } from './trust-command.js';
+import {
   formatIgnoredWorkspaceSandboxKey,
   ignoredWorkspaceSandboxKeys,
   isUserSettingsFile,
@@ -29,6 +41,76 @@ export interface WithheldProjectDeclarations {
   settings: ResolvedSettings;
   /** False under `--no-settings`, where no layer was read in the first place. */
   settingsEnabled: boolean;
+  /**
+   * What the provider gate withheld and dropped (`AgentConfig.workspaceProviderGate`). Omitted
+   * by a host that has no config to read it from, which then reports no provider notices.
+   */
+  providerGate?: WorkspaceProviderGate;
+}
+
+/**
+ * One warning per provider-gate outcome the user can act on (#418), each naming the command that
+ * decides it. A provider the user rejected is not reported again, as a rejected hook is not, and
+ * neither is a model selection that fell back because of one: the user already decided.
+ */
+export function collectWithheldProviderNotices(
+  gate: WorkspaceProviderGate,
+  workspace: string,
+): string[] {
+  const notices: string[] = [];
+  // Every command a notice suggests is built here: a provider id is repository-authored, and
+  // pasting one unquoted would run whatever a hostile id spells.
+  const approveCommand = (id: string): string => {
+    const { command, note } = providerTrustCommand(workspace, id);
+    return `\`${command}\`${note}`;
+  };
+
+  for (const dropped of gate.droppedOverrides) {
+    notices.push(`⚠  ${describeDroppedOverride(dropped)}`);
+  }
+
+  for (const entry of gate.partition.reserved) {
+    notices.push(`⚠  ${describeReservedProvider(entry)}`);
+  }
+
+  const pendingIds = new Set(gate.partition.pending.map((entry) => entry.id));
+  for (const entry of gate.partition.pending) {
+    const id = renderUntrustedText(entry.id, 64);
+    const origin = entry.declaration.baseURL ?? entry.declaration.baseUrl;
+    notices.push(
+      `⚠  Ignoring workspace-declared provider "${id}" (${describeOrigin(origin)}, key: ${describeApiKeyDeclaration(
+        entry.declaration.apiKey,
+        workspace,
+      )}) from ` +
+        `${entry.layers.map((layer) => renderUntrustedText(layer)).join(', ')}: it requires ` +
+        `approval. Run ${approveCommand(entry.id)} to review and approve it.`,
+    );
+  }
+
+  for (const selection of gate.withheldSelections) {
+    if (!pendingIds.has(selection.providerId)) continue;
+    notices.push(
+      `⚠  ${describeWithheldSelection(selection)} Run ${approveCommand(selection.providerId)} ` +
+        'to approve it.',
+    );
+  }
+
+  // The user's own selections that merely share a prefix with a withheld provider are not
+  // changed; saying so once is what tells them the withheld provider is not what they chose.
+  for (const selection of gate.unaffectedSelections) {
+    if (!pendingIds.has(selection.providerId)) continue;
+    notices.push(`⚠  ${describeUnaffectedSelection(selection)}`);
+  }
+
+  if (gate.legacyBaseUrl?.state === 'pending') {
+    notices.push(
+      `⚠  Ignoring baseUrl "${renderUntrustedText(gate.legacyBaseUrl.baseUrl)}" from ` +
+        `${LEGACY_BASE_URL_ID}: it would receive BOOK_API_KEY, so it requires approval. Run ` +
+        `${approveCommand(LEGACY_BASE_URL_ID)} to review and approve it.`,
+    );
+  }
+
+  return notices;
 }
 
 /**
@@ -41,7 +123,12 @@ export interface WithheldProjectDeclarations {
  * has already approved as if they were awaiting a first decision.
  */
 export function collectWithheldProjectNotices(input: WithheldProjectDeclarations): string[] {
-  if (!input.settingsEnabled) return [];
+  // `--no-settings` reads no layer, so the gate holds nothing but the legacy `.bookrc.json`
+  // `baseUrl`, which is ignored until approved whether or not a settings layer was read.
+  const providerNotices = input.providerGate
+    ? collectWithheldProviderNotices(input.providerGate, input.workspace)
+    : [];
+  if (!input.settingsEnabled) return providerNotices;
 
   const projectPath = join(input.workspace, '.book', 'settings.json');
   // At `$HOME` this is the user's own file, which the loader read as the user layer and
@@ -151,5 +238,5 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
     );
   }
 
-  return notices;
+  return [...notices, ...providerNotices];
 }

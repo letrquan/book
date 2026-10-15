@@ -2,6 +2,7 @@ import type { ChildProcess } from 'child_process';
 import type { CompactStrategy, ProviderModelConfig, ResolvedSettings } from '../settings.js';
 import type { LoadedMemoryContext } from '../memory-store.js';
 import type { ModelWindowStore } from '../model-window-store.js';
+import type { WorkspaceProviderGate } from '../provider-approvals.js';
 
 export type PermissionMode =
   'default' | 'auto' | 'plan' | 'accept-edits' | 'dontAsk' | 'bypassPermissions';
@@ -227,6 +228,18 @@ export interface AgentConfig {
    * proof of the user's choice). Recorded at load, never inferred from the URL.
    */
   defaultBaseUrlExplicit?: boolean;
+  /**
+   * Provider ids only a workspace layer declares, computed by the loader from the layer files
+   * themselves (#418) -- never from a settings key, which a workspace layer could write. A
+   * declared provider never inherits a key, `BOOK_API_KEY` and the session key included; and a
+   * withheld one (pending, rejected or reserved) is absent from `settings.provider`, so a model id
+   * a workspace controls that names it is refused instead of falling through to the default
+   * endpoint, while the user's own selection with that prefix resolves as the plain fallback. The
+   * rest of the gate (what was dropped, which selections fell back or were left alone, the legacy
+   * `baseUrl`) is what the hosts report. It describes one resolution of the settings: whoever
+   * re-resolves them in a session replaces the gate with the one computed alongside.
+   */
+  workspaceProviderGate?: WorkspaceProviderGate;
   defaultProvider?: 'anthropic' | 'openai' | 'auto';
   autoCompactEnabled: boolean;
   /**

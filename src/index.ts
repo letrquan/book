@@ -324,6 +324,28 @@ trustCommand
     },
   );
 
+trustCommand
+  .command('provider')
+  .description('Approve or reject a provider (origin and key) a repository declared')
+  .argument(
+    '[id]',
+    'Provider id, or .bookrc.json for a legacy baseUrl; omit to list what is pending',
+  )
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
+  .option('--all-pending', 'Apply to every provider currently awaiting a decision')
+  .option('--reject', 'Record a refusal instead of an approval')
+  .action(
+    async (
+      id: string | undefined,
+      options: { workspace?: string; allPending?: boolean; reject?: boolean },
+    ) => {
+      await runTrustCommand('provider', id, {
+        ...options,
+        workspace: resolveWorkspace(options.workspace),
+      });
+    },
+  );
+
 // ---- book config ----
 program
   .command('config')

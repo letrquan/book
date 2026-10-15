@@ -38,6 +38,7 @@ describe('loadWorkspaceTrust', () => {
       hookEntries: {},
       projectCommands: {},
       projectDirectories: {},
+      workspaceProviders: {},
     });
   });
 
@@ -68,6 +69,7 @@ describe('loadWorkspaceTrust', () => {
           // A directory decision is keyed by the real path, so two spellings of one directory
           // are one decision — see `additional-roots.ts`.
           trust.projectDirectories[realDir] = 'approved';
+          trust.workspaceProviders.relay = { fingerprint: 'jkl012', choice: 'rejected' };
         },
         storePath,
       );
@@ -78,6 +80,7 @@ describe('loadWorkspaceTrust', () => {
         mcpServers: { github: { fingerprint: 'def456', choice: 'approved' } },
         projectCommands: { deploy: { fingerprint: 'ghi789', choice: 'approved' } },
         projectDirectories: { [realDir]: 'approved' },
+        workspaceProviders: { relay: { fingerprint: 'jkl012', choice: 'rejected' } },
       });
     } finally {
       rmSync(realDir, { recursive: true, force: true });

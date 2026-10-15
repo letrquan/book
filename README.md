@@ -156,8 +156,9 @@ for await (const event of query('Explain this code', { workspace: process.cwd() 
 - **MCP servers** add tools: `book mcp add github npx -- -y @modelcontextprotocol/server-github`.
 - **Hooks** run your own scripts before or after a tool call, or when a session starts or ends.
 
-A repository cannot quietly switch these on for you: hooks, MCP servers, permission rules, and
-shell-running commands that a project declares wait for your one-time approval (`book trust`).
+A repository cannot quietly switch these on for you: hooks, MCP servers, permission rules,
+shell-running commands, and model providers (the endpoint and key a request uses) that a project
+declares wait for your one-time approval (`book trust`).
 
 ## Documentation
 

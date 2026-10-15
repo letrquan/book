@@ -42,10 +42,10 @@ it.
 
 Two groups of keys are refused in every scope. Trust decisions
 (`mcp.projectServers`, `permissions.projectAllowRules`, `hooks.projectEntries`,
-`commands.projectCommands`, `projectDirectories`) live in `<BOOK_HOME>/trust.json` and are recorded
-with `book trust`. The store is version 3; an older build reads a v3 store as unreadable and
-withholds every gated declaration until it is upgraded, rather than silently writing over the
-decisions it does not understand.
+`commands.projectCommands`, `projectDirectories`, `workspaceProviders`) live in
+`<BOOK_HOME>/trust.json` and are recorded with `book trust`. The store is version 4; an older build
+reads a v4 store as unreadable and withholds every gated declaration until it is upgraded, rather
+than silently writing over the decisions it does not understand.
 The `shell` setting is not writable by `book config` in a workspace scope — it names the program
 every `Bash` command is handed to, so edit the user-global file directly, pass `--settings`, or
 use `BOOK_SHELL`.
@@ -65,7 +65,9 @@ misspelled provider id.
 **Which key a model gets.** A provider entry with its own `apiKey` uses it. An entry without one,
 and a bare id that goes to the default endpoint, gets `BOOK_API_KEY` when it is set. Otherwise it
 gets the key the session already sends, but only when its endpoint is the very one the session
-already sends that key to; any other endpoint gets no key. Endpoints are compared after
+already sends that key to; any other endpoint gets no key. A provider that only a repository
+declares is the exception: it never inherits a key (see
+[Providers a repository declares](#providers-a-repository-declares)). Endpoints are compared after
 normalisation, so a trailing slash or the case of the scheme and host does not make a different
 one, while another host, port, scheme or path does. A key configured for one provider is never
 carried to another endpoint, so switching to a bare id cannot hand your Anthropic key to
@@ -94,6 +96,97 @@ A consult that fails is marked retryable only when a repeat could succeed: rate 
 server errors, network errors and timeouts. A rejected key or account, a retired or misspelled
 model, a transcript too long for the advisor's window, and any verdict on the request itself
 (400, 404, 422, a content filter) are not, so the agent does not send the same consult again.
+
+### Providers a repository declares
+
+A `provider` entry names two things you care about: where a request goes (`baseURL`) and which
+credential rides along (`apiKey`, a literal or a `{env:VAR}` / `{file:path}` reference that Book
+reads for the entry). A checked-in `.book/settings.json`, a force-added `.book/settings.local.json`
+or a legacy `.bookrc.json` can write both, so a workspace layer does not get to decide them
+unchecked. Without this gate, a cloned repository could send your provider key, `BOOK_API_KEY`, any
+file under `~` or any environment variable, plus the transcript, to an endpoint it named. Your own
+layers (`~/.book/settings.json`, `--settings`) are trusted and unchanged.
+
+- **A provider you define keeps your origin, key and type.** A workspace layer cannot change
+  `baseURL`, `baseUrl`, `apiKey` or `type` on a provider your own settings (the user file or
+  `--settings`) define. `type` decides how the key is sent (a bearer token to `/chat/completions`,
+  or `x-api-key` to `/v1/messages`), so changing it would re-route your key without moving the
+  origin. The override is dropped and reported, at launch and in `book doctor`. Only its `models`
+  still merge, so a repository can still add a model to your provider. The model picker's refresh
+  and hand-typed models write only what your own file holds, never a value a workspace layer
+  merged in.
+- **A provider only a repository declares is withheld.** It is not in effect until
+  `book trust provider <id>` approves it. The decision is recorded in `~/.book/trust.json`, which
+  nothing a repository ships can write, and it is keyed by a fingerprint of the declaration's
+  `type`, origin and `apiKey` text. Changing the `baseURL` or the key reference needs a new
+  approval; editing its `models` does not. `book trust provider` shows what a request would
+  actually reach, in full: the parsed protocol, host and port of the origin (a URL with userinfo
+  before the host, or one that does not parse, is flagged), the variable an `{env:…}` reference
+  names, and the normalised file a `{file:…}` reference opens, with `~` expanded and `..`
+  resolved. It never shows a resolved value, and a literal key is not echoed at all.
+- **The id `.bookrc.json` is reserved.** The decision about a legacy `baseUrl` is stored under that
+  key, so a workspace provider named `.bookrc.json` can never be approved: it stays withheld
+  whatever the trust store holds, and is reported as reserved. Rename it.
+- **It never inherits a key.** A workspace provider does not get `BOOK_API_KEY` or the key the
+  session already sends, even once approved. It sends its own `apiKey` or none, so an approved
+  keyless workspace provider fails at startup with the missing-key error
+  (`BOOK_API_KEY or provider.<id>.apiKey not set`) until its declaration carries its own key.
+  Changing the declaration to add one is a new approval.
+- **Its key reference is not read before approval.** A `{env:…}`, `{file:~/…}` or absolute
+  `{file:…}` reference on a withheld provider is never resolved: no environment variable is read
+  and no file is opened. Approving the provider is what allows that reference to be read, so
+  review it in the `book trust provider` listing first.
+- **A workspace selection that names a withheld provider falls back.** A workspace `model`,
+  `compactModel`, `advisorModel`, `agents.profiles.<name>.model` or a legacy `.bookrc.json` `model`
+  of the form `<id>/<model>` for a withheld provider is ignored, with a notice and a line in
+  `book doctor`, and your own value applies (or the default, when you set none). A model a
+  repository chooses any other way fails with a message naming `book trust provider <id>` instead
+  of falling back: the `model:` frontmatter of an agent definition and a `model` passed to
+  `AgentSpawn`. Nothing is sent to the default endpoint in its place. The id is read trimmed, by one
+  function, in the loader and in the resolver, so a value with surrounding whitespace is treated
+  the same on both sides.
+- **Your own model that shares a prefix is unaffected.** A repository can pick any provider id, so
+  a declared `meta-llama` collides with your own `model: "meta-llama/llama-3-70b"`, which is one
+  vendor-namespaced id and names no provider of yours. A selection from your own settings,
+  `--settings`, `--model`, `BOOK_MODEL`, `/model` or an `agents.profiles` override of yours whose
+  prefix names only a withheld workspace provider starts and resolves exactly as it would if the
+  workspace had not declared that provider, and is reported once ("provider `meta-llama` declared
+  by the workspace is withheld; your model `meta-llama/…` is unaffected"). **Approving that
+  provider changes this:** the same selections then go to the workspace's origin, so the
+  `book trust provider` listing names each of your selections that would be routed there before you
+  decide. An intentional `--model teamsrv/x` keeps working once `teamsrv` is approved.
+- **A legacy `.bookrc.json` `baseUrl` is gated the same way.** It would receive `BOOK_API_KEY`, so
+  it is ignored until `book trust provider .bookrc.json` approves it. Approving it makes the URL
+  the default endpoint, so the listing names everything that is then sent there: `BOOK_API_KEY`,
+  the requests and key of every provider with no `baseURL` of its own (by id, with the shape of its
+  key reference), and every plain model id and every `<vendor>/<model>` id that names none of your
+  providers. `BOOK_BASE_URL` is yours and is not gated.
+- **`/advisor off` outranks a checked-in advisor, while one is declared.** When a checked-in
+  `.book/settings.json` still declares an `advisorModel`, `/advisor off` also writes
+  `advisorModel: "off"` to `.book/settings.local.json`, which resolves after it, so the
+  repository's advisor does not come back at the next launch. `off` reads as "no advisor". The
+  checked-in file is never edited. The `off` applies only while a checked-in layer declares an
+  advisor: once the repository stops declaring one, the local `off` is ignored and your own value
+  applies again. `/advisor <model>` clears it too.
+
+```bash
+book trust provider                    # list the providers awaiting a decision
+book trust provider evil               # approve it, as declared now
+book trust provider evil --reject      # refuse it, and stop being told about it
+book trust provider --all-pending      # every provider awaiting a decision
+book trust provider .bookrc.json       # a legacy baseUrl
+```
+
+All of them take `--workspace <path>`, and every command Book suggests (in the launch notices,
+the refusal errors, the listing and `book doctor`) names the workspace whenever it is not the
+current directory. A provider id is any key a repository writes, so it is quoted for your shell
+when it is made of plain characters and a space; an id with anything else (`$`, a quote, a
+backtick, `!`, `%`, `\`, a control character, a leading `-` or a non-ASCII letter) is never put on a
+command line, and the suggested command is the listing instead. Print mode and the SDK report each
+withheld provider, dropped override and ignored selection on stderr; the TUI shows the same lines in the transcript at launch,
+and they are not saved to the session or sent to the model. `book doctor` lists every workspace
+provider with its state (approved, rejected or not in effect), the dropped overrides and the
+ignored selections. A provider you rejected is not reported again at launch.
 
 Set `BOOK_HOME` to replace the default `~/.book` user-state root. This relocates user settings,
 sessions, memory, managed-agent state and worktrees, jobs, rewind snapshots, telemetry, tool output,

@@ -12,6 +12,12 @@ export interface ResolvedAgentProfile {
   definition: ManagedAgentDef;
   requestedModel?: string;
   resolvedModel: string;
+  /**
+   * The model is the user's choice (a profile override in settings, or the session's own), not a
+   * repository's agent definition or a model passed at the spawn. A withheld workspace provider's
+   * prefix on a trusted model resolves as the plain fallback instead of refusing the child.
+   */
+  modelTrusted: boolean;
   provider?: string;
   effort?: AgentConfig['effort'];
   /**
@@ -51,18 +57,22 @@ export function resolveAgentProfile(
   const override = config.settings.agents.profiles[definition.name];
   const requestedModel = usableModel(invocationModel);
   const explicitlyInherits = override?.model?.trim() === 'inherit';
+  const overrideModel = usableModel(override?.model);
+  const definitionModel = explicitlyInherits ? undefined : usableModel(definition.model);
   const resolvedModel =
-    requestedModel ??
-    usableModel(override?.model) ??
-    (explicitlyInherits ? undefined : usableModel(definition.model)) ??
-    config.modelSelection ??
-    config.model;
+    requestedModel ?? overrideModel ?? definitionModel ?? config.modelSelection ?? config.model;
+  // An `agents.profiles.<name>.model` is a settings selection (the loader has already replaced a
+  // withheld workspace one) and the session's model is the user's; the agent definition's `model`
+  // and one passed at the spawn are written by a repository or chosen by the model.
+  const modelTrusted =
+    requestedModel === undefined && (overrideModel !== undefined || definitionModel === undefined);
   const slash = resolvedModel.indexOf('/');
   const chosenEffort = usableAgentEffort(override?.effort) ?? usableAgentEffort(definition.effort);
   return {
     definition,
     requestedModel,
     resolvedModel,
+    modelTrusted,
     provider: slash > 0 ? resolvedModel.slice(0, slash) : config.provider,
     effort: chosenEffort ?? config.effort,
     effortExplicit: chosenEffort !== undefined || isEffortChosen(config),
@@ -85,7 +95,8 @@ export function resolveAgentProfile(
  */
 export function resolveChildAgentConfig(
   base: AgentConfig,
-  profile: Pick<ResolvedAgentProfile, 'effort' | 'effortExplicit'>,
+  profile: Pick<ResolvedAgentProfile, 'effort' | 'effortExplicit'> &
+    Partial<Pick<ResolvedAgentProfile, 'modelTrusted'>>,
   resolvedModel: string | undefined,
 ): AgentConfig {
   const chosen = profile.effortExplicit;
@@ -96,7 +107,11 @@ export function resolveChildAgentConfig(
     effortChosen: chosen,
   };
   if (resolvedModel && resolvedModel !== 'unknown') {
-    config = applyModelDefaults(resolveModelProviderConfig(config, resolvedModel));
+    config = applyModelDefaults(
+      resolveModelProviderConfig(config, resolvedModel, {
+        trustedSelection: profile.modelTrusted === true,
+      }),
+    );
   }
   const effort = clampEffortToCatalog(config, config.effort, { raiseToLowest: chosen });
   return {

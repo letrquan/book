@@ -525,11 +525,18 @@ book trust command deploy              # and for a project command that substitu
 book trust dir ./shared                # and for a project-declared additionalDirectories entry
 book trust dir --all-pending           # every such directory still awaiting a decision
 book trust dir ./shared --reject       # refuse it
+book trust provider evil               # a provider (origin and key) only the repository declares
+book trust provider --all-pending      # every provider still awaiting a decision
+book trust provider evil --reject      # refuse it
 ```
 
 All of them take `--workspace <path>`; `book doctor` prints it for you when it is diagnosing a
 directory other than the one you are in. Each invocation records one decision and leaves every
 other decision — in this workspace and in every other — untouched.
+
+`book trust provider` decides where a repository's provider sends requests and which key it
+carries; what it covers, and what a repository can no longer change on a provider you define, is in
+[Providers a repository declares](configuration.md#providers-a-repository-declares).
 
 `book trust dir` shows the real path beside the declared text before recording anything, because
 the decision is keyed by where the path _really_ goes: a repository could declare `./shared` for a
