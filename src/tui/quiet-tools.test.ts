@@ -511,3 +511,153 @@ describe('reads outside the workspace', () => {
     expect(isQuietInvocation(absoluteInside, ok('d'), message, context)).toBe(true);
   });
 });
+
+describe('read-only shell commands (#459)', () => {
+  const context: QuietToolContext = { pinned: new Set(), workspace: '/repo' };
+  const message = assistant('m', '', []);
+  const bash = (id: string, command: string, extra: Record<string, unknown> = {}) =>
+    call(id, 'Bash', { command, ...extra });
+  const quiet = (toolCall: ToolCall, result: ToolResult | undefined = ok(toolCall.id)) =>
+    isQuietInvocation(toolCall, result, message, context);
+
+  it('folds a successful read-only command, running or finished', () => {
+    expect(quiet(bash('a', 'cat src/a.js'))).toBe(true);
+    expect(quiet(bash('b', 'rg TODO src | head -n 20'), undefined)).toBe(true);
+    expect(quiet(bash('c', 'git status'))).toBe(true);
+  });
+
+  it('keeps a mutating or unclassifiable command on its own row', () => {
+    expect(quiet(bash('a', 'touch x'))).toBe(false);
+    expect(quiet(bash('b', 'cat a > b'))).toBe(false);
+    expect(quiet(bash('c', 'npm test'))).toBe(false);
+    expect(quiet(call('d', 'Bash', {}))).toBe(false);
+    expect(quiet(call('e', 'Bash', { command: 42 }))).toBe(false);
+  });
+
+  it('keeps a failed, blocked or timed-out read-only command visible', () => {
+    expect(quiet(bash('a', 'cat src/a.js'), failed('a'))).toBe(false);
+    for (const status of ['blocked', 'timed_out', 'cancelled'] as const) {
+      expect(quiet(bash('b', 'cat src/a.js'), { ...failed('b'), status })).toBe(false);
+    }
+  });
+
+  it('keeps a background command, a pinned one and one awaiting permission visible', () => {
+    expect(quiet(bash('a', 'cat src/a.js', { run_in_background: true }))).toBe(false);
+    expect(
+      isQuietInvocation(bash('b', 'cat a.js'), ok('b'), message, {
+        ...context,
+        pinned: new Set(['b']),
+      }),
+    ).toBe(false);
+    expect(
+      isQuietInvocation(bash('c', 'cat a.js'), undefined, message, {
+        ...context,
+        pendingToolId: 'c',
+      }),
+    ).toBe(false);
+  });
+
+  it('keeps a command that reaches outside the workspace visible', () => {
+    expect(quiet(bash('a', 'cat /etc/passwd'))).toBe(false);
+    expect(quiet(bash('b', 'cat ../secrets.env'))).toBe(false);
+    expect(quiet(bash('c', 'grep -rn x src ../other'))).toBe(false);
+    expect(quiet(bash('d', 'cat /repo/src/a.js'))).toBe(true);
+    expect(quiet(bash('e', 'cat a.js', { workdir: '/etc' }))).toBe(false);
+    expect(quiet(bash('f', 'cat a.js', { workdir: 'src' }))).toBe(true);
+    // A relative path resolves from the command's own directory.
+    expect(quiet(bash('g', 'cat ../../x', { workdir: 'src' }))).toBe(false);
+    expect(quiet(bash('h', 'cat ../a.js', { workdir: 'src' }))).toBe(true);
+  });
+
+  it('treats BashOutput as before', () => {
+    expect(quiet(call('a', 'BashOutput', { shell_id: 'x' }))).toBe(true);
+  });
+
+  it('summarizes reads, searches and listings together', () => {
+    const summary = summarizeQuietRun([
+      { call: bash('a', 'cat src/a.js'), result: ok('a') },
+      { call: bash('b', 'grep -rn TODO src'), result: ok('b') },
+      { call: bash('c', 'ls src'), result: ok('c') },
+    ]);
+    expect(summary).toEqual({
+      title: 'Read',
+      target: 'a.js',
+      metadata: ['1 file', '1 search', '1 listing'],
+      running: false,
+    });
+  });
+
+  it('dedupes shell reads with Read, and counts listings after searches and before lookups', () => {
+    const summary = summarizeQuietRun([
+      { call: call('a', 'Read', { file_path: 'src/a.js' }), result: ok('a') },
+      { call: bash('b', 'cat a.js b.js'), result: ok('b') },
+      { call: bash('c', 'ls src && git status'), result: ok('c') },
+      { call: call('d', 'TaskList'), result: ok('d') },
+    ]);
+    expect(summary.target).toBe('a.js, b.js');
+    expect(summary.metadata).toEqual(['2 files', '2 listings', '1 lookup']);
+  });
+
+  it('titles a run by search, then listing, then check', () => {
+    expect(
+      summarizeQuietRun([
+        { call: bash('a', 'ls src'), result: ok('a') },
+        { call: bash('b', 'rg foo'), result: ok('b') },
+      ]),
+    ).toMatchObject({ title: 'Search', target: 'foo', metadata: ['1 search', '1 listing'] });
+    expect(
+      summarizeQuietRun([
+        { call: bash('a', 'ls src'), result: ok('a') },
+        { call: bash('b', 'git status'), result: ok('b') },
+        { call: call('c', 'TaskList'), result: ok('c') },
+      ]),
+    ).toMatchObject({ title: 'List', metadata: ['2 listings', '1 lookup'] });
+  });
+
+  it('folds three one-command turns into one entry', () => {
+    const turns = [
+      assistant('m1', '', [bash('a', 'cat src/a.js')]),
+      assistant('m2', '', [bash('b', 'grep -rn TODO src')]),
+      assistant('m3', '', [bash('c', 'ls src')]),
+    ];
+    const { entries } = createQuietCollapser()(turns, context);
+    expect(entries).toHaveLength(1);
+    expect((entries[0] as Message).toolCalls).toHaveLength(3);
+  });
+
+  it('keeps a mutating command out of the fold', () => {
+    const turns = [
+      assistant('m1', '', [bash('a', 'cat src/a.js')]),
+      assistant('m2', '', [bash('b', 'touch x')]),
+      assistant('m3', '', [bash('c', 'ls src')]),
+    ];
+    expect(createQuietCollapser()(turns, context).entries).toHaveLength(3);
+  });
+
+  it('absorbs reasoning before read-only commands', () => {
+    const turns = [
+      reasonedRead('m1', bash('a', 'cat src/a.js'), 'think'),
+      reasonedRead('m2', bash('b', 'rg TODO src'), 'think'),
+      reasonedRead('m3', bash('c', 'ls src'), 'native'),
+    ];
+    const { entries, absorbedThoughts } = createQuietCollapser()(turns, context);
+    expect(entries).toHaveLength(1);
+    expect(absorbedThoughts.has('m1')).toBe(true);
+  });
+
+  it('groups consecutive read-only commands in one message', () => {
+    const rows = groupQuietInvocations(
+      [
+        { call: bash('a', 'cat a.js'), result: ok('a') },
+        { call: bash('b', 'ls'), result: ok('b') },
+        { call: bash('c', 'touch x'), result: ok('c') },
+      ],
+      message,
+      context,
+    );
+    expect(rows).toEqual([
+      { kind: 'quiet', indices: [0, 1] },
+      { kind: 'single', index: 2 },
+    ]);
+  });
+});

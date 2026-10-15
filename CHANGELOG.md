@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **The compact transcript folds read-only shell commands into the quiet-run summary** (#459). A
+  model that explores through the shell (`cat src/a.js`, `rg TODO src`, `ls src`, `git diff --stat`)
+  no longer draws a row per command: a conservative parser, modelled on OpenAI Codex's
+  `parse_command.rs`, folds a `Bash` call like a read when it can prove the whole command read-only
+  (no redirection, expansion, background job, wrapper or mutating flag) and it succeeded, ran in the
+  foreground and stays inside the workspace. The summary counts shell reads with `Read`'s files,
+  shell searches with the searches, and listings as `N listings`. Anything else keeps its own row.
 - **`/goal <condition>`: keep working until a condition holds**, modelled on Claude Code's command.
   Each time the agent stops without calling a tool, the compact model reads the transcript and
   judges the condition with Claude Code's evaluator prompt. An unmet verdict returns its reason to

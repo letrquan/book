@@ -3,6 +3,11 @@ import { splitReasoningParts } from '../reasoning-tags.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import type { Message } from '../types/messages.js';
 import type { ToolCall, ToolResult } from '../types/tools.js';
+import {
+  classifyReadOnlyShellCommand,
+  shellCommandPaths,
+  type ReadOnlyShellPart,
+} from './shell-readonly.js';
 
 /**
  * Quiet tools: the reading an agent does on its way to a change.
@@ -14,9 +19,13 @@ import type { ToolCall, ToolResult } from '../types/tools.js';
  * reaches the network, delegates, fails or waits on a permission prompt keeps
  * its own row.
  *
- * `Bash` is deliberately absent even when a command only reads (`git diff
- * --stat`): a shell command can change anything, and the transcript cannot tell
- * which ones did.
+ * `Bash` is not in this set, because a shell command can change anything. It
+ * joins a run one call at a time, through `classifyReadOnlyShellCommand`: a
+ * conservative parser that accepts only a command it can prove read-only (`cat`,
+ * `rg`, `ls`, `git diff --stat`, ...) and rejects expansion, redirection,
+ * background jobs and every wrapper. Anything it cannot prove keeps its own row,
+ * as does a read-only command that failed, ran in the background or names a path
+ * outside the workspace.
  */
 export const QUIET_TOOLS: ReadonlySet<string> = new Set([
   'Read',
@@ -55,13 +64,43 @@ export interface QuietToolContext {
   workspace?: string;
 }
 
+/** Whether `target`, resolved from `base`, lies outside the workspace. */
+function escapesWorkspace(workspace: string, base: string, target: string): boolean {
+  const rel = relative(resolve(workspace), resolve(base, target));
+  return rel.startsWith('..') || isAbsolute(rel);
+}
+
 /** Whether a read or search reaches outside the workspace. */
 function reachesOutside(call: ToolCall, workspace: string | undefined): boolean {
   if (!workspace) return false;
   const target = argString(call.arguments, 'file_path', 'path', 'filePath');
   if (!target) return false;
-  const rel = relative(resolve(workspace), resolve(workspace, target));
-  return rel.startsWith('..') || isAbsolute(rel);
+  return escapesWorkspace(workspace, workspace, target);
+}
+
+/**
+ * What a `Bash` call reads, searches and lists when it is read-only, or
+ * undefined when it keeps its own row: a command the classifier cannot prove
+ * harmless, a background job, or one that names a path (or runs in a directory)
+ * outside the workspace. Relative paths resolve from the call's `workdir`.
+ */
+function readOnlyShellParts(
+  call: ToolCall,
+  workspace: string | undefined,
+): ReadOnlyShellPart[] | undefined {
+  const command = call.arguments.command;
+  if (typeof command !== 'string') return undefined;
+  if (call.arguments.run_in_background === true || call.arguments.runInBackground === true) {
+    return undefined;
+  }
+  const parts = classifyReadOnlyShellCommand(command);
+  if (!parts || !workspace) return parts;
+  const workdir = argString(call.arguments, 'workdir');
+  if (workdir && escapesWorkspace(workspace, workspace, workdir)) return undefined;
+  const base = resolve(workspace, workdir ?? '.');
+  return shellCommandPaths(parts).some((path) => escapesWorkspace(workspace, base, path))
+    ? undefined
+    : parts;
 }
 
 function resultFor(message: Message, toolCallId: string): ToolResult | undefined {
@@ -81,7 +120,12 @@ export function isQuietInvocation(
   message: Message,
   context: QuietToolContext,
 ): boolean {
-  if (!QUIET_TOOLS.has(canonicalToolName(call.name))) return false;
+  const name = canonicalToolName(call.name);
+  if (name === 'Bash') {
+    if (!readOnlyShellParts(call, context.workspace)) return false;
+  } else if (!QUIET_TOOLS.has(name)) {
+    return false;
+  }
   if (context.pinned.has(call.id) || context.pendingToolId === call.id) return false;
   if (reachesOutside(call, context.workspace)) return false;
   if (message.nestedToolInvocations?.some((nested) => nested.parentTraceId === call.id)) {
@@ -357,13 +401,34 @@ function plural(count: number, one: string, many: string): string {
 export function summarizeQuietRun(invocations: readonly QuietInvocation[]): QuietRunSummary {
   const files: string[] = [];
   const patterns: string[] = [];
+  const listed: string[] = [];
+  let listings = 0;
   const others: string[] = [];
+  const addFile = (path: string | undefined) => {
+    const shown = path ? basename(path.replace(/\\/g, '/')) : 'file';
+    if (!files.includes(shown)) files.push(shown);
+  };
   for (const { call } of invocations) {
     const name = canonicalToolName(call.name);
-    if (name === 'Read') {
-      const path = argString(call.arguments, 'file_path', 'path', 'filePath');
-      const shown = path ? basename(path.replace(/\\/g, '/')) : 'file';
-      if (!files.includes(shown)) files.push(shown);
+    if (name === 'Bash') {
+      // A folded command was classified, so the fallback only covers a call whose
+      // arguments changed under the summary; it reads as a lookup.
+      const command = call.arguments.command;
+      const parts = typeof command === 'string' ? classifyReadOnlyShellCommand(command) : undefined;
+      if (!parts) {
+        others.push(name);
+        continue;
+      }
+      for (const part of parts) {
+        if (part.kind === 'read') addFile(part.path);
+        else if (part.kind === 'search') patterns.push(part.query ?? part.path ?? 'search');
+        else {
+          listings += 1;
+          if (part.path && !listed.includes(part.path)) listed.push(part.path);
+        }
+      }
+    } else if (name === 'Read') {
+      addFile(argString(call.arguments, 'file_path', 'path', 'filePath'));
     } else if (SEARCH_TOOLS.has(name)) {
       const pattern = argString(call.arguments, 'pattern', 'query', 'glob');
       patterns.push(pattern ?? name.toLowerCase());
@@ -372,16 +437,20 @@ export function summarizeQuietRun(invocations: readonly QuietInvocation[]): Quie
     }
   }
 
-  const title = files.length > 0 ? 'Read' : patterns.length > 0 ? 'Search' : 'Check';
+  const title =
+    files.length > 0 ? 'Read' : patterns.length > 0 ? 'Search' : listings > 0 ? 'List' : 'Check';
   const target =
     files.length > 0
       ? files.join(', ')
       : patterns.length > 0
         ? patterns.join(', ')
-        : [...new Set(others)].join(', ');
+        : listings > 0
+          ? listed.join(', ') || '.'
+          : [...new Set(others)].join(', ');
   const metadata: string[] = [];
   if (files.length > 0) metadata.push(plural(files.length, 'file', 'files'));
   if (patterns.length > 0) metadata.push(plural(patterns.length, 'search', 'searches'));
+  if (listings > 0) metadata.push(plural(listings, 'listing', 'listings'));
   if (others.length > 0) metadata.push(plural(others.length, 'lookup', 'lookups'));
   return {
     title,

@@ -2252,3 +2252,49 @@ describe('ChatPanel folding keeps delegation narration', () => {
     }
   });
 });
+
+describe('ChatPanel quiet tool runs with read-only shell commands (#459)', () => {
+  const shellTurn = (id: string, command: string): Message => ({
+    ...msg(id, 'assistant', '<think></think>'),
+    toolCalls: [{ id: `${id}-call`, name: 'Bash', arguments: { command } }],
+    toolResults: [successResult(`${id}-call`, 'output')],
+  });
+  const session: Message[] = [
+    msg('u1', 'user', 'look around'),
+    shellTurn('a1', 'cat src/a.js'),
+    shellTurn('a2', 'grep -rn TODO src'),
+    shellTurn('a3', 'ls src'),
+    shellTurn('a4', 'touch x'),
+  ];
+
+  it('folds read-only commands into one summary row and keeps a mutating one apart', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel messages={session} terminalWidth={100} transcriptMode="compact" reducedMotion />,
+      ),
+    );
+    const lines = frame(view.lastFrame).split('\n');
+    const summary = lines.filter((line) => /Read\s+a\.js/.test(line));
+    expect(summary).toHaveLength(1);
+    // The metadata column is narrow, so the third count may be cut with an ellipsis.
+    expect(summary[0]).toContain('1 file · 1 search');
+    expect(lines.some((line) => /Bash\s+cat src\/a\.js/.test(line))).toBe(false);
+    expect(lines.filter((line) => /Bash\s+touch x/.test(line))).toHaveLength(1);
+  });
+
+  it('shows every command again in the detailed transcript', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={session}
+          terminalWidth={100}
+          transcriptMode="detailed"
+          reducedMotion
+        />,
+      ),
+    );
+    const output = frame(view.lastFrame);
+    expect(output).toMatch(/Bash\s+cat src\/a\.js/);
+    expect(output).toMatch(/Bash\s+ls src/);
+  });
+});
