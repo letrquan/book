@@ -65,8 +65,9 @@ fresh verification pass.
   rejecting and re-planning until the turn budget is gone.
 - Provider-native reasoning and inline `<think>`, `<thinking>`, `<reasoning>`, and
   `<reasoning_context>` blocks are kept separate from answer prose: the TUI streams active
-  thinking, collapses completed thoughts to a counted row in compact mode, and reopens them in
-  detailed mode, while fenced-code examples remain ordinary answer content. Shared reasoning-tag
+  thinking, collapses the thought of a final answer to a counted row in compact mode (the thought
+  behind a tool call is not drawn there at all, #470), and reopens every thought in detailed mode,
+  while fenced-code examples remain ordinary answer content. Shared reasoning-tag
   helpers let the agent loop recognize closed reasoning-only completions, retry an empty turn once,
   and emit `reasoning`/`attempt_discarded` events so session and headless hosts preserve the
   boundary.

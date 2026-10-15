@@ -13,12 +13,15 @@
  * Allow-list: `cat`, `bat` (only with paging off), `head`, `tail` (never following),
  * `nl`, `wc`, `file`, `stat`, `sed -n Np`, `grep`, `rg`, `ag`, `find` without actions,
  * `fd` without exec, `ls`, `tree`, `eza`, `du` and `pwd`, plus small stdin formatters
- * after a pipe. Not on it: `git` (a plain `git ...` in a shell carries none of the
- * hardening Book's own Git tools apply, so a repository's own config, attributes or
- * hooks can make it run a program), `ack` (it reads a project-level `.ackrc`), and
- * every pager, wrapper and interpreter. An option that names a file is counted as a
- * path for the caller's workspace check, or the command is refused. A path with a glob
- * that could expand to `..` is refused.
+ * after a pipe. Read-only `git` is on it too: `status`, `log`, `diff`, `show`, `grep`,
+ * `ls-files` and `branch` in its listing forms, behind only `-C <dir>`, `--no-pager`, `-P`
+ * and `--no-optional-locks`. A fold changes how a command that already ran is drawn, so
+ * what the repository's own config makes git run is not this module's question; what the
+ * command line itself asks for is (`-c`, `--output`, `--ext-diff`, a pager program, a
+ * branch name). Not on the list: `ack` (it reads a project-level `.ackrc`), and every
+ * pager, wrapper and interpreter. An option that names a file is counted as a path for
+ * the caller's workspace check, or the command is refused. A path with a glob that could
+ * expand to `..` is refused.
  *
  * `undefined` is always the safe answer: the command then keeps its own row.
  * Anything not named here, a command or a flag, is therefore "not read-only".
@@ -27,10 +30,14 @@
  * searches and listings, small stdin formatters dropped from a pipeline.
  */
 
+import { isAbsolute, posix } from 'path';
+
 export type ReadOnlyShellPart =
   | { kind: 'read'; path: string }
   | { kind: 'search'; query?: string; path?: string; extraPaths?: string[] }
-  | { kind: 'list'; path?: string; extraPaths?: string[] };
+  | { kind: 'list'; path?: string; extraPaths?: string[] }
+  /** A look at repository state (`git status`); `target` names it in a summary. */
+  | { kind: 'lookup'; target: string; path?: string; extraPaths?: string[] };
 
 /** Every path a classification names, for the caller's workspace-containment check. */
 export function shellCommandPaths(parts: readonly ReadOnlyShellPart[]): string[] {
@@ -224,6 +231,8 @@ interface ParsedArgs {
   operands: string[];
   /** The values of the options in `FlagRules.paths`. */
   flagPaths: string[];
+  /** How many operands came before a `--`, or all of them when there is none. */
+  beforeDashes: number;
 }
 
 /**
@@ -260,15 +269,13 @@ function parseArgs(args: readonly string[], rules: FlagRules = {}): ParsedArgs |
   const longValue = new Set(values.filter((v) => v.startsWith('--')));
   const flags: Flag[] = [];
   const operands: string[] = [];
-  const afterDashes: string[] = [];
-  let dashes = false;
+  let beforeDashes: number | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
-    if (dashes) {
+    if (beforeDashes !== undefined) {
       operands.push(arg);
-      afterDashes.push(arg);
     } else if (arg === '--') {
-      dashes = true;
+      beforeDashes = operands.length;
     } else if (arg.startsWith('--')) {
       const eq = arg.indexOf('=');
       if (eq >= 0) {
@@ -309,8 +316,16 @@ function parseArgs(args: readonly string[], rules: FlagRules = {}): ParsedArgs |
     .filter((flag) => flag.value !== undefined && matchesOption(flag, pathOptions, longValue))
     // A list of files (`file -m a:b`) is several paths, and the whole value is one too.
     .flatMap((flag) => [flag.value!, ...(flag.value!.includes(':') ? flag.value!.split(':') : [])]);
-  const parsed = { flags, operands, flagPaths };
+  const parsed = { flags, operands, flagPaths, beforeDashes: beforeDashes ?? operands.length };
   return rules.check && !rules.check(args, parsed) ? undefined : parsed;
+}
+
+function whereParts(paths: readonly string[]): { path?: string; extraPaths?: string[] } {
+  const [first, ...rest] = paths;
+  return {
+    ...(first !== undefined ? { path: first } : {}),
+    ...(rest.length > 0 ? { extraPaths: rest } : {}),
+  };
 }
 
 function pathsPart(
@@ -318,11 +333,7 @@ function pathsPart(
   paths: readonly string[],
   query?: string,
 ): ReadOnlyShellPart {
-  const [first, ...rest] = paths;
-  const where = {
-    ...(first !== undefined ? { path: first } : {}),
-    ...(rest.length > 0 ? { extraPaths: rest } : {}),
-  };
+  const where = whereParts(paths);
   if (kind === 'list') return { kind, ...where };
   return { kind, ...(query !== undefined ? { query } : {}), ...where };
 }
@@ -711,6 +722,248 @@ function listParts(args: readonly string[], rules: FlagRules): ReadOnlyShellPart
   return parsed ? [pathsPart('list', [...parsed.operands, ...parsed.flagPaths])] : undefined;
 }
 
+// --- Git ----------------------------------------------------------------
+
+/** The options git takes before the subcommand that are safe: `-C <dir>` is handled apart. */
+const GIT_GLOBAL_FLAGS: ReadonlySet<string> = new Set(['--no-pager', '-P', '--no-optional-locks']);
+
+/**
+ * Options that write a file (`--output`, `-O<orderfile>` reads one), run a program
+ * (`--ext-diff`, `--show-signature`, `git grep -O` / `--open-files-in-pager`), on any
+ * subcommand. A long name also matches its abbreviations.
+ */
+const GIT_DENY = ['--output', '-O', '--open-files-in-pager', '--ext-diff', '--show-signature'];
+
+/**
+ * Every `git branch` form that creates, deletes, renames, copies or configures a branch,
+ * or opens an editor. What is left, with no positional name, only lists.
+ */
+const GIT_BRANCH_DENY = [
+  ...GIT_DENY,
+  '-d',
+  '-D',
+  '-m',
+  '-M',
+  '-c',
+  '-C',
+  '-u',
+  '-f',
+  '-t',
+  '--delete',
+  '--move',
+  '--copy',
+  '--set-upstream',
+  '--set-upstream-to',
+  '--unset-upstream',
+  '--edit-description',
+  '--force',
+  '--track',
+  '--no-track',
+];
+
+/** Branch options whose value is optional: the last word of a command may leave it out. */
+const GIT_BRANCH_OPTIONAL_VALUE = new Set([
+  '--contains',
+  '--no-contains',
+  '--merged',
+  '--no-merged',
+]);
+
+/** A branch name is a positional operand; only `--list` turns it into a pattern. */
+function gitBranchOnlyLists(_args: readonly string[], parsed: ParsedArgs): boolean {
+  return parsed.operands.length === 0 || parsed.flags.some((flag) => flag.name === '--list');
+}
+
+/** `--orderfile=<file>` reads the order of a diff's files from a file: a path for the caller. */
+const GIT_ORDERFILE = ['--orderfile'];
+
+/**
+ * A `--format` / `--pretty` template that asks for a signature (`%G?`, `%GS`, `%GK`, ... on
+ * log and show, `%(signature...)` atoms on branch) makes git run gpg, as `--show-signature`
+ * does.
+ */
+const GIT_SIGNATURE_PLACEHOLDER = /%G|%\(signature/;
+const GIT_FORMAT_OPTIONS = ['--format', '--pretty'];
+
+function gitFormatAsksNoSignature(_args: readonly string[], parsed: ParsedArgs): boolean {
+  return parsed.flags.every(
+    (flag) =>
+      !matchesOption(flag, GIT_FORMAT_OPTIONS) ||
+      flag.value === undefined ||
+      !GIT_SIGNATURE_PLACEHOLDER.test(flag.value),
+  );
+}
+
+const GIT_RULES: Record<string, FlagRules> = {
+  status: { deny: GIT_DENY },
+  log: {
+    values: [
+      '-n',
+      '--max-count',
+      '--skip',
+      '--orderfile',
+      '--since',
+      '--until',
+      '--after',
+      '--before',
+      '--author',
+      '--committer',
+      '--grep',
+      '-L',
+    ],
+    // `-L <start>,<end>:<file>` names a file; `--orderfile` reads one.
+    paths: ['-L', ...GIT_ORDERFILE],
+    deny: GIT_DENY,
+    check: gitFormatAsksNoSignature,
+  },
+  diff: { values: GIT_ORDERFILE, paths: GIT_ORDERFILE, deny: GIT_DENY },
+  show: {
+    values: GIT_ORDERFILE,
+    paths: GIT_ORDERFILE,
+    deny: GIT_DENY,
+    check: gitFormatAsksNoSignature,
+  },
+  grep: {
+    values: [
+      '-e',
+      '-f',
+      '-A',
+      '-B',
+      '-C',
+      '-m',
+      '--max-count',
+      '--max-depth',
+      '--threads',
+      '--context',
+      '--after-context',
+      '--before-context',
+    ],
+    // `-f <file>` reads the patterns from a file.
+    paths: ['-f'],
+    deny: GIT_DENY,
+  },
+  'ls-files': {
+    values: [
+      '-x',
+      '--exclude',
+      '-X',
+      '--exclude-from',
+      '--exclude-per-directory',
+      '--with-tree',
+      '--format',
+    ],
+    paths: ['-X', '--exclude-from'],
+    deny: GIT_DENY,
+  },
+  branch: {
+    values: [
+      '--contains',
+      '--no-contains',
+      '--merged',
+      '--no-merged',
+      '--points-at',
+      '--sort',
+      '--format',
+    ],
+    deny: GIT_BRANCH_DENY,
+    check: (args, parsed) =>
+      gitBranchOnlyLists(args, parsed) && gitFormatAsksNoSignature(args, parsed),
+  },
+};
+
+const REVISION_NAME = /^(?:@|[A-Z_]*HEAD|[0-9a-f]{7,40})$/;
+
+/**
+ * Whether an operand before `--` is one a revision can be told by: `HEAD~2`, `main..feature`,
+ * `<rev>:<path>`, `HEAD`, a commit id. The revision half (all of it, without a colon) must not
+ * be able to name a path outside the workspace (absolute, a `..` segment, a glob) whatever it
+ * means to git. Anything else is ambiguous, and an ambiguous operand is a path.
+ *
+ * The path half of `<rev>:<path>` is judged apart, by the caller: git reads it from the
+ * current directory, so the revision must not take part in resolving its `..` segments.
+ */
+function isRevisionLike(operand: string): boolean {
+  const colon = operand.indexOf(':');
+  const revision = colon >= 0 ? operand.slice(0, colon) : operand;
+  if (isAbsolute(revision) || GLOB_CHARS.test(revision)) return false;
+  if (revision.split(/[\\/]/).includes('..')) return false;
+  return (
+    colon >= 0 || REVISION_NAME.test(revision) || /[~^@]/.test(revision) || revision.includes('..')
+  );
+}
+
+/**
+ * Read-only `git`: global options (`-C <dir>`, `--no-pager`, `-P`, `--no-optional-locks`),
+ * one of the listed subcommands, and no option that writes or runs a program. `-C` is a path,
+ * and so is every operand that could name a file; the operands are resolved against the
+ * `-C` directory, which is where git reads them from.
+ */
+function gitParts(args: readonly string[]): ReadOnlyShellPart[] | undefined {
+  const dirs: string[] = [];
+  let cwd: string | undefined;
+  let index = 0;
+  for (; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === '-C') {
+      const dir = args[index + 1];
+      if (dir === undefined) return undefined;
+      cwd = cwd === undefined || isAbsolute(dir) ? dir : posix.join(cwd, dir);
+      dirs.push(cwd);
+      index += 1;
+    } else if (!GIT_GLOBAL_FLAGS.has(arg)) {
+      break;
+    }
+  }
+  const subcommand = args[index];
+  if (subcommand === undefined || subcommand.startsWith('-')) return undefined;
+  const rules = lookup(GIT_RULES, subcommand);
+  if (!rules) return undefined;
+
+  let rest = args.slice(index + 1);
+  const last = rest[rest.length - 1];
+  if (subcommand === 'branch' && last !== undefined && GIT_BRANCH_OPTIONAL_VALUE.has(last)) {
+    rest = rest.slice(0, -1);
+  }
+  const parsed = parseArgs(rest, rules);
+  if (!parsed) return undefined;
+
+  // `git grep PATTERN`: the first operand before `--` is the pattern, unless `-e` or `-f` gave it.
+  let query: string | undefined;
+  let skip = 0;
+  if (subcommand === 'grep') {
+    const patterns = parsed.flags.filter((flag) => flag.name === '-e' || flag.name === '-f');
+    if (patterns.length > 0) query = patterns.find((flag) => flag.name === '-e')?.value;
+    else if (parsed.beforeDashes >= 1) {
+      query = parsed.operands[0];
+      skip = 1;
+    }
+  }
+
+  const candidates: string[] = [];
+  // A branch operand is a ref pattern for `--list`, never a path.
+  const operands = subcommand === 'branch' ? [] : parsed.operands;
+  for (const [position, operand] of operands.entries()) {
+    if (position < skip) continue;
+    // Pathspec magic (`:/`, `:(top)`, `:!x`) and index blobs (`:0:path`) reach past the
+    // working directory, and an index stage is not a revision.
+    if (operand.startsWith(':')) return undefined;
+    if (position >= parsed.beforeDashes || !isRevisionLike(operand)) {
+      candidates.push(operand);
+      continue;
+    }
+    // `<rev>:<path>` names a path in that revision, relative to the directory.
+    const colon = operand.indexOf(':');
+    if (colon >= 0 && colon < operand.length - 1) candidates.push(operand.slice(colon + 1));
+  }
+
+  const at = (path: string) =>
+    cwd === undefined || isAbsolute(path) ? path : posix.join(cwd, path);
+  const paths = [...dirs, ...candidates.map(at), ...parsed.flagPaths.map(at)];
+  if (subcommand === 'grep') return [pathsPart('search', paths, query)];
+  if (subcommand === 'ls-files') return [pathsPart('list', paths)];
+  return [{ kind: 'lookup', target: `git ${subcommand}`, ...whereParts(paths) }];
+}
+
 // --- Formatters ---------------------------------------------------------
 
 const FORMATTER_RULES: Record<string, FlagRules> = {
@@ -787,6 +1040,7 @@ function isFormatter(words: readonly string[]): boolean {
 function classifySegment(words: readonly string[]): ReadOnlyShellPart[] | undefined {
   const [cmd, ...args] = words;
   if (cmd === undefined) return undefined;
+  if (cmd === 'git') return gitParts(args);
   if (cmd === 'sed') return sedParts(args);
   if (cmd === 'rg') return rgParts(args);
   if (cmd === 'find') return findParts(args);

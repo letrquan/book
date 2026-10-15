@@ -1,12 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Message } from '../types/messages.js';
 import type { ToolCall, ToolResult } from '../types/tools.js';
+import { isWorkStep } from './components/transcript-messages.js';
 import {
   createQuietCollapser,
   groupQuietInvocations,
-  allCallsQuiet,
+  createProseMemo,
   hasProse,
-  hasReasoning,
+  hidesThoughtsInCompact,
   createShellPartsMemo,
   isQuietInvocation,
   continuesQuietRun,
@@ -96,37 +97,90 @@ describe('hasProse', () => {
   });
 });
 
-describe('hasReasoning', () => {
-  it('counts a non-blank think part or native reasoning, not an empty block', () => {
-    expect(hasReasoning(assistant('m', '<think>check the loader</think>', []))).toBe(true);
-    expect(hasReasoning({ ...assistant('m', '', []), reasoningContent: 'check' })).toBe(true);
-    expect(hasReasoning(assistant('m', '<think></think>', []))).toBe(false);
-    expect(hasReasoning({ ...assistant('m', '', []), reasoningContent: '  \n' })).toBe(false);
-    expect(hasReasoning(assistant('m', 'Reading the loader.', []))).toBe(false);
+describe('createProseMemo', () => {
+  it('parses a message once while its object and content stay the same', () => {
+    const parse = vi.fn(hasProse);
+    const prose = createProseMemo(parse);
+    const spoken = assistant('m', 'Reading the loader.', []);
+    const silent = assistant('n', '<think>x</think>', []);
+
+    expect(prose(spoken)).toBe(true);
+    expect(prose(spoken)).toBe(true);
+    expect(prose(silent)).toBe(false);
+    expect(prose(silent)).toBe(false);
+    expect(parse).toHaveBeenCalledTimes(2);
+  });
+
+  it('parses again for a new message object or changed content (a streamed delta)', () => {
+    const parse = vi.fn(hasProse);
+    const prose = createProseMemo(parse);
+    const first = assistant('m', '<think>x</think>', []);
+
+    expect(prose(first)).toBe(false);
+    expect(prose({ ...first })).toBe(false);
+    expect(parse).toHaveBeenCalledTimes(2);
+
+    const growing = assistant('m', '<think>x</think>', []);
+    expect(prose(growing)).toBe(false);
+    growing.content = '<think>x</think>Now this.';
+    expect(prose(growing)).toBe(true);
+    expect(parse).toHaveBeenCalledTimes(4);
   });
 });
 
-describe('allCallsQuiet', () => {
-  it('needs a call, and every call quiet', () => {
-    expect(allCallsQuiet(assistant('m', '', []), NONE)).toBe(false);
-    expect(allCallsQuiet(assistant('m', '', [call('a', 'Read'), call('b', 'Grep')]), NONE)).toBe(
-      true,
-    );
-    for (const name of ['Edit', 'Bash', 'AgentSpawn']) {
-      expect(allCallsQuiet(assistant('m', '', [call('a', 'Read'), call('b', name)]), NONE)).toBe(
-        false,
+describe('hidesThoughtsInCompact (#470)', () => {
+  it('hides the thoughts of any assistant step that does work, quiet or not', () => {
+    for (const name of ['Read', 'Bash', 'Edit', 'AgentSpawn']) {
+      expect(hidesThoughtsInCompact(assistant('m', '<think>x</think>', [call('a', name)]))).toBe(
+        true,
       );
     }
+    expect(
+      hidesThoughtsInCompact({
+        ...assistant('m', 'Next, the edit.', [call('a', 'Edit')]),
+        reasoningContent: 'x',
+      }),
+    ).toBe(true);
+    // One step call among bookkeeping makes it a step.
+    expect(
+      hidesThoughtsInCompact(
+        assistant('m', '<think>x</think>', [call('a', 'TodoWrite'), call('b', 'Bash')]),
+      ),
+    ).toBe(true);
   });
 
-  it('is false for a pending, failed, pinned or outside-the-workspace call', () => {
-    const turn = assistant('m', '', [call('a', 'Read'), call('b', 'Read')]);
-    expect(allCallsQuiet(turn, { ...NONE, pendingToolId: 'b' })).toBe(false);
-    expect(allCallsQuiet(turn, { pinned: new Set(['a']) })).toBe(false);
-    const failedTurn = assistant('m', '', [call('a', 'Read')], [failed('a')]);
-    expect(allCallsQuiet(failedTurn, NONE)).toBe(false);
-    const outside = assistant('m', '', [call('a', 'Read', { file_path: '/etc/hosts' })]);
-    expect(allCallsQuiet(outside, { pinned: new Set(), workspace: '/repo' })).toBe(false);
+  it('keeps the thoughts of an answer, which calls nothing', () => {
+    expect(hidesThoughtsInCompact(assistant('m', '<think>x</think>Done.', []))).toBe(false);
+    expect(hidesThoughtsInCompact({ ...assistant('m', 'Done.', []), toolCalls: undefined })).toBe(
+      false,
+    );
+  });
+
+  it('keeps the thoughts of an answer that ends with task bookkeeping or a hand-back', () => {
+    for (const name of [
+      'TodoWrite',
+      'TaskCreate',
+      'TaskUpdate',
+      'AskUserQuestion',
+      'ExitPlanMode',
+      'MemorySave',
+    ]) {
+      const answer = assistant('m', '<think>x</think>All done.', [call('a', name)]);
+      expect(hidesThoughtsInCompact(answer)).toBe(isWorkStep(answer));
+      expect(hidesThoughtsInCompact(answer)).toBe(false);
+    }
+    expect(
+      hidesThoughtsInCompact({
+        ...assistant('m', '', [call('a', 'AskUserQuestion')]),
+        reasoningContent: 'which one?',
+      }),
+    ).toBe(false);
+  });
+
+  it('is for assistant steps only', () => {
+    expect(
+      hidesThoughtsInCompact({ ...assistant('m', '', [call('a', 'Read')]), role: 'user' }),
+    ).toBe(false);
   });
 });
 
@@ -147,26 +201,26 @@ describe('continuesQuietRun', () => {
     expect(continuesQuietRun(assistant('m', 'Done.', []), NONE)).toBe(false);
   });
 
-  it('lets a message that reasons continue a run only when every call is quiet', () => {
+  it('lets a message continue a run whether or not it reasons', () => {
     const thought = '<think>weighing it</think>';
-    expect(continuesQuietRun(assistant('m', thought, [call('a', 'Read')]), NONE)).toBe(true);
-    expect(
-      continuesQuietRun(assistant('m', thought, [call('a', 'Read'), call('b', 'Read')]), NONE),
-    ).toBe(true);
-    expect(
-      continuesQuietRun(assistant('m', thought, [call('a', 'Read'), call('b', 'Bash')]), NONE),
-    ).toBe(false);
-    expect(
-      continuesQuietRun(assistant('m', thought, [call('a', 'Read'), call('b', 'Edit')]), NONE),
-    ).toBe(false);
-    const native = { ...assistant('m', '', [call('a', 'Read'), call('b', 'Edit')]) };
-    expect(continuesQuietRun({ ...native, reasoningContent: 'weighing it' }, NONE)).toBe(false);
-    expect(
-      continuesQuietRun(assistant('m', thought, [call('a', 'Read')]), {
-        ...NONE,
-        pendingToolId: 'a',
-      }),
-    ).toBe(false);
+    for (const content of ['', thought]) {
+      expect(continuesQuietRun(assistant('m', content, [call('a', 'Read')]), NONE)).toBe(true);
+      expect(
+        continuesQuietRun(assistant('m', content, [call('a', 'Read'), call('b', 'Edit')]), NONE),
+      ).toBe(true);
+      expect(
+        continuesQuietRun(assistant('m', content, [call('a', 'Read'), call('b', 'Bash')]), NONE),
+      ).toBe(true);
+      expect(continuesQuietRun(assistant('m', content, [call('a', 'Edit')]), NONE)).toBe(false);
+      expect(
+        continuesQuietRun(assistant('m', content, [call('a', 'Read')]), {
+          ...NONE,
+          pendingToolId: 'a',
+        }),
+      ).toBe(false);
+    }
+    const native = assistant('m', '', [call('a', 'Read'), call('b', 'Edit')]);
+    expect(continuesQuietRun({ ...native, reasoningContent: 'weighing it' }, NONE)).toBe(true);
     expect(
       continuesQuietRun(assistant('m', `${thought}Now the tests.`, [call('a', 'Read')]), NONE),
     ).toBe(false);
@@ -240,27 +294,13 @@ describe('createQuietCollapser', () => {
     expect(grown).not.toBe(once);
   });
 
-  it('keeps the merged object and its absorbed membership for a reasoned run that did not change', () => {
+  it('keeps the merged object for a reasoned run that did not change', () => {
     const collapse = createQuietCollapser();
     const first = reasonedRead('a1', call('r1', 'Read'), 'think');
     const second = reasonedRead('a2', call('r2', 'Read'), 'think');
     const once = collapse([first, second], NONE);
     const twice = collapse([first, second], NONE);
     expect(twice.entries[0]).toBe(once.entries[0]);
-    expect(once.absorbedThoughts.has('a1')).toBe(true);
-    expect(twice.absorbedThoughts.has('a1')).toBe(true);
-  });
-
-  it('rebuilds the merged entry when the head stops being absorbed', () => {
-    const collapse = createQuietCollapser();
-    const first = reasonedRead('a1', call('r1', 'Read'), 'native');
-    const second = reasonedRead('a2', call('r2', 'Read'), 'native');
-    const settled = collapse([first, second], NONE);
-    expect(settled.entries[0]!.reasoningContent).toBe('weighing a1\n\nweighing a2');
-    // A prompt now waits on the head's read: its thought must show.
-    const waiting = collapse([first, second], { ...NONE, pendingToolId: 'r1' });
-    expect(waiting.entries[0]!.reasoningContent).toBe('weighing a1');
-    expect(waiting.absorbedThoughts.has('a1')).toBe(false);
   });
 });
 
@@ -277,41 +317,27 @@ describe('reasoning inside a quiet run (#455)', () => {
         reasoned('a3', call('r3', 'Read', { file_path: 'c.js' }), how),
         reasoned('a4', call('g1', 'Grep', { pattern: 'TODO' }), how),
       ];
-      const { entries, sourceIds, absorbedThoughts } = collapse(messages, NONE);
+      const { entries, sourceIds } = collapse(messages, NONE);
       expect(entries.map((entry) => entry.id)).toEqual(['a1']);
       expect(entries[0]!.toolCalls!.map((c) => c.id)).toEqual(['r1', 'r2', 'r3', 'g1']);
       expect(sourceIds.get('a1')).toEqual(['a1', 'a2', 'a3', 'a4']);
-      expect(absorbedThoughts.has('a1')).toBe(true);
-      if (how === 'native') {
-        // Other consumers still get every thought, concatenated as before.
-        expect(entries[0]!.reasoningContent).toBe(
-          'weighing a1\n\nweighing a2\n\nweighing a3\n\nweighing a4',
-        );
-      }
     },
   );
 
-  it('joins one run whatever form each thought takes', () => {
+  it('carries every thought of a merged run, whatever form it takes', () => {
     const collapse = createQuietCollapser();
     const messages = [
-      reasoned('a1', call('r1', 'Read'), 'think'),
+      reasoned('a1', call('r1', 'Read'), 'native'),
       reasoned('a2', call('r2', 'Read'), 'native'),
+      reasoned('a3', call('r3', 'Read'), 'think'),
     ];
-    const { entries, absorbedThoughts } = collapse(messages, NONE);
+    const { entries } = collapse(messages, NONE);
     expect(entries).toHaveLength(1);
-    expect(absorbedThoughts.has('a1')).toBe(true);
+    // The Ctrl+O view and a prompt waiting on a call of the run still see each thought.
+    expect(entries[0]!.reasoningContent).toBe('weighing a1\n\nweighing a2\n\nweighing a3');
   });
 
-  it('still starts a new entry for a message with markdown prose', () => {
-    const collapse = createQuietCollapser();
-    const messages = [
-      reasoned('a1', call('r1', 'Read'), 'think'),
-      reasoned('a2', call('r2', 'Read'), 'think', 'Now the config.'),
-    ];
-    expect(collapse(messages, NONE).entries.map((entry) => entry.id)).toEqual(['a1', 'a2']);
-  });
-
-  it('keeps the thought of a head that speaks, and carries only the head reasoning', () => {
+  it('keeps the head reasoning and content as they were', () => {
     const collapse = createQuietCollapser();
     const head: Message = {
       ...assistant('a1', '<think>why these files</think>Let me look around.', [
@@ -323,62 +349,39 @@ describe('reasoning inside a quiet run (#455)', () => {
       ...assistant('a2', '', [call('r2', 'Read', { file_path: 'b.js' })]),
       reasoningContent: 'then this one',
     };
-    const { entries, absorbedThoughts } = collapse([head, next], NONE);
+    const { entries } = collapse([head, next], NONE);
     expect(entries.map((entry) => entry.id)).toEqual(['a1']);
     expect(entries[0]!.toolCalls!.map((c) => c.id)).toEqual(['r1', 'r2']);
-    expect(absorbedThoughts.has('a1')).toBe(false);
-    expect(entries[0]!.reasoningContent).toBe('why these files');
+    expect(entries[0]!.reasoningContent).toBe('why these files\n\nthen this one');
     expect(entries[0]!.content).toBe(head.content);
   });
 
-  it('keeps the thought of a head whose calls are not all quiet', () => {
+  it('still starts a new entry for a message with markdown prose', () => {
     const collapse = createQuietCollapser();
-    const head = reasoned('a1', call('e1', 'Edit'), 'native');
-    const headWithTail: Message = {
-      ...head,
-      toolCalls: [call('e1', 'Edit'), call('r1', 'Read')],
-      toolResults: [ok('e1'), ok('r1')],
-    };
-    const { entries, absorbedThoughts } = collapse(
-      [headWithTail, reasoned('a2', call('r2', 'Read'), 'native')],
-      NONE,
-    );
-    expect(entries).toHaveLength(1);
-    expect(absorbedThoughts.has('a1')).toBe(false);
-    expect(entries[0]!.reasoningContent).toBe('weighing a1');
+    const messages = [
+      reasoned('a1', call('r1', 'Read'), 'think'),
+      reasoned('a2', call('r2', 'Read'), 'think', 'Now the config.'),
+    ];
+    expect(collapse(messages, NONE).entries.map((entry) => entry.id)).toEqual(['a1', 'a2']);
   });
 
-  it('starts a new entry for reasoning before a command, an edit or a failure', () => {
+  it('still starts a new entry for a failure or an edit that opens it', () => {
     const collapse = createQuietCollapser();
     const first = reasoned('a1', call('r1', 'Read'), 'think');
-    const withTail = (tail: ToolCall, results?: ToolResult[]): Message => ({
+    const failedRead: Message = {
       ...reasoned('a2', call('r2', 'Read'), 'think'),
-      toolCalls: [call('r2', 'Read'), tail],
-      toolResults: results ?? [ok('r2'), ok(tail.id)],
-    });
-    for (const message of [
-      withTail(call('b1', 'Bash')),
-      withTail(call('e1', 'Edit')),
-      withTail(call('r3', 'Read'), [ok('r2'), failed('r3')]),
-    ]) {
-      const { entries, absorbedThoughts } = collapse([first, message], NONE);
+      toolResults: [failed('r2')],
+    };
+    for (const message of [failedRead, reasoned('a2', call('e1', 'Edit'), 'think')]) {
+      const { entries } = collapse([first, message], NONE);
       expect(entries.map((entry) => entry.id)).toEqual(['a1', 'a2']);
       expect(entries[1]).toBe(message);
-      expect(absorbedThoughts.has('a2')).toBe(false);
     }
   });
 
-  it('keeps the thought of a step whose edit waits on a permission prompt', () => {
+  it('starts a new entry for a step whose first call waits on a permission prompt', () => {
     const collapse = createQuietCollapser();
     const first = reasoned('a1', call('r1', 'Read'), 'think');
-    const second: Message = {
-      ...reasoned('a2', call('r2', 'Read'), 'think'),
-      toolCalls: [call('r2', 'Read'), call('e1', 'Edit')],
-      toolResults: [ok('r2')],
-    };
-    const { entries } = collapse([first, second], { ...NONE, pendingToolId: 'e1' });
-    expect(entries.map((entry) => entry.id)).toEqual(['a1', 'a2']);
-    // A pending read is never quiet either.
     const waiting = collapse([first, reasoned('a3', call('r3', 'Read'), 'think')], {
       ...NONE,
       pendingToolId: 'r3',
@@ -386,58 +389,54 @@ describe('reasoning inside a quiet run (#455)', () => {
     expect(waiting.entries.map((entry) => entry.id)).toEqual(['a1', 'a3']);
   });
 
+  it('groups the rows the same with and without a thought (a later step ending in an edit)', () => {
+    const entriesOf = (thought: string) => {
+      const first = assistant('a1', '', [
+        call('r1', 'Read', { file_path: 'a.js' }),
+        call('r2', 'Read', { file_path: 'b.js' }),
+      ]);
+      const second = assistant(
+        'a2',
+        thought,
+        [call('r3', 'Read', { file_path: 'c.js' }), call('e1', 'Edit', { file_path: 'c.js' })],
+        [ok('r3'), ok('e1')],
+      );
+      const { entries, sourceIds } = createQuietCollapser()([first, second], NONE);
+      return {
+        ids: entries.map((entry) => entry.id),
+        calls: entries.map((entry) => entry.toolCalls!.map((c) => c.id)),
+        sourceIds: [...sourceIds],
+        rows: entries.map((entry) =>
+          groupQuietInvocations(
+            entry.toolCalls!.map((c) => ({
+              call: c,
+              result: entry.toolResults!.find((r) => r.toolCallId === c.id),
+            })),
+            entry,
+            NONE,
+          ),
+        ),
+      };
+    };
+
+    const without = entriesOf('');
+    const withThought = entriesOf('<think>weighing c.js</think>');
+    expect(withThought).toEqual(without);
+    // Read a.js, b.js, c.js fold into one summary, then the Edit.
+    expect(without.ids).toEqual(['a1']);
+    expect(without.rows[0]).toEqual([
+      { kind: 'quiet', indices: [0, 1, 2] },
+      { kind: 'single', index: 3 },
+    ]);
+  });
+
   it('still merges a message without reasoning whose later call is an edit', () => {
     const collapse = createQuietCollapser();
     const first = assistant('a1', '', [call('r1', 'Read')]);
     const second = assistant('a2', '', [call('r2', 'Read'), call('e1', 'Edit')]);
-    const { entries, absorbedThoughts } = collapse([first, second], NONE);
+    const { entries } = collapse([first, second], NONE);
     expect(entries.map((entry) => entry.id)).toEqual(['a1']);
     expect(entries[0]!.toolCalls!.map((c) => c.id)).toEqual(['r1', 'r2', 'e1']);
-    expect(absorbedThoughts.has('a1')).toBe(true);
-  });
-
-  describe('a single message', () => {
-    const thought = '<think>weighing both</think>';
-
-    it('absorbs its thought when two or more quiet calls draw as one group row', () => {
-      const collapse = createQuietCollapser();
-      const turn = assistant('p1', thought, [call('a', 'Read'), call('b', 'Read')]);
-      expect(collapse([turn], NONE).absorbedThoughts.has('p1')).toBe(true);
-    });
-
-    it('keeps its thought when a non-quiet call follows the group (finding 4)', () => {
-      const collapse = createQuietCollapser();
-      const turn = assistant('p1', thought, [
-        call('a', 'Read'),
-        call('b', 'Read'),
-        call('e', 'Edit'),
-      ]);
-      expect(collapse([turn], NONE).absorbedThoughts.has('p1')).toBe(false);
-    });
-
-    it('keeps its thought before a lone quiet call', () => {
-      const collapse = createQuietCollapser();
-      const turn = assistant('p1', thought, [call('a', 'Read')]);
-      expect(collapse([turn], NONE).absorbedThoughts.has('p1')).toBe(false);
-    });
-
-    it('keeps its thought when it also speaks', () => {
-      const collapse = createQuietCollapser();
-      const turn = assistant('p1', `${thought}Checking both.`, [
-        call('a', 'Read'),
-        call('b', 'Read'),
-      ]);
-      expect(collapse([turn], NONE).absorbedThoughts.has('p1')).toBe(false);
-    });
-
-    it('never absorbs the reasoning of a delegating message (finding 5)', () => {
-      const collapse = createQuietCollapser();
-      const turn: Message = {
-        ...assistant('p1', '', [call('a', 'Read'), call('b', 'Read'), call('s', 'AgentSpawn')]),
-        reasoningContent: 'who should look',
-      };
-      expect(collapse([turn], NONE).absorbedThoughts.has('p1')).toBe(false);
-    });
   });
 });
 
@@ -459,6 +458,66 @@ describe('groupQuietInvocations', () => {
       { kind: 'single', index: 2 },
       { kind: 'single', index: 3 },
     ]);
+  });
+});
+
+describe('a call that reports a non-zero exit code (#470)', () => {
+  const message = assistant('m', '', []);
+  const shellRead = (id: string, shell: unknown): ToolResult => ({
+    ...ok(id),
+    data: { shell, output: '', remaining: 0 },
+  });
+  const rowsFor = (result: ToolResult) =>
+    groupQuietInvocations(
+      [
+        { call: call('r', 'Read'), result: ok('r') },
+        { call: call('b', 'BashOutput', { shell_id: 'x' }), result },
+      ],
+      message,
+      NONE,
+    );
+
+  it('keeps a BashOutput read of a shell that exited non-zero on its own row', () => {
+    const result = shellRead('b', { status: 'exited', exitCode: 2 });
+    expect(isQuietInvocation(call('b', 'BashOutput'), result, message, NONE)).toBe(false);
+    expect(rowsFor(result)).toEqual([
+      { kind: 'single', index: 0 },
+      { kind: 'single', index: 1 },
+    ]);
+  });
+
+  it('folds a BashOutput read of a shell that exited 0', () => {
+    expect(rowsFor(shellRead('b', { status: 'exited', exitCode: 0 }))).toEqual([
+      { kind: 'quiet', indices: [0, 1] },
+    ]);
+  });
+
+  it('folds a BashOutput read of a running shell, or one with no usable shell record', () => {
+    for (const shell of [
+      { status: 'running', exitCode: 2 },
+      { status: 'exited', exitCode: Number.NaN },
+      { status: 'exited' },
+      null,
+      'exited',
+      undefined,
+    ]) {
+      expect(rowsFor(shellRead('b', shell))).toEqual([{ kind: 'quiet', indices: [0, 1] }]);
+    }
+    expect(rowsFor({ ...ok('b'), data: null })).toEqual([{ kind: 'quiet', indices: [0, 1] }]);
+    expect(rowsFor({ ...ok('b'), data: 'text' })).toEqual([{ kind: 'quiet', indices: [0, 1] }]);
+  });
+
+  it('keeps a result whose structured error carries a non-zero exit code', () => {
+    const withExit = (exitCode: unknown): ToolResult => ({
+      ...ok('b'),
+      structuredError: { code: 'exit', message: 'boom', retryable: false, details: { exitCode } },
+    });
+    const exits = (exitCode: unknown) =>
+      isQuietInvocation(call('b', 'Read'), withExit(exitCode), message, NONE);
+    expect(exits(3)).toBe(false);
+    expect(exits(0)).toBe(true);
+    expect(exits(Number.NaN)).toBe(true);
+    expect(exits('3')).toBe(true);
   });
 });
 
@@ -527,11 +586,127 @@ describe('read-only shell commands (#459)', () => {
     expect(quiet(bash('c', 'find src -type f'))).toBe(true);
   });
 
-  it('keeps a git command on its own row', () => {
-    // Plain `git ...` runs whatever program the repository's config names.
-    for (const command of ['git status', 'git diff --stat', 'git log -5', 'git show HEAD']) {
+  it('folds read-only git (#470)', () => {
+    for (const command of [
+      'git status',
+      'git diff --stat',
+      'git log -5',
+      'git show HEAD',
+      'git branch -a',
+      'git grep -n TODO src',
+      'git ls-files src',
+      'git -C src status',
+      'git status | head -5',
+    ]) {
+      expect(quiet(bash('g', command))).toBe(true);
+    }
+  });
+
+  it('keeps git that changes something, or names a path outside the workspace, on its own row', () => {
+    for (const command of [
+      'git commit -m x',
+      'git branch new-feature',
+      'git -c core.pager=x log',
+      'git diff --output=/tmp/x',
+      'git -C ../other status',
+      'git diff -- ../outside',
+      'git diff --no-index /etc/a /etc/b',
+      'git show HEAD:../x',
+    ]) {
       expect(quiet(bash('g', command))).toBe(false);
     }
+  });
+
+  const exitOne: ToolResult = {
+    version: 2,
+    toolCallId: 'g',
+    status: 'error',
+    content: '',
+    structuredError: {
+      code: 'exit',
+      message: 'Exit code: 1',
+      retryable: false,
+      details: { exitCode: 1 },
+    },
+  };
+
+  it('keeps a failed git command, a background one and one that moved there on its own row', () => {
+    // `git diff --exit-code` exits 1 when there is a difference: a failure, not a search.
+    expect(quiet(bash('g', 'git diff --exit-code'), exitOne)).toBe(false);
+    expect(quiet(bash('g', 'git status', { run_in_background: true }))).toBe(false);
+    const moved: ToolResult = { ...ok('g'), data: { backgrounded: true } };
+    expect(quiet(bash('g', 'git log'), moved)).toBe(false);
+  });
+
+  it('folds a git grep that found nothing, like any other search', () => {
+    expect(quiet(bash('g', 'git grep TODO'), exitOne)).toBe(true);
+    expect(quiet(bash('g', 'git status'), exitOne)).toBe(false);
+  });
+
+  it('collapses a Read, a git status and a git grep into one entry', () => {
+    const turns = [
+      assistant('m1', '', [call('a', 'Read', { file_path: 'src/a.js' })]),
+      assistant('m2', '', [bash('b', 'git status')]),
+      assistant('m3', '', [bash('c', 'git grep TODO')]),
+    ];
+    const { entries } = createQuietCollapser()(turns, context);
+    expect(entries).toHaveLength(1);
+    const merged = entries[0] as Message;
+    expect(merged.toolCalls).toHaveLength(3);
+    const summary = summarizeQuietRun(
+      merged.toolCalls!.map((toolCall) => ({ call: toolCall, result: ok(toolCall.id) })),
+      context,
+    );
+    expect(summary).toEqual({
+      title: 'Read',
+      target: 'a.js',
+      metadata: ['1 file', '1 search', '1 lookup'],
+      running: false,
+    });
+  });
+
+  it('keeps a failed git diff --exit-code on its own row', () => {
+    const failedDiff = assistant('m2', '', [bash('b', 'git diff --exit-code')], [failed('b')]);
+    const turns = [
+      assistant('m1', '', [call('a', 'Read', { file_path: 'src/a.js' })]),
+      failedDiff,
+      assistant('m3', '', [bash('c', 'git status')]),
+    ];
+    expect(createQuietCollapser()(turns, context).entries).toHaveLength(3);
+  });
+
+  it('words a git run: grep is a search on its pattern, ls-files a listing, the rest lookups', () => {
+    expect(
+      summarizeQuietRun(
+        [
+          { call: bash('a', 'git grep -n TODO src'), result: ok('a') },
+          { call: bash('b', 'git ls-files src'), result: ok('b') },
+          { call: bash('c', 'git status'), result: ok('c') },
+          { call: bash('d', 'git log -3'), result: ok('d') },
+        ],
+        context,
+      ),
+    ).toEqual({
+      title: 'Search',
+      target: 'TODO',
+      metadata: ['1 search', '1 listing', '2 lookups'],
+      running: false,
+    });
+    // With nothing else to name, the target is the git subcommand, not `Bash`.
+    expect(
+      summarizeQuietRun(
+        [
+          { call: bash('a', 'git status'), result: ok('a') },
+          { call: bash('b', 'git diff --stat'), result: ok('b') },
+        ],
+        context,
+      ),
+    ).toEqual({
+      title: 'Check',
+      target: 'git status, git diff',
+      metadata: ['2 lookups'],
+      running: false,
+    });
   });
 
   it('keeps a command that timed out into a background shell on its own row', () => {
@@ -796,15 +971,14 @@ describe('read-only shell commands (#459)', () => {
     expect(createQuietCollapser()(turns, context).entries).toHaveLength(3);
   });
 
-  it('absorbs reasoning before read-only commands', () => {
+  it('folds reasoned read-only commands into one entry', () => {
     const turns = [
       reasonedRead('m1', bash('a', 'cat src/a.js'), 'think'),
       reasonedRead('m2', bash('b', 'rg TODO src'), 'think'),
       reasonedRead('m3', bash('c', 'ls src'), 'native'),
     ];
-    const { entries, absorbedThoughts } = createQuietCollapser()(turns, context);
+    const { entries } = createQuietCollapser()(turns, context);
     expect(entries).toHaveLength(1);
-    expect(absorbedThoughts.has('m1')).toBe(true);
   });
 
   it('groups consecutive read-only commands in one message', () => {

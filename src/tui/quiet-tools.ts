@@ -1,8 +1,11 @@
 import { basename, isAbsolute, relative, resolve } from 'path';
+import { isTerminalShellStatus } from '../jobs/shell-manager.js';
 import { splitReasoningParts } from '../reasoning-tags.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import type { Message } from '../types/messages.js';
+import type { BackgroundShellStatus } from '../types/runtime.js';
 import type { ToolCall, ToolResult } from '../types/tools.js';
+import { isWorkStep } from './components/transcript-messages.js';
 import {
   classifyReadOnlyShellCommand,
   shellCommandPaths,
@@ -23,12 +26,13 @@ import {
  * joins a run one call at a time, through `classifyReadOnlyShellCommand`: a
  * conservative parser that accepts only a command it can prove read-only (`cat`,
  * `rg`, `ls`, `find` without actions, ...) and rejects expansion, redirection,
- * background jobs and every wrapper. No `git` command is on its allow-list: a
- * plain `git ...` carries none of the hardening Book's own Git tools apply, so a
- * repository's config or attributes can make it run a program. Anything the
- * parser cannot prove keeps its own row, as does a read-only command that failed,
- * ran in the background (or was moved there at its timeout) or names a path
- * outside the workspace.
+ * background jobs and every wrapper. Read-only `git` (`status`, `log`, `diff`,
+ * `show`, `grep`, `ls-files` and `branch` in its listing forms) is on its
+ * allow-list, so it folds like Book's own Git tools do; folding only changes how
+ * a command that already ran is drawn. Anything the parser cannot prove keeps its
+ * own row, as does a read-only command that failed (`git diff --exit-code`
+ * exiting 1 included), ran in the background (or was moved there at its timeout)
+ * or names a path outside the workspace.
  */
 export const QUIET_TOOLS: ReadonlySet<string> = new Set([
   'Read',
@@ -168,6 +172,30 @@ function isNoMatchSearch(parts: readonly ReadOnlyShellPart[], result: ToolResult
   return error?.details?.exitCode === 1 && error.message.trim() === NO_STDERR_EXIT_ONE;
 }
 
+function isNonZeroExit(value: unknown): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value !== 0;
+}
+
+/**
+ * Whether a result reports a non-zero exit code, which is news a summary would bury: a BashOutput
+ * read of a background shell that finished non-zero (the read succeeded; `exit N` is the news,
+ * see `bashOutputExitMetadata` in tool-presentation.ts), or, defensively, any result whose
+ * structured error records one. `data` is persisted and unknown here, so every step is checked.
+ */
+function reportsNonZeroExit(name: string, result: ToolResult | undefined): boolean {
+  if (!result) return false;
+  if (isNonZeroExit(result.structuredError?.details?.exitCode)) return true;
+  if (name !== 'BashOutput') return false;
+  const shell = (result.data as { shell?: unknown } | null | undefined)?.shell;
+  if (typeof shell !== 'object' || shell === null) return false;
+  const { status, exitCode } = shell as { status?: unknown; exitCode?: unknown };
+  return (
+    typeof status === 'string' &&
+    isTerminalShellStatus(status as BackgroundShellStatus) &&
+    isNonZeroExit(exitCode)
+  );
+}
+
 function resultFor(message: Message, toolCallId: string): ToolResult | undefined {
   return message.toolResults?.find((result) => result.toolCallId === toolCallId);
 }
@@ -177,7 +205,8 @@ function resultFor(message: Message, toolCallId: string): ToolResult | undefined
  *
  * A running call may: it joins the run and the summary carries the spinner, so
  * the row does not appear and then vanish when the call finishes. A finished
- * call must have succeeded; a failure, a refusal or a cancellation is news.
+ * call must have succeeded; a failure, a refusal or a cancellation is news, and so
+ * is a result that reports a non-zero exit code.
  */
 export function isQuietInvocation(
   call: ToolCall,
@@ -202,7 +231,13 @@ export function isQuietInvocation(
   if (message.nestedToolInvocations?.some((nested) => nested.parentTraceId === call.id)) {
     return false;
   }
+  // The no-match search is a Bash call whose exit 1 is the normal outcome; it is exempt.
+  if (!noMatchSearch && reportsNonZeroExit(name, result)) return false;
   return !result || result.status === 'success' || noMatchSearch;
+}
+
+function isAssistantTurn(message: Message): boolean {
+  return message.role === 'assistant' && !message.localCommand;
 }
 
 /**
@@ -218,54 +253,69 @@ export function hasProse(message: Message): boolean {
 }
 
 /**
- * Whether a message carries a thought: a non-blank `<think>` part in its
- * content, or non-blank provider-native `reasoningContent`.
+ * A per-message memo of {@link hasProse}, for a component that asks again on every
+ * render. A message is parsed once while its object and its content stay the same;
+ * the streaming message is a new object on every delta, so it is parsed again.
  */
-export function hasReasoning(message: Message): boolean {
-  if (message.reasoningContent?.trim()) return true;
-  return splitReasoningParts(message.content ?? '', { concluded: false }).some(
-    (part) => part.kind === 'think' && part.text.trim().length > 0,
-  );
+export function createProseMemo(
+  parse: (message: Message) => boolean = hasProse,
+): (message: Message) => boolean {
+  const memo = new WeakMap<Message, { content: string; prose: boolean }>();
+  return (message) => {
+    const content = message.content ?? '';
+    const cached = memo.get(message);
+    if (cached && cached.content === content) return cached.prose;
+    const prose = parse(message);
+    memo.set(message, { content, prose });
+    return prose;
+  };
 }
 
 /**
- * Whether the message has at least one call and every one of them may fold into
- * a summary. A pending, failed, pinned, outside-the-workspace, mutating, command
- * or delegating call makes it false.
+ * The thoughts a message carries as text: its native `reasoningContent` and the
+ * non-blank `<think>` parts of its content.
  */
-export function allCallsQuiet(message: Message, context: QuietToolContext): boolean {
-  const calls = message.toolCalls ?? [];
-  return (
-    calls.length > 0 &&
-    calls.every((call) => isQuietInvocation(call, resultFor(message, call.id), message, context))
-  );
+function thoughtsOf(message: Message): string[] {
+  return [
+    message.reasoningContent,
+    ...splitReasoningParts(message.content ?? '', { concluded: false })
+      .filter((part) => part.kind === 'think')
+      .map((part) => part.text),
+  ].filter((value): value is string => Boolean(value?.trim()));
 }
 
-function isAssistantTurn(message: Message): boolean {
-  return message.role === 'assistant' && !message.localCommand;
+/**
+ * Whether the compact transcript hides this message's thoughts: a step of work,
+ * by the transcript's own definition ({@link isWorkStep}), quiet or not. The
+ * thought behind a call is process, and the row it led to says what happened. A
+ * message with no call, or whose calls only keep the task list or hand the turn
+ * back (`TodoWrite`, `AskUserQuestion`, ...), is an answer and keeps its thought
+ * row. Detailed mode and screen readers keep every thought, and so does a step
+ * whose call waits on a permission prompt; the caller applies those.
+ */
+export function hidesThoughtsInCompact(message: Message): boolean {
+  return isWorkStep(message);
 }
 
 /**
  * An assistant message with no prose of its own that continues a run begun
  * before it.
  *
- * Without reasoning only the first call has to be quiet. Book already folds a
- * tool-only turn with blank content into the turn before it, so the turn that
- * ends a run of reads often carries the edit that follows them, as
- * `[Read, Edit]`. Requiring every call to be quiet would leave that last read
- * stranded on its own row. The message joins whole; the rows it draws still keep
- * the edit apart (see {@link groupQuietInvocations}).
+ * Only the first call has to be quiet. Book already folds a tool-only turn with
+ * blank content into the turn before it, so the turn that ends a run of reads
+ * often carries the edit that follows them, as `[Read, Edit]`. Requiring every
+ * call to be quiet would leave that last read stranded on its own row. The
+ * message joins whole; the rows it draws still keep the edit apart (see
+ * {@link groupQuietInvocations}).
  *
- * A message that reasons joins only when every call is quiet. Joining drops its
- * thought into the run's summary, and a thought that leads to an edit, a command,
- * a call awaiting permission or a failure is one the reader should see.
+ * Whether the message reasons does not matter: the compact transcript hides a
+ * step's thought, so the rows group the same with and without one.
  */
 export function continuesQuietRun(message: Message, context: QuietToolContext): boolean {
   if (!isAssistantTurn(message)) return false;
   const first = message.toolCalls?.[0];
   if (!first) return false;
   if (hasProse(message)) return false;
-  if (hasReasoning(message)) return allCallsQuiet(message, context);
   // Joining would put a spawn in the same entry as the narration before it,
   // and AgentMessage hides a delegating entry's narration.
   if (message.toolCalls!.some((call) => call.name === 'AgentSpawn')) return false;
@@ -283,11 +333,6 @@ export interface CollapsedTimeline<T> {
   entries: T[];
   /** For a merged entry, keyed by its (first) id: every message folded into it, in order. */
   sourceIds: ReadonlyMap<string, readonly string[]>;
-  /**
-   * Ids of the entries whose thoughts are absorbed into a quiet summary row, so
-   * the compact transcript does not draw them.
-   */
-  absorbedThoughts: ReadonlySet<string>;
 }
 
 type TimelineEntry = Message | { transcriptOrdinal: unknown };
@@ -306,12 +351,9 @@ function isMessage(entry: TimelineEntry | undefined): entry is Message {
  * keeps the first message's id, so it holds its place in the virtual transcript
  * as the run grows.
  *
- * The collapser also decides which thoughts the run absorbs, since it sees
- * every member and its calls. A member that joins a run has no prose and, when it
- * reasons, only quiet calls, so its thought is absorbed. The head keeps its own
- * thought when it speaks or calls something that is not quiet: the merged entry
- * then carries only the head's reasoning. A single message is absorbed when its
- * quiet calls draw as one group row.
+ * The merged entry carries every member's thoughts in its `reasoningContent`: the
+ * compact transcript hides them ({@link hidesThoughtsInCompact}), except while a
+ * permission prompt waits on one of the run's calls.
  *
  * Merged entries are cached by the identity of the messages they were built
  * from, so a run that did not change keeps the same object and its row is not
@@ -321,10 +363,7 @@ export function createQuietCollapser(): <T extends TimelineEntry>(
   timeline: readonly T[],
   context: QuietToolContext,
 ) => CollapsedTimeline<T> {
-  let cache = new Map<
-    string,
-    { members: readonly Message[]; headAbsorbed: boolean; merged: Message }
-  >();
+  let cache = new Map<string, { members: readonly Message[]; merged: Message }>();
   return <T extends TimelineEntry>(
     timeline: readonly T[],
     context: QuietToolContext,
@@ -350,62 +389,38 @@ export function createQuietCollapser(): <T extends TimelineEntry>(
       runs.push(entry);
     }
 
-    const nextCache = new Map<
-      string,
-      { members: readonly Message[]; headAbsorbed: boolean; merged: Message }
-    >();
+    const nextCache = new Map<string, { members: readonly Message[]; merged: Message }>();
     const sourceIds = new Map<string, readonly string[]>();
-    const absorbedThoughts = new Set<string>();
     const entries = runs.map((run) => {
-      if (!Array.isArray(run)) {
-        // A lone quiet call keeps its thought row; two or more draw as one group
-        // row, which takes the thought into it.
-        if (
-          isMessage(run) &&
-          isAssistantTurn(run) &&
-          hasReasoning(run) &&
-          !hasProse(run) &&
-          allCallsQuiet(run, context) &&
-          run.toolCalls!.length >= 2
-        ) {
-          absorbedThoughts.add(run.id);
-        }
-        return run;
-      }
+      if (!Array.isArray(run)) return run;
       const head = run[0]!;
-      // Every later member joined without prose and, when it reasons, with only
-      // quiet calls, so the summary row takes its thought. The head's thought goes
-      // with it only when the head speaks no prose and calls nothing but quiet tools.
-      const headAbsorbed = !hasProse(head) && allCallsQuiet(head, context);
       const cached = cache.get(head.id);
       const merged =
         cached &&
-        cached.headAbsorbed === headAbsorbed &&
         cached.members.length === run.length &&
         cached.members.every((member, index) => member === run[index])
           ? cached.merged
           : {
               ...head,
-              reasoningContent: headAbsorbed
-                ? run
-                    .map((message) => message.reasoningContent)
-                    .filter((value): value is string => Boolean(value))
-                    .join('\n\n') || undefined
-                : head.reasoningContent,
+              // The head's own `<think>` parts stay in its content; a later member's
+              // content is not carried, so its thoughts join the reasoning instead.
+              reasoningContent:
+                [head.reasoningContent, ...run.slice(1).flatMap(thoughtsOf)]
+                  .filter((value): value is string => Boolean(value))
+                  .join('\n\n') || undefined,
               toolCalls: run.flatMap((message) => message.toolCalls ?? []),
               toolResults: run.flatMap((message) => message.toolResults ?? []),
               nestedToolInvocations: run.flatMap((message) => message.nestedToolInvocations ?? []),
             };
-      nextCache.set(head.id, { members: run, headAbsorbed, merged });
+      nextCache.set(head.id, { members: run, merged });
       sourceIds.set(
         head.id,
         run.map((message) => message.id),
       );
-      if (headAbsorbed) absorbedThoughts.add(head.id);
       return merged as T;
     });
     cache = nextCache;
-    return { entries, sourceIds, absorbedThoughts };
+    return { entries, sourceIds };
   };
 }
 
@@ -496,6 +511,8 @@ export function summarizeQuietRun(
       for (const part of parts) {
         if (part.kind === 'read') addFile(part.path);
         else if (part.kind === 'search') patterns.push(part.query ?? part.path ?? 'search');
+        // A git status or log is a lookup, named by its subcommand rather than `Bash`.
+        else if (part.kind === 'lookup') others.push(part.target);
         else {
           listings += 1;
           // A listing that names no path is of the current directory.
