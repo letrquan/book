@@ -35,6 +35,7 @@ const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
 const EMPTY_BOUNDARIES: CompactBoundary[] = [];
 const NO_SOURCE_IDS: ReadonlyMap<string, readonly string[]> = new Map();
+const NO_ABSORBED_THOUGHTS: ReadonlySet<string> = new Set();
 const STREAMING_TIMELINE_MIN_WINDOW = 16;
 const STREAMING_TIMELINE_MAX_WINDOW = 64;
 const COMPLETED_TIMELINE_MIN_WINDOW = 80;
@@ -281,9 +282,13 @@ export function ChatPanelInner({
   const displayTimeline = useMemo(
     () =>
       quietTools
-        ? quietCollapserRef.current!(windowedTimeline, quietTools, showThinking)
-        : { entries: windowedTimeline, sourceIds: NO_SOURCE_IDS },
-    [quietTools, showThinking, windowedTimeline],
+        ? quietCollapserRef.current!(windowedTimeline, quietTools)
+        : {
+            entries: windowedTimeline,
+            sourceIds: NO_SOURCE_IDS,
+            absorbedThoughts: NO_ABSORBED_THOUGHTS,
+          },
+    [quietTools, windowedTimeline],
   );
   const visibleTimeline = displayTimeline.entries;
   // Which entries a step of work follows in the same turn: their prose is
@@ -492,6 +497,7 @@ export function ChatPanelInner({
                   trimTrailingSpacing={nextEntryIsUser}
                   quietTools={quietTools}
                   continuesTurn={followedByWork.has(message.id)}
+                  absorbThoughts={displayTimeline.absorbedThoughts.has(message.id)}
                 />
               </Box>
             );
