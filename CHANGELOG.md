@@ -285,6 +285,18 @@ All notable changes to this project are documented in this file.
   were shortened it reads `… +N lines, M long lines shortened (Ctrl+E)`. An edit diff's gaps read
   `⋮ N lines omitted` and its footer gives the total, `… N lines hidden (Ctrl+E)`. The permission
   prompt's diff uses the same wording, with its own `D shows more` hint.
+- **The compact transcript previews an edit's diff as its first 20 rendered rows** (#470). A
+  12-line rename made by one `Edit` took 54 rows of the screen. Any diff of an existing file (`Edit`,
+  `MultiEdit`, an `ApplyPatch` update, a `Write` over a file) now shows its first 20 rows in order
+  and ends in `… +N lines (Ctrl+E)`; the files of one multi-file call share the 20. A new file keeps
+  its 10-line preview. Every collapsed budget (the 10, the 20, and the detailed transcript's 80)
+  now counts rendered terminal rows, so a diff of long wrapped lines no longer overruns it; the
+  `⋮ N lines omitted` gap rows and hunk headers count, and the footer does not. The detailed
+  transcript (Ctrl+O) and screen-reader mode keep the change-focused 80-row preview, whose footer
+  now reads `… +N lines (Ctrl+E)` instead of `… N lines hidden (Ctrl+E)`. A diff with one hunk
+  draws no hunk header, and with several each header carries its counts (`@@ -2,7 +2,7 @@`)
+  instead of `@@ -1 +1 @@` above a 39-line hunk, in the permission prompt too. The model-facing
+  diff text is unchanged.
 - **`model_unavailable` is a new `AgentTerminalReason` and stream-json `stopReason` value** (#387). A
   change for SDK and stream-json consumers that switch over the reason set. A stream that ends with
   it fails under `model_unavailable` and parks like `credentials_rejected` — nothing is wrong with

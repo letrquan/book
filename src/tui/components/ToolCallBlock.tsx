@@ -2,7 +2,7 @@ import { Text, Box, type DOMElement } from 'ink';
 import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Spinner } from './Spinner.js';
 import { useTheme } from '../theme.js';
-import { DiffBlock, NEW_FILE_PREVIEW_ROWS } from './Diff.js';
+import { DiffBlock, mutationDiffPreview } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { highlightCode } from './syntax-highlight.js';
 import { prepareToolOutputDisplay } from './tool-output.js';
@@ -17,6 +17,7 @@ import {
   deriveToolPresentation,
   toolErrorDetailOptions,
   type ToolPresentation,
+  type TranscriptMode,
 } from '../tool-presentation.js';
 import {
   CONTENT_COLUMN,
@@ -59,6 +60,8 @@ interface ToolCallBlockProps {
   screenReader?: boolean;
   /** When true, expanded tool results show the large rendering ceiling. */
   showAllToolOutput?: boolean;
+  /** Which transcript this row is drawn in; the detailed one previews diffs more widely. */
+  transcriptMode?: TranscriptMode;
   /** Render a file path as a child row under an aggregate mutation heading. */
   summaryVariant?: 'default' | 'file-child';
   /** Available terminal width, including this block's outer indentation. */
@@ -277,6 +280,7 @@ function ToolCallBlockInner({
   reducedMotion = false,
   screenReader = false,
   showAllToolOutput = false,
+  transcriptMode = 'compact',
   summaryVariant = 'default',
   terminalWidth = 80,
   labelWidth,
@@ -316,8 +320,9 @@ function ToolCallBlockInner({
     [args, name, result],
   );
   // Only one new file reads as a head preview; several joined files keep the change-focused one.
-  const previewsNewFileHead =
+  const createsSingleNewFile =
     mutationSummary?.kind === 'create' && (mutationSummary.fileCount ?? 1) <= 1;
+  const diffPreview = mutationDiffPreview({ createsSingleNewFile, transcriptMode, screenReader });
   const isFileChild = summaryVariant === 'file-child';
   // A child row sits under an aggregate heading that already named the verb, so
   // it drops the label column and renders on the nested grid.
@@ -453,8 +458,8 @@ function ToolCallBlockInner({
           output={result.content}
           filePath={presentation.filePath}
           collapsed={!showAllToolOutput}
-          preview={previewsNewFileHead ? 'head' : 'changes'}
-          maxRows={previewsNewFileHead ? NEW_FILE_PREVIEW_ROWS : undefined}
+          preview={diffPreview.preview}
+          maxRows={diffPreview.maxRows}
           terminalWidth={blockWidth}
         />
       ) : isExpanded && result?.content ? (

@@ -346,22 +346,90 @@ describe('ToolCallBlock', () => {
       expect(rendered).not.toContain('… +');
     });
 
-    it('caps an Edit diff longer than 80 rows', () => {
+    const longEditOutput = [
+      '@@ -1,100 +1,100 @@',
+      ...Array.from({ length: 100 }, (_, index) => `-old ${index + 1}`),
+      ...Array.from({ length: 100 }, (_, index) => `+new ${index + 1}`),
+    ].join('\n');
+
+    function editBlock(
+      props: { transcriptMode?: 'compact' | 'detailed'; showAllToolOutput?: boolean } = {},
+    ) {
+      return withTheme(
+        <ToolCallBlock
+          name="Edit"
+          args={{ filePath: 'src/a.ts' }}
+          result={successResult('call-edit-long', longEditOutput, {
+            kind: 'update',
+            filePath: 'src/a.ts',
+            addedLines: 100,
+            removedLines: 100,
+          })}
+          isExpanded
+          reducedMotion
+          {...props}
+        />,
+      );
+    }
+
+    it('previews the first 20 rows of an Edit diff in the compact transcript', () => {
+      const rendered = frame(render(editBlock()).lastFrame);
+      const contentRows = rendered.split('\n').filter((row) => /[-+] (old|new) \d+/.test(row));
+
+      expect(contentRows).toHaveLength(20);
+      expect(rendered).toContain('- old 20');
+      expect(rendered).not.toContain('- old 21');
+      expect(rendered).not.toContain('@@');
+      expect(rendered).not.toContain('lines omitted');
+      expect(rendered).toContain('… +180 lines (Ctrl+E)');
+    });
+
+    it('keeps the change-focused 80-row preview in the detailed transcript', () => {
+      const rendered = frame(render(editBlock({ transcriptMode: 'detailed' })).lastFrame);
+      const contentRows = rendered.split('\n').filter((row) => /[-+] (old|new) \d+/.test(row));
+
+      // One hunk draws no header: 79 content lines, one gap row, then the footer.
+      expect(contentRows).toHaveLength(79);
+      expect(rendered).toContain('- old 40');
+      expect(rendered).not.toContain('- old 41');
+      expect(rendered).toContain('+ new 100');
+      expect(rendered).not.toContain('+ new 50');
+      expect(rendered).toContain('… +121 lines (Ctrl+E)');
+      expect(rendered).toContain('⋮ 121 lines omitted');
+    });
+
+    it('shows the whole Edit diff under show-all, whatever the transcript mode', () => {
+      for (const transcriptMode of ['compact', 'detailed'] as const) {
+        const rendered = frame(
+          render(editBlock({ transcriptMode, showAllToolOutput: true })).lastFrame,
+        );
+        const contentRows = rendered.split('\n').filter((row) => /[-+] (old|new) \d+/.test(row));
+
+        expect(contentRows).toHaveLength(200);
+        expect(rendered).not.toContain('… +');
+        expect(rendered).not.toContain('lines omitted');
+        cleanup();
+      }
+    });
+
+    it('previews a compact Edit rename as 20 rows with its true remainder in the footer', () => {
       const output = [
-        '@@ -1,100 +1,100 @@',
-        ...Array.from({ length: 100 }, (_, index) => `-old ${index + 1}`),
-        ...Array.from({ length: 100 }, (_, index) => `+new ${index + 1}`),
+        '@@ -1 +1 @@',
+        ...Array.from({ length: 6 }, (_, index) => ` before ${index + 1}`),
+        ...Array.from({ length: 12 }, (_, index) => `-const oldName${index} = 1;`),
+        ...Array.from({ length: 12 }, (_, index) => `+const newName${index} = 1;`),
+        ...Array.from({ length: 9 }, (_, index) => ` after ${index + 1}`),
       ].join('\n');
       const view = render(
         withTheme(
           <ToolCallBlock
             name="Edit"
-            args={{ filePath: 'src/a.ts' }}
-            result={successResult('call-edit-long', output, {
+            args={{ filePath: 'src/a.ts', replaceAll: true }}
+            result={successResult('call-rename', output, {
               kind: 'update',
               filePath: 'src/a.ts',
-              addedLines: 100,
-              removedLines: 100,
+              addedLines: 12,
+              removedLines: 12,
             })}
             isExpanded
             reducedMotion
@@ -370,12 +438,8 @@ describe('ToolCallBlock', () => {
       );
       const rendered = frame(view.lastFrame);
 
-      expect(rendered).toContain('- old 39');
-      expect(rendered).not.toContain('- old 40');
-      expect(rendered).toContain('+ new 100');
-      expect(rendered).not.toContain('+ new 50');
-      expect(rendered).toContain('… 121 lines hidden (Ctrl+E)');
-      expect(rendered).toContain('⋮ 121 lines omitted');
+      expect(rendered.split('\n').filter((row) => row.includes('│'))).toHaveLength(21);
+      expect(rendered).toContain('… +19 lines (Ctrl+E)');
     });
 
     it('renders a multi-file creation with real file headers and no head preview', () => {
@@ -402,7 +466,14 @@ describe('ToolCallBlock', () => {
       };
       const view = render(
         withTheme(
-          <ToolCallBlock name="ApplyPatch" args={{}} result={result} isExpanded reducedMotion />,
+          <ToolCallBlock
+            name="ApplyPatch"
+            args={{}}
+            result={result}
+            isExpanded
+            reducedMotion
+            transcriptMode="detailed"
+          />,
         ),
       );
       const rendered = frame(view.lastFrame);
@@ -415,6 +486,42 @@ describe('ToolCallBlock', () => {
       expect(rendered).toContain('+ b.js line 15');
       expect(rendered).not.toContain('lines (Ctrl+E)');
       expect(rendered).not.toContain('lines hidden');
+    });
+
+    it('shares one 20-row compact budget across the files of one call', () => {
+      const fileBlock = (name: string) => [
+        `--- ${name}`,
+        `+++ ${name}`,
+        '@@ -0,0 +1,15 @@',
+        ...Array.from({ length: 15 }, (_, index) => `+${name} line ${index + 1}`),
+      ];
+      const result: ToolResult = {
+        version: 2,
+        toolCallId: 'call-multi-compact',
+        status: 'success',
+        content: [...fileBlock('a.js'), ...fileBlock('b.js')].join('\n'),
+        artifacts: {
+          fileMutations: ['a.js', 'b.js'].map((filePath) => ({
+            kind: 'create' as const,
+            filePath,
+            addedLines: 15,
+            removedLines: 0,
+          })),
+        },
+      };
+      const view = render(
+        withTheme(
+          <ToolCallBlock name="ApplyPatch" args={{}} result={result} isExpanded reducedMotion />,
+        ),
+      );
+      const rendered = frame(view.lastFrame);
+
+      // a.js takes 18 rows (two file headers, its hunk header, 15 lines); b.js gets the last two.
+      expect(rendered).toContain('+ a.js line 15');
+      expect(rendered).toContain('--- b.js');
+      expect(rendered).toContain('+++ b.js');
+      expect(rendered).not.toContain('b.js line 1');
+      expect(rendered).toContain('… +15 lines (Ctrl+E)');
     });
   });
 
