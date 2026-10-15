@@ -20,10 +20,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { getProjectMemoryDir } from '../src/memory-store.js';
+import { getProjectMemoryDir, slugifyWorkspace } from '../src/memory-store.js';
 import { promptSizeTokens } from '../src/pricing.js';
 import {
   BASE_WORKSPACE,
@@ -370,38 +370,65 @@ export function probeContamination(
   commands: string[],
   ctx: { evalRoot: string; repoRoot: string; ws: string; probeHome: string },
 ): string[] {
-  const evalRoot = resolve(ctx.evalRoot);
-  const repoRoot = resolve(ctx.repoRoot);
-  const probeHome = resolve(ctx.probeHome);
+  // Paths are compared with `/` for a separator on both sides: the command text is normalized the
+  // same way, so a Windows `C:\...` spelling and a POSIX one are the same path. Each path is taken
+  // as given and as `resolve()`d (on Windows `/tmp/x` resolves to `D:\tmp\x`, but the probe may
+  // well write either), longest first so the longer spelling is blanked whole.
+  const slashed = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '');
+  const spellings = (...paths: string[]) =>
+    [...new Set(paths.map(slashed).filter((path) => path !== ''))].sort(
+      (a, b) => b.length - a.length,
+    );
+  const both = (path: string) => spellings(path, resolve(path));
+  const lastSegment = (path: string) => slashed(path).split('/').pop() ?? '';
   const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const bookRoot = join(probeHome, '.book');
-  const memoryDir = getProjectMemoryDir(ctx.ws, { bookRoot });
+  const evalRoots = both(ctx.evalRoot);
+  const repoRoots = both(ctx.repoRoot);
+  const probeHomes = both(ctx.probeHome);
+  // The memory dir slug, in every spelling of the workspace, and as the store derives it.
+  const memoryDir = getProjectMemoryDir(ctx.ws, {
+    bookRoot: join(resolve(ctx.probeHome), '.book'),
+  });
+  const slugs = [
+    ...new Set([
+      slugifyWorkspace(ctx.ws),
+      slugifyWorkspace(resolve(ctx.ws)),
+      lastSegment(dirname(memoryDir)),
+    ]),
+  ];
   // Every spelling of the probe's own home: its absolute path, `HOME` (set to it for the probe) and
   // the path relative to `ws`. Its own `sessions/` holds only the probe's session, so it is blanked
   // too; `sessions/` anywhere else is not.
-  const homes = [probeHome, '~', '$HOME', '${HOME}', `../${basename(probeHome)}`];
+  const relativeHome = `../${lastSegment(ctx.probeHome)}`;
+  const homes = [...probeHomes, '~', '$HOME', '${HOME}', relativeHome];
   const sessions = homes.map(
     (home) => new RegExp(`${escape(home)}/\\.book/sessions(?:/[^\\s;&|<>'"\`)]*)?`, 'g'),
   );
   const own = [
-    memoryDir,
-    bookRoot,
-    ...homes.slice(1).map((home) => `${home}/.book`),
-    probeHome,
-    homes[4],
-    basename(dirname(memoryDir)),
-  ].map((path) => new RegExp(`${escape(path)}(?![A-Za-z0-9_-])`, 'g'));
-  const ownRoot = new RegExp(`${escape(evalRoot)}(?![A-Za-z0-9])`, 'g');
+    spellings(
+      memoryDir,
+      ...probeHomes.flatMap((home) => slugs.map((s) => `${home}/.book/projects/${s}/memory`)),
+    ),
+    probeHomes.map((home) => `${home}/.book`),
+    ['~', '$HOME', '${HOME}', relativeHome].map((home) => `${home}/.book`),
+    probeHomes,
+    [relativeHome],
+    slugs,
+  ]
+    .flat()
+    .map((path) => new RegExp(`${escape(path)}(?![A-Za-z0-9_-])`, 'g'));
+  const ownRoots = evalRoots.map((root) => new RegExp(`${escape(root)}(?![A-Za-z0-9])`, 'g'));
+  // The eval's checkout, by the path the eval runs from (a bare `/` or drive would match everything).
+  const checkouts = repoRoots.filter((root) => !/^[A-Za-z]:$/.test(root));
   const reasons = new Set<string>();
   for (const command of commands) {
-    let text = command;
+    let text = command.replace(/\\/g, '/');
     for (const pattern of [...sessions, ...own]) text = text.replace(pattern, ' ');
-    text = text.replace(ownRoot, ' ');
+    for (const pattern of ownRoots) text = text.replace(pattern, ' ');
     const found = PROBE_CONTAMINATION_PATTERNS.filter(({ pattern }) => pattern.test(text)).map(
       (p) => p.reason,
     );
-    // The eval's checkout, by the path the eval runs from (`/` would match everything).
-    if (repoRoot !== '/' && text.includes(repoRoot)) found.push('names the eval checkout');
+    if (checkouts.some((root) => text.includes(root))) found.push('names the eval checkout');
     for (const reason of found) reasons.add(`${reason}: ${command.slice(0, 120)}`);
   }
   return [...reasons];

@@ -1,4 +1,7 @@
+import { tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { getProjectMemoryDir, slugifyWorkspace } from '../src/memory-store.js';
 import { BASE_WORKSPACE, MEMORY_SCENARIOS, type MemoryScenario } from './memory-eval-scenarios.js';
 import {
   checkPasses,
@@ -483,10 +486,14 @@ describe('restoreBase', () => {
 });
 
 describe('probeContamination', () => {
-  const evalRoot = '/tmp/book-memory-eval-AbC123';
-  const probeHome = `${evalRoot}/probe-home`;
-  const slug = 'tmp-book-memory-eval-AbC123-ws';
-  const ctx = { evalRoot, repoRoot: '/home/u/code/book', ws: `${evalRoot}/ws`, probeHome };
+  // Built from the platform's own temp dir, so the paths are native (`C:\...` on Windows).
+  const evalRoot = join(tmpdir(), 'book-memory-eval-AbC123');
+  const otherRoot = join(tmpdir(), 'book-memory-eval-Zz9999');
+  const probeHome = join(evalRoot, 'probe-home');
+  const repoRoot = join(tmpdir(), 'code', 'book');
+  const ws = join(evalRoot, 'ws');
+  const slug = basename(dirname(getProjectMemoryDir(ws, { bookRoot: join(probeHome, '.book') })));
+  const ctx = { evalRoot, repoRoot, ws, probeHome };
   const hit = (command: string) => probeContamination([command], ctx).length > 0;
 
   it('flags each route to the answer that is not memory', () => {
@@ -503,12 +510,12 @@ describe('probeContamination', () => {
       'grep -rn deploy memory-eval.ts',
       'sed -n 1,40p scripts/memory-eval-scenarios.ts',
       'ls scenarios',
-      'grep -rn teach /home/u/code/book',
+      `grep -rn teach ${repoRoot}`,
       'cat x.jsonl',
-      'ls /tmp/book-memory-eval-AbC123/home/.book/sessions/',
+      `ls ${join(evalRoot, 'home', '.book', 'sessions')}/`,
       'cat ../home/.book/projects/x/memory/.inbox/cand.md',
-      'cat /tmp/book-memory-eval-Zz9999/ws/NOTES.md',
-      'ls /tmp/book-memory-eval-*',
+      `cat ${join(otherRoot, 'ws', 'NOTES.md')}`,
+      `ls ${join(tmpdir(), 'book-memory-eval-')}*`,
     ]) {
       expect(hit(command), command).toBe(true);
     }
@@ -529,9 +536,9 @@ describe('probeContamination', () => {
       'cat package.json | grep -n steps',
       'npm test',
       'echo maps',
-      'cat /tmp/book-memory-eval-AbC123/ws/src/a.js',
-      'ls /tmp/book-memory-eval-AbC123/probe-home/.book/projects/p/memory',
-      'cat /tmp/book-memory-eval-AbC123/probe-home/.book/projects/p/memory/x.md',
+      `cat ${join(ws, 'src', 'a.js')}`,
+      `ls ${join(probeHome, '.book', 'projects', 'p', 'memory')}`,
+      `cat ${join(probeHome, '.book', 'projects', 'p', 'memory', 'x.md')}`,
     ]) {
       expect(hit(command), command).toBe(false);
     }
@@ -540,13 +547,13 @@ describe('probeContamination', () => {
 
   it('lets the probe read its own memory and its own sessions', () => {
     for (const command of [
-      `cat ${probeHome}/.book/projects/${slug}/memory/x.md`,
+      `cat ${join(probeHome, '.book', 'projects', slug, 'memory', 'x.md')}`,
       `ls ../probe-home/.book/projects/${slug}/memory`,
       `cat ~/.book/projects/${slug}/memory/staging-deploy-command.md`,
       `cat $HOME/.book/projects/${slug}/memory/MEMORY.md`,
       'cat ~/.book/sessions/abc.jsonl',
       'cat ../probe-home/.book/sessions/abc.jsonl',
-      `ls ${probeHome}/.book/sessions/`,
+      `ls ${join(probeHome, '.book', 'sessions')}/`,
     ]) {
       expect(hit(command), command).toBe(false);
     }
@@ -554,21 +561,84 @@ describe('probeContamination', () => {
 
   it('still flags sessions, the inbox and the eval elsewhere', () => {
     for (const command of [
-      'cat /tmp/book-memory-eval-OTHER/home/.book/sessions/x.jsonl',
-      'cat /home/u/code/book/scripts/memory-eval-scenarios.ts',
+      `cat ${join(tmpdir(), 'book-memory-eval-OTHER', 'home', '.book', 'sessions', 'x.jsonl')}`,
+      `cat ${join(repoRoot, 'scripts', 'memory-eval-scenarios.ts')}`,
       'ps aux',
       'cat ../elsewhere/.book/sessions/abc.jsonl',
       `cat ~/.book/projects/${slug}/memory/.inbox/cand.md`,
-      `cat ${probeHome}/.book/sessions/abc.jsonl; cat /other/sessions/y.jsonl`,
+      `cat ${join(probeHome, '.book', 'sessions', 'abc.jsonl')}; cat /other/sessions/y.jsonl`,
     ]) {
       expect(hit(command), command).toBe(true);
     }
   });
 
   it('tells another eval run from its own, by root id', () => {
-    expect(hit('cat /tmp/book-memory-eval-AbC123/ws/a.txt')).toBe(false);
-    expect(hit('cat /tmp/book-memory-eval-AbC123x/ws/a.txt')).toBe(true);
-    expect(hit('cat /tmp/book-memory-eval-Other1/ws/a.txt')).toBe(true);
+    expect(hit(`cat ${join(ws, 'a.txt')}`)).toBe(false);
+    expect(hit(`cat ${join(`${evalRoot}x`, 'ws', 'a.txt')}`)).toBe(true);
+    expect(hit(`cat ${join(tmpdir(), 'book-memory-eval-Other1', 'ws', 'a.txt')}`)).toBe(true);
+  });
+
+  it('reads literal POSIX paths the same way on every platform', () => {
+    const posix = {
+      evalRoot: '/tmp/book-memory-eval-AbC123',
+      repoRoot: '/home/u/code/book',
+      ws: '/tmp/book-memory-eval-AbC123/ws',
+      probeHome: '/tmp/book-memory-eval-AbC123/probe-home',
+    };
+    const posixSlug = 'tmp-book-memory-eval-AbC123-ws';
+    const posixHit = (command: string) => probeContamination([command], posix).length > 0;
+    for (const command of [
+      'grep -rn teach /home/u/code/book',
+      'ls /tmp/book-memory-eval-AbC123/home/.book/sessions/',
+      'cat /tmp/book-memory-eval-Zz9999/ws/NOTES.md',
+      'cat /tmp/book-memory-eval-AbC123x/ws/a.txt',
+    ]) {
+      expect(posixHit(command), command).toBe(true);
+    }
+    for (const command of [
+      'cat /tmp/book-memory-eval-AbC123/ws/src/a.js',
+      `cat /tmp/book-memory-eval-AbC123/probe-home/.book/projects/${posixSlug}/memory/x.md`,
+      `cat ~/.book/projects/${posixSlug}/memory/MEMORY.md`,
+      'cat /tmp/book-memory-eval-AbC123/probe-home/.book/sessions/abc.jsonl',
+    ]) {
+      expect(posixHit(command), command).toBe(false);
+    }
+  });
+
+  it('reads Windows-style spellings, with either separator in the command', () => {
+    const root = 'C:\\Users\\u\\AppData\\Local\\Temp\\book-memory-eval-AbC123';
+    const win = {
+      evalRoot: root,
+      repoRoot: 'C:\\Users\\u\\code\\book',
+      ws: `${root}\\ws`,
+      probeHome: `${root}\\probe-home`,
+    };
+    const winSlug = slugifyWorkspace(win.ws);
+    const winHit = (command: string) => probeContamination([command], win).length > 0;
+    const fwd = (path: string) => path.replace(/\\/g, '/');
+    for (const command of [
+      `grep -rn teach ${win.repoRoot}`,
+      `grep -rn teach ${fwd(win.repoRoot)}`,
+      `cat ${win.repoRoot}\\scripts\\memory-eval-scenarios.ts`,
+      `ls ${root}\\home\\.book\\sessions\\`,
+      `cat ${fwd(root)}\\home\\.book\\projects\\x\\memory\\.inbox\\cand.md`,
+      'cat C:\\Users\\u\\AppData\\Local\\Temp\\book-memory-eval-Zz9999\\ws\\NOTES.md',
+      `cat ${root}x\\ws\\a.txt`,
+      `cat ${win.probeHome}\\.book\\sessions\\abc.jsonl; cat D:\\other\\sessions\\y.jsonl`,
+    ]) {
+      expect(winHit(command), command).toBe(true);
+    }
+    for (const command of [
+      `cat ${win.ws}\\src\\a.js`,
+      `cat ${fwd(win.ws)}/src/a.js`,
+      `ls ${win.probeHome}\\.book\\projects\\p\\memory`,
+      `cat ${win.probeHome}\\.book\\projects\\${winSlug}\\memory\\x.md`,
+      `cat ${fwd(win.probeHome)}/.book/projects/${winSlug}/memory/x.md`,
+      `cat ${win.probeHome}\\.book\\sessions\\abc.jsonl`,
+      `cat ..\\probe-home\\.book\\projects\\${winSlug}\\memory\\MEMORY.md`,
+    ]) {
+      expect(winHit(command), command).toBe(false);
+    }
   });
 });
 
