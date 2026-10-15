@@ -153,11 +153,13 @@ describe('findGitRoot', () => {
     expect(findGitRoot(plain)).toBe(plain);
   });
 
-  it('gives a relative workspace the key of the absolute one', () => {
+  it('gives a relative workspace the key of the absolute one', ({ skip }) => {
     const repo = makeGitRepo('repo');
     mkdirSync(join(repo, 'src'));
     const relativeWorkspace = relative(process.cwd(), join(repo, 'src'));
-    expect(isAbsolute(relativeWorkspace)).toBe(false);
+    if (isAbsolute(relativeWorkspace)) {
+      skip('no relative path from the cwd to the temp dir (different drive)');
+    }
     expect(findGitRoot(relativeWorkspace)).toBe(repo);
     expect(getProjectMemoryDir(relativeWorkspace, { bookRoot })).toBe(
       getProjectMemoryDir(join(repo, 'src'), { bookRoot }),
