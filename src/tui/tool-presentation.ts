@@ -1,4 +1,6 @@
+import type { BackgroundShellStatus } from '../types/runtime.js';
 import type { ToolResult } from '../types/tools.js';
+import { isTerminalShellStatus } from '../jobs/shell-manager.js';
 import { foldControlCharacters as foldShared } from '../control-characters.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
@@ -259,17 +261,42 @@ function exitMetadata(
 }
 
 /**
+ * `exit 2`, for a BashOutput read of a background shell that finished with a non-zero exit code.
+ * The read itself succeeded, so the row keeps its status and mark; the code is the news. It reads
+ * the shell record BashOutput returns as the result's `data` (`{ shell, output, remaining }`).
+ * `data` is persisted with the result, so a resumed session's rows show it too; it is still
+ * unknown here, so every step is checked.
+ */
+function bashOutputExitMetadata(
+  canonicalName: string,
+  result: ToolResult | undefined,
+): string | undefined {
+  if (canonicalName !== 'BashOutput' || result?.status !== 'success') return undefined;
+  const shell = (result.data as { shell?: unknown } | null | undefined)?.shell;
+  if (typeof shell !== 'object' || shell === null) return undefined;
+  const { status, exitCode } = shell as { status?: unknown; exitCode?: unknown };
+  if (typeof status !== 'string' || !isTerminalShellStatus(status as BackgroundShellStatus)) {
+    return undefined;
+  }
+  return typeof exitCode === 'number' && Number.isFinite(exitCode) && exitCode !== 0
+    ? `exit ${exitCode}`
+    : undefined;
+}
+
+/**
  * Put the result's status marker first in a row's metadata, and a failed result's exit code
  * right after it: `failed · exit 1 · 7ms`. It shows by presence of the code, not by tool name.
+ * A BashOutput read of a shell that exited non-zero has no marker, so its code leads.
  */
 function addStatusMetadata(
   metadata: string[],
   status: ToolPresentationStatus,
   result: ToolResult | undefined,
+  canonicalName: string,
 ): void {
   const statusMetadata = resultStatusMetadata(status);
   if (statusMetadata && !metadata.includes(statusMetadata)) metadata.unshift(statusMetadata);
-  const exit = exitMetadata(status, result);
+  const exit = exitMetadata(status, result) ?? bashOutputExitMetadata(canonicalName, result);
   if (exit && !metadata.includes(exit)) metadata.splice(metadata.indexOf('failed') + 1, 0, exit);
 }
 
@@ -419,7 +446,7 @@ export function deriveToolPresentation(
       filePath = mutation.filePath;
       target = mutation.filePath;
     }
-    addStatusMetadata(metadata, status, result);
+    addStatusMetadata(metadata, status, result, canonicalName);
     // Writing the plan down takes no time worth reading; `0ms` was only noise.
     const duration = todoColumns ? undefined : formatDuration(result.metrics?.durationMs);
     if (duration) metadata.push(duration);
@@ -530,7 +557,7 @@ export function deriveToolPresentation(
     if (size) metadata.push(size);
   }
 
-  addStatusMetadata(metadata, status, result);
+  addStatusMetadata(metadata, status, result, canonicalName);
   // Writing the plan down takes no time worth reading; `0ms` was only noise.
   const duration = todoColumns ? undefined : formatDuration(result?.metrics?.durationMs);
   if (duration) metadata.push(duration);
@@ -720,13 +747,12 @@ export function composeToolRow(
   // between. The bound lives on the grid so it narrows with nesting.
   const measure = grid.row;
 
-  // A failed row's metadata with an exit code, `failed · exit 1 · 7ms`, runs past the grid's
-  // 20-column meta column, and the duration is what a cut there would take. It gets room for
-  // them, never more than two fifths of the row. A failure without one keeps the column.
+  // A row's metadata with an exit code, `failed · exit 1 · 7ms` or a shell read's
+  // `exit 2 · 12 lines · 7ms`, runs past the grid's 20-column meta column, and the duration is
+  // what a cut there would take. It gets room for them, never more than two fifths of the row.
+  // A row without one keeps the column.
   const metaBudget =
-    grid.meta > 0 &&
-    metaSource[0] === 'failed' &&
-    metaSource.some((part) => EXIT_METADATA.test(part))
+    grid.meta > 0 && metaSource.some((part) => EXIT_METADATA.test(part))
       ? Math.max(grid.meta, Math.min(FAILED_META_WIDTH, Math.floor(measure * 0.4)))
       : grid.meta;
   const meta = metaBudget > 0 ? truncateDisplay(joinMetadata(metaSource), metaBudget) : '';
@@ -760,6 +786,12 @@ export const TOOL_ERROR_NOTE_LINES = 2;
 /** Rows of a failed command's detail at most: the `… +N lines` hint, the tail, the note. */
 export const TOOL_ERROR_COMMAND_MAX_ROWS = 1 + TOOL_ERROR_TAIL_LINES + TOOL_ERROR_NOTE_LINES;
 
+/**
+ * Most lines of a failure an expanded row shows: the last ones. The same bound OutputBlock puts
+ * on `showAllToolOutput`, so a runaway output cannot flood the transcript.
+ */
+export const TOOL_ERROR_EXPANDED_LINES = 2000;
+
 /** The line Book's sandbox appends to a command's message: `withReadOnlyGitDirNote` and kin. */
 const SANDBOX_NOTE_PREFIX = 'Note: ';
 
@@ -777,7 +809,8 @@ export interface ToolErrorDetail {
    */
   column: number;
   /**
-   * `… +36 lines`: how many of a command's output lines are hidden above `lines`. Set only
+   * `… +36 lines (Ctrl+E)`: how many of a command's output lines are hidden above `lines`,
+   * and the key that shows them. An expanded detail names no key: `… +500 lines`. Set only
    * when the output kept its tail and the row budget had room for it; it reads before the
    * rows, as the lines it stands for did.
    */
@@ -785,7 +818,8 @@ export interface ToolErrorDetail {
   /**
    * A message word-wrapped to the row's measure, the last line ending in `…` when more was
    * cut; a failed command's output as its last {@link TOOL_ERROR_TAIL_LINES} non-blank
-   * lines, one row each. Empty when a command failed with nothing to show but its exit code.
+   * lines, one row each (all of them when expanded). Empty when a command failed with nothing
+   * to show but its exit code.
    */
   lines: string[];
   /**
@@ -804,9 +838,17 @@ export interface ToolErrorDetailOptions {
   /** The command's stdout, shown instead of a message that is only `Exit code: N`. */
   stdout?: string;
   /**
+   * Show the whole failure, not its tail: the row was expanded (Ctrl+E). A command's output keeps
+   * its last {@link TOOL_ERROR_EXPANDED_LINES} non-blank lines, one row each, still never
+   * wrapped; prose wraps with no two-row cap, to as many rows. The collapsed hint names the key
+   * that gets here, so the expanded one does not.
+   */
+  expanded?: boolean;
+  /**
    * Most rows the detail may take. Defaults to {@link TOOL_ERROR_COMMAND_MAX_ROWS} for a
-   * command's output and to {@link TOOL_ERROR_MAX_LINES} for prose. The hint goes first when it
-   * does not fit, then the tail's top rows.
+   * command's output and to {@link TOOL_ERROR_MAX_LINES} for prose; expanded, to what
+   * {@link TOOL_ERROR_EXPANDED_LINES} lines, the hint and the note take. The hint goes first
+   * when it does not fit, then the tail's top rows.
    */
   maxRows?: number;
 }
@@ -851,6 +893,7 @@ function commandOutputDetail(
   width: number,
   column: number,
   maxRows: number,
+  expanded: boolean,
 ): ToolErrorDetail {
   const messageLines = nonBlankOutputLines(error);
   // Book's own note ends the message. It is advice for the reader, not output: it keeps rows of
@@ -873,7 +916,10 @@ function commandOutputDetail(
   const note =
     noteLine !== undefined && noteCap > 0 ? wrapProse(noteLine.trim(), width, noteCap) : [];
   const tail = prepareToolOutputDisplay(source.join('\n'), {
-    maxLines: Math.min(TOOL_ERROR_TAIL_LINES, Math.max(0, maxRows - note.length)),
+    maxLines: Math.min(
+      expanded ? TOOL_ERROR_EXPANDED_LINES : TOOL_ERROR_TAIL_LINES,
+      Math.max(0, maxRows - note.length),
+    ),
     maxLineWidth: width,
     strategy: 'tail',
   });
@@ -881,7 +927,9 @@ function commandOutputDetail(
   const showHint = hidden > 0 && tail.lines.length + note.length + 1 <= maxRows;
   return {
     column,
-    ...(showHint ? { hint: `… +${hidden} ${hidden === 1 ? 'line' : 'lines'}` } : {}),
+    ...(showHint
+      ? { hint: `… +${hidden} ${hidden === 1 ? 'line' : 'lines'}${expanded ? '' : ' (Ctrl+E)'}` }
+      : {}),
     lines: tail.lines,
     ...(note.length > 0 ? { note } : {}),
   };
@@ -899,7 +947,8 @@ function commandOutputDetail(
  * override must not reach the screen.
  *
  * A failed command's output (`options.commandOutput`) has line structure, and its end is the
- * part that says what failed: one row per non-blank line, never wrapped, the last ones.
+ * part that says what failed: one row per non-blank line, never wrapped, the last ones. An
+ * expanded detail (`options.expanded`) shows all of them, up to {@link TOOL_ERROR_EXPANDED_LINES}.
  */
 export function composeToolErrorDetail(
   row: Pick<ToolPresentation, 'title' | 'target'>,
@@ -916,17 +965,29 @@ export function composeToolErrorDetail(
   // lose the middle of the message, past the reach of the `…` below.
   const width = Math.max(1, grid.row - indent);
   const column = toolRowTargetOffset(grid, underTarget);
+  const expanded = options.expanded === true;
   if (options.commandOutput) {
     return commandOutputDetail(
       error,
       options.stdout ?? '',
       width,
       column,
-      options.maxRows ?? TOOL_ERROR_COMMAND_MAX_ROWS,
+      options.maxRows ??
+        (expanded
+          ? 1 + TOOL_ERROR_EXPANDED_LINES + TOOL_ERROR_NOTE_LINES
+          : TOOL_ERROR_COMMAND_MAX_ROWS),
+      expanded,
     );
   }
   const text = (foldControlCharacters(error) ?? '').trim();
-  return { column, lines: wrapProse(text, width, options.maxRows ?? TOOL_ERROR_MAX_LINES) };
+  return {
+    column,
+    lines: wrapProse(
+      text,
+      width,
+      options.maxRows ?? (expanded ? TOOL_ERROR_EXPANDED_LINES : TOOL_ERROR_MAX_LINES),
+    ),
+  };
 }
 
 /** The last `max` non-blank lines of `text`, read from its end: the cost is theirs, not its size. */

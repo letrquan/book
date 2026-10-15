@@ -340,7 +340,7 @@ function ToolCallBlockInner({
   const errorDetail = useMemo(() => {
     if (!inlineError?.trim()) return undefined;
     // A result with an exit code carries a command's output; its message keeps its lines.
-    const options = toolErrorDetailOptions(result);
+    const options = { ...toolErrorDetailOptions(result), expanded: showAllToolOutput };
     const detail = isFileChild
       ? composeToolErrorDetail(
           { title: '', target: undefined },
@@ -351,7 +351,7 @@ function ToolCallBlockInner({
       : composeToolErrorDetail(presentation, inlineError, rowGrid, options);
     // A command that failed with no output has nothing to show: the row says `exit N`.
     return detail.lines.length > 0 || detail.note ? detail : undefined;
-  }, [inlineError, isFileChild, presentation, result, rowGrid]);
+  }, [inlineError, isFileChild, presentation, result, rowGrid, showAllToolOutput]);
 
   useLayoutEffect(() => {
     if (!registry || !toolId) return;

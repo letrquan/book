@@ -877,15 +877,50 @@ describe('ToolCallBlock failures', () => {
 
     expect(lines[0]).toMatch(/failed · exit 1 · 7ms/);
     expect(lines.slice(1).map((line) => line.trim())).toEqual([
-      '… +36 lines',
+      '… +36 lines (Ctrl+E)',
       'error: assertion 37 failed in test/case_37.test.js: expected 200, got 500',
       'error: assertion 38 failed in test/case_38.test.js: expected 200, got 500',
       'error: assertion 39 failed in test/case_39.test.js: expected 200, got 500',
       'error: assertion 40 failed in test/case_40.test.js: expected 200, got 500',
     ]);
     expect(rendered).not.toContain('assertion 1 failed');
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}… +36 lines`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}… +36 lines (Ctrl+E)`);
     expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}error: assertion 40`);
+  });
+
+  it('shows every line of the failure once the row is shown in full, with no hint', () => {
+    const stderr = Array.from(
+      { length: 40 },
+      (_, i) =>
+        `error: assertion ${i + 1} failed in test/case_${i + 1}.test.js: expected 200, got 500`,
+    );
+    const result = enrichToolResultPresentation(
+      {
+        ...toolFailure(stderr.join('\n'), { details: { exitCode: 1 } }),
+        metrics: { durationMs: 7 },
+      },
+      'Bash',
+      { command: 'bash scripts/fail.sh' },
+    );
+    const rendered = stripAnsi(
+      colourFrame(
+        <ToolCallBlock
+          name="Bash"
+          args={{ command: 'bash scripts/fail.sh' }}
+          result={result}
+          isExpanded={false}
+          showAllToolOutput
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+    const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
+
+    expect(lines[0]).toMatch(/failed · exit 1 · 7ms/);
+    expect(lines.slice(1).map((line) => line.trim())).toEqual(stderr);
+    expect(rendered).not.toContain('Ctrl+E');
+    expect(rendered).not.toContain('… +');
   });
 
   it('shows the stdout verdict of a command that said nothing on stderr', () => {
@@ -916,7 +951,7 @@ describe('ToolCallBlock failures', () => {
     expect(lines[0]).toMatch(/failed · exit 1 · 7ms/);
     expect(lines[0]).not.toMatch(/12 lines/);
     expect(lines.slice(1).map((line) => line.trim())).toEqual([
-      '… +8 lines',
+      '… +8 lines (Ctrl+E)',
       'FAIL test/case_9.test.js',
       'FAIL test/case_10.test.js',
       'FAIL test/case_11.test.js',
