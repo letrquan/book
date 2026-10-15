@@ -43,6 +43,12 @@ describe('Check', () => {
     expect(result.structuredError?.code).toBe('tool_error');
   });
 
+  it('records the exit code of a failing check for the transcript', async () => {
+    const result = await run(contextWith({ boom: 'exit 3' }), 'boom');
+    expect(result.status).not.toBe('success');
+    expect(result.structuredError?.details).toEqual({ exitCode: 3 });
+  });
+
   it('distinguishes a timeout from a failing check', async () => {
     // The bug this guards: exec kills the child with SIGTERM on timeout, and
     // reporting that as an ordinary failure tells the agent its suite failed when
@@ -57,6 +63,7 @@ describe('Check', () => {
     expect(result.structuredError?.retryable).toBe(true);
     expect(result.structuredError?.message).toContain('did not fail');
     expect(result.structuredError?.details).toMatchObject({ timeoutMs: 1_000 });
+    expect(result.structuredError?.details).not.toHaveProperty('exitCode');
   });
 
   it('honors a raised agents.checkTimeoutMs', async () => {

@@ -58,6 +58,18 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A failed command's whole error is reachable, and `Check` and `BashOutput` rows show their exit
+  code** (#470). The detail under a failed command's row kept its last four lines under a dimmed
+  `… +N lines`, and no key showed the rest: Ctrl+E ignored it, in compact mode and after Ctrl+O. The
+  hint now reads `… +N lines (Ctrl+E)`, and expanding the row (Ctrl+E, or Ctrl+O then Ctrl+E) shows
+  every line of the output, up to the last 2000 rows (a longer output says how many lines it cut,
+  naming no key); a line wider than the row continues on the rows after it instead of being cut.
+  The error folds back to its tail when the row is collapsed again, a command that printed only to
+  stdout shows that stdout once, and a failure whose stderr is hidden can be expanded by a click.
+  A prose failure wraps past two rows when expanded. A failed
+  `Check` now records its exit code, so its row reads `failed · exit 3` like a `Bash` row does (a
+  timed-out check is not a failing check and has none). A `BashOutput` row for a background shell
+  that finished with a non-zero exit shows `exit N`; the read still counts as a success.
 - **A failed Bash call's error detail keeps its last lines and its exit code** (#457). The detail
   under the tool row folded stderr into one paragraph, kept its start, and stopped after two rows,
   so a failing test run showed its first assertion and never its verdict. A failed command's
@@ -315,16 +327,29 @@ All notable changes to this project are documented in this file.
   over; they survive only in the backup. A `.format` file marks the directory as migrated.
   While the backup exists, `/memory status` and `book doctor` say where it is: "Migrated to the new
   memory format; the old files are in `<path>`."
-- **The transcript caps file diffs and its output footers are short** (#456, #458). A successful
-  `Write` or `Edit` diff longer than 80 lines is cut to a change-focused preview of up to 80 diff
-  lines; a diff of 80 lines or fewer stays whole. A newly created file previews only its first 10
-  lines, one terminal row each, with no hunk header. Ctrl+E shows the whole of the current (latest
-  or selected) row's output, not every row. A cut of a new file or of plain tool output is
-  summarised as `… +N lines (Ctrl+E)` instead of
+- **The transcript caps file diffs and its output footers are short** (#456, #458). A newly created
+  file previews only its first 10 lines, one terminal row each, with no hunk header. Ctrl+E shows
+  the whole of the current (latest or selected) row's output, not every row. A cut of a new file or
+  of plain tool output is summarised as `… +N lines (Ctrl+E)` instead of
   `… 97 more lines hidden, 2620 B (103 lines, 2.7 KB total; Ctrl+E shows all)`, and when long lines
-  were shortened it reads `… +N lines, M long lines shortened (Ctrl+E)`. An edit diff's gaps read
-  `⋮ N lines omitted` and its footer gives the total, `… N lines hidden (Ctrl+E)`. The permission
-  prompt's diff uses the same wording, with its own `D shows more` hint.
+  were shortened it reads `… +N lines, M long lines shortened (Ctrl+E)`. How an edit's diff is
+  previewed is described under #470 below.
+- **The compact transcript previews an edit's diff as its first 20 rendered rows** (#470). A
+  12-line rename made by one `Edit` took 54 rows of the screen. Any diff of an existing file (`Edit`,
+  `MultiEdit`, an `ApplyPatch` update, a `Write` over a file) now shows its first 20 rows in order
+  and ends in `… +N lines (Ctrl+E)`; the files of one multi-file call share the 20. A single file's
+  `--- path` / `+++ path` rows are dropped, since the row above names the path; several files keep
+  them. A first line too long for the 20 is cut to them and ends in `…`. A new file keeps its
+  10-line preview. Every collapsed budget (the 10, the 20, and the detailed transcript's 80) now
+  counts rendered terminal rows, so a diff of long wrapped lines no longer overruns it; the
+  `⋮ N lines omitted` gap rows and hunk headers count, and the footer does not. The detailed
+  transcript (Ctrl+O) and screen-reader mode keep the change-focused 80-row preview, whose gaps
+  read `⋮ N lines omitted` and whose footer gives the total, `… N lines hidden (Ctrl+E)`; the
+  permission prompt's diff uses that preview and wording, with its own `D shows more` hint, offered
+  whenever the rendered diff is cut, however few source lines it has. A file whose diff has one
+  hunk draws no hunk header, and a file with several draws each with its counts (`@@ -2,7 +2,7 @@`)
+  instead of `@@ -1 +1 @@` above a 39-line hunk, counted per file and only over the diff's own
+  lines, in the permission prompt too. The model-facing diff text is unchanged.
 - **`model_unavailable` is a new `AgentTerminalReason` and stream-json `stopReason` value** (#387). A
   change for SDK and stream-json consumers that switch over the reason set. A stream that ends with
   it fails under `model_unavailable` and parks like `credentials_rejected` — nothing is wrong with

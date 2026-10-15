@@ -2,7 +2,7 @@ import { Text, Box, type DOMElement } from 'ink';
 import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Spinner } from './Spinner.js';
 import { useTheme } from '../theme.js';
-import { DiffBlock, NEW_FILE_PREVIEW_ROWS } from './Diff.js';
+import { DiffBlock, mutationDiffPreview } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { highlightCode } from './syntax-highlight.js';
 import { prepareToolOutputDisplay } from './tool-output.js';
@@ -15,8 +15,10 @@ import {
   composeToolErrorDetail,
   composeToolRow,
   deriveToolPresentation,
+  EXPANDED_OUTPUT_MAX_LINES,
   toolErrorDetailOptions,
   type ToolPresentation,
+  type TranscriptMode,
 } from '../tool-presentation.js';
 import {
   CONTENT_COLUMN,
@@ -59,6 +61,8 @@ interface ToolCallBlockProps {
   screenReader?: boolean;
   /** When true, expanded tool results show the large rendering ceiling. */
   showAllToolOutput?: boolean;
+  /** Which transcript this row is drawn in; the detailed one previews diffs more widely. */
+  transcriptMode?: TranscriptMode;
   /** Render a file path as a child row under an aggregate mutation heading. */
   summaryVariant?: 'default' | 'file-child';
   /** Available terminal width, including this block's outer indentation. */
@@ -277,6 +281,7 @@ function ToolCallBlockInner({
   reducedMotion = false,
   screenReader = false,
   showAllToolOutput = false,
+  transcriptMode = 'compact',
   summaryVariant = 'default',
   terminalWidth = 80,
   labelWidth,
@@ -315,9 +320,11 @@ function ToolCallBlockInner({
     () => getFileMutationDisplaySummary(name, args, result),
     [args, name, result],
   );
-  // Only one new file reads as a head preview; several joined files keep the change-focused one.
-  const previewsNewFileHead =
+  // One new file previews its first lines; any other diff is previewed as mutationDiffPreview
+  // says: the compact transcript's first rows in order, the detailed one's change-focused rows.
+  const createsSingleNewFile =
     mutationSummary?.kind === 'create' && (mutationSummary.fileCount ?? 1) <= 1;
+  const diffPreview = mutationDiffPreview({ createsSingleNewFile, transcriptMode, screenReader });
   const isFileChild = summaryVariant === 'file-child';
   // A child row sits under an aggregate heading that already named the verb, so
   // it drops the label column and renders on the nested grid.
@@ -336,32 +343,53 @@ function ToolCallBlockInner({
       elapsed,
     });
   }, [elapsed, rowGrid, isFileChild, mutationSummary, presentation]);
-  // A failure's message goes under the row, on the grid the row was laid out on.
-  const errorDetail = useMemo(() => {
+  // The output block under the row renders exactly when this holds. It draws a command's stdout in
+  // full, so an expanded error detail must not draw the same lines again.
+  const rendersOutputBlock = isExpanded && Boolean(result?.content) && !isDiffOutput(name, result);
+  // The detail shows everything only while its row is itself expanded: the ids that ask for it are
+  // never removed, so a row folded back (a click, or Ctrl+O out of detailed mode) must fold it too.
+  const showFullError = showAllToolOutput && isExpanded;
+  // A failure's message goes under the row, on the grid the row was laid out on. The collapsed
+  // detail is always composed: its hint says whether the row has lines to reveal.
+  const errorDetails = useMemo(() => {
     if (!inlineError?.trim()) return undefined;
-    // A result with an exit code carries a command's output; its message keeps its lines.
-    const options = toolErrorDetailOptions(result);
-    const detail = isFileChild
-      ? composeToolErrorDetail(
-          { title: '', target: undefined },
-          inlineError,
-          nestedGrid(rowGrid),
-          options,
-        )
-      : composeToolErrorDetail(presentation, inlineError, rowGrid, options);
-    // A command that failed with no output has nothing to show: the row says `exit N`.
-    return detail.lines.length > 0 || detail.note ? detail : undefined;
-  }, [inlineError, isFileChild, presentation, result, rowGrid]);
+    const compose = (expanded: boolean) => {
+      // A result with an exit code carries a command's output; its message keeps its lines.
+      const options = {
+        ...toolErrorDetailOptions(result),
+        expanded,
+        stdoutShownBelow: rendersOutputBlock,
+      };
+      const detail = isFileChild
+        ? composeToolErrorDetail(
+            { title: '', target: undefined },
+            inlineError,
+            nestedGrid(rowGrid),
+            options,
+          )
+        : composeToolErrorDetail(presentation, inlineError, rowGrid, options);
+      // A command that failed with no output has nothing to show: the row says `exit N`.
+      return detail.lines.length > 0 || detail.note ? detail : undefined;
+    };
+    return {
+      collapsed: compose(false),
+      expanded: showFullError ? compose(true) : undefined,
+    };
+  }, [inlineError, isFileChild, presentation, rendersOutputBlock, result, rowGrid, showFullError]);
+  const errorDetail = showFullError ? errorDetails?.expanded : errorDetails?.collapsed;
+  // A failure whose collapsed detail hides lines can be expanded even when the row's own output
+  // has nothing to reveal: stderr is not in `result.content`.
+  const expandable = presentation.hasHiddenContent || Boolean(errorDetails?.collapsed?.hint);
 
   useLayoutEffect(() => {
     if (!registry || !toolId) return;
     return registry.register({
       id: toolId,
       element: summaryRef,
-      expandable: presentation.hasHiddenContent,
+      expandable,
       expanded: isExpanded,
     });
-  }, [isExpanded, presentation.hasHiddenContent, registry, toolId]);
+  }, [expandable, isExpanded, registry, toolId]);
 
   if (screenReader) {
     return (
@@ -453,8 +481,8 @@ function ToolCallBlockInner({
           output={result.content}
           filePath={presentation.filePath}
           collapsed={!showAllToolOutput}
-          preview={previewsNewFileHead ? 'head' : 'changes'}
-          maxRows={previewsNewFileHead ? NEW_FILE_PREVIEW_ROWS : undefined}
+          preview={diffPreview.preview}
+          maxRows={diffPreview.maxRows}
           terminalWidth={blockWidth}
         />
       ) : isExpanded && result?.content ? (
@@ -506,7 +534,7 @@ function OutputBlock({
   const display = useMemo(
     () =>
       prepareToolOutputDisplay(output, {
-        maxLines: showAllToolOutput ? 2000 : success ? 6 : 10,
+        maxLines: showAllToolOutput ? EXPANDED_OUTPUT_MAX_LINES : success ? 6 : 10,
         maxLineWidth: contentWidth,
         hint: showAllToolOutput ? undefined : 'Ctrl+E',
         strategy: showAllToolOutput ? 'head' : success ? 'head-tail' : 'tail',
