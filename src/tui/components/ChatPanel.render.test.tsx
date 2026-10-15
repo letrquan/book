@@ -5,6 +5,7 @@ import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { DensityContext, type TuiDensity } from '../density.js';
 import { ChatPanel, getCompletedTimelineWindow, getStreamingTimelineWindow } from './ChatPanel.js';
 import { AgentMessage } from './AgentMessage.js';
+import { ToolExpandTargetContext } from './ToolCallBlock.js';
 import { userTurnRows } from './UserMessage.js';
 import { DROP_CAP } from './WelcomeScreen.js';
 import { PILCROW } from '../marks.js';
@@ -1314,12 +1315,14 @@ describe('ChatPanel Ink rendering', () => {
 
     const view = render(
       withTheme(
-        <ChatPanel
-          messages={messages}
-          expandedToolCallId="call-1"
-          terminalWidth={100}
-          reducedMotion
-        />,
+        <ToolExpandTargetContext.Provider value="call-1">
+          <ChatPanel
+            messages={messages}
+            expandedToolCallId="call-1"
+            terminalWidth={100}
+            reducedMotion
+          />
+        </ToolExpandTargetContext.Provider>,
       ),
     );
 
@@ -1699,7 +1702,11 @@ describe('ChatPanel Ink rendering', () => {
     };
 
     const view = render(
-      withTheme(<ChatPanel messages={[message]} terminalWidth={100} reducedMotion />),
+      withTheme(
+        <ToolExpandTargetContext.Provider value="edit">
+          <ChatPanel messages={[message]} terminalWidth={100} reducedMotion />
+        </ToolExpandTargetContext.Provider>,
+      ),
     );
     const output = frame(view.lastFrame);
 

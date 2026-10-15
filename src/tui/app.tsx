@@ -91,7 +91,9 @@ import { runHostReview } from '../review/host.js';
 import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewScope } from '../review/types.js';
 import { join } from 'path';
-import { selectExpandedToolId, selectLatestToolId } from './tool-traces.js';
+import { selectExpandedToolId } from './tool-traces.js';
+import { selectExpandTargetId } from './tool-expansion.js';
+import { ToolExpandTargetContext } from './components/ToolCallBlock.js';
 import { halfPageScrollDirection, pagerChordsAvailable } from './transcript-scroll.js';
 import {
   getTranscriptShortcutAction,
@@ -1765,6 +1767,35 @@ export function App({
   const focusedToolId = focusedToolIdsByTranscript.get(activeTranscriptScope) ?? null;
   const showAllToolOutputIds =
     showAllToolOutputIdsByTranscript.get(activeTranscriptScope) ?? EMPTY_SHOW_ALL_TOOL_OUTPUT_IDS;
+  // The row Ctrl+E acts on, and the one row whose truncated footer names the key. One computation
+  // feeds both, so the hint and the key cannot disagree. The walk stops at the first match.
+  const expandTargetId = useMemo(
+    () =>
+      selectExpandTargetId({
+        messages: activeTranscriptMessages,
+        transcriptMode,
+        terminalWidth: termWidth,
+        terminalHeight: termHeight,
+        screenReader,
+        expansionOverrides: toolExpansionOverrides,
+        showAllToolOutputIds,
+        focusedToolId,
+        automaticToolId: activeExpandedToolId,
+        running: isThinking,
+      }),
+    [
+      activeExpandedToolId,
+      activeTranscriptMessages,
+      focusedToolId,
+      isThinking,
+      screenReader,
+      showAllToolOutputIds,
+      termHeight,
+      termWidth,
+      toolExpansionOverrides,
+      transcriptMode,
+    ],
+  );
   const updateToolExpansionOverrides = useCallback(
     (update: (current: Map<string, boolean>) => Map<string, boolean>) => {
       setToolExpansionOverridesByTranscript((current) => {
@@ -2535,8 +2566,7 @@ export function App({
         return true;
       }
       if (transcriptAction === 'expand-output') {
-        const targetToolId =
-          activeExpandedToolId ?? focusedToolId ?? selectLatestToolId(activeTranscriptMessages);
+        const targetToolId = expandTargetId;
         uiLog.event('input:Ctrl+E', { action: 'expand-current-tool', toolId: targetToolId });
         if (targetToolId) {
           updateToolExpansionOverrides((current) => new Map(current).set(targetToolId, true));
@@ -2556,9 +2586,7 @@ export function App({
       showConfigPicker,
       showAgentProfilePicker,
       showSkills,
-      activeExpandedToolId,
-      activeTranscriptMessages,
-      focusedToolId,
+      expandTargetId,
       showAllToolOutput,
       updateToolExpansionOverrides,
     ],
@@ -2694,158 +2722,160 @@ export function App({
             onNotify={handleCopiedNotice}
             onRedrawViewport={redrawViewport}
           >
-            <Box flexDirection="column" width={termWidth}>
-              {error && (
-                <Box paddingX={1} marginBottom={1}>
-                  <Text color={theme.error}>✕ {error}</Text>
-                </Box>
-              )}
-              {managedAgents.surface === 'detail' && selectedShellId ? (
-                backgroundShells.shells.find((shell) => shell.id === selectedShellId) ? (
-                  <BackgroundShellDetail
-                    shell={backgroundShells.shells.find((shell) => shell.id === selectedShellId)!}
-                    readTail={readSelectedShellTail}
-                    width={termWidth}
-                  />
-                ) : (
-                  <Box paddingX={1}>
-                    <Text color={theme.subtle}>Loading background shell…</Text>
+            <ToolExpandTargetContext.Provider value={expandTargetId}>
+              <Box flexDirection="column" width={termWidth}>
+                {error && (
+                  <Box paddingX={1} marginBottom={1}>
+                    <Text color={theme.error}>✕ {error}</Text>
                   </Box>
-                )
-              ) : managedAgents.surface === 'detail' && managedAgents.selectedAgentId ? (
-                // Viewing a child: never fall back to the main conversation.
-                // The record can briefly lag its summary (a status event lists
-                // an agent before its record is stored), so show a loading
-                // placeholder until it arrives rather than the parent transcript.
-                managedAgents.records.get(managedAgents.selectedAgentId) ? (
-                  <SubagentDetail
-                    record={managedAgents.records.get(managedAgents.selectedAgentId)!}
-                    liveText={managedAgents.liveText.get(managedAgents.selectedAgentId)}
-                    width={termWidth}
-                    height={termHeight}
+                )}
+                {managedAgents.surface === 'detail' && selectedShellId ? (
+                  backgroundShells.shells.find((shell) => shell.id === selectedShellId) ? (
+                    <BackgroundShellDetail
+                      shell={backgroundShells.shells.find((shell) => shell.id === selectedShellId)!}
+                      readTail={readSelectedShellTail}
+                      width={termWidth}
+                    />
+                  ) : (
+                    <Box paddingX={1}>
+                      <Text color={theme.subtle}>Loading background shell…</Text>
+                    </Box>
+                  )
+                ) : managedAgents.surface === 'detail' && managedAgents.selectedAgentId ? (
+                  // Viewing a child: never fall back to the main conversation.
+                  // The record can briefly lag its summary (a status event lists
+                  // an agent before its record is stored), so show a loading
+                  // placeholder until it arrives rather than the parent transcript.
+                  managedAgents.records.get(managedAgents.selectedAgentId) ? (
+                    <SubagentDetail
+                      record={managedAgents.records.get(managedAgents.selectedAgentId)!}
+                      liveText={managedAgents.liveText.get(managedAgents.selectedAgentId)}
+                      width={termWidth}
+                      height={termHeight}
+                      reducedMotion={motionDisabled}
+                      screenReader={screenReader}
+                      transcriptMode={transcriptMode}
+                      automaticToolCallId={activeExpandedToolId}
+                      toolExpansionOverrides={toolExpansionOverrides}
+                      showAllToolOutput={showAllDetailedOutput}
+                      showAllToolOutputIds={showAllToolOutputIds}
+                      showThinking={liveConfig.settings.ui.showThinking}
+                    />
+                  ) : (
+                    <Box paddingX={1}>
+                      <Text color={theme.subtle}>Loading subagent…</Text>
+                    </Box>
+                  )
+                ) : (
+                  <ChatPanel
+                    messages={messages}
+                    managedAgentTraces={managedAgentTraces}
+                    compactBoundaries={compactBoundaries}
+                    streamingMessageId={streamingMessageId}
+                    pendingPermission={pendingPermission}
+                    transcriptMode={transcriptMode}
+                    automaticToolCallId={expandedToolId}
+                    toolExpansionOverrides={toolExpansionOverrides}
                     reducedMotion={motionDisabled}
                     screenReader={screenReader}
-                    transcriptMode={transcriptMode}
-                    automaticToolCallId={activeExpandedToolId}
-                    toolExpansionOverrides={toolExpansionOverrides}
+                    terminalWidth={termWidth}
+                    showThinking={liveConfig.settings.ui.showThinking}
+                    terminalHeight={termHeight}
+                    workspace={config.workspace}
+                    recentSessions={recentSessions ?? NO_RECENT_SESSIONS}
+                    contentsPending={recentSessions === undefined}
+                    model={liveConfig.modelSelection ?? liveConfig.model}
+                    mode={mode}
+                    commandCount={commands.length}
+                    skillCount={skills.length}
+                    retryPhase={retryPhase}
                     showAllToolOutput={showAllDetailedOutput}
                     showAllToolOutputIds={showAllToolOutputIds}
-                    showThinking={liveConfig.settings.ui.showThinking}
+                    retryAttempt={retryAttempt}
+                    retryMax={retryMax}
+                    retryCountdownMs={retryCountdownMs}
                   />
-                ) : (
-                  <Box paddingX={1}>
-                    <Text color={theme.subtle}>Loading subagent…</Text>
-                  </Box>
-                )
-              ) : (
-                <ChatPanel
-                  messages={messages}
-                  managedAgentTraces={managedAgentTraces}
-                  compactBoundaries={compactBoundaries}
-                  streamingMessageId={streamingMessageId}
-                  pendingPermission={pendingPermission}
-                  transcriptMode={transcriptMode}
-                  automaticToolCallId={expandedToolId}
-                  toolExpansionOverrides={toolExpansionOverrides}
-                  reducedMotion={motionDisabled}
-                  screenReader={screenReader}
-                  terminalWidth={termWidth}
-                  showThinking={liveConfig.settings.ui.showThinking}
-                  terminalHeight={termHeight}
-                  workspace={config.workspace}
-                  recentSessions={recentSessions ?? NO_RECENT_SESSIONS}
-                  contentsPending={recentSessions === undefined}
-                  model={liveConfig.modelSelection ?? liveConfig.model}
-                  mode={mode}
-                  commandCount={commands.length}
-                  skillCount={skills.length}
-                  retryPhase={retryPhase}
-                  showAllToolOutput={showAllDetailedOutput}
-                  showAllToolOutputIds={showAllToolOutputIds}
-                  retryAttempt={retryAttempt}
-                  retryMax={retryMax}
-                  retryCountdownMs={retryCountdownMs}
-                />
-              )}
-              {referencePanel === 'steps' && (
-                <StepsSheet todos={agentTodos} width={panelGrid(termWidth).width} />
-              )}
-              {referencePanel === 'tasks' && (
-                <TaskList
-                  tasks={tasks}
-                  width={panelGrid(termWidth).width}
-                  onUpdateStatus={updateTaskStatus}
-                  onRemove={removeTask}
-                />
-              )}
-              {showHelp && (
-                <HelpPanel width={panelGrid(termWidth).width} customCommands={commands} />
-              )}
-              {showStatus && (
-                <SoftPanel title="Session" meta="Esc to close" width={panelGrid(termWidth).width}>
-                  <KeyValueList
-                    width={panelContentWidth(termWidth)}
-                    rows={[
-                      { key: 'model', value: liveConfig.modelSelection ?? liveConfig.model },
-                      { key: 'auth', value: liveConfig.apiKey ? 'API key' : 'none' },
-                      { key: 'session', value: displaySessionName(sessionName) },
-                      { key: 'workspace', value: config.workspace },
-                      { key: 'mode', value: mode },
-                      { key: 'turn', value: `${currentTurn}` },
-                      { key: 'tokens used', value: `${tokenCount}` },
-                      { key: 'max tokens', value: String(config.maxTokens) },
-                      {
-                        key: 'max turns',
-                        value:
-                          config.maxTurns == null || config.maxTurns <= 0
-                            ? 'unlimited'
-                            : String(config.maxTurns),
-                      },
-                      {
-                        key: 'tasks',
-                        value: `${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`,
-                      },
-                    ]}
+                )}
+                {referencePanel === 'steps' && (
+                  <StepsSheet todos={agentTodos} width={panelGrid(termWidth).width} />
+                )}
+                {referencePanel === 'tasks' && (
+                  <TaskList
+                    tasks={tasks}
+                    width={panelGrid(termWidth).width}
+                    onUpdateStatus={updateTaskStatus}
+                    onRemove={removeTask}
                   />
-                </SoftPanel>
-              )}
-              {showPermissions && (
-                <SoftPanel
-                  title="Permissions"
-                  meta="Esc to close"
-                  width={panelGrid(termWidth).width}
-                >
-                  <PermissionsPanel
-                    mode={mode}
-                    permissions={liveConfig.settings.permissions}
-                    onRemove={removePermissionRule}
-                    active={!modalOwnsInput}
-                    terminalWidth={termWidth}
+                )}
+                {showHelp && (
+                  <HelpPanel width={panelGrid(termWidth).width} customCommands={commands} />
+                )}
+                {showStatus && (
+                  <SoftPanel title="Session" meta="Esc to close" width={panelGrid(termWidth).width}>
+                    <KeyValueList
+                      width={panelContentWidth(termWidth)}
+                      rows={[
+                        { key: 'model', value: liveConfig.modelSelection ?? liveConfig.model },
+                        { key: 'auth', value: liveConfig.apiKey ? 'API key' : 'none' },
+                        { key: 'session', value: displaySessionName(sessionName) },
+                        { key: 'workspace', value: config.workspace },
+                        { key: 'mode', value: mode },
+                        { key: 'turn', value: `${currentTurn}` },
+                        { key: 'tokens used', value: `${tokenCount}` },
+                        { key: 'max tokens', value: String(config.maxTokens) },
+                        {
+                          key: 'max turns',
+                          value:
+                            config.maxTurns == null || config.maxTurns <= 0
+                              ? 'unlimited'
+                              : String(config.maxTurns),
+                        },
+                        {
+                          key: 'tasks',
+                          value: `${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`,
+                        },
+                      ]}
+                    />
+                  </SoftPanel>
+                )}
+                {showPermissions && (
+                  <SoftPanel
+                    title="Permissions"
+                    meta="Esc to close"
+                    width={panelGrid(termWidth).width}
+                  >
+                    <PermissionsPanel
+                      mode={mode}
+                      permissions={liveConfig.settings.permissions}
+                      onRemove={removePermissionRule}
+                      active={!modalOwnsInput}
+                      terminalWidth={termWidth}
+                      screenReader={screenReader}
+                    />
+                  </SoftPanel>
+                )}
+                {pendingPlanApproval ? (
+                  <PlanApprovalDetails
+                    plan={pendingPlanApproval.plan}
                     screenReader={screenReader}
+                    terminalWidth={termWidth}
                   />
-                </SoftPanel>
-              )}
-              {pendingPlanApproval ? (
-                <PlanApprovalDetails
-                  plan={pendingPlanApproval.plan}
-                  screenReader={screenReader}
-                  terminalWidth={termWidth}
-                />
-              ) : null}
-              {showShortcuts && (
-                <SoftPanel
-                  title="Keyboard shortcuts"
-                  meta="Esc to close"
-                  width={panelGrid(termWidth).width}
-                >
-                  <KeyValueList
-                    keys="ink"
-                    rows={SHORTCUT_ROWS}
-                    width={panelContentWidth(termWidth)}
-                  />
-                </SoftPanel>
-              )}
-            </Box>
+                ) : null}
+                {showShortcuts && (
+                  <SoftPanel
+                    title="Keyboard shortcuts"
+                    meta="Esc to close"
+                    width={panelGrid(termWidth).width}
+                  >
+                    <KeyValueList
+                      keys="ink"
+                      rows={SHORTCUT_ROWS}
+                      width={panelContentWidth(termWidth)}
+                    />
+                  </SoftPanel>
+                )}
+              </Box>
+            </ToolExpandTargetContext.Provider>
           </TranscriptView>
 
           <Box flexDirection="column" flexShrink={0} width={termWidth}>
@@ -3603,7 +3633,10 @@ const SHORTCUT_ROWS: ReadonlyArray<{ key: string; value: string }> = [
   { key: 'Ctrl+T', value: "Show or hide the agent's steps" },
   { key: '/tasks', value: 'Focus background tasks; ↑↓ select, Enter open, x stop' },
   { key: 'Ctrl+O', value: 'Toggle detailed transcript' },
-  { key: 'Ctrl+E', value: 'Expand current tool output (empty prompt)' },
+  {
+    key: 'Ctrl+E',
+    value: 'Expand the newest truncated tool output (empty prompt; again: the next one up)',
+  },
   { key: 'Click', value: 'Expand or collapse a tool summary' },
   { key: 'Ctrl+L', value: 'Redraw screen' },
   { key: 'Alt+M', value: 'Cycle permission mode' },

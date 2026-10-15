@@ -1,22 +1,31 @@
 import { Text, Box, type DOMElement } from 'ink';
-import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from 'react';
 import { Spinner } from './Spinner.js';
 import { useTheme } from '../theme.js';
 import { DiffBlock, mutationDiffPreview } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { highlightCode } from './syntax-highlight.js';
-import { prepareToolOutputDisplay } from './tool-output.js';
 import { truncateDisplay } from './word-wrap.js';
 import {
   getFileMutationDisplaySummary,
   isRenderableFileMutationDiff,
 } from '../file-mutation-display.js';
 import {
-  composeToolErrorDetail,
+  composeResultErrorDetail,
   composeToolRow,
   deriveToolPresentation,
-  EXPANDED_OUTPUT_MAX_LINES,
-  toolErrorDetailOptions,
+  EXPAND_KEY,
+  mutationDiffPreviewInput,
+  showsErrorMessage,
+  toolOutputContentWidth,
+  toolOutputDisplay,
   type ToolPresentation,
   type TranscriptMode,
 } from '../tool-presentation.js';
@@ -33,17 +42,14 @@ import { foldControlCharacters, stripTerminalControls } from '../../control-char
 import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
 import { useUiClock } from '../ui-clock.js';
 import type { ToolResult } from '../../types/tools.js';
-import { networkPolicyRefusal } from '../../tools/web-policy.js';
 
 /**
- * A blocked result shows its reason only for a network-policy refusal or a stopped cross-origin
- * redirect, which the user needs to understand. `networkPolicyRefusal` classifies both, and the
- * loop's stop message uses the same classifier.
+ * The id of the tool row Ctrl+E acts on, computed once by `selectExpandTargetId` in app.tsx. In
+ * the compact transcript only that row's truncated footer names the key. The default is "no
+ * target" (`null`): a compact row outside a provider names no key, because it cannot know that
+ * Ctrl+E would act on it. The detailed transcript names the key on every footer regardless.
  */
-function showsErrorMessage(result: ToolResult | undefined): boolean {
-  if (!result?.structuredError) return false;
-  return result.status !== 'blocked' || networkPolicyRefusal(result) !== undefined;
-}
+export const ToolExpandTargetContext = createContext<string | null>(null);
 
 interface ToolCallBlockProps {
   toolId?: string;
@@ -288,6 +294,13 @@ function ToolCallBlockInner({
 }: ToolCallBlockProps) {
   const theme = useTheme();
   const registry = useToolRowInteractionRegistry();
+  const expandTargetId = useContext(ToolExpandTargetContext);
+  // Ctrl+E in the detailed transcript shows everything, so every footer names it. In the compact
+  // one it expands the target row only: the others keep the footer and drop the key.
+  const expandHint =
+    transcriptMode === 'detailed' || (toolId !== undefined && expandTargetId === toolId)
+      ? EXPAND_KEY
+      : '';
   const summaryRef = useRef<DOMElement>(null);
   const grid = useMemo(() => {
     const base = transcriptGrid(terminalWidth);
@@ -322,9 +335,9 @@ function ToolCallBlockInner({
   );
   // One new file previews its first lines; any other diff is previewed as mutationDiffPreview
   // says: the compact transcript's first rows in order, the detailed one's change-focused rows.
-  const createsSingleNewFile =
-    mutationSummary?.kind === 'create' && (mutationSummary.fileCount ?? 1) <= 1;
-  const diffPreview = mutationDiffPreview({ createsSingleNewFile, transcriptMode, screenReader });
+  const diffPreview = mutationDiffPreview(
+    mutationDiffPreviewInput(mutationSummary, { transcriptMode, screenReader }),
+  );
   const isFileChild = summaryVariant === 'file-child';
   // A child row sits under an aggregate heading that already named the verb, so
   // it drops the label column and renders on the nested grid.
@@ -353,29 +366,31 @@ function ToolCallBlockInner({
   // detail is always composed: its hint says whether the row has lines to reveal.
   const errorDetails = useMemo(() => {
     if (!inlineError?.trim()) return undefined;
-    const compose = (expanded: boolean) => {
-      // A result with an exit code carries a command's output; its message keeps its lines.
-      const options = {
-        ...toolErrorDetailOptions(result),
+    const compose = (expanded: boolean) =>
+      composeResultErrorDetail({
+        presentation,
+        message: inlineError,
+        result,
+        rowGrid,
+        isFileChild,
         expanded,
         stdoutShownBelow: rendersOutputBlock,
-      };
-      const detail = isFileChild
-        ? composeToolErrorDetail(
-            { title: '', target: undefined },
-            inlineError,
-            nestedGrid(rowGrid),
-            options,
-          )
-        : composeToolErrorDetail(presentation, inlineError, rowGrid, options);
-      // A command that failed with no output has nothing to show: the row says `exit N`.
-      return detail.lines.length > 0 || detail.note ? detail : undefined;
-    };
+        expandHint,
+      });
     return {
       collapsed: compose(false),
       expanded: showFullError ? compose(true) : undefined,
     };
-  }, [inlineError, isFileChild, presentation, rendersOutputBlock, result, rowGrid, showFullError]);
+  }, [
+    expandHint,
+    inlineError,
+    isFileChild,
+    presentation,
+    rendersOutputBlock,
+    result,
+    rowGrid,
+    showFullError,
+  ]);
   const errorDetail = showFullError ? errorDetails?.expanded : errorDetails?.collapsed;
   // A failure whose collapsed detail hides lines can be expanded even when the row's own output
   // has nothing to reveal: stderr is not in `result.content`.
@@ -483,6 +498,7 @@ function ToolCallBlockInner({
           collapsed={!showAllToolOutput}
           preview={diffPreview.preview}
           maxRows={diffPreview.maxRows}
+          expandHint={expandHint}
           terminalWidth={blockWidth}
         />
       ) : isExpanded && result?.content ? (
@@ -493,6 +509,7 @@ function ToolCallBlockInner({
           showAllToolOutput={showAllToolOutput}
           toolName={presentation.canonicalName}
           terminalWidth={blockWidth}
+          expandHint={expandHint}
         />
       ) : null}
     </Box>
@@ -520,6 +537,7 @@ function OutputBlock({
   showAllToolOutput,
   toolName,
   terminalWidth,
+  expandHint,
 }: {
   output: string;
   success: boolean;
@@ -527,19 +545,13 @@ function OutputBlock({
   showAllToolOutput: boolean;
   toolName: string;
   terminalWidth: number;
+  expandHint: string;
 }) {
-  // The rail's border plus its padding occupy the nested gutter.
-  const contentWidth = Math.max(8, Math.floor(terminalWidth) - CONTENT_COLUMN - 2);
+  const contentWidth = toolOutputContentWidth(terminalWidth);
   const footerWidth = contentWidth;
   const display = useMemo(
-    () =>
-      prepareToolOutputDisplay(output, {
-        maxLines: showAllToolOutput ? EXPANDED_OUTPUT_MAX_LINES : success ? 6 : 10,
-        maxLineWidth: contentWidth,
-        hint: showAllToolOutput ? undefined : 'Ctrl+E',
-        strategy: showAllToolOutput ? 'head' : success ? 'head-tail' : 'tail',
-      }),
-    [contentWidth, output, showAllToolOutput, success],
+    () => toolOutputDisplay(output, { success, showAllToolOutput, terminalWidth, expandHint }),
+    [expandHint, output, showAllToolOutput, success, terminalWidth],
   );
   const language = inferLanguage(output, toolName);
   const displayText = display.lines.join('\n');
