@@ -98,6 +98,7 @@ const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
+import { startupNoticeMessages } from '../startup-notices.js';
 
 export function didSendMessageComplete(result: AgentSessionSendResult): boolean {
   return result.status === 'completed';
@@ -125,6 +126,12 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
   snapshotStore?: RewindSnapshotStoreInterface;
   /** Live extra tools (e.g. MCP) merged into each per-send registry. */
   additionalTools?: () => ToolDefinition[];
+  /**
+   * Warnings about this launch, shown once as local rows after the loaded transcript. Not
+   * persisted and not part of the model's context, so a resumed session shows the current
+   * launch's and never an earlier one's.
+   */
+  startupNotices?: readonly string[];
 }
 
 function providerIdFromSelection(selection: string): string | undefined {
@@ -290,7 +297,11 @@ function summarizeGoal(goal: ActiveGoal | undefined): GoalSummary | undefined {
 export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const initialTranscript = session.transcript ?? session.history;
   const initialContext = session.contextHistory ?? session.history;
-  const [messages, setMessages] = useState<Message[]>(initialTranscript);
+  const [messages, setMessages] = useState<Message[]>(() =>
+    session.startupNotices?.length
+      ? [...initialTranscript, ...startupNoticeMessages(session.startupNotices)]
+      : initialTranscript,
+  );
   const [compactBoundaries, setCompactBoundaries] = useState<CompactBoundary[]>(
     session.compactBoundaries ?? [],
   );
@@ -419,7 +430,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const streamingIdRef = useRef<string | null>(null);
   // What the streaming message holds (see StreamOutput), tracked as events arrive.
   const streamOutputRef = useRef<StreamOutput>(freshStreamOutput());
-  const messagesRef = useRef<Message[]>(initialTranscript);
+  const messagesRef = useRef<Message[]>(messages);
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
   const sessionNameRef = useRef(session.sessionName);

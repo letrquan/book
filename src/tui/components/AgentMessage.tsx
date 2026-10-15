@@ -635,11 +635,12 @@ export function AgentMessageInner({
   // A local note that opens with a status mark (`✕ Could not save…`, `✓
   // Background shell … exited`) is an event, so it is set like a tool row: the
   // mark in its colour, then the text in ink. As plain prose it read as a stray
-  // line of white text. Only a failure takes colour: a check is the default
-  // state of the row, the same as on a tool row.
+  // line of white text. A failure and a warning (`⚠ Ignoring a workspace-declared
+  // provider…`) take colour: a check is the default state of the row, the same
+  // as on a tool row.
   const localEvent =
     message.kind === 'local' && !message.localCommand && !screenReader
-      ? /^([✕✓]) ([\s\S]+)$/.exec(displayContent)
+      ? /^([✕✓⚠])\s+([\s\S]+)$/.exec(displayContent)
       : null;
   if (localEvent) {
     return (
@@ -647,7 +648,17 @@ export function AgentMessageInner({
         marginLeft={CONTENT_COLUMN}
         width={Math.max(8, (terminalWidth ?? 80) - CONTENT_COLUMN - 1)}
       >
-        <Text color={localEvent[1] === '✕' ? theme.error : theme.inactive}>{localEvent[1]} </Text>
+        <Text
+          color={
+            localEvent[1] === '✕'
+              ? theme.error
+              : localEvent[1] === '⚠'
+                ? theme.warning
+                : theme.inactive
+          }
+        >
+          {localEvent[1]}{' '}
+        </Text>
         <Box flexGrow={1} flexShrink={1}>
           <Text color={theme.text} wrap="wrap">
             {localEvent[2]}

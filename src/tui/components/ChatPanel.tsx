@@ -18,6 +18,7 @@ import {
   type QuietToolContext,
 } from '../quiet-tools.js';
 import { WelcomeScreen, type RecentChapter } from './WelcomeScreen.js';
+import { isStartupNotice } from '../startup-notices.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount, useDebugRender } from '../debug.js';
 import { useDensity, type TuiDensity } from '../density.js';
@@ -329,30 +330,42 @@ export function ChatPanelInner({
     isEmpty: timeline.length === 0,
   });
 
+  // A launch's own warnings are the only rows before the first prompt: the title page stays,
+  // with them below it. It gives way once the conversation starts.
+  const noticesOnly = timeline.length > 0 && timeline.every(isStartupNotice);
+  const welcome = (reservedRows: number) => (
+    <WelcomeScreen
+      terminalWidth={terminalWidth ?? 80}
+      terminalHeight={terminalHeight ?? 24}
+      workspace={workspace}
+      model={model}
+      mode={mode}
+      commandCount={commandCount}
+      skillCount={skillCount}
+      reducedMotion={reducedMotion}
+      screenReader={screenReader}
+      animate={false}
+      recentSessions={recentSessions}
+      contentsPending={contentsPending}
+      reservedRows={reservedRows}
+    />
+  );
+
   if (timeline.length === 0) {
     // A managed child transcript must never fall back to the main welcome
     // banner; callers render their own empty/waiting state around this panel.
     if (mode === 'managed') return null;
-    return (
-      <WelcomeScreen
-        terminalWidth={terminalWidth ?? 80}
-        terminalHeight={terminalHeight ?? 24}
-        workspace={workspace}
-        model={model}
-        mode={mode}
-        commandCount={commandCount}
-        skillCount={skillCount}
-        reducedMotion={reducedMotion}
-        screenReader={screenReader}
-        animate={false}
-        recentSessions={recentSessions}
-        contentsPending={contentsPending}
-      />
-    );
+    return welcome(0);
   }
 
   return (
     <Box flexDirection="column">
+      {noticesOnly ? (
+        <>
+          {welcome(visibleTimeline.reduce((rows, entry) => rows + estimateRows(entry), 1))}
+          <Box height={1} />
+        </>
+      ) : null}
       {hiddenTimelineEntries > 0 ? (
         <Box marginLeft={2} marginBottom={density === 'tight' ? 0 : 1}>
           <Text dimColor>

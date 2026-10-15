@@ -31,6 +31,12 @@ book config set --local permissions.allow '["Read(*)"]'              # just this
 book config list --local                                             # what this checkout overrides
 book config unset --local permissions.allow                          # drop the override
 
+# Approve or refuse what a repository declared (hooks, rules, commands, directories, providers)
+book trust provider                # list the providers a repository declared that await a decision
+book trust provider evil           # approve one, as it is declared now
+book trust provider evil --reject  # refuse it
+book trust provider --all-pending  # every provider awaiting a decision
+
 # Manage MCP servers (JSON shape is compatible with the wider MCP ecosystem)
 book mcp list
 book mcp add github npx -- -y @modelcontextprotocol/server-github

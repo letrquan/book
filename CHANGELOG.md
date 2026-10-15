@@ -34,6 +34,8 @@ All notable changes to this project are documented in this file.
   names no listed model is saved with a note. Every model picker
   (`/model` too) now opens with the cursor on the current choice, which a long list used to scroll
   out of view, and `Alt+S session` is offered only where it applies (the main model).
+- **`book trust provider [id]`** approves or rejects a provider a repository declares (#418), with
+  `-w`/`--workspace`, `--all-pending` and `--reject`; with no id it lists what awaits a decision.
 
 ### Fixed
 
@@ -284,6 +286,29 @@ All notable changes to this project are documented in this file.
   workspace is refused unless the symlink itself lives inside a present read-only directory mount or inside a
   `denyWrite` / `denyRead` directory. Note that a sandboxed `git worktree remove` deletes the work tree and then
   fails on its read-only admin directory; `git worktree prune` outside the sandbox cleans up.
+- **A cloned repository could send your provider key, and the conversation, to an endpoint it
+  named** (#418). A checked-in `.book/settings.json`, a force-added `.book/settings.local.json` or
+  a legacy `.bookrc.json` could set a provider's `baseURL` and `apiKey`, and `apiKey` accepted a
+  `{file:~/…}`, an absolute `{file:…}` or an `{env:VAR}` reference, so the repository chose both
+  where a request went and which secret rode with it: your provider key, `BOOK_API_KEY`, any file
+  under `~` or any environment variable, together with the transcript. Now a workspace layer's
+  `baseURL`, `baseUrl` and `apiKey` for a provider your own settings define are dropped and
+  reported (its `models` and `type` still merge). A provider only a workspace declares is withheld
+  until `book trust provider <id>` approves it, against a fingerprint of its type, origin and
+  `apiKey` text, so a changed `baseURL` or key reference asks again. A workspace provider never
+  inherits `BOOK_API_KEY` or the session key, and an unapproved one's key reference is never
+  resolved. A workspace `model`, `compactModel` or `advisorModel` that names a withheld provider
+  falls back to your value with a notice; `--model`, `BOOK_MODEL`, agent and profile models and
+  `AgentSpawn` fail with the `book trust provider` message instead. A legacy `.bookrc.json`
+  `baseUrl` is ignored until `book trust provider .bookrc.json` approves it. `/advisor off` now
+  also writes `advisorModel: "off"` to `.book/settings.local.json` when a checked-in file still
+  declares an advisor, so it stays off. Print mode, the SDK and the TUI report each withheld
+  declaration (the TUI shows them in the transcript at launch, not saved to the session and not
+  sent to the model), and `book doctor` lists every workspace provider with its state.
+  **Behaviour change:** a provider that only a repository declares now needs
+  `book trust provider <id>` before it is used, and an approved provider with no key of its own
+  sends none, so it fails at startup with the missing-key error until its declaration carries its
+  own `apiKey`. A provider you define in `~/.book/settings.json` is unaffected.
 
 ## [0.3.0] - 2026-10-07
 

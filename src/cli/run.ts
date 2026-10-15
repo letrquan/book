@@ -212,11 +212,15 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     if (config.modelProviderWarning) console.warn('⚠  ' + config.modelProviderWarning);
     // Print mode reports these with the other withheld declarations below. The interactive modes
     // have no prompt for a provider, and one the workspace declared that is not in effect would
-    // otherwise be silent: the model it names just never appears.
-    if (options.print === undefined && config.workspaceProviderGate) {
-      for (const notice of collectWithheldProviderNotices(config.workspaceProviderGate)) {
-        console.warn(notice);
-      }
+    // otherwise be silent: the model it names just never appears. The full-screen TUI clears the
+    // screen on its first render, so it shows them itself (`startupNotices`) rather than have
+    // them written here; only the scrollback mode, which keeps the terminal's history, prints.
+    const providerNotices =
+      options.print === undefined && config.workspaceProviderGate
+        ? collectWithheldProviderNotices(config.workspaceProviderGate)
+        : [];
+    if (options.scrollback) {
+      for (const notice of providerNotices) console.warn(notice);
     }
     const interactiveMaxTurns = parseNumericFlag(options.maxTurns, '--max-turns', {
       integer: true,
@@ -452,6 +456,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           redrawViewport,
           mcp: mcpHost,
           session: { ...bootstrap, store: sessionStore, timelineStore, snapshotStore },
+          startupNotices: providerNotices,
         }),
         {
           exitOnCtrlC: false,
