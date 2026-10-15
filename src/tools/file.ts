@@ -11,6 +11,7 @@ import { buildChildEnv } from '../child-env.js';
 import { markdownContentStart } from '../frontmatter.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { findRelaxedMatch } from './fuzzy-match.js';
+import { checkMemoryWrite, withMemoryWarnings } from '../memory-write-guard.js';
 import {
   isBookLocalSettingsUnderRoots,
   pathOutsideWorkspaceResult,
@@ -1435,7 +1436,19 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
       if (unobserved) return unobserved;
     }
     const inputContent = args.content as string;
-    const newContent = before.exists ? inputContent.replace(/\r\n/g, '\n') : inputContent;
+    let newContent = before.exists ? inputContent.replace(/\r\n/g, '\n') : inputContent;
+    let memoryWarnings: string[] = [];
+    if (resolved.memory) {
+      const checked = checkMemoryWrite(
+        ctx,
+        filePath,
+        newContent,
+        before.exists ? before.text : null,
+      );
+      if (!checked.ok) return checked.failure;
+      newContent = checked.content ?? newContent;
+      memoryWarnings = checked.warnings;
+    }
     const { diff, stats } = await renderDiffWithStatsAsync(before.text, newContent, 3, ctx.signal);
     try {
       await writeFileAtomically(
@@ -1457,17 +1470,20 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
       );
     }
     const observation = await observeFile(ctx, filePath, before.exists ? 'write' : 'create');
-    const result = toolSuccess(diff || 'File written successfully', {
-      artifacts: {
-        fileMutation: {
-          kind: before.exists ? 'update' : 'create',
-          filePath: relativePath,
-          addedLines: stats.addedLines,
-          removedLines: stats.removedLines,
+    const result = toolSuccess(
+      withMemoryWarnings(diff || 'File written successfully', memoryWarnings),
+      {
+        artifacts: {
+          fileMutation: {
+            kind: before.exists ? 'update' : 'create',
+            filePath: relativePath,
+            addedLines: stats.addedLines,
+            removedLines: stats.removedLines,
+          },
+          fileObservations: [observation],
         },
-        fileObservations: [observation],
       },
-    });
+    );
     if (before.exists) return result;
     // A file that did not exist has no before-and-after for the model to read: the diff is every
     // line it just wrote, so replaying it bills a second copy of the whole file on the next request
@@ -1476,7 +1492,10 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
     // overwrite keeps the diff: its removed lines are the part the model cannot re-derive.
     return {
       ...result,
-      maskedPlaceholder: `Created ${relativePath} (${stats.addedLines} lines, ${Buffer.byteLength(newContent, 'utf8')} bytes).`,
+      maskedPlaceholder: withMemoryWarnings(
+        `Created ${relativePath} (${stats.addedLines} lines, ${Buffer.byteLength(newContent, 'utf8')} bytes).`,
+        memoryWarnings,
+      ),
     };
   });
 }
@@ -1522,7 +1541,14 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
       '',
     );
     if (!application.ok) return application.failure;
-    const newContent = application.content;
+    let newContent = application.content;
+    let memoryWarnings: string[] = [];
+    if (resolved.memory) {
+      const checked = checkMemoryWrite(ctx, filePath, newContent, content);
+      if (!checked.ok) return checked.failure;
+      newContent = checked.content ?? newContent;
+      memoryWarnings = checked.warnings;
+    }
     const toleranceNote = application.note ? `\n\nNote: ${application.note}` : '';
     const { diff, stats } = await renderDiffWithStatsAsync(content, newContent, 3, ctx.signal);
     try {
@@ -1538,17 +1564,23 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
       );
     }
     const observation = await observeFile(ctx, filePath, 'edit');
-    return toolSuccess((diff || 'File edited successfully (no textual change)') + toleranceNote, {
-      artifacts: {
-        fileMutation: {
-          kind: 'update',
-          filePath: relativePath,
-          addedLines: stats.addedLines,
-          removedLines: stats.removedLines,
+    return toolSuccess(
+      withMemoryWarnings(
+        (diff || 'File edited successfully (no textual change)') + toleranceNote,
+        memoryWarnings,
+      ),
+      {
+        artifacts: {
+          fileMutation: {
+            kind: 'update',
+            filePath: relativePath,
+            addedLines: stats.addedLines,
+            removedLines: stats.removedLines,
+          },
+          fileObservations: [observation],
         },
-        fileObservations: [observation],
       },
-    });
+    );
   });
 }
 
@@ -1602,6 +1634,13 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
       if (application.note) notes.push(application.note);
       await yieldToEventLoop(ctx.signal);
     }
+    let memoryWarnings: string[] = [];
+    if (resolved.memory) {
+      const checked = checkMemoryWrite(ctx, filePath, content, original);
+      if (!checked.ok) return checked.failure;
+      content = checked.content ?? content;
+      memoryWarnings = checked.warnings;
+    }
     const toleranceNote = notes.length > 0 ? `\n\nNote: ${notes.join(' ')}` : '';
     const { diff, stats } = await renderDiffWithStatsAsync(original, content, 3, ctx.signal);
     try {
@@ -1617,17 +1656,23 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
       );
     }
     const observation = await observeFile(ctx, filePath, 'edit');
-    return toolSuccess((diff || 'File edited successfully (no textual change)') + toleranceNote, {
-      artifacts: {
-        fileMutation: {
-          kind: 'update',
-          filePath: relativePath,
-          addedLines: stats.addedLines,
-          removedLines: stats.removedLines,
+    return toolSuccess(
+      withMemoryWarnings(
+        (diff || 'File edited successfully (no textual change)') + toleranceNote,
+        memoryWarnings,
+      ),
+      {
+        artifacts: {
+          fileMutation: {
+            kind: 'update',
+            filePath: relativePath,
+            addedLines: stats.addedLines,
+            removedLines: stats.removedLines,
+          },
+          fileObservations: [observation],
         },
-        fileObservations: [observation],
       },
-    });
+    );
   });
 }
 

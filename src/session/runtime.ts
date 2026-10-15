@@ -97,6 +97,12 @@ export class SessionRuntime {
    * A runtime is replaced on `/clear`, which is what clears the goal with it.
    */
   activeGoal?: ActiveGoal;
+  /**
+   * The loaded memory snapshot whose `MEMORY.md` was last seeded into the observation ledger, so
+   * the seed happens once per snapshot: a later turn must not claim the model has seen a file that
+   * changed since. A reloaded snapshot (a new object) is seeded again, as a resumed session is.
+   */
+  memoryIndexSeededFor?: object;
   readonly backgroundShells: BackgroundShellStore;
   readonly fileObservationLedger: Map<string, FileObservation>;
   readonly toolDiscoveryState: ToolDiscoveryState;

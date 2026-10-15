@@ -9,9 +9,10 @@ import {
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, win32 } from 'path';
 import * as pathUtils from './tools/path-utils.js';
 import {
+  memoryTargetSpellings,
   permissionReasonOf,
   permissionRuleLadder,
   permissionResultOf,
@@ -1935,5 +1936,254 @@ describe('an honored additional directory reads like the workspace (#300)', () =
 
       expect(first).toEqual(second);
     });
+  });
+});
+
+describe('a write into the memory directory (memory write root)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function tempDir(prefix: string): string {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    dirs.push(dir);
+    return dir;
+  }
+
+  function settings(overrides: Partial<ResolvedSettings['permissions']> = {}): ResolvedSettings {
+    return {
+      ...DEFAULT_SETTINGS,
+      permissions: { ...DEFAULT_SETTINGS.permissions, ...overrides },
+    };
+  }
+
+  function setup() {
+    const workspace = tempDir('book-memperm-ws-');
+    const memory = tempDir('book-memperm-mem-');
+    const scope = (withMemory = true): { workspace: WorkspaceScope } => ({
+      workspace: {
+        root: workspace,
+        judgeReads: true,
+        refuseUnreachableReads: true,
+        autoAllowReads: true,
+        ...(withMemory ? { memoryWrite: { root: memory } } : {}),
+      },
+    });
+    return { workspace, memory, scope };
+  }
+
+  const patch = (...ops: string[]) => `*** Begin Patch\n${ops.join('\n')}\n*** End Patch`;
+
+  it('allows Write, Edit, MultiEdit and a memory-only ApplyPatch with source memory', () => {
+    const { memory, scope } = setup();
+    const file = join(memory, 'topic.md');
+    const allowed = { decision: 'allow', source: 'memory' };
+    expect(
+      evaluatePermissionDetail('Write', { filePath: file, content: 'x' }, settings(), scope()),
+    ).toEqual(allowed);
+    expect(
+      evaluatePermissionDetail(
+        'Edit',
+        { filePath: file, oldString: 'a', newString: 'b' },
+        settings(),
+        scope(),
+      ),
+    ).toEqual(allowed);
+    expect(
+      evaluatePermissionDetail('MultiEdit', { filePath: file, edits: [] }, settings(), scope()),
+    ).toEqual(allowed);
+    expect(
+      evaluatePermissionDetail(
+        'ApplyPatch',
+        {
+          patch: patch(
+            `*** Add File: ${join(memory, 'a.md')}`,
+            '+x',
+            `*** Delete File: ${join(memory, 'b.md')}`,
+          ),
+        },
+        settings(),
+        scope(),
+      ),
+    ).toEqual(allowed);
+  });
+
+  it('asks for what the memory rules do not serve', () => {
+    const { workspace, memory, scope } = setup();
+    const ask = { decision: 'ask', source: 'default' };
+    for (const filePath of [
+      join(memory, 'notes.txt'),
+      join(memory, '.inbox', 'a.md'),
+      join(workspace, 'a.md'),
+      'topic.md',
+    ]) {
+      expect(
+        evaluatePermissionDetail('Write', { filePath, content: 'x' }, settings(), scope()),
+      ).toEqual(ask);
+    }
+    // No memory root in the scope (a subagent, or memory off): nothing is special.
+    expect(
+      evaluatePermissionDetail(
+        'Write',
+        { filePath: join(memory, 'topic.md'), content: 'x' },
+        settings(),
+        scope(false),
+      ),
+    ).toEqual(ask);
+  });
+
+  it('does not auto-allow a mixed ApplyPatch', () => {
+    const { workspace, memory, scope } = setup();
+    expect(
+      evaluatePermissionDetail(
+        'ApplyPatch',
+        {
+          patch: patch(
+            `*** Add File: ${join(memory, 'a.md')}`,
+            '+x',
+            `*** Add File: ${join(workspace, 'b.txt')}`,
+            '+y',
+          ),
+        },
+        settings(),
+        scope(),
+      ),
+    ).toEqual({ decision: 'ask', source: 'default' });
+  });
+
+  it('keeps a deny rule on Write, and an ask rule, ahead of the memory allowance', () => {
+    const { memory, scope } = setup();
+    const args = { filePath: join(memory, 'topic.md'), content: 'x' };
+    expect(
+      evaluatePermissionDetail('Write', args, settings({ deny: ['Write'] }), scope()),
+    ).toMatchObject({ decision: 'deny', source: 'deny' });
+    expect(
+      evaluatePermissionDetail('Write', args, settings({ ask: ['Write(**/topic.md)'] }), scope()),
+    ).toMatchObject({ decision: 'ask', source: 'ask' });
+    const patchArgs = { patch: patch(`*** Add File: ${join(memory, 'a.md')}`, '+x') };
+    expect(
+      evaluatePermissionDetail('ApplyPatch', patchArgs, settings({ deny: ['Write'] }), scope()),
+    ).toMatchObject({ decision: 'deny' });
+    expect(
+      evaluatePermissionDetail('ApplyPatch', patchArgs, settings({ ask: ['ApplyPatch'] }), scope()),
+    ).toMatchObject({ decision: 'ask', source: 'ask' });
+  });
+
+  it('matches deny and ask path rules against a memory target on every tool', () => {
+    const { memory, scope } = setup();
+    const file = join(memory, 'topic.md');
+    expect(
+      evaluatePermissionDetail(
+        'Edit',
+        { filePath: file, oldString: 'a', newString: 'b' },
+        settings({ deny: ['Edit(**/*.md)'] }),
+        scope(),
+      ),
+    ).toMatchObject({ decision: 'deny', source: 'deny' });
+    expect(
+      evaluatePermissionDetail(
+        'MultiEdit',
+        { filePath: file, edits: [] },
+        settings({ ask: ['MultiEdit(**/topic.md)'] }),
+        scope(),
+      ),
+    ).toMatchObject({ decision: 'ask', source: 'ask' });
+    const patchArgs = { patch: patch(`*** Add File: ${join(memory, 'a.md')}`, '+x') };
+    expect(
+      evaluatePermissionDetail(
+        'ApplyPatch',
+        patchArgs,
+        settings({ deny: ['ApplyPatch(**/a.md)'] }),
+        scope(),
+      ),
+    ).toMatchObject({ decision: 'deny', source: 'deny' });
+    expect(
+      evaluatePermissionDetail(
+        'ApplyPatch',
+        patchArgs,
+        settings({ ask: ['Write(**/a.md)'] }),
+        scope(),
+      ),
+    ).toMatchObject({ decision: 'ask', source: 'ask' });
+  });
+
+  it('offers deny and ask the memory-root-relative spelling of a memory target', () => {
+    const { memory, scope } = setup();
+    const file = join(memory, 'topic.md');
+    // Neither rule matches the absolute path as written; only the root-relative form does.
+    expect(
+      evaluatePermissionDetail(
+        'Write',
+        { filePath: file, content: 'x' },
+        settings({ deny: ['Write(topic.md)'] }),
+        scope(),
+      ),
+    ).toMatchObject({ decision: 'deny', source: 'deny' });
+    expect(
+      evaluatePermissionDetail(
+        'ApplyPatch',
+        { patch: patch(`*** Add File: ${join(memory, 'a.md')}`, '+x') },
+        settings({ ask: ['Write(a.md)'] }),
+        scope(),
+      ),
+    ).toMatchObject({ decision: 'ask', source: 'ask' });
+  });
+
+  it('gives an allow rule no memory-root-relative meaning', () => {
+    const { memory, scope } = setup();
+    expect(
+      evaluatePermissionDetail(
+        'Write',
+        { filePath: join(memory, 'topic.md'), content: 'x' },
+        settings({ allow: ['Write(topic.md)'] }),
+        scope(),
+      ),
+    ).toEqual({ decision: 'allow', source: 'memory' });
+    expect(
+      evaluatePermissionDetail(
+        'ApplyPatch',
+        { patch: patch(`*** Add File: ${join(memory, 'a.md')}`, '+x') },
+        settings({ allow: ['Write(a.md)'] }),
+        scope(),
+      ),
+    ).toEqual({ decision: 'allow', source: 'memory' });
+  });
+
+  describe('memoryTargetSpellings', () => {
+    // A Windows path, checked on any OS through the `relative` seam.
+    const target = {
+      filePath: 'C:\\Users\\u\\.book\\memory\\sub\\topic.md',
+      canonicalPath: 'C:\\Users\\u\\.book\\memory\\sub\\topic.md',
+    };
+    const root = 'C:\\Users\\u\\.book\\memory';
+
+    it('adds forward-slash and root-relative spellings for a restrictive rule', () => {
+      const spellings = memoryTargetSpellings(target, root, true, win32.relative);
+      expect(spellings).toContain('C:/Users/u/.book/memory/sub/topic.md');
+      expect(spellings).toContain('sub/topic.md');
+      expect(spellings.some((s) => s.includes('\\'))).toBe(false);
+    });
+
+    it('adds no root-relative spelling for an allow rule', () => {
+      const spellings = memoryTargetSpellings(target, root, false, win32.relative);
+      expect(spellings).toEqual([
+        'C:/Users/u/.book/memory/sub/topic.md',
+        'C:/Users/u/.book/memory/sub/topic.md',
+      ]);
+      expect(spellings).not.toContain('sub/topic.md');
+    });
+  });
+
+  it('does not touch NotebookEdit', () => {
+    const { memory, scope } = setup();
+    expect(
+      evaluatePermissionDetail(
+        'NotebookEdit',
+        { notebook_path: join(memory, 'a.md'), new_source: 'x' },
+        settings(),
+        scope(),
+      ),
+    ).toEqual({ decision: 'ask', source: 'default' });
   });
 });

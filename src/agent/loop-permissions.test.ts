@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -1207,5 +1208,152 @@ describe('runAgentLoop reads an approved additional directory (#300)', () => {
     expect(prompt).not.toHaveBeenCalled();
     expect(byId(results, 'w1')?.structuredError?.code).toBe('path_outside_workspace');
     expect(existsSync(join(outside, 'planted.txt'))).toBe(false);
+  });
+});
+
+describe('runAgentLoop memory writes', () => {
+  async function run(
+    memory: string,
+    calls: ScriptedCall[],
+    mode: 'default' | 'accept-edits' | 'dontAsk' | 'auto' | 'bypassPermissions',
+    options: {
+      memoryContext?: LoadedMemoryContext;
+      isSubagent?: boolean;
+      configure?: (config: AgentConfig) => void;
+    } = {},
+  ) {
+    const prompt = vi.fn(async () => 'deny' as const);
+    const results: ToolResult[] = [];
+    const config = defaultConfig({
+      workspace,
+      maxTurns: 2,
+      memoryContext: options.memoryContext ?? loadedMemory(memory),
+    });
+    options.configure?.(config);
+    await runAgentLoop(
+      config,
+      createDefaultRegistry(),
+      'remember it',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      mode,
+      {
+        provider: toolsThenText(calls),
+        isNewSession: false,
+        isSubagent: options.isSubagent,
+      },
+    );
+    return { prompt, results };
+  }
+
+  for (const mode of ['default', 'accept-edits', 'dontAsk', 'auto'] as const) {
+    it(`writes a memory file without a prompt in ${mode}, stamped with the session`, async () => {
+      const memory = tempDir('book-loop-memory-');
+      const file = join(memory, 'fact.md');
+      const { prompt, results } = await run(
+        memory,
+        [
+          {
+            id: 'w1',
+            name: 'Write',
+            arguments: {
+              filePath: file,
+              content:
+                '---\nname: fact\ndescription: A fact\nmetadata:\n  type: project\n---\nBody\n',
+            },
+          },
+        ],
+        mode,
+      );
+      expect(prompt).not.toHaveBeenCalled();
+      expect(byId(results, 'w1')?.status).toBe('success');
+      expect(readFileSync(file, 'utf8')).toContain('  modified: ');
+    });
+  }
+
+  it('still denies a memory write when a deny rule names Write', async () => {
+    const memory = tempDir('book-loop-memory-');
+    const file = join(memory, 'fact.md');
+    const { prompt, results } = await run(
+      memory,
+      [{ id: 'w1', name: 'Write', arguments: { filePath: file, content: 'x\n' } }],
+      'default',
+      { configure: (config) => config.settings.permissions.deny.push('Write') },
+    );
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'w1')?.structuredError?.code).toBe('permission_denied');
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it('keeps a subagent out of the memory directory, whatever its mode', async () => {
+    const memory = tempDir('book-loop-memory-');
+    const file = join(memory, 'fact.md');
+    const { results } = await run(
+      memory,
+      [{ id: 'w1', name: 'Write', arguments: { filePath: file, content: 'x\n' } }],
+      'bypassPermissions',
+      { isSubagent: true },
+    );
+    expect(byId(results, 'w1')?.structuredError?.code).toBe('path_outside_workspace');
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it('makes memory read-only with autoSave off', async () => {
+    const memory = tempDir('book-loop-memory-');
+    const file = join(memory, 'fact.md');
+    const { results } = await run(
+      memory,
+      [{ id: 'w1', name: 'Write', arguments: { filePath: file, content: 'x\n' } }],
+      'auto',
+      { configure: (config) => (config.settings.memory.autoSave = false) },
+    );
+    expect(byId(results, 'w1')?.structuredError?.code).toBe('path_outside_workspace');
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it('seeds a whole MEMORY.md so its first Edit needs no Read', async () => {
+    const memory = tempDir('book-loop-memory-');
+    writeFileSync(join(memory, 'MEMORY.md'), '# Memory\n');
+    const { results } = await run(
+      memory,
+      [
+        {
+          id: 'e1',
+          name: 'Edit',
+          arguments: {
+            filePath: join(memory, 'MEMORY.md'),
+            oldString: '# Memory',
+            newString: '# Memory\n- [Fact](fact.md) — a pointer',
+          },
+        },
+      ],
+      'default',
+      { memoryContext: { ...loadedMemory(memory), indexLoaded: true } },
+    );
+    expect(byId(results, 'e1')?.status).toBe('success');
+    expect(readFileSync(join(memory, 'MEMORY.md'), 'utf8')).toContain('(fact.md)');
+  });
+
+  it('does not seed a cut MEMORY.md, so the model must Read it first', async () => {
+    const memory = tempDir('book-loop-memory-');
+    writeFileSync(join(memory, 'MEMORY.md'), '# Memory\n');
+    const { results } = await run(
+      memory,
+      [
+        {
+          id: 'e1',
+          name: 'Edit',
+          arguments: {
+            filePath: join(memory, 'MEMORY.md'),
+            oldString: '# Memory',
+            newString: '# Memory\n- [Fact](fact.md) — a pointer',
+          },
+        },
+      ],
+      'default',
+      { memoryContext: { ...loadedMemory(memory), indexLoaded: true, wasLineTruncated: true } },
+    );
+    expect(byId(results, 'e1')?.structuredError?.code).toBe('file_not_observed');
+    expect(readFileSync(join(memory, 'MEMORY.md'), 'utf8')).toBe('# Memory\n');
   });
 });
