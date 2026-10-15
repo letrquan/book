@@ -319,7 +319,8 @@ function ToolCallBlockInner({
     () => getFileMutationDisplaySummary(name, args, result),
     [args, name, result],
   );
-  // Only one new file reads as a head preview; several joined files keep the change-focused one.
+  // One new file previews its first lines; any other diff is previewed as mutationDiffPreview
+  // says: the compact transcript's first rows in order, the detailed one's change-focused rows.
   const createsSingleNewFile =
     mutationSummary?.kind === 'create' && (mutationSummary.fileCount ?? 1) <= 1;
   const diffPreview = mutationDiffPreview({ createsSingleNewFile, transcriptMode, screenReader });

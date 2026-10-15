@@ -5,6 +5,14 @@ import { displayWidth, hardWrapLine, padDisplay, truncateDisplay } from './word-
 import { highlightCode, type StyledSegment } from './syntax-highlight.js';
 import type { TranscriptMode } from '../tool-presentation.js';
 
+/**
+ * Which rows a collapsed preview keeps. `changes` keeps every hunk's changed rows plus nearby
+ * context, and reports what it hides as gap rows and a total. `head` keeps the first content
+ * lines, one terminal row each, cut with `…` (a new file). `head-wrap` keeps the diff's first
+ * rows in order, wrapped like the full diff (an edit).
+ */
+export type DiffPreviewKind = 'changes' | 'head' | 'head-wrap';
+
 interface DiffProps {
   output: string;
   filePath?: string;
@@ -15,13 +23,8 @@ interface DiffProps {
    * omission footer row is not counted: it is drawn after the budgeted rows.
    */
   maxRows?: number;
-  /**
-   * Which rows the collapsed preview keeps. `changes` (default) keeps every hunk's
-   * changed rows plus nearby context. `head` keeps the diff's first rows in order: a
-   * `maxRows` of `NEW_FILE_PREVIEW_ROWS` or fewer is one content line per row, cut
-   * with `…` (a new file); a larger one wraps long lines like the full diff (an edit).
-   */
-  preview?: 'changes' | 'head';
+  /** Which rows the collapsed preview keeps; `changes` by default. */
+  preview?: DiffPreviewKind;
   /** Key hint shown in the omission footer while collapsed; empty for none. */
   expandHint?: string;
   terminalWidth?: number;
@@ -379,37 +382,83 @@ function isContentRow(row: ParsedDiffLine): boolean {
   return row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx';
 }
 
+/** File metadata (`--- path`, `+++ path`, `diff …`); a `\ No newline` marker is not. */
+function isFileMetaRow(row: ParsedDiffLine): boolean {
+  return row.kind === 'meta' && row.marker !== '\\';
+}
+
+/**
+ * Where each file of a diff starts: a `diff ` line, or a `--- ` / `+++ ` pair that is not the
+ * pair of a `diff ` header just above it. Rows before the first of those belong to a file of
+ * their own. These are the boundaries `parseDiffLines` recognises as `meta` rows.
+ */
+function fileStarts(rows: readonly ParsedDiffLine[]): number[] {
+  if (rows.length === 0) return [];
+  const starts: number[] = [];
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (!isFileMetaRow(row)) continue;
+    const previous = rows[index - 1];
+    const startsFile =
+      row.text.startsWith('diff ') ||
+      (row.text.startsWith('--- ') &&
+        rows[index + 1]?.kind === 'meta' &&
+        rows[index + 1].text.startsWith('+++ ') &&
+        !(previous?.kind === 'meta' && previous.text.startsWith('diff ')));
+    if (startsFile) starts.push(index);
+  }
+  if (starts[0] !== 0) starts.unshift(0);
+  return starts;
+}
+
+/** The rows a preview keeps, and the cap on a kept row too tall for the budget left. */
+interface Selection {
+  indices: number[];
+  /** Row index → the wrapped terminal rows of it to draw; a row not here is drawn whole. */
+  rowLimits: Map<number, number>;
+}
+
 /** The first `limit` content lines; hunk headers and file metadata are skipped. */
-function selectHeadIndices(rows: readonly ParsedDiffLine[], limit: number): number[] {
+function selectHeadIndices(rows: readonly ParsedDiffLine[], limit: number): Selection {
   const indices: number[] = [];
   for (let index = 0; index < rows.length && indices.length < limit; index++) {
     if (isContentRow(rows[index])) indices.push(index);
   }
-  return indices;
+  return { indices, rowLimits: new Map() };
 }
 
 /** Rendered terminal rows a diff row occupies, given the width the renderer wraps it to. */
 type RowCost = (index: number) => number;
 
 /**
- * Head preview of an edit: the diff's first rows in order, hunk headers and file headers
- * included, each long line wrapped as the full diff wraps it. A line whose wrapped rows would
- * overflow the budget is left out whole, except the diff's first line, which is always shown.
+ * Head preview of an edit: the diff's first rows in order, hunk headers included, each long
+ * line wrapped as the full diff wraps it. A line whose wrapped rows would overflow the budget
+ * is left out whole. The diff's first line is always shown, but only as many of its wrapped
+ * rows as the budget holds.
  *
+ * A diff of one file skips its `---` / `+++` rows: the row above the diff names the path.
  * When one call's diff covers several files (a multi-file ApplyPatch or MultiEdit) they share
- * this one budget, in order: the preview ends wherever the budget does.
+ * this one budget, in order, and keep those rows, which separate the files.
  */
-function selectHeadRows(rows: readonly ParsedDiffLine[], budget: number, cost: RowCost): number[] {
+function selectHeadRows(
+  rows: readonly ParsedDiffLine[],
+  budget: number,
+  cost: RowCost,
+  skipFileMeta: boolean,
+): Selection {
   const indices: number[] = [];
+  const rowLimits = new Map<number, number>();
   let used = 0;
   for (let index = 0; index < rows.length; index++) {
+    if (skipFileMeta && isFileMetaRow(rows[index])) continue;
     const rowCost = cost(index);
     if (indices.length > 0 && used + rowCost > budget) break;
+    if (rowCost > budget) rowLimits.set(index, budget);
     indices.push(index);
-    used += rowCost;
+    used += Math.min(rowCost, budget);
     if (used >= budget) break;
   }
-  return indices;
+  return { indices, rowLimits };
 }
 
 /**
@@ -421,18 +470,18 @@ function selectChangeRows(
   rows: readonly ParsedDiffLine[],
   budget: number,
   cost: RowCost,
-): number[] {
+): Selection {
   // Every row costs at least one terminal row, so more rows than budget cannot fit whole.
   if (rows.length <= budget) {
     let total = 0;
     for (let index = 0; index < rows.length; index++) total += cost(index);
-    if (total <= budget) return rows.map((_, index) => index);
+    if (total <= budget) return { indices: rows.map((_, index) => index), rowLimits: new Map() };
   }
 
   const changedIndices = rows
     .map((row, index) => (row.kind === 'add' || row.kind === 'del' ? index : -1))
     .filter((index) => index >= 0);
-  if (changedIndices.length === 0) return selectHeadRows(rows, budget, cost);
+  if (changedIndices.length === 0) return selectHeadRows(rows, budget, cost, false);
 
   // contentBefore[i]: content lines in rows[0, i). A gap row sits wherever any are skipped.
   const contentBefore = new Array<number>(rows.length + 1);
@@ -461,15 +510,22 @@ function selectChangeRows(
 
   if (selectionCost(priorityIndices, budget) > budget) {
     // Changes alone overflow: keep the first and last ones around a single gap row. The
-    // first row is always shown, however many rows it wraps to.
+    // first row is always shown, cut to the head's budget if it wraps to more rows.
     const headBudget = Math.ceil((budget - 1) / 2);
     const tailBudget = Math.floor((budget - 1) / 2);
     const head: number[] = [];
+    const rowLimits = new Map<number, number>();
     let used = 0;
     let previous = -1;
     for (const index of priorityIndices) {
-      const rowCost = cost(index) + gapRows(previous, index);
+      const gap = gapRows(previous, index);
+      let rowCost = cost(index) + gap;
       if (head.length > 0 && used + rowCost > headBudget) break;
+      if (head.length === 0 && rowCost > headBudget) {
+        const limit = Math.max(1, headBudget - gap);
+        rowLimits.set(index, limit);
+        rowCost = limit + gap;
+      }
       head.push(index);
       used += rowCost;
       previous = index;
@@ -486,7 +542,7 @@ function selectChangeRows(
       used += rowCost;
       following = index;
     }
-    return [...head, ...tail];
+    return { indices: [...head, ...tail], rowLimits };
   }
 
   // Context is useful, but changed rows and hunk boundaries always win the budget.
@@ -513,20 +569,20 @@ function selectChangeRows(
     const trial = [...selected, candidate].sort((a, b) => a - b);
     if (selectionCost(trial, budget) <= budget) selected = trial;
   }
-  return selected;
+  return { indices: selected, rowLimits: new Map() };
 }
 
-/**
- * A head preview this small is a new file's: one terminal row per line, cut with `…`, and
- * only content lines count. A larger one is an edit's, and wraps like the full diff.
- */
-function headPreviewTruncates(maxRows: number): boolean {
-  return maxRows <= NEW_FILE_PREVIEW_ROWS;
+/** A row's text as the renderer draws it: one entry per terminal row. */
+interface RowText {
+  content: string[];
+  spans?: DiffSpan[][];
 }
 
 interface SelectedDiffRow {
   row: ParsedDiffLine;
   sourceIndex: number;
+  /** The row's text, already cut to its row limit. */
+  text: RowText;
   /** Content lines (add/del/ctx) omitted between the previous shown row and this one. */
   gapLines: number;
 }
@@ -555,11 +611,7 @@ function diffGeometry(rows: readonly ParsedDiffLine[], terminalWidth: number): D
 }
 
 /** A row's text as the renderer draws it: wrapped, or cut to one row when `truncate`. */
-function layoutRowText(
-  row: ParsedDiffLine,
-  contentWidth: number,
-  truncate: boolean,
-): { content: string[]; spans?: DiffSpan[][] } {
+function layoutRowText(row: ParsedDiffLine, contentWidth: number, truncate: boolean): RowText {
   const spans = row.spans
     ? truncate
       ? [truncateSpans(row.spans, contentWidth)]
@@ -573,13 +625,29 @@ function layoutRowText(
   return { content, spans };
 }
 
+/**
+ * A wrapped row cut to its first `limit` terminal rows. The last drawn row ends in `…`, the
+ * way `truncateDisplay` marks a cut: it is cut from the row it was joined to.
+ */
+function limitRowText(text: RowText, limit: number, contentWidth: number): RowText {
+  if (text.content.length <= limit) return text;
+  const content = text.content.slice(0, limit);
+  const last = limit - 1;
+  if (!text.spans) {
+    content[last] = truncateDisplay(content[last] + text.content[limit], contentWidth);
+    return { content };
+  }
+  const spans = text.spans.slice(0, limit);
+  spans[last] = truncateSpans([...spans[last], ...text.spans[limit]], contentWidth);
+  content[last] = spans[last].map((span) => span.text).join('');
+  return { content, spans };
+}
+
 /** One shared layout of a diff: what DiffBlock draws and what the footer reports. */
 interface DiffLayout {
   rows: SelectedDiffRow[];
   /** Content lines (add/del/ctx) the preview leaves out; the footer's N. */
   omittedLines: number;
-  /** Each line is cut to one terminal row instead of wrapping. */
-  truncateLines: boolean;
 }
 
 function layoutDiff(
@@ -587,32 +655,33 @@ function layoutDiff(
   contentWidth: number,
   collapsed: boolean,
   limit: number,
-  preview: 'changes' | 'head',
+  preview: DiffPreviewKind,
 ): DiffLayout {
   const budget = Math.max(1, Math.floor(limit));
-  const truncateLines = collapsed && preview === 'head' && headPreviewTruncates(budget);
-  const costs = new Map<number, number>();
-  const cost: RowCost = (index) => {
-    let value = costs.get(index);
-    if (value === undefined) {
-      const row = rows[index];
-      // Four columns per UTF-16 unit covers a tab and a double-width character: one row.
-      value =
-        row.content.length * 4 <= contentWidth
-          ? 1
-          : layoutRowText(row, contentWidth, false).content.length;
-      costs.set(index, value);
+  // Each line of a new file's preview is cut to one terminal row instead of wrapping.
+  const truncateLines = collapsed && preview === 'head';
+  // A wrapped row is laid out once: costing it and drawing it share the result.
+  const wrapped = new Map<number, RowText>();
+  const wrappedText = (index: number): RowText => {
+    let text = wrapped.get(index);
+    if (text === undefined) {
+      text = layoutRowText(rows[index], contentWidth, false);
+      wrapped.set(index, text);
     }
-    return value;
+    return text;
   };
+  const cost: RowCost = (index) =>
+    // Four columns per UTF-16 unit covers a tab and a double-width character: one row.
+    rows[index].content.length * 4 <= contentWidth ? 1 : wrappedText(index).content.length;
 
-  const indices = !collapsed
-    ? rows.map((_, index) => index)
+  const selection: Selection = !collapsed
+    ? { indices: rows.map((_, index) => index), rowLimits: new Map() }
     : preview === 'head'
-      ? truncateLines
-        ? selectHeadIndices(rows, budget)
-        : selectHeadRows(rows, budget, cost)
-      : selectChangeRows(rows, budget, cost);
+      ? selectHeadIndices(rows, budget)
+      : preview === 'head-wrap'
+        ? selectHeadRows(rows, budget, cost, fileStarts(rows).length <= 1)
+        : selectChangeRows(rows, budget, cost);
+  const { indices, rowLimits } = selection;
   const selected = new Set(indices);
   // Hunk headers and metadata are signposts, not content: only lines count.
   const omittedLines = rows.reduce(
@@ -626,52 +695,69 @@ function layoutDiff(
       if (isContentRow(rows[index])) gapLines++;
     }
     previous = sourceIndex;
-    return { row: rows[sourceIndex], sourceIndex, gapLines };
+    const row = rows[sourceIndex];
+    const rowLimit = rowLimits.get(sourceIndex);
+    const text = truncateLines
+      ? layoutRowText(row, contentWidth, true)
+      : rowLimit === undefined
+        ? (wrapped.get(sourceIndex) ?? layoutRowText(row, contentWidth, false))
+        : limitRowText(wrappedText(sourceIndex), rowLimit, contentWidth);
+    return { row, sourceIndex, text, gapLines };
   });
-  return { rows: selectedRows, omittedLines, truncateLines };
+  return { rows: selectedRows, omittedLines };
 }
 
 /**
- * The rows to draw. A diff with exactly one hunk draws no header (the gutter's line numbers
- * already say where the change is). With several, each header is recomputed from the hunk's
- * own lines, because `tools/diff.ts` writes `@@ -a +c @@` without counts, which reads as a
- * one-line hunk: `-a,b +c,d` with b the context and removed lines, d the context and added.
+ * The rows to draw, one file at a time. A file whose diff has exactly one hunk draws no header
+ * (the gutter's line numbers already say where the change is). With several, each header is
+ * recomputed from the hunk's own lines, because `tools/diff.ts` writes `@@ -a +c @@` without
+ * counts, which reads as a one-line hunk: `-a,b +c,d` with b the context and removed lines, d
+ * the context and added. A hunk's lines are the rows that start with ` `, `+` or `-`; it ends
+ * at the first row that does not, such as the blank line and warning a tool appends.
  */
 function prepareDiffRows(parsed: readonly ParsedDiffLine[]): ParsedDiffLine[] {
-  const hunkCount = parsed.reduce((total, row) => total + (row.kind === 'hunk' ? 1 : 0), 0);
-  if (hunkCount === 0) return [...parsed];
-  if (hunkCount === 1) return parsed.filter((row) => row.kind !== 'hunk');
+  if (!parsed.some((row) => row.kind === 'hunk')) return [...parsed];
 
-  const rows = [...parsed];
-  for (let index = 0; index < rows.length; index++) {
-    const position = rows[index].kind === 'hunk' ? parseHunkPosition(rows[index].text) : undefined;
-    if (!position) continue;
-    let oldCount = 0;
-    let newCount = 0;
-    // A hunk ends at the next header or file metadata; a `\ No newline` marker belongs to it.
-    for (
-      let next = index + 1;
-      next < rows.length &&
-      rows[next].kind !== 'hunk' &&
-      (rows[next].kind !== 'meta' || rows[next].marker === '\\');
-      next++
-    ) {
-      if (rows[next].kind === 'meta') continue;
-      if (rows[next].kind !== 'add') oldCount++;
-      if (rows[next].kind !== 'del') newCount++;
+  const starts = fileStarts(parsed);
+  const rows: ParsedDiffLine[] = [];
+  starts.forEach((start, fileIndex) => {
+    const end = starts[fileIndex + 1] ?? parsed.length;
+    let hunkCount = 0;
+    for (let index = start; index < end; index++) {
+      if (parsed[index].kind === 'hunk') hunkCount++;
     }
-    rows[index] = {
-      ...rows[index],
-      content: `@@ -${position.oldLine},${oldCount} +${position.newLine},${newCount} @@`,
-    };
-  }
+    for (let index = start; index < end; index++) {
+      const row = parsed[index];
+      const position = row.kind === 'hunk' ? parseHunkPosition(row.text) : undefined;
+      if (!position || hunkCount === 0) {
+        rows.push(row);
+        continue;
+      }
+      if (hunkCount === 1) continue;
+      let oldCount = 0;
+      let newCount = 0;
+      for (let next = index + 1; next < end; next++) {
+        const line = parsed[next];
+        if (line.kind === 'hunk') break;
+        // A `\ No newline` marker belongs to the hunk but is not one of its lines.
+        if (line.kind === 'meta' && line.marker === '\\') continue;
+        if (line.kind === 'meta' || !/^[ +-]/.test(line.text)) break;
+        if (line.kind !== 'add') oldCount++;
+        if (line.kind !== 'del') newCount++;
+      }
+      rows.push({
+        ...row,
+        content: `@@ -${position.oldLine},${oldCount} +${position.newLine},${newCount} @@`,
+      });
+    }
+  });
   return rows;
 }
 
 export interface DiffPreviewOptions {
   /** The same width DiffBlock receives as `terminalWidth`. */
   terminalWidth: number;
-  preview: 'changes' | 'head';
+  preview: DiffPreviewKind;
   maxRows: number;
 }
 
@@ -690,12 +776,12 @@ export function mutationDiffPreview(input: {
   createsSingleNewFile: boolean;
   transcriptMode: TranscriptMode;
   screenReader: boolean;
-}): { preview: 'changes' | 'head'; maxRows: number } {
+}): { preview: DiffPreviewKind; maxRows: number } {
   if (input.createsSingleNewFile) return { preview: 'head', maxRows: NEW_FILE_PREVIEW_ROWS };
   if (input.transcriptMode === 'detailed' || input.screenReader) {
     return { preview: 'changes', maxRows: COLLAPSED_ROWS };
   }
-  return { preview: 'head', maxRows: EDIT_PREVIEW_ROWS };
+  return { preview: 'head-wrap', maxRows: EDIT_PREVIEW_ROWS };
 }
 
 function lineNumber(value: number | undefined, width: number): string {
@@ -734,19 +820,21 @@ export function DiffBlock({
   );
   const language = inferDiffLanguage(filePath);
   const omittedNoun = selected.omittedLines === 1 ? 'line' : 'lines';
+  // The change-focused preview reports what it hides as gap rows too, so its footer is the
+  // total. A head preview hides only what trails the last row: `+N` more.
+  const omittedLabel =
+    preview === 'changes'
+      ? `${selected.omittedLines} ${omittedNoun} hidden`
+      : `+${selected.omittedLines} ${omittedNoun}`;
 
   return (
     <Box flexDirection="column">
-      {selected.rows.map(({ row, sourceIndex, gapLines }) => {
+      {selected.rows.map(({ row, sourceIndex, text, gapLines }) => {
         const backgroundColor =
           row.kind === 'add' ? theme.diffAdded : row.kind === 'del' ? theme.diffRemoved : undefined;
         // A hunk header is a signpost, not content: quiet, and never the accent.
         const foregroundColor = row.kind === 'hunk' ? theme.inactive : theme.text;
-        const { content: wrappedContent, spans: wrappedSpans } = layoutRowText(
-          row,
-          contentWidth,
-          selected.truncateLines,
-        );
+        const { content: wrappedContent, spans: wrappedSpans } = text;
 
         return (
           <Fragment key={`${sourceIndex}-${row.text}`}>
@@ -840,7 +928,7 @@ export function DiffBlock({
           <Text color={theme.subtle} dimColor>
             │{' '}
             {truncateDisplay(
-              `… +${selected.omittedLines} ${omittedNoun}${collapsed && expandHint ? ` (${expandHint})` : ''}`,
+              `… ${omittedLabel}${collapsed && expandHint ? ` (${expandHint})` : ''}`,
               Math.max(4, terminalWidth - 4),
             )}
           </Text>

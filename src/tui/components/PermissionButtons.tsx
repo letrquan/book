@@ -18,7 +18,7 @@ import { permissionRuleForToolCall, permissionRuleLadder } from '../../permissio
 import type { PermissionDecision, PermissionResult, ToolCall } from '../../types/tools.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
-import { DiffBlock, expandTabs } from './Diff.js';
+import { DiffBlock, diffPreviewOmittedRows, expandTabs } from './Diff.js';
 import { ChoiceList, DecisionSheet, type Choice } from './chrome.js';
 import { displayWidth, hardWrapLine, truncateDisplay } from './word-wrap.js';
 
@@ -357,11 +357,24 @@ export function PermissionButtons({
     shownFiles.filter((file) => (diffRows.get(file.filePath) ?? 0) > 0).length,
   );
   const diffRowsPerFile = Math.max(MIN_DIFF_ROWS_PER_FILE, Math.floor(diffBudget / shownWithDiff));
+  // A shown diff is cut by rendered rows at the width its DiffBlock gets, not by source lines,
+  // so the layout the block draws says whether it left something out. Memoized: the card
+  // re-renders on every keypress and must not lay a large diff out each time.
+  const shownDiffCut = useMemo(
+    () =>
+      (preview && !preview.error ? preview.files : []).slice(0, filesShown).some(
+        (file) =>
+          diffPreviewOmittedRows(file.diff, {
+            terminalWidth: contentWidth,
+            preview: 'changes',
+            maxRows: diffRowsPerFile,
+          }) > 0,
+      ),
+    [preview, filesShown, contentWidth, diffRowsPerFile],
+  );
   // `D` is offered only while it would show something more, or has. On a
   // terminal too short for a larger budget the diff already shows what it can.
-  const diffHasMore =
-    hiddenFiles.length > 0 ||
-    shownFiles.some((file) => (diffRows.get(file.filePath) ?? 0) > diffRowsPerFile);
+  const diffHasMore = hiddenFiles.length > 0 || shownDiffCut;
   const canExpand =
     expanded ||
     (files.length === 0 && commandExpandHint !== 'none') ||

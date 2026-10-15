@@ -394,7 +394,8 @@ describe('ToolCallBlock', () => {
       expect(rendered).not.toContain('- old 41');
       expect(rendered).toContain('+ new 100');
       expect(rendered).not.toContain('+ new 50');
-      expect(rendered).toContain('… +121 lines (Ctrl+E)');
+      expect(rendered).toContain('… 121 lines hidden (Ctrl+E)');
+      expect(rendered).not.toContain('… +');
       expect(rendered).toContain('⋮ 121 lines omitted');
     });
 
@@ -516,12 +517,46 @@ describe('ToolCallBlock', () => {
       );
       const rendered = frame(view.lastFrame);
 
-      // a.js takes 18 rows (two file headers, its hunk header, 15 lines); b.js gets the last two.
+      // Each file has one hunk, so neither draws a header. a.js takes 17 rows (two file headers,
+      // 15 lines); b.js gets its two file headers and its first line.
+      expect(rendered).not.toContain('@@');
       expect(rendered).toContain('+ a.js line 15');
       expect(rendered).toContain('--- b.js');
       expect(rendered).toContain('+++ b.js');
-      expect(rendered).not.toContain('b.js line 1');
-      expect(rendered).toContain('… +15 lines (Ctrl+E)');
+      expect(rendered).toContain('+ b.js line 1');
+      expect(rendered).not.toContain('b.js line 2');
+      expect(rendered).toContain('… +14 lines (Ctrl+E)');
+    });
+
+    it('drops the file metadata rows of a single-file ApplyPatch preview', () => {
+      const result: ToolResult = {
+        version: 2,
+        toolCallId: 'call-single-patch',
+        status: 'success',
+        content: [
+          '--- src/a.ts',
+          '+++ src/a.ts',
+          '@@ -4 +4 @@',
+          '-const a = 1;',
+          '+const a = 2;',
+        ].join('\n'),
+        artifacts: {
+          fileMutations: [
+            { kind: 'update' as const, filePath: 'src/a.ts', addedLines: 1, removedLines: 1 },
+          ],
+        },
+      };
+      const view = render(
+        withTheme(
+          <ToolCallBlock name="ApplyPatch" args={{}} result={result} isExpanded reducedMotion />,
+        ),
+      );
+      const rendered = frame(view.lastFrame);
+
+      expect(rendered).toContain('+ const a = 2;');
+      expect(rendered).not.toContain('--- src/a.ts');
+      expect(rendered).not.toContain('+++ src/a.ts');
+      expect(rendered).not.toContain('@@');
     });
   });
 

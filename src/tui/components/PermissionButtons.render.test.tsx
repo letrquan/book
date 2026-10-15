@@ -428,7 +428,31 @@ describe('PermissionButtons payload', () => {
     expect(mentions(frame, 'notes.txt')).toBe(1);
   });
 
-  it('summarises a cut diff as +N lines with the D hint', async () => {
+  it('offers D when a few very long lines wrap past the per-file budget', async () => {
+    const root = makeWorkspace({});
+    // Three source lines: far fewer than the row budget, but each wraps to dozens of rows.
+    const content = ['a', 'b', 'c'].map((letter) => letter.repeat(2000)).join('\n');
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{
+            id: 'write-wrapped',
+            name: 'Write',
+            arguments: { filePath: 'min.js', content },
+          }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          terminalRows={80}
+          workspaceRoot={root}
+        />,
+      ),
+    );
+    const frame = await frameContaining(view, '+ aaaa');
+    expect(frame).toMatch(/… \d+ lines? hidden \(D shows more\)/);
+    expect(frame).toContain('D more');
+  });
+
+  it('summarises a cut diff as N lines hidden with the D hint', async () => {
     const root = makeWorkspace({});
     const content = Array.from({ length: 60 }, (_, index) => `line ${index + 1}`).join('\n');
     const view = render(
@@ -447,8 +471,7 @@ describe('PermissionButtons payload', () => {
       ),
     );
     const frame = await frameContaining(view, '+ line 1');
-    expect(frame).toMatch(/… \+\d+ lines \(D shows more\)/);
-    expect(frame).not.toContain('lines hidden');
+    expect(frame).toMatch(/… \d+ lines hidden \(D shows more\)/);
     expect(frame).not.toContain('B omitted');
   });
 
