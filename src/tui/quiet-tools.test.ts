@@ -7,6 +7,7 @@ import {
   allCallsQuiet,
   hasProse,
   hasReasoning,
+  createShellPartsMemo,
   isQuietInvocation,
   continuesQuietRun,
   summarizeQuietRun,
@@ -523,7 +524,63 @@ describe('read-only shell commands (#459)', () => {
   it('folds a successful read-only command, running or finished', () => {
     expect(quiet(bash('a', 'cat src/a.js'))).toBe(true);
     expect(quiet(bash('b', 'rg TODO src | head -n 20'), undefined)).toBe(true);
-    expect(quiet(bash('c', 'git status'))).toBe(true);
+    expect(quiet(bash('c', 'find src -type f'))).toBe(true);
+  });
+
+  it('keeps a git command on its own row', () => {
+    // Plain `git ...` runs whatever program the repository's config names.
+    for (const command of ['git status', 'git diff --stat', 'git log -5', 'git show HEAD']) {
+      expect(quiet(bash('g', command))).toBe(false);
+    }
+  });
+
+  it('keeps a command that timed out into a background shell on its own row', () => {
+    const moved: ToolResult = {
+      ...ok('a'),
+      data: { backgrounded: true, shell: { id: 'shell-1', status: 'running' } },
+    };
+    expect(quiet(bash('a', 'cat src/a.js'), moved)).toBe(false);
+    // Other data on a result does not matter.
+    expect(quiet(bash('b', 'cat src/a.js'), { ...ok('b'), data: { backgrounded: false } })).toBe(
+      true,
+    );
+    expect(quiet(bash('c', 'cat src/a.js'), { ...ok('c'), data: 'text' })).toBe(true);
+  });
+
+  it('counts the file an option names against the workspace', () => {
+    for (const command of [
+      'fd --ignore-file /etc/passwd foo',
+      'fd --search-path /etc foo',
+      'fd --base-directory ../x foo',
+      'rg --ignore-file /etc/passwd foo',
+      'rg -f /etc/passwd src',
+      'rg --file=/etc/passwd src',
+      'rg -f pats /etc',
+      'find src -newer /etc/passwd',
+      'find src -newer ../x',
+      'find . -samefile /etc/passwd',
+      'find . -newerat /etc/passwd',
+      'file -m /etc/magic a',
+      'file -m src/m:/etc/magic a',
+      'file --magic=/etc/magic a',
+    ]) {
+      expect(quiet(bash('o', command)), command).toBe(false);
+    }
+    for (const command of [
+      'rg --ignore-file .ignore foo',
+      'fd --ignore-file .fdignore foo',
+      'find src -newer a.js',
+      'file -m magic.mgc a.bin',
+    ]) {
+      expect(quiet(bash('i', command)), command).toBe(true);
+    }
+  });
+
+  it('keeps a glob that can reach the parent directory on its own row', () => {
+    for (const command of ['cat .*/secret', 'cat .[.]/x', 'ls .?']) {
+      expect(quiet(bash('p', command)), command).toBe(false);
+    }
+    expect(quiet(bash('q', 'cat src/*.ts'))).toBe(true);
   });
 
   it('keeps a mutating or unclassifiable command on its own row', () => {
@@ -591,7 +648,7 @@ describe('read-only shell commands (#459)', () => {
     const summary = summarizeQuietRun([
       { call: call('a', 'Read', { file_path: 'src/a.js' }), result: ok('a') },
       { call: bash('b', 'cat a.js b.js'), result: ok('b') },
-      { call: bash('c', 'ls src && git status'), result: ok('c') },
+      { call: bash('c', 'ls src && ls'), result: ok('c') },
       { call: call('d', 'TaskList'), result: ok('d') },
     ]);
     expect(summary.target).toBe('a.js, b.js');
@@ -608,10 +665,60 @@ describe('read-only shell commands (#459)', () => {
     expect(
       summarizeQuietRun([
         { call: bash('a', 'ls src'), result: ok('a') },
-        { call: bash('b', 'git status'), result: ok('b') },
+        { call: bash('b', 'pwd'), result: ok('b') },
         { call: call('c', 'TaskList'), result: ok('c') },
       ]),
-    ).toMatchObject({ title: 'List', metadata: ['2 listings', '1 lookup'] });
+    ).toMatchObject({
+      title: 'List',
+      target: 'src, .',
+      metadata: ['2 listings', '1 lookup'],
+    });
+  });
+
+  it('names the current directory for a listing with no path, and a file for a read', () => {
+    expect(summarizeQuietRun([{ call: bash('a', 'ls'), result: ok('a') }])).toMatchObject({
+      title: 'List',
+      target: '.',
+    });
+    expect(
+      summarizeQuietRun([
+        { call: bash('a', 'ls'), result: ok('a') },
+        { call: bash('b', 'cat src/a.js'), result: ok('b') },
+      ]),
+    ).toMatchObject({ title: 'Read', target: 'a.js' });
+  });
+
+  it('memoizes a classification per command, and works through a context', () => {
+    const memo = createShellPartsMemo();
+    const parts = memo('ls src');
+    // The same array comes back: it was not classified again.
+    expect(memo('ls src')).toBe(parts);
+    const withMemo: QuietToolContext = { ...context, shellParts: memo };
+    expect(isQuietInvocation(bash('a', 'ls src'), ok('a'), message, withMemo)).toBe(true);
+    expect(isQuietInvocation(bash('b', 'touch x'), ok('b'), message, withMemo)).toBe(false);
+  });
+
+  it('bounds the memo and still answers after evicting', () => {
+    const memo = createShellPartsMemo(2);
+    const first = memo('ls a');
+    memo('ls b');
+    memo('ls c');
+    expect(memo('ls a')).toEqual(first);
+    expect(memo('touch x')).toBeUndefined();
+    expect(memo('touch x')).toBeUndefined();
+  });
+
+  it('uses the context memo for the summary too', () => {
+    const seen: string[] = [];
+    const summary = summarizeQuietRun([{ call: bash('a', 'cat src/a.js'), result: ok('a') }], {
+      ...context,
+      shellParts: (command) => {
+        seen.push(command);
+        return [{ kind: 'read', path: 'x.ts' }];
+      },
+    });
+    expect(seen).toEqual(['cat src/a.js']);
+    expect(summary.target).toBe('x.ts');
   });
 
   it('folds three one-command turns into one entry', () => {

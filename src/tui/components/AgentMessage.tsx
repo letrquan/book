@@ -562,7 +562,10 @@ export function AgentMessageInner({
     const byIndex = new Map<number, { head: boolean; summary: QuietRunSummary }>();
     for (const row of groupQuietInvocations(topLevelInvocations, message, quietTools)) {
       if (row.kind !== 'quiet') continue;
-      const summary = summarizeQuietRun(row.indices.map((index) => topLevelInvocations[index]!));
+      const summary = summarizeQuietRun(
+        row.indices.map((index) => topLevelInvocations[index]!),
+        quietTools,
+      );
       row.indices.forEach((index, position) =>
         byIndex.set(index, { head: position === 0, summary }),
       );

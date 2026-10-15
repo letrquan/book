@@ -14,6 +14,7 @@ import { AgentMessage, managedAgentTracesEqualForMessage } from './AgentMessage.
 import { UserMessage, userTurnRows } from './UserMessage.js';
 import {
   createQuietCollapser,
+  createShellPartsMemo,
   groupQuietInvocations,
   type QuietToolContext,
 } from '../quiet-tools.js';
@@ -256,7 +257,9 @@ export function ChatPanelInner({
     const pinned = new Set<string>();
     for (const [id, expanded] of toolExpansionOverrides ?? []) if (expanded) pinned.add(id);
     if (expandedToolCallId) pinned.add(expandedToolCallId);
-    return { pinned, pendingToolId, workspace };
+    // The memo lives with this context: the transcript classifies the same shell
+    // commands on every render until something here changes.
+    return { pinned, pendingToolId, workspace, shellParts: createShellPartsMemo() };
   }, [
     expandedToolCallId,
     pendingToolId,

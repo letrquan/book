@@ -22,9 +22,12 @@ import {
  * `Bash` is not in this set, because a shell command can change anything. It
  * joins a run one call at a time, through `classifyReadOnlyShellCommand`: a
  * conservative parser that accepts only a command it can prove read-only (`cat`,
- * `rg`, `ls`, `git diff --stat`, ...) and rejects expansion, redirection,
- * background jobs and every wrapper. Anything it cannot prove keeps its own row,
- * as does a read-only command that failed, ran in the background or names a path
+ * `rg`, `ls`, `find` without actions, ...) and rejects expansion, redirection,
+ * background jobs and every wrapper. No `git` command is on its allow-list: a
+ * plain `git ...` carries none of the hardening Book's own Git tools apply, so a
+ * repository's config or attributes can make it run a program. Anything the
+ * parser cannot prove keeps its own row, as does a read-only command that failed,
+ * ran in the background (or was moved there at its timeout) or names a path
  * outside the workspace.
  */
 export const QUIET_TOOLS: ReadonlySet<string> = new Set([
@@ -62,6 +65,46 @@ export interface QuietToolContext {
    * when no prompt was shown (bypass mode, or an allow rule).
    */
   workspace?: string;
+  /**
+   * Classifies a shell command. The transcript asks again for the same command on
+   * every render, so a context that lives across renders carries a memo
+   * (`createShellPartsMemo`); without one the classifier is called directly.
+   */
+  shellParts?: (command: string) => ReadOnlyShellPart[] | undefined;
+}
+
+/**
+ * A bounded per-command memo of `classifyReadOnlyShellCommand`, for a
+ * `QuietToolContext` to carry. It lives and dies with the context that holds it.
+ */
+export function createShellPartsMemo(
+  limit = 256,
+): (command: string) => ReadOnlyShellPart[] | undefined {
+  const memo = new Map<string, ReadOnlyShellPart[] | undefined>();
+  return (command) => {
+    if (memo.has(command)) return memo.get(command);
+    const parts = classifyReadOnlyShellCommand(command);
+    if (memo.size >= limit) memo.delete(memo.keys().next().value!);
+    memo.set(command, parts);
+    return parts;
+  };
+}
+
+function shellPartsFor(
+  context: QuietToolContext | undefined,
+  command: string,
+): ReadOnlyShellPart[] | undefined {
+  return (context?.shellParts ?? classifyReadOnlyShellCommand)(command);
+}
+
+/** Whether a result reports a command that outlived its timeout and was moved to a background shell. */
+function wasBackgrounded(result: ToolResult | undefined): boolean {
+  const data = result?.data;
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    (data as { backgrounded?: unknown }).backgrounded === true
+  );
 }
 
 /** Whether `target`, resolved from `base`, lies outside the workspace. */
@@ -86,14 +129,15 @@ function reachesOutside(call: ToolCall, workspace: string | undefined): boolean 
  */
 function readOnlyShellParts(
   call: ToolCall,
-  workspace: string | undefined,
+  context: QuietToolContext,
 ): ReadOnlyShellPart[] | undefined {
+  const { workspace } = context;
   const command = call.arguments.command;
   if (typeof command !== 'string') return undefined;
   if (call.arguments.run_in_background === true || call.arguments.runInBackground === true) {
     return undefined;
   }
-  const parts = classifyReadOnlyShellCommand(command);
+  const parts = shellPartsFor(context, command);
   if (!parts || !workspace) return parts;
   const workdir = argString(call.arguments, 'workdir');
   if (workdir && escapesWorkspace(workspace, workspace, workdir)) return undefined;
@@ -122,7 +166,10 @@ export function isQuietInvocation(
 ): boolean {
   const name = canonicalToolName(call.name);
   if (name === 'Bash') {
-    if (!readOnlyShellParts(call, context.workspace)) return false;
+    if (!readOnlyShellParts(call, context)) return false;
+    // A foreground command still running at its timeout is adopted as a background
+    // shell and reported as a success; it is a job to watch, not a read.
+    if (wasBackgrounded(result)) return false;
   } else if (!QUIET_TOOLS.has(name)) {
     return false;
   }
@@ -398,7 +445,10 @@ function plural(count: number, one: string, many: string): string {
  * names what the agent looked at, so the summary still says something; the
  * row truncates it to the column like any other target.
  */
-export function summarizeQuietRun(invocations: readonly QuietInvocation[]): QuietRunSummary {
+export function summarizeQuietRun(
+  invocations: readonly QuietInvocation[],
+  context?: QuietToolContext,
+): QuietRunSummary {
   const files: string[] = [];
   const patterns: string[] = [];
   const listed: string[] = [];
@@ -414,7 +464,7 @@ export function summarizeQuietRun(invocations: readonly QuietInvocation[]): Quie
       // A folded command was classified, so the fallback only covers a call whose
       // arguments changed under the summary; it reads as a lookup.
       const command = call.arguments.command;
-      const parts = typeof command === 'string' ? classifyReadOnlyShellCommand(command) : undefined;
+      const parts = typeof command === 'string' ? shellPartsFor(context, command) : undefined;
       if (!parts) {
         others.push(name);
         continue;
@@ -424,7 +474,9 @@ export function summarizeQuietRun(invocations: readonly QuietInvocation[]): Quie
         else if (part.kind === 'search') patterns.push(part.query ?? part.path ?? 'search');
         else {
           listings += 1;
-          if (part.path && !listed.includes(part.path)) listed.push(part.path);
+          // A listing that names no path is of the current directory.
+          const where = part.path ?? '.';
+          if (!listed.includes(where)) listed.push(where);
         }
       }
     } else if (name === 'Read') {
@@ -445,7 +497,7 @@ export function summarizeQuietRun(invocations: readonly QuietInvocation[]): Quie
       : patterns.length > 0
         ? patterns.join(', ')
         : listings > 0
-          ? listed.join(', ') || '.'
+          ? listed.join(', ')
           : [...new Set(others)].join(', ');
   const metadata: string[] = [];
   if (files.length > 0) metadata.push(plural(files.length, 'file', 'files'));

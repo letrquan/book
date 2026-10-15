@@ -10,6 +10,16 @@
  * background jobs, multi-line scripts, wrappers), and then checks every segment
  * against a small allow-list with each command's mutating flags rejected.
  *
+ * Allow-list: `cat`, `bat` (only with paging off), `head`, `tail` (never following),
+ * `nl`, `wc`, `file`, `stat`, `sed -n Np`, `grep`, `rg`, `ag`, `find` without actions,
+ * `fd` without exec, `ls`, `tree`, `eza`, `du` and `pwd`, plus small stdin formatters
+ * after a pipe. Not on it: `git` (a plain `git ...` in a shell carries none of the
+ * hardening Book's own Git tools apply, so a repository's own config, attributes or
+ * hooks can make it run a program), `ack` (it reads a project-level `.ackrc`), and
+ * every pager, wrapper and interpreter. An option that names a file is counted as a
+ * path for the caller's workspace check, or the command is refused. A path with a glob
+ * that could expand to `..` is refused.
+ *
  * `undefined` is always the safe answer: the command then keeps its own row.
  * Anything not named here, a command or a flag, is therefore "not read-only".
  *
@@ -29,6 +39,22 @@ export function shellCommandPaths(parts: readonly ReadOnlyShellPart[]): string[]
       ? [part.path]
       : [...(part.path !== undefined ? [part.path] : []), ...(part.extraPaths ?? [])],
   );
+}
+
+const GLOB_CHARS = /[*?[]/;
+
+/**
+ * Whether a path operand holds a glob that bash (before 5.2) could expand to `..`:
+ * a segment that starts with a dot and has a metacharacter (`.*`, `.?`, `.[.]`), or
+ * one made only of metacharacters and dots (`[.][.]`, `*`). The workspace check is
+ * lexical, so `.*\/secret` would resolve inside the workspace while the shell
+ * reaches the parent.
+ */
+function globMayReachParent(path: string): boolean {
+  return path.split(/[\\/]/).some((segment) => {
+    if (!GLOB_CHARS.test(segment)) return false;
+    return segment.startsWith('.') || /^[*?[\].]+$/.test(segment);
+  });
 }
 
 type Connector = '|' | '&&' | '||' | ';';
@@ -183,23 +209,43 @@ interface FlagRules {
   values?: readonly string[];
   /** Options that make the command unsafe. A long name also matches its abbreviations. */
   deny?: readonly string[];
+  /**
+   * Options whose value names a file or directory. Each is also listed in `values`; the
+   * value joins the command's paths, so the workspace check sees it.
+   */
+  paths?: readonly string[];
+  /** A last check on the raw words and what they parsed to; false refuses the command. */
+  check?: (args: readonly string[], parsed: ParsedArgs) => boolean;
 }
 
 interface ParsedArgs {
   flags: Flag[];
   /** Every non-option word, including those after `--`. */
   operands: string[];
-  /** The words after `--`, which are always paths for the git tools. */
-  afterDashes: string[];
+  /** The values of the options in `FlagRules.paths`. */
+  flagPaths: string[];
 }
 
-function isDenied(flag: Flag, deny: readonly string[]): boolean {
-  return deny.some((entry) =>
-    entry.startsWith('--')
-      ? // getopt-style tools accept any unambiguous prefix of a long option.
-        flag.name.startsWith('--') && flag.name.length >= 3 && entry.startsWith(flag.name)
-      : flag.name === entry,
-  );
+/**
+ * Whether a flag is one of `entries`. getopt-style tools accept any unambiguous prefix
+ * of a long option, so a long entry also matches its abbreviations, except a name that
+ * is itself a known option (`--exclude` beside `--exclude-from`).
+ */
+function matchesOption(
+  flag: Flag,
+  entries: readonly string[],
+  known: ReadonlySet<string> = new Set(),
+): boolean {
+  return entries.some((entry) => {
+    if (!entry.startsWith('--')) return flag.name === entry;
+    if (flag.name === entry) return true;
+    return (
+      flag.name.startsWith('--') &&
+      flag.name.length >= 3 &&
+      entry.startsWith(flag.name) &&
+      !known.has(flag.name)
+    );
+  });
 }
 
 /**
@@ -257,8 +303,14 @@ function parseArgs(args: readonly string[], rules: FlagRules = {}): ParsedArgs |
     }
   }
   const deny = rules.deny ?? [];
-  if (flags.some((flag) => isDenied(flag, deny))) return undefined;
-  return { flags, operands, afterDashes };
+  if (flags.some((flag) => matchesOption(flag, deny, longValue))) return undefined;
+  const pathOptions = rules.paths ?? [];
+  const flagPaths = flags
+    .filter((flag) => flag.value !== undefined && matchesOption(flag, pathOptions, longValue))
+    // A list of files (`file -m a:b`) is several paths, and the whole value is one too.
+    .flatMap((flag) => [flag.value!, ...(flag.value!.includes(':') ? flag.value!.split(':') : [])]);
+  const parsed = { flags, operands, flagPaths };
+  return rules.check && !rules.check(args, parsed) ? undefined : parsed;
 }
 
 function pathsPart(
@@ -280,16 +332,27 @@ function lookup<T>(table: Record<string, T>, key: string | undefined): T | undef
   return key !== undefined && Object.hasOwn(table, key) ? table[key] : undefined;
 }
 
-/** A word that names somewhere outside the directory the command runs in. */
-function lexicallyEscapes(word: string): boolean {
-  return (
-    /^[\\/~]/.test(word) || /^[A-Za-z]:/.test(word) || word.split(/[\\/]/).some((s) => s === '..')
-  );
-}
-
 // --- Read ---------------------------------------------------------------
 
 const HEAD_TAIL_VALUES = ['-n', '-c', '--lines', '--bytes'];
+
+/**
+ * `tail` must never follow: `-f`, `-F`, `--follow` (denied by name), a cluster that
+ * holds one (`-5f`), and the obsolete `+1f` operand form all keep it running.
+ */
+function tailDoesNotFollow(args: readonly string[], parsed: ParsedArgs): boolean {
+  if (parsed.operands.some((operand) => operand.startsWith('+'))) return false;
+  for (const arg of args) {
+    if (arg === '--') break;
+    if (/^-[^-]/.test(arg) && /[fF]/.test(arg)) return false;
+  }
+  return true;
+}
+
+/** `bat` only runs a pager unless paging is turned off. */
+function batPagingIsNever(_args: readonly string[], parsed: ParsedArgs): boolean {
+  return parsed.flags.every((flag) => !matchesOption(flag, ['--paging']) || flag.value === 'never');
+}
 
 const READ_RULES: Record<string, FlagRules> = {
   cat: {},
@@ -310,14 +373,30 @@ const READ_RULES: Record<string, FlagRules> = {
       '--color',
       '--map-syntax',
     ],
-    deny: ['--pager'],
+    deny: [
+      '--pager',
+      // `bat cache --build` and the like write the cache; `--generate-config-file` a config.
+      '--generate-config-file',
+      '--build',
+      '--clear',
+      '--source',
+      '--target',
+      '--blank',
+      '--acknowledgements',
+    ],
+    check: batPagingIsNever,
   },
   head: { values: HEAD_TAIL_VALUES },
-  tail: { values: HEAD_TAIL_VALUES, deny: ['-f', '-F', '--follow'] },
+  tail: {
+    values: HEAD_TAIL_VALUES,
+    deny: ['-f', '-F', '--follow'],
+    check: tailDoesNotFollow,
+  },
   nl: { values: ['-b', '-d', '-f', '-h', '-i', '-l', '-n', '-s', '-v', '-w'] },
   wc: { deny: ['--files0-from'] },
   file: {
     values: ['-m', '--magic-file', '-P', '--parameter', '-e', '--exclude'],
+    paths: ['-m', '--magic-file'],
     deny: ['-f', '-C', '--files-from', '--compile'],
   },
   stat: { values: ['-c', '--format', '--printf'] },
@@ -327,7 +406,7 @@ READ_RULES.batcat = READ_RULES.bat!;
 function readParts(args: readonly string[], rules: FlagRules): ReadOnlyShellPart[] | undefined {
   const parsed = parseArgs(args, rules);
   if (!parsed || parsed.operands.length === 0) return undefined;
-  return parsed.operands.map((path) => ({ kind: 'read', path }));
+  return [...parsed.operands, ...parsed.flagPaths].map((path) => ({ kind: 'read', path }));
 }
 
 /** Only an address print: `sed -n 1,40p file`. Every other script can write, execute or read. */
@@ -421,12 +500,14 @@ const RG_VALUES = [
   '--type-add',
   '--type-clear',
   '--engine',
+  '--ignore-file',
+  '-f',
+  '--file',
 ];
 
-const AG_ACK_VALUES = [
+const AG_VALUES = [
   '-G',
   '--file-search-regex',
-  '-g',
   '-m',
   '--max-count',
   '-A',
@@ -448,41 +529,42 @@ const SEARCH_RULES: Record<string, FlagRules> = {
   rg: {
     values: RG_VALUES,
     // `--pre` and `--hostname-bin` run a program; `-z` decompresses through one.
-    deny: ['--pre', '--pre-glob', '--search-zip', '-z', '-f', '--file', '--hostname-bin'],
+    deny: ['--pre', '--pre-glob', '--search-zip', '-z', '--hostname-bin'],
+    paths: ['--ignore-file', '-f', '--file'],
   },
-  ag: { values: AG_ACK_VALUES, deny: ['--pager'] },
-  ack: { values: AG_ACK_VALUES, deny: ['--pager'] },
-};
-
-const GIT_GREP_RULES: FlagRules = {
-  values: ['-e', '-A', '-B', '-C', '-m', '--max-count', '--max-depth', '-j', '--threads'],
-  deny: ['-f', '-O', '--open-files-in-pager', '--no-index'],
+  ag: {
+    values: AG_VALUES,
+    // `--pager` runs a program; `-p` reads an ignore file and `-g` makes every operand a path.
+    deny: ['--pager', '-p', '--path-to-ignore', '-g'],
+  },
 };
 SEARCH_RULES.egrep = SEARCH_RULES.grep!;
 SEARCH_RULES.fgrep = SEARCH_RULES.grep!;
 
+/** The options that supply the pattern, so that every operand is a path. */
+const PATTERN_OPTIONS = ['-e', '--regexp'];
+/** `rg -f FILE` reads its patterns from a file, which then names no pattern operand. */
+const RG_PATTERN_OPTIONS = [...PATTERN_OPTIONS, '-f', '--file'];
+
 /** `grep PATTERN PATH...`, or `-e PATTERN` and then only paths. */
 function grepLikeParts(
-  args: readonly string[],
-  rules: FlagRules,
-  options: { checkEscapes?: boolean } = {},
-): ReadOnlyShellPart[] | undefined {
-  const parsed = parseArgs(args, rules);
-  if (!parsed) return undefined;
-  if (options.checkEscapes && parsed.operands.some(lexicallyEscapes)) return undefined;
-  const patterns = parsed.flags.filter((f) => f.name === '-e' || f.name === '--regexp');
-  const query = patterns.length > 0 ? patterns[0]!.value : parsed.operands[0];
+  parsed: ParsedArgs,
+  patternOptions: readonly string[] = PATTERN_OPTIONS,
+): ReadOnlyShellPart[] {
+  const patterns = parsed.flags.filter((flag) => patternOptions.includes(flag.name));
+  const named = patterns.find((flag) => PATTERN_OPTIONS.includes(flag.name));
+  const query = patterns.length > 0 ? named?.value : parsed.operands[0];
   const paths = patterns.length > 0 ? parsed.operands : parsed.operands.slice(1);
-  return [pathsPart('search', paths, query)];
+  return [pathsPart('search', [...paths, ...parsed.flagPaths], query)];
 }
 
 function rgParts(args: readonly string[]): ReadOnlyShellPart[] | undefined {
   const parsed = parseArgs(args, SEARCH_RULES.rg);
   if (!parsed) return undefined;
   if (parsed.flags.some((f) => f.name === '--files')) {
-    return [pathsPart('list', parsed.operands)];
+    return [pathsPart('list', [...parsed.operands, ...parsed.flagPaths])];
   }
-  return grepLikeParts(args, SEARCH_RULES.rg!);
+  return grepLikeParts(parsed, RG_PATTERN_OPTIONS);
 }
 
 const FIND_DENY = new Set([
@@ -495,7 +577,11 @@ const FIND_DENY = new Set([
   '-fprint0',
   '-fprintf',
   '-fls',
+  // Reads the names of the files to search from a file.
+  '-files0-from',
 ]);
+/** Tests that compare with a file named by the next word: `-newer FILE`, `-newerXY FILE`. */
+const FIND_FILE_TESTS = /^-(?:newer|anewer|cnewer|samefile|newer[aBcm][aBcmt])$/;
 const FIND_QUERY_TESTS = new Set([
   '-name',
   '-iname',
@@ -511,6 +597,8 @@ function findParts(args: readonly string[]): ReadOnlyShellPart[] | undefined {
   if (args.some((arg) => FIND_DENY.has(arg))) return undefined;
   let i = 0;
   while (args[i] === '-H' || args[i] === '-L' || args[i] === '-P') i += 1;
+  // `-D opts` and `-O3` come before the start points and would hide them from this scan.
+  if (/^-[DO]/.test(args[i] ?? '')) return undefined;
   const paths: string[] = [];
   while (i < args.length && !/^(?:-.|[!(),])/.test(args[i]!)) {
     paths.push(args[i]!);
@@ -519,6 +607,12 @@ function findParts(args: readonly string[]): ReadOnlyShellPart[] | undefined {
   const expression = args.slice(i);
   const test = expression.findIndex((arg) => FIND_QUERY_TESTS.has(arg));
   const query = test >= 0 ? expression[test + 1] : undefined;
+  for (const [index, arg] of expression.entries()) {
+    if (!FIND_FILE_TESTS.test(arg)) continue;
+    const file = expression[index + 1];
+    if (file === undefined) return undefined;
+    paths.push(file);
+  }
   return [pathsPart('search', paths, query)];
 }
 
@@ -548,7 +642,9 @@ const FD_RULES: FlagRules = {
     '--search-path',
     '--base-directory',
   ],
-  deny: ['-x', '-X', '--exec', '--exec-batch'],
+  paths: ['--ignore-file', '--search-path', '--base-directory'],
+  // `-l` is `--exec-batch ls -l`.
+  deny: ['-x', '-X', '--exec', '--exec-batch', '-l', '--list-details'],
 };
 
 function isPathish(word: string): boolean {
@@ -558,9 +654,6 @@ function isPathish(word: string): boolean {
 function fdParts(args: readonly string[]): ReadOnlyShellPart[] | undefined {
   const parsed = parseArgs(args, FD_RULES);
   if (!parsed) return undefined;
-  const flagPaths = parsed.flags
-    .filter((f) => f.name === '--search-path' || f.name === '--base-directory')
-    .map((f) => f.value!);
   const [first, ...rest] = parsed.operands;
   let query: string | undefined;
   let paths: string[];
@@ -569,7 +662,7 @@ function fdParts(args: readonly string[]): ReadOnlyShellPart[] | undefined {
     query = first;
     paths = rest;
   }
-  return [pathsPart('search', [...paths, ...flagPaths], query)];
+  return [pathsPart('search', [...paths, ...parsed.flagPaths], query)];
 }
 
 // --- List ---------------------------------------------------------------
@@ -592,112 +685,53 @@ const LIST_RULES: Record<string, FlagRules> = {
   },
   tree: {
     values: ['-L', '-P', '-I', '--charset', '--filelimit', '--sort', '--timefmt'],
-    // `tree -o FILE` writes the listing to a file.
-    deny: ['-o', '--output'],
+    // `tree -o FILE` writes the listing to a file; the others read one.
+    deny: ['-o', '--output', '--fromfile', '--fromtabfile', '--gitfile'],
   },
   eza: { values: ['-L', '--level', '-I', '--ignore-glob', '-s', '--sort', '--time-style'] },
-  du: { values: ['-d', '--max-depth', '-B', '--block-size', '--exclude', '-t', '--threshold'] },
+  du: {
+    values: [
+      '-d',
+      '--max-depth',
+      '-B',
+      '--block-size',
+      '--exclude',
+      '-t',
+      '--threshold',
+      '--time-style',
+    ],
+    // These read the names or patterns to use from a file.
+    deny: ['--files0-from', '-X', '--exclude-from'],
+  },
 };
 LIST_RULES.exa = LIST_RULES.eza!;
 
 function listParts(args: readonly string[], rules: FlagRules): ReadOnlyShellPart[] | undefined {
   const parsed = parseArgs(args, rules);
-  return parsed ? [pathsPart('list', parsed.operands)] : undefined;
-}
-
-// --- Git ----------------------------------------------------------------
-
-const GIT_VALUES = [
-  '-U',
-  '--unified',
-  '-S',
-  '-G',
-  '-n',
-  '--max-count',
-  '--skip',
-  '--since',
-  '--until',
-  '--after',
-  '--before',
-  '--author',
-  '--committer',
-  '--grep',
-  '--diff-filter',
-];
-
-const GIT_RULES: Record<string, FlagRules> = {
-  status: {},
-  diff: { values: GIT_VALUES, deny: ['--output', '--ext-diff', '--no-index', '-O'] },
-  log: { values: GIT_VALUES, deny: ['--output'] },
-  show: { values: GIT_VALUES, deny: ['--output', '--ext-diff'] },
-  'rev-parse': {},
-  'ls-files': {},
-};
-
-const GIT_BRANCH_FLAGS = new Set([
-  '-a',
-  '-r',
-  '-v',
-  '--list',
-  '--show-current',
-  '--all',
-  '--remotes',
-]);
-
-/**
- * Read-only git subcommands. A global option before the subcommand (`-c`, `-C`,
- * `--git-dir`) can redirect the command or run a program, so none is accepted.
- * Operands may be revisions or paths, so any that names somewhere outside the
- * directory is refused outright.
- */
-function gitParts(args: readonly string[]): ReadOnlyShellPart[] | undefined {
-  const [sub, ...rest] = args;
-  if (sub === undefined || sub.startsWith('-')) return undefined;
-  if (sub === 'grep') return grepLikeParts(rest, GIT_GREP_RULES, { checkEscapes: true });
-  if (sub === 'branch') {
-    const parsed = parseArgs(rest, { deny: [] });
-    if (!parsed || parsed.operands.length > 0) return undefined;
-    if (parsed.flags.some((flag) => !GIT_BRANCH_FLAGS.has(flag.name))) return undefined;
-    return [{ kind: 'list' }];
-  }
-  if (sub === 'blame') {
-    const parsed = parseArgs(rest, {
-      values: ['-L'],
-      deny: ['--contents', '-S', '--ignore-revs-file', '--output'],
-    });
-    if (!parsed || parsed.operands.length === 0 || parsed.operands.some(lexicallyEscapes)) {
-      return undefined;
-    }
-    return [{ kind: 'read', path: parsed.afterDashes[0] ?? parsed.operands.at(-1)! }];
-  }
-  const rules = lookup(GIT_RULES, sub);
-  if (!rules) return undefined;
-  const parsed = parseArgs(rest, rules);
-  if (!parsed || parsed.operands.some(lexicallyEscapes)) return undefined;
-  return [pathsPart('list', parsed.afterDashes)];
+  return parsed ? [pathsPart('list', [...parsed.operands, ...parsed.flagPaths])] : undefined;
 }
 
 // --- Formatters ---------------------------------------------------------
 
 const FORMATTER_RULES: Record<string, FlagRules> = {
-  wc: { deny: ['--files0-from'] },
+  wc: READ_RULES.wc!,
   sort: {
-    values: [
-      '-k',
-      '-t',
-      '-S',
+    values: ['-k', '-t', '-S', '--key', '--field-separator', '--buffer-size'],
+    // `-o FILE` writes the result to a file; `--compress-program` runs a program; the rest
+    // read or write a file or directory named by their value.
+    deny: [
+      '-o',
+      '--output',
+      '--compress-program',
+      '--files0-from',
       '-T',
-      '--key',
-      '--field-separator',
-      '--buffer-size',
       '--temporary-directory',
+      '--random-source',
     ],
-    // `-o FILE` writes the result to a file; `--compress-program` runs a program.
-    deny: ['-o', '--output', '--compress-program', '--files0-from'],
   },
   uniq: { values: ['-f', '-s', '-w', '--skip-fields', '--skip-chars', '--check-chars'] },
-  head: { values: HEAD_TAIL_VALUES },
-  tail: { values: HEAD_TAIL_VALUES, deny: ['-f', '-F', '--follow'] },
+  head: READ_RULES.head!,
+  tail: READ_RULES.tail!,
   cut: {
     values: [
       '-b',
@@ -753,7 +787,6 @@ function isFormatter(words: readonly string[]): boolean {
 function classifySegment(words: readonly string[]): ReadOnlyShellPart[] | undefined {
   const [cmd, ...args] = words;
   if (cmd === undefined) return undefined;
-  if (cmd === 'git') return gitParts(args);
   if (cmd === 'sed') return sedParts(args);
   if (cmd === 'rg') return rgParts(args);
   if (cmd === 'find') return findParts(args);
@@ -765,7 +798,10 @@ function classifySegment(words: readonly string[]): ReadOnlyShellPart[] | undefi
   const read = lookup(READ_RULES, cmd);
   if (read) return readParts(args, read);
   const search = lookup(SEARCH_RULES, cmd);
-  if (search) return grepLikeParts(args, search);
+  if (search) {
+    const parsed = parseArgs(args, search);
+    return parsed ? grepLikeParts(parsed) : undefined;
+  }
   const list = lookup(LIST_RULES, cmd);
   if (list) return listParts(args, list);
   return undefined;
@@ -792,5 +828,5 @@ export function classifyReadOnlyShellCommand(command: string): ReadOnlyShellPart
     if (!segmentParts) return undefined;
     parts.push(...segmentParts);
   }
-  return parts;
+  return shellCommandPaths(parts).some(globMayReachParent) ? undefined : parts;
 }

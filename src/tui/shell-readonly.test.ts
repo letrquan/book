@@ -27,16 +27,24 @@ const accepted: Array<[string, ReadOnlyShellPart[]]> = [
   ['tree -L 2 src', [{ kind: 'list', path: 'src' }]],
   ['tree src', [{ kind: 'list', path: 'src' }]],
   ['pwd', [{ kind: 'list' }]],
-  ['git status', [{ kind: 'list' }]],
-  ['git diff --stat', [{ kind: 'list' }]],
-  ['git diff -- src/a.js', [{ kind: 'list', path: 'src/a.js' }]],
-  ['git log --oneline -5', [{ kind: 'list' }]],
-  ['git show HEAD:src/a.js', [{ kind: 'list' }]],
-  ['git branch -a', [{ kind: 'list' }]],
-  ['git branch', [{ kind: 'list' }]],
-  ['git ls-files', [{ kind: 'list' }]],
-  ['git grep -n TODO -- src', [{ kind: 'search', query: 'TODO', path: 'src' }]],
-  ['git blame -L 1,5 src/a.js', [{ kind: 'read', path: 'src/a.js' }]],
+  ['tail -n 5 a', [{ kind: 'read', path: 'a' }]],
+  ['tail -n5 a', [{ kind: 'read', path: 'a' }]],
+  ['cat src/*.ts', [{ kind: 'read', path: 'src/*.ts' }]],
+  ['bat --paging=never a.js', [{ kind: 'read', path: 'a.js' }]],
+  ['bat --paging never a.js', [{ kind: 'read', path: 'a.js' }]],
+  ['rg --ignore-file .ignore foo', [{ kind: 'search', query: 'foo', path: '.ignore' }]],
+  ['rg -f pats src', [{ kind: 'search', path: 'src', extraPaths: ['pats'] }]],
+  ['fd --ignore-file .fdignore foo', [{ kind: 'search', query: 'foo', path: '.fdignore' }]],
+  ['fd --search-path src foo', [{ kind: 'search', query: 'foo', path: 'src' }]],
+  ['find src -newer a.js', [{ kind: 'search', path: 'src', extraPaths: ['a.js'] }]],
+  [
+    'file -m magic.mgc a.bin',
+    [
+      { kind: 'read', path: 'a.bin' },
+      { kind: 'read', path: 'magic.mgc' },
+    ],
+  ],
+  ['du --exclude=node_modules src', [{ kind: 'list', path: 'src' }]],
   ['rg TODO src | head -n 20', [{ kind: 'search', query: 'TODO', path: 'src' }]],
   [
     'cat a.js && cat b.js',
@@ -48,7 +56,7 @@ const accepted: Array<[string, ReadOnlyShellPart[]]> = [
   ['rg foo 2>/dev/null', [{ kind: 'search', query: 'foo' }]],
   ['rg foo 2>&1 | head', [{ kind: 'search', query: 'foo' }]],
   ['grep -c x a.js | wc -l', [{ kind: 'search', query: 'x', path: 'a.js' }]],
-  ['git log --oneline | sort | uniq -c | tail -n 3', [{ kind: 'list' }]],
+  ['rg x src | sort | uniq -c | tail -n 3', [{ kind: 'search', query: 'x', path: 'src' }]],
   ['rg x src | cut -d: -f1 | sort -u', [{ kind: 'search', query: 'x', path: 'src' }]],
   ['rg x src | tr a-z A-Z', [{ kind: 'search', query: 'x', path: 'src' }]],
   [
@@ -130,7 +138,23 @@ const rejected: Array<[string, string]> = [
   ['rg pre inline', 'rg --pre=./x foo'],
   ['rg search-zip', 'rg -z foo'],
   ['rg search-zip long', 'rg --search-zip foo'],
-  ['rg patterns from a file', 'rg -f pats src'],
+  // A plain `git ...` in a shell carries none of the hardening Book's own Git tools apply
+  // (GIT_HARDENING_ARGS, HARDENED_DIFF_ARGS and --no-show-signature in src/tools/git.ts), so
+  // the repository's core.fsmonitor, diff.external, textconv drivers, gpg.program and
+  // clean/smudge filters can run a program. It cannot be proven read-only from its text.
+  ['git status', 'git status'],
+  ['git diff', 'git diff --stat'],
+  ['git diff path', 'git diff -- src/a.js'],
+  ['git log', 'git log --oneline -5'],
+  ['git show', 'git show HEAD:src/a.js'],
+  ['git branch', 'git branch -a'],
+  ['git branch bare', 'git branch'],
+  ['git ls-files', 'git ls-files'],
+  ['git rev-parse', 'git rev-parse HEAD'],
+  ['git grep', 'git grep -n TODO -- src'],
+  ['git blame', 'git blame -L 1,5 src/a.js'],
+  ['git after a pipe', 'cat a.js | git status'],
+  ['git in a pipeline', 'git log --oneline | sort | uniq -c | tail -n 3'],
   ['git branch create', 'git branch new-branch'],
   ['git branch delete', 'git branch -d old'],
   ['git branch move', 'git branch -m a b'],
@@ -161,6 +185,49 @@ const rejected: Array<[string, string]> = [
   ['tail follow cluster', 'tail -fn 5 log'],
   ['tail follow long', 'tail --follow=name log'],
   ['tail -F', 'tail -F log'],
+  ['tail obsolete follow', 'tail +1f a'],
+  ['tail + operand', 'tail +5 a'],
+  ['tail follow with a count', 'tail -5f a'],
+  ['tail follow after -n', 'tail -nf a'],
+  ['tail follow as a formatter', 'rg x | tail -5f'],
+  ['tail plus operand as a formatter', 'rg x | tail +1f'],
+  ['du files0-from', 'du --files0-from=/etc/x'],
+  ['du files0-from abbreviation', 'du --files0=x'],
+  ['du exclude-from', 'du -X pats'],
+  ['du exclude-from long', 'du --exclude-from=pats'],
+  ['find files0-from', 'find . -files0-from list'],
+  ['find -D leading', 'find -D tree /etc -name x'],
+  ['fd list details', 'fd -l foo'],
+  ['file files-from', 'file -f list'],
+  ['file files-from long', 'file --files-from=list'],
+  ['grep file', 'grep -f pats src'],
+  ['grep file long', 'grep --file=pats src'],
+  ['tree fromfile', 'tree --fromfile list'],
+  ['sort files0-from', 'rg x | sort --files0-from=f'],
+  ['sort temporary directory', 'rg x | sort -T /tmp'],
+  ['sort temporary directory long', 'rg x | sort --temporary-directory=/tmp'],
+  ['sort random source', 'rg x | sort --random-source=/dev/zero'],
+  ['glob dot star', 'cat .*/secret'],
+  ['glob dot bracket', 'cat .[.]/x'],
+  ['glob dot question', 'ls .?'],
+  ['glob dot star alone', 'ls .*'],
+  ['glob of bracket dots', 'cat [.][.]/x'],
+  ['glob star segment', 'ls */x'],
+  ['glob question segment', 'cat src/?/a'],
+  ['glob in a search path', 'rg x .*/src'],
+  ['bat paging always', 'bat --paging=always a'],
+  ['bat paging auto', 'bat --paging=auto a'],
+  ['bat paging separate', 'bat --paging always a'],
+  ['bat paging abbreviation', 'bat --pag=auto a'],
+  ['bat pager long', 'bat --pager less a'],
+  ['bat generate config', 'bat --generate-config-file'],
+  ['batcat pager', 'batcat --pager=less a'],
+  ['ack', 'ack foo src'],
+  ['ack pager', 'ack --pager=less foo'],
+  ['ag pager', 'ag --pager less foo'],
+  ['ag pager inline', 'ag --pager=less foo'],
+  ['ag path-to-ignore', 'ag -p /etc/x foo'],
+  ['ag file names only', 'ag -g foo /etc'],
   ['sort output', 'rg x | sort -o out'],
   ['sort output long', 'rg x | sort --output=out'],
   ['sort output abbreviation', 'rg x | sort --out=out'],
@@ -222,6 +289,18 @@ describe('shellCommandPaths', () => {
   });
 
   it('is empty when the command names no path', () => {
-    expect(shellCommandPaths(classifyReadOnlyShellCommand('git status')!)).toEqual([]);
+    expect(shellCommandPaths(classifyReadOnlyShellCommand('ls')!)).toEqual([]);
+  });
+
+  it('counts the value of an option that names a file', () => {
+    expect(
+      shellCommandPaths(classifyReadOnlyShellCommand('rg --ignore-file .ignore foo src')!),
+    ).toEqual(['src', '.ignore']);
+    expect(shellCommandPaths(classifyReadOnlyShellCommand('file -m a:b c')!)).toEqual([
+      'c',
+      'a:b',
+      'a',
+      'b',
+    ]);
   });
 });
