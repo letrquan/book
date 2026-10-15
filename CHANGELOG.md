@@ -50,6 +50,16 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A failed Bash call's error detail keeps its last lines and its exit code** (#457). The detail
+  under the tool row folded stderr into one paragraph, kept its start, and stopped after two rows,
+  so a failing test run showed its first assertion and never its verdict. A failed command's
+  output (a result that carries an exit code) now shows one row per non-blank line, the last four,
+  behind a dimmed `… +N lines` row for the rest, and the row's metadata reads
+  `failed · exit 1 · 7ms`. Many test runners print the verdict on stdout and leave stderr empty;
+  for those the detail shows the tail of stdout, and a command with no output shows no detail rows.
+  Book's own sandbox note stays readable after the tail, in up to two rows. Any other failure (an
+  MCP error, a validation message) wraps as before, first line first. What the model reads is
+  unchanged.
 - **Reasoning no longer breaks the compact transcript's quiet-run summary** (#455). A model that
   thought before every read (an inline `<think>` part or provider-native reasoning) drew a
   `▸ thought` row and a tool row per call instead of one `✓ Read a.js, b.js, c.js` summary. Only

@@ -203,6 +203,19 @@ describe('Bash shell tools', () => {
     expect(c.backgroundShells).toBeUndefined();
   });
 
+  it('carries a foreground failure’s exit code in its details, leaving the message as it was', async () => {
+    const command = nodeCommand(
+      'exit-three.cjs',
+      `process.stderr.write('a\\nb\\n');\nprocess.exitCode = 3;\n`,
+    );
+
+    const result = await bash.execute({ command }, ctx());
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toBe('a\nb\n');
+    expect(result.structuredError?.details).toEqual({ exitCode: 3 });
+  });
+
   it('cancels a foreground Bash process through the tool signal', async () => {
     const controller = new AbortController();
     const c = ctxWith({ workspaceRoot: process.cwd(), signal: controller.signal });

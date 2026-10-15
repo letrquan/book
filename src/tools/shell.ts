@@ -66,8 +66,8 @@ function ok(output: string, data?: unknown): ToolResult {
   return toolSuccess(output, { data });
 }
 
-function fail(error: string, output = ''): ToolResult {
-  return toolFailure(error, { content: output });
+function fail(error: string, output = '', details?: Record<string, unknown>): ToolResult {
+  return toolFailure(error, { content: output, ...(details ? { details } : {}) });
 }
 
 function readString(
@@ -488,6 +488,9 @@ async function bashForeground(
                 built.gitDirReadOnly,
               ),
               stdout,
+              // For the transcript row only: the model reads the message and the
+              // output, never `details`.
+              typeof code === 'number' ? { exitCode: code } : undefined,
             ),
       );
     };
