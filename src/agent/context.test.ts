@@ -690,7 +690,11 @@ describe('buildMessages', () => {
     const dir = mkdtempSync(join(tmpdir(), 'book-context-deny-'));
     try {
       const memoryDir = getProjectMemoryDir(dir);
-      for (const rule of ['Write', `Write(${join(memoryDir, '**')})`, 'Write(**/memory/*.md)']) {
+      for (const rule of [
+        'Write',
+        `Write(${memoryDir.replace(/\\/g, '/')}/**)`,
+        'Write(**/memory/*.md)',
+      ]) {
         const config = defaultConfig({ workspace: dir, memoryContext: memoryContextFor(dir) });
         config.settings.permissions.deny = [rule];
         const prompt = systemPrefix(await buildMessages(config, [userMsg('hi')], []));

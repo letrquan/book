@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { join, relative } from 'path';
+import { basename, join, relative } from 'path';
 import type { FileObservation, ToolContext } from './types/tools.js';
 import {
   findLegacyMemoryBackup,
@@ -704,7 +704,7 @@ describe('the backup notice', () => {
       expect(buildMemoryReport({ workspace, bookRoot: root })).toContain(backup);
       expect(
         readdirSync(join(memoryDir, '..')).filter((n) => n.startsWith('memory.legacy-')),
-      ).toEqual([backup.split('/').pop()]);
+      ).toEqual([basename(backup)]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
