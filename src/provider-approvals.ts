@@ -22,6 +22,8 @@
  * reporting hosts call the same functions, so what is enforced and what is reported cannot drift.
  */
 import { createHash } from 'crypto';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import type { ProviderConfig, WorkspaceProviderChoice } from './settings.js';
 import { renderUntrustedText } from './hook-approvals.js';
 import { updateWorkspaceTrust } from './workspace-trust.js';
@@ -285,6 +287,99 @@ export function withheldModelSelections(
   return withheld;
 }
 
+/** The legacy `.bookrc.json` `baseUrl`, and whether the user approved it. */
+export interface LegacyBaseUrlGate {
+  baseUrl: string;
+  state: WorkspaceProviderState;
+}
+
+/**
+ * What the provider gate did to one resolution (#418), for the config that carries it and for the
+ * hosts that report it. Computed from the layer files themselves, never read back from a settings
+ * key a workspace layer could write.
+ */
+export interface WorkspaceProviderGate {
+  /** Provider ids only workspace layers define: they never inherit a key. */
+  declared: string[];
+  /** The subset of {@link declared} that is withheld (pending or rejected). */
+  withheld: string[];
+  /** The same ids sorted by the user's decision on the declaration as written. */
+  partition: WorkspaceProviderPartition;
+  /** Origin and key overrides a workspace layer wrote for a trusted provider; all dropped. */
+  droppedOverrides: DroppedProviderOverride[];
+  /** Model selections that fell back to the trusted layers' value. */
+  withheldSelections: WithheldModelSelection[];
+  /** The legacy `.bookrc.json` `baseUrl`, when the workspace has one. */
+  legacyBaseUrl?: LegacyBaseUrlGate;
+}
+
+/**
+ * The `baseUrl` a legacy `.bookrc.json` declares, read without the deprecation warning or the
+ * rest of the schema. Undefined when the file is absent, unreadable or names no usable URL, which
+ * is when {@link evaluateLegacyBaseUrl} has nothing to decide either.
+ */
+export function readLegacyBaseUrl(workspace: string): string | undefined {
+  const path = join(workspace, '.bookrc.json');
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+    const baseUrl = isPlainObject(parsed) ? parsed.baseUrl : undefined;
+    return typeof baseUrl === 'string' && URL.canParse(baseUrl) ? baseUrl : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * How a declared `apiKey` reads in a disclosure: the reference text of a `{env:…}` or `{file:…}`
+ * reference, or a note that a literal is present. Never a resolved value, and a literal is never
+ * echoed: it may be a real credential.
+ */
+export function describeApiKeyDeclaration(apiKey: string | undefined): string {
+  if (apiKey === undefined) return 'none';
+  if (/^\{(?:env|file):[^}]+\}$/.test(apiKey)) return renderUntrustedText(apiKey);
+  return 'a literal key (not shown)';
+}
+
+/** One provider as a decision is asked for it: id, declared origin and key reference. */
+export function describeWorkspaceProvider(entry: WorkspaceProviderEntry): string {
+  const origin = entry.declaration.baseURL ?? entry.declaration.baseUrl;
+  return (
+    `${renderUntrustedText(entry.id, 64)}  ` +
+    `${origin === undefined ? '(no baseURL: the default endpoint)' : renderUntrustedText(origin)}  ` +
+    `key: ${describeApiKeyDeclaration(entry.declaration.apiKey)}`
+  );
+}
+
+/** The legacy `baseUrl` as a decision is asked for it: it receives `BOOK_API_KEY`. */
+export function describeLegacyBaseUrl(baseUrl: string): string {
+  return `${LEGACY_BASE_URL_ID}  ${renderUntrustedText(baseUrl)}  key: BOOK_API_KEY would be sent here`;
+}
+
+/** One dropped override as a report reads it, without a leading marker. */
+export function describeDroppedOverride(dropped: DroppedProviderOverride): string {
+  return (
+    `${dropped.keys.join(', ')} for provider "${renderUntrustedText(dropped.providerId, 64)}" in ` +
+    `${renderUntrustedText(dropped.path)} ignored: you defined that provider yourself, so a ` +
+    'workspace file cannot change where its key goes. `book trust provider` does not apply to ' +
+    'it; to use another origin or key, set it in your own settings (~/.book/settings.json).'
+  );
+}
+
+/** One withheld model selection as a report reads it, without a leading marker. */
+export function describeWithheldSelection(selection: WithheldModelSelection): string {
+  const id = renderUntrustedText(selection.providerId, 64);
+  const instead =
+    selection.fallback === undefined
+      ? 'the trusted settings set none, so the default applies'
+      : `"${renderUntrustedText(selection.fallback)}" is used instead`;
+  return (
+    `${selection.key} "${renderUntrustedText(selection.value)}" from ` +
+    `${renderUntrustedText(selection.path)} ignored: it names the workspace provider "${id}", ` +
+    `which is not approved; ${instead}.`
+  );
+}
+
 /**
  * Why a request on `rawModel` may not be made: its provider is declared by the workspace and the
  * user has not approved it. The id is repository-authored text on its way to a terminal.
@@ -296,6 +391,21 @@ export function workspaceProviderRefusal(providerId: string, rawModel: string): 
     `workspace and has not been approved. It needs \`book trust provider ${id}\` before Book ` +
     'sends it a request or resolves its key.'
   );
+}
+
+/**
+ * What resolving a model on a withheld workspace provider throws. A class of its own so a caller
+ * that otherwise tolerates a model it cannot resolve (a managed-agent spawn defers that to the
+ * run) can tell this one apart: it is a decision waiting for the user, not a typo.
+ */
+export class WorkspaceProviderRefusalError extends Error {
+  constructor(
+    readonly providerId: string,
+    rawModel: string,
+  ) {
+    super(workspaceProviderRefusal(providerId, rawModel));
+    this.name = 'WorkspaceProviderRefusalError';
+  }
 }
 
 /**

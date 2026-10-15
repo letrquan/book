@@ -245,6 +245,13 @@ export const providerModelSchema = z.object({
     .optional(),
 });
 
+/**
+ * The `advisorModel` value that means "no advisor". `/advisor off` removes the user layer's key,
+ * but a checked-in `.book/settings.json` that declares an advisor would come back at the next
+ * launch, so the local layer (which outranks it) gets this instead (#418).
+ */
+export const ADVISOR_OFF_VALUE = 'off';
+
 export const providerConfigSchema = z.object({
   type: z.enum(['openai', 'anthropic']).default('openai'),
   baseURL: z.string().min(1).optional(),
@@ -532,7 +539,8 @@ export const bookSettingsSchema = z.object({
   compactEffort: effortLevelSchema.optional(),
   /**
    * A stronger model the agent may consult through the `Advisor` tool (`/advisor`).
-   * Unset, the tool is not offered.
+   * Unset, the tool is not offered; {@link ADVISOR_OFF_VALUE} is the explicit "off" that a higher
+   * layer writes to outrank a lower layer's advisor.
    */
   advisorModel: z.string().min(1).optional(),
   /** Max agent turns per user message. Omit for unlimited. */

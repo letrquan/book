@@ -367,6 +367,76 @@ export async function runDoctorCommand(
     console.log();
   }
 
+  // A provider names where a request goes and which credential rides along, so one only the
+  // workspace declares is withheld until the user decides on that exact declaration (#418).
+  // Listed in every state, with the shape of its key but never a value: a `{file:…}` or `{env:…}`
+  // reference is shown as written and never resolved, and a literal is not echoed at all.
+  const providerGate = config.workspaceProviderGate;
+  if (providerGate) {
+    const {
+      describeDroppedOverride,
+      describeLegacyBaseUrl,
+      describeWithheldSelection,
+      describeWorkspaceProvider,
+    } = await import('../provider-approvals.js');
+    const providerGroups = [
+      { mark: '[x]', suffix: '', entries: providerGate.partition.approved },
+      { mark: '[-]', suffix: ' (rejected)', entries: providerGate.partition.rejected },
+      { mark: '[!]', suffix: ' (not in effect)', entries: providerGate.partition.pending },
+    ];
+    const legacy = providerGate.legacyBaseUrl;
+    const legacyMark =
+      legacy?.state === 'approved' ? '[x]' : legacy?.state === 'rejected' ? '[-]' : '[!]';
+    const legacySuffix =
+      legacy?.state === 'approved'
+        ? ''
+        : legacy?.state === 'rejected'
+          ? ' (rejected)'
+          : ' (not in effect)';
+    const anyPending = providerGate.partition.pending.length > 0 || legacy?.state === 'pending';
+    if (providerGate.declared.length > 0 || legacy) {
+      console.log('Workspace-declared providers (require approval):');
+      for (const group of providerGroups) {
+        for (const entry of group.entries) {
+          console.log(`  ${group.mark} ${describeWorkspaceProvider(entry)}${group.suffix}`);
+          console.log(`        declared in: ${entry.layers.join(', ')}`);
+        }
+      }
+      if (legacy) {
+        console.log(`  ${legacyMark} ${describeLegacyBaseUrl(legacy.baseUrl)}${legacySuffix}`);
+      }
+      if (providerGate.partition.pending.length > 0) {
+        console.log(approvalHint('  Approve one:', config.workspace, 'provider <id>'));
+      }
+      if (legacy?.state === 'pending') {
+        console.log(
+          approvalHint('  Approve the legacy baseUrl:', config.workspace, 'provider .bookrc.json'),
+        );
+      }
+      if (anyPending) {
+        console.log(
+          approvalHint('  Approve all pending:', config.workspace, 'provider --all-pending') +
+            ' (add --reject to refuse)',
+        );
+      }
+      console.log();
+    }
+    if (providerGate.droppedOverrides.length > 0) {
+      console.log('Workspace overrides of your providers (dropped):');
+      for (const dropped of providerGate.droppedOverrides) {
+        console.log(`  [!] ${describeDroppedOverride(dropped)}`);
+      }
+      console.log();
+    }
+    if (providerGate.withheldSelections.length > 0) {
+      console.log('Withheld model selections:');
+      for (const selection of providerGate.withheldSelections) {
+        console.log(`  [!] ${describeWithheldSelection(selection)}`);
+      }
+      console.log();
+    }
+  }
+
   // Hooks.
   const hooks = settings.hooks;
   // `hooks.projectEntries` records trust decisions, not hook entries.

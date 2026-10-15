@@ -20,11 +20,9 @@ import {
   providerIdsOf,
   withheldModelSelections,
   withoutWorkspaceProviderOverrides,
-  type DroppedProviderOverride,
   type ModelSelectionLayer,
   type ProviderLayer,
-  type WithheldModelSelection,
-  type WorkspaceProviderPartition,
+  type WorkspaceProviderGate,
 } from './provider-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { normalizeRemovedSettings } from './settings-removed.js';
@@ -553,23 +551,7 @@ export function isUserSettingsFile(path: string, paths: SettingsResolutionPaths 
   return sameFile(path, userSettingsPath(paths));
 }
 
-/**
- * What the provider gate did to one resolution (#418), for the config that carries it and for the
- * hosts that report it. Computed from the layer files themselves, never read back from a settings
- * key a workspace layer could write.
- */
-export interface WorkspaceProviderGate {
-  /** Provider ids only workspace layers define: they never inherit a key. */
-  declared: string[];
-  /** The subset of {@link declared} that is withheld (pending or rejected). */
-  withheld: string[];
-  /** The same ids sorted by the user's decision on the declaration as written. */
-  partition: WorkspaceProviderPartition;
-  /** Origin and key overrides a workspace layer wrote for a trusted provider; all dropped. */
-  droppedOverrides: DroppedProviderOverride[];
-  /** Model selections that fell back to the trusted layers' value. */
-  withheldSelections: WithheldModelSelection[];
-}
+export type { WorkspaceProviderGate };
 
 export function emptyWorkspaceProviderGate(): WorkspaceProviderGate {
   return {
@@ -599,6 +581,8 @@ export function resolveSettingsWithProviderGate(
 
   // Every layer is read before any is merged: whether a workspace layer may speak for a provider
   // depends on which ids the *trusted* layers define, and the `--settings` layer merges last.
+  // The read order is unchanged (user, project, local, `--settings`) and nothing merged between
+  // two reads can throw, so the first broken file still names the error, as before.
   const userPath = userSettingsPath(paths);
   const user = loadSettingsFile(userPath);
   const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');

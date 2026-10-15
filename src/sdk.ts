@@ -144,6 +144,7 @@ export async function* query(
         workspace: config.workspace,
         settings: config.settings,
         settingsEnabled: !options.noSettings,
+        providerGate: config.workspaceProviderGate,
       })) {
         console.warn(notice);
       }

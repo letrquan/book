@@ -10,11 +10,17 @@ import {
   settingsLayerPaths,
   applySettingsEnvOverrides,
 } from './settings-loader.js';
-import { evaluateLegacyBaseUrl, workspaceProviderRefusal } from './provider-approvals.js';
+import {
+  evaluateLegacyBaseUrl,
+  workspaceProviderRefusal,
+  WorkspaceProviderRefusalError,
+  type LegacyBaseUrlGate,
+} from './provider-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { hadRemovedAuthConfiguration } from './settings-removed.js';
 import type { SettingsResolutionPaths } from './settings-loader.js';
 import {
+  ADVISOR_OFF_VALUE,
   DEFAULT_SETTINGS,
   unboundedInt,
   type CompactStrategy,
@@ -219,20 +225,24 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   // A `.bookrc.json` `baseUrl` receives BOOK_API_KEY, and the file ships with a repository, so it
   // is honoured only once the user has approved that exact URL (#418). `--no-settings` reads no
   // settings layer, but the decision lives in the trust store, so it is still consulted.
+  const legacyBaseUrlGate: LegacyBaseUrlGate | undefined =
+    legacy?.baseUrl === undefined
+      ? undefined
+      : {
+          baseUrl: legacy.baseUrl,
+          state: evaluateLegacyBaseUrl(
+            noSettings
+              ? loadWorkspaceTrust(
+                  resolvedWorkspace,
+                  options?.settingsPaths?.trustStorePath ??
+                    defaultTrustStorePath(options?.settingsPaths?.home),
+                ).workspaceProviders
+              : settings.workspaceProviders,
+            legacy.baseUrl,
+          ),
+        };
   const legacyBaseUrl =
-    legacy?.baseUrl !== undefined &&
-    evaluateLegacyBaseUrl(
-      noSettings
-        ? loadWorkspaceTrust(
-            resolvedWorkspace,
-            options?.settingsPaths?.trustStorePath ??
-              defaultTrustStorePath(options?.settingsPaths?.home),
-          ).workspaceProviders
-        : settings.workspaceProviders,
-      legacy.baseUrl,
-    ) === 'approved'
-      ? legacy.baseUrl
-      : undefined;
+    legacyBaseUrlGate?.state === 'approved' ? legacyBaseUrlGate.baseUrl : undefined;
   const explicitBaseUrl = process.env.BOOK_BASE_URL || legacyBaseUrl;
   const defaultProviderOverride = validateProvider(process.env.BOOK_PROVIDER) || 'auto';
 
@@ -264,7 +274,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     defaultApiKey,
     defaultBaseUrl,
     defaultBaseUrlExplicit: Boolean(process.env.BOOK_BASE_URL),
-    workspaceProviderGate: { declared: providerGate.declared, withheld: providerGate.withheld },
+    workspaceProviderGate: { ...providerGate, legacyBaseUrl: legacyBaseUrlGate },
     defaultProvider,
     autoCompactEnabled: settings.autoCompactEnabled ?? legacy?.autoCompactEnabled ?? true,
     workspace: resolvedWorkspace,
@@ -461,7 +471,7 @@ export function resolveModelProviderConfig(
     // A provider the workspace declared and the user has not approved is not "no provider": the
     // plain fallback would send the id to the default endpoint with BOOK_API_KEY (#418).
     if (isWithheldWorkspaceProvider(config, providerId)) {
-      throw new Error(workspaceProviderRefusal(providerId, rawModel));
+      throw new WorkspaceProviderRefusalError(providerId, rawModel);
     }
     return plainModelConfig(config, rawModel);
   }
@@ -588,11 +598,16 @@ export function resolveCompactModelConfig(config: AgentConfig): AgentConfig {
   };
 }
 
-/** The advisor model the session is configured with, if any. */
+/**
+ * The advisor model the session is configured with, if any. {@link ADVISOR_OFF_VALUE} is "none":
+ * it is what `/advisor off` writes when a layer it cannot edit still declares an advisor.
+ */
 export function configuredAdvisorModel(
   config: Pick<AgentConfig, 'advisorModel' | 'settings'>,
 ): string | undefined {
-  return config.advisorModel?.trim() || config.settings?.advisorModel?.trim() || undefined;
+  const configured =
+    config.advisorModel?.trim() || config.settings?.advisorModel?.trim() || undefined;
+  return configured?.toLowerCase() === ADVISOR_OFF_VALUE ? undefined : configured;
 }
 
 /**
@@ -695,6 +710,17 @@ export function resolveReducerModelConfig(config: AgentConfig): AgentConfig {
   };
 }
 
+/**
+ * Read a key a settings file wrote as a literal, `{env:VAR}` or `{file:path}`.
+ *
+ * A workspace layer can carry a reference, so a caller must only hand this a declaration the user
+ * has accepted (#418). The audit of every caller: `resolveModelProviderConfig` reads
+ * `settings.provider`, which holds trusted-layer providers and approved workspace ones only (a
+ * pending or rejected one is absent and its model id throws first); and the model picker's
+ * refresh reads the same resolved map. Nothing else resolves a reference: project MCP servers
+ * expand their own `${VAR}` syntax behind `mcp-approvals.ts`, and hook `env` values are literals
+ * behind `hook-approvals.ts`.
+ */
 export function resolveSecret(raw: string | undefined, workspace: string): string | undefined {
   if (!raw) return undefined;
   const envMatch = raw.match(/^\{env:([^}]+)\}$/);

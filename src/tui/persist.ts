@@ -22,7 +22,7 @@ import {
   SettingsRepository,
 } from '../settings-repository.js';
 import { resolveBookHome } from '../book-home.js';
-import type { SkillActivation, SkillExecution } from '../settings.js';
+import { ADVISOR_OFF_VALUE, type SkillActivation, type SkillExecution } from '../settings.js';
 import { blockedWorkspaceSettingWrite } from '../settings-scope.js';
 
 const LOCAL_DIR = '.book';
@@ -161,6 +161,23 @@ export function removeUserSettingClearingLocal(
   if (!result.ok) return { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
   clearLocalSettings(workspace, [key]);
   return { ok: true };
+}
+
+/**
+ * `/advisor off`: remove the user layer's advisor and the local layer's, and, when a checked-in
+ * `.book/settings.json` still declares one, write an explicit "off" to the local layer, which
+ * outranks it. Without that the repository's advisor came back at the next launch, because
+ * nothing this command is allowed to edit outranked the file it may not (#418). The checked-in
+ * file itself is never touched, and nothing is written to the workspace when none declares one.
+ */
+export function turnOffAdvisorModel(workspace: string): { ok: boolean; error?: string } {
+  const removed = removeUserSettingClearingLocal(workspace, 'advisorModel');
+  if (!removed.ok) return removed;
+  const projectDeclares =
+    readSettingsAt(join(workspace, LOCAL_DIR, GLOBAL_FILE)).advisorModel !== undefined;
+  return projectDeclares
+    ? persistSettingLocal(workspace, 'advisorModel', ADVISOR_OFF_VALUE)
+    : removed;
 }
 
 /** Persist a profile model without treating dots in the profile name as path separators. */

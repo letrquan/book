@@ -59,7 +59,7 @@ import {
   persistAgentProfileModel,
   persistSettingsGlobal,
   persistUserSettingClearingLocal,
-  removeUserSettingClearingLocal,
+  turnOffAdvisorModel,
   persistPermissionRuleLocal,
   removePermissionRuleLocal,
   persistSkillActivationLocal,
@@ -2275,7 +2275,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     (model: string | null) => {
       const result = model
         ? persistUserSettingClearingLocal(config.workspace, 'advisorModel', model)
-        : removeUserSettingClearingLocal(config.workspace, 'advisorModel');
+        : turnOffAdvisorModel(config.workspace);
       if (!result.ok) return result;
       setLiveConfig((current) => ({
         ...current,

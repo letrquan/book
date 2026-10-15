@@ -1799,6 +1799,52 @@ describe('workspace-declared providers (#418)', () => {
     );
   }
 
+  // Part 1 reads every layer before merging any. That moved no read: the files are still opened
+  // user, project, local, then `--settings`, and nothing merged between two reads can throw, so
+  // the first broken file still names the error, and a broken project file still stops a
+  // `--settings` resolution just as it did when each layer was merged as it was read.
+  describe('reading every layer before merging any', () => {
+    const broken = (path: string, how: 'json' | 'schema') => {
+      mkdirSync(join(path, '..'), { recursive: true });
+      writeFileSync(path, how === 'json' ? '{ not json' : JSON.stringify({ maxTurns: 0 }));
+    };
+    const userFile = () => join(userDir, '.book', 'settings.json');
+    const projectFile = () => join(dir, '.book', 'settings.json');
+    const localFile = () => join(dir, '.book', 'settings.local.json');
+
+    it('reports the user layer when every layer is broken', () => {
+      const extra = join(dir, 'extra.json');
+      broken(userFile(), 'json');
+      broken(projectFile(), 'schema');
+      broken(localFile(), 'json');
+      broken(extra, 'json');
+
+      expect(() => load(extra)).toThrow(`Invalid JSON in settings file: ${userFile()}`);
+    });
+
+    it('reports the project layer before the local one, and the local one before --settings', () => {
+      const extra = join(dir, 'extra.json');
+      broken(projectFile(), 'schema');
+      broken(localFile(), 'json');
+      broken(extra, 'json');
+      expect(() => load(extra)).toThrow(`Invalid settings in ${projectFile()}`);
+
+      rmSync(projectFile());
+      expect(() => load(extra)).toThrow(`Invalid JSON in settings file: ${localFile()}`);
+
+      rmSync(localFile());
+      expect(() => load(extra)).toThrow(`Invalid JSON in settings file: ${extra}`);
+    });
+
+    it('does not let --settings load past a broken project file', () => {
+      const extra = join(dir, 'extra.json');
+      writeFileSync(extra, JSON.stringify({ model: 'fine' }));
+      broken(projectFile(), 'json');
+
+      expect(() => load(extra)).toThrow(`Invalid JSON in settings file: ${projectFile()}`);
+    });
+  });
+
   it('drops origin and key overrides of a trusted provider, and reports them', () => {
     writeUserLayer({
       provider: { work: { baseURL: 'https://user.example/v1', apiKey: 'user-key' } },

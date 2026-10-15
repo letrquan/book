@@ -1,9 +1,10 @@
 /**
  * `book trust` — record a decision about repository-declared configuration.
  *
- * The gated input is a hook entry, a `permissions.allow` rule, or a project
- * command whose body substitutes shell; until a decision exists, the resolver
- * withholds it. Doctor reports what is withheld and prints the command that
+ * The gated input is a hook entry, a `permissions.allow` rule, a project
+ * command whose body substitutes shell, a directory, or a provider only the
+ * workspace declares (its origin and key reference; #418); until a decision
+ * exists, the resolver withholds it. Doctor reports what is withheld and prints the command that
  * grants it, so this is the non-interactive half of that flow.
  *
  * Commands are keyed by name rather than by fingerprint. A hook or a rule is
@@ -50,11 +51,25 @@ import {
   partitionProjectAllowRules,
   persistProjectAllowRuleChoice,
 } from '../permission-approvals.js';
-import { isUserSettingsFile, loadSettingsFile, resolveSettings } from '../settings-loader.js';
+import {
+  describeLegacyBaseUrl,
+  describeWorkspaceProvider,
+  evaluateLegacyBaseUrl,
+  LEGACY_BASE_URL_ID,
+  legacyBaseUrlFingerprint,
+  persistWorkspaceProviderChoice,
+  readLegacyBaseUrl,
+  type WorkspaceProviderState,
+} from '../provider-approvals.js';
+import {
+  isUserSettingsFile,
+  loadSettingsFile,
+  resolveSettingsWithProviderGate,
+} from '../settings-loader.js';
 import type { SlashCommand } from '../types/commands.js';
 import { exit } from './exit.js';
 
-export type TrustKind = 'hook' | 'rule' | 'command' | 'dir';
+export type TrustKind = 'hook' | 'rule' | 'command' | 'dir' | 'provider';
 
 export interface TrustCommandOptions {
   workspace: string;
@@ -81,15 +96,18 @@ export async function runTrustCommand(
   if (options.allPending && target !== undefined) {
     fail(`book trust ${kind}: pass either a target or --all-pending, not both`);
   }
-  if (!options.allPending && target === undefined) {
+  // `provider` with neither is the listing: what is awaiting a decision, and the command for it.
+  const listsProviders = kind === 'provider' && !options.allPending && target === undefined;
+  if (!options.allPending && target === undefined && !listsProviders) {
     fail(
       `book trust ${kind}: name what to trust, or pass --all-pending. Run \`book doctor\` to list what is withheld.`,
     );
   }
 
   let settings;
+  let providerGate;
   try {
-    settings = resolveSettings(workspace);
+    ({ settings, providerGate } = resolveSettingsWithProviderGate(workspace));
   } catch (error) {
     return fail(
       `book trust ${kind}: cannot read settings for ${workspace}: ${error instanceof Error ? error.message : String(error)}`,
@@ -225,6 +243,75 @@ export async function runTrustCommand(
       }
       directoryDecisions.push(entry);
     }
+  } else if (kind === 'provider') {
+    // Providers only the workspace declares, plus the legacy `.bookrc.json` `baseUrl` under its
+    // own id. A provider a trusted layer defines has nothing to decide: its origin and key are
+    // the user's, and a workspace layer's override of them is dropped whatever is recorded here.
+    interface ProviderCandidate {
+      id: string;
+      fingerprint: string;
+      state: WorkspaceProviderState;
+      line: string;
+    }
+    const candidates: ProviderCandidate[] = (['approved', 'pending', 'rejected'] as const).flatMap(
+      (state) =>
+        providerGate.partition[state].map((entry) => ({
+          id: entry.id,
+          fingerprint: entry.fingerprint,
+          state,
+          line: describeWorkspaceProvider(entry),
+        })),
+    );
+    const legacyBaseUrl = readLegacyBaseUrl(workspace);
+    if (legacyBaseUrl !== undefined) {
+      candidates.push({
+        id: LEGACY_BASE_URL_ID,
+        fingerprint: legacyBaseUrlFingerprint(legacyBaseUrl),
+        state: evaluateLegacyBaseUrl(settings.workspaceProviders, legacyBaseUrl),
+        line: describeLegacyBaseUrl(legacyBaseUrl),
+      });
+    }
+    const pending = candidates.filter((candidate) => candidate.state === 'pending');
+    const push = (candidate: ProviderCandidate) => {
+      // Approving sends the user's requests, and the key a reference names, to the origin shown,
+      // so that is what gets shown before the decision is recorded.
+      if (!options.reject) console.log(`  ${candidate.line}`);
+      decisions.push({
+        key: candidate.id,
+        label: candidate.id,
+        fingerprint: candidate.fingerprint,
+      });
+    };
+
+    if (listsProviders) {
+      if (pending.length === 0) {
+        console.log(`No workspace-declared providers are awaiting a decision in ${workspace}.`);
+        return;
+      }
+      console.log(`Workspace-declared providers awaiting a decision in ${workspace}:`);
+      for (const candidate of pending) console.log(`  [!] ${candidate.line}`);
+      console.log('Approve one: book trust provider <id>   (add --reject to refuse)');
+      console.log('Approve all: book trust provider --all-pending');
+      return;
+    }
+    if (options.allPending) {
+      if (pending.length === 0) {
+        console.log(`No workspace-declared providers are awaiting a decision in ${workspace}.`);
+        return;
+      }
+      for (const candidate of pending) push(candidate);
+    } else {
+      const candidate = candidates.find((known) => known.id === target);
+      if (!candidate) {
+        // A typo would otherwise record a decision that matches no provider.
+        const known = candidates.map((entry) => `  ${entry.id}  (${entry.state})`).join('\n');
+        return fail(
+          `book trust provider: ${workspace} declares no provider "${target}".` +
+            (known ? `\nDeclared by the workspace:\n${known}` : '\nNothing is declared.'),
+        );
+      }
+      push(candidate);
+    }
   } else {
     const declared = projectSettings?.permissions?.allow ?? [];
     const partition = partitionProjectAllowRules(declared, settings.permissions.projectAllowRules);
@@ -257,9 +344,11 @@ export async function runTrustCommand(
     const result =
       kind === 'command'
         ? persistProjectCommandChoice(workspace, decision.key, decision.fingerprint!, choice)
-        : kind === 'hook'
-          ? persistProjectHookChoice(workspace, decision.key, choice)
-          : persistProjectAllowRuleChoice(workspace, decision.key, choice);
+        : kind === 'provider'
+          ? persistWorkspaceProviderChoice(workspace, decision.key, decision.fingerprint!, choice)
+          : kind === 'hook'
+            ? persistProjectHookChoice(workspace, decision.key, choice)
+            : persistProjectAllowRuleChoice(workspace, decision.key, choice);
     if (result.ok) console.log(`${verb} ${decision.label}`);
     else failures.push(`${decision.label}: ${result.error ?? 'unknown error'}`);
   }

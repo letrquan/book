@@ -2,6 +2,7 @@ import type { ChildProcess } from 'child_process';
 import type { CompactStrategy, ProviderModelConfig, ResolvedSettings } from '../settings.js';
 import type { LoadedMemoryContext } from '../memory-store.js';
 import type { ModelWindowStore } from '../model-window-store.js';
+import type { WorkspaceProviderGate } from '../provider-approvals.js';
 
 export type PermissionMode =
   'default' | 'auto' | 'plan' | 'accept-edits' | 'dontAsk' | 'bypassPermissions';
@@ -232,12 +233,10 @@ export interface AgentConfig {
    * themselves (#418) -- never from a settings key, which a workspace layer could write. A
    * declared provider never inherits a key, `BOOK_API_KEY` and the session key included; and a
    * withheld one (pending or rejected) is absent from `settings.provider`, so a model id naming it
-   * is refused instead of falling through to the default endpoint.
+   * is refused instead of falling through to the default endpoint. The rest of the gate (what was
+   * dropped, which selections fell back, the legacy `baseUrl`) is what the hosts report.
    */
-  workspaceProviderGate?: {
-    declared: readonly string[];
-    withheld: readonly string[];
-  };
+  workspaceProviderGate?: WorkspaceProviderGate;
   defaultProvider?: 'anthropic' | 'openai' | 'auto';
   autoCompactEnabled: boolean;
   /**

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { afterEach, describe, expect, it } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -9,6 +9,11 @@ import {
   type BuiltinCommandContext,
 } from './builtins.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { loadConfig } from '../config.js';
+import {
+  persistWorkspaceProviderChoice,
+  workspaceProviderFingerprint,
+} from '../provider-approvals.js';
 import { saveMemory } from '../memory-store.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../models.js';
 
@@ -909,6 +914,79 @@ describe('/advisor', () => {
     expect(registry.execute('advisor', 'off', context())).toEqual({
       type: 'set-advisor',
       model: null,
+    });
+  });
+
+  // #418. A provider only the workspace declares is not in `settings.provider` until approved.
+  describe('naming a workspace-declared provider (#418)', () => {
+    const saved = Object.fromEntries(
+      ['BOOK_API_KEY', 'BOOK_BASE_URL', 'BOOK_HOME', 'BOOK_MODEL', 'BOOK_ADVISOR_MODEL'].map(
+        (name) => [name, process.env[name]],
+      ),
+    );
+    const dirs: string[] = [];
+    afterEach(() => {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    });
+    const declaration = { type: 'openai', baseURL: 'https://lab.example/v1' } as const;
+
+    function workspaceConfig() {
+      const home = mkdtempSync(join(tmpdir(), 'book-builtins-home-'));
+      const workspace = mkdtempSync(join(tmpdir(), 'book-builtins-ws-'));
+      dirs.push(home, workspace);
+      mkdirSync(join(workspace, '.book'));
+      writeFileSync(
+        join(workspace, '.book', 'settings.json'),
+        JSON.stringify({ provider: { lab: declaration } }),
+      );
+      process.env.BOOK_HOME = home;
+      process.env.BOOK_API_KEY = 'sk-test';
+      delete process.env.BOOK_BASE_URL;
+      delete process.env.BOOK_MODEL;
+      delete process.env.BOOK_ADVISOR_MODEL;
+      return { home, workspace };
+    }
+
+    it('refuses /advisor <workspace-provider>/<model> while pending, naming the command', () => {
+      const { workspace } = workspaceConfig();
+
+      const effect = registry.execute(
+        'advisor',
+        'lab/adv',
+        context({ runtimeConfig: loadConfig(workspace) }),
+      );
+
+      expect(effect).toMatchObject({ type: 'local-message', isError: true });
+      expect(effect).toHaveProperty('content', expect.stringContaining('book trust provider lab'));
+    });
+
+    it('accepts it once the provider is approved', () => {
+      const { home, workspace } = workspaceConfig();
+      expect(
+        persistWorkspaceProviderChoice(
+          workspace,
+          'lab',
+          workspaceProviderFingerprint(declaration),
+          'approved',
+          join(home, 'trust.json'),
+        ).ok,
+      ).toBe(true);
+
+      expect(
+        registry.execute('advisor', 'lab/adv', context({ runtimeConfig: loadConfig(workspace) })),
+      ).toEqual({ type: 'set-advisor', model: 'lab/adv' });
+    });
+
+    it('still turns the advisor off while the provider is pending', () => {
+      const { workspace } = workspaceConfig();
+
+      expect(
+        registry.execute('advisor', 'off', context({ runtimeConfig: loadConfig(workspace) })),
+      ).toEqual({ type: 'set-advisor', model: null });
     });
   });
 

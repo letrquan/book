@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveSettings } from '../settings-loader.js';
+import { configuredAdvisorModel, loadConfig } from '../config.js';
 import {
   persistWorkspaceProviderChoice,
   workspaceProviderFingerprint,
@@ -22,6 +23,7 @@ import {
   removeProviderLocal,
   removeProviderGlobal,
   clearLocalSettings,
+  turnOffAdvisorModel,
 } from './persist.js';
 
 let dir: string;
@@ -516,5 +518,67 @@ describe('global scope (~/.book/settings.json)', () => {
   it('clearLocalSettings is a no-op when the local file is absent', () => {
     expect(clearLocalSettings(dir, ['model']).ok).toBe(true);
     expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(false);
+  });
+
+  // #418. `/advisor off` removes the user layer's key and the local layer's, but a checked-in
+  // `.book/settings.json` that declares an advisor then came back at the next launch: the loader
+  // reads it as the project layer, and nothing the command wrote outranked it.
+  describe('turnOffAdvisorModel', () => {
+    const writeProject = (settings: Record<string, unknown>) => {
+      mkdirSync(join(dir, '.book'), { recursive: true });
+      writeFileSync(join(dir, '.book', 'settings.json'), JSON.stringify(settings));
+    };
+    const reload = () => {
+      const saved = process.env.BOOK_ADVISOR_MODEL;
+      delete process.env.BOOK_ADVISOR_MODEL;
+      try {
+        return configuredAdvisorModel(loadConfig(dir, { allowMissingApiKey: true }));
+      } finally {
+        if (saved !== undefined) process.env.BOOK_ADVISOR_MODEL = saved;
+      }
+    };
+
+    it('leaves no advisor after a reload although the project settings declare one', () => {
+      persistSettingGlobal('advisorModel', 'user/adv');
+      writeProject({ advisorModel: 'project/adv' });
+      expect(reload()).toBe('project/adv');
+
+      expect(turnOffAdvisorModel(dir)).toEqual({ ok: true });
+
+      expect(reload()).toBeUndefined();
+      expect(readSettingsGlobal().advisorModel).toBeUndefined();
+      // The checked-in file is the repository's: it is not edited.
+      expect(JSON.parse(readFileSync(join(dir, '.book', 'settings.json'), 'utf-8'))).toEqual({
+        advisorModel: 'project/adv',
+      });
+    });
+
+    it('overrides an advisor the local layer declares too', () => {
+      writeProject({ advisorModel: 'project/adv' });
+      persistSettingLocal(dir, 'advisorModel', 'local/adv');
+
+      expect(turnOffAdvisorModel(dir).ok).toBe(true);
+
+      expect(reload()).toBeUndefined();
+    });
+
+    it('writes nothing to the workspace when no workspace layer declares an advisor', () => {
+      persistSettingGlobal('advisorModel', 'user/adv');
+      writeProject({ model: 'gpt-4o' });
+
+      expect(turnOffAdvisorModel(dir).ok).toBe(true);
+
+      expect(reload()).toBeUndefined();
+      expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(false);
+    });
+
+    it('is a plain removal for a workspace with no settings files at all', () => {
+      persistSettingGlobal('advisorModel', 'user/adv');
+
+      expect(turnOffAdvisorModel(dir).ok).toBe(true);
+
+      expect(reload()).toBeUndefined();
+      expect(existsSync(join(dir, '.book'))).toBe(false);
+    });
   });
 });

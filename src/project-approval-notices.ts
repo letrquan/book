@@ -14,6 +14,14 @@ import { collectDeclaredDirectories, partitionProjectDirectories } from './addit
 import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
 import {
+  describeApiKeyDeclaration,
+  describeDroppedOverride,
+  describeWithheldSelection,
+  LEGACY_BASE_URL_ID,
+  type WorkspaceProviderGate,
+} from './provider-approvals.js';
+import { renderUntrustedText } from './hook-approvals.js';
+import {
   formatIgnoredWorkspaceSandboxKey,
   ignoredWorkspaceSandboxKeys,
   isUserSettingsFile,
@@ -29,6 +37,55 @@ export interface WithheldProjectDeclarations {
   settings: ResolvedSettings;
   /** False under `--no-settings`, where no layer was read in the first place. */
   settingsEnabled: boolean;
+  /**
+   * What the provider gate withheld and dropped (`AgentConfig.workspaceProviderGate`). Omitted
+   * by a host that has no config to read it from, which then reports no provider notices.
+   */
+  providerGate?: WorkspaceProviderGate;
+}
+
+/**
+ * One warning per provider-gate outcome the user can act on (#418), each naming the command that
+ * decides it. A provider the user rejected is not reported again, as a rejected hook is not, and
+ * neither is a model selection that fell back because of one: the user already decided.
+ */
+export function collectWithheldProviderNotices(gate: WorkspaceProviderGate): string[] {
+  const notices: string[] = [];
+
+  for (const dropped of gate.droppedOverrides) {
+    notices.push(`⚠  ${describeDroppedOverride(dropped)}`);
+  }
+
+  const pendingIds = new Set(gate.partition.pending.map((entry) => entry.id));
+  for (const entry of gate.partition.pending) {
+    const id = renderUntrustedText(entry.id, 64);
+    const origin = entry.declaration.baseURL ?? entry.declaration.baseUrl;
+    notices.push(
+      `⚠  Ignoring workspace-declared provider "${id}" (${
+        origin === undefined ? 'default endpoint' : renderUntrustedText(origin)
+      }, key: ${describeApiKeyDeclaration(entry.declaration.apiKey)}) from ` +
+        `${entry.layers.map((layer) => renderUntrustedText(layer)).join(', ')}: it requires ` +
+        `approval. Run \`book trust provider ${id}\` to review and approve it.`,
+    );
+  }
+
+  for (const selection of gate.withheldSelections) {
+    if (!pendingIds.has(selection.providerId)) continue;
+    notices.push(
+      `⚠  ${describeWithheldSelection(selection)} Run ` +
+        `\`book trust provider ${renderUntrustedText(selection.providerId, 64)}\` to approve it.`,
+    );
+  }
+
+  if (gate.legacyBaseUrl?.state === 'pending') {
+    notices.push(
+      `⚠  Ignoring baseUrl "${renderUntrustedText(gate.legacyBaseUrl.baseUrl)}" from ` +
+        `${LEGACY_BASE_URL_ID}: it would receive BOOK_API_KEY, so it requires approval. Run ` +
+        `\`book trust provider ${LEGACY_BASE_URL_ID}\` to review and approve it.`,
+    );
+  }
+
+  return notices;
 }
 
 /**
@@ -41,7 +98,12 @@ export interface WithheldProjectDeclarations {
  * has already approved as if they were awaiting a first decision.
  */
 export function collectWithheldProjectNotices(input: WithheldProjectDeclarations): string[] {
-  if (!input.settingsEnabled) return [];
+  // `--no-settings` reads no layer, so the gate holds nothing but the legacy `.bookrc.json`
+  // `baseUrl`, which is ignored until approved whether or not a settings layer was read.
+  const providerNotices = input.providerGate
+    ? collectWithheldProviderNotices(input.providerGate)
+    : [];
+  if (!input.settingsEnabled) return providerNotices;
 
   const projectPath = join(input.workspace, '.book', 'settings.json');
   // At `$HOME` this is the user's own file, which the loader read as the user layer and
@@ -151,5 +213,5 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
     );
   }
 
-  return notices;
+  return [...notices, ...providerNotices];
 }

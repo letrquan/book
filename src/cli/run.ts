@@ -7,7 +7,10 @@ import { connectMcpServers, disconnectMcpServers } from '../mcp.js';
 import { McpSessionHost } from '../mcp-host.js';
 import { mcpServersToRecord, partitionMcpServersByApproval } from '../mcp-approvals.js';
 import { resolveMcpServerList } from '../mcp-config.js';
-import { collectWithheldProjectNotices } from '../project-approval-notices.js';
+import {
+  collectWithheldProjectNotices,
+  collectWithheldProviderNotices,
+} from '../project-approval-notices.js';
 import { isExiting, setExitCode } from './exit.js';
 import { installPrintInterrupt, printExitCode, type PrintInterrupt } from './print-interrupt.js';
 import { parseNumericFlag } from './utils.js';
@@ -207,6 +210,14 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     }) as AgentConfig;
     // Stderr, so it cannot corrupt --output-format json on stdout.
     if (config.modelProviderWarning) console.warn('⚠  ' + config.modelProviderWarning);
+    // Print mode reports these with the other withheld declarations below. The interactive modes
+    // have no prompt for a provider, and one the workspace declared that is not in effect would
+    // otherwise be silent: the model it names just never appears.
+    if (options.print === undefined && config.workspaceProviderGate) {
+      for (const notice of collectWithheldProviderNotices(config.workspaceProviderGate)) {
+        console.warn(notice);
+      }
+    }
     const interactiveMaxTurns = parseNumericFlag(options.maxTurns, '--max-turns', {
       integer: true,
     });
@@ -245,6 +256,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         workspace: config.workspace,
         settings: config.settings,
         settingsEnabled: options.settings !== false,
+        providerGate: config.workspaceProviderGate,
       })) {
         console.warn(notice);
       }

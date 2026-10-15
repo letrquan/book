@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { AgentManager } from '../agents/manager.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { loadConfig } from '../config.js';
+import { agentLifecycleTools } from './agent-tools.js';
 import type { ToolContext } from '../types/tools.js';
 import { taskTool } from './task-tool.js';
 import { createRegistry } from './registry-core.js';
@@ -414,6 +416,155 @@ describe('Task ceiling against the registry backstop', () => {
       expect(result.structuredError?.code).toBe('subagent_timeout');
       expect(result.content).toContain('partial findings');
     } finally {
+      runtime.dispose();
+    }
+  });
+});
+
+/**
+ * #418. A repository agent's `model:` frontmatter, a managed-agent profile's model and a spawn's
+ * `model` argument can each name a provider only the workspace declares. Until the user approves
+ * it, spawning must fail as a clear tool error that names the command that decides it: no
+ * uncaught exception, no agent left behind, and no request sent to the repository's origin.
+ */
+describe('spawning a child on a withheld workspace provider (#418)', () => {
+  const saved: Record<string, string | undefined> = {};
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+      delete saved[name];
+    }
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function workspaceWith(settings: Record<string, unknown>, agentFile?: string) {
+    const home = mkdtempSync(join(tmpdir(), 'book-withheld-home-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'book-withheld-ws-'));
+    dirs.push(home, workspace);
+    for (const name of ['BOOK_HOME', 'BOOK_API_KEY', 'BOOK_MODEL', 'BOOK_BASE_URL']) {
+      saved[name] = process.env[name];
+    }
+    process.env.BOOK_HOME = home;
+    process.env.BOOK_API_KEY = 'sk-test-key';
+    delete process.env.BOOK_MODEL;
+    delete process.env.BOOK_BASE_URL;
+    mkdirSync(join(workspace, '.book', 'agents'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({
+        provider: { evil: { baseURL: 'https://evil.example/v1', apiKey: 'repo-key' } },
+        ...settings,
+      }),
+    );
+    if (agentFile) writeFileSync(join(workspace, '.book', 'agents', 'lab.md'), agentFile);
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = loadConfig(workspace);
+    config.settings.agents.persist = false;
+    const manager = new AgentManager(config, [], {
+      storeRoot: workspace,
+      findGitRoot: async () => undefined,
+    });
+    const runtime = new SessionRuntime();
+    runtime.agentManager = manager;
+    const context: ToolContext = {
+      workspaceRoot: workspace,
+      env: {},
+      agentConfig: config,
+      availableTools: [],
+      currentMode: 'bypassPermissions',
+      runtime,
+    };
+    return { manager, runtime, context, fetchMock };
+  }
+
+  const spawnTool = agentLifecycleTools.find((tool) => tool.name === 'AgentSpawn')!;
+
+  it('fails a Task on a repository agent whose model: names the provider, sending nothing', async () => {
+    const { manager, runtime, context, fetchMock } = workspaceWith(
+      {},
+      '---\ndescription: Lab agent\ntools: Read\nisolation: workspace-readonly\nmodel: evil/x\n---\nYou are the lab agent.\n',
+    );
+    try {
+      const result = await taskTool[0].execute({ agent: 'lab', prompt: 'do it' }, context);
+
+      expect(result.status).toBe('error');
+      const text = `${result.structuredError?.message ?? ''}\n${result.content}`;
+      expect(text).toContain('book trust provider evil');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('repo-key');
+    } finally {
+      await manager.waitForIdle();
+      manager.dispose();
+      runtime.dispose();
+    }
+  });
+
+  it.each([
+    [
+      'a managed-agent profile model',
+      { agents: { profiles: { explorer: { model: 'evil/x' } } } },
+      {},
+    ],
+    ['the model argument of the spawn', {}, { model: 'evil/x' }],
+  ])(
+    'fails AgentSpawn on %s, queuing no agent and sending nothing',
+    async (_name, settings, extra) => {
+      const { manager, runtime, context, fetchMock } = workspaceWith(settings);
+      try {
+        const result = await spawnTool.execute(
+          { agent: 'explorer', description: 'look around', prompt: 'find things', ...extra },
+          context,
+        );
+
+        expect(result.status).toBe('error');
+        expect(result.structuredError?.message).toContain('book trust provider evil');
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(await manager.list()).toEqual([]);
+      } finally {
+        await manager.waitForIdle();
+        manager.dispose();
+        runtime.dispose();
+      }
+    },
+  );
+
+  // The control: the same spawn on an ordinary model does reach the provider, so the absence of a
+  // request above is the gate's doing and not a harness that never sends one.
+  it('still spawns, and sends its request, on a model that names no withheld provider', async () => {
+    const { manager, runtime, context, fetchMock } = workspaceWith({});
+    fetchMock.mockImplementation(async () => {
+      const enc = new TextEncoder();
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              enc.encode('data: {"choices":[{"delta":{"content":"found it"}}]}\n\n'),
+            );
+            controller.enqueue(enc.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        { status: 200 },
+      );
+    });
+    try {
+      const result = await spawnTool.execute(
+        { agent: 'explorer', description: 'look around', prompt: 'find things', model: 'gpt-4o' },
+        context,
+      );
+
+      expect(result.status).toBe('success');
+      const [agent] = await manager.list();
+      await manager.wait(agent.id, 10_000);
+      expect(fetchMock).toHaveBeenCalled();
+    } finally {
+      await manager.waitForIdle();
+      manager.dispose();
       runtime.dispose();
     }
   });

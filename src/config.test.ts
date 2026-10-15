@@ -4,6 +4,7 @@ import {
   applyModelDefaults,
   clampEffortToCatalog,
   compactsOnSessionModel,
+  configuredAdvisorModel,
   freezeAgentConfig,
   loadConfig,
   resolveAdvisorModelConfig,
@@ -1129,6 +1130,29 @@ describe('loadConfig provider registry', () => {
   });
 });
 
+describe('configuredAdvisorModel', () => {
+  const settings = (advisorModel?: string) => ({ advisorModel }) as never;
+
+  it('returns the configured id, trimmed', () => {
+    expect(configuredAdvisorModel({ advisorModel: ' a/b ', settings: settings() })).toBe('a/b');
+  });
+
+  // `/advisor off` writes this to the local layer when a checked-in layer still declares an
+  // advisor (#418): the one value that outranks the project layer and reads as "no advisor".
+  it.each(['off', 'OFF', ' Off '])('treats %j as no advisor, from either source', (value) => {
+    expect(configuredAdvisorModel({ advisorModel: value, settings: settings() })).toBe(undefined);
+    expect(configuredAdvisorModel({ advisorModel: undefined, settings: settings(value) })).toBe(
+      undefined,
+    );
+  });
+
+  it('lets an advisor from the environment outrank an off in settings', () => {
+    expect(configuredAdvisorModel({ advisorModel: 'env/adv', settings: settings('off') })).toBe(
+      'env/adv',
+    );
+  });
+});
+
 describe('advisorModelRefusal (#419)', () => {
   function configure(settings: Record<string, unknown>): void {
     writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify(settings));
@@ -1350,7 +1374,10 @@ describe('workspace-declared providers (#418)', () => {
       expect(config.settings.model).toBe('trusted-model');
       expect(config.model).toBe('trusted-model');
       expect(config.baseUrl).toBe('https://api.openai.com/v1');
-      expect(config.workspaceProviderGate).toEqual({ declared: ['evil'], withheld: ['evil'] });
+      expect(config.workspaceProviderGate).toMatchObject({
+        declared: ['evil'],
+        withheld: ['evil'],
+      });
       // No route reaches the origin with a key.
       expect(() => resolveModelProviderConfig(config, 'evil/x')).toThrow(trustHint('evil'));
       for (const resolved of [config, resolveModelProviderConfig(config, 'gpt-4o')]) {
@@ -1440,6 +1467,81 @@ describe('workspace-declared providers (#418)', () => {
       }
     });
 
+    // The audit: whatever form the reference takes and whichever decision is on file, nothing on
+    // any route a model id can take reads the variable or opens the file while it is withheld.
+    describe.each([
+      ['pending', undefined],
+      ['rejected', 'rejected'],
+    ] as const)('a %s provider key reference is never resolved', (_state, decision) => {
+      it.each([
+        ['{env:AUDIT_KEY_VAR}', 'env'],
+        ['{file:~/audit-token}', 'home file'],
+        ['{file:ABSOLUTE}', 'absolute file'],
+      ])('%s (%s), on every route', (reference) => {
+        const fakeHome = mkdtempSync(join(tmpdir(), 'book-fake-home-'));
+        const homeToken = join(fakeHome, 'audit-token');
+        writeFileSync(homeToken, 'home-secret');
+        const absoluteToken = join(fakeHome, 'absolute-token');
+        writeFileSync(absoluteToken, 'absolute-secret');
+        const apiKey = reference.replace('ABSOLUTE', absoluteToken);
+        const declaration = { ...evil, apiKey };
+        writeWorkspace('settings.json', { model: 'evil/x', provider: { evil: declaration } });
+        writeWorkspace('settings.local.json', {
+          compactModel: 'evil/c',
+          advisorModel: 'evil/a',
+        });
+        if (decision) decide('evil', declaration, decision);
+
+        const reads: string[] = [];
+        const realEnv = process.env;
+        realEnv.AUDIT_KEY_VAR = 'env-secret';
+        vi.stubEnv('HOME', fakeHome);
+        Object.defineProperty(process, 'env', {
+          value: new Proxy(realEnv, {
+            get(target, key, receiver) {
+              if (typeof key === 'string') reads.push(key);
+              return Reflect.get(target, key, receiver);
+            },
+          }),
+          configurable: true,
+          writable: true,
+        });
+        vi.mocked(readFileSync).mockClear();
+        try {
+          // The selections fall back, so the load itself succeeds without the key ever mattering.
+          const config = load({ allowMissingApiKey: true });
+          for (const route of [
+            () => resolveModelProviderConfig(config, 'evil/x'),
+            () => resolveCompactModelConfig({ ...config, compactModel: 'evil/c' }),
+            () => resolveAdvisorModelConfig({ ...config, advisorModel: 'evil/a' }),
+            () => load({ modelOverride: 'evil/x' }),
+          ]) {
+            expect(route).toThrow(trustHint('evil'));
+          }
+          expect(advisorModelRefusal(config, 'evil/a')).toContain(trustHint('evil'));
+        } finally {
+          Object.defineProperty(process, 'env', {
+            value: realEnv,
+            configurable: true,
+            writable: true,
+          });
+          vi.unstubAllEnvs();
+        }
+        const opened = vi.mocked(readFileSync).mock.calls.map(([path]) => String(path));
+        try {
+          // Positive controls: the proxy and the spy both see reads, so absence means something.
+          expect(reads).toContain('BOOK_API_KEY');
+          expect(opened.length).toBeGreaterThan(0);
+          expect(reads).not.toContain('AUDIT_KEY_VAR');
+          expect(opened).not.toContain(homeToken);
+          expect(opened).not.toContain(absoluteToken);
+        } finally {
+          rmSync(fakeHome, { recursive: true, force: true });
+          delete realEnv.AUDIT_KEY_VAR;
+        }
+      });
+    });
+
     it('is released by an approval of the exact declaration, and never inherits a key', () => {
       process.env.BOOK_API_KEY = 'user-secret-key';
       process.env.EVIL_KEY_VAR = 'env-secret';
@@ -1449,7 +1551,7 @@ describe('workspace-declared providers (#418)', () => {
 
       const config = load();
       expect(config.settings.provider.evil.baseURL).toBe(evilUrl);
-      expect(config.workspaceProviderGate).toEqual({ declared: ['evil'], withheld: [] });
+      expect(config.workspaceProviderGate).toMatchObject({ declared: ['evil'], withheld: [] });
       expect(config.baseUrl).toBe(evilUrl);
       expect(config.apiKey).toBe('env-secret');
       // The unset variable yields no key, not BOOK_API_KEY.
@@ -1544,7 +1646,7 @@ describe('workspace-declared providers (#418)', () => {
       writeWorkspace('settings.json', { model: 'evil/x', provider: { evil } });
 
       const config = loadConfig(workspace, { noSettings: true });
-      expect(config.workspaceProviderGate).toEqual({ declared: [], withheld: [] });
+      expect(config.workspaceProviderGate).toMatchObject({ declared: [], withheld: [] });
       expect(config.settings.provider).toEqual({});
     });
   });
@@ -1654,6 +1756,27 @@ describe('workspace-declared providers (#418)', () => {
       writeLegacy();
       approveLegacy(legacyUrl, 'rejected');
       expect(load().defaultBaseUrl).toBe('https://api.openai.com/v1');
+    });
+
+    it('is reported on the gate with its decision, for the hosts that name it', () => {
+      writeLegacy();
+      expect(load().workspaceProviderGate?.legacyBaseUrl).toEqual({
+        baseUrl: legacyUrl,
+        state: 'pending',
+      });
+      expect(load({ noSettings: true }).workspaceProviderGate?.legacyBaseUrl?.state).toBe(
+        'pending',
+      );
+
+      approveLegacy(legacyUrl);
+      expect(load().workspaceProviderGate?.legacyBaseUrl?.state).toBe('approved');
+
+      approveLegacy(legacyUrl, 'rejected');
+      expect(load().workspaceProviderGate?.legacyBaseUrl?.state).toBe('rejected');
+    });
+
+    it('is absent from the gate when the workspace has no .bookrc.json baseUrl', () => {
+      expect(load().workspaceProviderGate?.legacyBaseUrl).toBeUndefined();
     });
 
     it('leaves BOOK_BASE_URL unaffected', () => {

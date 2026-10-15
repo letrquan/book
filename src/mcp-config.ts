@@ -69,6 +69,12 @@ interface ExpandedValue {
  * Expand the small interpolation language used by the de-facto mcpServers
  * config format. We deliberately support only `${NAME}` and `${NAME:-default}`
  * here; shell syntax is never evaluated.
+ *
+ * A project `.mcp.json` is repository-controlled, and its `env`, `headers`, `url` and `command`
+ * can name any variable of this process (#418 audit). The expansion only builds a config in
+ * memory: it reaches a child process or a request only for a server `mcp-approvals.ts` approved
+ * against a fingerprint of the expanded values, `connectMcpServers` skips project servers it was
+ * given no approved list for, and every disclosure of a config is redacted.
  */
 function expandValue(raw: string, env: NodeJS.ProcessEnv): ExpandedValue {
   const missing = new Set<string>();

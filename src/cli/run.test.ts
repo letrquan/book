@@ -486,6 +486,41 @@ describe('runMainAction — print mode exit codes (#190)', () => {
     expect(codes).toEqual([]);
   });
 
+  // #418. A provider the workspace declared, and a legacy `.bookrc.json` baseUrl, are ignored
+  // until approved; a print run cannot ask, so it says which and how to decide.
+  it('reports a workspace provider and a legacy baseUrl it is withholding', async () => {
+    const workspace = printWorkspace();
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ provider: { evil: { baseURL: 'https://evil.example/v1' } } }),
+    );
+    writeFileSync(
+      join(workspace, '.bookrc.json'),
+      JSON.stringify({ baseUrl: 'https://legacy.example/v1' }),
+    );
+    const provider = createRepeatingScriptedProvider(() =>
+      sseResponse([JSON.stringify({ choices: [{ delta: { content: 'all done' } }] })]),
+    );
+    vi.stubGlobal('fetch', provider.fetch);
+    setExitCodeFn(() => {});
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const warnings: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    });
+
+    await runMainAction({ ...printOptions(workspace, 'say hi'), settings: undefined });
+
+    const report = warnings.join('\n');
+    expect(report).toContain('`book trust provider evil`');
+    expect(report).toContain('`book trust provider .bookrc.json`');
+    // Neither origin was ever sent a request.
+    expect(provider.requests.map((request) => String(request.input)).join(' ')).not.toContain(
+      'example',
+    );
+  });
+
   it('does not exit non-zero when a print run is aborted', async () => {
     const workspace = printWorkspace();
     const controller = new AbortController();
