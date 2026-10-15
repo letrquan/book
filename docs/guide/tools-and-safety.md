@@ -258,8 +258,11 @@ The benchmark requires configured provider credentials and is not part of CI.
 
 `npm run eval:memory` measures whether memory helps the next session and stays safe. Each item is
 a teaching session followed by a probe in a fresh session. The workspace is reset between the two,
-so a probe can pass only through memory, never by reading what the teaching session edited. Every
-item also runs with memory disabled (the baseline) on the same probe. Items cover explicit and
+so a probe can pass only through memory, never by reading what the teaching session edited.
+Teaching and probe run in separate homes: the probe gets only its own memory directory (approved
+files and `MEMORY.md`, no inbox, no sessions, no other project), and a probe that inspects
+processes, the eval sources, transcripts or the inbox is reported as contaminated and never counted
+as a pass. Every item also runs with memory disabled (the baseline) on the same probe. Items cover explicit and
 implicit saves, corrections, a buried convention, scoped requests and keyword traps that must _not_
 be saved, facts already in `CLAUDE.md`, update, forget, and poisoned web and repository content.
 Scoring reads the store and the probe's files, commands and answer, never the model's own claims.

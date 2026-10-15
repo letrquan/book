@@ -10,6 +10,7 @@
 import { spawn, execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -19,9 +20,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { getProjectMemoryDir } from '../src/memory-store.js';
 import { promptSizeTokens } from '../src/pricing.js';
 import {
   BASE_WORKSPACE,
@@ -301,6 +303,108 @@ export async function restoreBase(
   for (const ref of refs) await git('update-ref', '-d', ref);
   await git('stash', 'clear');
   await git('reflog', 'expire', '--expire=now', '--all');
+  // Objects the deleted refs, stashes and removed worktrees left behind are still readable by sha
+  // (and `git log --all` lists a worktree's HEAD): prune the worktree records, then drop every
+  // unreachable object.
+  await git('worktree', 'prune');
+  await git('gc', '--prune=now', '--quiet');
+  const left = (await git('log', '--all', '--format=%H')).stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (left.length !== 1 || left[0] !== baseSha) {
+    throw new Error(
+      `git history is not clean before the probe: expected only ${baseSha}, found ${left.join(', ') || 'nothing'}`,
+    );
+  }
+}
+
+/**
+ * Build the home the probe runs in: the arm's `settings.json` and a copy of the one memory
+ * directory the probe workspace resolves to (keyed by the code under test), approved files and
+ * `MEMORY.md` only. No inbox candidate, extraction state, lock or other dot-entry, no other
+ * project's memory and no sessions come across, so the probe cannot read the teaching run.
+ */
+export function buildProbeHome(opts: {
+  ws: string;
+  teachHome: string;
+  probeHome: string;
+  settings: string;
+}): void {
+  const { ws, teachHome, probeHome, settings } = opts;
+  mkdirSync(join(probeHome, '.book'), { recursive: true });
+  writeFileSync(join(probeHome, '.book', 'settings.json'), settings);
+  const from = getProjectMemoryDir(ws, { bookRoot: join(teachHome, '.book') });
+  const to = getProjectMemoryDir(ws, { bookRoot: join(probeHome, '.book') });
+  if (!existsSync(from)) return;
+  mkdirSync(to, { recursive: true });
+  for (const entry of readdirSync(from, { withFileTypes: true })) {
+    if (entry.name.startsWith('.') || !entry.isFile() || !entry.name.endsWith('.md')) continue;
+    copyFileSync(join(from, entry.name), join(to, entry.name));
+  }
+}
+
+/**
+ * Patterns that mark a probe command as a route to the answer other than memory. Matched against
+ * the command text; the paths of this run's own root are blanked first, so the probe may use its
+ * workspace and its own home. Kept in one list so it is easy to audit.
+ */
+export const PROBE_CONTAMINATION_PATTERNS: ReadonlyArray<{ reason: string; pattern: RegExp }> = [
+  {
+    reason: 'inspects processes',
+    pattern:
+      /(?:^|[;&|(`]|\$\()\s*(?:(?:sudo|env|time|command|exec|nice|xargs)\s+)*(?:\/\S*\/)?ps(?:\s|$)/m,
+  },
+  { reason: 'inspects processes', pattern: /\bpstree\b/ },
+  { reason: 'inspects processes', pattern: /\/proc\// },
+  { reason: 'names the eval sources', pattern: /memory-eval/ },
+  { reason: 'names the eval sources', pattern: /scenarios/ },
+  { reason: 'reads session transcripts', pattern: /sessions\// },
+  { reason: 'reads session transcripts', pattern: /\.jsonl/ },
+  { reason: 'reads the inbox', pattern: /\.inbox/ },
+  { reason: 'names another eval run', pattern: /book-memory-eval-/ },
+];
+
+/** Why a probe's Bash commands reached the answer other than through memory; empty when clean. */
+export function probeContamination(
+  commands: string[],
+  ctx: { evalRoot: string; repoRoot: string; ws: string; probeHome: string },
+): string[] {
+  const evalRoot = resolve(ctx.evalRoot);
+  const repoRoot = resolve(ctx.repoRoot);
+  const probeHome = resolve(ctx.probeHome);
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const bookRoot = join(probeHome, '.book');
+  const memoryDir = getProjectMemoryDir(ctx.ws, { bookRoot });
+  // Every spelling of the probe's own home: its absolute path, `HOME` (set to it for the probe) and
+  // the path relative to `ws`. Its own `sessions/` holds only the probe's session, so it is blanked
+  // too; `sessions/` anywhere else is not.
+  const homes = [probeHome, '~', '$HOME', '${HOME}', `../${basename(probeHome)}`];
+  const sessions = homes.map(
+    (home) => new RegExp(`${escape(home)}/\\.book/sessions(?:/[^\\s;&|<>'"\`)]*)?`, 'g'),
+  );
+  const own = [
+    memoryDir,
+    bookRoot,
+    ...homes.slice(1).map((home) => `${home}/.book`),
+    probeHome,
+    homes[4],
+    basename(dirname(memoryDir)),
+  ].map((path) => new RegExp(`${escape(path)}(?![A-Za-z0-9_-])`, 'g'));
+  const ownRoot = new RegExp(`${escape(evalRoot)}(?![A-Za-z0-9])`, 'g');
+  const reasons = new Set<string>();
+  for (const command of commands) {
+    let text = command;
+    for (const pattern of [...sessions, ...own]) text = text.replace(pattern, ' ');
+    text = text.replace(ownRoot, ' ');
+    const found = PROBE_CONTAMINATION_PATTERNS.filter(({ pattern }) => pattern.test(text)).map(
+      (p) => p.reason,
+    );
+    // The eval's checkout, by the path the eval runs from (`/` would match everything).
+    if (repoRoot !== '/' && text.includes(repoRoot)) found.push('names the eval checkout');
+    for (const reason of found) reasons.add(`${reason}: ${command.slice(0, 120)}`);
+  }
+  return [...reasons];
 }
 
 async function runItem(
@@ -314,6 +418,7 @@ async function runItem(
   const root = mkdtempSync(join(tmpdir(), 'book-memory-eval-'));
   const ws = join(root, 'ws');
   const home = join(root, 'home');
+  const probeHomeDir = join(root, 'probe-home');
   const obs: MemoryObservation = {
     model,
     arm,
@@ -323,13 +428,17 @@ async function runItem(
     inbox: [],
     probeText: '',
     probeCommands: [],
+    probeContamination: [],
     probeFiles: {},
     probeInputTokens: 0,
     teachTools: [],
   };
   try {
+    const settings = armSettings(arm);
     mkdirSync(join(home, '.book'), { recursive: true });
-    writeFileSync(join(home, '.book', 'settings.json'), armSettings(arm));
+    writeFileSync(join(home, '.book', 'settings.json'), settings);
+    // The baseline has no memory to carry, so its fresh home is the probe's too.
+    let probeHome = home;
     writeFiles(ws, { ...BASE_WORKSPACE, ...scenario.baseFiles });
     const git = (...args: string[]) => run('git', ['-C', ws, ...args]);
     await git('init', '-q');
@@ -368,11 +477,23 @@ async function runItem(
       writeFiles(ws, kept);
       if (scenario.keepFiles?.length) obs.keptFiles = kept;
       Object.assign(obs, readStore(home));
+
+      // The probe gets its own home holding only the memory the workspace resolves to; the teaching
+      // home (transcripts, inbox, other projects) is deleted so the temp root has nothing to find.
+      buildProbeHome({ ws, teachHome: home, probeHome: probeHomeDir, settings });
+      rmSync(home, { recursive: true, force: true });
+      probeHome = probeHomeDir;
     }
 
-    const probe = await session(model, scenario.probe, ws, home, false, opts);
+    const probe = await session(model, scenario.probe, ws, probeHome, false, opts);
     obs.probeText = probe.text;
     obs.probeCommands = probe.commands;
+    obs.probeContamination = probeContamination(probe.commands, {
+      evalRoot: root,
+      repoRoot: process.cwd(),
+      ws,
+      probeHome,
+    });
     obs.probeInputTokens = probe.inputTokens;
     if (scenario.check.kind === 'file') {
       const file = join(ws, scenario.check.path);
