@@ -8,6 +8,8 @@ import {
   shouldExpandTool,
 } from './tool-presentation.js';
 import {
+  EXPANDED_OUTPUT_MAX_LINES,
+  TOOL_ERROR_EXPANDED_MAX_ROWS,
   composeToolErrorDetail,
   composeToolRow,
   estimateToolErrorDetailRows,
@@ -653,17 +655,87 @@ describe('composeToolErrorDetail with a failed command', () => {
       expect(detail.lines[10]).toBe('bad  [31mred [0m line');
     });
 
-    it('truncates a long line to its row instead of wrapping it', () => {
-      const detail = composeToolErrorDetail(row, `short\n${'x'.repeat(300)}`, grid, expanded);
-      expect(detail.lines).toHaveLength(2);
-      expect(detail.lines[1]!.endsWith('…')).toBe(true);
-      expect(displayWidth(detail.lines[1]!)).toBeLessThanOrEqual(room);
+    it('continues a long line on the rows after it, losing none of it', () => {
+      const long = 'abcdefghij'.repeat(Math.ceil((room * 3) / 10)).slice(0, room * 3);
+      const detail = composeToolErrorDetail(row, `short\n${long}`, grid, expanded);
+      expect(detail.lines).toHaveLength(4);
+      expect(detail.lines[0]).toBe('short');
+      expect(detail.lines.slice(1)).toHaveLength(3);
+      expect(detail.lines.slice(1).join('')).toBe(long);
+      for (const line of detail.lines) expect(displayWidth(line)).toBeLessThanOrEqual(room);
+      // The collapsed detail still cuts it to one row.
+      const collapsed = composeToolErrorDetail(row, `short\n${long}`, grid, command);
+      expect(collapsed.lines).toHaveLength(2);
+      expect(collapsed.lines[1]!.endsWith('…')).toBe(true);
+    });
+
+    it('wraps CJK and emoji by display width', () => {
+      const long = '漢字🙂'.repeat(room);
+      const detail = composeToolErrorDetail(row, long, grid, expanded);
+      expect(detail.lines.length).toBeGreaterThan(1);
+      expect(detail.lines.join('')).toBe(long);
+      for (const line of detail.lines) expect(displayWidth(line)).toBeLessThanOrEqual(room);
+    });
+
+    it('keeps the last rows of wrapped output within the bound, and counts the hidden lines', () => {
+      const wide = (n: number) => `${n}`.padStart(4, '0') + 'x'.repeat(room * 2 - 4);
+      const lines = Array.from({ length: 1500 }, (_, i) => wide(i + 1));
+      const detail = composeToolErrorDetail(row, lines.join('\n'), grid, expanded);
+      expect(detail.lines).toHaveLength(EXPANDED_OUTPUT_MAX_LINES);
+      expect(detail.lines.at(-1)).toBe(lines.at(-1)!.slice(room));
+      expect(detail.lines.slice(-2).join('')).toBe(lines.at(-1));
+      // 2000 rows hold 1000 whole lines; the 500 before them are hidden.
+      expect(detail.hint).toBe('… +500 lines');
+      expect(rows(detail)).toBeLessThanOrEqual(TOOL_ERROR_EXPANDED_MAX_ROWS);
+    });
+
+    it('counts a line the bound cuts into as hidden, and keeps its last rows', () => {
+      const long = 'y'.repeat(room * 2500);
+      const detail = composeToolErrorDetail(row, `first\n${long}`, grid, expanded);
+      expect(detail.lines).toHaveLength(EXPANDED_OUTPUT_MAX_LINES);
+      expect(detail.hint).toBe('… +2 lines');
+      expect(detail.lines.every((line) => line === 'y'.repeat(room))).toBe(true);
+    });
+
+    it('shows no stdout fallback when the output block draws that stdout below', () => {
+      const stdout = source(12).join('\n');
+      const detail = composeToolErrorDetail(row, 'Exit code: 1', grid, {
+        ...expanded,
+        stdout,
+        stdoutShownBelow: true,
+      });
+      expect(detail.lines).toEqual([]);
+      expect(detail.hint).toBeUndefined();
+      const withNote = composeToolErrorDetail(row, 'Exit code: 1\nNote: run it outside.', grid, {
+        ...expanded,
+        stdout,
+        stdoutShownBelow: true,
+      });
+      expect(withNote.lines).toEqual([]);
+      expect(withNote.note).toEqual(['Note: run it outside.']);
+    });
+
+    it('keeps the collapsed stdout tail and real stderr even when stdout shows below', () => {
+      const stdout = source(12).join('\n');
+      const collapsed = composeToolErrorDetail(row, 'Exit code: 1', grid, {
+        ...command,
+        stdout,
+        stdoutShownBelow: true,
+      });
+      expect(collapsed.lines).toEqual(source(12).slice(8));
+      expect(collapsed.hint).toBe('… +8 lines (Ctrl+E)');
+      const stderr = composeToolErrorDetail(row, 'Exit code: 1\nboom', grid, {
+        ...expanded,
+        stdout,
+        stdoutShownBelow: true,
+      });
+      expect(stderr.lines).toEqual(['Exit code: 1', 'boom']);
     });
 
     it('keeps the last 2000 lines and counts the rest, naming no key', () => {
       const detail = composeToolErrorDetail(row, source(2500).join('\n'), grid, expanded);
       expect(detail.hint).toBe('… +500 lines');
-      expect(detail.lines).toHaveLength(2000);
+      expect(detail.lines).toHaveLength(EXPANDED_OUTPUT_MAX_LINES);
       expect(detail.lines[0]).toBe(assertion(501));
       expect(detail.lines.at(-1)).toBe(assertion(2500));
     });
@@ -699,7 +771,7 @@ describe('composeToolErrorDetail with a failed command', () => {
       expect(detail.lines.length).toBeGreaterThan(2);
       expect(detail.lines.join(' ')).toBe(prose.trim());
       const huge = composeToolErrorDetail(row, 'word '.repeat(60_000), grid, { expanded: true });
-      expect(huge.lines).toHaveLength(2000);
+      expect(huge.lines).toHaveLength(EXPANDED_OUTPUT_MAX_LINES);
     });
   });
 

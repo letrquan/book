@@ -10,7 +10,7 @@ import { refusedBeforeRun } from '../tools/pre-execution-codes.js';
 import { normalizePersistedTodos, type Todo } from '../tools/todo.js';
 import { stepProgress } from './steps.js';
 import { STATUS_INDICATORS } from './status-indicators.js';
-import { displayWidth, truncateDisplay, wordWrap } from './components/word-wrap.js';
+import { displayWidth, hardWrapLine, truncateDisplay, wordWrap } from './components/word-wrap.js';
 import { prepareToolOutputDisplay } from './components/tool-output.js';
 import {
   LABEL_COLUMN_WIDTH,
@@ -787,10 +787,14 @@ export const TOOL_ERROR_NOTE_LINES = 2;
 export const TOOL_ERROR_COMMAND_MAX_ROWS = 1 + TOOL_ERROR_TAIL_LINES + TOOL_ERROR_NOTE_LINES;
 
 /**
- * Most lines of a failure an expanded row shows: the last ones. The same bound OutputBlock puts
- * on `showAllToolOutput`, so a runaway output cannot flood the transcript.
+ * Most lines (rows, once a long line wraps) of output an expanded row shows. OutputBlock puts this
+ * bound on `showAllToolOutput` and an expanded error detail keeps to it, so a runaway output cannot
+ * flood the transcript.
  */
-export const TOOL_ERROR_EXPANDED_LINES = 2000;
+export const EXPANDED_OUTPUT_MAX_LINES = 2000;
+
+/** Rows of an expanded failed command's detail at most: the hint, the output, the note. */
+export const TOOL_ERROR_EXPANDED_MAX_ROWS = 1 + EXPANDED_OUTPUT_MAX_LINES + TOOL_ERROR_NOTE_LINES;
 
 /** The line Book's sandbox appends to a command's message: `withReadOnlyGitDirNote` and kin. */
 const SANDBOX_NOTE_PREFIX = 'Note: ';
@@ -818,8 +822,8 @@ export interface ToolErrorDetail {
   /**
    * A message word-wrapped to the row's measure, the last line ending in `…` when more was
    * cut; a failed command's output as its last {@link TOOL_ERROR_TAIL_LINES} non-blank
-   * lines, one row each (all of them when expanded). Empty when a command failed with nothing
-   * to show but its exit code.
+   * lines, one row each (all of them when expanded, a line wider than the row continuing on the
+   * rows after it). Empty when a command failed with nothing to show but its exit code.
    */
   lines: string[];
   /**
@@ -838,16 +842,21 @@ export interface ToolErrorDetailOptions {
   /** The command's stdout, shown instead of a message that is only `Exit code: N`. */
   stdout?: string;
   /**
+   * The row's output block draws `stdout` in full under the detail. An expanded detail then shows
+   * no stdout fallback, which would draw the same lines twice. A collapsed one still tails it.
+   */
+  stdoutShownBelow?: boolean;
+  /**
    * Show the whole failure, not its tail: the row was expanded (Ctrl+E). A command's output keeps
-   * its last {@link TOOL_ERROR_EXPANDED_LINES} non-blank lines, one row each, still never
-   * wrapped; prose wraps with no two-row cap, to as many rows. The collapsed hint names the key
-   * that gets here, so the expanded one does not.
+   * its last {@link EXPANDED_OUTPUT_MAX_LINES} rows, a line wider than the row continuing on the
+   * rows after it; prose wraps with no two-row cap, to as many rows. The collapsed hint names the
+   * key that gets here, so the expanded one does not.
    */
   expanded?: boolean;
   /**
    * Most rows the detail may take. Defaults to {@link TOOL_ERROR_COMMAND_MAX_ROWS} for a
    * command's output and to {@link TOOL_ERROR_MAX_LINES} for prose; expanded, to what
-   * {@link TOOL_ERROR_EXPANDED_LINES} lines, the hint and the note take. The hint goes first
+   * {@link EXPANDED_OUTPUT_MAX_LINES} lines, the hint and the note take. The hint goes first
    * when it does not fit, then the tail's top rows.
    */
   maxRows?: number;
@@ -886,6 +895,29 @@ function nonBlankOutputLines(text: string): string[] {
   return lines;
 }
 
+/**
+ * The last rows of `lines`, each wrapped at display width `width`, at most `budget` of them, and
+ * how many source lines they show whole. A line the budget cuts into keeps its last rows.
+ */
+function wrappedTail(
+  lines: readonly string[],
+  width: number,
+  budget: number,
+): { rows: string[]; wholeLines: number } {
+  const blocks: string[][] = [];
+  let count = 0;
+  let wholeLines = 0;
+  for (let index = lines.length - 1; index >= 0 && count < budget; index--) {
+    const wrapped = hardWrapLine(lines[index]!, width);
+    const room = budget - count;
+    if (wrapped.length <= room) wholeLines++;
+    const block = wrapped.length <= room ? wrapped : wrapped.slice(-room);
+    blocks.push(block);
+    count += block.length;
+  }
+  return { rows: blocks.reverse().flat(), wholeLines };
+}
+
 /** A failed command's output as hint, tail rows and note, inside `maxRows`. */
 function commandOutputDetail(
   error: string,
@@ -894,6 +926,7 @@ function commandOutputDetail(
   column: number,
   maxRows: number,
   expanded: boolean,
+  stdoutShownBelow: boolean,
 ): ToolErrorDetail {
   const messageLines = nonBlankOutputLines(error);
   // Book's own note ends the message. It is advice for the reader, not output: it keeps rows of
@@ -903,10 +936,12 @@ function commandOutputDetail(
     : undefined;
   // Many test runners print their verdict on stdout and leave stderr empty, and the shell tool
   // then reports only `Exit code: N`, which the row's metadata already says.
-  const source =
-    messageLines.length === 1 && EXIT_CODE_ONLY.test(messageLines[0]!.trim())
-      ? nonBlankOutputLines(stdout)
-      : messageLines;
+  const stdoutFallback = messageLines.length === 1 && EXIT_CODE_ONLY.test(messageLines[0]!.trim());
+  const source = stdoutFallback
+    ? expanded && stdoutShownBelow
+      ? []
+      : nonBlankOutputLines(stdout)
+    : messageLines;
 
   // The note gives way to the tail's last row, never the other way round.
   const noteCap = Math.min(
@@ -915,22 +950,25 @@ function commandOutputDetail(
   );
   const note =
     noteLine !== undefined && noteCap > 0 ? wrapProse(noteLine.trim(), width, noteCap) : [];
+  const budget = Math.min(
+    expanded ? EXPANDED_OUTPUT_MAX_LINES : TOOL_ERROR_TAIL_LINES,
+    Math.max(0, maxRows - note.length),
+  );
+  // Expanded, a long line continues on the rows after it instead of being cut, so the rows are
+  // wrapped here and the display only counts what stays out of them.
+  const wrapped = expanded ? wrappedTail(source, width, budget) : undefined;
   const tail = prepareToolOutputDisplay(source.join('\n'), {
-    maxLines: Math.min(
-      expanded ? TOOL_ERROR_EXPANDED_LINES : TOOL_ERROR_TAIL_LINES,
-      Math.max(0, maxRows - note.length),
-    ),
-    maxLineWidth: width,
+    maxLines: wrapped ? wrapped.wholeLines : budget,
+    maxLineWidth: wrapped ? Number.MAX_SAFE_INTEGER : width,
+    hint: expanded ? undefined : 'Ctrl+E',
     strategy: 'tail',
   });
-  const hidden = tail.hiddenLines;
-  const showHint = hidden > 0 && tail.lines.length + note.length + 1 <= maxRows;
+  const lines = wrapped ? wrapped.rows : tail.lines;
+  const showHint = tail.hiddenLines > 0 && lines.length + note.length + 1 <= maxRows;
   return {
     column,
-    ...(showHint
-      ? { hint: `… +${hidden} ${hidden === 1 ? 'line' : 'lines'}${expanded ? '' : ' (Ctrl+E)'}` }
-      : {}),
-    lines: tail.lines,
+    ...(showHint && tail.footer ? { hint: tail.footer } : {}),
+    lines,
     ...(note.length > 0 ? { note } : {}),
   };
 }
@@ -947,8 +985,9 @@ function commandOutputDetail(
  * override must not reach the screen.
  *
  * A failed command's output (`options.commandOutput`) has line structure, and its end is the
- * part that says what failed: one row per non-blank line, never wrapped, the last ones. An
- * expanded detail (`options.expanded`) shows all of them, up to {@link TOOL_ERROR_EXPANDED_LINES}.
+ * part that says what failed: one row per non-blank line, cut at the row's measure, the last
+ * ones. An expanded detail (`options.expanded`) shows all of them, up to
+ * {@link EXPANDED_OUTPUT_MAX_LINES} rows, and wraps a wider line onto the rows after it.
  */
 export function composeToolErrorDetail(
   row: Pick<ToolPresentation, 'title' | 'target'>,
@@ -972,11 +1011,9 @@ export function composeToolErrorDetail(
       options.stdout ?? '',
       width,
       column,
-      options.maxRows ??
-        (expanded
-          ? 1 + TOOL_ERROR_EXPANDED_LINES + TOOL_ERROR_NOTE_LINES
-          : TOOL_ERROR_COMMAND_MAX_ROWS),
+      options.maxRows ?? (expanded ? TOOL_ERROR_EXPANDED_MAX_ROWS : TOOL_ERROR_COMMAND_MAX_ROWS),
       expanded,
+      options.stdoutShownBelow === true,
     );
   }
   const text = (foldControlCharacters(error) ?? '').trim();
@@ -985,7 +1022,7 @@ export function composeToolErrorDetail(
     lines: wrapProse(
       text,
       width,
-      options.maxRows ?? (expanded ? TOOL_ERROR_EXPANDED_LINES : TOOL_ERROR_MAX_LINES),
+      options.maxRows ?? (expanded ? EXPANDED_OUTPUT_MAX_LINES : TOOL_ERROR_MAX_LINES),
     ),
   };
 }

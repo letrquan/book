@@ -5,6 +5,7 @@ import { Box } from 'ink';
 import { act } from 'react';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
+import { ToolRowInteractionContext } from './tool-row-interactions.js';
 import { displayWidth } from './word-wrap.js';
 import type { FileMutationSummary, ToolResult } from '../../types/tools.js';
 import { enrichToolResultPresentation, toolFailure, toolSuccess } from '../../tools/result.js';
@@ -908,7 +909,7 @@ describe('ToolCallBlock failures', () => {
           name="Bash"
           args={{ command: 'bash scripts/fail.sh' }}
           result={result}
-          isExpanded={false}
+          isExpanded
           showAllToolOutput
           terminalWidth={100}
           reducedMotion
@@ -921,6 +922,146 @@ describe('ToolCallBlock failures', () => {
     expect(lines.slice(1).map((line) => line.trim())).toEqual(stderr);
     expect(rendered).not.toContain('Ctrl+E');
     expect(rendered).not.toContain('… +');
+  });
+
+  it('folds the whole error back to its tail when the row is no longer expanded', () => {
+    const stderr = Array.from(
+      { length: 40 },
+      (_, i) =>
+        `error: assertion ${i + 1} failed in test/case_${i + 1}.test.js: expected 200, got 500`,
+    );
+    const result = enrichToolResultPresentation(
+      toolFailure(stderr.join('\n'), { details: { exitCode: 1 } }),
+      'Bash',
+      { command: 'bash scripts/fail.sh' },
+    );
+    const rendered = stripAnsi(
+      colourFrame(
+        <ToolCallBlock
+          name="Bash"
+          args={{ command: 'bash scripts/fail.sh' }}
+          result={result}
+          isExpanded={false}
+          showAllToolOutput
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+    const lines = rendered
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .slice(1)
+      .map((line) => line.trim());
+
+    expect(lines).toEqual(['… +36 lines (Ctrl+E)', ...stderr.slice(-4)]);
+  });
+
+  it('draws the stdout of a command with no stderr once when the row is expanded in full', () => {
+    const stdout = Array.from({ length: 12 }, (_, i) => `FAIL test/case_${i + 1}.test.js`).join(
+      '\n',
+    );
+    const result = enrichToolResultPresentation(
+      toolFailure('Exit code: 1', { content: stdout, details: { exitCode: 1 } }),
+      'Bash',
+      { command: 'npm test' },
+    );
+    const draw = (isExpanded: boolean) =>
+      stripAnsi(
+        colourFrame(
+          <ToolCallBlock
+            name="Bash"
+            args={{ command: 'npm test' }}
+            result={result}
+            isExpanded={isExpanded}
+            showAllToolOutput
+            terminalWidth={100}
+            reducedMotion
+          />,
+        ),
+      );
+    const rendered = draw(true);
+
+    for (let i = 1; i <= 12; i++) {
+      expect(rendered.split(`FAIL test/case_${i}.test.js`)).toHaveLength(2);
+    }
+    expect(rendered).not.toContain('… +');
+    // Folded back, only the collapsed tail is left, and the output block is gone.
+    const folded = draw(false);
+    expect(folded).toContain('… +8 lines (Ctrl+E)');
+    expect(folded).not.toContain('FAIL test/case_1.test.js');
+  });
+
+  it('continues a long expanded error line on the rows after it', () => {
+    const long = `error: ${'0123456789'.repeat(18)}`;
+    const result = enrichToolResultPresentation(
+      toolFailure(long, { details: { exitCode: 1 } }),
+      'Bash',
+      { command: 'make' },
+    );
+    const rendered = stripAnsi(
+      colourFrame(
+        <ToolCallBlock
+          name="Bash"
+          args={{ command: 'make' }}
+          result={result}
+          isExpanded
+          showAllToolOutput
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+    const detail = rendered
+      .split('\n')
+      .slice(1)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    expect(detail.length).toBeGreaterThan(1);
+    expect(detail.join('')).toBe(long);
+    expect(rendered).not.toContain('…');
+  });
+
+  describe('click expansion', () => {
+    const register = (result: ToolResult, command: string) => {
+      const registrations: Array<{ expandable: boolean; expanded: boolean }> = [];
+      colourFrame(
+        <ToolRowInteractionContext.Provider
+          value={{
+            register: (registration) => {
+              registrations.push(registration);
+              return () => undefined;
+            },
+          }}
+        >
+          <ToolCallBlock
+            toolId="call-1"
+            name="Bash"
+            args={{ command }}
+            result={result}
+            isExpanded={false}
+            terminalWidth={100}
+            reducedMotion
+          />
+        </ToolRowInteractionContext.Provider>,
+      );
+      return registrations.at(-1);
+    };
+    const stderr = (count: number) =>
+      Array.from({ length: count }, (_, i) => `error: line ${i + 1}`).join('\n');
+    const failed = (message: string) =>
+      enrichToolResultPresentation(toolFailure(message, { details: { exitCode: 1 } }), 'Bash', {
+        command: 'make',
+      });
+
+    it('registers a stderr-only failure with hidden lines as expandable', () => {
+      expect(register(failed(stderr(12)), 'make')?.expandable).toBe(true);
+    });
+
+    it('does not register a failure whose lines all show', () => {
+      expect(register(failed(stderr(3)), 'make')?.expandable).toBe(false);
+    });
   });
 
   it('shows the stdout verdict of a command that said nothing on stderr', () => {
