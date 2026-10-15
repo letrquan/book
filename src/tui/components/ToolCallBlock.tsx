@@ -411,6 +411,13 @@ function ToolCallBlockInner({
           summary row truncates: every row draws inside its own box. */}
       {errorDetail ? (
         <Box flexDirection="column" marginLeft={errorDetail.column}>
+          {errorDetail.hint ? (
+            <Box height={1}>
+              <Text wrap="truncate-end" color={theme.inactive}>
+                {errorDetail.hint}
+              </Text>
+            </Box>
+          ) : null}
           {errorDetail.lines.map((line, index) => (
             <Box key={index} height={1}>
               <Text

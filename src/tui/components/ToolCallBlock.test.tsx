@@ -726,6 +726,46 @@ describe('ToolCallBlock failures', () => {
     expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}×`);
     expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}Exit code: 1`);
   });
+
+  it('shows the exit code and the tail of a long failure, behind a count of what was cut', () => {
+    const stderr = Array.from(
+      { length: 40 },
+      (_, i) =>
+        `error: assertion ${i + 1} failed in test/case_${i + 1}.test.js: expected 200, got 500`,
+    ).join('\n');
+    const result = enrichToolResultPresentation(
+      {
+        ...toolFailure(stderr, { details: { exitCode: 1 } }),
+        metrics: { durationMs: 7 },
+      },
+      'Bash',
+      { command: 'bash scripts/fail.sh' },
+    );
+    const raw = colourFrame(
+      <ToolCallBlock
+        name="Bash"
+        args={{ command: 'bash scripts/fail.sh' }}
+        result={result}
+        isExpanded={false}
+        terminalWidth={100}
+        reducedMotion
+      />,
+    );
+    const rendered = stripAnsi(raw);
+    const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
+
+    expect(lines[0]).toMatch(/failed · exit 1 · 7ms/);
+    expect(lines.slice(1).map((line) => line.trim())).toEqual([
+      '… +36 lines',
+      'error: assertion 37 failed in test/case_37.test.js: expected 200, got 500',
+      'error: assertion 38 failed in test/case_38.test.js: expected 200, got 500',
+      'error: assertion 39 failed in test/case_39.test.js: expected 200, got 500',
+      'error: assertion 40 failed in test/case_40.test.js: expected 200, got 500',
+    ]);
+    expect(rendered).not.toContain('assertion 1 failed');
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}… +36 lines`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}error: assertion 40`);
+  });
 });
 
 describe('ToolCallBlock plan rows', () => {

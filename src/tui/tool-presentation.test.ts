@@ -343,12 +343,13 @@ describe('composeToolRow', () => {
 
   it('folds the control characters out of a failure text, not only out of a target', () => {
     // The error is the model's own or a tool's, and the text of an
-    // `invalid_json_arguments` failure quotes the model's raw arguments: a newline,
-    // an ESC and a bidi override all reach it. `match`, not `test` — CONTROL_CHARACTERS
+    // `invalid_json_arguments` failure quotes the model's raw arguments: an ESC and a
+    // bidi override reach it, and a lone newline is a line break only when something
+    // follows it (the multi-line cases below). `match`, not `test` — CONTROL_CHARACTERS
     // is global, and `test` would advance lastIndex between assertions.
     const detail = composeToolErrorDetail(
       { title: 'Edit', target: 'src/tools/file.ts' },
-      ['bad\nthing', String.fromCharCode(0x202e), 'here'].join(''),
+      ['bad\u001bthing', String.fromCharCode(0x202e), 'here\n'].join(''),
       grid,
     );
     expect(detail.lines.join(' ').match(CONTROL_CHARACTERS)).toBeNull();
@@ -454,6 +455,65 @@ describe('composeToolErrorDetail', () => {
     for (const line of detail.lines) {
       expect(displayWidth(line)).toBeLessThanOrEqual(room(grid, detail.column));
     }
+  });
+});
+
+describe('composeToolErrorDetail with a multi-line message', () => {
+  const grid = transcriptGrid(100);
+  const row = { title: 'Bash', target: 'bash scripts/fail.sh' };
+  const assertion = (n: number) =>
+    `error: assertion ${n} failed in test/case_${n}.test.js: expected 200, got 500`;
+  const source = (count: number) => Array.from({ length: count }, (_, i) => assertion(i + 1));
+
+  it('keeps the last four lines of a long failure, one row each, behind a count of the rest', () => {
+    const detail = composeToolErrorDetail(row, source(40).join('\n'), grid);
+    expect(detail.hint).toBe('… +36 lines');
+    expect(detail.lines).toEqual([assertion(37), assertion(38), assertion(39), assertion(40)]);
+    for (const line of detail.lines) {
+      expect(displayWidth(line)).toBeLessThanOrEqual(grid.row - grid.label - 1);
+    }
+  });
+
+  it('shows a short failure whole, line by line, with no hint', () => {
+    const detail = composeToolErrorDetail(row, 'first\nsecond\nthird\n\n', grid);
+    expect(detail.hint).toBeUndefined();
+    expect(detail.lines).toEqual(['first', 'second', 'third']);
+  });
+
+  it('shows exactly four lines whole', () => {
+    const detail = composeToolErrorDetail(row, source(4).join('\n'), grid);
+    expect(detail.hint).toBeUndefined();
+    expect(detail.lines).toEqual(source(4));
+  });
+
+  it('truncates a long line to its row instead of wrapping it', () => {
+    const detail = composeToolErrorDetail(row, `short\n${'x'.repeat(300)}`, grid);
+    expect(detail.lines).toHaveLength(2);
+    expect(detail.lines[1]!.endsWith('…')).toBe(true);
+    expect(displayWidth(detail.lines[1]!)).toBeLessThanOrEqual(grid.row - grid.label - 1);
+  });
+
+  it('neutralises an escape sequence inside a line', () => {
+    const detail = composeToolErrorDetail(row, 'ok\n\u001b[31mred\u001b[0m text\nlast', grid);
+    for (const line of detail.lines) expect(line.match(CONTROL_CHARACTERS)).toBeNull();
+    expect(detail.lines).toEqual(['ok', ' [31mred [0m text', 'last']);
+  });
+
+  it('splits CRLF line endings', () => {
+    const detail = composeToolErrorDetail(row, 'one\r\ntwo\r\nthree', grid);
+    expect(detail.hint).toBeUndefined();
+    expect(detail.lines).toEqual(['one', 'two', 'three']);
+  });
+
+  it('leaves a one-line message as it was: word-wrapped, two rows, cut with an ellipsis', () => {
+    const one = composeToolErrorDetail(row, 'exit code 1\n', grid);
+    expect(one.hint).toBeUndefined();
+    expect(one.lines).toEqual(['exit code 1']);
+
+    const long = composeToolErrorDetail(row, 'word '.repeat(200), grid);
+    expect(long.hint).toBeUndefined();
+    expect(long.lines).toHaveLength(2);
+    expect(long.lines[1]!.endsWith('…')).toBe(true);
   });
 });
 
@@ -672,6 +732,48 @@ describe('TodoWrite rows', () => {
     });
     expect(presentation.target).toBe('Fix the parser');
     expect(presentation.metadata).toEqual(['0 of 1 done']);
+  });
+});
+
+describe('Bash exit code metadata', () => {
+  const args = { command: 'bash scripts/fail.sh' };
+  const failed = (details?: Record<string, unknown>) =>
+    toolFailure('boom', { code: 'tool_error', ...(details ? { details } : {}) });
+
+  it('names a non-zero exit code right after the failed marker', () => {
+    const withCode = failed({ exitCode: 1 });
+    const bare = deriveToolPresentation('Bash', args, withCode);
+    expect(bare.metadata).toEqual(['failed', 'exit 1']);
+
+    const enriched = enrichToolResultPresentation(
+      { ...withCode, metrics: { durationMs: 7 } },
+      'Bash',
+      args,
+    );
+    expect(deriveToolPresentation('Bash', args, enriched).metadata).toEqual([
+      'failed',
+      'exit 1',
+      '7ms',
+    ]);
+  });
+
+  it('adds nothing when the failure carries no exit code', () => {
+    expect(deriveToolPresentation('Bash', args, failed()).metadata).toEqual(['failed']);
+    expect(deriveToolPresentation('Bash', args, failed({ exitCode: '1' })).metadata).toEqual([
+      'failed',
+    ]);
+    expect(deriveToolPresentation('Bash', args, failed({ exitCode: 0 })).metadata).toEqual([
+      'failed',
+    ]);
+  });
+
+  it('is only for Bash', () => {
+    const presentation = deriveToolPresentation(
+      'Read',
+      { filePath: 'a.ts' },
+      failed({ exitCode: 1 }),
+    );
+    expect(presentation.metadata).not.toContain('exit 1');
   });
 });
 

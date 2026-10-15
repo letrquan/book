@@ -237,6 +237,27 @@ function resultStatusMetadata(status: ToolPresentationStatus): string | undefine
   return undefined;
 }
 
+/**
+ * Put the result's status marker first in a row's metadata, and a failed command's
+ * exit code right after it: `failed · exit 1 · 7ms`. Bash records the code in
+ * `structuredError.details.exitCode`; a failure without one (a timeout, a cancel,
+ * a result persisted before the code was recorded) shows the marker alone.
+ */
+function addStatusMetadata(
+  metadata: string[],
+  status: ToolPresentationStatus,
+  canonicalName: string,
+  result: ToolResult | undefined,
+): void {
+  const statusMetadata = resultStatusMetadata(status);
+  if (statusMetadata && !metadata.includes(statusMetadata)) metadata.unshift(statusMetadata);
+  if (status !== 'failure' || canonicalName !== 'Bash') return;
+  const exitCode = result?.structuredError?.details?.exitCode;
+  if (typeof exitCode !== 'number' || !Number.isFinite(exitCode) || exitCode === 0) return;
+  const exit = `exit ${exitCode}`;
+  if (!metadata.includes(exit)) metadata.splice(metadata.indexOf('failed') + 1, 0, exit);
+}
+
 function fileMutationPresentation(
   canonicalName: string,
   args: Record<string, unknown>,
@@ -383,8 +404,7 @@ export function deriveToolPresentation(
       filePath = mutation.filePath;
       target = mutation.filePath;
     }
-    const statusMetadata = resultStatusMetadata(status);
-    if (statusMetadata && !metadata.includes(statusMetadata)) metadata.unshift(statusMetadata);
+    addStatusMetadata(metadata, status, canonicalName, result);
     // Writing the plan down takes no time worth reading; `0ms` was only noise.
     const duration = todoColumns ? undefined : formatDuration(result.metrics?.durationMs);
     if (duration) metadata.push(duration);
@@ -494,8 +514,7 @@ export function deriveToolPresentation(
     if (size) metadata.push(size);
   }
 
-  const statusMetadata = resultStatusMetadata(status);
-  if (statusMetadata && !metadata.includes(statusMetadata)) metadata.unshift(statusMetadata);
+  addStatusMetadata(metadata, status, canonicalName, result);
   // Writing the plan down takes no time worth reading; `0ms` was only noise.
   const duration = todoColumns ? undefined : formatDuration(result?.metrics?.durationMs);
   if (duration) metadata.push(duration);
@@ -630,6 +649,9 @@ const SHORT_LABELS: Record<string, string> = {
   'Shell output': 'Shell',
 };
 
+/** Columns a failed row's metadata may take: `failed · exit 255 · 1m 12s` fits. */
+const FAILED_META_WIDTH = 28;
+
 /** The three aligned columns of a tool row, already padded to the grid. */
 export interface ToolRowColumns {
   /** Verb, padded to the grid's label column. Empty when labels are inline. */
@@ -679,7 +701,14 @@ export function composeToolRow(
   // between. The bound lives on the grid so it narrows with nesting.
   const measure = grid.row;
 
-  const meta = grid.meta > 0 ? truncateDisplay(joinMetadata(metaSource), grid.meta) : '';
+  // A failed row's metadata, `failed · exit 1 · 7ms`, runs past the grid's 20-column
+  // meta column, and the duration is what a cut there would take. It gets room for
+  // them, never more than two fifths of the row.
+  const metaBudget =
+    grid.meta > 0 && metaSource[0] === 'failed'
+      ? Math.max(grid.meta, Math.min(FAILED_META_WIDTH, Math.floor(measure * 0.4)))
+      : grid.meta;
+  const meta = metaBudget > 0 ? truncateDisplay(joinMetadata(metaSource), metaBudget) : '';
 
   const metaWidth = displayWidth(meta);
   // The budget covers the whole truncated string, prefix included — subtracting
@@ -701,6 +730,22 @@ export function composeToolRow(
 /** Most rows a failure's message takes under its tool row. */
 export const TOOL_ERROR_MAX_LINES = 2;
 
+/** Most source lines of a multi-line failure shown under its row: the last ones. */
+export const TOOL_ERROR_TAIL_LINES = 4;
+
+/**
+ * A message's source lines, without the blank lines around it. One line (or none)
+ * means the message is prose to word-wrap; more means output to keep the shape of.
+ */
+function errorSourceLines(error: string): string[] {
+  const lines = error.split(/\r?\n/);
+  let start = 0;
+  let end = lines.length;
+  while (start < end && lines[start]!.trim() === '') start++;
+  while (end > start && lines[end - 1]!.trim() === '') end--;
+  return lines.slice(start, end);
+}
+
 /** A failure's message as the lines it takes under its tool row. */
 export interface ToolErrorDetail {
   /**
@@ -711,7 +756,15 @@ export interface ToolErrorDetail {
    * measure there.
    */
   column: number;
-  /** The message, word-wrapped to the row's measure; the last line ends in `…` when more was cut. */
+  /**
+   * `… +36 lines`: how much of a multi-line message is hidden above `lines`. Set only when the
+   * message kept its tail; it reads before the rows, as the lines it stands for did.
+   */
+  hint?: string;
+  /**
+   * A one-line message word-wrapped to the row's measure, the last line ending in `…` when more
+   * was cut; a multi-line one's last {@link TOOL_ERROR_TAIL_LINES} source lines, one row each.
+   */
   lines: string[];
 }
 
@@ -741,6 +794,20 @@ export function composeToolErrorDetail(
   // lose the middle of the message, past the reach of the `…` below.
   const width = Math.max(1, grid.row - indent);
   const column = toolRowTargetOffset(grid, underTarget);
+  const sourceLines = errorSourceLines(error);
+  if (sourceLines.length > 1) {
+    // Output has line structure, and its end is the part that says what failed:
+    // one row per line, never wrapped, and the last lines rather than the first.
+    const hidden = Math.max(0, sourceLines.length - TOOL_ERROR_TAIL_LINES);
+    const lines = sourceLines
+      .slice(hidden)
+      .map((line) => truncateDisplay(foldControlCharacters(line) ?? '', width));
+    return {
+      column,
+      ...(hidden > 0 ? { hint: `… +${hidden} ${hidden === 1 ? 'line' : 'lines'}` } : {}),
+      lines,
+    };
+  }
   const text = (foldControlCharacters(error) ?? '').trim();
   const wrapped = wordWrap(text, width).split('\n');
   if (wrapped.length <= maxLines) return { column, lines: wrapped };
