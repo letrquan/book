@@ -238,6 +238,16 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The transcript caps file diffs and its output footers are short** (#456, #458). A successful
+  `Write` or `Edit` diff longer than 80 lines is cut to a change-focused preview of up to 80 diff
+  lines; a diff of 80 lines or fewer stays whole. A newly created file previews only its first 10
+  lines, one terminal row each, with no hunk header. Ctrl+E shows the whole of the current (latest
+  or selected) row's output, not every row. A cut of a new file or of plain tool output is
+  summarised as `… +N lines (Ctrl+E)` instead of
+  `… 97 more lines hidden, 2620 B (103 lines, 2.7 KB total; Ctrl+E shows all)`, and when long lines
+  were shortened it reads `… +N lines, M long lines shortened (Ctrl+E)`. An edit diff's gaps read
+  `⋮ N lines omitted` and its footer gives the total, `… N lines hidden (Ctrl+E)`. The permission
+  prompt's diff uses the same wording, with its own `D shows more` hint.
 - **`model_unavailable` is a new `AgentTerminalReason` and stream-json `stopReason` value** (#387). A
   change for SDK and stream-json consumers that switch over the reason set. A stream that ends with
   it fails under `model_unavailable` and parks like `credentials_rejected` — nothing is wrong with

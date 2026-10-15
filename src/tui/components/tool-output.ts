@@ -13,20 +13,10 @@ export interface ToolOutputDisplay {
   lines: string[];
   totalLines: number;
   totalChars: number;
-  totalBytes: number;
   hiddenLines: number;
-  hiddenBytes: number;
   truncatedLines: number;
   truncated: boolean;
   footer?: string;
-}
-
-export function formatByteSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kib = bytes / 1024;
-  if (kib < 1024) return `${kib.toFixed(kib >= 10 ? 0 : 1)} KB`;
-  const mib = kib / 1024;
-  return `${mib.toFixed(mib >= 10 ? 0 : 1)} MB`;
 }
 
 /**
@@ -42,15 +32,6 @@ export function prepareToolOutputDisplay(
   const widthLimit = Math.max(0, Math.floor(maxLineWidth));
   const visibleIndices = selectVisibleLineIndices(rawLines.length, lineLimit, strategy);
   const visibleRawLines = visibleIndices.map((index) => rawLines[index] ?? '');
-  // Measure the whole output in one call and only the visible lines
-  // individually — a per-line map allocates a string and a Buffer measurement
-  // for every line of a potentially huge output just to fill in the footer.
-  const totalBytes = Buffer.byteLength(output, 'utf8');
-  let visibleBytes = 0;
-  for (const index of visibleIndices) {
-    visibleBytes +=
-      Buffer.byteLength(rawLines[index] ?? '', 'utf8') + (index < rawLines.length - 1 ? 1 : 0);
-  }
   let truncatedLines = 0;
   const lines = visibleRawLines.map((line) => {
     const next = truncateDisplay(line, widthLimit);
@@ -58,26 +39,16 @@ export function prepareToolOutputDisplay(
     return next;
   });
   const hiddenLines = Math.max(0, rawLines.length - visibleRawLines.length);
-  const hiddenBytes = Math.max(0, totalBytes - visibleBytes);
   const truncated = hiddenLines > 0 || truncatedLines > 0;
   const footer = truncated
-    ? formatToolOutputFooter({
-        totalLines: rawLines.length,
-        totalBytes,
-        hiddenLines,
-        hiddenBytes,
-        truncatedLines,
-        hint,
-      })
+    ? formatToolOutputFooter({ hiddenLines, truncatedLines, hint })
     : undefined;
 
   return {
     lines,
     totalLines: rawLines.length,
     totalChars: output.length,
-    totalBytes,
     hiddenLines,
-    hiddenBytes,
     truncatedLines,
     truncated,
     footer,
@@ -105,28 +76,19 @@ function selectVisibleLineIndices(
   return Array.from({ length: maxLines }, (_, index) => index);
 }
 
-function formatToolOutputFooter({
-  totalLines,
-  totalBytes,
+/** `… +N lines, M long lines shortened (hint)`; each part appears only when it applies. */
+export function formatToolOutputFooter({
   hiddenLines,
-  hiddenBytes,
   truncatedLines,
   hint,
 }: {
-  totalLines: number;
-  totalBytes: number;
   hiddenLines: number;
-  hiddenBytes: number;
   truncatedLines: number;
   hint?: string;
 }): string {
   const parts: string[] = [];
-  if (hiddenLines > 0)
-    parts.push(
-      `${hiddenLines} more ${hiddenLines === 1 ? 'line' : 'lines'} hidden, ${hiddenBytes} B`,
-    );
+  if (hiddenLines > 0) parts.push(`+${hiddenLines} ${hiddenLines === 1 ? 'line' : 'lines'}`);
   if (truncatedLines > 0)
     parts.push(`${truncatedLines} long ${truncatedLines === 1 ? 'line' : 'lines'} shortened`);
-  const summary = `${totalLines} ${totalLines === 1 ? 'line' : 'lines'}, ${formatByteSize(totalBytes)} total`;
-  return `… ${parts.join(', ')} (${summary}${hint ? `; ${hint}` : ''})`;
+  return `… ${parts.join(', ')}${hint ? ` (${hint})` : ''}`;
 }
