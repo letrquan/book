@@ -147,6 +147,27 @@ function readOnlyShellParts(
     : parts;
 }
 
+const NO_STDERR_EXIT_ONE = 'Exit code: 1';
+
+/**
+ * Whether a result is a search that found nothing: `grep`, `rg`, `ag`, `fd` and friends exit 1
+ * when nothing matches, and Bash reports any non-zero exit as a failure. That is the normal
+ * outcome of a search, so it folds like a success.
+ *
+ * It must be exactly that: a failed `error` result (not blocked, cancelled or timed out) whose
+ * recorded exit code is 1, from a command whose every part is a search, and that wrote nothing
+ * to stderr. shell.ts reports a failed command's message as its stderr, or `Exit code: N` when
+ * there is none, so a message that is exactly `Exit code: 1` is the one way to tell the
+ * command was silent on stderr; anything else (a bad regex, a missing path, a sandbox denial)
+ * keeps its row.
+ */
+function isNoMatchSearch(parts: readonly ReadOnlyShellPart[], result: ToolResult): boolean {
+  if (result.status !== 'error') return false;
+  if (parts.length === 0 || !parts.every((part) => part.kind === 'search')) return false;
+  const error = result.structuredError;
+  return error?.details?.exitCode === 1 && error.message.trim() === NO_STDERR_EXIT_ONE;
+}
+
 function resultFor(message: Message, toolCallId: string): ToolResult | undefined {
   return message.toolResults?.find((result) => result.toolCallId === toolCallId);
 }
@@ -165,8 +186,11 @@ export function isQuietInvocation(
   context: QuietToolContext,
 ): boolean {
   const name = canonicalToolName(call.name);
+  let noMatchSearch = false;
   if (name === 'Bash') {
-    if (!readOnlyShellParts(call, context)) return false;
+    const parts = readOnlyShellParts(call, context);
+    if (!parts) return false;
+    noMatchSearch = result !== undefined && isNoMatchSearch(parts, result);
     // A foreground command still running at its timeout is adopted as a background
     // shell and reported as a success; it is a job to watch, not a read.
     if (wasBackgrounded(result)) return false;
@@ -178,7 +202,7 @@ export function isQuietInvocation(
   if (message.nestedToolInvocations?.some((nested) => nested.parentTraceId === call.id)) {
     return false;
   }
-  return !result || result.status === 'success';
+  return !result || result.status === 'success' || noMatchSearch;
 }
 
 /**

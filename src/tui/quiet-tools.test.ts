@@ -598,6 +598,61 @@ describe('read-only shell commands (#459)', () => {
     }
   });
 
+  describe('a search that exits 1', () => {
+    /** What shell.ts records for a failed command: stderr, or `Exit code: N` when there is none. */
+    const exited = (
+      id: string,
+      exitCode: number | undefined,
+      message = `Exit code: ${exitCode}`,
+    ): ToolResult => ({
+      version: 2,
+      toolCallId: id,
+      status: 'error',
+      content: '',
+      structuredError: {
+        code: 'tool_error',
+        message,
+        retryable: false,
+        ...(exitCode === undefined ? {} : { details: { exitCode } }),
+      },
+    });
+
+    it('folds with no match and no stderr, and still counts as a search', () => {
+      const search = bash('a', 'grep -rn TODO src');
+      expect(quiet(search, exited('a', 1))).toBe(true);
+      expect(quiet(bash('b', 'grep -rn TODO src | wc -l'), exited('b', 1))).toBe(true);
+      expect(summarizeQuietRun([{ call: search, result: exited('a', 1) }], context)).toEqual({
+        title: 'Search',
+        target: 'TODO',
+        metadata: ['1 search'],
+        running: false,
+      });
+    });
+
+    it('keeps another exit code on its own row', () => {
+      expect(quiet(bash('a', 'grep -rn TODO src'), exited('a', 2))).toBe(false);
+      expect(quiet(bash('b', 'grep -rn TODO src'), exited('b', 0))).toBe(false);
+    });
+
+    it('keeps one that wrote to stderr on its own row', () => {
+      const search = bash('a', 'grep -rn TODO nope');
+      expect(quiet(search, exited('a', 1, 'grep: nope: No such file or directory'))).toBe(false);
+    });
+
+    it('keeps a failure with no exit code, or no search, on its own row', () => {
+      expect(quiet(bash('a', 'grep -rn TODO src'), exited('a', undefined))).toBe(false);
+      expect(quiet(bash('b', 'cat a.js'), exited('b', 1))).toBe(false);
+      expect(quiet(bash('c', 'grep TODO a.js && cat a.js'), exited('c', 1))).toBe(false);
+      expect(quiet(bash('d', 'rg TODO src; ls src'), exited('d', 1))).toBe(false);
+    });
+
+    it('keeps a timeout, a cancel and a refusal on its own row', () => {
+      for (const status of ['timed_out', 'cancelled', 'blocked'] as const) {
+        expect(quiet(bash('a', 'grep TODO src'), { ...exited('a', 1), status })).toBe(false);
+      }
+    });
+  });
+
   it('keeps a background command, a pinned one and one awaiting permission visible', () => {
     expect(quiet(bash('a', 'cat src/a.js', { run_in_background: true }))).toBe(false);
     expect(
