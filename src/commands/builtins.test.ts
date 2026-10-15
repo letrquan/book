@@ -8,6 +8,7 @@ import {
   createBuiltinCommandRegistry,
   type BuiltinCommandContext,
 } from './builtins.js';
+import { memoryConsolidateTools } from './builtins-prompts.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { loadConfig, resolveAdvisorModelConfig } from '../config.js';
 import {
@@ -1162,17 +1163,21 @@ describe('/memory consolidate', () => {
       expect(effect.prompt).toContain('concentrate on: the build notes');
       expect(effect.prompt).not.toMatch(/MemorySave/i);
       expect(effect.context.resolvedBody).toBe(effect.prompt);
+      // The rules are written with `/` on every platform; on Windows the directory may also have
+      // a second, long-name spelling (8.3 short names), so the set is checked for this one.
+      const slashed = memoryDir.replaceAll('\\', '/');
       expect(effect.context.allowedTools).toEqual(
         expect.arrayContaining([
           'Read',
           'Glob',
           'Grep',
-          `Write(${memoryDir}/*.md)`,
-          `Edit(${memoryDir}/*.md)`,
-          `MultiEdit(${memoryDir}/*.md)`,
-          `Bash(rm ${memoryDir}/*.md)`,
+          `Write(${slashed}/*.md)`,
+          `Edit(${slashed}/*.md)`,
+          `MultiEdit(${slashed}/*.md)`,
+          `Bash(rm ${slashed}/*.md)`,
         ]),
       );
+      expect(effect.context.allowedTools).toEqual(memoryConsolidateTools(memoryDir));
       expect(effect.context.allowedTools).not.toContain('ApplyPatch');
       expect(effect.context.allowedTools).not.toContain('Bash');
 
@@ -1216,7 +1221,8 @@ describe('/memory consolidate', () => {
   it('refuses when a deny rule refuses writes to the memory directory', () => {
     const { workspace, memoryDir } = setup();
     const config = defaultConfig();
-    for (const deny of ['Write', `Write(${memoryDir}/**)`]) {
+    // A rule is written with `/` on every platform (a `\` in a glob is an escape).
+    for (const deny of ['Write', `Write(${memoryDir.replaceAll('\\', '/')}/**)`]) {
       const runtimeConfig = {
         ...config,
         settings: {

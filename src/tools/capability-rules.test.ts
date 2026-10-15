@@ -184,6 +184,72 @@ describe('capability rules, Windows spellings', () => {
     expect(parseStrictRm('rm C:\\', 'win32')).toBeNull();
   });
 
+  it('reads `~` in a drive operand only as an 8.3 short-name marker', () => {
+    expect(parseStrictRm('rm C:\\Users\\RUNNER~1\\a.md', 'win32')).toEqual([
+      'C:\\Users\\RUNNER~1\\a.md',
+    ]);
+    expect(parseStrictRm('rm C:/Users/RUNNER~12/x/a~2.md', 'win32')).not.toBeNull();
+    for (const command of [
+      'rm C:\\Users\\~\\a.md',
+      'rm C:\\Users\\~root\\a.md',
+      'rm C:\\Users\\a.md~',
+      'rm ~1/a.md',
+      'rm ~/a.md',
+    ]) {
+      expect(parseStrictRm(command, 'win32'), command).toBeNull();
+    }
+    // A POSIX path has no short names, so a tilde there is still refused.
+    expect(parseStrictRm('rm /home/RUNNER~1/a.md', 'linux')).toBeNull();
+  });
+
+  it('admits a strict rm in the short or the long spelling of a root (8.3 names)', () => {
+    const short = 'C:\\Users\\RUNNER~1\\AppData\\Temp\\memory';
+    const long = 'C:\\Users\\runneradmin\\AppData\\Temp\\memory';
+    // What `realpath` does on the runner: the short name is expanded, whatever the case.
+    const canonicalize = (path: string) => path.replace(/RUNNER~1/i, 'runneradmin');
+    const under = (command: string, root: string) =>
+      strictRmOfMarkdownUnder(command, root, 'win32', canonicalize);
+    for (const root of [short, long, short.replaceAll('\\', '/')]) {
+      for (const dir of [short, long, short.replaceAll('\\', '/'), long.replaceAll('\\', '/')]) {
+        expect(under(`rm ${dir}\\a.md`, root), `${root} / ${dir}`).not.toBeNull();
+        expect(under(`rm ${dir}/a.md ${dir}/b.md`, root), `${root} / ${dir}`).not.toBeNull();
+      }
+      expect(under(`rm ${short}\\..\\a.md`, root)).toBeNull();
+      expect(under(`rm ${short}\\MEMORY.md`, root)).toBeNull();
+      expect(under(`rm C:\\Users\\RUNNER~1\\AppData\\Temp\\other\\a.md`, root)).toBeNull();
+      expect(under(`rm C:\\Users\\OTHER~1\\AppData\\Temp\\memory\\a.md`, root)).toBeNull();
+    }
+    // A link under the root that leaves it is still refused after both sides are canonicalized.
+    const escaping = (path: string) =>
+      canonicalize(path).replace(/memory\\linked$/i, 'elsewhere\\target');
+    expect(
+      strictRmOfMarkdownUnder(`rm ${short}\\linked\\a.md`, short, 'win32', escaping),
+    ).toBeNull();
+    expect(strictRmOfMarkdownUnder(`rm ${short}\\a.md`, short, 'win32', escaping)).not.toBeNull();
+  });
+
+  it('matches an rm rule written in either spelling of a short-named root', () => {
+    const rules = [
+      'Bash(rm C:/Users/RUNNER~1/Temp/memory/*.md)',
+      'Bash(rm C:/Users/runneradmin/Temp/memory/*.md)',
+    ];
+    const bash = (command: string) => win(rules, 'Bash', { command });
+    expect(bash('rm C:\\Users\\RUNNER~1\\Temp\\memory\\a.md')).toBe(true);
+    expect(bash('rm C:\\Users\\runneradmin\\Temp\\memory\\a.md')).toBe(true);
+    expect(
+      bash('rm C:\\Users\\RUNNER~1\\Temp\\memory\\a.md C:/Users/RUNNER~1/Temp/memory/b.md'),
+    ).toBe(true);
+    // A rule admits a line whose operands all match that one rule, so two spellings in one line
+    // are refused (and the model removes the files one command each).
+    expect(
+      bash('rm C:\\Users\\RUNNER~1\\Temp\\memory\\a.md C:\\Users\\runneradmin\\Temp\\memory\\b.md'),
+    ).toBe(false);
+    expect(bash('rm C:\\Users\\RUNNER~1\\Temp\\other\\a.md')).toBe(false);
+    expect(bash('rm C:\\Users\\RUNNER~1\\Temp\\memory\\a.md C:\\Users\\RUNNER~1\\x.md')).toBe(
+      false,
+    );
+  });
+
   it('strictRmOperandsSpelledUnder compares in one spelling, never the index', () => {
     const root = 'C:\\Users\\u\\memory';
     const under = (command: string) => strictRmOperandsSpelledUnder(command, [root], 'win32');

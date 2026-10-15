@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync, symlinkSync } from 'fs';
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -46,7 +46,8 @@ describe('buildMemoryConsolidatePrompt', () => {
   it('names the directory, the index and today', () => {
     const prompt = buildMemoryConsolidatePrompt(input);
     expect(prompt).toContain('/home/u/.book/projects/p/memory');
-    expect(prompt).toContain('/home/u/.book/projects/p/memory/MEMORY.md');
+    // The index is joined with the platform's separator, as `/memory consolidate` joins it.
+    expect(prompt).toContain(join(input.memoryDir, 'MEMORY.md'));
     expect(prompt).toContain('Today is 2026-10-15');
     expect(prompt).toContain('today is 2026-10-15');
   });
@@ -95,7 +96,10 @@ describe('memoryConsolidateTools', () => {
     isToolCallAllowed(parseCapabilityRules(tools), { id: 'c', name, arguments: args });
 
   it('is the read tools, writes to memory markdown, and rm of it', () => {
-    expect(memoryConsolidateTools(memory)).toEqual([
+    // Links are not followed, so the directory has one spelling on every platform and one set of
+    // rules: the default `canonicalize` would map a POSIX literal onto the current drive on Windows.
+    const own = { canonicalize: (dir: string) => dir };
+    expect(memoryConsolidateTools(memory, own)).toEqual([
       'Read',
       'Glob',
       'Grep',
@@ -104,7 +108,39 @@ describe('memoryConsolidateTools', () => {
       `MultiEdit(${memory}/*.md)`,
       `Bash(rm ${memory}/*.md)`,
     ]);
-    expect(memoryConsolidateTools(`${memory}/`)).toEqual(memoryConsolidateTools(memory));
+    expect(memoryConsolidateTools(`${memory}/`, own)).toEqual(memoryConsolidateTools(memory, own));
+  });
+
+  it('lists one set of rules per spelling of the directory (8.3 short and long names)', () => {
+    const short = 'C:\\Users\\RUNNER~1\\Temp\\home\\projects\\p\\memory';
+    const long = 'C:\\Users\\runneradmin\\Temp\\home\\projects\\p\\memory';
+    const canonicalize = (dir: string) => dir.replace('RUNNER~1', 'runneradmin');
+    const rulesFor = (dir: string) => [
+      `Write(${dir}/*.md)`,
+      `Edit(${dir}/*.md)`,
+      `MultiEdit(${dir}/*.md)`,
+      `Bash(rm ${dir}/*.md)`,
+    ];
+    const slashed = (dir: string) => dir.replaceAll('\\', '/');
+    const tools = memoryConsolidateTools(short, { platform: 'win32', canonicalize });
+    expect(tools.slice(0, 3)).toEqual(['Read', 'Glob', 'Grep']);
+    expect(tools.slice(3)).toEqual([...rulesFor(slashed(short)), ...rulesFor(slashed(long))]);
+    // A directory with no short name is one spelling.
+    expect(memoryConsolidateTools(long, { platform: 'win32', canonicalize }).slice(3)).toEqual(
+      rulesFor(slashed(long)),
+    );
+
+    const rules = parseCapabilityRules(tools);
+    const can = (name: string, args: Record<string, unknown>) =>
+      isToolCallAllowed(rules, { id: 'c', name, arguments: args }, new Set(), 'win32');
+    for (const dir of [short, long]) {
+      expect(can('Write', { filePath: `${dir}\\a.md` }), dir).toBe(true);
+      expect(can('Write', { filePath: `${slashed(dir)}/a.md` }), dir).toBe(true);
+      expect(can('Bash', { command: `rm ${dir}\\a.md` }), dir).toBe(true);
+      expect(can('Bash', { command: `rm ${dir}\\a.md ${dir}\\b.md` }), dir).toBe(true);
+    }
+    expect(can('Bash', { command: `rm ${short}\\a.md C:\\Users\\RUNNER~1\\x.md` })).toBe(false);
+    expect(can('Write', { filePath: 'C:\\Users\\RUNNER~1\\Temp\\home\\a.md' })).toBe(false);
   });
 
   it('allows what consolidating needs', () => {
@@ -229,9 +265,12 @@ describe('memoryConsolidateTools', () => {
     const tools = memoryConsolidateTools(link);
     expect(tools.filter((tool) => tool.startsWith('Write('))).toHaveLength(2);
     const can = allowed(tools);
+    // The real path is the directory as links resolve it. On Windows `real` (from the temp dir) is
+    // spelled in 8.3 short form, which is neither the link nor the resolved spelling.
+    const resolved = realpathSync.native(real);
     expect(can('Write', { filePath: join(link, 'a.md') })).toBe(true);
-    expect(can('Write', { filePath: join(real, 'a.md') })).toBe(true);
-    expect(can('Bash', { command: `rm ${join(real, 'a.md')}` })).toBe(true);
+    expect(can('Write', { filePath: join(resolved, 'a.md') })).toBe(true);
+    expect(can('Bash', { command: `rm ${join(resolved, 'a.md')}` })).toBe(true);
     expect(can('Write', { filePath: join(holder, 'a.md') })).toBe(false);
   });
 });

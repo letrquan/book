@@ -2317,7 +2317,10 @@ describe('a Bash rm of memory files (memory write root)', () => {
     const decide = (command: string) =>
       evaluatePermissionDetail('Bash', { command }, settings(), { workspace: scope });
     expect(decide(`rm ${join(link, 'a.md')}`)).toEqual(allowed);
-    expect(decide(`rm ${join(realpathSync(real), 'a.md')}`)).toEqual(allowed);
+    // The resolved spelling (on Windows the temp dir's 8.3 short name is expanded), and the
+    // short-name spelling `real` was made with: all three name the one directory.
+    expect(decide(`rm ${join(realpathSync.native(real), 'a.md')}`)).toEqual(allowed);
+    expect(decide(`rm ${join(real, 'a.md')}`)).toEqual(allowed);
   });
 
   it('keeps deny and ask rules ahead of it, and a user allow rule is not needed', () => {

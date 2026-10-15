@@ -328,7 +328,10 @@ describe('resolvePrintCommand — host effects fail loudly', () => {
       if (dispatch.kind !== 'prompt') throw new Error('expected a prompt dispatch');
       expect(dispatch.prompt).toContain(join(dir, 'MEMORY.md'));
       expect(dispatch.prompt).toContain('concentrate on: the build notes');
-      expect(dispatch.commandContext?.allowedTools).toContain(`Bash(rm ${dir}/*.md)`);
+      // Rules are written with `/` on every platform.
+      expect(dispatch.commandContext?.allowedTools).toContain(
+        `Bash(rm ${dir.replaceAll('\\', '/')}/*.md)`,
+      );
       expect(dispatch.commandContext?.allowedTools).not.toContain('ApplyPatch');
     });
 

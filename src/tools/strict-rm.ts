@@ -1,5 +1,5 @@
-import { dirname, posix, win32 } from 'path';
-import { canonicalizePath, comparablePath, isUnderRoot } from './path-utils.js';
+import { posix, win32 } from 'path';
+import { canonicalizePath, comparablePath, isOutside } from './path-utils.js';
 
 /**
  * A strict reading of a shell line that is nothing but `rm <file> [<file>…]`.
@@ -20,11 +20,16 @@ import { canonicalizePath, comparablePath, isUnderRoot } from './path-utils.js';
  * separator. Git-Bash-style `/c/Users/…` operands are read as POSIX paths and so never match a
  * `C:` root: `/c/…` is ambiguous with a path on the current drive, so it is left refused rather
  * than guessed at. A directory name with a blank in it cannot be written without quotes, so it is
- * refused too.
+ * refused too. A `~` is read only as the 8.3 short-name marker (`RUNNER~1`): a shell expands a tilde
+ * at the start of a word, and a drive operand never starts with one.
  */
 const PLAIN_POSIX_OPERAND = /^\/[A-Za-z0-9_./@%+=:,-]*$/;
-/** `C:/…` or `C:\…`; past the drive no `:` is allowed (`a.md:stream` is not a file name). */
-const PLAIN_DRIVE_OPERAND = /^[A-Za-z]:[\\/][A-Za-z0-9_.\\/@%+=,-]*$/;
+/**
+ * `C:/…` or `C:\…`; past the drive no `:` is allowed (`a.md:stream` is not a file name). A `~` must
+ * be followed by a digit, the 8.3 short form of a long directory name (`C:\Users\RUNNER~1`), which
+ * is how Windows spells a temp directory.
+ */
+const PLAIN_DRIVE_OPERAND = /^[A-Za-z]:[\\/](?:[A-Za-z0-9_.\\/@%+=,-]|~(?=[0-9]))*$/;
 
 export function parseStrictRm(
   command: string,
@@ -63,18 +68,24 @@ export function strictRmOperandsSpelledUnder(
   command: string,
   roots: readonly string[],
   platform: NodeJS.Platform = process.platform,
+  /** Another spelling of an operand that may also be under a root (see `strictRmOfMarkdownUnder`). */
+  respell: (operand: string) => string = (operand) => operand,
 ): string[] | null {
   const operands = parseStrictRm(command, platform);
   if (!operands) return null;
   const spellings = roots.map((root) =>
     posix.normalize(comparablePath(root, platform)).replace(/\/+$/, ''),
   );
+  const isUnder = (path: string) => {
+    const spelled = comparablePath(path, platform);
+    return spellings.some((spelling) => spelled.startsWith(`${spelling}/`));
+  };
   for (const operand of operands) {
     const spelled = comparablePath(operand, platform);
     if (!isMarkdownFile(spelled) || posix.basename(spelled).toLowerCase() === 'memory.md') {
       return null;
     }
-    if (!spellings.some((spelling) => spelled.startsWith(`${spelling}/`))) return null;
+    if (!isUnder(operand) && !isUnder(respell(operand))) return null;
   }
   return operands;
 }
@@ -86,19 +97,31 @@ export function strictRmOperandsSpelledUnder(
  * "Under" is judged twice: by the spelling, and again after links are followed in the directory
  * that holds each file, so a symlinked subdirectory cannot carry a removal out of `root`. The file
  * itself may be a link: `rm` removes the link and not what it points at.
+ *
+ * `canonicalize` is how links (and, on Windows, 8.3 short names) are followed. Root and operand
+ * both go through it, so `C:\Users\RUNNER~1\…` and `C:\Users\runneradmin\…` name one directory
+ * whichever of them the root and the operand are spelled in; it is a seam so that a Windows path
+ * can be judged on any host.
  */
 export function strictRmOfMarkdownUnder(
   command: string,
   root: string,
   platform: NodeJS.Platform = process.platform,
+  canonicalize: (path: string) => string = canonicalizePath,
 ): string[] | null {
   const paths = platform === 'win32' ? win32 : posix;
   if (!paths.isAbsolute(root)) return null;
+  const canonicalRoot = canonicalize(root);
   // The root as the model was told it and as links resolve it: either spelling names it.
-  const operands = strictRmOperandsSpelledUnder(command, [root, canonicalizePath(root)], platform);
+  const operands = strictRmOperandsSpelledUnder(
+    command,
+    [root, canonicalRoot],
+    platform,
+    (operand) => paths.join(canonicalize(paths.dirname(operand)), paths.basename(operand)),
+  );
   if (!operands) return null;
   for (const operand of operands) {
-    if (!isUnderRoot(canonicalizePath(dirname(operand)), root)) return null;
+    if (isOutside(canonicalRoot, canonicalize(paths.dirname(operand)), paths)) return null;
   }
   return operands;
 }
