@@ -77,6 +77,43 @@ describe('buildMemoryReport', () => {
     expect(report).toContain('Project rule (project)');
   });
 
+  it('reports lines and bytes against both limits when the index fits', () => {
+    const dir = getProjectMemoryDir(workspace, { bookRoot });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'MEMORY.md'), '- [A](a.md) — hook\n', 'utf-8');
+    const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
+    expect(report).toContain('Index: 1/200 lines, 20/25,000 bytes\n');
+    expect(report).not.toContain('cut');
+  });
+
+  it('says when the line limit cut the index', () => {
+    const dir = getProjectMemoryDir(workspace, { bookRoot });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'MEMORY.md'),
+      Array.from({ length: 205 }, (_, i) => `line ${i + 1}`).join('\n'),
+      'utf-8',
+    );
+    const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
+    expect(report).toContain('Index: 205/200 lines, 1,736/25,000 bytes — cut (over the 200-line');
+    expect(report).toContain('first 200 of 205 non-empty lines loaded');
+  });
+
+  it('says when the byte limit cut the index', () => {
+    const dir = getProjectMemoryDir(workspace, { bookRoot });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'MEMORY.md'),
+      Array.from({ length: 100 }, () => 'z'.repeat(300)).join('\n'),
+      'utf-8',
+    );
+    const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
+    expect(report).toContain(
+      'Index: 100/200 lines, 30,099/25,000 bytes — cut (over the 25,000-byte limit)',
+    );
+    expect(report).not.toContain('-line limit');
+  });
+
   it('shows disabled model writes and pending inbox candidates', () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.memory.autoSave = false;

@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **Memory is keyed by the git repository root, and a cut `MEMORY.md` says so.** Linked worktrees
+  and subdirectories of one repository now share one memory (before, each path got its own, so a
+  fact taught in the main checkout was missing in a worktree). The root is found by reading `.git`
+  (no `git` process); outside a repository the key is the workspace itself. A directory under the
+  old workspace-path key is moved on first run, or merged into the new one with `-2`, `-3`
+  suffixes on a name collision. `MEMORY.md` now loads its first 200 lines and 25,000 bytes, and a
+  `> WARNING:` line at the end of the loaded index names how much was cut off and where. The
+  `/memory status` report, `book doctor` and the `MemorySave` consolidation nudge (from 20,000
+  bytes) count bytes as well as lines.
 - **`/goal <condition>`: keep working until a condition holds**, modelled on Claude Code's command.
   Each time the agent stops without calling a tool, the compact model reads the transcript and
   judges the condition with Claude Code's evaluator prompt. An unmet verdict returns its reason to

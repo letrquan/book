@@ -627,14 +627,28 @@ export async function runDoctorCommand(
   console.log();
 
   // Memory.
-  const { DEFAULT_MAX_INDEX_LINES, getMemoryHealth } = await import('../memory-store.js');
-  const memoryHealth = getMemoryHealth(config.workspace);
+  const { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES, getMemoryHealth, loadMemoryContext } =
+    await import('../memory-store.js');
+  // Loaded first so a directory keyed the old way is moved before it is counted, as at session start.
+  const memoryHealth = getMemoryHealth(loadMemoryContext(config.workspace));
   const lastWrite = memoryHealth.lastWrite ? memoryHealth.lastWrite.toISOString() : 'never';
   console.log('Memory:');
   console.log('  Approved memories: ' + memoryHealth.approvedCount);
   console.log('  Superseded:        ' + memoryHealth.supersededCount);
   console.log('  Inbox candidates:  ' + memoryHealth.inboxCount);
   console.log(`  Index lines:       ${memoryHealth.indexLineCount} / ${DEFAULT_MAX_INDEX_LINES}`);
+  console.log(
+    `  Index bytes:       ${memoryHealth.indexByteCount.toLocaleString('en-US')} / ${MAX_INDEX_BYTES.toLocaleString('en-US')}`,
+  );
+  if (memoryHealth.wasLineTruncated || memoryHealth.wasByteTruncated) {
+    const limits = [
+      memoryHealth.wasLineTruncated ? `${DEFAULT_MAX_INDEX_LINES} lines` : '',
+      memoryHealth.wasByteTruncated ? `${MAX_INDEX_BYTES.toLocaleString('en-US')} bytes` : '',
+    ].filter(Boolean);
+    console.log(
+      `  Index cut:         MEMORY.md is over the ${limits.join(' and ')} limit; a session loads only part of it. Consolidate it.`,
+    );
+  }
   console.log('  Last write:        ' + lastWrite);
   console.log();
 

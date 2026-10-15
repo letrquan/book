@@ -86,6 +86,36 @@ describe('MemorySave tool', () => {
       expect(past.content).toContain('only the first 200 load');
     });
 
+    it('asks the model to consolidate as the index nears its byte limit', async () => {
+      const memoryDir = getProjectMemoryDir(workspace);
+      mkdirSync(memoryDir, { recursive: true });
+      // Few, long free-form lines: well under 160 lines, so only the bytes can trigger it.
+      const long = (count: number) =>
+        [
+          '# Book memory index',
+          ...Array.from({ length: count }, () => `- ${'n'.repeat(198)}`),
+        ].join('\n');
+      const save = (title: string) =>
+        memorySaveTool.execute(
+          { action: 'save', type: 'project', title, body: 'A fact.' },
+          createContext(),
+        );
+
+      writeFileSync(join(memoryDir, 'MEMORY.md'), long(50));
+      expect((await save('Small')).content).not.toContain('Consolidate');
+
+      writeFileSync(join(memoryDir, 'MEMORY.md'), long(105)); // ≈ 21,000 bytes
+      const near = await save('Near');
+      expect(near.content).toContain('of 25,000 loadable bytes. Consolidate soon');
+      expect(near.content).not.toContain('loadable lines');
+
+      writeFileSync(join(memoryDir, 'MEMORY.md'), long(130)); // ≈ 26,000 bytes
+      const past = await save('Past');
+      expect(past.content).toContain(
+        'only the first 25,000 load in a new session. Consolidate now',
+      );
+    });
+
     it('supersedes an existing entry when asked', async () => {
       await memorySaveTool.execute(
         { action: 'save', type: 'project', title: 'Old rule', body: 'Use tabs.', slug: 'style' },

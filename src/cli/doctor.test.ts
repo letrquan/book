@@ -619,8 +619,28 @@ describe('runDoctorCommand memory health', () => {
     expect(output).toContain('Approved memories: 1');
     expect(output).toContain('Inbox candidates:  1');
     expect(output).toContain('Index lines:       2 / 200');
+    expect(output).toContain('Index bytes:       ');
+    expect(output).toContain(' / 25,000');
+    expect(output).not.toContain('Index cut:');
     expect(output).toContain('Superseded:        0');
     expect(output).toMatch(/Last write:\s+\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('says when MEMORY.md is over a limit and only part of it loads', async () => {
+    const { getProjectMemoryDir } = await import('../memory-store.js');
+    const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome });
+    mkdirSync(memoryDir, { recursive: true });
+    writeFileSync(
+      join(memoryDir, 'MEMORY.md'),
+      Array.from({ length: 100 }, () => 'z'.repeat(300)).join('\n'),
+      'utf-8',
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('Index lines:       100 / 200');
+    expect(output).toContain('Index bytes:       30,099 / 25,000');
+    expect(output).toContain('Index cut:         MEMORY.md is over the 25,000 bytes limit');
   });
 });
 
