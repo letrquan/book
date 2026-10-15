@@ -13,10 +13,10 @@ import type {
 import { AgentMessage, managedAgentTracesEqualForMessage } from './AgentMessage.js';
 import { UserMessage, userTurnRows } from './UserMessage.js';
 import {
+  createProseMemo,
   createQuietCollapser,
   createShellPartsMemo,
   groupQuietInvocations,
-  hasProse,
   hidesThoughtsInCompact,
   type QuietToolContext,
 } from '../quiet-tools.js';
@@ -29,6 +29,7 @@ import { mergeAssistantMessages, messagesFollowedByWork } from './transcript-mes
 import { selectExpandedToolId } from '../tool-traces.js';
 import { estimateToolErrorDetailRows, type TranscriptMode } from '../tool-presentation.js';
 import type { ToolResult } from '../../types/tools.js';
+import { splitReasoningParts } from '../../reasoning-tags.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { useTranscriptHistoryLoader, useTranscriptLayoutChange } from '../transcript-layout.js';
@@ -38,7 +39,6 @@ const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
 const EMPTY_BOUNDARIES: CompactBoundary[] = [];
 const NO_SOURCE_IDS: ReadonlyMap<string, readonly string[]> = new Map();
-const NO_ABSORBED_THOUGHTS: ReadonlySet<string> = new Set();
 const STREAMING_TIMELINE_MIN_WINDOW = 16;
 const STREAMING_TIMELINE_MAX_WINDOW = 64;
 const COMPLETED_TIMELINE_MIN_WINDOW = 80;
@@ -103,6 +103,26 @@ function estimateToolRows(message: Message, quietTools: QuietToolContext | undef
   );
 }
 
+/**
+ * Whether the compact transcript hides this message's thought: it is a step of
+ * work, and no permission prompt waits on one of its calls. `quietTools` is only
+ * set in the compact transcript.
+ */
+function thoughtIsHidden(message: Message, quietTools: QuietToolContext | undefined): boolean {
+  if (!quietTools || !hidesThoughtsInCompact(message)) return false;
+  const pending = quietTools.pendingToolId;
+  return !(pending && message.toolCalls?.some((call) => call.id === pending));
+}
+
+/** The content without its `<think>` parts: what is left is drawn as prose. */
+function withoutThoughts(content: string): string {
+  if (!content.includes('<')) return content;
+  return splitReasoningParts(content, { concluded: false })
+    .filter((part) => part.kind === 'markdown')
+    .map((part) => part.text)
+    .join('');
+}
+
 function estimateTimelineRows(
   entry: Message | CompactBoundary,
   terminalWidth: number,
@@ -122,7 +142,11 @@ function estimateTimelineRows(
       (density === 'tight' ? 0 : 2)
     );
   }
-  const textRows = estimateWrappedRows(entry.content, transcriptGrid(terminalWidth).content);
+  // A thought the compact transcript hides draws no rows, whatever its length.
+  const content = thoughtIsHidden(entry, quietTools)
+    ? withoutThoughts(entry.content)
+    : entry.content;
+  const textRows = estimateWrappedRows(content, transcriptGrid(terminalWidth).content);
   const attachmentRows = entry.attachments?.length ? 1 : 0;
   const toolRows = estimateToolRows(entry, quietTools);
   return Math.max(1, textRows + attachmentRows + toolRows);
@@ -288,11 +312,7 @@ export function ChatPanelInner({
     () =>
       quietTools
         ? quietCollapserRef.current!(windowedTimeline, quietTools)
-        : {
-            entries: windowedTimeline,
-            sourceIds: NO_SOURCE_IDS,
-            absorbedThoughts: NO_ABSORBED_THOUGHTS,
-          },
+        : { entries: windowedTimeline, sourceIds: NO_SOURCE_IDS },
     [quietTools, windowedTimeline],
   );
   const visibleTimeline = displayTimeline.entries;
@@ -301,6 +321,8 @@ export function ChatPanelInner({
   // a step folded into it makes the entry a step anyway, so the head's id is
   // the one to look up.
   const oldestVisibleId = visibleTimeline.find((entry): entry is Message => 'role' in entry)?.id;
+  // Whether a message speaks: asked on every render of a row, so each message is parsed once.
+  const proseMemo = useMemo(() => createProseMemo(), []);
   const followedByWork = useMemo(
     () => messagesFollowedByWork(messages, oldestVisibleId),
     [messages, oldestVisibleId],
@@ -454,9 +476,14 @@ export function ChatPanelInner({
             const nextEntryIsUser = Boolean(next && 'role' in next && next.role === 'user');
             // A step that opens on its tool rows, its thought hidden and no prose
             // above them, sits against the rows before it, the same as a step
-            // with no thought (which the merge folds into the entry before it).
+            // with no thought (which the merge folds into the entry before it). A
+            // turn that hands the conversation back, or whose call awaits your
+            // approval, is not a step and keeps its blank row.
             const opensOnToolRows =
-              quietTools !== undefined && hidesThoughtsInCompact(message) && !hasProse(message);
+              quietTools !== undefined &&
+              !rowPendingPermission &&
+              hidesThoughtsInCompact(message) &&
+              !proseMemo(message);
             const followsToolCall = Boolean(
               previous &&
               'role' in previous &&

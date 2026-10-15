@@ -163,6 +163,7 @@ describe('AgentMessage thoughts before a tool call (#470)', () => {
       screenReader?: boolean;
       isStreaming?: boolean;
       showThinking?: boolean;
+      pendingPermission?: PendingPermissionRequest;
     } = {},
   ): string {
     const { lastFrame } = render(
@@ -173,6 +174,7 @@ describe('AgentMessage thoughts before a tool call (#470)', () => {
           showThinking={props.showThinking ?? true}
           transcriptMode={props.transcriptMode ?? 'compact'}
           screenReader={props.screenReader}
+          pendingPermission={props.pendingPermission}
           reducedMotion
           terminalWidth={80}
         />
@@ -258,6 +260,54 @@ describe('AgentMessage thoughts before a tool call (#470)', () => {
 
     expect(quiet).toBe(never);
   });
+
+  it.each(['think', 'native'] as const)(
+    'keeps the thought of an answer that ends with a task-list update (%s)',
+    (how) => {
+      const todo = { id: 'todo-1', name: 'TodoWrite', arguments: { todos: [] } };
+      const answer: Message = {
+        ...assistant(how === 'think' ? '<think>weigh it\nthen go</think>All done.' : 'All done.', [
+          todo,
+        ]),
+        ...(how === 'native' ? { reasoningContent: 'weigh it\nthen go' } : {}),
+        toolResults: [],
+      };
+      const frame = view(answer);
+
+      expect(frame).toContain('▸ thought · 2 lines');
+      expect(frame).toContain('All done.');
+    },
+  );
+
+  it('keeps the thought of a turn that asks a question', () => {
+    const asking: Message = {
+      ...assistant('<think>weigh it\nthen go</think>', [
+        { id: 'ask-1', name: 'AskUserQuestion', arguments: { questions: [] } },
+      ]),
+      toolResults: [],
+    };
+
+    expect(view(asking)).toContain('▸ thought · 2 lines');
+  });
+
+  it.each(['think', 'native'] as const)(
+    'shows the thought while the prompt for its call is open, and hides it once the call runs (%s)',
+    (how) => {
+      const running: Message = { ...toolStep(how), toolResults: [] };
+      const waiting = view(running, { pendingPermission: { toolCall: bashCall } });
+
+      expect(waiting).toContain('▸ thought · 2 lines');
+      expect(waiting).toContain('seq 1 3');
+      // The same step with no prompt open: the call was approved and runs.
+      const approved = view(running);
+      expect(approved).not.toContain('thought');
+      // A prompt for another call does not bring it back.
+      const other = view(running, {
+        pendingPermission: { toolCall: { id: 'bash-2', name: 'Bash', arguments: {} } },
+      });
+      expect(other).not.toContain('thought');
+    },
+  );
 
   it('keeps a thought that is still streaming while no tool call has landed', () => {
     const thinking = assistant('<think>weigh it\nthen go</think>');

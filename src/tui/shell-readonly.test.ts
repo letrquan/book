@@ -86,6 +86,10 @@ const accepted: Array<[string, ReadOnlyShellPart[]]> = [
   ['git diff --exit-code', [{ kind: 'lookup', target: 'git diff' }]],
   ['git log main..feature', [{ kind: 'lookup', target: 'git log' }]],
   ['git log -n 5 --author=me', [{ kind: 'lookup', target: 'git log' }]],
+  ["git log '--format=%h %s'", [{ kind: 'lookup', target: 'git log' }]],
+  ["git log '--pretty=format:%h %an'", [{ kind: 'lookup', target: 'git log' }]],
+  ['git log --pretty=oneline', [{ kind: 'lookup', target: 'git log' }]],
+  ["git show '--format=%H'", [{ kind: 'lookup', target: 'git show' }]],
   ['git show HEAD:src/a.js', [{ kind: 'lookup', target: 'git show', path: 'src/a.js' }]],
   ['git show', [{ kind: 'lookup', target: 'git show' }]],
   ['git branch', [{ kind: 'lookup', target: 'git branch' }]],
@@ -222,6 +226,16 @@ const rejected: Array<[string, string]> = [
   ['git diff output', 'git diff --output=/tmp/x'],
   ['git diff output separate', 'git diff --output /tmp/x'],
   ['git diff output abbreviation', 'git diff --out=x'],
+  ['git log format with a signature placeholder', 'git log --format=%G?'],
+  ['git log format with the signer', "git log '--pretty=format:%GS'"],
+  ['git log tformat with a signature placeholder', "git log '--format=tformat:%h %GK'"],
+  ['git log pretty with a signature placeholder', "git log '--pretty=%GG'"],
+  ['git log format with a later signature placeholder', "git log '--format=%h %s %GP'"],
+  ['git show format with a signature placeholder', "git show '--format=%GT'"],
+  ['git show pretty with a signature placeholder', "git show '--pretty=format:%GF'"],
+  ['git branch format with a %G placeholder', "git branch '--format=%G?'"],
+  ['git branch format with a signature atom', "git branch '--format=%(signature)'"],
+  ['git branch format with a signature atom, separate', "git branch --format '%(signature:grade)'"],
   ['git diff orderfile', 'git diff -O/tmp/order'],
   ['git diff ext-diff', 'git diff --ext-diff'],
   ['git log output', 'git log --output=x'],
@@ -400,6 +414,26 @@ describe('git paths', () => {
   it('resolves the operands against the -C directory', () => {
     expect(pathsOf('git -C src diff -- a.js')).toEqual(['src', 'src/a.js']);
     expect(pathsOf('git -C src diff -- ../../x')).toEqual(['src', '../x']);
+  });
+
+  it('reports the path half of a <rev>:<path> operand, so a climb past the workspace shows', () => {
+    // The `HEAD:..` segment must not cancel one `..` of the path: git reads the path from the
+    // current directory, not from the revision.
+    expect(pathsOf('git show HEAD:../../secret')).toEqual(['../../secret']);
+    expect(pathsOf('git show HEAD:../secret')).toEqual(['../secret']);
+    expect(pathsOf('git diff HEAD~1:../../a')).toEqual(['../../a']);
+    expect(pathsOf('git grep foo HEAD:../..')).toEqual(['../..']);
+    expect(pathsOf('git show HEAD:src/a.js')).toEqual(['src/a.js']);
+    expect(pathsOf('git -C src show HEAD:a.js')).toEqual(['src', 'src/a.js']);
+    expect(pathsOf('git show HEAD:')).toEqual([]);
+  });
+
+  it('counts the file of --orderfile as a path', () => {
+    expect(pathsOf('git diff --orderfile=/etc/passwd')).toEqual(['/etc/passwd']);
+    expect(pathsOf('git diff --orderfile /etc/passwd')).toEqual(['/etc/passwd']);
+    expect(pathsOf('git log --orderfile=../order -p')).toEqual(['../order']);
+    expect(pathsOf('git show --orderfile ../order')).toEqual(['../order']);
+    expect(pathsOf('git -C src diff --orderfile=order')).toEqual(['src', 'src/order']);
   });
 
   it('does not report revision operands', () => {

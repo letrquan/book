@@ -9,10 +9,13 @@ All notable changes to this project are documented in this file.
 - **Compact mode hides a tool step's thought, and read-only git through `Bash` folds** (#470). An
   assistant step that calls a tool no longer draws its `▸ thought · N lines` row in the compact
   transcript, whether the row is quiet or not (Ctrl+O shows it, and so does screen-reader mode); a
-  final answer and a thought still streaming keep theirs. `git status`, `log`, `diff`, `show`,
+  final answer, a turn that only updates the task list or hands the turn back (`TodoWrite`,
+  `AskUserQuestion`), a step whose call waits for your approval, and a thought still streaming keep
+  theirs. `git status`, `log`, `diff`, `show`,
   `grep`, `ls-files` and listing-only `git branch`, with only `-C <dir>`, `--no-pager`, `-P` and
   `--no-optional-locks` before the subcommand, now fold into quiet runs like Book's own Git tools
-  (`-c`, `--output`, `grep -O`, aliases and every path outside the workspace keep their row).
+  (`-c`, `--output`, `grep -O`, a `--format` that asks for a signature, aliases and every path
+  outside the workspace keep their row).
 - **The compact transcript folds read-only shell commands into the quiet-run summary** (#459). A
   model that explores through the shell (`cat src/a.js`, `rg TODO src`, `ls src`) no longer draws a
   row per command: a conservative parser, modelled on OpenAI Codex's `parse_command.rs`, folds a

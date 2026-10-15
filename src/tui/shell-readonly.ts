@@ -30,7 +30,7 @@
  * searches and listings, small stdin formatters dropped from a pipeline.
  */
 
-import { isAbsolute, join } from 'path';
+import { isAbsolute, posix } from 'path';
 
 export type ReadOnlyShellPart =
   | { kind: 'read'; path: string }
@@ -774,6 +774,26 @@ function gitBranchOnlyLists(_args: readonly string[], parsed: ParsedArgs): boole
   return parsed.operands.length === 0 || parsed.flags.some((flag) => flag.name === '--list');
 }
 
+/** `--orderfile=<file>` reads the order of a diff's files from a file: a path for the caller. */
+const GIT_ORDERFILE = ['--orderfile'];
+
+/**
+ * A `--format` / `--pretty` template that asks for a signature (`%G?`, `%GS`, `%GK`, ... on
+ * log and show, `%(signature...)` atoms on branch) makes git run gpg, as `--show-signature`
+ * does.
+ */
+const GIT_SIGNATURE_PLACEHOLDER = /%G|%\(signature/;
+const GIT_FORMAT_OPTIONS = ['--format', '--pretty'];
+
+function gitFormatAsksNoSignature(_args: readonly string[], parsed: ParsedArgs): boolean {
+  return parsed.flags.every(
+    (flag) =>
+      !matchesOption(flag, GIT_FORMAT_OPTIONS) ||
+      flag.value === undefined ||
+      !GIT_SIGNATURE_PLACEHOLDER.test(flag.value),
+  );
+}
+
 const GIT_RULES: Record<string, FlagRules> = {
   status: { deny: GIT_DENY },
   log: {
@@ -781,6 +801,7 @@ const GIT_RULES: Record<string, FlagRules> = {
       '-n',
       '--max-count',
       '--skip',
+      '--orderfile',
       '--since',
       '--until',
       '--after',
@@ -790,12 +811,18 @@ const GIT_RULES: Record<string, FlagRules> = {
       '--grep',
       '-L',
     ],
-    // `-L <start>,<end>:<file>` names a file.
-    paths: ['-L'],
+    // `-L <start>,<end>:<file>` names a file; `--orderfile` reads one.
+    paths: ['-L', ...GIT_ORDERFILE],
     deny: GIT_DENY,
+    check: gitFormatAsksNoSignature,
   },
-  diff: { deny: GIT_DENY },
-  show: { deny: GIT_DENY },
+  diff: { values: GIT_ORDERFILE, paths: GIT_ORDERFILE, deny: GIT_DENY },
+  show: {
+    values: GIT_ORDERFILE,
+    paths: GIT_ORDERFILE,
+    deny: GIT_DENY,
+    check: gitFormatAsksNoSignature,
+  },
   grep: {
     values: [
       '-e',
@@ -839,7 +866,8 @@ const GIT_RULES: Record<string, FlagRules> = {
       '--format',
     ],
     deny: GIT_BRANCH_DENY,
-    check: gitBranchOnlyLists,
+    check: (args, parsed) =>
+      gitBranchOnlyLists(args, parsed) && gitFormatAsksNoSignature(args, parsed),
   },
 };
 
@@ -847,14 +875,21 @@ const REVISION_NAME = /^(?:@|[A-Z_]*HEAD|[0-9a-f]{7,40})$/;
 
 /**
  * Whether an operand before `--` is one a revision can be told by: `HEAD~2`, `main..feature`,
- * `<rev>:<path>`, `HEAD`, a commit id. It must not be able to name a path outside the
- * workspace (absolute, a `..` segment, a glob) whatever it means to git. Anything else is
- * ambiguous, and an ambiguous operand is a path.
+ * `<rev>:<path>`, `HEAD`, a commit id. The revision half (all of it, without a colon) must not
+ * be able to name a path outside the workspace (absolute, a `..` segment, a glob) whatever it
+ * means to git. Anything else is ambiguous, and an ambiguous operand is a path.
+ *
+ * The path half of `<rev>:<path>` is judged apart, by the caller: git reads it from the
+ * current directory, so the revision must not take part in resolving its `..` segments.
  */
 function isRevisionLike(operand: string): boolean {
-  if (isAbsolute(operand) || GLOB_CHARS.test(operand)) return false;
-  if (operand.split(/[\\/]/).includes('..')) return false;
-  return REVISION_NAME.test(operand) || /[~^@:]/.test(operand) || operand.includes('..');
+  const colon = operand.indexOf(':');
+  const revision = colon >= 0 ? operand.slice(0, colon) : operand;
+  if (isAbsolute(revision) || GLOB_CHARS.test(revision)) return false;
+  if (revision.split(/[\\/]/).includes('..')) return false;
+  return (
+    colon >= 0 || REVISION_NAME.test(revision) || /[~^@]/.test(revision) || revision.includes('..')
+  );
 }
 
 /**
@@ -872,7 +907,7 @@ function gitParts(args: readonly string[]): ReadOnlyShellPart[] | undefined {
     if (arg === '-C') {
       const dir = args[index + 1];
       if (dir === undefined) return undefined;
-      cwd = cwd === undefined || isAbsolute(dir) ? dir : join(cwd, dir);
+      cwd = cwd === undefined || isAbsolute(dir) ? dir : posix.join(cwd, dir);
       dirs.push(cwd);
       index += 1;
     } else if (!GIT_GLOBAL_FLAGS.has(arg)) {
@@ -921,7 +956,8 @@ function gitParts(args: readonly string[]): ReadOnlyShellPart[] | undefined {
     if (colon >= 0 && colon < operand.length - 1) candidates.push(operand.slice(colon + 1));
   }
 
-  const at = (path: string) => (cwd === undefined || isAbsolute(path) ? path : join(cwd, path));
+  const at = (path: string) =>
+    cwd === undefined || isAbsolute(path) ? path : posix.join(cwd, path);
   const paths = [...dirs, ...candidates.map(at), ...parsed.flagPaths.map(at)];
   if (subcommand === 'grep') return [pathsPart('search', paths, query)];
   if (subcommand === 'ls-files') return [pathsPart('list', paths)];

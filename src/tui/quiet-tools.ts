@@ -3,6 +3,7 @@ import { splitReasoningParts } from '../reasoning-tags.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import type { Message } from '../types/messages.js';
 import type { ToolCall, ToolResult } from '../types/tools.js';
+import { isWorkStep } from './components/transcript-messages.js';
 import {
   classifyReadOnlyShellCommand,
   shellCommandPaths,
@@ -223,62 +224,69 @@ export function hasProse(message: Message): boolean {
 }
 
 /**
- * Whether a message carries a thought: a non-blank `<think>` part in its
- * content, or non-blank provider-native `reasoningContent`.
+ * A per-message memo of {@link hasProse}, for a component that asks again on every
+ * render. A message is parsed once while its object and its content stay the same;
+ * the streaming message is a new object on every delta, so it is parsed again.
  */
-export function hasReasoning(message: Message): boolean {
-  if (message.reasoningContent?.trim()) return true;
-  return splitReasoningParts(message.content ?? '', { concluded: false }).some(
-    (part) => part.kind === 'think' && part.text.trim().length > 0,
-  );
+export function createProseMemo(
+  parse: (message: Message) => boolean = hasProse,
+): (message: Message) => boolean {
+  const memo = new WeakMap<Message, { content: string; prose: boolean }>();
+  return (message) => {
+    const content = message.content ?? '';
+    const cached = memo.get(message);
+    if (cached && cached.content === content) return cached.prose;
+    const prose = parse(message);
+    memo.set(message, { content, prose });
+    return prose;
+  };
 }
 
 /**
- * Whether the compact transcript hides this message's thoughts: any assistant
- * step that calls a tool, quiet or not. The thought behind a call is process,
- * and the row it led to says what happened. A message with no call is an answer
- * and keeps its thought row. Detailed mode and screen readers keep every thought;
- * the caller applies that. This is the one rule for both a summary row that
- * absorbs a thought and a tool row that stands alone.
+ * The thoughts a message carries as text: its native `reasoningContent` and the
+ * non-blank `<think>` parts of its content.
+ */
+function thoughtsOf(message: Message): string[] {
+  return [
+    message.reasoningContent,
+    ...splitReasoningParts(message.content ?? '', { concluded: false })
+      .filter((part) => part.kind === 'think')
+      .map((part) => part.text),
+  ].filter((value): value is string => Boolean(value?.trim()));
+}
+
+/**
+ * Whether the compact transcript hides this message's thoughts: a step of work,
+ * by the transcript's own definition ({@link isWorkStep}), quiet or not. The
+ * thought behind a call is process, and the row it led to says what happened. A
+ * message with no call, or whose calls only keep the task list or hand the turn
+ * back (`TodoWrite`, `AskUserQuestion`, ...), is an answer and keeps its thought
+ * row. Detailed mode and screen readers keep every thought, and so does a step
+ * whose call waits on a permission prompt; the caller applies those.
  */
 export function hidesThoughtsInCompact(message: Message): boolean {
-  return isAssistantTurn(message) && (message.toolCalls?.length ?? 0) > 0;
-}
-
-/**
- * Whether the message has at least one call and every one of them may fold into
- * a summary. A pending, failed, pinned, outside-the-workspace, mutating, command
- * or delegating call makes it false.
- */
-export function allCallsQuiet(message: Message, context: QuietToolContext): boolean {
-  const calls = message.toolCalls ?? [];
-  return (
-    calls.length > 0 &&
-    calls.every((call) => isQuietInvocation(call, resultFor(message, call.id), message, context))
-  );
+  return isWorkStep(message);
 }
 
 /**
  * An assistant message with no prose of its own that continues a run begun
  * before it.
  *
- * Without reasoning only the first call has to be quiet. Book already folds a
- * tool-only turn with blank content into the turn before it, so the turn that
- * ends a run of reads often carries the edit that follows them, as
- * `[Read, Edit]`. Requiring every call to be quiet would leave that last read
- * stranded on its own row. The message joins whole; the rows it draws still keep
- * the edit apart (see {@link groupQuietInvocations}).
+ * Only the first call has to be quiet. Book already folds a tool-only turn with
+ * blank content into the turn before it, so the turn that ends a run of reads
+ * often carries the edit that follows them, as `[Read, Edit]`. Requiring every
+ * call to be quiet would leave that last read stranded on its own row. The
+ * message joins whole; the rows it draws still keep the edit apart (see
+ * {@link groupQuietInvocations}).
  *
- * A message that reasons joins only when every call is quiet. Joining drops its
- * thought into the run's summary, and a thought that leads to an edit, a command,
- * a call awaiting permission or a failure is one the reader should see.
+ * Whether the message reasons does not matter: the compact transcript hides a
+ * step's thought, so the rows group the same with and without one.
  */
 export function continuesQuietRun(message: Message, context: QuietToolContext): boolean {
   if (!isAssistantTurn(message)) return false;
   const first = message.toolCalls?.[0];
   if (!first) return false;
   if (hasProse(message)) return false;
-  if (hasReasoning(message)) return allCallsQuiet(message, context);
   // Joining would put a spawn in the same entry as the narration before it,
   // and AgentMessage hides a delegating entry's narration.
   if (message.toolCalls!.some((call) => call.name === 'AgentSpawn')) return false;
@@ -296,13 +304,6 @@ export interface CollapsedTimeline<T> {
   entries: T[];
   /** For a merged entry, keyed by its (first) id: every message folded into it, in order. */
   sourceIds: ReadonlyMap<string, readonly string[]>;
-  /**
-   * Ids of the entries whose thoughts a quiet summary row stands in for. The
-   * compact transcript hides every tool step's thought
-   * ({@link hidesThoughtsInCompact}), so each of these is hidden by that rule too;
-   * this says which of them the summary row replaces.
-   */
-  absorbedThoughts: ReadonlySet<string>;
 }
 
 type TimelineEntry = Message | { transcriptOrdinal: unknown };
@@ -321,12 +322,9 @@ function isMessage(entry: TimelineEntry | undefined): entry is Message {
  * keeps the first message's id, so it holds its place in the virtual transcript
  * as the run grows.
  *
- * The collapser also decides which thoughts the run absorbs, since it sees
- * every member and its calls. A member that joins a run has no prose and, when it
- * reasons, only quiet calls, so its thought is absorbed. The head keeps its own
- * thought when it speaks or calls something that is not quiet: the merged entry
- * then carries only the head's reasoning. A single message is absorbed when its
- * quiet calls draw as one group row.
+ * The merged entry carries every member's thoughts in its `reasoningContent`: the
+ * compact transcript hides them ({@link hidesThoughtsInCompact}), except while a
+ * permission prompt waits on one of the run's calls.
  *
  * Merged entries are cached by the identity of the messages they were built
  * from, so a run that did not change keeps the same object and its row is not
@@ -336,10 +334,7 @@ export function createQuietCollapser(): <T extends TimelineEntry>(
   timeline: readonly T[],
   context: QuietToolContext,
 ) => CollapsedTimeline<T> {
-  let cache = new Map<
-    string,
-    { members: readonly Message[]; headAbsorbed: boolean; merged: Message }
-  >();
+  let cache = new Map<string, { members: readonly Message[]; merged: Message }>();
   return <T extends TimelineEntry>(
     timeline: readonly T[],
     context: QuietToolContext,
@@ -365,62 +360,38 @@ export function createQuietCollapser(): <T extends TimelineEntry>(
       runs.push(entry);
     }
 
-    const nextCache = new Map<
-      string,
-      { members: readonly Message[]; headAbsorbed: boolean; merged: Message }
-    >();
+    const nextCache = new Map<string, { members: readonly Message[]; merged: Message }>();
     const sourceIds = new Map<string, readonly string[]>();
-    const absorbedThoughts = new Set<string>();
     const entries = runs.map((run) => {
-      if (!Array.isArray(run)) {
-        // A lone quiet call keeps its thought row; two or more draw as one group
-        // row, which takes the thought into it.
-        if (
-          isMessage(run) &&
-          isAssistantTurn(run) &&
-          hasReasoning(run) &&
-          !hasProse(run) &&
-          allCallsQuiet(run, context) &&
-          run.toolCalls!.length >= 2
-        ) {
-          absorbedThoughts.add(run.id);
-        }
-        return run;
-      }
+      if (!Array.isArray(run)) return run;
       const head = run[0]!;
-      // Every later member joined without prose and, when it reasons, with only
-      // quiet calls, so the summary row takes its thought. The head's thought goes
-      // with it only when the head speaks no prose and calls nothing but quiet tools.
-      const headAbsorbed = !hasProse(head) && allCallsQuiet(head, context);
       const cached = cache.get(head.id);
       const merged =
         cached &&
-        cached.headAbsorbed === headAbsorbed &&
         cached.members.length === run.length &&
         cached.members.every((member, index) => member === run[index])
           ? cached.merged
           : {
               ...head,
-              reasoningContent: headAbsorbed
-                ? run
-                    .map((message) => message.reasoningContent)
-                    .filter((value): value is string => Boolean(value))
-                    .join('\n\n') || undefined
-                : head.reasoningContent,
+              // The head's own `<think>` parts stay in its content; a later member's
+              // content is not carried, so its thoughts join the reasoning instead.
+              reasoningContent:
+                [head.reasoningContent, ...run.slice(1).flatMap(thoughtsOf)]
+                  .filter((value): value is string => Boolean(value))
+                  .join('\n\n') || undefined,
               toolCalls: run.flatMap((message) => message.toolCalls ?? []),
               toolResults: run.flatMap((message) => message.toolResults ?? []),
               nestedToolInvocations: run.flatMap((message) => message.nestedToolInvocations ?? []),
             };
-      nextCache.set(head.id, { members: run, headAbsorbed, merged });
+      nextCache.set(head.id, { members: run, merged });
       sourceIds.set(
         head.id,
         run.map((message) => message.id),
       );
-      if (headAbsorbed) absorbedThoughts.add(head.id);
       return merged as T;
     });
     cache = nextCache;
-    return { entries, sourceIds, absorbedThoughts };
+    return { entries, sourceIds };
   };
 }
 
