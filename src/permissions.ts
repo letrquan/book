@@ -1,5 +1,5 @@
 import { realpathSync } from 'fs';
-import { isAbsolute, relative, sep } from 'path';
+import { isAbsolute, relative, resolve, sep } from 'path';
 import type { ResolvedSettings } from './settings.js';
 import type {
   PermissionDecision,
@@ -632,6 +632,24 @@ function resolvedPathScope(scope: WorkspaceScope): ResolvedPathScope {
 }
 
 /**
+ * The spellings of a memory write root target: the path as written and after links, with forward
+ * slashes, and — for `deny` and `ask` only — the path relative to the canonical memory root,
+ * mirroring what an honored root contributes. `allow` gets no root-relative form, or
+ * `Write(topic.md)` would come to grant the memory file. `relativeOf` is the path module's
+ * `relative`, a seam so a Windows path can be checked on any OS.
+ */
+export function memoryTargetSpellings(
+  target: { filePath: string; canonicalPath: string },
+  canonicalRoot: string,
+  restrictive: boolean,
+  relativeOf: (from: string, to: string) => string = relative,
+): string[] {
+  const spellings = [toPosix(target.filePath), toPosix(target.canonicalPath)];
+  if (restrictive) spellings.push(toPosix(relativeOf(canonicalRoot, target.canonicalPath)));
+  return spellings;
+}
+
+/**
  * The other spellings of a target path that a rule may have been written against: relative to the
  * root it lands in and absolute, with forward slashes. Inside the workspace that is the
  * workspace-relative form, the absolute path as written, the absolute path after links, and the
@@ -653,8 +671,28 @@ function spellingsOfPath(
   restrictive: boolean,
 ): string[] {
   const spellings: string[] = [];
+  const { memoryWrite } = paths.scope;
+  if (memoryWrite && !includeReadOnly) {
+    // A write the memory write root serves, which the readable roots below may not (the memory
+    // directory is usually outside the workspace). Without these a `deny`/`ask` glob such as
+    // `Write(**/topic.md)` never saw a forward-slash spelling of a Windows path and lost to the
+    // memory allowance.
+    const memory = resolveMutationPath(
+      {
+        workspaceRoot: paths.scope.root,
+        additionalRoots: paths.scope.additionalRoots,
+        memoryWrite,
+      },
+      raw,
+    );
+    if (memory?.memory) {
+      spellings.push(
+        ...memoryTargetSpellings(memory, canonicalizePath(resolve(memoryWrite.root)), restrictive),
+      );
+    }
+  }
   const detail = paths.detail(raw, includeReadOnly);
-  if (!('path' in detail)) return [];
+  if (!('path' in detail)) return [...new Set(spellings)].filter((s) => s !== '' && s !== raw);
   const resolved = detail.path;
   const inWorkspace = resolveWorkspacePath(paths.scope.root, raw) !== null;
   if (inWorkspace) {
