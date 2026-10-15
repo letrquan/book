@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **The compact transcript folds read-only shell commands into the quiet-run summary** (#459). A
+  model that explores through the shell (`cat src/a.js`, `rg TODO src`, `ls src`) no longer draws a
+  row per command: a conservative parser, modelled on OpenAI Codex's `parse_command.rs`, folds a
+  `Bash` call like a read when it can prove the whole command read-only (no redirection, expansion,
+  background job, wrapper, pager, follow mode or mutating flag) and it succeeded (a search that found nothing and exited 1 counts), ran in the
+  foreground (not moved to a background shell at its timeout) and stays inside the workspace. Any
+  option that names a file counts as a path, and a glob that could expand to `..` keeps the row. No
+  `git` command folds (a plain `git …` carries none of the hardening Book's own Git tools apply, so
+  a repository's config or attributes can make it run a program), and neither does `ack`, which
+  reads a project-level `.ackrc`. The summary counts shell reads with `Read`'s files, shell searches
+  with the searches, and listings as `N listings`. Anything else keeps its own row.
 - **Memory is keyed by the git repository root, and a cut `MEMORY.md` says so.** Linked worktrees
   and subdirectories of one repository now share one memory (before, each path got its own, so a
   fact taught in the main checkout was missing in a worktree). The root is found by reading `.git`
