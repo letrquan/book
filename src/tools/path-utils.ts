@@ -306,8 +306,50 @@ function resolveMemoryWritePath(
  */
 export function mutationDisplayPath(resolved: ResolvedReadablePath): string {
   if (!resolved.memory) return resolved.relativePath;
-  const below = relative(canonicalizePath(resolve(resolved.root)), resolved.canonicalPath);
+  return memoryDisplayName(resolved.root, resolved.canonicalPath);
+}
+
+function memoryDisplayName(memoryRoot: string, canonicalPath: string): string {
+  const below = relative(canonicalizePath(resolve(memoryRoot)), canonicalPath);
   return `memory/${below.split(sep).join('/')}`;
+}
+
+/**
+ * How the Read row names a file: `memory/<name>.md` when the file lies in the project memory
+ * directory, otherwise `undefined` (the row keeps the path the model wrote).
+ *
+ * Decided from the memory directory itself rather than from `resolved.memory`: Read reaches memory
+ * through `readOnlyRoots`, or through the workspace when Book runs from a directory that holds it,
+ * and neither sets that flag.
+ */
+export function memoryReadDisplayPath(
+  roots: Pick<PathRoots, 'memorySearchRoot' | 'memoryWrite'>,
+  resolved: ResolvedReadablePath,
+): string | undefined {
+  const memoryRoot = roots.memorySearchRoot ?? roots.memoryWrite?.root;
+  if (!memoryRoot) return undefined;
+  const canonicalRoot = canonicalizePath(resolve(memoryRoot));
+  if (
+    resolved.canonicalPath === canonicalRoot ||
+    isOutside(canonicalRoot, resolved.canonicalPath)
+  ) {
+    return undefined;
+  }
+  return memoryDisplayName(memoryRoot, resolved.canonicalPath);
+}
+
+/**
+ * How a file is named in text the **model** reads (an error, a `Created …` line, a diff header).
+ *
+ * This is deliberately not {@link mutationDisplayPath}. That one is for the TUI row, where
+ * `memory/<name>.md` is short and unambiguous. The model would take `memory/x.md` as relative to
+ * the workspace and read the wrong file, so a memory file is named by its absolute path — the path
+ * it can pass straight back to Read — and its workspace-relative spelling
+ * (`../home/.book/projects/<slug>/memory/x.md`) is never shown. A workspace file keeps
+ * `relativePath`. On Windows the absolute path stays native, as the model passes native paths there.
+ */
+export function messagePathFor(resolved: ResolvedReadablePath): string {
+  return resolved.memory ? resolved.filePath : resolved.relativePath;
 }
 
 /**

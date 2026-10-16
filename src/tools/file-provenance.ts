@@ -137,26 +137,26 @@ export async function observeFile(
 export async function requireFreshObservation(
   ctx: ToolContext,
   absolutePath: string,
-  relativePath: string,
+  displayPath: string,
 ): Promise<string | undefined> {
   const workspaceId = workspaceIdentity(ctx.workspaceRoot);
-  const normalizedPath = relativePath.replace(/\\/g, '/');
   // Looked up by the same derivation `observeFile` filed it under, not by the display spelling:
   // the two are the same file spelled two ways whenever the workspace root is itself reached
-  // through a link (PR #334 finding 6). `relativePath` is still what the message names, because
-  // that is the spelling the model wrote.
+  // through a link (PR #334 finding 6). `displayPath` is what the message names: the caller's
+  // `messagePathFor`, so a workspace file keeps its relative spelling and a memory file its
+  // absolute path. It is used as given, since normalising separators would break a native one.
   const remembered = ctx.fileObservationLedger?.get(
     observationKey(workspaceId, observationPathFor(ctx.workspaceRoot, absolutePath)),
   );
   if (!remembered || isOutline(remembered)) return undefined;
   try {
     const info = await stat(absolutePath);
-    if (!info.isFile()) return staleMessage(normalizedPath);
+    if (!info.isFile()) return staleMessage(displayPath);
     const bytes = await readFile(absolutePath);
     const currentHash = createHash('sha256').update(bytes).digest('hex');
-    return currentHash === remembered.sha256 ? undefined : staleMessage(normalizedPath);
+    return currentHash === remembered.sha256 ? undefined : staleMessage(displayPath);
   } catch {
-    return staleMessage(normalizedPath);
+    return staleMessage(displayPath);
   }
 }
 
@@ -172,19 +172,18 @@ function staleMessage(path: string): string {
  * same code and remediation.
  *
  * Keyed on `absolutePath` through {@link observationPathFor}, the way the observation was filed —
- * `relativePath` is the display spelling and can be the other spelling of the same file. It
- * names the file in the message either way.
+ * `displayPath` is the message spelling (`messagePathFor`) and can be the other spelling of the
+ * same file. It names the file in the message either way.
  */
 export function requireObservationForMutation(
   ctx: ToolContext,
   absolutePath: string,
-  relativePath: string,
+  displayPath: string,
   retryVerb: string,
 ): ToolResult | undefined {
   const ledger = ctx.fileObservationLedger;
   if (!ledger) return undefined;
   const workspaceId = workspaceIdentity(ctx.workspaceRoot);
-  const normalizedPath = relativePath.replace(/\\/g, '/');
   const remembered = ledger.get(
     observationKey(workspaceId, observationPathFor(ctx.workspaceRoot, absolutePath)),
   );
@@ -193,7 +192,7 @@ export function requireObservationForMutation(
     ? "has only been outlined in this session, and an outline is not the file's content"
     : 'has not been read in this session';
   return toolFailure(
-    `SKIPPED: ${normalizedPath} ${seen}. Call Read (or mention the file) before modifying it.`,
+    `SKIPPED: ${displayPath} ${seen}. Call Read (or mention the file) before modifying it.`,
     {
       code: 'file_not_observed',
       remediation: `Read the file first, then retry the ${retryVerb}.`,

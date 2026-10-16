@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ToolResult } from '../types/tools.js';
 import {
   deriveToolPresentation,
@@ -27,6 +30,7 @@ import {
 } from './layout.js';
 import { displayWidth } from './components/word-wrap.js';
 import { enrichToolResultPresentation, toolFailure, toolSuccess } from '../tools/result.js';
+import { fileTools } from '../tools/file.js';
 
 type ResultOverrides = Partial<ToolResult> & {
   success?: boolean;
@@ -948,6 +952,41 @@ describe('Read row line count', () => {
     expect(
       deriveToolPresentation('Read', { filePath: 'min.js' }, result({ output: cut })).summary,
     ).toBe('Read(min.js) · 1 line');
+  });
+});
+
+describe('Read row of a memory file', () => {
+  const read = fileTools.find((tool) => tool.name === 'Read')!;
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('names the file memory/<name>.md, with its line count, and any other file as the model wrote it', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-readrow-ws-'));
+    const memory = mkdtempSync(join(tmpdir(), 'book-readrow-mem-'));
+    dirs.push(workspace, memory);
+    writeFileSync(join(memory, 'build-cmd.md'), 'one\ntwo\n');
+    writeFileSync(join(workspace, 'plain.md'), 'one\n');
+    const ctx = {
+      workspaceRoot: workspace,
+      env: {},
+      readOnlyRoots: [memory],
+      memorySearchRoot: memory,
+    };
+
+    const memoryPath = join(memory, 'build-cmd.md');
+    const memoryArgs = { filePath: memoryPath };
+    const row = deriveToolPresentation('Read', memoryArgs, await read.execute(memoryArgs, ctx));
+    expect(row.target).toBe('memory/build-cmd.md');
+    expect(row.metadata).toContain('2 lines');
+    expect(row.summary).toBe('Read memory/build-cmd.md');
+
+    const plainPath = join(workspace, 'plain.md');
+    const plainArgs = { filePath: plainPath };
+    const plain = deriveToolPresentation('Read', plainArgs, await read.execute(plainArgs, ctx));
+    expect(plain.target).toBe(plainPath);
+    expect(plain.metadata).toContain('1 line');
   });
 });
 

@@ -100,6 +100,10 @@ All notable changes to this project are documented in this file.
   `BOOK_BASE_URL`, `BOOK_PROVIDER`, `BOOK_MODEL` and `BOOK_EFFORT`, which the TUI streaming tests
   pass to their child on purpose (#358). To keep an override while debugging, list it in
   `BOOK_TEST_KEEP_ENV`, for example `BOOK_TEST_KEEP_ENV=BOOK_DEBUG,BOOK_DEBUG_STDERR`.
+- **A memory file is named by what reads it best.** The `Read` row of a memory file now shows
+  `memory/<file>` like the `Write`/`Edit` rows, instead of the long absolute path, and a message
+  about a memory file (`file_not_observed`, a stale read, `Created …`, an `ApplyPatch` diff header)
+  names its absolute path instead of `../home/.book/…`. A workspace file keeps its relative path.
 - **A short quiet-run summary row shows all its metadata** (#469). `Read a.js` with
   `1 file · 1 search · 1 listing` was cut at the 20-column meta column; the summary row's metadata
   now takes the columns its target leaves free, and a long target keeps its priority.

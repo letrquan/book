@@ -9,6 +9,7 @@ import { renderDiffWithStatsAsync } from './diff.js';
 import { observeFile, requireFreshObservation } from './file-provenance.js';
 import { checkMemoryWrite, noticeMemoryWrite, withMemoryWarnings } from '../memory-write-guard.js';
 import {
+  messagePathFor,
   mutationDisplayPath,
   pathOutsideWorkspaceResult,
   resolveMutationPath,
@@ -46,7 +47,8 @@ interface StagedFile {
   operation: PatchOperation;
   absolutePath: string;
   writePath: string;
-  relativePath: string;
+  /** How the file is named in text the model reads (`messagePathFor`). */
+  messagePath: string;
   /** The file is in the memory directory, so a notice follows the commit. */
   memory?: true;
   before: TextSnapshot;
@@ -295,7 +297,14 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
   const paths = parsed.operations.map((operation) => operation.path);
   const resolved = parsed.operations.map((operation) => {
     const result = resolveMutationPath(ctx, operation.path);
-    return result ? { operation, ...result, displayPath: mutationDisplayPath(result) } : null;
+    return result
+      ? {
+          operation,
+          ...result,
+          displayPath: mutationDisplayPath(result),
+          messagePath: messagePathFor(result),
+        }
+      : null;
   });
   if (resolved.some((entry) => !entry))
     return pathOutsideWorkspaceResult(paths[resolved.findIndex((entry) => !entry)]);
@@ -306,6 +315,8 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
     relativePath: string;
     /** `relativePath`, or `memory/<name>.md` for a memory file. */
     displayPath: string;
+    /** `relativePath`, or the absolute path for a memory file: the spelling the model reads. */
+    messagePath: string;
     memory?: true;
   }>;
   const canonicalKeys = entries.map((entry) =>
@@ -327,24 +338,24 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
           throwIfAborted(ctx.signal);
           const before = await readTextSnapshot(entry.filePath, entry.operation.kind === 'add');
           if (before.binary)
-            return toolFailure(`Binary file is unsupported: ${entry.relativePath}`, {
+            return toolFailure(`Binary file is unsupported: ${entry.messagePath}`, {
               code: 'binary_file_unsupported',
               remediation: 'Use a text file mutation or a dedicated binary workflow.',
             });
           if (before.mixedLineEndings && entry.operation.kind === 'update')
             return toolFailure(
-              `Mixed line endings are unsupported for patch updates: ${entry.relativePath}`,
+              `Mixed line endings are unsupported for patch updates: ${entry.messagePath}`,
               {
                 code: 'patch_conflict',
                 remediation:
                   'Normalize the file line endings, reread it, and regenerate the patch.',
-                details: { filePath: entry.relativePath, lineEnding: 'mixed' },
+                details: { filePath: entry.messagePath, lineEnding: 'mixed' },
               },
             );
           const stale =
             entry.operation.kind === 'add'
               ? undefined
-              : await requireFreshObservation(ctx, entry.filePath, entry.relativePath);
+              : await requireFreshObservation(ctx, entry.filePath, entry.messagePath);
           if (stale)
             return toolFailure(stale, {
               code: 'stale_file_observation',
@@ -352,7 +363,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
             });
           if (entry.operation.kind === 'add') {
             if (before.exists)
-              return toolFailure(`File already exists: ${entry.relativePath}`, {
+              return toolFailure(`File already exists: ${entry.messagePath}`, {
                 code: 'patch_conflict',
                 remediation: 'Use Update File for an existing file.',
               });
@@ -369,7 +380,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
               operation: entry.operation,
               absolutePath: entry.filePath,
               writePath: entry.canonicalPath,
-              relativePath: entry.relativePath,
+              messagePath: entry.messagePath,
               memory: entry.memory,
               before,
               afterText,
@@ -378,7 +389,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
             });
           } else if (entry.operation.kind === 'delete') {
             if (!before.exists)
-              return toolFailure(`File not found: ${entry.relativePath}`, {
+              return toolFailure(`File not found: ${entry.messagePath}`, {
                 code: 'patch_conflict',
                 remediation: 'Reread the workspace and regenerate the patch.',
               });
@@ -390,7 +401,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
               operation: entry.operation,
               absolutePath: entry.filePath,
               writePath: entry.filePath,
-              relativePath: entry.relativePath,
+              messagePath: entry.messagePath,
               memory: entry.memory,
               before,
               mutation: {
@@ -403,21 +414,21 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
             });
           } else {
             if (!before.exists)
-              return toolFailure(`File not found: ${entry.relativePath}`, {
+              return toolFailure(`File not found: ${entry.messagePath}`, {
                 code: 'patch_context_not_found',
                 remediation: 'Reread the file and regenerate the patch.',
               });
             const applied = applyHunks(before.text, entry.operation.hunks);
             if (applied.mismatch)
               return toolFailure(
-                `${entry.relativePath}: ${applied.mismatch.structuredError?.message}`,
+                `${entry.messagePath}: ${applied.mismatch.structuredError?.message}`,
                 {
                   ...applied.mismatch.structuredError,
                   code: applied.mismatch.structuredError?.code ?? 'patch_context_not_found',
                   remediation: applied.mismatch.structuredError?.remediation,
                   details: {
                     ...applied.mismatch.structuredError?.details,
-                    filePath: entry.relativePath,
+                    filePath: entry.messagePath,
                     lineEnding: before.mixedLineEndings ? 'mixed' : before.lineEnding,
                     normalizedMatching: true,
                   },
@@ -435,7 +446,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
               operation: entry.operation,
               absolutePath: entry.filePath,
               writePath: entry.canonicalPath,
-              relativePath: entry.relativePath,
+              messagePath: entry.messagePath,
               memory: entry.memory,
               before,
               afterText,
@@ -477,7 +488,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
             3,
             ctx.signal,
           );
-          if (diff) diffs.push(`--- ${file.relativePath}\n+++ ${file.relativePath}\n${diff}`);
+          if (diff) diffs.push(`--- ${file.messagePath}\n+++ ${file.messagePath}\n${diff}`);
         }
         const committed: StagedFile[] = [];
         try {
@@ -502,7 +513,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
                 ? check.exists
                 : !check.exists || !check.bytes.equals(file.afterBytes!)
             )
-              throw new Error(`Post-write verification failed for ${file.relativePath}`);
+              throw new Error(`Post-write verification failed for ${file.messagePath}`);
           }
         } catch (error) {
           let rollbackFailed = false;
@@ -590,7 +601,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
             `${staged
               .map(
                 (file, order) =>
-                  `${order === 0 ? 'Created' : 'created'} ${file.relativePath} (${file.mutation.addedLines} lines, ${file.afterBytes?.byteLength ?? 0} bytes)`,
+                  `${order === 0 ? 'Created' : 'created'} ${file.messagePath} (${file.mutation.addedLines} lines, ${file.afterBytes?.byteLength ?? 0} bytes)`,
               )
               .join('; ')}.`,
             memoryWarnings,
