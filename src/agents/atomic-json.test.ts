@@ -32,6 +32,18 @@ function contention(code: string): NodeJS.ErrnoException {
   return Object.assign(new Error(code), { code });
 }
 
+/**
+ * A clock the writer's deadline cannot run out on, for a test that injects one contention and is
+ * about what the writer does after it rather than about how long it waits.
+ *
+ * A write gives up with `busy` once its deadline (500ms by default) has passed, and it checks after
+ * every contended lock or rename. On the real clock the lock, the temp file and the fsyncs before
+ * the first rename spend that budget too, so on a loaded machine the injected contention can find
+ * the deadline already gone: the writer returns `busy` without trying again and the test fails for
+ * a reason it is not about (#450). A test of the deadline itself keeps a clock it moves.
+ */
+const frozenClock = { now: () => 0 };
+
 describe('AtomicJsonWriter', () => {
   it('fsyncs a complete temp and atomically replaces the target', () => {
     const { target } = fixture();
@@ -278,6 +290,7 @@ describe('AtomicJsonWriter', () => {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 10,
       hostname: 'test-host',
+      ...frozenClock,
       fs: {
         renameSync: (source, destination) => {
           renameCalls++;
@@ -362,6 +375,7 @@ describe('AtomicJsonWriter', () => {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 10,
       hostname: 'test-host',
+      ...frozenClock,
       fsAsync: {
         rename: async (source, destination) => {
           renameCalls++;
@@ -421,6 +435,7 @@ describe('AtomicJsonWriter', () => {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 10,
       hostname: 'test-host',
+      ...frozenClock,
       fsAsync: {
         rename: async (source, destination) => {
           renameCalls++;

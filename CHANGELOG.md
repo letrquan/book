@@ -88,6 +88,11 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The atomic-write tests no longer fail with `busy` on a loaded machine** (#450). Three of them
+  inject one contention and expect the writer to try again, but ran on the real clock against its
+  500ms deadline, so the fsyncs before the first rename could use up the whole budget and the writer
+  returned `busy` without a second attempt. They now run on a frozen clock; the writer is unchanged,
+  and `busy` once the deadline has passed is still its documented result.
 - **A finished compaction is shown only in the transcript.** Its row, `✓ Compact conversation`,
   is now the whole record of a successful compaction: the post-compaction card and the
   `Compacted 100%` bar no longer appear above the input or linger until the next message. A
