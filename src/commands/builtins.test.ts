@@ -8,6 +8,7 @@ import {
   createBuiltinCommandRegistry,
   type BuiltinCommandContext,
 } from './builtins.js';
+import { memoryConsolidateTools } from './builtins-prompts.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { loadConfig, resolveAdvisorModelConfig } from '../config.js';
 import {
@@ -697,7 +698,7 @@ describe('built-in command contract', () => {
     });
     const usage = {
       type: 'local-message',
-      content: 'Usage: /memory [status|delete <file>|on|off|path]',
+      content: 'Usage: /memory [status|delete <file>|on|off|path|consolidate [focus]]',
     };
     expect(registry.execute('memory', 'unknown', context())).toEqual(usage);
     // The inbox is gone, and its commands with it.
@@ -1086,5 +1087,178 @@ describe('/advisor', () => {
         registry.execute('advisor', 'status', context({ runtimeConfig: runtimeConfig() })),
       ).toMatchObject({ type: 'local-message' });
     });
+  });
+});
+
+describe('/memory consolidate', () => {
+  const cleanup: string[] = [];
+  const previousBookHome = process.env.BOOK_HOME;
+  afterEach(() => {
+    for (const dir of cleanup.splice(0)) rmSync(dir, { recursive: true, force: true });
+    if (previousBookHome === undefined) delete process.env.BOOK_HOME;
+    else process.env.BOOK_HOME = previousBookHome;
+  });
+
+  /** A workspace whose memory directory holds `files` (none: an empty directory). */
+  function setup(files: string[] = ['build-cmd.md']) {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-consolidate-ws-'));
+    const bookHome = mkdtempSync(join(tmpdir(), 'book-consolidate-home-'));
+    cleanup.push(workspace, bookHome);
+    process.env.BOOK_HOME = bookHome;
+    const memoryDir = getProjectMemoryDir(workspace);
+    mkdirSync(memoryDir, { recursive: true });
+    writeFileSync(join(memoryDir, '.format'), '2\n'); // already migrated: nothing rewrites the files
+    for (const file of files) {
+      writeFileSync(
+        join(memoryDir, file),
+        `---\nname: ${file}\ndescription: d\nmetadata:\n  type: project\n---\nBody.\n`,
+      );
+    }
+    writeFileSync(join(memoryDir, 'MEMORY.md'), '- [Build](build-cmd.md) — how to build\n');
+    return { workspace, memoryDir };
+  }
+
+  const run = (rawArguments: string, overrides: Partial<BuiltinCommandContext>) => {
+    const effect = createBuiltinCommandRegistry().execute(
+      'memory',
+      rawArguments,
+      context(overrides),
+    );
+    if (!effect) throw new Error('/memory produced no effect');
+    return effect;
+  };
+
+  const refusal = (content: string | RegExp) =>
+    expect.objectContaining({
+      type: 'local-message',
+      isError: true,
+      content: expect.stringMatching(content),
+    });
+
+  it('is registered under /memory and advertised in its usage line', () => {
+    const definition = BUILTIN_COMMAND_DEFINITIONS.find(({ name }) => name === 'memory');
+    expect(definition?.argumentHint).toContain('consolidate');
+    expect(definition?.nonInteractiveSubcommands).toEqual(['consolidate']);
+    expect(definition?.nonInteractive).toBeFalsy();
+    expect(run('unknown', {})).toEqual({
+      type: 'local-message',
+      content: 'Usage: /memory [status|delete <file>|on|off|path|consolidate [focus]]',
+    });
+    // Only the word itself is the subcommand.
+    expect(run('consolidates', {})).toMatchObject({ type: 'local-message' });
+    expect(run('consolidates', {})).not.toHaveProperty('isError');
+  });
+
+  it('sends a prompt with the memory paths, today and the focus, and the restricted tools', () => {
+    const { workspace, memoryDir } = setup();
+    const previousDate = process.env.BOOK_EVALUATION_DATE;
+    process.env.BOOK_EVALUATION_DATE = '2026-10-15';
+    try {
+      const effect = run('consolidate the build notes', { workspace });
+      if (effect.type !== 'send-prompt')
+        throw new Error(`expected send-prompt, got ${effect.type}`);
+      expect(effect.prompt).toContain(memoryDir);
+      expect(effect.prompt).toContain(join(memoryDir, 'MEMORY.md'));
+      expect(effect.prompt).toContain('2026-10-15');
+      expect(effect.prompt).toContain('concentrate on: the build notes');
+      expect(effect.prompt).not.toMatch(/MemorySave/i);
+      expect(effect.context.resolvedBody).toBe(effect.prompt);
+      // The rules are written with `/` on every platform; on Windows the directory may also have
+      // a second, long-name spelling (8.3 short names), so the set is checked for this one.
+      const slashed = memoryDir.replaceAll('\\', '/');
+      expect(effect.context.allowedTools).toEqual(
+        expect.arrayContaining([
+          'Read',
+          'Glob',
+          'Grep',
+          `Write(${slashed}/*.md)`,
+          `Edit(${slashed}/*.md)`,
+          `MultiEdit(${slashed}/*.md)`,
+          `Bash(rm ${slashed}/*.md)`,
+        ]),
+      );
+      expect(effect.context.allowedTools).toEqual(memoryConsolidateTools(memoryDir));
+      expect(effect.context.allowedTools).not.toContain('ApplyPatch');
+      expect(effect.context.allowedTools).not.toContain('Bash');
+
+      const bare = run('consolidate', { workspace });
+      if (bare.type !== 'send-prompt') throw new Error('expected send-prompt');
+      expect(bare.prompt).not.toContain('concentrate on');
+    } finally {
+      if (previousDate === undefined) delete process.env.BOOK_EVALUATION_DATE;
+      else process.env.BOOK_EVALUATION_DATE = previousDate;
+    }
+  });
+
+  it('runs in a session another agent drives (the write guard protects a person’s files)', () => {
+    const { workspace } = setup();
+    const runtimeConfig = { ...defaultConfig(), sessionDriver: 'agent' as const };
+    expect(run('consolidate', { workspace, runtimeConfig }).type).toBe('send-prompt');
+  });
+
+  it('refuses, sending no prompt, when memory is disabled', () => {
+    const { workspace } = setup();
+    const config = defaultConfig();
+    const runtimeConfig = {
+      ...config,
+      settings: { ...config.settings, memory: { ...config.settings.memory, enabled: false } },
+    };
+    expect(run('consolidate', { workspace, runtimeConfig })).toEqual(refusal(/Memory is disabled/));
+  });
+
+  it('refuses when the model cannot write memory in this session', () => {
+    const { workspace } = setup();
+    const config = defaultConfig();
+    const autoSaveOff = {
+      ...config,
+      settings: { ...config.settings, memory: { ...config.settings.memory, autoSave: false } },
+    };
+    expect(run('consolidate', { workspace, runtimeConfig: autoSaveOff })).toEqual(
+      refusal(/not writable in this session/),
+    );
+  });
+
+  it('refuses when a deny rule refuses writes to the memory directory', () => {
+    const { workspace, memoryDir } = setup();
+    const config = defaultConfig();
+    // A rule is written with `/` on every platform (a `\` in a glob is an escape).
+    for (const deny of ['Write', `Write(${memoryDir.replaceAll('\\', '/')}/**)`]) {
+      const runtimeConfig = {
+        ...config,
+        settings: {
+          ...config.settings,
+          permissions: { ...config.settings.permissions, deny: [deny] },
+        },
+      };
+      expect(run('consolidate', { workspace, runtimeConfig }), deny).toEqual(
+        refusal(/deny rule refuses writes/),
+      );
+    }
+    // A deny rule that leaves memory alone does not stop it.
+    const unrelated = {
+      ...config,
+      settings: {
+        ...config.settings,
+        permissions: { ...config.settings.permissions, deny: ['Write(**/.env)'] },
+      },
+    };
+    expect(run('consolidate', { workspace, runtimeConfig: unrelated }).type).toBe('send-prompt');
+  });
+
+  it('refuses in plan mode', () => {
+    const { workspace } = setup();
+    expect(run('consolidate', { workspace, mode: 'plan' })).toEqual(refusal(/Plan mode/));
+    expect(run('consolidate', { workspace, mode: 'accept-edits' }).type).toBe('send-prompt');
+  });
+
+  it('refuses when the memory directory holds no topic files', () => {
+    const { workspace, memoryDir } = setup([]);
+    expect(run('consolidate', { workspace })).toEqual(refusal(/no memory files/));
+    // The index alone is not a memory.
+    expect(readFileSync(join(memoryDir, 'MEMORY.md'), 'utf8')).toContain('build-cmd.md');
+    // Nor is a directory that does not exist.
+    const empty = mkdtempSync(join(tmpdir(), 'book-consolidate-empty-'));
+    cleanup.push(empty);
+    expect(run('consolidate', { workspace: empty })).toEqual(refusal(/no memory files/));
   });
 });

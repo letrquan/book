@@ -20,6 +20,7 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { PermissionDecision, ToolResult } from '../types/tools.js';
 import type { Provider } from '../provider/index.js';
 import type { LoadedMemoryContext } from '../memory-store.js';
+import { memoryConsolidateTools } from '../commands/builtins-prompts.js';
 
 function noopCallbacks(overrides: Partial<AgentLoopCallbacks> = {}): AgentLoopCallbacks {
   return {
@@ -1423,5 +1424,104 @@ describe('runAgentLoop memory writes', () => {
     );
     expect(byId(results, 'e1')?.structuredError?.code).toBe('file_not_observed');
     expect(readFileSync(join(memory, 'MEMORY.md'), 'utf8')).toBe('# Memory\n');
+  });
+});
+
+describe('runAgentLoop under the /memory consolidate tool set', () => {
+  const stamped = (name: string, body: string) =>
+    `---\nname: ${name}\ndescription: ${name}\nmetadata:\n  type: project\n---\n${body}\n`;
+
+  async function run(memory: string, calls: ScriptedCall[]) {
+    const prompt = vi.fn(async () => 'deny' as const);
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2, memoryContext: loadedMemory(memory) }),
+      createDefaultRegistry(),
+      'consolidate',
+      [],
+      noopCallbacks({ onPermissionRequired: prompt, onToolResult: (r) => results.push(r) }),
+      'default',
+      {
+        provider: toolsThenText(calls),
+        isNewSession: false,
+        allowedTools: memoryConsolidateTools(memory),
+      },
+    );
+    return { prompt, results };
+  }
+
+  it('reads, merges, removes and re-indexes in default mode with no prompt', async () => {
+    const memory = tempDir('book-loop-consolidate-');
+    const index = join(memory, 'MEMORY.md');
+    writeFileSync(index, '- [A](a.md) — one\n- [B](b.md) — two\nA note.\n');
+    writeFileSync(join(memory, 'a.md'), stamped('a', 'Use pnpm.'));
+    writeFileSync(join(memory, 'b.md'), stamped('b', 'Use pnpm.'));
+
+    const { prompt, results } = await run(memory, [
+      { id: 'r1', name: 'Read', arguments: { filePath: index } },
+      { id: 'r2', name: 'Read', arguments: { filePath: join(memory, 'b.md') } },
+      {
+        id: 'w1',
+        name: 'Write',
+        arguments: { filePath: join(memory, 'merged.md'), content: stamped('merged', 'Use pnpm.') },
+      },
+      { id: 'x1', name: 'Bash', arguments: { command: `rm ${join(memory, 'b.md')}` } },
+      {
+        id: 'e1',
+        name: 'Edit',
+        arguments: {
+          filePath: index,
+          oldString: '- [B](b.md) — two',
+          newString: '- [Merged](merged.md) — pnpm',
+        },
+      },
+    ]);
+
+    expect(prompt).not.toHaveBeenCalled();
+    for (const id of ['r1', 'r2', 'w1', 'x1', 'e1']) {
+      expect(byId(results, id)?.status, id).toBe('success');
+    }
+    expect(existsSync(join(memory, 'b.md'))).toBe(false);
+    expect(existsSync(join(memory, 'merged.md'))).toBe(true);
+    expect(readFileSync(index, 'utf8')).toBe(
+      '- [A](a.md) — one\n- [Merged](merged.md) — pnpm\nA note.\n',
+    );
+  });
+
+  it('refuses everything outside the set, and runs none of it', async () => {
+    const memory = tempDir('book-loop-consolidate-');
+    writeFileSync(join(memory, 'a.md'), stamped('a', 'Use pnpm.'));
+    const victim = join(workspace, 'victim.md');
+    writeFileSync(victim, 'keep me\n');
+    const patch = `*** Begin Patch\n*** Add File: ${join(memory, 'p.md')}\n+x\n*** End Patch`;
+
+    const { prompt, results } = await run(memory, [
+      { id: 'w1', name: 'Write', arguments: { filePath: join(workspace, 'new.md'), content: 'x' } },
+      {
+        id: 'w2',
+        name: 'Write',
+        arguments: { filePath: join(memory, '..', 'up.md'), content: 'x' },
+      },
+      { id: 'p1', name: 'ApplyPatch', arguments: { patch } },
+      { id: 'x1', name: 'Bash', arguments: { command: `rm -rf ${memory}` } },
+      { id: 'x2', name: 'Bash', arguments: { command: `rm ${victim}` } },
+      {
+        id: 'x3',
+        name: 'Bash',
+        arguments: { command: `rm ${join(memory, 'a.md')} && touch ${join(workspace, 'pwned')}` },
+      },
+      { id: 'm1', name: 'mcp__evil__run', arguments: {} },
+    ]);
+
+    expect(prompt).not.toHaveBeenCalled();
+    for (const id of ['w1', 'w2', 'p1', 'x1', 'x2', 'x3', 'm1']) {
+      expect(byId(results, id)?.status, id).not.toBe('success');
+    }
+    expect(existsSync(join(workspace, 'new.md'))).toBe(false);
+    expect(existsSync(join(memory, '..', 'up.md'))).toBe(false);
+    expect(existsSync(join(memory, 'p.md'))).toBe(false);
+    expect(existsSync(join(memory, 'a.md'))).toBe(true);
+    expect(existsSync(victim)).toBe(true);
+    expect(existsSync(join(workspace, 'pwned'))).toBe(false);
   });
 });

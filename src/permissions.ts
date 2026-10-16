@@ -6,6 +6,7 @@ import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex, globWalkPlan } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
+import { strictRmOfMarkdownUnder } from './tools/strict-rm.js';
 import {
   canonicalizePath,
   isBookLocalSettingsPath,
@@ -82,8 +83,12 @@ export interface WorkspaceScope {
    * Book's project memory directory as a write root (`ToolContext.memoryWrite`), set for the root
    * agent only. A Write, Edit, MultiEdit or ApplyPatch whose every target resolves into it as a
    * memory file is allowed with source `memory`, after the user's deny, ask and allow rules.
+   *
+   * `scope` is `ToolContext.memoryWrite.scope`. A Bash `rm` of memory files is allowed the same
+   * way only when it is `full`: `rm` bypasses the write guard that protects a person's files in a
+   * `learnings` session, so there it keeps its prompt.
    */
-  memoryWrite?: { root: string };
+  memoryWrite?: { root: string; scope?: 'learnings' | 'full' };
   /**
    * The real paths of the home directories under which a read keeps asking, resolved once per run
    * (`homeGuards()`). A read outside every root is refused; a read inside one of these is served,
@@ -898,6 +903,23 @@ function writesOnlyMemory(
 }
 
 /**
+ * Whether a call is a Bash `rm` of memory files and nothing else: one plain `rm` whose every operand
+ * is an absolute `*.md` path under the memory root (see `strictRmOfMarkdownUnder`). The one shell
+ * command that needs no prompt, as removing a memory is for Claude Code. `full` sessions only: the
+ * write guard cannot see an `rm`, so a session another agent drives keeps asking.
+ */
+function removesOnlyMemory(
+  tool: string,
+  args: Record<string, unknown>,
+  scope: WorkspaceScope | undefined,
+): boolean {
+  if (tool !== 'Bash' || scope?.memoryWrite?.scope !== 'full') return false;
+  // `run_in_background` would detach the removal from the call the user is shown.
+  if (typeof args.command !== 'string' || args.run_in_background === true) return false;
+  return strictRmOfMarkdownUnder(args.command, scope.memoryWrite.root) !== null;
+}
+
+/**
  * Evaluate permission rules against a tool call. Rules are evaluated in
  * CC's order: deny → ask → allow. First match wins.
  *
@@ -1049,7 +1071,9 @@ export function evaluatePermissionDetail(
   // A write into the memory directory needs no prompt: the guard in `memory-write-guard.ts` judges
   // its content. Every rule the user wrote outranks this, as for a read, so a `deny` or `ask` on
   // Write has already returned above.
-  if (writesOnlyMemory(tool, args, scope)) return { decision: 'allow', source: 'memory' };
+  if (writesOnlyMemory(tool, args, scope) || removesOnlyMemory(tool, args, scope)) {
+    return { decision: 'allow', source: 'memory' };
+  }
 
   // `sandbox.autoAllowBashIfSandboxed` is evaluated last, and only in place of
   // the *default* ask. Every user-written rule outranks it: a matching `deny`

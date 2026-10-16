@@ -371,6 +371,24 @@ export function isUnderRoot(canonicalPath: string, root: string): boolean {
 }
 
 /**
+ * A path in the one spelling two *strings* are compared in, when neither is touched on disk: the
+ * separator is `/`, and on Windows the case is folded (the same fold `isBookLocalSettingsPath`
+ * makes, since NTFS answers to any case).
+ *
+ * `\` is a separator only on Windows. On POSIX it is an ordinary file-name character, and reading
+ * it as a separator would let `/home/u/memory\a.md` — a file named `memory\a.md` in `/home/u` —
+ * pass for one inside `/home/u/memory`. The platform is a parameter so that the Windows spelling is
+ * judged on any host.
+ */
+export function comparablePath(
+  value: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== 'win32') return value;
+  return value.replaceAll('\\', '/').toLowerCase();
+}
+
+/**
  * Whether a path has the *shape* of a root's Book-local settings file or directory, whatever root
  * is being asked about: the last segment is `.book`, or `settings.local.json` under one.
  *

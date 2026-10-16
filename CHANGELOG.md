@@ -6,6 +6,28 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **`/memory consolidate [focus]`: tidy the memory store** (PR 3 of the Claude Code memory parity
+  plan). Memory is the model's own to write, so it drifts: near-duplicates, facts the code has
+  outgrown, lines in `MEMORY.md` that point at nothing, "yesterday" with no date. The command runs
+  one agent pass in the current session, so its edits show as ordinary tool rows. It merges
+  duplicates (deleting the extras with `rm`), rewrites or deletes contradicted memories, makes
+  relative dates absolute, checks that the files, functions, flags and commands a memory names still
+  exist, and prunes `MEMORY.md` to one pointer line per file within 200 lines and 25,000 bytes. It
+  reconciles feedback and project memories with `CLAUDE.md` / `AGENTS.md`, which win; a memory that
+  is clearly newer is annotated `Contradicts CLAUDE.md — verify which is current.` and reported,
+  never used to edit them. The pass is refused, with no prompt sent, when memory is disabled or not
+  writable in the session, in plan mode, or with no memory files. It runs with `Read`/`Glob`/`Grep`,
+  `Write`/`Edit`/`MultiEdit` of `*.md` files in the memory directory and `rm` of them, and nothing
+  else (no `ApplyPatch`, MCP or other `Bash`); the memory write guard still applies. It also runs
+  headlessly (`book -p "/memory consolidate"`); the other `/memory` forms stay refused in print
+  mode. An automatic trigger is not part of this change.
+- **A plain `rm` of memory files needs no prompt.** One `Bash` command that is `rm` and nothing
+  else, whose every operand is an absolute `*.md` path under the memory directory (not `MEMORY.md`),
+  is allowed after your `deny`, `ask` and `allow` rules, as a memory write is. Flags, `--`, globs,
+  quotes, variables, `.`/`..` segments, chaining, redirects, substitution and paths through a
+  symlinked subdirectory all keep the ordinary prompt, as does every `rm` in a session another
+  agent drives.
+
 - **Compact mode hides a tool step's thought, and read-only git through `Bash` folds** (#470). An
   assistant step that calls a tool no longer draws its `▸ thought · N lines` row in the compact
   transcript, whether the row is quiet or not (Ctrl+O shows it, and so does screen-reader mode); a

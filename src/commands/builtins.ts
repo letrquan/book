@@ -7,7 +7,12 @@ import type { CompactBoundary } from '../types/sessions.js';
 import type { ActiveGoal } from '../types/goal.js';
 import { formatGoalReport, GOAL_MAX_CHARS, isGoalClearWord } from '../agent/goal.js';
 import { buildInitPrompt } from './init-prompt.js';
-import { buildSecurityReviewPrompt, SECURITY_REVIEW_TOOLS } from './builtins-prompts.js';
+import {
+  buildMemoryConsolidatePrompt,
+  buildSecurityReviewPrompt,
+  memoryConsolidateTools,
+  SECURITY_REVIEW_TOOLS,
+} from './builtins-prompts.js';
 import { parseReviewScope, REVIEW_USAGE } from '../review/scope.js';
 import type { ReviewScope } from '../review/types.js';
 import { CommandRegistry, type CommandAlias, type CommandDefinition } from './registry.js';
@@ -16,7 +21,14 @@ import { EFFORT_USAGE, isEffortLevel, type EffortLevel } from './effort.js';
 import { redactSettingValue } from '../settings-redaction.js';
 import { formatSettingsKeyHelp } from '../settings-repository.js';
 import { buildMemoryReport } from '../memory-display.js';
-import { deleteMemoryEntry, getProjectMemoryDir } from '../memory-store.js';
+import {
+  deleteMemoryEntry,
+  getProjectMemoryDir,
+  listMemoryFiles,
+  memoryWriteScope,
+} from '../memory-store.js';
+import { denyRulesRefuseMemoryWrites } from '../memory-access.js';
+import { promptCurrentDate } from '../agent/prompt-determinism.js';
 import {
   costReport,
   failureTotal,
@@ -438,6 +450,59 @@ function scopeFlagFor(scope: SettingsScope): string {
   return scope === 'user' ? '--global' : `--${scope}`;
 }
 
+const MEMORY_USAGE = 'Usage: /memory [status|delete <file>|on|off|path|consolidate [focus]]';
+
+function memoryRefusal(content: string): BuiltinCommandEffect {
+  // `isError` so a print host fails the run instead of exiting 0 on a pass that never happened.
+  return { type: 'local-message', content: `✕ ${content}`, isError: true };
+}
+
+/**
+ * `/memory consolidate [focus]`: one agent pass over the memory directory, run as an ordinary
+ * prompt so the user watches its edits as tool rows. Refused, with no prompt sent, when the pass
+ * could not write what it finds.
+ */
+function memoryConsolidateEffect(
+  focus: string,
+  context: BuiltinCommandContext,
+): BuiltinCommandEffect {
+  const config = context.runtimeConfig;
+  if (!config.settings.memory.enabled) {
+    return memoryRefusal(
+      'Memory is disabled (memory.enabled is false), so there is nothing to consolidate.',
+    );
+  }
+  if (context.mode === 'plan') {
+    return memoryRefusal('Plan mode is on, and consolidating edits memory. Leave plan mode first.');
+  }
+  const dir = getProjectMemoryDir(context.workspace);
+  // The same two conditions `memorySection` writes the prompt's "you may write memory" on.
+  if (memoryWriteScope(config) === 'none') {
+    return memoryRefusal(
+      'Memory is not writable in this session (memory.autoSave is off). Turn it on with /memory on.',
+    );
+  }
+  if (denyRulesRefuseMemoryWrites(config, dir)) {
+    return memoryRefusal(
+      'A permission deny rule refuses writes to the memory directory, so a consolidation could not save anything.',
+    );
+  }
+  if (listMemoryFiles(context.workspace).length === 0) {
+    return memoryRefusal(`There are no memory files in \`${dir}\` to consolidate.`);
+  }
+  const prompt = buildMemoryConsolidatePrompt({
+    memoryDir: dir,
+    today: promptCurrentDate(),
+    focus,
+  });
+  return promptEffect(
+    'memory-consolidate',
+    'Consolidate project memory',
+    prompt,
+    memoryConsolidateTools(dir),
+  );
+}
+
 function memoryCommandEffect(
   rawArguments: string,
   context: BuiltinCommandContext,
@@ -476,10 +541,10 @@ function memoryCommandEffect(
       refreshMemory: result.ok,
     };
   }
-  return {
-    type: 'local-message',
-    content: 'Usage: /memory [status|delete <file>|on|off|path]',
-  };
+  if (rawArguments === 'consolidate' || rawArguments.startsWith('consolidate ')) {
+    return memoryConsolidateEffect(rawArguments.slice('consolidate'.length).trim(), context);
+  }
+  return { type: 'local-message', content: MEMORY_USAGE };
 }
 
 const AGENT_USAGE =
@@ -914,7 +979,9 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   {
     name: 'memory',
     description: 'Manage auto-memory',
-    argumentHint: '[status|delete|on|off|path]',
+    argumentHint: '[status|delete|on|off|path|consolidate]',
+    // Only `consolidate` produces a prompt; every other form changes host state or settings.
+    nonInteractiveSubcommands: ['consolidate'],
     execute: ({ rawArguments }, context) => memoryCommandEffect(rawArguments, context),
   },
   {

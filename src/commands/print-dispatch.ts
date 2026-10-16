@@ -353,6 +353,9 @@ function supportedCommandHelp(builtins: BuiltinPrintRegistry, commands: SlashCom
   const lines = ['Commands supported in print mode:'];
   for (const definition of builtins.getDefinitions()) {
     if (definition.nonInteractive) lines.push(`  /${definition.name} — ${definition.description}`);
+    for (const subcommand of definition.nonInteractiveSubcommands ?? []) {
+      lines.push(`  /${definition.name} ${subcommand} — ${definition.description}`);
+    }
   }
   const custom = commands.map((command) => `/${command.name}`);
   lines.push(
@@ -405,7 +408,11 @@ export async function resolvePrintCommand(
   // A `tuiOnly` command is the TUI's own state, so a non-interactive host treats the name as one
   // it has never heard of: a project command may claim it, and otherwise it passes through.
   if (resolved && !resolved.definition.tuiOnly) {
-    if (!resolved.definition.nonInteractive) {
+    const subcommand = parsed.rawArguments.trim().split(/\s+/)[0] ?? '';
+    const allowedHere =
+      resolved.definition.nonInteractive ||
+      (resolved.definition.nonInteractiveSubcommands?.includes(subcommand) ?? false);
+    if (!allowedHere) {
       throw unsupported(
         parsed.name,
         'needs an interactive session: it changes host state instead of producing a prompt.',

@@ -6,6 +6,7 @@ import {
   createPrintEffectRegistry,
   PrintEffectRegistry,
   resolvePrintCommand,
+  PrintCommandUsageError,
   UnsupportedPrintCommandError,
   type BuiltinPrintRegistry,
   type PrintCommandDispatch,
@@ -21,6 +22,7 @@ import { CommandRegistry } from './registry.js';
 import { discoverCommands } from './loader.js';
 import { projectCommandFingerprint, type ProjectCommandStore } from '../command-approvals.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { getProjectMemoryDir } from '../memory-store.js';
 
 let tempDirs: string[] = [];
 const previousBookHome = process.env.BOOK_HOME;
@@ -300,6 +302,75 @@ describe('resolvePrintCommand — host effects fail loudly', () => {
       );
     },
   );
+
+  describe('/memory', () => {
+    function withMemory(workspace: string): string {
+      const dir = getProjectMemoryDir(workspace);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, '.format'), '2\n');
+      writeFileSync(
+        join(dir, 'a.md'),
+        '---\nname: a\ndescription: d\nmetadata:\n  type: project\n---\nBody.\n',
+      );
+      return dir;
+    }
+
+    it('runs `consolidate` headlessly, as a prompt with the restricted tools', async () => {
+      const workspace = tempWorkspace();
+      const dir = withMemory(workspace);
+
+      const dispatch = await resolvePrintCommand(
+        '/memory consolidate the build notes',
+        env(workspace),
+      );
+
+      expect(dispatch.kind).toBe('prompt');
+      if (dispatch.kind !== 'prompt') throw new Error('expected a prompt dispatch');
+      expect(dispatch.prompt).toContain(join(dir, 'MEMORY.md'));
+      expect(dispatch.prompt).toContain('concentrate on: the build notes');
+      // Rules are written with `/` on every platform.
+      expect(dispatch.commandContext?.allowedTools).toContain(
+        `Bash(rm ${dir.replaceAll('\\', '/')}/*.md)`,
+      );
+      expect(dispatch.commandContext?.allowedTools).not.toContain('ApplyPatch');
+    });
+
+    it('refuses every other /memory form', async () => {
+      const workspace = tempWorkspace();
+      const dir = withMemory(workspace);
+      for (const form of [
+        '/memory',
+        '/memory status',
+        '/memory path',
+        '/memory on',
+        '/memory off',
+        '/memory delete a.md',
+        '/memory consolidates',
+        '/memory delete consolidate',
+      ]) {
+        await expect(resolvePrintCommand(form, env(workspace)), form).rejects.toBeInstanceOf(
+          UnsupportedPrintCommandError,
+        );
+      }
+      // Refused before `execute` ran: the file `delete` would have removed is still there.
+      expect(existsSync(join(dir, 'a.md'))).toBe(true);
+    });
+
+    it('lists it among the supported commands in the refusal', async () => {
+      const workspace = tempWorkspace();
+      const error = (await resolvePrintCommand('/memory path', env(workspace)).catch(
+        (thrown) => thrown,
+      )) as UnsupportedPrintCommandError;
+      expect(error.message).toContain('/memory consolidate');
+    });
+
+    it('fails the run when consolidating is refused, rather than exiting 0', async () => {
+      const workspace = tempWorkspace(); // no memory files
+      await expect(
+        resolvePrintCommand('/memory consolidate', env(workspace)),
+      ).rejects.toBeInstanceOf(PrintCommandUsageError);
+    });
+  });
 
   it('never executes an interactive built-in, so its side effects cannot fire', async () => {
     const workspace = tempWorkspace();

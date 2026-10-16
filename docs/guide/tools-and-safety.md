@@ -345,9 +345,17 @@ end in `.md`, and sit under no dot-directory (`.git/`, an old `.inbox/`) and no 
 that also names a file outside the memory directory goes through the normal prompt. Each successful
 write announces itself (`memory saved: <file>`, or `memory deleted: <file>` for an `ApplyPatch`
 delete; an edit of `MEMORY.md` alone says nothing), and the tool row names the file relative to the
-memory directory (`memory/<file>.md`). The model deletes a memory with `rm` under the ordinary `Bash`
-permission; `Bash` has no memory guard, so that path, like `echo >`, is not checked. Every write
-through a file tool passes a guard before it lands:
+memory directory (`memory/<file>.md`). The model deletes a memory with `rm`. A `Bash` command that
+is exactly one plain `rm` of memory files needs no prompt in `default`, `acceptEdits`, `auto` and
+`dontAsk`, after your `deny`, `ask` and `allow` rules like a memory write: the word `rm`, then one
+or more operands, each an absolute path under the memory directory ending in `.md` (not
+`MEMORY.md`, not a dot-file) and made of letters, digits and `_ . / @ % + = : , -` only. There is no
+flag, `--`, glob, quote, `~`, variable, `.` or `..` segment, chaining (`;`, `&&`, `|`), redirect,
+substitution or line break, and a path that reaches the directory through a symlinked subdirectory
+is not under it; any such command goes through the ordinary `Bash` permission. A session another
+agent drives (`learnings`) keeps the prompt for every `rm`, because `Bash` has no memory guard:
+that path, like `echo >`, is not checked against file ownership. Every write through a file tool
+passes a guard before it lands:
 
 - Text that looks like a secret is refused (`memory_secret_rejected`).
 - In a session another agent drives, a topic file needs a `metadata.type` of `project` or
