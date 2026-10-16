@@ -4,6 +4,7 @@ import { canonicalToolName } from './aliases.js';
 import { globToRegex } from './glob-regex.js';
 import { comparablePath } from './path-utils.js';
 import { getPrimaryArg } from './primary-arg.js';
+import { SHELL_CHAINING } from './shell-chaining.js';
 import { strictRmMatchesGlob } from './strict-rm.js';
 
 /** Tools whose rule pattern names one file, so a call is matched by the path it really names. */
@@ -101,6 +102,34 @@ export function isToolCallAllowed(
         )
       );
     }
+    if (canonical === 'Bash') {
+      // Under a command glob a compound command is refused outright, quoted or not, and the whole
+      // command is matched: the primary argument is only its first line.
+      const command = call.arguments.command;
+      if (typeof command !== 'string' || SHELL_CHAINING.test(command)) return false;
+      return globToRegex(normalizedPattern).test(command.replace(/^\.\//, ''));
+    }
     return globToRegex(normalizedPattern).test(primary);
   });
 }
+
+/**
+ * Whether a call is a Bash command that chains, pipes, redirects or substitutes, which a
+ * `Bash(<glob>)` capability rule refuses. Used to say so in the refusal the model reads.
+ */
+export function isCompoundShellCommand(call: ToolCall): boolean {
+  const command = call.arguments.command;
+  return (
+    canonicalToolName(call.name) === 'Bash' &&
+    typeof command === 'string' &&
+    SHELL_CHAINING.test(command)
+  );
+}
+
+/** What a capability refusal of a compound Bash command says was wrong with the command. */
+export const COMPOUND_COMMAND_REFUSAL =
+  'The command was refused because it chains, pipes, redirects or substitutes (`; & | < > ` $ ( ) { }` or a newline), even inside quotes.';
+
+/** What a capability refusal of a compound Bash command tells the model to do instead. */
+export const COMPOUND_COMMAND_REMEDIATION =
+  "Send each command as its own Bash call, each matching the run's allowed-tools rule.";

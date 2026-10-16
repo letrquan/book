@@ -42,6 +42,13 @@ the shell the body runs, in order, not the prose around it: rewording the instru
 ask again. Commands in `~/.book/commands/` are yours and are never gated, and a project command
 that substitutes no shell has nothing to approve.
 
+**`allowed-tools` narrows what a command, skill, or agent role may run.** A rule such as
+`Bash(git *)` admits a Bash call only if the whole command matches the pattern, and only if the
+command is a single command: one containing any of ``; & | < > ` $ ( ) { }`` or a newline is
+refused, even when the character sits inside quotes (`git commit -m "a; b"` is refused too). Book
+does not parse shell, so it fails closed; split a compound command into separate Bash calls, each
+matching the rule. A bare `Bash` rule (no pattern) admits any command.
+
 Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/queue`, `/exit`,
 `/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent
 controls (`/agents`, `/agent`), config (`/model`, `/providers`,
