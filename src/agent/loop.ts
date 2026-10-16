@@ -21,6 +21,7 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import { createProvider, type Provider } from '../provider/index.js';
 import { isTruncationFinishReason, TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
 import { buildMessages } from './context.js';
+import { renameToolUseBlocks, renderedToolCallIds, uniqueToolCallId } from './tool-call-ids.js';
 import type { PreparedToolCall, ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
 import {
@@ -1542,6 +1543,12 @@ export async function runAgentLoop(
       let assistantContent = '';
       let reasoningContent = '';
       const toolCalls: ToolCall[] = [];
+      // The ids the provider sent, for the in-batch duplicate guard: a call renamed
+      // below to keep ids unique across the conversation must not hide a repeat.
+      const rawToolCallIds: string[] = [];
+      // Raw id -> the id this turn gave the call, for per-call structures keyed by id.
+      const renamedToolCallIds = new Map<string, string>();
+      let usedToolCallIds: Set<string> | undefined;
       const nestedTraceIds: string[] = [];
       let turnUsage: Usage | null = null;
       let responseMetadata: ProviderResponseMetadata | undefined;
@@ -1676,15 +1683,27 @@ export async function runAgentLoop(
           } else if (event.type === 'tool_call' && event.toolCall) {
             flushReasoning();
             assistantOutputProduced = true;
-            toolCalls.push(event.toolCall);
-            callbacks.onToolCall(event.toolCall);
+            // A provider may repeat an id from an earlier turn, and a request carrying
+            // two calls with one id is rejected for good (#410). Rename before anyone
+            // sees the call, so the id announced, executed and persisted is one.
+            usedToolCallIds ??= renderedToolCallIds(newHistory);
+            rawToolCallIds.push(event.toolCall.id);
+            const callId = uniqueToolCallId(usedToolCallIds, event.toolCall.id);
+            usedToolCallIds.add(callId);
+            const streamedCall =
+              callId === event.toolCall.id ? event.toolCall : { ...event.toolCall, id: callId };
+            if (streamedCall !== event.toolCall) {
+              renamedToolCallIds.set(event.toolCall.id, callId);
+            }
+            toolCalls.push(streamedCall);
+            callbacks.onToolCall(streamedCall);
             if (options?.nestedToolObserver && options.parentToolTraceId) {
-              const traceId = `${options.parentToolTraceId}/${turn}-${nestedTraceIds.length + 1}:${event.toolCall.id}`;
+              const traceId = `${options.parentToolTraceId}/${turn}-${nestedTraceIds.length + 1}:${streamedCall.id}`;
               nestedTraceIds.push(traceId);
               options.nestedToolObserver.onToolCall({
                 traceId,
                 parentTraceId: options.parentToolTraceId,
-                call: event.toolCall,
+                call: streamedCall,
               });
             }
           } else if (event.type === 'error' && event.error) {
@@ -1706,7 +1725,10 @@ export async function runAgentLoop(
               responseId: event.responseId,
               finishReasons: event.finishReasons,
             };
-            assistantProviderMetadata = event.providerMetadata;
+            assistantProviderMetadata = renameToolUseBlocks(
+              event.providerMetadata,
+              renamedToolCallIds,
+            );
           }
           if (signal?.aborted) break;
         }
@@ -2429,9 +2451,7 @@ export async function runAgentLoop(
       };
 
       const duplicateIds = [
-        ...new Set(
-          toolCalls.map((call) => call.id).filter((id, index, ids) => ids.indexOf(id) !== index),
-        ),
+        ...new Set(rawToolCallIds.filter((id, index, ids) => ids.indexOf(id) !== index)),
       ];
       if (duplicateIds.length > 0) {
         const message = `Provider returned duplicate tool call IDs: ${duplicateIds.join(', ')}. The batch was rejected before execution.`;

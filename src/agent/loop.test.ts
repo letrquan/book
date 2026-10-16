@@ -12,7 +12,13 @@ import {
   runCompact,
 } from './compact.js';
 import { createDefaultRegistry, createRegistry } from '../tools/registry.js';
-import { defaultConfig, userMsg } from '../test/fixtures.js';
+import {
+  assistantMsg,
+  defaultConfig,
+  toolCall as fixtureCall,
+  toolResult as fixtureResult,
+  userMsg,
+} from '../test/fixtures.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 import type { Message, Usage } from '../types/messages.js';
@@ -9067,5 +9073,207 @@ describe('tool-output masking at the preflight gate (compaction v3)', () => {
     expect(sent[0]).toContain('r'.repeat(4_800));
     expect(sent[0]).toContain('src/read-59.ts');
     expect(result.at(-1)?.content).toBe('ok');
+  });
+});
+
+describe('runAgentLoop tool-call id uniqueness across the conversation (#410)', () => {
+  type WireMessage = {
+    role: string;
+    tool_calls?: Array<{ id: string }>;
+    tool_call_id?: string;
+  };
+
+  /** Stub `fetch` with one stream per request (the last repeats) and record each request body. */
+  function stubRequests(streams: Array<() => ReadableStream>): WireMessage[][] {
+    const requests: WireMessage[][] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init?: { body?: unknown }) => {
+        requests.push((JSON.parse(String(init?.body)) as { messages: WireMessage[] }).messages);
+        const make = streams[Math.min(requests.length - 1, streams.length - 1)];
+        return new Response(make(), { status: 200 });
+      }),
+    );
+    return requests;
+  }
+
+  const callIds = (messages: WireMessage[]): string[] =>
+    messages.flatMap((message) => message.tool_calls?.map((call) => call.id) ?? []);
+  const resultIds = (messages: WireMessage[]): string[] =>
+    messages.filter((m) => m.role === 'tool').map((m) => m.tool_call_id ?? '');
+
+  function echoRegistry(): { registry: ReturnType<typeof createRegistry>; executed: () => number } {
+    const registry = createRegistry();
+    const execute = vi.fn(async () => toolSuccess('echoed'));
+    registry.register({
+      name: 'Echo',
+      description: 'Echo',
+      parameters: { type: 'object', properties: {} },
+      execute,
+    });
+    return { registry, executed: () => execute.mock.calls.length };
+  }
+
+  const echo = (id: string) => () => toolCallStream([{ id, name: 'Echo', arguments: '{}' }]);
+  const done = () => textStream('done');
+
+  function poisonedHistory(): Message[] {
+    const turn = (n: number): Message[] => [
+      { ...userMsg(`go ${n}`), id: `u${n}` },
+      {
+        ...assistantMsg(
+          '',
+          [fixtureCall('call_1', 'Echo')],
+          [fixtureResult('call_1', `result ${n}`)],
+        ),
+        id: `a${n}`,
+      },
+    ];
+    return [...turn(1), ...turn(2)];
+  }
+
+  it('renames a call whose id repeats an earlier turn, keeping the first occurrence', async () => {
+    const requests = stubRequests([echo('call_1'), echo('call_1'), done]);
+    const { registry, executed } = echoRegistry();
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 5 }),
+      registry,
+      'run tools',
+      [],
+      noopCallbacks(),
+      'bypassPermissions',
+    );
+
+    expect(executed()).toBe(2);
+    expect(requests).toHaveLength(3);
+    const ids = callIds(requests[2]);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe('call_1');
+    expect(ids[1]).not.toBe('call_1');
+    expect(resultIds(requests[2])).toEqual(ids);
+    // What is persisted carries the renamed id on both the call and its result.
+    const assistants = history.filter((message) => message.toolCalls?.length);
+    expect(assistants.map((m) => m.toolCalls?.[0].id)).toEqual(ids);
+    expect(assistants.map((m) => m.toolResults?.[0].toolCallId)).toEqual(ids);
+  });
+
+  it('announces and reports the renamed call under the same id', async () => {
+    stubRequests([echo('call_1'), echo('call_1'), done]);
+    const { registry } = echoRegistry();
+    const announced: string[] = [];
+    const reported: string[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 5 }),
+      registry,
+      'run tools',
+      [],
+      noopCallbacks({
+        onToolCall: (call) => announced.push(call.id),
+        onToolResult: (result) => reported.push(result.toolCallId),
+      }),
+      'bypassPermissions',
+    );
+
+    expect(announced[0]).toBe('call_1');
+    expect(announced[1]).not.toBe('call_1');
+    expect(reported).toEqual(announced);
+  });
+
+  it('never reuses an id the renaming already handed out', async () => {
+    const requests = stubRequests([echo('call_1'), echo('call_1'), echo('call_1_2'), done]);
+    const { registry } = echoRegistry();
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 6 }),
+      registry,
+      'run tools',
+      [],
+      noopCallbacks(),
+      'bypassPermissions',
+    );
+
+    const ids = callIds(requests[3]);
+    expect(ids).toHaveLength(3);
+    expect(new Set(ids).size).toBe(3);
+    expect(resultIds(requests[3])).toEqual(ids);
+  });
+
+  it('resumes a session persisted with a repeated id, sending distinct ids', async () => {
+    const requests = stubRequests([done]);
+    const { registry } = echoRegistry();
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 2 }),
+      registry,
+      'carry on',
+      poisonedHistory(),
+      noopCallbacks(),
+      'bypassPermissions',
+    );
+
+    const ids = callIds(requests[0]);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe('call_1');
+    expect(ids[1]).not.toBe('call_1');
+    expect(resultIds(requests[0])).toEqual(ids);
+  });
+
+  it('renders the persisted duplicate under the same id on every request', async () => {
+    const requests = stubRequests([echo('call_9'), done]);
+    const { registry } = echoRegistry();
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 5 }),
+      registry,
+      'carry on',
+      poisonedHistory(),
+      noopCallbacks(),
+      'bypassPermissions',
+    );
+
+    expect(requests).toHaveLength(2);
+    const first = callIds(requests[0]);
+    const second = callIds(requests[1]);
+    expect(first).toHaveLength(2);
+    expect(new Set(first).size).toBe(2);
+    expect(second.slice(0, 2)).toEqual(first);
+    expect(second[2]).toBe('call_9');
+    expect(resultIds(requests[1]).slice(0, 2)).toEqual(first);
+  });
+
+  it('still rejects an in-batch duplicate when the id is also in history', async () => {
+    stubRequests([
+      () =>
+        toolCallStream([
+          { id: 'call_1', name: 'Echo', arguments: '{}' },
+          { id: 'call_1', name: 'Echo', arguments: '{}' },
+        ]),
+    ]);
+    const { registry, executed } = echoRegistry();
+    const results: ToolResult[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'run tools',
+      [
+        userMsg('earlier'),
+        assistantMsg(
+          '',
+          [fixtureCall('call_1', 'Echo')],
+          [fixtureResult('call_1', 'earlier result')],
+        ),
+      ],
+      noopCallbacks({ onToolResult: (result) => results.push(result) }),
+      'bypassPermissions',
+    );
+
+    expect(executed()).toBe(0);
+    expect(results).toHaveLength(2);
+    expect(
+      results.every((result) => result.structuredError?.code === 'duplicate_tool_call_id'),
+    ).toBe(true);
   });
 });
