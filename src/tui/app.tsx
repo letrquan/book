@@ -3352,20 +3352,10 @@ export function App({
             ) : null}
           </Box>
 
-          {compactUi &&
-          (compactUi.phase === 'error' ||
-            compactUi.phase === 'skipped' ||
-            // A compaction that succeeded with something to say -- reduced
-            // coverage, input that addressed the summarizer, or a deferred
-            // checkpoint with a judge's verdict -- keeps its card; a clean
-            // synchronous one is the boundary row in the transcript alone.
-            (compactUi.phase === 'diff' && (compactUi.warning || compactUi.judge))) ? (
-            <CompactDiffCard
-              state={compactUi}
-              terminalWidth={termWidth}
-              reducedMotion={motionDisabled}
-              screenReader={screenReader}
-            />
+          {/* A finished compaction is its row in the transcript alone; only a failure or a skip
+              has something to say down here, and it stays until the next send. */}
+          {compactUi && (compactUi.phase === 'error' || compactUi.phase === 'skipped') ? (
+            <CompactDiffCard state={compactUi} terminalWidth={termWidth} />
           ) : null}
 
           {isResolvingCommand ? <Text dimColor>Resolving command shell expansions...</Text> : null}
@@ -3396,7 +3386,6 @@ export function App({
             <WorkingIndicator
               isThinking={isThinking}
               isCompacting={isCompacting}
-              compactComplete={isCompactCommitted}
               compactTrigger={compactUi?.trigger}
               messages={messages}
               streamingMessageId={streamingMessageId}

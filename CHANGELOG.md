@@ -88,6 +88,13 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A finished compaction is shown only in the transcript.** Its row, `✓ Compact conversation`,
+  is now the whole record of a successful compaction: the post-compaction card and the
+  `Compacted 100%` bar no longer appear above the input or linger until the next message. A
+  compaction warning is kept on that row (`Compact conversation · reduced fidelity`, with the
+  warning in one dim line under it), not as a separate row, and stays out of the model's context. A
+  resumed session's rows do not carry it. The running bar and the error and skipped cards are
+  unchanged; an error or skipped card still stays until the next message.
 - **A failed `Check` reports the way a failed `Bash` does** (#473). A check that exited non-zero
   reported `stderr || stdout`, so a runner that prints its failing assertions on stdout while npm
   warns on stderr lost them: the model never saw them and neither did the transcript. The message is

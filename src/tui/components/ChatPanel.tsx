@@ -22,6 +22,8 @@ import {
 } from '../quiet-tools.js';
 import { WelcomeScreen, type RecentChapter } from './WelcomeScreen.js';
 import { isStartupNotice } from '../startup-notices.js';
+import { userFacingCompactWarning } from '../../agent/compact.js';
+import { foldControlCharacters } from '../../control-characters.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount, useDebugRender } from '../debug.js';
 import { useDensity, type TuiDensity } from '../density.js';
@@ -129,8 +131,11 @@ function estimateTimelineRows(
   quietTools?: QuietToolContext,
   density: TuiDensity = 'compact',
 ): number {
-  // A boundary is one row of its own plus the blank row it takes, which tight density drops.
-  if ('transcriptOrdinal' in entry) return density === 'tight' ? 1 : 2;
+  // A boundary is one row of its own plus the blank row it takes, which tight density drops, and
+  // the one detail line a warning adds.
+  if ('transcriptOrdinal' in entry) {
+    return (density === 'tight' ? 1 : 2) + (entry.warning ? 1 : 0);
+  }
 
   // A user turn is its prompt and the two blank rows above it (tight density
   // drops them): the margin belongs to the turn, so an unmeasured one is
@@ -428,6 +433,7 @@ export function ChatPanelInner({
         if ('transcriptOrdinal' in entry) {
           row = (
             <CompactBoundaryRow
+              boundary={entry}
               terminalWidth={terminalWidth}
               spaced={index > 0 && density !== 'tight'}
               screenReader={screenReader}
@@ -725,27 +731,62 @@ function buildTimeline(
 
 /**
  * The point the conversation was compacted, set like a tool row: its mark on the column every tool
- * row's status mark uses, a blank row above and below it except in tight density.
+ * row's status mark uses, a blank row above and below it except in tight density. A compaction
+ * that carried a warning says so in the title and shows the warning in one dim line under it, on
+ * the rail a tool row's output hangs from.
  */
 function CompactBoundaryRow({
+  boundary,
   terminalWidth = 80,
   spaced,
   screenReader,
 }: {
+  boundary: CompactBoundary;
   terminalWidth?: number;
   spaced: boolean;
   screenReader: boolean;
 }) {
   const theme = useTheme();
   const text = indentedGrid(transcriptGrid(terminalWidth)).content;
+  const title = boundary.degraded
+    ? 'Compact conversation · reduced fidelity'
+    : boundary.warning
+      ? 'Compact conversation · with a warning'
+      : 'Compact conversation';
+  // The warning quotes text from the conversation: fold anything that is not one printable line.
+  const detail = boundary.warning
+    ? foldControlCharacters(userFacingCompactWarning(boundary.warning)).trim()
+    : '';
   return (
     <Box
+      flexDirection="column"
       marginTop={spaced ? 1 : 0}
       marginLeft={screenReader ? 0 : CONTENT_COLUMN}
       width={GUTTER_WIDTH + text}
     >
-      <Text color={theme.inactive}>✓ </Text>
-      <Text color={theme.text}>{truncateDisplay('Compact conversation', text)}</Text>
+      <Box>
+        <Text color={theme.inactive}>✓ </Text>
+        <Text color={theme.text}>{truncateDisplay(title, text)}</Text>
+      </Box>
+      {detail ? (
+        screenReader ? (
+          <Text>{detail}</Text>
+        ) : (
+          <Box
+            borderStyle="single"
+            borderLeft
+            borderTop={false}
+            borderRight={false}
+            borderBottom={false}
+            borderLeftColor={theme.toolRail}
+            paddingLeft={1}
+          >
+            <Text color={theme.subtle} dimColor>
+              {truncateDisplay(detail, text)}
+            </Text>
+          </Box>
+        )
+      ) : null}
     </Box>
   );
 }

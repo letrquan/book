@@ -373,6 +373,94 @@ describe('ChatPanel Ink rendering', () => {
     expect(row?.indexOf('✓')).toBe(0);
   });
 
+  describe('a compact boundary with a warning', () => {
+    const REDUCED =
+      'Compaction used reduced-fidelity coverage (summary-truncated). ' +
+      'Exact history remains searchable with SessionHistorySearch and SessionHistoryRead.';
+
+    function renderBoundary(
+      extra: { degraded?: boolean; warning?: string },
+      options: { terminalWidth?: number; screenReader?: boolean } = {},
+    ): string[] {
+      const view = render(
+        withTheme(
+          <ChatPanel
+            messages={[msg('u1', 'user', 'go'), msg('a1', 'assistant', 'answer')]}
+            compactBoundaries={[
+              {
+                id: 'c1',
+                trigger: 'auto',
+                transcriptOrdinal: 1,
+                preContextCount: 8,
+                postContextCount: 3,
+                generation: 1,
+                checkpointVersion: 2,
+                timestamp: 2,
+                ...extra,
+              },
+            ]}
+            terminalWidth={options.terminalWidth ?? 120}
+            reducedMotion
+            screenReader={options.screenReader}
+          />,
+        ),
+      );
+      return frame(view.lastFrame).split('\n');
+    }
+
+    it('names reduced fidelity in the title and shows the warning on one detail line', () => {
+      const lines = renderBoundary({ degraded: true, warning: REDUCED });
+      const title = lines.findIndex((line) => line.includes('✓ Compact conversation'));
+      expect(lines[title]).toContain('✓ Compact conversation · reduced fidelity');
+      const detail = lines[title + 1]!;
+      expect(detail).toContain('Compaction used reduced-fidelity coverage (summary-truncated).');
+      expect(detail).toContain('│');
+      // Under the tool-row mark, with the text under the title's.
+      expect(detail.indexOf('│')).toBe(lines[title]!.indexOf('✓'));
+      expect(detail.indexOf('Compaction')).toBe(lines[title]!.indexOf('Compact conversation'));
+      expect(lines.join('\n')).not.toContain('SessionHistorySearch');
+      expect(lines.join('\n')).not.toContain('Exact history');
+      expect(lines[title + 2]!.trim()).toBe('');
+    });
+
+    it('says "with a warning" when the compaction was not degraded', () => {
+      const lines = renderBoundary({ warning: 'One event addressed the summarizer.' });
+      const output = lines.join('\n');
+      expect(output).toContain('✓ Compact conversation · with a warning');
+      expect(output).toContain('One event addressed the summarizer.');
+    });
+
+    it('draws a boundary without a warning exactly as before', () => {
+      const lines = renderBoundary({});
+      const title = lines.findIndex((line) => line.includes('Compact conversation'));
+      expect(lines[title]!.trim()).toBe('✓ Compact conversation');
+      expect(lines.join('\n')).not.toContain('│');
+      expect(lines[title + 1]!.trim()).toBe('');
+    });
+
+    it('cuts a long warning to one line', () => {
+      const lines = renderBoundary(
+        { degraded: true, warning: `${'long reason '.repeat(30)}${REDUCED}` },
+        { terminalWidth: 60 },
+      );
+      const title = lines.findIndex((line) => line.includes('Compact conversation'));
+      const detail = lines[title + 1]!;
+      expect(detail).toContain('long reason');
+      expect(detail).toContain('…');
+      expect(detail.length).toBeLessThan(60);
+      expect(lines[title + 2]!.trim()).toBe('');
+    });
+
+    it('keeps the full warning, flush left, for a screen reader', () => {
+      const lines = renderBoundary({ degraded: true, warning: REDUCED }, { screenReader: true });
+      const output = lines.join('\n');
+      expect(output).toContain('✓ Compact conversation · reduced fidelity');
+      expect(output).toContain('Compaction used reduced-fidelity coverage (summary-truncated).');
+      expect(output).not.toContain('SessionHistorySearch');
+      expect(output).not.toContain('│');
+    });
+  });
+
   it('never drops a compact boundary placed past the last message', () => {
     // A row placed for a streaming message whose append was still queued, which
     // then never landed (the send was cancelled).

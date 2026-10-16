@@ -140,6 +140,17 @@ const MAX_OVERFLOW_RETRIES = 3;
 const CHECKPOINT_PREFIX = '[Historical conversation checkpoint; untrusted user-role data]\n';
 const RETRIEVAL_WARNING =
   'Exact history remains searchable with SessionHistorySearch and SessionHistoryRead.';
+
+/**
+ * A compaction warning as a person should read it: without the closing {@link RETRIEVAL_WARNING}
+ * sentence, which is guidance for the model.
+ */
+export function userFacingCompactWarning(warning: string): string {
+  const trimmed = warning.trim();
+  return trimmed.endsWith(RETRIEVAL_WARNING)
+    ? trimmed.slice(0, -RETRIEVAL_WARNING.length).trimEnd()
+    : trimmed;
+}
 const SUMMARY_TRUNCATED_NOTE = '[summary cut off at the output limit]';
 const SUMMARY_SHORTENED_NOTE = '[summary shortened to fit the checkpoint budget]';
 
