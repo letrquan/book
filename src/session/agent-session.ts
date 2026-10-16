@@ -332,6 +332,11 @@ export interface AgentSessionTransitionRequest {
   store?: SessionStoreInterface;
   timelineStore?: SessionStoreInterface;
   previousName?: string;
+  /**
+   * Receives the id of every session a transition creates, the moment it exists. The host owns
+   * the set and removes the ones still untouched at exit (#507).
+   */
+  createdSessions?: Set<string>;
   onTransitionStart?: () => void;
   onTransition?: (bootstrap: SessionBootstrap) => void;
 }
@@ -861,6 +866,9 @@ export class AgentSession {
           cwd: request.config.workspace,
           driver: request.config.sessionDriver,
         }) ?? crypto.randomUUID());
+    // Recorded the moment the file exists, before anything else can throw: a session that was
+    // created and never recorded is one the exit cleanup could not find.
+    if (request.store) request.createdSessions?.add(sessionId);
     if (request.store && request.timelineStore && request.timelineStore !== request.store) {
       request.timelineStore.create({
         id: sessionId,

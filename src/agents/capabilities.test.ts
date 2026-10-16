@@ -92,7 +92,7 @@ describe('managed agent capabilities', () => {
     expect(compound.structuredError?.message).toContain('chains, pipes, redirects or substitutes');
     expect(compound.structuredError?.message).toContain('its own Bash call');
     expect(compound.structuredError?.message).toContain('allowed-tools rules');
-    expect(compound.structuredError?.message).toContain('without these characters');
+    expect(compound.structuredError?.message).toContain('quote the argument');
     expect(compound.structuredError?.message).toContain('a different tool');
     expect(plain.structuredError?.code).toBe('capability_denied');
     expect(plain.structuredError?.message).not.toContain('chains, pipes');

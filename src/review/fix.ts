@@ -26,7 +26,12 @@ export interface FixEvidence {
 export interface FixAgentRunner extends ReviewAgentRunner {
   findPatchCandidateEvidence(agentId: string): Promise<FixEvidence | undefined>;
   getEvidence(evidenceId: string): Promise<FixEvidence | undefined>;
-  apply(agentId: string, evidenceId: string): Promise<FixApplyResult>;
+  /** `options.signal` stops an apply that is already running. */
+  apply(
+    agentId: string,
+    evidenceId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<FixApplyResult>;
 }
 
 export interface FixRunResult {
@@ -177,7 +182,17 @@ export async function applyReviewFixes(
         continue;
       }
 
-      const applied = await runner.apply(patcher.id, candidate.id);
+      let applied: FixApplyResult;
+      try {
+        applied = await runner.apply(patcher.id, candidate.id, { signal: options.signal });
+      } catch (error) {
+        if (!options.signal?.aborted) throw error;
+        // A stop ends an apply by throwing; a result that was *returned* is a real outcome, applied
+        // or not, whatever the signal says by now.
+        result.cancelled = true;
+        result.messages.push(`Stopped while applying ${finding.file}: ${REVIEW_CANCELLED}.`);
+        break;
+      }
       if (applied.status === 'applied') {
         result.applied++;
         result.messages.push(

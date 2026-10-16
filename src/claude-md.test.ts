@@ -110,6 +110,80 @@ describe('discoverProjectInstructions', () => {
       [join(workspace, 'AGENTS.md'), 'shared rules'],
     ]);
   });
+
+  // #449. The key is the real path, so a home reached through a link still meets its own file
+  // once, as the user's, when the workspace is given by the real path.
+  it('loads ~/.claude/CLAUDE.md once, as user, when home is a link and the workspace is not', () => {
+    const realHome = join(dir, 'realhome');
+    const linkedHome = join(dir, 'linkhome');
+    const nested = join(realHome, 'code', 'app');
+    mkdirSync(nested, { recursive: true });
+    symlinkSync(realHome, linkedHome, 'junction');
+    write(join(realHome, '.claude', 'CLAUDE.md'), 'user rules');
+
+    const sources = discoverProjectInstructions(nested, linkedHome).filter((s) =>
+      s.path.startsWith(dir),
+    );
+
+    expect(sources.map((s) => [s.path, s.body, s.layer])).toEqual([
+      [join(linkedHome, '.claude', 'CLAUDE.md'), 'user rules', 'user'],
+    ]);
+  });
+
+  // Only `.claude/CLAUDE.md` and `.book/AGENTS.md` are user files. The home directory is also an
+  // ancestor of the workspace, and what sits directly in it is read like any ancestor's.
+  it('loads AGENTS.md and CLAUDE.md in the home directory itself as project instructions', () => {
+    const nested = join(home, 'code', 'app');
+    mkdirSync(nested, { recursive: true });
+    write(join(home, 'AGENTS.md'), 'home agents');
+    write(join(home, 'CLAUDE.md'), 'home claude');
+
+    const sources = discoverProjectInstructions(nested, home).filter((s) => s.path.startsWith(dir));
+
+    expect(sources.map((s) => [s.path, s.body, s.layer])).toEqual([
+      [join(home, 'AGENTS.md'), 'home agents', 'project'],
+      [join(home, 'CLAUDE.md'), 'home claude', 'project'],
+    ]);
+  });
+
+  // #449, decided: a CLAUDE.md linked to CLAUDE.local.md loads that file once, at the project
+  // position of the link, so it precedes `.claude/CLAUDE.md` and no `local` entry follows it.
+  it.skipIf(process.platform === 'win32')(
+    'loads a CLAUDE.md linked to CLAUDE.local.md once, at the link, as project',
+    () => {
+      write(join(workspace, 'CLAUDE.local.md'), 'local rules');
+      symlinkSync('CLAUDE.local.md', join(workspace, 'CLAUDE.md'));
+      write(join(workspace, '.claude', 'CLAUDE.md'), 'dot-claude');
+
+      const sources = discoverProjectInstructions(workspace, home).filter((s) =>
+        s.path.startsWith(dir),
+      );
+
+      expect(sources.map((s) => [s.path, s.body, s.layer])).toEqual([
+        [join(workspace, 'CLAUDE.md'), 'local rules', 'project'],
+        [join(workspace, '.claude', 'CLAUDE.md'), 'dot-claude', 'project'],
+      ]);
+      expect(sources.some((s) => s.layer === 'local')).toBe(false);
+    },
+  );
+
+  // The real path has to be case-canonical for this: Windows names one drive `C:` and `c:`.
+  it.skipIf(process.platform !== 'win32')(
+    'loads ~/.claude/CLAUDE.md once, as user, when the drive letter differs in case',
+    () => {
+      const nested = join(home, 'code', 'app');
+      mkdirSync(nested, { recursive: true });
+      write(join(home, '.claude', 'CLAUDE.md'), 'user rules');
+      const flipped =
+        home[0] === home[0].toUpperCase() ? home[0].toLowerCase() : home[0].toUpperCase();
+
+      const sources = discoverProjectInstructions(nested, flipped + home.slice(1)).filter((s) =>
+        s.path.toLowerCase().startsWith(dir.toLowerCase()),
+      );
+
+      expect(sources.map((s) => [s.body, s.layer])).toEqual([['user rules', 'user']]);
+    },
+  );
 });
 
 describe('renderProjectInstructions', () => {

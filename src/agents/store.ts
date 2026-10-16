@@ -729,12 +729,20 @@ export class AgentStore {
 
   saveAgent(
     agent: AgentRecord,
-    options: { defer?: boolean; required?: boolean } = {},
+    options: { defer?: boolean; required?: boolean; afterDispose?: boolean } = {},
   ): AtomicWriteResult {
     // A disposed store has flushed what it had pending and removed its lease: a record saved now
     // would be a write by an owner that is gone. Refused here, and only here, because `dispose()`
     // itself runs `flushPending`, which is not a save. The cache is left alone for the same reason.
-    if (this.disposed) {
+    //
+    // `afterDispose` is for the one fact that can only be known after the store is gone: an apply
+    // that was running when the manager was disposed and landed on the operator's branch anyway. It
+    // is written at once (nothing is left to flush a deferred write) and without a lease, which
+    // is what a completed agent's record can do without: the record is terminal, only its
+    // `applicationStatus` changes.
+    if (this.disposed && options.afterDispose) {
+      options = { ...options, defer: false };
+    } else if (this.disposed) {
       return { status: 'cancelled', target: this.agentPath(agent.id), attempts: 0, elapsedMs: 0 };
     }
     let persisted = structuredClone(agent);

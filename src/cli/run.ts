@@ -20,7 +20,7 @@ import type { AgentConfig } from '../types/runtime.js';
 import type { RewindSnapshotStoreInterface } from '../types/sessions.js';
 import type { HeadlessResult } from '../types/public-sdk.js';
 import {
-  discardUntouchedSession,
+  discardUntouchedSessions,
   resolveSessionBootstrap,
   type SessionBootstrap,
 } from '../session/resolve.js';
@@ -194,6 +194,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
   // The session this launch opened, for the `finally` below: a launch that ends before its
   // first prompt, however it ends, must not leave an empty session behind (#444).
   let launched: { store: SessionStore | undefined; bootstrap: SessionBootstrap } | undefined;
+  // The sessions the TUI's `/new` and `/clear` created: each is as much this process's as the
+  // launch's own session, and goes the same way when nothing was ever recorded in it (#507).
+  const createdSessions = new Set<string>();
   try {
     const requestedWorkspace = options.workspace as string | undefined;
     // Validated again here rather than trusted from commander: the option parser
@@ -465,7 +468,13 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           interactiveAssets,
           redrawViewport,
           mcp: mcpHost,
-          session: { ...bootstrap, store: sessionStore, timelineStore, snapshotStore },
+          session: {
+            ...bootstrap,
+            store: sessionStore,
+            timelineStore,
+            snapshotStore,
+            createdSessions,
+          },
           startupNotices: providerNotices,
         }),
         {
@@ -509,6 +518,6 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
   } finally {
     // After every SessionEnd hook the launch ran (the print run and the TUI both await theirs),
     // so a record a hook wrote keeps the session. Never throws.
-    if (launched) discardUntouchedSession(launched.store, launched.bootstrap);
+    if (launched) discardUntouchedSessions(launched.store, launched.bootstrap, createdSessions);
   }
 }

@@ -509,6 +509,21 @@ describe('TUI keyboard input', () => {
     expect(output).toContain('default');
   }, 20_000);
 
+  // #504: two presses read together are one stdin chunk. Written once the composer takes keys,
+  // which is after raw mode is on, so the exit can only come from Book itself: before the fix the
+  // chunk was ignored, 3 runs of 3. (Written at the very first frame the bytes can reach the
+  // terminal's line discipline and kill the process with SIGINT, fixed or not, so a test of that
+  // moment would prove nothing.)
+  it.skipIf(IS_WINDOWS)(
+    'two Ctrl+C bytes written at once exit a TUI that is taking keys',
+    async () => {
+      session = await startAndWait();
+      session.sendKey('\x03\x03');
+      expect(await session.waitForExit(15_000)).toBe(0);
+    },
+    30_000,
+  );
+
   it('fills a wide terminal without stretching its floating panels', async () => {
     // The whole point of removing the 120-column measure is only observable
     // above 120, and the rest of this suite runs at exactly 120 -- the one

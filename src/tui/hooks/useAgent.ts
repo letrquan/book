@@ -135,6 +135,11 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
   store?: SessionStoreInterface;
   timelineStore?: SessionStoreInterface;
   snapshotStore?: RewindSnapshotStoreInterface;
+  /**
+   * Filled with the id of every session `/new` or `/clear` creates, so the host that owns the
+   * process can remove the ones still empty at exit (#507).
+   */
+  createdSessions?: Set<string>;
   /** Live extra tools (e.g. MCP) merged into each per-send registry. */
   additionalTools?: () => ToolDefinition[];
   /**
@@ -735,6 +740,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         store: session.store,
         timelineStore,
         previousName,
+        createdSessions: session.createdSessions,
         onTransitionStart: prepareConversationProjection,
         onTransition: (bootstrap) => {
           resumedFromRunIdRef.current = undefined;
@@ -754,6 +760,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       agentSession,
       prepareConversationProjection,
       projectConversationState,
+      session.createdSessions,
       session.store,
       timelineStore,
     ],

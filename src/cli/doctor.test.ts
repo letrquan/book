@@ -430,6 +430,46 @@ describe('runDoctorCommand --no-settings', () => {
     expect(output).not.toMatch(/\[x\] Project:/);
   });
 });
+
+/**
+ * #449 (via #429). In a session started at `$HOME` with `BOOK_HOME` unset the Project file is the
+ * User file, which the loader reads once; doctor says so rather than listing it as a second layer.
+ */
+describe('runDoctorCommand at the home directory', () => {
+  let home: string;
+  const projectFile = () => join(home, '.book', 'settings.json');
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'book-doctor-userhome-'));
+    mkdirSync(join(home, '.book'), { recursive: true });
+    writeFileSync(projectFile(), JSON.stringify({ model: 'home-model' }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('marks the Project line as the User file when BOOK_HOME is unset', async () => {
+    vi.stubEnv('BOOK_HOME', undefined);
+
+    const output = await doctorOutput(home);
+
+    expect(output).toContain(`Project: ${projectFile()} (the User file; read once, as User)`);
+  });
+
+  it('lists the Project file plainly when BOOK_HOME is elsewhere', async () => {
+    vi.stubEnv('BOOK_HOME', bookHome);
+
+    const output = await doctorOutput(home);
+
+    expect(output).toContain(`Project: ${projectFile()}`);
+    expect(output).not.toContain('the User file; read once, as User');
+  });
+});
+
 describe('runDoctorCommand model resolution', () => {
   it('names a provider prefix that matches no configured provider', async () => {
     // Reported before Credentials on purpose. Without it the only symptom of a
