@@ -1,0 +1,53 @@
+import type { BackgroundShellStore } from '../types/runtime.js';
+
+/**
+ * A session background shell is `shell_<n>`. A persistent one is `shell_<uuid>`, whose first group
+ * can be all digits (`shell_12345678-…`), so a match may not run on into a word character or a
+ * hyphen.
+ */
+const SESSION_SHELL_ID = /\bshell_(\d+)(?![\w-])/g;
+
+/**
+ * The highest `shell_<n>` a scan believes. The scan reads every string in a transcript (tool
+ * output, file contents, user text), and `shell_20261016` in a log is not a shell id. A value near
+ * `Number.MAX_SAFE_INTEGER` would also stop `nextId++` from advancing and hand out duplicate ids.
+ * No session starts a million shells, so a larger number is something else.
+ */
+export const MAX_SEEDED_SHELL_ID = 1_000_000;
+
+/**
+ * The counter value that cannot collide with any `shell_<n>` id the given messages mention: one
+ * past the highest, or 1 when there is none.
+ *
+ * `nextId` restarts at 1 for every runtime, so a resumed session's transcript ("Background shell
+ * `T` (shell_1) exited.") and the first shell it starts next would otherwise share an id (#449).
+ */
+export function nextShellIdAfter(...sources: unknown[]): number {
+  let highest = 0;
+  // Every object is entered once, which is also what ends a structure that refers back to itself,
+  // and a source given twice (a transcript passed as its own context history) is not read twice.
+  const visited = new WeakSet<object>();
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      for (const match of value.matchAll(SESSION_SHELL_ID)) {
+        const id = Number(match[1]);
+        if (id <= MAX_SEEDED_SHELL_ID && id > highest) highest = id;
+      }
+      return;
+    }
+    if (typeof value !== 'object' || value === null || visited.has(value)) return;
+    visited.add(value);
+    // Arrays and plain objects alike: a message is JSON data, so the strings are its values.
+    for (const child of Object.values(value)) visit(child);
+  };
+  for (const source of sources) visit(source);
+  return highest + 1;
+}
+
+/**
+ * Raise `store.nextId` past every id the sources mention. The store is changed in place: the
+ * runtime's `ShellJobManager` holds it by reference, so a replacement would never be seen.
+ */
+export function seedShellIds(store: BackgroundShellStore, ...sources: unknown[]): void {
+  store.nextId = Math.max(store.nextId, nextShellIdAfter(...sources));
+}

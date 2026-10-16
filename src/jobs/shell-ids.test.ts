@@ -1,0 +1,87 @@
+import { describe, expect, it } from 'vitest';
+import type { BackgroundShellStore } from '../types/runtime.js';
+import { MAX_SEEDED_SHELL_ID, nextShellIdAfter, seedShellIds } from './shell-ids.js';
+
+describe('nextShellIdAfter', () => {
+  it('is 1 when nothing names a shell', () => {
+    expect(nextShellIdAfter()).toBe(1);
+    expect(nextShellIdAfter([{ role: 'user', content: 'no shells here' }], undefined, null)).toBe(
+      1,
+    );
+  });
+
+  it('is one past the highest id across transcript text, a tool result and a tool call input', () => {
+    const transcript = [{ role: 'user', content: 'Background shell `build` (shell_1) exited.' }];
+    const history = [
+      { role: 'tool', toolResult: { content: 'Started background shell shell_2 (pid 12).' } },
+      { role: 'assistant', toolCalls: [{ name: 'KillShell', input: { shell_id: 'shell_3' } }] },
+    ];
+
+    expect(nextShellIdAfter(transcript, history)).toBe(4);
+  });
+
+  it('reads an id that follows an escaped newline', () => {
+    expect(nextShellIdAfter([{ content: 'done\nshell_7\n' }])).toBe(8);
+  });
+
+  it('ignores a persistent id, even one whose first group is all digits', () => {
+    expect(nextShellIdAfter([{ content: 'shell_12345678-aaaa-bbbb-cccc-1234567890ab' }])).toBe(1);
+    expect(
+      nextShellIdAfter([
+        { content: 'shell_12345678-aaaa-bbbb-cccc-1234567890ab and shell_2 (shell_9a)' },
+      ]),
+    ).toBe(3);
+  });
+
+  it('compares ids as numbers, so shell_10 is past shell_9', () => {
+    expect(nextShellIdAfter([{ content: 'shell_9 then shell_10' }])).toBe(11);
+    expect(nextShellIdAfter([{ content: 'shell_10 then shell_9' }])).toBe(11);
+  });
+
+  it('ignores a number too large to be a shell counter, but counts one just under the cap', () => {
+    // A date, a build number or a byte count in a tool result is not a shell id, and a value near
+    // Number.MAX_SAFE_INTEGER would leave `nextId++` unable to move at all.
+    expect(nextShellIdAfter([{ content: 'built shell_20261016 today' }])).toBe(1);
+    expect(nextShellIdAfter([{ content: 'shell_9007199254740990' }])).toBe(1);
+    expect(nextShellIdAfter([{ content: 'shell_999999 and shell_2' }])).toBe(1_000_000);
+    expect(nextShellIdAfter([{ content: `shell_${MAX_SEEDED_SHELL_ID + 1}` }])).toBe(1);
+  });
+
+  it('scans a source it is given twice only once', () => {
+    // `contextHistory` defaults to `transcript`, so callers pass one array twice.
+    let reads = 0;
+    const transcript = [
+      {
+        get content() {
+          reads++;
+          return 'Background shell `T` (shell_2) exited.';
+        },
+      },
+    ];
+
+    expect(nextShellIdAfter(transcript, transcript)).toBe(3);
+    expect(reads).toBe(1);
+  });
+
+  it('survives a structure that refers back to itself', () => {
+    const message: Record<string, unknown> = { content: 'shell_4' };
+    message.self = message;
+
+    expect(nextShellIdAfter([message])).toBe(5);
+  });
+
+  it('does not match a longer word that ends in the id', () => {
+    expect(nextShellIdAfter([{ content: 'myshell_5 and a_shell_6' }])).toBe(1);
+  });
+});
+
+describe('seedShellIds', () => {
+  it('raises nextId on the store it is given and never lowers it', () => {
+    const store: BackgroundShellStore = { nextId: 1, shells: new Map() };
+    seedShellIds(store, [{ content: 'shell_3' }]);
+    expect(store.nextId).toBe(4);
+
+    seedShellIds(store, [{ content: 'shell_1' }]);
+    expect(store.nextId).toBe(4);
+  });
+});

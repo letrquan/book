@@ -71,6 +71,12 @@ export interface ShellStartOptions {
   notify?: BackgroundShellNotify;
   timeoutMs?: number;
   lifetime?: 'session' | 'persistent';
+  /**
+   * Ends a persistent start that is still waiting for its runner: the runner is killed and the job
+   * forgotten, as for a start that outran its budget. Read only by a persistent start; a session
+   * shell is spawned at once and has nothing to wait for.
+   */
+  signal?: AbortSignal;
   workspace?: string;
   envOverrides?: Record<string, string>;
   parentSessionId?: string;
@@ -111,6 +117,13 @@ export interface ShellOutputResult {
   output: string;
   remaining: number;
 }
+
+/**
+ * How long a persistent start waits for the detached runner to report its job (#495). Starting node
+ * twice (the runner, then its supervisor) plus the command took over the old three seconds on a
+ * loaded Windows machine, and a start that is refused kills a job that would have run.
+ */
+export const DEFAULT_RUNNER_START_BUDGET_MS = 10_000;
 
 export interface ShellJobManagerOptions {
   persistentRoot?: string;
@@ -725,10 +738,17 @@ export class ShellJobManager {
       controlToken: token,
     };
     this.store.shells.set(id, shell);
-    const startBudgetMs = this.options.runnerStartBudgetMs ?? 3_000;
-    // Monotonic: this is "wait up to three seconds", not "wait until 12:04".
+    const startBudgetMs = this.options.runnerStartBudgetMs ?? DEFAULT_RUNNER_START_BUDGET_MS;
+    // Monotonic: this is "wait up to ten seconds", not "wait until 12:04".
     const deadline = this.clock.monotonicNowMs() + startBudgetMs;
+    let cancelled: 'aborted' | 'disposed' | undefined;
     while (this.clock.monotonicNowMs() < deadline) {
+      // A turn that was cancelled or a runtime that was disposed has given this job up, so waiting
+      // out the rest of the budget would only block it, and then kill the runner of a job nobody
+      // tracks.
+      if (this.disposed) cancelled = 'disposed';
+      else if (options.signal?.aborted) cancelled = 'aborted';
+      if (cancelled) break;
       const state = readJsonFile<PersistentShellState>(recordPath);
       if (state) {
         this.applyPersistentState(shell, state);
@@ -752,9 +772,14 @@ export class ShellJobManager {
         // Cleanup is best effort; the start error is the one to report.
       }
       const detail = runnerError.trim();
-      const what = runnerExited
-        ? 'exited before the job started'
-        : `did not start within ${startBudgetMs}ms`;
+      const what =
+        cancelled === 'disposed'
+          ? 'start was abandoned because the shell manager was disposed'
+          : cancelled === 'aborted'
+            ? 'start was cancelled'
+            : runnerExited
+              ? 'exited before the job started'
+              : `did not start within ${startBudgetMs}ms`;
       throw new Error(`Persistent background runner ${what}${detail ? `: ${detail}` : '.'}`);
     }
     this.emit({ type: 'background_job_start', job: cloneRecord(shell) });

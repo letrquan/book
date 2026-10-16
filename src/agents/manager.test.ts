@@ -1408,6 +1408,58 @@ describe('AgentManager lifecycle', () => {
     }
   });
 
+  it('numbers a follow-up run’s background shells after the ones its history names (#449)', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    // The follow-up gets a runtime of its own, whose counter would otherwise restart at 1 while the
+    // history it is handed still says "Started background shell shell_1".
+    const nextIds: number[] = [];
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      worktreeRoot: tempRoot(),
+      findGitRoot: async () => root,
+      createSnapshot: async () => snapshot(root),
+      createWorktree: async (_snapshot, agentId) => ({ path: root, branch: `branch-${agentId}` }),
+      runLoop: async (_config, _registry, prompt, history, callbacks, _mode, options) => {
+        nextIds.push(options!.runtime!.backgroundShells.nextId);
+        callbacks.onTerminal?.({
+          status: 'completed',
+          reason: 'normal_completion',
+          partialOutput: false,
+        });
+        return [
+          ...history,
+          {
+            id: options?.userMessageId ?? `opening-${nextIds.length}`,
+            role: 'user',
+            content: prompt,
+            includeInContext: true,
+            derivedContent: true,
+            timestamp: nextIds.length,
+          },
+          {
+            id: `answer-${nextIds.length}`,
+            role: 'assistant',
+            content: 'Started background shell shell_1 and shell_2.',
+            includeInContext: true,
+            timestamp: nextIds.length,
+          },
+        ];
+      },
+    });
+    try {
+      const record = await manager.spawn({ agent: 'explorer', prompt: 'task A' });
+      await manager.wait(record.id);
+      await manager.send(record.id, 'task B');
+      await manager.wait(record.id);
+
+      expect(nextIds).toEqual([1, 3]);
+    } finally {
+      manager.dispose();
+    }
+  });
+
   it('runs explorer without Git, snapshots, or worktrees', async () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });

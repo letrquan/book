@@ -1029,6 +1029,26 @@ console.log('alive-still'); setInterval(() => {}, 1000);
     }
   }, 20_000);
 
+  it('hands the turn’s abort signal to a persistent start, so a cancelled turn is not held', async () => {
+    const c = ctxWith({ workspaceRoot: dir, signal: AbortSignal.abort() });
+    const store: BackgroundShellStore = { nextId: 1, shells: new Map() };
+    c.backgroundShells = store;
+    // The default budget, on purpose: only the signal ends this start, and quickly.
+    c.shellManager = new ShellJobManager(store, { persistentRoot: join(dir, 'jobs') });
+    const command = nodeCommand('cancelled-persistent.cjs', `setInterval(() => {}, 1000);\n`);
+
+    const began = Date.now();
+    const result = await bash.execute(
+      { command, run_in_background: true, lifetime: 'persistent' },
+      c,
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message ?? result.content).toMatch(/cancelled/);
+    expect(Date.now() - began).toBeLessThan(5_000);
+    expect(store.shells.size).toBe(0);
+  }, 30_000);
+
   it('refuses a wait over the limit in force here', async () => {
     const c = ctxWith({ env: { BOOK_TOOL_TIMEOUT_MS: '30000' } });
     const command = nodeCommand('wait-ceiling.cjs', `setInterval(() => {}, 1000);\n`);
@@ -1047,7 +1067,13 @@ console.log('alive-still'); setInterval(() => {}, 1000);
     // and writes its record files.
     const store: BackgroundShellStore = { nextId: 1, shells: new Map() };
     c.backgroundShells = store;
-    c.shellManager = new ShellJobManager(store, { persistentRoot: join(dir, 'jobs') });
+    // A wide start budget, not the production default: the budget is a ceiling a green run never
+    // nears, and a loaded Windows runner needs more than a few seconds to start two node processes.
+    c.shellManager = new ShellJobManager(store, {
+      persistentRoot: join(dir, 'jobs'),
+      runnerStartBudgetMs: 30_000,
+      runnerStopBudgetMs: 30_000,
+    });
     const command = nodeCommand(
       'wait-persistent.cjs',
       `setTimeout(() => { console.log('persistent-done'); process.exit(0); }, 400);\n`,

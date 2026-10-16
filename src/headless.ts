@@ -43,6 +43,7 @@ import {
 } from './stream-json.js';
 import { AgentSession, type AgentSessionRunRequest } from './session/agent-session.js';
 import { SessionRuntime } from './session/runtime.js';
+import { seedShellIds } from './jobs/shell-ids.js';
 import type { AgentEvent } from './session/agent-events.js';
 import type { CarriedSpend } from './session/run-accounting.js';
 import {
@@ -224,6 +225,7 @@ export async function runHeadless(
     todos: runtime.todos.length,
     tasks: runtime.tasks.length,
   });
+  seedShellIds(runtime.backgroundShells, opts.transcript ?? opts.history, opts.history);
 
   try {
     if (opts.outputFormat === 'stream-json') {

@@ -73,6 +73,7 @@ import type {
   IssueQuality,
   AgentTopology,
 } from './types.js';
+import { seedShellIds } from '../jobs/shell-ids.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { normalizePermissionMode, resolvePermissionMode } from '../permission-mode.js';
 
@@ -1566,6 +1567,7 @@ export class AgentManager {
       // shell this run would destroy before the model could read it.
       ownsSessionShells: false,
     });
+    seedShellIds(runtime.backgroundShells, record.transcript);
     const controller = runtime.trackAbortController(new AbortController());
     this.controllers.set(record.id, controller);
     try {
