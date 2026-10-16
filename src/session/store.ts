@@ -196,28 +196,37 @@ export class SessionStore {
 
   private persistIndex(deletedIds: string[] = [], changedIds?: string[]): void {
     if (this.buildingIndex) return;
+    this.withIndexLock(() => this.writeIndexLocked(deletedIds, changedIds));
+  }
+
+  private withIndexLock<T>(action: () => T): T {
     const lock = this.acquireIndexLock();
     try {
-      const sessions = this.readPersistedIndexEntries();
-      const ids = changedIds ?? Array.from(this.metadataIndex.keys());
-      for (const id of ids) {
-        const entry = this.metadataIndex.get(id);
-        if (entry) sessions[id] = entry;
-      }
-      for (const id of deletedIds) delete sessions[id];
-      const target = this.indexPath();
-      const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
-      try {
-        writeFileSync(temporary, JSON.stringify({ version: 1, sessions }), 'utf-8');
-        renameSync(temporary, target);
-        this.indexMtimeMs = statSync(target).mtimeMs;
-        this.metadataIndex.clear();
-        for (const [id, entry] of Object.entries(sessions)) this.metadataIndex.set(id, entry);
-      } finally {
-        if (existsSync(temporary)) unlinkSync(temporary);
-      }
+      return action();
     } finally {
       this.releaseIndexLock(lock);
+    }
+  }
+
+  /** The index write itself; the caller holds the index lock. */
+  private writeIndexLocked(deletedIds: string[], changedIds?: string[]): void {
+    const sessions = this.readPersistedIndexEntries();
+    const ids = changedIds ?? Array.from(this.metadataIndex.keys());
+    for (const id of ids) {
+      const entry = this.metadataIndex.get(id);
+      if (entry) sessions[id] = entry;
+    }
+    for (const id of deletedIds) delete sessions[id];
+    const target = this.indexPath();
+    const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporary, JSON.stringify({ version: 1, sessions }), 'utf-8');
+      renameSync(temporary, target);
+      this.indexMtimeMs = statSync(target).mtimeMs;
+      this.metadataIndex.clear();
+      for (const [id, entry] of Object.entries(sessions)) this.metadataIndex.set(id, entry);
+    } finally {
+      if (existsSync(temporary)) unlinkSync(temporary);
     }
   }
 
@@ -997,19 +1006,13 @@ export class SessionStore {
       if (preserveIds.has(id)) continue;
       try {
         if (entry.meta.updatedAt < cutoff) {
-          unlinkSync(this.path(id));
-          rmSync(imageSessionDirectory(this.root, id), { recursive: true, force: true });
-          this.metadataIndex.delete(id);
-          this.parsedSessions.delete(id);
+          this.discardSession(id);
           removedIds.push(id);
           removed++;
         }
       } catch {
         if (existsSync(this.path(id)) && statSync(this.path(id)).mtimeMs < cutoff) {
-          unlinkSync(this.path(id));
-          rmSync(imageSessionDirectory(this.root, id), { recursive: true, force: true });
-          this.metadataIndex.delete(id);
-          this.parsedSessions.delete(id);
+          this.discardSession(id);
           removedIds.push(id);
           removed++;
         }
@@ -1018,6 +1021,64 @@ export class SessionStore {
     if (removedIds.length > 0) this.persistIndex(removedIds, []);
     return removed;
   }
+
+  /**
+   * Remove one session this process created if nothing was ever recorded in it: its file
+   * holds nothing but the bare header `create` wrote (no turn, no run, no patch, no name).
+   * A name is something a user typed (`--name`), so a named session is kept. The decision
+   * is made from the stored file, under the index lock, and the file and its index entry go
+   * together. A file another process still holds (EBUSY, EPERM on Windows) is left in place.
+   * Returns whether the session was removed.
+   */
+  removeUntouched(id: string): boolean {
+    if (!existsSync(this.path(id))) return false;
+    this.ensureIndex();
+    try {
+      return this.withIndexLock(() => {
+        if (!this.isUntouched(id)) return false;
+        try {
+          this.discardSession(id);
+        } catch (error) {
+          // Already gone is the outcome asked for; the index entry below still has to go.
+          if (!isErrno(error, ['ENOENT'])) throw error;
+          this.metadataIndex.delete(id);
+          this.parsedSessions.delete(id);
+        }
+        this.writeIndexLocked([id], []);
+        return true;
+      });
+    } catch (error) {
+      if (isErrno(error, ['ENOENT', 'EBUSY', 'EPERM'])) return false;
+      throw error;
+    }
+  }
+
+  private isUntouched(id: string): boolean {
+    // The raw lines, not `readRecords`: a line it cannot parse is still something written.
+    const lines = readFileSync(this.path(id), 'utf-8').split('\n').filter(Boolean);
+    if (lines.length === 0) return true;
+    if (lines.length > 1) return false;
+    try {
+      const header = JSON.parse(lines[0]!) as SessionRecord;
+      const data = (header.data ?? {}) as { kind?: string; name?: string };
+      return header.type === 'session_meta' && data.kind === 'session_meta' && !data.name;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Remove one session's file, attachments and cached state. The index file is not rewritten. */
+  private discardSession(id: string): void {
+    unlinkSync(this.path(id));
+    rmSync(imageSessionDirectory(this.root, id), { recursive: true, force: true });
+    this.metadataIndex.delete(id);
+    this.parsedSessions.delete(id);
+  }
+}
+
+function isErrno(error: unknown, codes: string[]): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code !== undefined && codes.includes(code);
 }
 
 function cloneLoadedSession(session: LoadedSession): LoadedSession {

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from './store.js';
-import { resolveSessionBootstrap, selectSession } from './resolve.js';
+import { discardUntouchedSession, resolveSessionBootstrap, selectSession } from './resolve.js';
 
 let dir: string;
 let store: SessionStore;
@@ -140,5 +140,75 @@ describe('selectSession', () => {
 
   it('throws for missing selectors', () => {
     expect(() => selectSession(store, 'missing')).toThrow('Session not found');
+  });
+});
+
+describe('discardUntouchedSession (#444)', () => {
+  it('removes a session the launch created and never wrote to: no file, no index entry', () => {
+    const launch = resolveSessionBootstrap(store, { cwd: '/proj' });
+    expect(launch.created).toBe(true);
+    expect(existsSync(join(dir, `${launch.sessionId}.jsonl`))).toBe(true);
+
+    expect(discardUntouchedSession(store, launch)).toBe(true);
+
+    expect(existsSync(join(dir, `${launch.sessionId}.jsonl`))).toBe(false);
+    const index = JSON.parse(readFileSync(join(dir, 'session-index.json'), 'utf-8')) as {
+      sessions: Record<string, unknown>;
+    };
+    expect(Object.keys(index.sessions)).toEqual([]);
+    expect(store.list()).toEqual([]);
+  });
+
+  it('keeps a launch that recorded one prompt', () => {
+    const launch = resolveSessionBootstrap(store, { cwd: '/proj' });
+    store.append(launch.sessionId, { type: 'user', timestamp: 2, data: { content: 'hello' } });
+
+    expect(discardUntouchedSession(store, launch)).toBe(false);
+    expect(store.findById(launch.sessionId)?.messageCount).toBe(1);
+  });
+
+  it('keeps state a hook wrote after the bootstrap', () => {
+    const launch = resolveSessionBootstrap(store, { cwd: '/proj' });
+    store.patchMeta(launch.sessionId, { driver: 'agent' });
+
+    expect(discardUntouchedSession(store, launch)).toBe(false);
+    expect(existsSync(join(dir, `${launch.sessionId}.jsonl`))).toBe(true);
+  });
+
+  it('never removes a resumed or continued session, however empty', () => {
+    const id = store.create({ cwd: '/proj', name: 'earlier' });
+    const resumed = resolveSessionBootstrap(store, { cwd: '/proj', resume: 'earlier' });
+    expect(resumed).toMatchObject({ sessionId: id, created: false });
+
+    expect(discardUntouchedSession(store, resumed)).toBe(false);
+    expect(existsSync(join(dir, `${id}.jsonl`))).toBe(true);
+  });
+
+  it('keeps a launch named with --name that never sent a prompt', () => {
+    const launch = resolveSessionBootstrap(store, { cwd: '/proj', sessionName: 'release-work' });
+
+    expect(discardUntouchedSession(store, launch)).toBe(false);
+    expect(store.findByName('release-work')?.id).toBe(launch.sessionId);
+  });
+
+  it('does nothing without a store, and keeps everything in a store that cannot remove', () => {
+    const launch = resolveSessionBootstrap(store, { cwd: '/proj' });
+    expect(discardUntouchedSession(undefined, launch)).toBe(false);
+    // An SDK caller's own store may not know how to remove a session.
+    const bare = { create: () => 'x' };
+    expect(discardUntouchedSession(bare as never, launch)).toBe(false);
+    expect(existsSync(join(dir, `${launch.sessionId}.jsonl`))).toBe(true);
+  });
+
+  it('never throws from the exit path', () => {
+    const launch = resolveSessionBootstrap(store, { cwd: '/proj' });
+    const failing = {
+      removeUntouched: () => {
+        throw Object.assign(new Error('locked'), { code: 'EPERM' });
+      },
+    };
+
+    expect(() => discardUntouchedSession(failing as never, launch)).not.toThrow();
+    expect(discardUntouchedSession(failing as never, launch)).toBe(false);
   });
 });

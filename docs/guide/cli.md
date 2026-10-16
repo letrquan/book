@@ -57,6 +57,12 @@ its error codes, and malformed arguments are counted by shape:
 `invalid_json_arguments:truncated_start` is a route dropping a call's first fragment, not the model
 writing bad JSON.
 
+A launch that ends before its first prompt (opening Book and quitting, or a print run or SDK query
+that fails before it records one) removes the session it created, so no empty session is left in
+`<BOOK_HOME>/sessions`. Anything recorded in a session keeps it, as does `--name`: a name you typed
+is kept even if no prompt followed. A session you resumed (`--resume`, `--continue`) is never
+removed.
+
 ## Common flags
 
 | Flag                                  | Purpose                                                                                                                         |

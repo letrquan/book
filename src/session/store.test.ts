@@ -802,3 +802,93 @@ describe('SessionStore — host notices survive a reload (#248)', () => {
     }
   });
 });
+
+describe('SessionStore — removeUntouched (#444)', () => {
+  const indexedIds = (root: string) =>
+    Object.keys(
+      (
+        JSON.parse(readFileSync(join(root, 'session-index.json'), 'utf-8')) as {
+          sessions: Record<string, unknown>;
+        }
+      ).sessions,
+    );
+
+  it('removes a session holding only its header, and its index entry, for every reader', () => {
+    const s = new SessionStore(dir);
+    const kept = s.create({ cwd: '/proj', name: 'kept' });
+    const id = s.create({ cwd: '/proj', driver: 'human' });
+    expect(indexedIds(dir)).toContain(id);
+
+    expect(s.removeUntouched(id)).toBe(true);
+
+    expect(existsSync(join(dir, `${id}.jsonl`))).toBe(false);
+    expect(indexedIds(dir)).toEqual([kept]);
+    expect(s.findById(id)).toBeUndefined();
+    // A store opened afterwards, from the files, agrees.
+    expect(new SessionStore(dir).findById(id)).toBeUndefined();
+  });
+
+  it.each([
+    ['a user turn', { type: 'user', timestamp: 2, data: { content: 'hi' } }],
+    ['a local message', { type: 'local', timestamp: 2, data: { content: 'note' } }],
+    ['an assistant turn', { type: 'assistant', timestamp: 2, data: { content: 'ok' } }],
+    ['a usage record', { type: 'usage', timestamp: 2, data: {} }],
+    [
+      'a metadata patch',
+      { type: 'session_meta', timestamp: 2, data: { kind: 'session_meta_patch' } },
+    ],
+  ] as const)('keeps a session that holds %s', (_label, record) => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, record as never);
+
+    expect(s.removeUntouched(id)).toBe(false);
+
+    expect(existsSync(join(dir, `${id}.jsonl`))).toBe(true);
+    expect(indexedIds(dir)).toContain(id);
+  });
+
+  it('keeps a session a hook wrote a line into behind the store`s back', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    appendFileSync(join(dir, `${id}.jsonl`), 'not even json\n', 'utf-8');
+
+    expect(s.removeUntouched(id)).toBe(false);
+    expect(existsSync(join(dir, `${id}.jsonl`))).toBe(true);
+  });
+
+  it('keeps a session the user named', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj', name: 'release-work' });
+
+    expect(s.removeUntouched(id)).toBe(false);
+    expect(s.findByName('release-work')?.id).toBe(id);
+  });
+
+  it('reports a session that is already gone without throwing', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    rmSync(join(dir, `${id}.jsonl`));
+
+    expect(s.removeUntouched(id)).toBe(false);
+    expect(s.removeUntouched('never-existed')).toBe(false);
+  });
+
+  it.each(['EBUSY', 'EPERM'])(
+    'leaves the session in place when another process holds the file (%s)',
+    (code) => {
+      const s = new SessionStore(dir);
+      const id = s.create({ cwd: '/proj' });
+      // Windows refuses the unlink while another process has the file open.
+      const held = s as unknown as { discardSession(id: string): void };
+      vi.spyOn(held, 'discardSession').mockImplementation(() => {
+        throw Object.assign(new Error(code), { code });
+      });
+
+      expect(s.removeUntouched(id)).toBe(false);
+
+      expect(existsSync(join(dir, `${id}.jsonl`))).toBe(true);
+      expect(indexedIds(dir)).toContain(id);
+    },
+  );
+});
