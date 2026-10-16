@@ -866,6 +866,9 @@ export class AgentSession {
           cwd: request.config.workspace,
           driver: request.config.sessionDriver,
         }) ?? crypto.randomUUID());
+    // Recorded the moment the file exists, before anything else can throw: a session that was
+    // created and never recorded is one the exit cleanup could not find.
+    if (request.store) request.createdSessions?.add(sessionId);
     if (request.store && request.timelineStore && request.timelineStore !== request.store) {
       request.timelineStore.create({
         id: sessionId,
@@ -873,7 +876,6 @@ export class AgentSession {
         driver: request.config.sessionDriver,
       });
     }
-    if (request.store) request.createdSessions?.add(sessionId);
 
     const bootstrap = emptySessionBootstrap(
       sessionId,

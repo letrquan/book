@@ -3089,6 +3089,36 @@ describe('AgentSession.clearSession — exit cleanup of created sessions (#507)'
     }
   });
 
+  it('records the new session even when the timeline store throws creating it', async () => {
+    const fixture = createSessionFixture('book-clear-exit-');
+    try {
+      const launch = resolveSessionBootstrap(fixture.store, { cwd: '/proj' });
+      const created = new Set<string>();
+      const session = new AgentSession(noHooks);
+      const failingTimeline = {
+        create: () => {
+          throw new Error('timeline disk full');
+        },
+      };
+
+      await expect(
+        session.clearSession({
+          config,
+          currentSessionId: launch.sessionId,
+          store: fixture.store,
+          timelineStore: failingTimeline as never,
+          createdSessions: created,
+        }),
+      ).rejects.toThrow('timeline disk full');
+
+      expect(created.size).toBe(1);
+      discardUntouchedSessions(fixture.store, launch, created);
+      expect(sessionFiles(fixture.root)).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('never removes a resumed launch, however empty, and records nothing for /resume', async () => {
     const fixture = createSessionFixture('book-clear-exit-');
     try {

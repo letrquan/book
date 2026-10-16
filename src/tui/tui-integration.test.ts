@@ -113,12 +113,7 @@ export function buildTuiChildEnv(
  * Start a TUI and wait until the initial render is visible (detected by
  * the presence of the "Ask me anything" placeholder in the input bar).
  */
-async function startAndWait(
-  extraEnv: Record<string, string> = {},
-  // `probe: false` hands the session back the moment the placeholder is on screen, for a test of
-  // what the app does with input in the first moments (#504).
-  { probe = true }: { probe?: boolean } = {},
-): Promise<TuiSession> {
+async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiSession> {
   const testRoot = mkdtempSync(join(tmpdir(), 'book-tui-'));
   // The startup fire animation delays the input bar past waitFor timeouts on
   // loaded runners; these tests need a deterministic boot straight to the UI.
@@ -279,7 +274,6 @@ async function startAndWait(
   // replayed screen shows it in the composer, then clear it with Ctrl+U.
   try {
     await session.waitFor('Ask me anything', 10_000);
-    if (!probe) return session;
     const deadline = Date.now() + 10_000;
     const probeShown = async () =>
       (await session.readScreen()).some((line) => line.startsWith('¶ q'));
@@ -515,23 +509,11 @@ describe('TUI keyboard input', () => {
     expect(output).toContain('default');
   }, 20_000);
 
-  // #504: Book stalls its event loop for a few hundred ms right after the first frame, so two
-  // presses written close together are read as one chunk. The placeholder is on screen before
-  // that stall ends, which is the moment this writes them.
-  it.skipIf(IS_WINDOWS)(
-    'two Ctrl+C bytes written at once as soon as the prompt shows exit the TUI',
-    async () => {
-      session = await startAndWait({}, { probe: false });
-      session.sendKey('\x03\x03');
-      expect(await session.waitForExit(15_000)).toBe(0);
-    },
-    30_000,
-  );
-
-  // The same chunk once the composer takes keys, which is after raw mode is on. Written at the
-  // first frame, the bytes can still reach the terminal's own line discipline and kill the
-  // process with SIGINT, so the test above cannot tell a fixed build from an unfixed one. This
-  // one can: before #504 the chunk was ignored here, 3 runs of 3.
+  // #504: two presses read together are one stdin chunk. Written once the composer takes keys,
+  // which is after raw mode is on, so the exit can only come from Book itself: before the fix the
+  // chunk was ignored, 3 runs of 3. (Written at the very first frame the bytes can reach the
+  // terminal's line discipline and kill the process with SIGINT, fixed or not, so a test of that
+  // moment would prove nothing.)
   it.skipIf(IS_WINDOWS)(
     'two Ctrl+C bytes written at once exit a TUI that is taking keys',
     async () => {

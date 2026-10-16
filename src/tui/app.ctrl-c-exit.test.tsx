@@ -355,6 +355,34 @@ describe('idle Ctrl+C exit confirmation', () => {
     expect(state.endCurrentSession).toHaveBeenCalledTimes(1);
   });
 
+  // The pieces of one read are delivered one at a time, each against the state the last left:
+  // the first press clears the draft and the second arms the window, as two reads would.
+  it('two Ctrl+C bytes in one read over a draft clear it and arm, without exiting', async () => {
+    const { view, state } = await startIdleApp();
+    press(view, 'abc');
+    await waitForFrame(view, '> abc');
+
+    press(view, '\x03\x03');
+
+    await waitForFrame(view, CTRL_C_EXIT_HINT_TEXT);
+    await waitForFrameWithout(view, '> abc');
+    await new Promise((resolve) => realSetTimeout(resolve, 50));
+    expect(state.endCurrentSession).not.toHaveBeenCalled();
+    expect(view.lastFrame()).not.toContain('\x03');
+  });
+
+  it('text then two Ctrl+C bytes in one read keeps the text from being lost to an exit', async () => {
+    const { view, state } = await startIdleApp();
+
+    press(view, 'hello\x03\x03');
+
+    await waitForFrame(view, CTRL_C_EXIT_HINT_TEXT);
+    await waitForFrameWithout(view, '> hello');
+    await new Promise((resolve) => realSetTimeout(resolve, 50));
+    expect(state.endCurrentSession).not.toHaveBeenCalled();
+    expect(view.lastFrame()).not.toContain('\x03');
+  });
+
   it('one Ctrl+C byte alone only arms the exit window', async () => {
     const { view, state } = await startIdleApp();
 

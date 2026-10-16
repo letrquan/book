@@ -152,6 +152,9 @@ export function discardUntouchedSession(
  * and every session `/new` or `/clear` created since, whether or not it is still current. Each
  * is judged on its own by `discardUntouchedSession`, so a session that got a prompt, a name, or
  * a record from a hook stays. Returns how many were removed.
+ *
+ * `createdSessionIds` holds only sessions a transition made (`clearSession` always makes a new
+ * id), so none of them is the launch's own and none needs checking against it.
  */
 export function discardUntouchedSessions(
   store: SessionStoreInterface | undefined,
@@ -161,12 +164,7 @@ export function discardUntouchedSessions(
   let removed = 0;
   if (discardUntouchedSession(store, launch)) removed++;
   for (const sessionId of createdSessionIds) {
-    if (
-      sessionId !== launch.sessionId &&
-      discardUntouchedSession(store, { sessionId, created: true })
-    ) {
-      removed++;
-    }
+    if (discardUntouchedSession(store, { sessionId, created: true })) removed++;
   }
   return removed;
 }
