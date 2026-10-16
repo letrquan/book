@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  countDrawnOutputLines,
   countOutputLines,
   formatToolOutputFooter,
   prepareToolOutputDisplay,
@@ -45,6 +44,62 @@ describe('prepareToolOutputDisplay', () => {
     expect(displayWidth(display.lines[0])).toBeLessThanOrEqual(7);
     expect(display.truncated).toBe(true);
     expect(display.footer).toBe('… 1 long line shortened');
+  });
+
+  it('leaves out every empty line the output ends in, and keeps the ones inside it', () => {
+    const display = prepareToolOutputDisplay('S1\n\nS2\n', { maxLines: 10, maxLineWidth: 120 });
+    expect(display.lines).toEqual(['S1', '', 'S2']);
+    expect(display.totalLines).toBe(3);
+    expect(display.hiddenLines).toBe(0);
+    expect(display.truncated).toBe(false);
+    expect(display.footer).toBeUndefined();
+
+    const trailing = prepareToolOutputDisplay('A\n\nB\n\n\n', { maxLines: 10, maxLineWidth: 120 });
+    expect(trailing.lines).toEqual(['A', '', 'B']);
+    expect(trailing.totalLines).toBe(3);
+    expect(trailing.footer).toBeUndefined();
+  });
+
+  it('keeps a line of whitespace, which is not empty', () => {
+    const display = prepareToolOutputDisplay('A\n  \n\n', { maxLines: 10, maxLineWidth: 120 });
+    expect(display.lines).toEqual(['A', '  ']);
+    expect(display.totalLines).toBe(2);
+  });
+
+  it('shows no line for an output that is only newlines', () => {
+    for (const output of ['', '\n', '\n\n\n']) {
+      const display = prepareToolOutputDisplay(output, { maxLines: 10, maxLineWidth: 120 });
+      expect([output, display.lines, display.totalLines]).toEqual([output, [], 0]);
+    }
+  });
+
+  it('measures what a preview cuts against the lines it can draw', () => {
+    const display = prepareToolOutputDisplay('a\n\nb\n\nc\n', {
+      maxLines: 3,
+      maxLineWidth: 120,
+    });
+
+    expect(display.lines).toEqual(['a', '', 'b']);
+    expect(display.hiddenLines).toBe(2);
+    expect(display.footer).toBe('… +2 lines');
+  });
+
+  it('previews the last real lines of an output that ends in blank lines', () => {
+    const tail = prepareToolOutputDisplay('one\ntwo\nFAIL x\n\n\n', {
+      maxLines: 2,
+      maxLineWidth: 120,
+      strategy: 'tail',
+    });
+    expect(tail.lines).toEqual(['two', 'FAIL x']);
+    expect(tail.hiddenLines).toBe(1);
+
+    const headTail = prepareToolOutputDisplay('a\nb\nc\nd\ne\nf\ng\nh\n\n\n', {
+      maxLines: 4,
+      maxLineWidth: 120,
+      strategy: 'head-tail',
+    });
+    expect(headTail.lines).toEqual(['a', 'b', 'g', 'h']);
+    expect(headTail.hiddenLines).toBe(4);
   });
 
   it('reports total character counts', () => {
@@ -155,18 +210,35 @@ describe('formatToolOutputFooter', () => {
 });
 
 describe('countOutputLines', () => {
-  it('finds no line in an empty output, and a line after every newline in any other', () => {
+  it('counts the lines of an output: every one but the empty ones it ends in', () => {
     expect(countOutputLines('')).toBe(0);
     expect(countOutputLines('a')).toBe(1);
     expect(countOutputLines('a\nb')).toBe(2);
-    // A final newline ends in an empty line, as the block splits it: the block draws that one too.
-    expect(countOutputLines('a\n')).toBe(2);
-    expect(countOutputLines('\n')).toBe(2);
-    expect(countOutputLines('\n\n')).toBe(3);
-    expect(countOutputLines('\nFAIL a\n\n\nexpected 1\n')).toBe(6);
+    expect(countOutputLines('a\n')).toBe(1);
+    expect(countOutputLines('a\nb\n')).toBe(2);
+    expect(countOutputLines('\n')).toBe(0);
+    expect(countOutputLines('\n\n')).toBe(0);
+    expect(countOutputLines('\nX')).toBe(2);
+    expect(countOutputLines('a\n\n\nb')).toBe(4);
+    expect(countOutputLines('A\n\nB\n\n\n')).toBe(3);
+    expect(countOutputLines('\nFAIL a\n\n\nexpected 1\n')).toBe(5);
   });
 
-  it('counts what prepareToolOutputDisplay splits the same output into', () => {
+  it('counts a line of whitespace like any other', () => {
+    expect(countOutputLines(' ')).toBe(1);
+    expect(countOutputLines(' \n')).toBe(1);
+    expect(countOutputLines('\t\n\n \n')).toBe(3);
+    expect(countOutputLines('A\n\nB\n   \nC\n')).toBe(5);
+  });
+
+  it('splits on a newline only: the \\r of a CRLF stays on its line', () => {
+    expect(countOutputLines('X\r\n')).toBe(1);
+    expect(countOutputLines('one\r\ntwo\r\n')).toBe(2);
+    expect(countOutputLines('\r\n')).toBe(1);
+    expect(countOutputLines('A\r\n\r\nB\r\n')).toBe(3);
+  });
+
+  it('counts what prepareToolOutputDisplay shows, whatever the preview cuts', () => {
     const outputs = [
       '',
       'a',
@@ -175,73 +247,7 @@ describe('countOutputLines', () => {
       '\n\n\n',
       'a\nb',
       'a\n\nb',
-      ' \n\t\n',
-      '\nFAIL a\n\n\nexpected 1\n',
-      'one\r\ntwo\r\n',
-      '\u001b[31mred\u001b[0m\n\u200e\n',
-      '🙂\n🙂\n',
-      'x'.repeat(5000),
-      Array.from({ length: 2500 }, (_, i) => `line ${i}`).join('\n'),
-    ];
-    for (const output of outputs) {
-      const display = prepareToolOutputDisplay(output, {
-        maxLines: 10,
-        maxLineWidth: 120,
-        strategy: 'tail',
-      });
-      expect([JSON.stringify(output.slice(0, 20)), countOutputLines(output)]).toEqual([
-        JSON.stringify(output.slice(0, 20)),
-        display.totalLines,
-      ]);
-    }
-  });
-
-  it('counts a large output: a million empty lines, and ten megabytes of short ones', () => {
-    expect(countOutputLines('\n'.repeat(1_000_000))).toBe(1_000_001);
-    expect(countOutputLines('x\n'.repeat(5_000_000))).toBe(5_000_001);
-  });
-});
-
-describe('countDrawnOutputLines', () => {
-  it('finds a row in every line that is not empty, and none in the empty ones', () => {
-    expect(countDrawnOutputLines('')).toBe(0);
-    expect(countDrawnOutputLines('X')).toBe(1);
-    expect(countDrawnOutputLines('a\nb')).toBe(2);
-    // The empty line after a final newline is a line of the block's own count and no row of it.
-    expect(countDrawnOutputLines('X\n')).toBe(1);
-    expect(countDrawnOutputLines('a\nb\n')).toBe(2);
-    expect(countDrawnOutputLines('\nX')).toBe(1);
-    expect(countDrawnOutputLines('\n')).toBe(0);
-    expect(countDrawnOutputLines('\n\n\n')).toBe(0);
-    expect(countDrawnOutputLines('a\n\n\nb')).toBe(2);
-    expect(countDrawnOutputLines('\nFAIL a\n\n\nexpected 1\n')).toBe(2);
-  });
-
-  it('counts a line of whitespace: it draws a row, which an empty line does not', () => {
-    expect(countDrawnOutputLines(' ')).toBe(1);
-    expect(countDrawnOutputLines(' \n')).toBe(1);
-    expect(countDrawnOutputLines('\t\n\n \n')).toBe(2);
-    expect(countDrawnOutputLines('A\n\nB\n   \nC\n')).toBe(4);
-  });
-
-  it('splits on a newline only, as the block does: the \\r of a CRLF stays on its line', () => {
-    expect(countDrawnOutputLines('X\r\n')).toBe(1);
-    expect(countDrawnOutputLines('one\r\ntwo\r\n')).toBe(2);
-    // A line that is only the \r is not empty, so the block draws a row for it.
-    expect(countDrawnOutputLines('\r\n')).toBe(1);
-    expect(countDrawnOutputLines('A\r\n\r\nB\r\n')).toBe(3);
-  });
-
-  it('counts the lines prepareToolOutputDisplay makes that are not empty, as OutputBlock draws them', () => {
-    // OutputBlock draws one row for each of `display.lines`, and Ink gives an empty one no height.
-    const outputs = [
-      '',
-      'a',
-      'a\n',
-      '\n',
-      '\n\n\n',
-      'a\nb',
-      'a\n\nb',
+      'A\n\nB\n\n\n',
       ' \n\t\n',
       'A\n\nB\n   \nC\n',
       '\nFAIL a\n\n\nexpected 1\n',
@@ -252,33 +258,42 @@ describe('countDrawnOutputLines', () => {
       '🙂\n🙂\n',
       'x'.repeat(5000),
       Array.from({ length: 900 }, (_, i) => `line ${i}\n\n`).join(''),
+      Array.from({ length: 2500 }, (_, i) => `line ${i}`).join('\n'),
     ];
     for (const output of outputs) {
-      const display = prepareToolOutputDisplay(output, {
-        maxLines: 2000,
+      const label = JSON.stringify(output.slice(0, 20));
+      const everything = prepareToolOutputDisplay(output, {
+        maxLines: 5000,
         maxLineWidth: 120,
         strategy: 'head',
       });
-      expect(display.hiddenLines).toBe(0);
-      const label = JSON.stringify(output.slice(0, 20));
-      expect([label, countDrawnOutputLines(output)]).toEqual([
+      expect([label, countOutputLines(output), everything.lines.length]).toEqual([
         label,
-        display.lines.filter((line) => line.length > 0).length,
+        everything.totalLines,
+        everything.totalLines,
       ]);
+      const preview = prepareToolOutputDisplay(output, {
+        maxLines: 10,
+        maxLineWidth: 120,
+        strategy: 'tail',
+      });
+      expect([label, countOutputLines(output)]).toEqual([label, preview.totalLines]);
+      expect(preview.hiddenLines).toBe(preview.totalLines - preview.lines.length);
     }
   });
 
   it('counts a large output: a million empty lines, and ten megabytes of short ones', () => {
-    expect(countDrawnOutputLines('\n'.repeat(1_000_000))).toBe(0);
-    expect(countDrawnOutputLines('x\n'.repeat(5_000_000))).toBe(5_000_000);
-    expect(countDrawnOutputLines('\nx'.repeat(5_000_000))).toBe(5_000_000);
+    expect(countOutputLines('\n'.repeat(1_000_000))).toBe(0);
+    expect(countOutputLines('x\n'.repeat(5_000_000))).toBe(5_000_000);
+    expect(countOutputLines('\nx'.repeat(5_000_000))).toBe(5_000_001);
+    expect(countOutputLines(`x${'\n'.repeat(1_000_000)}`)).toBe(1);
   });
 
   it('makes no line of the output to count it', () => {
     const big = 'x\n'.repeat(1_000_000);
     const split = vi.spyOn(String.prototype, 'split');
     try {
-      expect(countDrawnOutputLines(big)).toBe(1_000_000);
+      expect(countOutputLines(big)).toBe(1_000_000);
       const widest = Math.max(0, ...split.mock.contexts.map((text) => String(text).length));
       expect(widest).toBeLessThan(1000);
     } finally {

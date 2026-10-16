@@ -20,53 +20,47 @@ export interface ToolOutputDisplay {
 }
 
 /**
- * The lines {@link prepareToolOutputDisplay} makes of `output`, which OutputBlock gives a row each
- * unless they are empty: none for an empty output, otherwise one for each piece between newlines,
- * so a final newline ends in an empty line of its own. Only a newline splits: the `\r` of a CRLF
- * stays at the end of its line. {@link countOutputLines} counts these lines without making them and
- * {@link countDrawnOutputLines} the ones that get a row: keep the three in step.
+ * Where the lines of `output` end: before the newlines it ends in. Those are no lines of the output
+ * but what its last newline (real output ends in one) and any blank lines after its last text leave
+ * behind, so a block draws nothing for them and a count does not name them.
  */
-function splitOutputLines(output: string): string[] {
-  return output.length === 0 ? [] : output.split('\n');
+function outputLinesEnd(output: string): number {
+  let end = output.length;
+  while (end > 0 && output.charCodeAt(end - 1) === 10) end--;
+  return end;
 }
 
 /**
- * How many lines {@link prepareToolOutputDisplay} makes of `output` (its `totalLines`), found by
- * scanning for newlines: a large output costs one pass and no allocation per line. The empty line
- * after a final newline is one of them; {@link countDrawnOutputLines} leaves it out, as the block
- * draws no row for it.
+ * THE definition of a tool output's lines, and the only one: the pieces between newlines, with
+ * every empty line the output ends in dropped. The empty lines inside it stay (a blank line between
+ * two paragraphs is a row), and so does a line of whitespace, which is not empty. Only a newline
+ * splits: the `\r` of a CRLF stays at the end of its line. A header's line count, the block's rows,
+ * its `… +N lines` footers and the hint that counts a command's hidden stdout all read it, so they
+ * cannot disagree: {@link countOutputLines} counts these lines without making them.
+ */
+function splitOutputLines(output: string): string[] {
+  const end = outputLinesEnd(output);
+  return end === 0 ? [] : output.slice(0, end).split('\n');
+}
+
+/**
+ * How many lines {@link splitOutputLines} makes of `output` (the `totalLines` of its display), found
+ * by scanning for newlines: a large output costs one pass and no allocation per line.
  */
 export function countOutputLines(output: string): number {
-  if (output.length === 0) return 0;
+  const end = outputLinesEnd(output);
+  if (end === 0) return 0;
   let lines = 1;
-  for (let at = output.indexOf('\n'); at !== -1; at = output.indexOf('\n', at + 1)) lines++;
+  for (let at = output.indexOf('\n'); at !== -1 && at < end; at = output.indexOf('\n', at + 1)) {
+    lines++;
+  }
   return lines;
 }
 
 /**
- * How many rows OutputBlock draws for `output` once it shows every line: the lines
- * {@link splitOutputLines} makes of it that are not empty. Ink gives an empty line no height, so
- * the ones between two newlines and the one after a final newline take no row, while a line of
- * spaces takes one. A newline alone splits, as in the block: the `\r` of a CRLF stays on its line,
- * so `"X\r\n"` is one row and a line that is only a `\r` is a row too.
- *
- * Found by scanning for newlines and making no line, so a large output costs one pass and no
- * allocation per line. A line of nothing but the escape sequences Ink strips (cursor movement,
- * erasing) draws no row either, but telling it from text takes the sequences parsed: it is counted.
- */
-export function countDrawnOutputLines(output: string): number {
-  let drawn = 0;
-  let start = 0;
-  for (let at = output.indexOf('\n'); at !== -1; at = output.indexOf('\n', start)) {
-    if (at > start) drawn++;
-    start = at + 1;
-  }
-  return output.length > start ? drawn + 1 : drawn;
-}
-
-/**
  * Prepare tool output for terminal display without mutating the underlying result.
- * Counts the original output, then returns a bounded, display-width-aware preview.
+ * Counts the original output, then returns a bounded, display-width-aware preview. `lines` are the
+ * rows to draw, each one a row even when empty.
  */
 export function prepareToolOutputDisplay(
   output: string,

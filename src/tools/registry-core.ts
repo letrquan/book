@@ -519,6 +519,34 @@ async function waitForSettlement(settled: Promise<void>, timeoutMs: number): Pro
   }
 }
 
+/**
+ * Refuses, at registration, a definition whose `ignoredArguments` entry is also something the tool
+ * reads: a schema property, an alias key, or an alias target. Such an entry would drop a real
+ * argument without a word, so the definition is wrong and the error says which argument and tool.
+ */
+export function assertIgnoredArgumentsAreUnambiguous(tool: ToolDefinition): void {
+  const ignored = tool.ignoredArguments ?? [];
+  if (ignored.length === 0) return;
+  const aliases = tool.argumentAliases ?? {};
+  const roles = new Map<string, string>();
+  for (const property of Object.keys(tool.inputSchema?.properties ?? {})) {
+    roles.set(property, 'a schema property');
+  }
+  for (const [alias, target] of Object.entries(aliases)) {
+    roles.set(alias, 'an argument alias');
+    if (!roles.has(target)) roles.set(target, 'an argument alias target');
+  }
+  for (const argument of ignored) {
+    const role = roles.get(argument);
+    if (role) {
+      throw new Error(
+        `Tool ${tool.name} lists ${JSON.stringify(argument)} in ignoredArguments, but it is also ` +
+          `${role}; ignoring it would silently drop a real argument.`,
+      );
+    }
+  }
+}
+
 export function createRegistry() {
   const tools = new Map<string, ToolDefinition>();
 
@@ -704,6 +732,7 @@ export function createRegistry() {
     normalizeCall,
     register(tool: ToolDefinition): void {
       const normalized = normalizeToolDefinition(tool);
+      assertIgnoredArgumentsAreUnambiguous(normalized);
       tools.set(normalized.name, normalized);
     },
     registerAll(toolList: ToolDefinition[]): void {

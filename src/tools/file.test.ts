@@ -82,7 +82,7 @@ import { createRegistry } from './registry.js';
 import { boundToolResultOutput, toolResultModelContent, TOOL_RESULT_MAX_BYTES } from './result.js';
 import { isRenderableFileMutationDiff } from '../tui/file-mutation-display.js';
 import type { ToolContext } from '../types/tools.js';
-import { spawn, spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import {
   chmodSync,
   existsSync,
@@ -126,9 +126,17 @@ const grep = fileTools.find((t) => t.name === 'Grep')!;
 /** Mutations require a prior observation; tests Read once to satisfy the contract. */
 const observeFirst = (name: string) => read.execute({ filePath: name }, ctx);
 
-/** Grep's default backend spawns `rg`, which is not installed everywhere. */
-const hasRipgrep = () =>
-  spawnSync('rg', ['--version'], { stdio: 'ignore', timeout: 5000 }).status === 0;
+/**
+ * Grep's default backend spawns `rg`, which is not installed everywhere. Probed once, at
+ * collection time, because `it.skipIf` is read before any `beforeAll` has run.
+ */
+const hasRipgrep = await new Promise<boolean>((settle) => {
+  const probe = spawn(process.platform === 'win32' ? 'rg.exe' : 'rg', ['--version'], {
+    stdio: 'ignore',
+  });
+  probe.once('error', () => settle(false));
+  probe.once('close', (code) => settle(code === 0));
+});
 
 /**
  * One `rg` call, so a test can ask ripgrep itself rather than the tool that wraps it: the
@@ -1689,12 +1697,17 @@ describe('grep', () => {
     expect(limited.content.split('\n')).toHaveLength(1);
   });
 
-  it('scopes the search to a subdirectory via path on both backends', async () => {
-    mkdirSync(join(dir, 'sub', 'inner'), { recursive: true });
-    writeFileSync(join(dir, 'root.ts'), 'const marker = 1;');
-    writeFileSync(join(dir, 'sub', 'inner', 'scoped.ts'), 'const marker = 2;');
+  // Each of the "both backends" tests pins its backend: an unpinned run falls back to the portable
+  // one whenever rg fails or is missing, so it could not say which backend had answered.
+  describe.each([
+    { backend: 'portable', env: { BOOK_GREP_BACKEND: 'typescript' }, skip: false },
+    { backend: 'ripgrep', env: { BOOK_GREP_BACKEND: 'ripgrep' }, skip: !hasRipgrep },
+  ])('on the $backend backend', ({ env, skip }) => {
+    it.skipIf(skip)('scopes the search to a subdirectory via path', async () => {
+      mkdirSync(join(dir, 'sub', 'inner'), { recursive: true });
+      writeFileSync(join(dir, 'root.ts'), 'const marker = 1;');
+      writeFileSync(join(dir, 'sub', 'inner', 'scoped.ts'), 'const marker = 2;');
 
-    for (const env of [{}, { BOOK_GREP_BACKEND: 'typescript' }] as Record<string, string>[]) {
       const result = await grep.execute(
         { pattern: 'marker', include: '**/*.ts', path: 'sub' },
         { ...ctx, env },
@@ -1702,7 +1715,34 @@ describe('grep', () => {
       expect(result.status).toBe('success');
       expect(result.content).toContain('sub/inner/scoped.ts:1: const marker = 2;');
       expect(result.content).not.toContain('root.ts');
-    }
+    });
+
+    it.skipIf(skip)('applies C as symmetric context', async () => {
+      writeFileSync(join(dir, 'context.ts'), 'before\ntarget\nafter');
+      const result = await grep.execute(
+        { pattern: 'target', include: '*.ts', C: 1 },
+        { ...ctx, env },
+      );
+      expect(result.content).toContain('context.ts:1- before');
+      expect(result.content).toContain('context.ts:2: target');
+      expect(result.content).toContain('context.ts:3- after');
+    });
+
+    it.skipIf(skip)('matches regardless of case with i (#426)', async () => {
+      writeFileSync(join(dir, 'case.ts'), 'const Needle = 1;\nconst other = 2;');
+      const context = { ...ctx, env };
+      const exact = await grep.execute({ pattern: 'needle', include: '*.ts' }, context);
+      expect(exact.content).toBe('No matches found');
+
+      const folded = await grep.execute({ pattern: 'needle', include: '*.ts', i: true }, context);
+      expect(folded.content).toContain('case.ts:1: const Needle = 1;');
+
+      const across = await grep.execute(
+        { pattern: 'needle = 1;\\nconst OTHER', include: '*.ts', i: true, multiline: true },
+        context,
+      );
+      expect(across.content).toContain('case.ts:1');
+    });
   });
 
   it('scopes the search to a single file via path', async () => {
@@ -1719,7 +1759,7 @@ describe('grep', () => {
   // to be read as the option and run `./x` — with no prompt, because workspace Grep is
   // auto-allowed. Skipped where a `./x` preprocessor cannot be exercised; the argv test below
   // covers the separator itself on every platform.
-  it.skipIf(process.platform === 'win32' || !hasRipgrep())(
+  it.skipIf(process.platform === 'win32' || !hasRipgrep)(
     'searches a path that starts with - instead of reading it as a ripgrep option (#324)',
     async (test) => {
       const marker = join(dir, 'PREPROCESSOR_RAN');
@@ -1956,35 +1996,229 @@ describe('grep', () => {
     expect(walks.calls.every((call) => call.signal === controller.signal)).toBe(true);
   });
 
-  it('applies C as symmetric context on both backends', async () => {
-    writeFileSync(join(dir, 'context.ts'), 'before\ntarget\nafter');
-    for (const env of [{}, { BOOK_GREP_BACKEND: 'typescript' }] as Record<string, string>[]) {
-      const result = await grep.execute(
-        { pattern: 'target', include: '*.ts', C: 1 },
-        { ...ctx, env },
+  describe('inline flags (#447)', () => {
+    const portable = { BOOK_GREP_BACKEND: 'typescript' };
+    const pinned = { BOOK_GREP_BACKEND: 'ripgrep' };
+    const run = (args: Record<string, unknown>, env: Record<string, string>) =>
+      grep.execute(args, { ...ctx, env });
+
+    describe('on the portable backend', () => {
+      it('reads a leading (?i) as the i flag', async () => {
+        writeFileSync(join(dir, 'a.txt'), 'HELLO\nworld');
+        const result = await run({ pattern: '(?i)hello' }, portable);
+        expect(result.status).toBe('success');
+        expect(result.content).toContain('a.txt:1: HELLO');
+      });
+
+      it('does not repeat a flag the call already sets', async () => {
+        writeFileSync(join(dir, 'a.txt'), 'HELLO');
+        const both = await run({ pattern: '(?i)hello', i: true }, portable);
+        expect(both.status).toBe('success');
+        expect(both.content).toContain('a.txt:1: HELLO');
+
+        writeFileSync(join(dir, 'b.txt'), 'a\nb');
+        const dotAll = await run(
+          { pattern: '(?s)a.b', multiline: true, include: 'b.txt' },
+          portable,
+        );
+        expect(dotAll.status).toBe('success');
+        expect(dotAll.content).toContain('b.txt:1');
+      });
+
+      it('reads several leading flag groups, (?is) and (?i)(?s) alike', async () => {
+        writeFileSync(join(dir, 'a.txt'), 'A\nB');
+        for (const pattern of ['(?is)a.b', '(?i)(?s)a.b', '(?s)(?i)(?m)a.b']) {
+          const result = await run({ pattern, multiline: true }, portable);
+          expect(result.status, pattern).toBe('success');
+          expect(result.content, pattern).toContain('a.txt:1');
+        }
+      });
+
+      it('matches across lines with (?s) and multiline', async () => {
+        writeFileSync(join(dir, 'a.txt'), 'a\nb');
+        const result = await run({ pattern: '(?s)a.b', multiline: true }, portable);
+        expect(result.status).toBe('success');
+        expect(result.content).toContain('a.txt:1');
+      });
+
+      it('leaves groups that are not global flags to the regex engine', async () => {
+        writeFileSync(join(dir, 'a.txt'), 'ax\nxy\nzz');
+        const alternation = await run({ pattern: '(?:a|b)x' }, portable);
+        expect(alternation.status).toBe('success');
+        expect(alternation.content).toContain('a.txt:1: ax');
+
+        const named = await run({ pattern: '(?<n>x)y' }, portable);
+        expect(named.status).toBe('success');
+        expect(named.content).toContain('a.txt:2: xy');
+
+        const lookahead = await run({ pattern: 'x(?=y)' }, portable);
+        expect(lookahead.content).toContain('a.txt:2: xy');
+      });
+
+      it.each([
+        ['(?x)hel lo', '(?x)'],
+        ['(?U)hello', '(?U)'],
+        ['(?-i)hello', '(?-i)'],
+        ['hello(?i)', '(?i)'],
+        ['(?ix)hello', '(?ix)'],
+        ['(?i)(?x)hello', '(?x)'],
+        ['(?s)(?i)(?U)hello', '(?U)'],
+      ])('names the inline flag group it cannot read in %s', async (pattern, construct) => {
+        const result = await run({ pattern }, portable);
+        expect(result.status).toBe('error');
+        expect(result.structuredError?.code).toBe('invalid_regex');
+        // The message opens with the pattern itself, so only this phrase proves the group is named.
+        expect(result.structuredError?.message).toContain(`inline flag group ${construct} is not`);
+        expect(result.structuredError?.message).toContain('i: true');
+      });
+
+      it.each(['(?i)foo(', '(?is)foo(', '(?i)(?s)foo('])(
+        'does not blame a translated flag group for the real error in %s',
+        async (pattern) => {
+          const result = await run({ pattern }, portable);
+          expect(result.status).toBe('error');
+          expect(result.structuredError?.code).toBe('invalid_regex');
+          expect(result.structuredError?.message).toBe(`Invalid regex: ${pattern}`);
+          expect(result.structuredError?.message).not.toContain('inline flag group');
+        },
       );
-      expect(result.content).toContain('context.ts:1- before');
-      expect(result.content).toContain('context.ts:2: target');
-      expect(result.content).toContain('context.ts:3- after');
-    }
-  });
 
-  it('matches regardless of case with i on both backends (#426)', async () => {
-    writeFileSync(join(dir, 'case.ts'), 'const Needle = 1;\nconst other = 2;');
-    for (const env of [{}, { BOOK_GREP_BACKEND: 'typescript' }] as Record<string, string>[]) {
-      const context = { ...ctx, env };
-      const exact = await grep.execute({ pattern: 'needle', include: '*.ts' }, context);
-      expect(exact.content).toBe('No matches found');
+      it('leaves $ and . to the line, as ripgrep does, when a CRLF file is searched by line', async () => {
+        writeFileSync(join(dir, 'crlf.txt'), 'foo\r\nbar\r\n');
+        // `m` and `s` mean nothing per line; kept as flags they would match before or at the \r.
+        for (const pattern of ['(?m)foo$', '(?s)foo.', '(?ms)foo$', '(?s)foo.$']) {
+          const result = await run({ pattern }, portable);
+          expect(result.status, pattern).toBe('success');
+          expect(result.content, pattern).toBe('No matches found');
+        }
+        const plain = await run({ pattern: '(?m)^foo' }, portable);
+        expect(plain.content).toContain('crlf.txt:1: foo');
+      });
 
-      const folded = await grep.execute({ pattern: 'needle', include: '*.ts', i: true }, context);
-      expect(folded.content).toContain('case.ts:1: const Needle = 1;');
+      it('still lets (?s) and (?m) reach a multiline search', async () => {
+        writeFileSync(join(dir, 'crlf.txt'), 'foo\nbar\n');
+        const dot = await run({ pattern: 'foo.bar', multiline: true }, portable);
+        expect(dot.content).toContain('crlf.txt:1');
+        const anchor = await run({ pattern: '(?m)^bar$', multiline: true }, portable);
+        expect(anchor.content).toContain('crlf.txt:2');
+      });
 
-      const across = await grep.execute(
-        { pattern: 'needle = 1;\\nconst OTHER', include: '*.ts', i: true, multiline: true },
-        context,
+      it('still reports a plain invalid pattern as invalid_regex', async () => {
+        const result = await run({ pattern: 'a(' }, portable);
+        expect(result.status).toBe('error');
+        expect(result.structuredError?.code).toBe('invalid_regex');
+        expect(result.structuredError?.message).toContain('a(');
+      });
+    });
+
+    describe('on the ripgrep backend', () => {
+      it.skipIf(!hasRipgrep)('runs (?i) in ripgrep', async () => {
+        writeFileSync(join(dir, 'a.txt'), 'HELLO');
+        const result = await run({ pattern: '(?i)hello' }, pinned);
+        expect(result.status).toBe('success');
+        expect(result.content).toContain('a.txt:1: HELLO');
+      });
+
+      it.skipIf(!hasRipgrep)('accepts (?x), which JavaScript cannot', async () => {
+        writeFileSync(join(dir, 'a.txt'), 'hello');
+        const result = await run({ pattern: '(?x)hel lo' }, pinned);
+        expect(result.status).toBe('success');
+        expect(result.content).toContain('a.txt:1: hello');
+      });
+
+      it.skipIf(!hasRipgrep)('reports rg own error for a lookahead, with no fallback', async () => {
+        // The portable engine would match this file, so an error proves nothing ran on JS.
+        writeFileSync(join(dir, 'a.txt'), 'foobar');
+        const result = await run({ pattern: 'foo(?=bar)' }, pinned);
+        expect(result.status).toBe('error');
+        expect(result.structuredError?.message).toContain('look-around');
+      });
+
+      it.skipIf(process.platform === 'win32')(
+        'fails plainly when rg is not installed',
+        async () => {
+          writeFileSync(join(dir, 'a.txt'), 'hello');
+          const empty = mkdtempSync(join(tmpdir(), 'book-no-rg-'));
+          try {
+            const result = await run({ pattern: 'hello' }, { ...pinned, PATH: empty });
+            expect(result.status).toBe('error');
+            expect(result.structuredError?.message).toMatch(/rg.*not found/i);
+          } finally {
+            rmSync(empty, { recursive: true, force: true });
+          }
+        },
       );
-      expect(across.content).toContain('case.ts:1');
-    }
+    });
+
+    describe('on the default backend', () => {
+      it('matches a leading (?i)', async () => {
+        writeFileSync(join(dir, 'a.txt'), 'HELLO');
+        const result = await run({ pattern: '(?i)hello' }, {});
+        expect(result.status).toBe('success');
+        expect(result.content).toContain('a.txt:1: HELLO');
+      });
+
+      it.skipIf(!hasRipgrep)('still runs a lookahead on the portable engine', async () => {
+        writeFileSync(join(dir, 'a.txt'), 'foobar');
+        const result = await run({ pattern: 'foo(?=bar)' }, {});
+        expect(result.status).toBe('success');
+        expect(result.content).toContain('a.txt:1: foobar');
+      });
+
+      it.skipIf(!hasRipgrep)('adds rg own error when both engines reject the pattern', async () => {
+        writeFileSync(join(dir, 'a.txt'), 'foo');
+        const result = await run({ pattern: 'foo(' }, {});
+        expect(result.status).toBe('error');
+        expect(result.structuredError?.code).toBe('invalid_regex');
+        expect(result.structuredError?.message).toContain('unclosed group');
+      });
+
+      // rg exits 2 for a file it could not read as well as for a pattern it could not compile, and
+      // only the second is a reason to ask the portable engine: it would reject an rg-only pattern
+      // and blame it for a permission error.
+      describe('when rg exits 2 for a reason that is not the pattern', () => {
+        const fakeRg = (stderrLine: string) => {
+          const bin = mkdtempSync(join(tmpdir(), 'book-fake-rg-'));
+          const script = `process.stderr.write(${JSON.stringify(stderrLine + '\n')});\nprocess.exit(2);`;
+          writeFileSync(join(bin, 'rg'), `#!/usr/bin/env node\n${script}\n`);
+          chmodSync(join(bin, 'rg'), 0o755);
+          return { bin, env: { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` } };
+        };
+
+        it.skipIf(process.platform === 'win32')(
+          'reports rg own answer, not an invalid pattern',
+          async () => {
+            writeFileSync(join(dir, 'a.txt'), 'nothing here');
+            const { bin, env } = fakeRg('rg: ./locked.txt: Permission denied (os error 13)');
+            try {
+              // JavaScript cannot compile `(?x)`: falling back would answer invalid_regex.
+              const result = await run({ pattern: '(?x)foo bar' }, env);
+              expect(result.status).toBe('success');
+              expect(result.content).toBe('No matches found');
+            } finally {
+              rmSync(bin, { recursive: true, force: true });
+            }
+          },
+        );
+
+        it.skipIf(process.platform === 'win32')(
+          'still asks the portable engine when the stderr is a regex parse error',
+          async () => {
+            writeFileSync(join(dir, 'a.txt'), 'foobar');
+            const { bin, env } = fakeRg(
+              'rg: regex parse error:\n    (?:foo(?=bar))\nerror: look-around',
+            );
+            try {
+              const result = await run({ pattern: 'foo(?=bar)' }, env);
+              expect(result.status).toBe('success');
+              expect(result.content).toContain('a.txt:1: foobar');
+            } finally {
+              rmSync(bin, { recursive: true, force: true });
+            }
+          },
+        );
+      });
+    });
   });
 
   it('keeps timers responsive and observes abort during a broad scan', async () => {

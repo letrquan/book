@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import vm from 'node:vm';
 import { basename, extname, join, resolve as resolvePath } from 'node:path';
 import { glob } from 'tinyglobby';
+import { describeInvalidPattern, portablePattern } from './grep-pattern.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { globWalkIgnore, globWalkPlan } from './glob-regex.js';
 import { recordingWalkFs, walkPartialNote, type WalkFailure } from './walk-fs.js';
@@ -2014,9 +2015,14 @@ function regexPartialNotice(stop: GrepBudgetStop): string {
   return `... (stopped: ${stop.cause}; ${stop.unread} was not searched — refine the pattern or narrow the search)`;
 }
 
+/**
+ * The portable backend. `rgError` is ripgrep's own message when ripgrep was asked first and gave
+ * up, so a pattern both engines reject is reported with both their reasons.
+ */
 async function grepSearchPortable(
   args: Record<string, unknown>,
   ctx: ToolContext,
+  rgError?: string,
 ): Promise<ToolResult> {
   const pattern = args.pattern as string;
   const includePattern = (args.include as string | undefined) ?? '**/*';
@@ -2030,12 +2036,22 @@ async function grepSearchPortable(
     Math.max(1, Number.isFinite(requestedHeadLimit) ? Math.floor(requestedHeadLimit) : 1),
   );
 
+  // The flags a leading `(?i)` / `(?s)` / `(?m)` stands for, merged with the call's own once each.
+  const translated = portablePattern(pattern, `${multiline ? 'gms' : 'g'}${ignoreCase ? 'i' : ''}`);
+  // Searched a line at a time, the lines are split on `\n` alone and a CRLF line keeps its `\r`:
+  // `m` would let `$` match before it and `s` would let `.` match it, which ripgrep does not do.
+  // Neither flag means anything for one line, so they go.
+  const compiled = multiline
+    ? translated
+    : { source: translated.source, flags: translated.flags.replace(/[ms]/g, '') };
+  const invalidPattern = () =>
+    toolFailure(describeInvalidPattern(pattern, rgError), { code: 'invalid_regex' });
   try {
     // Compiled here for the verdict, not for use: the pattern itself is compiled in the sandbox,
     // where a run of it can be interrupted.
-    new RegExp(pattern, multiline ? 'gms' : 'g');
+    new RegExp(compiled.source, compiled.flags);
   } catch {
-    return toolFailure(`Invalid regex: ${pattern}`, { code: 'invalid_regex' });
+    return invalidPattern();
   }
 
   const scoped = await resolveGrepScope(args, ctx);
@@ -2168,8 +2184,8 @@ async function grepSearchPortable(
       const started = Date.now();
       const outcome = sandbox.run(
         {
-          pattern,
-          flags: ignoreCase ? 'gmsi' : 'gms',
+          pattern: compiled.source,
+          flags: compiled.flags,
           limit: headLimit - totalMatches,
           multiline: true,
           text: content,
@@ -2181,9 +2197,7 @@ async function grepSearchPortable(
         if (!stopOnTimeout(file, budget)) return regexTimeoutFailure(pattern, budget);
         stopped = true;
       }
-      if (outcome.kind === 'invalid') {
-        return toolFailure(`Invalid regex: ${pattern}`, { code: 'invalid_regex' });
-      }
+      if (outcome.kind === 'invalid') return invalidPattern();
       if (outcome.kind === 'ok') {
         let line = 1;
         let countedUntil = 0;
@@ -2222,8 +2236,8 @@ async function grepSearchPortable(
         const started = Date.now();
         const outcome = sandbox.run(
           {
-            pattern,
-            flags: ignoreCase ? 'gi' : 'g',
+            pattern: compiled.source,
+            flags: compiled.flags,
             limit: headLimit - totalMatches,
             multiline: false,
             lines: batch,
@@ -2236,9 +2250,7 @@ async function grepSearchPortable(
           stopped = true;
           break;
         }
-        if (outcome.kind === 'invalid') {
-          return toolFailure(`Invalid regex: ${pattern}`, { code: 'invalid_regex' });
-        }
+        if (outcome.kind === 'invalid') return invalidPattern();
         for (const match of outcome.matches) {
           const lineIndex = batchStart + (match.line ?? 0);
           matches.push({ line: lineIndex + 1, text: clipGrepText(lines[lineIndex]) });
@@ -2359,7 +2371,72 @@ interface RipgrepJsonEvent {
   };
 }
 
-type RipgrepOutcome = { kind: 'success'; result: ToolResult } | { kind: 'fallback' };
+/**
+ * What one `rg` run came to. A `fallback` is a search ripgrep did not answer: the default backend
+ * runs it on the portable one, and the pinned backend reports `reason` instead.
+ */
+type RipgrepOutcome =
+  | { kind: 'success'; result: ToolResult }
+  | {
+      kind: 'fallback';
+      /**
+       * `not_found`: no `rg` to spawn; `bad_output`: stdout was not JSON events; `failed`: a
+       * pattern error, or a run that failed without matches.
+       */
+      reason: 'not_found' | 'bad_output' | 'failed';
+      /** What `rg` wrote to stderr, bounded. */
+      stderr: string;
+    };
+
+/** How much of ripgrep's stderr is kept, and how many of its lines reach the model. */
+const RIPGREP_STDERR_MAX_CHARS = 4096;
+const RIPGREP_STDERR_SHOWN_LINES = 6;
+
+/** ripgrep's own error, trimmed to the few lines that say what is wrong. */
+function ripgrepErrorText(stderr: string): string | undefined {
+  const text = stderr
+    .trim()
+    .split(/\r?\n/)
+    .slice(0, RIPGREP_STDERR_SHOWN_LINES)
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .trim();
+  return text || undefined;
+}
+
+/**
+ * Whether ripgrep's stderr is a complaint about the pattern itself. rg exits 2 for that and also
+ * for a file it could not read, and only the first says anything about the pattern.
+ */
+function ripgrepRejectedPattern(stderr: string): boolean {
+  return /regex parse error|error parsing regex/i.test(stderr);
+}
+
+/** What a search pinned to ripgrep reports when ripgrep did not answer it. */
+function pinnedRipgrepFailure(
+  pattern: string,
+  outcome: Extract<RipgrepOutcome, { kind: 'fallback' }>,
+): ToolResult {
+  if (outcome.reason === 'not_found') {
+    return toolFailure(
+      'Grep is pinned to ripgrep (BOOK_GREP_BACKEND=ripgrep), but rg was not found on PATH.',
+      { code: 'ripgrep_not_found' },
+    );
+  }
+  if (outcome.reason === 'bad_output') {
+    return toolFailure(
+      'Grep is pinned to ripgrep (BOOK_GREP_BACKEND=ripgrep), but rg wrote output Book could not read.',
+      { code: 'ripgrep_failed' },
+    );
+  }
+  const said = ripgrepErrorText(outcome.stderr);
+  const isPatternError = ripgrepRejectedPattern(outcome.stderr);
+  return toolFailure(
+    `${isPatternError ? `Invalid regex: ${pattern}` : 'ripgrep could not run this search'}` +
+      (said ? `\nripgrep said:\n${said}` : ''),
+    { code: isPatternError ? 'invalid_regex' : 'ripgrep_failed' },
+  );
+}
 
 /**
  * The lines the reader dropped for being over the cap, as the model is told about them (#349).
@@ -2548,9 +2625,10 @@ async function grepSearchWithRipgrep(
     const proc = spawn('rg', rgArgs, {
       cwd: scope.root,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: buildChildEnv(process.env, ctx.env),
     });
+    let stderr = '';
     let settled = false;
     let totalMatches = 0;
     let outputBytes = 0;
@@ -2638,8 +2716,14 @@ async function grepSearchWithRipgrep(
     };
 
     proc.once('error', (error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') finish({ kind: 'fallback' });
+      if (error.code === 'ENOENT') finish({ kind: 'fallback', reason: 'not_found', stderr });
       else fail(error);
+    });
+    proc.stderr?.setEncoding('utf8');
+    proc.stderr?.on('data', (chunk: string) => {
+      if (stderr.length < RIPGREP_STDERR_MAX_CHARS) {
+        stderr = (stderr + chunk).slice(0, RIPGREP_STDERR_MAX_CHARS);
+      }
     });
     proc.stdout?.setEncoding('utf8');
     const reader = new RipgrepLineReader((line) => {
@@ -2650,14 +2734,24 @@ async function grepSearchWithRipgrep(
         processEvent(JSON.parse(line) as RipgrepJsonEvent);
       } catch {
         stopSearchProcess(proc);
-        finish({ kind: 'fallback' });
+        finish({ kind: 'fallback', reason: 'bad_output', stderr });
       }
     });
     proc.stdout?.on('data', (chunk: string) => reader.push(chunk));
     proc.once('close', (code) => {
       if (settled) return;
-      if (code !== 0 && code !== 1 && totalMatches === 0 && !outputTruncated) {
-        finish({ kind: 'fallback' });
+      // Exit 2 with a complaint about something other than the pattern (a file it could not read)
+      // is rg's own answer, "no matches" included: asking the portable engine would blame an rg-only
+      // pattern for a permission error. Any other failure to run is still the portable engine's.
+      const unreadableFileOnly = code === 2 && !ripgrepRejectedPattern(stderr);
+      if (
+        code !== 0 &&
+        code !== 1 &&
+        !unreadableFileOnly &&
+        totalMatches === 0 &&
+        !outputTruncated
+      ) {
+        finish({ kind: 'fallback', reason: 'failed', stderr });
         return;
       }
       const serializedMatches = Object.fromEntries(
@@ -2727,16 +2821,17 @@ async function grepSearchWithRipgrep(
 }
 
 async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const pattern = args.pattern as string;
-  try {
-    new RegExp(pattern, (args.multiline as boolean) ? 'gms' : 'g');
-  } catch {
-    return toolFailure(`Invalid regex: ${pattern}`, { code: 'invalid_regex' });
-  }
+  // The pattern is not compiled here: what is valid is each backend's call. ripgrep has inline
+  // flags JavaScript lacks, and JavaScript has lookaround that ripgrep's default engine rejects.
   throwIfAborted(ctx.signal);
-  if (ctx.env.BOOK_GREP_BACKEND === 'typescript') return grepSearchPortable(args, ctx);
+  const backend = ctx.env.BOOK_GREP_BACKEND;
+  if (backend === 'typescript') return grepSearchPortable(args, ctx);
   const native = await grepSearchWithRipgrep(args, ctx);
-  return native.kind === 'success' ? native.result : grepSearchPortable(args, ctx);
+  if (native.kind === 'success') return native.result;
+  // `ripgrep` is an internal pin, like `typescript`: the search is ripgrep's or it fails, so a
+  // test can tell which engine answered.
+  if (backend === 'ripgrep') return pinnedRipgrepFailure(args.pattern as string, native);
+  return grepSearchPortable(args, ctx, ripgrepErrorText(native.stderr));
 }
 
 export const fileTools: ToolDefinition[] = [

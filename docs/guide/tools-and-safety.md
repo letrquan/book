@@ -178,7 +178,8 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   `new_string`, `replace_all`, Grep `glob`/`-A`/`-B`/`-C`/`-i`, ApplyPatch `input`) are normalized
   to Book's canonical arguments before validation, and `invalid_arguments` errors list the allowed
   argument names. Grep's `-n` is accepted and ignored, since its results always carry line
-  numbers.
+  numbers. With ripgrep, Grep accepts ripgrep's regex syntax including inline flags; the portable
+  fallback accepts leading `(?i)`, `(?s)` and `(?m)`.
 - **Malformed-JSON arguments.** A call whose arguments are not valid JSON fails with
   `invalid_json_arguments`, and the error names the shape the text arrived in rather than reporting
   schema errors about arguments the model did send:
