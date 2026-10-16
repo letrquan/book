@@ -213,8 +213,15 @@ cannot declare a ceiling for a clone.
 A window you declare yourself always wins: set `contextWindow` on the model in settings and nothing
 is learned or applied over it. `book doctor` lists every learned window with how long ago it was
 learned, and `/context` and the status line mark which source the current window came from
-(`declared`, `learned`, `family`, or `default`). To discard one, delete its entry from
+(`declared`, `learned`, `reported`, `family`, or `default`). To discard one, delete its entry from
 `model-windows.json`, or delete the file to forget them all — it is rebuilt on demand.
+
+Adding or refreshing models through `/model` against an Anthropic endpoint records each model's
+reported `max_input_tokens` as `reportedContextWindow`, and every refresh updates it (or removes it
+when the endpoint stops reporting one). Discovery never writes `contextWindow`. The order is: a
+`contextWindow` you set yourself always wins; then a learned ceiling; then the reported window; then
+the family table; then the default. A reported window is not a declaration, so an overflow can still
+lower it by learning a ceiling, and `/context` shows its source as `reported`.
 
 ### Prompt caching on OpenAI-compatible providers
 

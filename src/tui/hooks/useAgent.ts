@@ -82,7 +82,11 @@ import {
   resolveSettingsWithProviderGate,
 } from '../../settings-loader.js';
 import type { WorkspaceProviderGate } from '../../provider-approvals.js';
-import { providerConfigForSave, type ProviderSaveRequest } from '../model-options.js';
+import {
+  providerConfigForSave,
+  refreshLiveModelInfo,
+  type ProviderSaveRequest,
+} from '../model-options.js';
 import type { ProviderRemovalResult } from '../components/ModelPicker.js';
 import { updateEffortLevel } from '../../commands/effort.js';
 import { seedObservationLedger } from '../../tools/file-provenance.js';
@@ -2132,7 +2136,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           ? applyModelDefaults(
               resolveModelProviderConfig(withProvider, selection, { trustedSelection: true }),
             )
-          : withProvider;
+          : refreshLiveModelInfo(withProvider, providerId);
       });
       const nextOwnedProviders = {
         ids: new Set(ownedProvidersRef.current.ids).add(providerId),

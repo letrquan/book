@@ -232,7 +232,9 @@ export function resolveModelKey(
 
 /**
  * Resolve the context window and its origin for a model.
- * Precedence: declared (`config.modelInfo?.contextWindow`) -> learned (from overflow store) -> family match -> DEFAULT_CONTEXT_WINDOW.
+ * Precedence: declared (`config.modelInfo?.contextWindow`) -> learned (from overflow store) ->
+ * reported (`config.modelInfo?.reportedContextWindow`, from the endpoint's model list) -> family
+ * match -> DEFAULT_CONTEXT_WINDOW.
  */
 export function resolveContextWindow(
   config: Pick<AgentConfig, 'modelInfo'> &
@@ -251,6 +253,10 @@ export function resolveContextWindow(
       return { window: learnedWindow, source: 'learned' };
     }
   }
+  const reported = config.modelInfo?.reportedContextWindow;
+  if (typeof reported === 'number' && reported > 0) {
+    return { window: reported, source: 'reported' };
+  }
   if (modelKey) {
     const familyWindow = resolveFamilyContextWindow(modelKey);
     if (familyWindow !== undefined) {
@@ -260,7 +266,10 @@ export function resolveContextWindow(
   return { window: DEFAULT_CONTEXT_WINDOW, source: 'default' };
 }
 
-/** The context window to act on: what the model declares, else learned, else family, else default. */
+/**
+ * The context window to act on: what the model declares, else learned, else the endpoint's
+ * reported window, else family, else default.
+ */
 export function resolveContextLimit(
   config: Pick<AgentConfig, 'modelInfo'> &
     Partial<Pick<AgentConfig, 'model' | 'modelSelection' | 'modelWindowStore'>>,
@@ -269,7 +278,10 @@ export function resolveContextLimit(
   return resolveContextWindow(config, store).window;
 }
 
-/** True when the window was explicitly declared in config.modelInfo. */
+/**
+ * True when the window was explicitly declared in config.modelInfo. A reported window is not a
+ * declaration: it can be wrong, so the overflow ratchet must still be able to learn a lower one.
+ */
 export function hasDeclaredContextWindow(
   config: Partial<Pick<AgentConfig, 'modelInfo' | 'model' | 'modelSelection' | 'modelWindowStore'>>,
 ): boolean {
