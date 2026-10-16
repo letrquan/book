@@ -1589,7 +1589,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     async (shell: BackgroundShellRecord): Promise<boolean> => {
       const tail = agentSession.getRuntime().shellManager.readTail(shell.id, 4_000) ?? '';
       const exit = shell.exitCode !== undefined ? ` exit=${shell.exitCode ?? 'none'}` : '';
-      // A retried command keeps its title; the id tells the two completions apart (#425).
+      // `display` is the user-facing transcript row, and what the session persists for it. A
+      // retried command keeps its title, so the id after the title tells its two completions apart
+      // there (#425). The model does not read this line: it reads the
+      // `<background-shell-completion>` block below, which has its own `id:` line.
       const id = shell.title && shell.title !== shell.id ? ` (${shell.id})` : '';
       const display = `Background shell ${shell.title || shell.id}${id} ${shell.status}${exit}.`;
       const context = [
