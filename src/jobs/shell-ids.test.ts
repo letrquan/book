@@ -47,6 +47,29 @@ describe('nextShellIdAfter', () => {
     expect(nextShellIdAfter([{ content: `shell_${MAX_SEEDED_SHELL_ID + 1}` }])).toBe(1);
   });
 
+  it('scans a source it is given twice only once', () => {
+    // `contextHistory` defaults to `transcript`, so callers pass one array twice.
+    let reads = 0;
+    const transcript = [
+      {
+        get content() {
+          reads++;
+          return 'Background shell `T` (shell_2) exited.';
+        },
+      },
+    ];
+
+    expect(nextShellIdAfter(transcript, transcript)).toBe(3);
+    expect(reads).toBe(1);
+  });
+
+  it('survives a structure that refers back to itself', () => {
+    const message: Record<string, unknown> = { content: 'shell_4' };
+    message.self = message;
+
+    expect(nextShellIdAfter([message])).toBe(5);
+  });
+
   it('does not match a longer word that ends in the id', () => {
     expect(nextShellIdAfter([{ content: 'myshell_5 and a_shell_6' }])).toBe(1);
   });

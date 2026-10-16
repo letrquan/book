@@ -24,19 +24,23 @@ export const MAX_SEEDED_SHELL_ID = 1_000_000;
  */
 export function nextShellIdAfter(...sources: unknown[]): number {
   let highest = 0;
-  for (const source of sources) {
-    // The replacer sees every string value as written, so the ids are read from the text itself
-    // rather than from its JSON escaping (`\nshell_1` has no word boundary before the `s`).
-    JSON.stringify(source, (_key, value: unknown) => {
-      if (typeof value === 'string') {
-        for (const match of value.matchAll(SESSION_SHELL_ID)) {
-          const id = Number(match[1]);
-          if (id <= MAX_SEEDED_SHELL_ID && id > highest) highest = id;
-        }
+  // Every object is entered once, which is also what ends a structure that refers back to itself,
+  // and a source given twice (a transcript passed as its own context history) is not read twice.
+  const visited = new WeakSet<object>();
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      for (const match of value.matchAll(SESSION_SHELL_ID)) {
+        const id = Number(match[1]);
+        if (id <= MAX_SEEDED_SHELL_ID && id > highest) highest = id;
       }
-      return value;
-    });
-  }
+      return;
+    }
+    if (typeof value !== 'object' || value === null || visited.has(value)) return;
+    visited.add(value);
+    // Arrays and plain objects alike: a message is JSON data, so the strings are its values.
+    for (const child of Object.values(value)) visit(child);
+  };
+  for (const source of sources) visit(source);
   return highest + 1;
 }
 
