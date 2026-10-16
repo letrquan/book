@@ -1190,7 +1190,10 @@ export class AgentSession {
     request: AgentSessionCompactRequest,
   ): Promise<AgentSessionCompactOutcome> {
     const timestamp = Date.now();
-    const boundary: CompactBoundary = {
+    // The record keeps `degraded` and `warning` at its top level, and resume restores
+    // `data.boundary` as written, so the persisted boundary is built without them: only the
+    // live boundary, which the host draws, carries them.
+    const recorded: CompactBoundary = {
       id: result.compactId,
       trigger: result.trigger,
       transcriptOrdinal: request.transcriptOrdinal,
@@ -1203,6 +1206,11 @@ export class AgentSession {
       timestamp,
       carriedCount: result.carriedCount,
     };
+    const boundary: CompactBoundary = {
+      ...recorded,
+      ...(result.degraded ? { degraded: true } : {}),
+      ...(result.warning ? { warning: result.warning } : {}),
+    };
     const data: CompactRecordData = {
       version: 2,
       compactId: result.compactId,
@@ -1214,7 +1222,7 @@ export class AgentSession {
       preContextTokens: result.preContextTokens,
       postContextTokens: result.postContextTokens,
       replacementHistory: result.replacementHistory,
-      boundary,
+      boundary: recorded,
       throughEventRef: result.throughEventRef,
       summarizedCount: result.summarizedCount,
       retainedCount: result.retainedCount,

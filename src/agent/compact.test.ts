@@ -16,6 +16,7 @@ import {
   judgeCompaction,
   clipHistoryToolResults,
   estimateHistoryTokens,
+  userFacingCompactWarning,
 } from './compact.js';
 import { DEFAULT_CONTEXT_WINDOW, resolveContextLimit } from '../models.js';
 import type { AgentConfig } from '../types/runtime.js';
@@ -126,6 +127,20 @@ function readStep(id: string, path: string, tokens: number): Message {
     toolResults: [toolResult(`${id}-call`, 'x'.repeat(tokens * 4))],
   };
 }
+
+describe('userFacingCompactWarning', () => {
+  it('drops the closing retrieval guidance, which is for the model', () => {
+    expect(
+      userFacingCompactWarning(
+        'Compaction used reduced-fidelity coverage (x). Exact history remains searchable with SessionHistorySearch and SessionHistoryRead.',
+      ),
+    ).toBe('Compaction used reduced-fidelity coverage (x).');
+  });
+
+  it('leaves a warning without that sentence as it is', () => {
+    expect(userFacingCompactWarning(' Something else. ')).toBe('Something else.');
+  });
+});
 
 describe('usageAtGate', () => {
   const config = { modelInfo: { contextWindow: 272_000 }, maxTokens: 64_000 };

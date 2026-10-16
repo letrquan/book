@@ -350,7 +350,7 @@ describe('WorkingIndicator', () => {
     expect(output.split('\n')).toHaveLength(1);
   });
 
-  it('caps active compact progress below 100% until compaction succeeds', () => {
+  it('caps active compact progress below 100% and drops the bar once compaction ends', () => {
     vi.useFakeTimers();
     const view = render(
       withTheme(
@@ -385,18 +385,17 @@ describe('WorkingIndicator', () => {
         <WorkingIndicator
           isThinking={false}
           compactTrigger="manual"
-          compactComplete
           messages={[]}
           terminalWidth={80}
         />,
       ),
     );
 
-    const completed = stripAnsi(view.lastFrame());
-    expect(completed).toContain('Compacted');
-    expect(completed).toContain('100%');
-    expect(completed).toContain('████████████████████████');
-    expect(completed).not.toContain('Esc to cancel');
+    // A finished compaction is shown by its transcript row alone: no completed bar lingers.
+    const finished = stripAnsi(view.lastFrame()).trim();
+    expect(finished).not.toContain('Compact');
+    expect(finished).not.toContain('100%');
+    expect(finished).toBe('');
   });
 
   it('keeps compact progress on one row in narrow terminals', () => {

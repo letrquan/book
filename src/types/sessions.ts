@@ -129,6 +129,13 @@ export interface CompactBoundary {
   timestamp: number;
   /** Earlier user turns kept verbatim ahead of the checkpoint; absent on records written before Carried Turns. */
   carriedCount?: number;
+  /**
+   * The compaction used reduced-fidelity coverage. Live only: the host shows it on the boundary's
+   * row, it is not written to the session record, and a resumed session's boundaries lack it.
+   */
+  degraded?: boolean;
+  /** The compaction's warning, for the same live row as `degraded`; not persisted either. */
+  warning?: string;
 }
 
 export type RewindAction = 'conversation' | 'code' | 'both';

@@ -12,44 +12,12 @@ afterEach(() => cleanup());
 function renderCard(state: React.ComponentProps<typeof CompactDiffCard>['state']) {
   return render(
     <ThemeContext.Provider value={DEFAULT_THEME}>
-      <CompactDiffCard state={state} terminalWidth={80} reducedMotion />
+      <CompactDiffCard state={state} terminalWidth={80} />
     </ThemeContext.Provider>,
   );
 }
 
 describe('CompactDiffCard', () => {
-  it('renders successful compaction as a concise tool-style result row', () => {
-    const output = stripAnsi(
-      renderCard({
-        phase: 'done',
-        trigger: 'manual',
-        preMessages: 20,
-        preContextTokens: 12_340,
-      }).lastFrame(),
-    );
-
-    expect(output).toContain('✓ Compact conversation');
-    expect(output).toContain('20 messages');
-    expect(output).toContain('~12.3k context');
-    expect(output).not.toContain('older conversation turns');
-    expect(output).not.toContain('Structured summary');
-  });
-
-  it('keeps reduced-fidelity retrieval guidance visible', () => {
-    const output = stripAnsi(
-      renderCard({
-        phase: 'done',
-        trigger: 'manual',
-        preMessages: 20,
-        degraded: true,
-        warning: 'Exact history remains searchable.',
-      }).lastFrame(),
-    );
-
-    expect(output).toContain('Compact conversation · reduced fidelity');
-    expect(output).toContain('Exact history remains searchable.');
-  });
-
   it('renders failures without a popup card', () => {
     const output = stripAnsi(
       renderCard({
@@ -61,5 +29,23 @@ describe('CompactDiffCard', () => {
 
     expect(output).toContain('× Provider unavailable.');
     expect(output).not.toContain('╭');
+  });
+
+  it('renders a skip with its reason', () => {
+    const output = stripAnsi(
+      renderCard({
+        phase: 'skipped',
+        trigger: 'manual',
+        message: 'Not enough messages to compact.',
+      }).lastFrame(),
+    );
+
+    expect(output).toContain('– Not enough messages to compact.');
+  });
+
+  it('renders nothing while a compaction is running', () => {
+    expect(stripAnsi(renderCard({ phase: 'working', trigger: 'manual' }).lastFrame()).trim()).toBe(
+      '',
+    );
   });
 });
