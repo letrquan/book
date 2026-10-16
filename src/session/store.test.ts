@@ -604,6 +604,22 @@ describe('SessionStore', () => {
     expect(s.findByName('Investigate legacy session labels')?.id).toBe(id);
   });
 
+  it('never derives a display name from an agent-notification turn (#446)', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'user',
+      timestamp: 1,
+      data: { content: 'Atlas completed: found it', kind: 'agent-notification' },
+    });
+    // The live index entry, then one rebuilt from the file.
+    expect(s.findById(id)?.name).toBeUndefined();
+    expect(new SessionStore(dir).load(id).meta.name).toBeUndefined();
+
+    s.append(id, { type: 'user', timestamp: 2, data: { content: 'fix the build' } });
+    expect(new SessionStore(dir).load(id).meta.name).toBe('Fix the build');
+  });
+
   it('applies append-only metadata patches without counting them as messages', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });

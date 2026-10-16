@@ -411,7 +411,9 @@ export class SessionStore {
     } else if (record.type === 'user') {
       entry.meta.messageCount++;
       entry.lastMessageRole = 'user';
-      if (!entry.meta.name && data.content) entry.meta.name = deriveSessionName(data.content);
+      if (!entry.meta.name && data.content && data.kind !== 'agent-notification') {
+        entry.meta.name = deriveSessionName(data.content);
+      }
     } else if (record.type === 'local') {
       entry.meta.messageCount++;
       entry.lastMessageRole = 'assistant';
@@ -769,7 +771,10 @@ export class SessionStore {
     meta.messageCount = count;
     if (!meta.name) {
       const firstUserPrompt = transcript.find(
-        (message) => message.role === 'user' && message.kind !== 'local',
+        (message) =>
+          message.role === 'user' &&
+          message.kind !== 'local' &&
+          message.kind !== 'agent-notification',
       )?.content;
       if (firstUserPrompt) meta.name = deriveSessionName(firstUserPrompt);
     }

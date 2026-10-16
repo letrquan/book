@@ -1029,6 +1029,11 @@ export class AgentSession {
     } satisfies SessionRecord);
     if (request.timelineStore) request.onUserMessagePersisted?.();
 
+    // A completion notification is host-generated text, not something the user said: it
+    // never names a session, or renames one, whether or not the caller passed a name (#446).
+    if (request.userMessage.kind === 'agent-notification') {
+      return { contextMessage, sessionName: request.sessionName ?? '' };
+    }
     const sessionName =
       request.sessionName?.trim() ||
       deriveSessionName(request.sessionNameSource ?? request.displayMessage);

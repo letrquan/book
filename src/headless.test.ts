@@ -7,7 +7,11 @@ import { SessionStore } from './session/store.js';
 import { createDefaultRegistry, createRegistry } from './tools/registry.js';
 import { fileTools } from './tools/file.js';
 import { defaultConfig } from './test/fixtures.js';
-import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
+import {
+  createRepeatingScriptedProvider,
+  createScriptedProvider,
+  sseResponse,
+} from './test/scripted-provider.js';
 import type { AgentConfig } from './types/runtime.js';
 import type { UserQuestionRequest } from './types/tools.js';
 import { toolSuccess } from './tools/result.js';
@@ -462,6 +466,95 @@ describe('runHeadless — text output', () => {
       rootRunId: 'persisted-root-run',
       parentRunId: 'persisted-child-run',
     });
+  });
+
+  it('keeps the prompt-derived session name when a managed-agent completion arrives (#446)', async () => {
+    const workspace = makeWorkspace();
+    const sessionsDir = makeWorkspace();
+    const sessions = new SessionStore(sessionsDir);
+    const notification: AgentCompletionNotification = {
+      deliveryId: 'child-1:1',
+      sequence: 1,
+      rootRunId: 'persisted-root-run',
+      runId: 'persisted-child-run',
+      completion: {
+        agentId: 'child-1',
+        displayName: 'Atlas',
+        profile: 'explorer',
+        status: 'completed',
+        resolvedModel: 'test/model',
+        isolation: 'workspace-readonly',
+        summary: 'Found the missing delivery bridge',
+        evidenceIds: [],
+        createdAt: 1,
+        startedAt: 2,
+        updatedAt: 3,
+        finishedAt: 3,
+      },
+    };
+    let pending = [notification];
+    const fakeManager = {
+      waitForIdle: vi.fn(async () => {}),
+      listPendingCompletions: vi.fn(async () => pending),
+      acknowledgeCompletion: vi.fn(async () => {
+        pending = [];
+      }),
+      dispose: vi.fn(),
+    } as unknown as AgentManager;
+    const registry = createRegistry();
+    registry.register({
+      name: 'SpawnFakeAgent',
+      description: 'Create a deterministic fake background completion for the host test.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, context) => {
+        notification.parentSessionId = context.parentSessionId;
+        context.runtime!.agentManager = fakeManager;
+        return toolSuccess('spawned');
+      },
+    });
+    const provider = createScriptedProvider(
+      sseResponse([
+        JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { index: 0, id: 'spawn', function: { name: 'SpawnFakeAgent', arguments: '{}' } },
+                ],
+              },
+            },
+          ],
+        }),
+      ]),
+      sseResponse([JSON.stringify({ choices: [{ delta: { content: 'Started.' } }] })]),
+      sseResponse([JSON.stringify({ choices: [{ delta: { content: 'Integrated.' } }] })]),
+    );
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const result = await runHeadless(freshConfig({ workspace }), registry, {
+      prompt: 'delegate the exploration',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      maxTurns: 3,
+      stdout: { write: () => true },
+      sessionStore: sessions,
+    });
+
+    // The completion turn really ran and was recorded as a user turn...
+    expect(provider.requests).toHaveLength(3);
+    expect(result.messages).toContainEqual(
+      expect.objectContaining({
+        kind: 'agent-notification',
+        content: expect.stringContaining('Atlas'),
+      }),
+    );
+    // ...and the session is still named after the prompt, in the index and on disk.
+    expect(sessions.load(result.sessionId!).meta.name).toBe('Delegate the exploration');
+    expect(new SessionStore(sessionsDir).load(result.sessionId!).meta.name).toBe(
+      'Delegate the exploration',
+    );
   });
 
   it('expands @ file mentions before sending prompts to the provider', async () => {

@@ -2843,6 +2843,47 @@ describe('AgentSession.recordUserMessage — one pass over what the user typed',
   });
 });
 
+describe('AgentSession.recordUserMessage — session names (#446)', () => {
+  async function recordTurn(options: { kind?: Message['kind']; sessionName?: string }) {
+    const patches: unknown[] = [];
+    const userMessage: Message = {
+      id: 'user-1',
+      role: 'user',
+      content: '<subagent_notification> Atlas finished',
+      includeInContext: true,
+      kind: options.kind,
+      timestamp: 10,
+    };
+    const result = await new AgentSession().recordUserMessage({
+      config: defaultConfig(),
+      sessionId: 'session-1',
+      displayMessage: userMessage.content,
+      contextMessage: userMessage.content,
+      userMessage,
+      sessionName: options.sessionName,
+      timelineStore: { append: () => {}, patchMeta: (_id, patch) => patches.push(patch) },
+    });
+    return { result, patches };
+  }
+
+  it('never names or renames a session after an agent notification', async () => {
+    const named = await recordTurn({ kind: 'agent-notification', sessionName: 'Fix the build' });
+    expect(named.result.sessionName).toBe('Fix the build');
+    expect(named.patches).toEqual([]);
+
+    // Even with no name yet: the notification text is not a title.
+    const unnamed = await recordTurn({ kind: 'agent-notification' });
+    expect(unnamed.result.sessionName).toBe('');
+    expect(unnamed.patches).toEqual([]);
+  });
+
+  it('still names an unnamed session after an ordinary turn', async () => {
+    const { result, patches } = await recordTurn({ kind: 'conversation' });
+    expect(result.sessionName).toBe('<subagent_notification> Atlas finished');
+    expect(patches).toEqual([{ name: '<subagent_notification> Atlas finished' }]);
+  });
+});
+
 describe('AgentSession — /goal records', () => {
   const goalsIn = (records: SessionRecord[]) =>
     records
