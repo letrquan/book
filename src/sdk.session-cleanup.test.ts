@@ -34,6 +34,7 @@ vi.mock('./headless.js', () => ({
 }));
 
 import { query } from './sdk.js';
+import { disconnectMcpServers } from './mcp.js';
 
 let fixture: SessionFixture;
 let previousApiKey: string | undefined;
@@ -108,5 +109,23 @@ describe('query() — untouched sessions', () => {
     await run('say nothing', { sessionId: id });
 
     expect(existsSync(join(fixture.root, `${id}.jsonl`))).toBe(true);
+  });
+
+  it('removes it even when the background run rejects, and the rejection still propagates', async () => {
+    vi.mocked(disconnectMcpServers).mockRejectedValueOnce(new Error('mcp disconnect failed'));
+    const iterator = query('say nothing', {
+      workspace: fixture.root,
+      noSettings: true,
+      sessionStore: fixture.store,
+    });
+    expect((await iterator.next()).value).toMatchObject({ type: 'system' });
+    const session = (await iterator.next()).value as { sessionId: string };
+    expect(existsSync(join(fixture.root, `${session.sessionId}.jsonl`))).toBe(true);
+
+    // The consumer stops here; the run's cleanup throws while the generator unwinds.
+    await expect(iterator.return(undefined)).rejects.toThrow('mcp disconnect failed');
+
+    expect(existsSync(join(fixture.root, `${session.sessionId}.jsonl`))).toBe(false);
+    expect(indexed(session.sessionId)).toBe(false);
   });
 });

@@ -234,10 +234,14 @@ export async function* query(
   } finally {
     controller.abort(new Error('SDK event consumer stopped'));
     options.signal?.removeEventListener('abort', abortFromCaller);
-    await running;
-    // The run has ended, SessionEnd hooks included: a query that stopped before it recorded
-    // its prompt leaves no empty session behind (#444).
-    discardUntouchedSession(sessionStore, bootstrap);
+    try {
+      await running;
+    } finally {
+      // The run has ended, SessionEnd hooks included, whether it resolved or rejected: a
+      // query that stopped before it recorded its prompt leaves no empty session behind
+      // (#444). A rejection still propagates.
+      discardUntouchedSession(sessionStore, bootstrap);
+    }
   }
 }
 
