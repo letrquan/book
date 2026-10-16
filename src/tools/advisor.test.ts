@@ -386,6 +386,7 @@ describe('Advisor tool', () => {
       ['auth', false],
       ['quota', false],
       ['not_found', false],
+      ['redirect', false],
       // A retired or misspelled model, and every verdict on the request itself.
       ['model_unavailable', false],
       ['invalid_request_error', false],

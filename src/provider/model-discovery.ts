@@ -8,7 +8,7 @@ export interface DiscoveredModel {
 }
 
 import { systemClock, type Clock } from '../clock.js';
-import { isRedirectResponse, refuseRedirect } from './reliability.js';
+import { isRedirectResponse, refuseRedirect, type ProviderRedirectError } from './reliability.js';
 
 export interface ModelDiscoveryOptions {
   type: ProviderProtocol;
@@ -85,6 +85,16 @@ function safeStatusError(status: number): ModelDiscoveryError {
   return new ModelDiscoveryError(`Model discovery request failed with HTTP ${status}.`, 'request');
 }
 
+/** One line for the wizard's and picker's error slot: discovery sends no prompt. */
+function redirectMessage({ status, target }: ProviderRedirectError): string {
+  const http = status === 0 ? '' : ` (HTTP ${status})`;
+  const what =
+    target === undefined
+      ? `answered${status === 0 ? '' : ` HTTP ${status}`} with no redirect target Book could read`
+      : `redirected to ${target}${http}`;
+  return `The model-list endpoint ${what}; Book does not follow provider redirects. Check the provider's base URL.`;
+}
+
 function retryDelay(attempt: number, retry: RetryConfig, retryAfter: string | null): number {
   const retryAfterSeconds = retryAfter === null ? NaN : Number(retryAfter);
   if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
@@ -150,7 +160,7 @@ async function fetchWithRetry(
     // Never retried: the key must not follow a redirect, and a second ask gets the same answer.
     if (response && isRedirectResponse(response)) {
       const refused = await refuseRedirect(response, url);
-      throw new ModelDiscoveryError(refused.message, 'request');
+      throw new ModelDiscoveryError(redirectMessage(refused), 'request');
     }
 
     if (response && !(RETRYABLE_STATUSES.has(response.status) || response.status >= 500)) {

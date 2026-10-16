@@ -145,6 +145,7 @@ const SHARED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'rate_limited',
   'overloaded',
   'server_error',
+  'redirect',
   'stream_stall',
   'transport_interrupted',
 ]);

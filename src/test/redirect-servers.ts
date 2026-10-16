@@ -6,7 +6,9 @@ export interface RedirectFixtureOptions {
   status?: number;
   /**
    * The `Location` header for a given server-B port; returning undefined sends none.
-   * Defaults to `http://localhost:<portB>/steal`.
+   * Defaults to `http://127.0.0.1:<portB>/steal`: server B listens on 127.0.0.1 only, so a
+   * hostname that may resolve to `::1` would let a followed redirect fail to connect and a
+   * leak assertion pass for the wrong reason.
    */
   location?: (portB: number) => string | undefined;
 }
@@ -49,7 +51,7 @@ export function createRedirectFixtures(): {
         res.end('{}');
       });
       const portB = await listen(serverB);
-      const location = (options.location ?? ((port) => `http://localhost:${port}/steal`))(portB);
+      const location = (options.location ?? ((port) => `http://127.0.0.1:${port}/steal`))(portB);
       const serverA = createServer((req, res) => {
         countA++;
         req.resume();

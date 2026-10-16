@@ -960,7 +960,7 @@ describe('Anthropic provider redirects (#445)', () => {
   const fixtures = createRedirectFixtures();
   afterEach(() => fixtures.closeAll());
 
-  it('reports a redirect as a non-retryable not_found error naming the target', async () => {
+  it('reports a redirect as a non-retryable redirect error naming the target', async () => {
     const fx = await fixtures.start({ status: 307 });
     const config = defaultConfig({
       baseUrl: fx.urlA,
@@ -976,8 +976,8 @@ describe('Anthropic provider redirects (#445)', () => {
     expect(events).toEqual([
       expect.objectContaining({
         type: 'error',
-        errorCode: 'not_found',
-        error: expect.stringContaining(`http://localhost:${fx.portB}/steal`),
+        errorCode: 'redirect',
+        error: expect.stringContaining(`http://127.0.0.1:${fx.portB}/steal`),
       }),
     ]);
     expect(fx.requestsA()).toBe(1);

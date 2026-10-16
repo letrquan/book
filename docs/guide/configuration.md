@@ -78,7 +78,9 @@ carried to another endpoint, so switching to a bare id cannot hand your Anthropi
 with an error naming the redirect target (scheme, host and path only), and nothing is sent there,
 so your key and prompt never reach a URL you did not configure. The usual causes are `http` where
 the endpoint wants `https`, a missing or extra path segment such as `/v1`, or a host that has moved.
-If the target the error names is the endpoint you meant, set the provider's base URL to it.
+If the host the error names is the endpoint you meant, set the provider's base URL to that address
+without the endpoint path Book adds (`/messages`, `/chat/completions` or `/models`): for example,
+`https://gw.example/v1/chat/completions` becomes the base URL `https://gw.example/v1`.
 
 **The advisor fails closed.** `advisorModel` (and `BOOK_ADVISOR_MODEL`, and `/advisor`) is a
 request you do not make yourself, so an id that is not `<provider>/<model>` for a provider in

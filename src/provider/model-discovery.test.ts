@@ -193,7 +193,11 @@ describe('discoverModels redirects (#445)', () => {
 
       expect(error).toBeInstanceOf(ModelDiscoveryError);
       expect((error as ModelDiscoveryError).code).toBe('request');
-      expect((error as Error).message).toContain(`http://localhost:${fx.portB}/steal`);
+      const { message } = error as Error;
+      expect(message).toContain(`redirected to http://127.0.0.1:${fx.portB}/steal (HTTP 307)`);
+      expect(message).toContain("Check the provider's base URL.");
+      expect(message).not.toMatch(/prompt|API key/);
+      expect(message.length).toBeLessThanOrEqual(200);
       expect(fx.requestsA()).toBe(1);
       expect(fx.requestsB()).toBe(0);
     },

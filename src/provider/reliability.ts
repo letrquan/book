@@ -19,6 +19,7 @@ export type ProviderErrorCode =
   | 'unprocessable'
   | 'quota'
   | 'model_unavailable'
+  | 'redirect'
   | 'unknown';
 
 export function classifyHttpStatus(status: number): {
@@ -427,7 +428,7 @@ export function classifyApiError(
 }
 
 export function classifyProviderError(error: unknown): ProviderErrorCode {
-  if (error instanceof ProviderRedirectError) return 'not_found';
+  if (error instanceof ProviderRedirectError) return 'redirect';
   if (error instanceof DOMException && error.name === 'TimeoutError') return 'timeout';
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
   if (message.includes('timed out') || message.includes('timeout')) return 'timeout';
@@ -748,11 +749,15 @@ export class ProviderRedirectError extends Error {
     /** Scheme, host and path of the redirect target; never userinfo, query or fragment. */
     readonly target: string | undefined,
   ) {
+    // An `opaqueredirect` response reports status 0, which is not an HTTP status to quote.
+    const answered = status === 0 ? 'answered with a redirect' : `answered HTTP ${status}`;
     super(
-      `Provider endpoint answered HTTP ${status} with a redirect ` +
-        `${target === undefined ? 'that gave no usable target' : `to ${target}`}; ` +
-        'Book refuses provider redirects so the API key and prompt never reach another URL. ' +
-        "Set the provider's base URL to the final endpoint if that is the one you meant.",
+      target === undefined
+        ? `Provider endpoint ${answered}${status === 0 ? ' that has' : ' with'} no redirect target Book could read, and Book does not follow provider redirects. ` +
+            "Check the provider's base URL."
+        : `Provider endpoint ${answered}${status === 0 ? '' : ' with a redirect'} to ${target}, and Book does not follow provider redirects. ` +
+            "If that host is the endpoint you meant, set the provider's base URL to that address without the endpoint path Book adds " +
+            '(https://gw.example/v1/chat/completions becomes https://gw.example/v1).',
     );
     this.name = 'ProviderRedirectError';
   }
@@ -783,16 +788,21 @@ export function isRedirectResponse(response: Response): boolean {
   return response.type === 'opaqueredirect' || (response.status >= 300 && response.status <= 399);
 }
 
-/** Cancel a redirect's body and build the error for it. */
-export async function refuseRedirect(
-  response: Response,
-  requestUrl: string,
-): Promise<ProviderRedirectError> {
+/** Cancel a response body that will not be read, ignoring a body something else has locked. */
+async function cancelBody(response: Response): Promise<void> {
   try {
     await response.body?.cancel();
   } catch {
     // A custom fetch implementation may expose an already-locked body.
   }
+}
+
+/** Cancel a redirect's body and build the error for it. */
+export async function refuseRedirect(
+  response: Response,
+  requestUrl: string,
+): Promise<ProviderRedirectError> {
+  await cancelBody(response);
   return new ProviderRedirectError(
     response.status,
     sanitizeRedirectTarget(response.headers.get('location'), requestUrl),
@@ -951,11 +961,7 @@ export async function fetchWithRetry(
         headers: response.headers,
       });
     }
-    try {
-      await response.body?.cancel();
-    } catch {
-      // A custom fetch implementation may expose an already-locked body.
-    }
+    await cancelBody(response);
   }
 
   throw new Error(lastError ?? 'request failed after retries');
