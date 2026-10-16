@@ -4,6 +4,7 @@ import { canonicalToolName } from './aliases.js';
 import { globToRegex } from './glob-regex.js';
 import { comparablePath } from './path-utils.js';
 import { getPrimaryArg } from './primary-arg.js';
+import { SHELL_CHAINING } from './shell-chaining.js';
 import { strictRmMatchesGlob } from './strict-rm.js';
 
 /** Tools whose rule pattern names one file, so a call is matched by the path it really names. */
@@ -101,6 +102,37 @@ export function isToolCallAllowed(
         )
       );
     }
+    if (canonical === 'Bash') {
+      // Under a command glob a compound command is refused outright, quoted or not, and the whole
+      // command is matched: the primary argument is only its first line.
+      const command = call.arguments.command;
+      if (typeof command !== 'string' || isCompoundShellCommand(call)) return false;
+      return globToRegex(normalizedPattern).test(command.trim().replace(/^\.\//, ''));
+    }
     return globToRegex(normalizedPattern).test(primary);
   });
 }
+
+/**
+ * Whether a call is a Bash command that chains, pipes, redirects or substitutes, which a
+ * `Bash(<glob>)` capability rule refuses. This is the one predicate behind both the gate in
+ * {@link isToolCallAllowed} and the refusal text the model reads.
+ *
+ * Surrounding whitespace is not part of the command (a model often ends one with a newline), so it
+ * is trimmed first; a newline inside the command still counts. An inner carriage return counts too:
+ * PowerShell reads a bare CR as a line break.
+ */
+export function isCompoundShellCommand(call: ToolCall): boolean {
+  const command = call.arguments.command;
+  if (canonicalToolName(call.name) !== 'Bash' || typeof command !== 'string') return false;
+  const trimmed = command.trim();
+  return SHELL_CHAINING.test(trimmed) || trimmed.includes('\r');
+}
+
+/** What a capability refusal of a compound Bash command says was wrong with the command. */
+export const COMPOUND_COMMAND_REFUSAL =
+  'The command was refused because it chains, pipes, redirects or substitutes (`;`, `&`, `|`, `<`, `>`, `$`, `(`, `)`, `{`, `}`, a backtick, or a newline), even inside quotes.';
+
+/** What a capability refusal of a compound Bash command tells the model to do instead. */
+export const COMPOUND_COMMAND_REMEDIATION =
+  "Send each command as its own Bash call, and make each call match the run's allowed-tools rules (a skill's, command's or agent role's allowed-tools); or rewrite the command without these characters (for example, a commit message without parentheses); or use a different tool.";
