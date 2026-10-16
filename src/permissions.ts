@@ -6,7 +6,7 @@ import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex, globWalkPlan } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
-import { SHELL_CHAINING } from './tools/shell-chaining.js';
+import { ANY_QUOTE, SHELL_CHAINING, hasCompoundShellSyntax } from './tools/shell-chaining.js';
 import { strictRmOfMarkdownUnder } from './tools/strict-rm.js';
 import {
   canonicalizePath,
@@ -136,6 +136,8 @@ export interface WorkspaceScope {
 export interface PermissionEvaluationOptions {
   sandboxBackendAvailable?: () => boolean;
   workspace?: WorkspaceScope;
+  /** The platform a Bash command is read for; `process.platform` unless a test injects one. */
+  platform?: NodeJS.Platform;
 }
 
 /** Read-only file tools whose targets inside the workspace need no prompt (#264). */
@@ -284,6 +286,26 @@ function ruleMatches(rule: ParsedRule, toolName: string, primaryArg: string): bo
 }
 
 /**
+ * Whether an `allow` rule admits a Bash call (#500). A bare `Bash` rule admits every call. A rule
+ * with a pattern admits it only when the whole command, trimmed, matches the pattern and is not
+ * compound: a glob cannot say "and nothing else", and the primary argument is only the first line,
+ * so `Bash(git status)` must not admit `git status` followed by a second line, nor `Bash(git *)`
+ * `git status && rm -rf ~`. Otherwise the rule does not match and the call falls through to the
+ * prompt. `deny` and `ask` do not use this: they keep reading the first line.
+ */
+function bashAllowRuleMatches(
+  rule: ParsedRule,
+  command: unknown,
+  platform: NodeJS.Platform,
+): boolean {
+  if (!toolNameMatchesRule(rule.toolName, 'Bash')) return false;
+  if (rule.pattern === null) return true;
+  if (typeof command !== 'string') return false;
+  if (hasCompoundShellSyntax(command, platform)) return false;
+  return ruleMatchesCandidate(rule, 'Bash', command.trim(), false);
+}
+
+/**
  * The rule that remembers exactly this call, or `undefined` when the call has no
  * primary argument to scope one to.
  *
@@ -358,8 +380,18 @@ export function permissionRuleLadder(call: ToolCall): string[] {
   if (!exact) return [];
   if (canonicalToolName(call.name) !== 'Bash') return [exact];
 
-  const command = getPrimaryArg(call.arguments).trim();
-  if (!command || SHELL_CHAINING.test(command)) return [exact];
+  // The whole command, not its first line, and quote-blind on purpose: a quote-aware tokenizer
+  // would offer rungs with a dangling quote, such as `Bash(git commit -m "fix(x): *)`.
+  const raw = call.arguments.command;
+  const command = typeof raw === 'string' ? raw.trim() : '';
+  if (
+    !command ||
+    SHELL_CHAINING.test(command) ||
+    ANY_QUOTE.test(command) ||
+    command.includes('\r')
+  ) {
+    return [exact];
+  }
 
   const tokens = command.split(/\s+/);
   const ladder = [exact];
@@ -370,8 +402,16 @@ export function permissionRuleLadder(call: ToolCall): string[] {
   return ladder;
 }
 
-export function permissionRuleMatchesCall(rule: string, call: ToolCall): boolean {
+export function permissionRuleMatchesCall(
+  rule: string,
+  call: ToolCall,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
   const toolName = canonicalToolName(call.name);
+  // This feeds the session approve-all rules, which act as an allow.
+  if (toolName === 'Bash') {
+    return bashAllowRuleMatches(parseRule(rule), call.arguments.command, platform);
+  }
   const primaryArg = getPrimaryArg(call.arguments);
   if (toolName === 'WebFetch' && primaryArg) {
     try {
@@ -1051,8 +1091,13 @@ export function evaluatePermissionDetail(
       return { decision: 'ask', matchedRule: entry.text, source: 'ask', ...outside };
     }
   }
+  const platform = options.platform ?? process.platform;
   for (const entry of parsed.allow) {
-    if (matchesRule(entry.parsed, false)) {
+    const matched =
+      tool === 'Bash'
+        ? bashAllowRuleMatches(entry.parsed, args.command, platform)
+        : matchesRule(entry.parsed, false);
+    if (matched) {
       return { decision: 'allow', matchedRule: entry.text, source: 'allow' };
     }
   }
