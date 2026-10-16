@@ -107,4 +107,19 @@ describe('formatToolOutputFooter', () => {
       '… +1 line, 1 long line shortened (Ctrl+E)',
     );
   });
+
+  it('says what the hidden lines are lines of, with the same plural and the same hint', () => {
+    const footer = (hiddenLines: number, hint?: string) =>
+      formatToolOutputFooter({ hiddenLines, truncatedLines: 0, hint, of: 'output' });
+    expect(footer(7, 'Ctrl+E')).toBe('… +7 lines of output (Ctrl+E)');
+    expect(footer(1, 'Ctrl+E')).toBe('… +1 line of output (Ctrl+E)');
+    expect(footer(1, '')).toBe('… +1 line of output');
+    expect(footer(2)).toBe('… +2 lines of output');
+  });
+
+  it('names no subject when no lines are hidden', () => {
+    expect(
+      formatToolOutputFooter({ hiddenLines: 0, truncatedLines: 2, hint: 'Ctrl+E', of: 'output' }),
+    ).toBe('… 2 long lines shortened (Ctrl+E)');
+  });
 });

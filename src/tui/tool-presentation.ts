@@ -11,7 +11,7 @@ import { normalizePersistedTodos, type Todo } from '../tools/todo.js';
 import { stepProgress } from './steps.js';
 import { STATUS_INDICATORS } from './status-indicators.js';
 import { displayWidth, hardWrapLine, truncateDisplay, wordWrap } from './components/word-wrap.js';
-import { prepareToolOutputDisplay } from './components/tool-output.js';
+import { formatToolOutputFooter, prepareToolOutputDisplay } from './components/tool-output.js';
 import {
   CONTENT_COLUMN,
   LABEL_COLUMN_WIDTH,
@@ -899,8 +899,14 @@ export interface ToolErrorDetail {
    * and the key that shows them. An expanded detail names no key: `… +500 lines`. Set only
    * when the output kept its tail and the row budget had room for it; it reads before the
    * rows, as the lines it stands for did.
+   *
+   * A collapsed detail whose rows are a stderr message, with no hidden lines of its own, names the
+   * command's stdout instead: `… +1 line of output (Ctrl+E)`, with {@link hintBelow} set. A row
+   * draws one such footer, so the rows' own count of what they cut wins.
    */
   hint?: string;
+  /** `hint` counts the command's stdout, which `lines` do not show: it reads after the rows. */
+  hintBelow?: boolean;
   /**
    * A message word-wrapped to the row's measure, the last line ending in `…` when more was
    * cut; a failed command's output as its last {@link TOOL_ERROR_TAIL_LINES} non-blank
@@ -921,11 +927,15 @@ export interface ToolErrorDetailOptions {
    * its lines and shows the last of them. Anything else is prose: folded, word-wrapped, cut.
    */
   commandOutput?: boolean;
-  /** The command's stdout, shown instead of a message that is only `Exit code: N`. */
+  /**
+   * The command's stdout, shown instead of a message that is only `Exit code: N`. Under any other
+   * message a collapsed detail counts its non-blank lines in a footer, `… +1 line of output`.
+   */
   stdout?: string;
   /**
-   * The row's output block draws `stdout` in full under the detail. An expanded detail then shows
-   * no stdout fallback, which would draw the same lines twice. A collapsed one still tails it.
+   * The row's output block draws `stdout` under the detail. An expanded detail then shows no stdout
+   * fallback, which would draw the same lines twice. A collapsed one still tails that fallback, but
+   * names no stdout under a stderr message: the block counts what it cuts itself.
    */
   stdoutShownBelow?: boolean;
   /**
@@ -1005,6 +1015,17 @@ function wrappedTail(
   return { rows: blocks.reverse().flat(), wholeLines };
 }
 
+/**
+ * `… +1 line of output (Ctrl+E)`: how many non-blank lines of a failed command's stdout are not
+ * under its row, for a detail whose rows are the stderr. Undefined when stdout has none.
+ */
+function hiddenStdoutHint(stdout: string, expandHint: string): string | undefined {
+  const hiddenLines = nonBlankOutputLines(stdout).length;
+  return hiddenLines > 0
+    ? formatToolOutputFooter({ hiddenLines, truncatedLines: 0, hint: expandHint, of: 'output' })
+    : undefined;
+}
+
 /** A failed command's output as hint, tail rows and note, inside `maxRows`. */
 function commandOutputDetail(
   error: string,
@@ -1052,10 +1073,19 @@ function commandOutputDetail(
     strategy: 'tail',
   });
   const lines = wrapped ? wrapped.rows : tail.lines;
-  const showHint = tail.hiddenLines > 0 && lines.length + note.length + 1 <= maxRows;
+  // Under a stderr message a collapsed row says nothing of the stdout unless this footer does, and
+  // Ctrl+E skips a row that hides nothing. The tail's own count of the lines it cut comes first: a
+  // row draws one footer and names the key once. There is none when the stdout is the rows (an
+  // exit-code-only message) or an open row's output block draws it.
+  const stdoutHint =
+    tail.hiddenLines === 0 && !stdoutFallback && !expanded && !stdoutShownBelow
+      ? hiddenStdoutHint(stdout, expandHint)
+      : undefined;
+  const hint = stdoutHint ?? (tail.hiddenLines > 0 ? tail.footer : undefined);
+  const showHint = hint !== undefined && lines.length + note.length + 1 <= maxRows;
   return {
     column,
-    ...(showHint && tail.footer ? { hint: tail.footer } : {}),
+    ...(showHint ? { hint, ...(stdoutHint ? { hintBelow: true } : {}) } : {}),
     lines,
     ...(note.length > 0 ? { note } : {}),
   };
@@ -1216,8 +1246,9 @@ function lastNonBlankLines(text: string, max: number): string[] {
 /**
  * How many rows a result's error detail draws, without a width or a walk of its output: 0 for a
  * result that did not fail, {@link TOOL_ERROR_MAX_LINES} for prose, and for a command's output
- * the hint and tail (at most one row per non-blank line) plus the note's rows. Follows
- * {@link composeToolErrorDetail}'s rules; the virtual transcript sizes its spacers from it.
+ * the hint and tail (at most one row per non-blank line) plus the note's rows. The hint is one row
+ * whether it counts the stderr lines the tail cut or the stdout a stderr message leaves out.
+ * Follows {@link composeToolErrorDetail}'s rules; the virtual transcript sizes its spacers from it.
  */
 export function estimateToolErrorDetailRows(result: ToolResult | undefined): number {
   if (!result || result.status === 'success' || !result.structuredError) return 0;
@@ -1228,9 +1259,14 @@ export function estimateToolErrorDetailRows(result: ToolResult | undefined): num
     lines.pop();
     noteRows = TOOL_ERROR_NOTE_LINES;
   }
-  const shown =
-    lines.length === 1 && EXIT_CODE_ONLY.test(lines[0]!.trim())
-      ? lastNonBlankLines(result.content ?? '', TOOL_ERROR_TAIL_LINES + 1).length
-      : lines.length;
-  return Math.min(TOOL_ERROR_TAIL_LINES + 1, shown) + noteRows;
+  const stdoutIsRows = lines.length === 1 && EXIT_CODE_ONLY.test(lines[0]!.trim());
+  const shown = stdoutIsRows
+    ? lastNonBlankLines(result.content ?? '', TOOL_ERROR_TAIL_LINES + 1).length
+    : lines.length;
+  // Under a stderr message, any stdout takes the hint's row when the tail cut nothing of its own.
+  const stdoutRow =
+    !stdoutIsRows && shown + noteRows > 0 && lastNonBlankLines(result.content ?? '', 1).length > 0
+      ? 1
+      : 0;
+  return Math.min(TOOL_ERROR_TAIL_LINES + 1, shown + stdoutRow) + noteRows;
 }

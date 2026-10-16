@@ -88,6 +88,21 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A failed command's stdout is named under its stderr, and Ctrl+E reaches the row** (#480). A
+  command that failed with output on both streams showed only its stderr tail: an `npm warn` where
+  the `FAIL test/a.test.js > expected 1, got 2` that said what broke belonged. The model read both,
+  but nothing under the row said the stdout existed, and Ctrl+E skipped the row unless it was the
+  latest, because the compact transcript took it to hide nothing. The collapsed detail of a failed
+  `Bash` or `Check` now ends with `… +1 line of output (Ctrl+E)`, counting the stdout's non-blank
+  lines (only the row Ctrl+E acts on names the key; the others read `… +1 line of output`), and the
+  row counts as hiding content, so Ctrl+E picks it even when a newer row hides nothing. Pressing it
+  shows the whole stderr and the stdout in the output block, and the next press moves up to the next
+  truncated row. A stderr tail that already cuts lines keeps its own `… +N lines (Ctrl+E)`: a row
+  draws one footer and names the key once. A message that is only `Exit code: N` is unchanged, since
+  its stdout is the detail, and a row that is open (Ctrl+E, a click, or Ctrl+O's detailed
+  transcript) draws the stdout in its output block alone. A `BashOutput` read of a shell that failed
+  is a successful read of one buffer that holds both streams, so it has no stderr to put a stdout
+  under and is unchanged.
 - **A finished compaction is shown only in the transcript.** Its row, `✓ Compact conversation`,
   is now the whole record of a successful compaction: the post-compaction card and the
   `Compacted 100%` bar no longer appear above the input or linger until the next message. A

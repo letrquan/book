@@ -12,6 +12,7 @@ import {
 } from './tool-presentation.js';
 import {
   EXPANDED_OUTPUT_MAX_LINES,
+  TOOL_ERROR_COMMAND_MAX_ROWS,
   TOOL_ERROR_EXPANDED_MAX_ROWS,
   composeToolErrorDetail,
   composeToolRow,
@@ -580,9 +581,125 @@ describe('composeToolErrorDetail with a failed command', () => {
   it('keeps the message when stderr said more than the exit code', () => {
     const detail = composeToolErrorDetail(row, 'Exit code: 1\nboom', grid, {
       ...command,
-      stdout: 'ignored',
+      stdout: 'FAIL a',
     });
+    // The stdout is not the detail's source here; it is only counted, under the message.
     expect(detail.lines).toEqual(['Exit code: 1', 'boom']);
+    expect(detail.hint).toBe('… +1 line of output (Ctrl+E)');
+  });
+
+  describe('the stdout a stderr message leaves out', () => {
+    const stderr = 'npm warn config something';
+    const stdout = 'FAIL test/a.test.js > expected 1, got 2';
+    const withStdout = { ...command, stdout };
+
+    it('is named under the stderr tail, with the key', () => {
+      const detail = composeToolErrorDetail(row, stderr, grid, withStdout);
+      expect(detail.lines).toEqual([stderr]);
+      expect(detail.hint).toBe('… +1 line of output (Ctrl+E)');
+      expect(detail.hintBelow).toBe(true);
+      expect(rows(detail)).toBe(2);
+    });
+
+    it('counts the non-blank lines, and says lines from two on', () => {
+      const detail = composeToolErrorDetail(row, stderr, grid, {
+        ...command,
+        stdout: 'FAIL a\n\n  \nFAIL b\r\n\t\nFAIL c\n\n',
+      });
+      expect(detail.hint).toBe('… +3 lines of output (Ctrl+E)');
+    });
+
+    it('names no key for a row that Ctrl+E does not target', () => {
+      const detail = composeToolErrorDetail(row, stderr, grid, { ...withStdout, expandHint: '' });
+      expect(detail.hint).toBe('… +1 line of output');
+      expect(detail.hintBelow).toBe(true);
+    });
+
+    it('says nothing of a stdout with no non-blank line', () => {
+      for (const blank of [undefined, '', '\n  \n', '\t\r\n\u0007']) {
+        const detail = composeToolErrorDetail(row, stderr, grid, { ...command, stdout: blank });
+        expect(detail.hint).toBeUndefined();
+        expect(detail.hintBelow).toBeUndefined();
+        expect(detail.lines).toEqual([stderr]);
+      }
+    });
+
+    it('is not drawn where the output block draws that stdout, or in an expanded detail', () => {
+      for (const view of [
+        { expanded: true, stdoutShownBelow: true },
+        { expanded: false, stdoutShownBelow: true },
+        { expanded: true },
+      ]) {
+        const detail = composeToolErrorDetail(row, stderr, grid, { ...withStdout, ...view });
+        expect(detail.hint).toBeUndefined();
+        expect(detail.hintBelow).toBeUndefined();
+        expect(detail.lines).toEqual([stderr]);
+      }
+    });
+
+    it('leaves the exit-code-only case as it was: the stdout is the detail itself', () => {
+      const bare = composeToolErrorDetail(row, 'Exit code: 1', grid, {
+        ...command,
+        stdout: 'FAIL a\nFAIL b',
+      });
+      expect(bare.lines).toEqual(['FAIL a', 'FAIL b']);
+      expect(bare.hint).toBeUndefined();
+      const noted = composeToolErrorDetail(row, 'Exit code: 1\nNote: run it outside.', grid, {
+        ...command,
+        stdout: 'FAIL a',
+      });
+      expect(noted.lines).toEqual(['FAIL a']);
+      expect(noted.hint).toBeUndefined();
+    });
+
+    it('keeps the stderr hint when stderr hides lines of its own, and draws no second footer', () => {
+      const detail = composeToolErrorDetail(row, source(40).join('\n'), grid, withStdout);
+      expect(detail.hint).toBe('… +36 lines (Ctrl+E)');
+      expect(detail.hintBelow).toBeUndefined();
+      expect(detail.lines).toEqual(source(40).slice(-4));
+      expect(rows(detail)).toBe(5);
+    });
+
+    it('takes the row that a stderr hint would have taken from a full four-line tail', () => {
+      const detail = composeToolErrorDetail(row, source(4).join('\n'), grid, withStdout);
+      expect(detail.lines).toEqual(source(4));
+      expect(detail.hint).toBe('… +1 line of output (Ctrl+E)');
+      expect(rows(detail)).toBe(5);
+    });
+
+    it('stays inside the default budget when a sandbox note takes two rows', () => {
+      const note = `Note: ${'word '.repeat(80)}`;
+      const detail = composeToolErrorDetail(
+        row,
+        `${source(4).join('\n')}\n${note}`,
+        grid,
+        withStdout,
+      );
+      expect(detail.lines).toEqual(source(4));
+      expect(detail.note).toHaveLength(2);
+      expect(detail.hint).toBe('… +1 line of output (Ctrl+E)');
+      expect(detail.hintBelow).toBe(true);
+      expect(rows(detail)).toBe(TOOL_ERROR_COMMAND_MAX_ROWS);
+    });
+
+    it('goes first when the row budget has no room, as the stderr hint does', () => {
+      const at = (maxRows: number) =>
+        composeToolErrorDetail(row, stderr, grid, { ...withStdout, maxRows });
+      expect(at(2).hint).toBe('… +1 line of output (Ctrl+E)');
+      expect(rows(at(2))).toBe(2);
+      expect(at(1).hint).toBeUndefined();
+      expect(at(1).lines).toEqual([stderr]);
+      expect(at(0).hint).toBeUndefined();
+      expect(at(0).lines).toEqual([]);
+    });
+
+    it('never takes more rows than the budget, at any size', () => {
+      const short = `${source(2).join('\n')}\nNote: ${'word '.repeat(80)}`;
+      for (let maxRows = 0; maxRows <= 9; maxRows++) {
+        const detail = composeToolErrorDetail(row, short, grid, { ...withStdout, maxRows });
+        expect(rows(detail)).toBeLessThanOrEqual(maxRows);
+      }
+    });
   });
 
   describe('the sandbox note', () => {
@@ -814,6 +931,39 @@ describe('composeToolErrorDetail with a failed command', () => {
   });
 });
 
+describe('toolErrorDetailOptions', () => {
+  const stdout = 'FAIL test/a.test.js > expected 1, got 2';
+
+  it('reads a failure that records an exit code as a command, its content being the stdout', () => {
+    // What a failed `Bash` and a failed `Check` both return: stderr is the message, stdout the content.
+    const failed = toolFailure('npm warn config something', {
+      content: stdout,
+      details: { exitCode: 1 },
+    });
+    expect(toolErrorDetailOptions(failed)).toEqual({ commandOutput: true, stdout });
+  });
+
+  it('leaves every other message as prose', () => {
+    // A timed-out check records no exit code, and neither does a failure of any other tool.
+    expect(toolErrorDetailOptions(toolFailure('timed out', { content: stdout }))).toEqual({});
+    expect(toolErrorDetailOptions(undefined)).toEqual({});
+  });
+
+  it('finds no command in a BashOutput read of a failed shell: the read succeeded', () => {
+    // The exit code is in the shell record, and the one buffer holds both streams, so there is no
+    // stderr message to put a stdout under.
+    const read = result({
+      output: stdout,
+      data: {
+        shell: { id: 'shell-1', status: 'failed', exitCode: 2 },
+        output: stdout,
+        remaining: 0,
+      },
+    });
+    expect(toolErrorDetailOptions(read)).toEqual({});
+  });
+});
+
 describe('estimateToolErrorDetailRows', () => {
   const failure = (message: string, content = '', details?: Record<string, unknown>) =>
     toolFailure(message, { content, ...(details ? { details } : {}) });
@@ -856,6 +1006,21 @@ describe('estimateToolErrorDetailRows', () => {
     expect(rows(lines(12), 'Exit code: 1\nNote: run it outside.')).toBe(7);
   });
 
+  it('adds the row that names the stdout a stderr message leaves out', () => {
+    const rows = (message: string, content: string) =>
+      estimateToolErrorDetailRows(failure(message, content, { exitCode: 1 }));
+    // The stderr row, then `… +1 line of output (Ctrl+E)` under it.
+    expect(rows('boom', 'FAIL a')).toBe(2);
+    expect(rows(lines(4), 'FAIL a')).toBe(5);
+    expect(rows(`${lines(2)}\nNote: run it outside.`, 'FAIL a')).toBe(5);
+    // A stderr hint of its own is the row's one footer.
+    expect(rows(lines(40), 'FAIL a')).toBe(5);
+    expect(rows(`${lines(40)}\nNote: run it outside.`, lines(30))).toBe(7);
+    // Nothing to name: blank stdout, or a stdout that is the detail itself.
+    expect(rows('boom', '\n \n')).toBe(1);
+    expect(rows('Exit code: 1', lines(2))).toBe(2);
+  });
+
   it('agrees with the rows composeToolErrorDetail draws', () => {
     const grid = transcriptGrid(100);
     const row = { title: 'Bash', target: 'npm test' };
@@ -867,6 +1032,11 @@ describe('estimateToolErrorDetailRows', () => {
       ['Exit code: 1', lines(12)],
       ['Exit code: 1', ''],
       [`${lines(9)}\nNote: ${wide} ${wide} ${wide} ${wide}`, ''],
+      ['boom', 'FAIL a'],
+      [lines(4), lines(30)],
+      [lines(9), lines(3)],
+      ['Exit code: 1\nboom', 'FAIL a'],
+      [`${lines(2)}\nNote: ${wide} ${wide} ${wide} ${wide}`, lines(3)],
     ];
     for (const [message, content] of cases) {
       const result = failure(message, content, { exitCode: 1 });

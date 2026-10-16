@@ -81,13 +81,18 @@ export function formatToolOutputFooter({
   hiddenLines,
   truncatedLines,
   hint,
+  of,
 }: {
   hiddenLines: number;
   truncatedLines: number;
   hint?: string;
+  /** What the hidden lines are lines of, when the rows above them are not: `… +1 line of output`. */
+  of?: string;
 }): string {
   const parts: string[] = [];
-  if (hiddenLines > 0) parts.push(`+${hiddenLines} ${hiddenLines === 1 ? 'line' : 'lines'}`);
+  if (hiddenLines > 0) {
+    parts.push(`+${hiddenLines} ${hiddenLines === 1 ? 'line' : 'lines'}${of ? ` of ${of}` : ''}`);
+  }
   if (truncatedLines > 0)
     parts.push(`${truncatedLines} long ${truncatedLines === 1 ? 'line' : 'lines'} shortened`);
   return `… ${parts.join(', ')}${hint ? ` (${hint})` : ''}`;

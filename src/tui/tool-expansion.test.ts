@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { assistantMsg } from '../test/fixtures.js';
 import { workloadMessages, workloadRows } from '../test/tool-expand-workload.js';
+import { enrichToolResultPresentation, toolFailure } from '../tools/result.js';
 import type { Message } from '../types/messages.js';
+import type { ToolCall, ToolResult } from '../types/tools.js';
 import { getCompletedTimelineWindow } from './components/ChatPanel.js';
 import {
   selectExpandTargetId,
@@ -314,6 +316,141 @@ describe('toolRowHidesContent', () => {
         showAllToolOutput: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe('a failed command whose stdout its row leaves out', () => {
+  const STDERR = 'npm warn config something';
+  const STDOUT = 'FAIL test/a.test.js > expected 1, got 2';
+
+  interface Row {
+    call: ToolCall;
+    result: ToolResult;
+  }
+
+  /** The way Bash and Check both report a failure: stderr is the message, stdout the content. */
+  function failedCommand(
+    name: string,
+    args: Record<string, unknown>,
+    stdout = STDOUT,
+    stderr = STDERR,
+  ): Row {
+    const id = `${name}-failed`;
+    const result = enrichToolResultPresentation(
+      { ...toolFailure(stderr, { content: stdout, details: { exitCode: 1 } }), toolCallId: id },
+      name,
+      args,
+    );
+    return { call: { id, name, arguments: args }, result };
+  }
+
+  /** A newer row that hides nothing: a command that succeeded draws no body while it is collapsed. */
+  function newerOk(): Row {
+    return {
+      call: { id: 'newer-ok', name: 'Bash', arguments: { command: 'echo newer-ok' } },
+      result: { version: 2, toolCallId: 'newer-ok', status: 'success', content: 'newer-ok' },
+    };
+  }
+
+  const turn = (...rows: Row[]): Message => ({
+    ...assistantMsg(
+      '',
+      rows.map((row) => row.call),
+      rows.map((row) => row.result),
+    ),
+    id: 'turn-failed',
+  });
+
+  function hides(row: Row, view: { isExpanded?: boolean; showAllToolOutput?: boolean } = {}) {
+    return toolRowHidesContent({
+      name: row.call.name,
+      args: row.call.arguments,
+      result: row.result,
+      isExpanded: view.isExpanded ?? false,
+      transcriptMode: 'compact',
+      terminalWidth: WIDTH,
+      showAllToolOutput: view.showAllToolOutput ?? false,
+    });
+  }
+
+  describe.each([
+    ['Bash', { command: 'npm test' }],
+    ['Check', { name: 'unit' }],
+  ])('a failed %s row', (name, args) => {
+    const failed = failedCommand(name, args);
+
+    it('hides its stdout while it is collapsed, and nothing once it is shown in full', () => {
+      expect(hides(failed)).toBe(true);
+      expect(hides(failed, { isExpanded: true, showAllToolOutput: true })).toBe(false);
+    });
+
+    it('hides nothing while it is expanded and its output block draws the whole stdout', () => {
+      expect(hides(failed, { isExpanded: true })).toBe(false);
+    });
+
+    it('is the Ctrl+E target although a newer row hides nothing', () => {
+      expect(target({ messages: [turn(failed, newerOk())] })).toBe(failed.call.id);
+    });
+
+    it('is not the target without a stdout: the stdout is what the row hides', () => {
+      const stderrOnly = failedCommand(name, args, '');
+      expect(hides(stderrOnly)).toBe(false);
+      expect(target({ messages: [turn(stderrOnly, newerOk())] })).toBe('newer-ok');
+    });
+
+    it('still hides content when its stderr cuts lines of its own: that hint is the one footer', () => {
+      const stderr = Array.from({ length: 12 }, (_, i) => `error: line ${i + 1}`).join('\n');
+      const long = failedCommand(name, args, STDOUT, stderr);
+      expect(hides(long)).toBe(true);
+      expect(target({ messages: [turn(long, newerOk())] })).toBe(long.call.id);
+      expect(hides(long, { isExpanded: true, showAllToolOutput: true })).toBe(false);
+    });
+
+    it('hands the target to the next truncated row once expanded and shown in full', () => {
+      const messages = [...workloadMessages(), turn(failed, newerOk())];
+      expect(target({ messages })).toBe(failed.call.id);
+      expect(target({ messages, ...showIn(failed.call.id) })).toBe('edit-long');
+    });
+
+    it('wins as the focused row while it hides its stdout, and not once it is shown', () => {
+      const messages = [...workloadMessages(), turn(failed, newerOk())];
+      expect(target({ messages, focusedToolId: failed.call.id })).toBe(failed.call.id);
+      expect(target({ messages, focusedToolId: failed.call.id, ...showIn(failed.call.id) })).toBe(
+        'edit-long',
+      );
+    });
+  });
+
+  describe('BashOutput', () => {
+    const shellRead = (): Row => {
+      const output = Array.from({ length: 30 }, (_, i) => `row ${i}`).join('\n');
+      return {
+        call: { id: 'shell-read', name: 'BashOutput', arguments: { shell_id: 'shell-1' } },
+        result: {
+          version: 2,
+          toolCallId: 'shell-read',
+          status: 'success',
+          content: output,
+          data: { shell: { id: 'shell-1', status: 'failed', exitCode: 2 }, output, remaining: 0 },
+        },
+      };
+    };
+
+    it('hides nothing in a read of a failed shell while collapsed: the read succeeded', () => {
+      // The shell's one buffer holds both streams and no stderr is set under the row, so this is a
+      // success row like any other: it draws no body collapsed, and no footer to name a key on.
+      const read = shellRead();
+      expect(hides(read)).toBe(false);
+      expect(target({ messages: [...workloadMessages(), turn(read)] })).toBe('edit-long');
+      // Expanded, its output is drawn and cut like any command's.
+      expect(hides(read, { isExpanded: true })).toBe(true);
+    });
+
+    it('is read by the exit code a failure records, not by the tool name', () => {
+      const failed = failedCommand('BashOutput', { shell_id: 'shell-1' });
+      expect(hides(failed)).toBe(true);
+      expect(target({ messages: [turn(failed, newerOk())] })).toBe(failed.call.id);
+    });
   });
 });
 

@@ -49,8 +49,8 @@ export interface ToolRowPreviewInput {
 /**
  * Whether the compact transcript draws a body for one tool row that leaves something out: a
  * diff preview with omitted rows, an output preview with hidden lines, or a failure's collapsed
- * detail with a hint. A row whose body is not drawn hides nothing, and a row in the show-all set
- * hides nothing any more.
+ * detail with a hint (the lines its tail cut, or the stdout a stderr message leaves out). A row
+ * whose body is not drawn hides nothing, and a row in the show-all set hides nothing any more.
  *
  * It takes the values `ToolCallBlock` derives its previews from and calls the same functions,
  * so the footer a row draws and this answer cannot disagree.
