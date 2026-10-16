@@ -1875,6 +1875,13 @@ export class AgentManager {
           runtime,
         },
       );
+      // `dispose()` already recorded this run as interrupted by the process ending and aborted it.
+      // Whatever the loop reports now (cancelled by that abort, a failure, a completion that raced
+      // it) is not a new ending for the agent. The store would still take the write, because an
+      // immediate one does not ask whether it is disposed, so this is the only thing keeping the
+      // record as `dispose()` wrote it, in memory and on disk. The `catch` below does the same
+      // (#490).
+      if (this.disposed) return;
       finishRunningActivities(false);
       this.flushTextDelta(record.id);
       record.transcript = updated;

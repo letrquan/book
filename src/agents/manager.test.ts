@@ -1,5 +1,5 @@
 import { permissionResultOf } from '../permissions.js';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -14,6 +14,7 @@ import type { AtomicJsonWriter } from './atomic-json.js';
 import { repositoryHash } from './git-isolation.js';
 import type { AgentRecord, AgentRuntimeEvent, AgentSnapshot } from './types.js';
 import { createAgentRunContext } from '../types/runs.js';
+import { createTerminalOutcome } from '../types/terminal.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { evidenceTools } from '../tools/agent-tools.js';
 import { applyReviewFixes } from '../review/fix.js';
@@ -2542,16 +2543,11 @@ describe('children re-driven after a restart', () => {
     internals.store?.dispose?.();
 
     // The first manager's run is still alive here: `exitHandler()` records it as interrupted but
-    // does not abort it, because in production the process is exiting. Aborting it now with
-    // `dispose()` is no way out, because the aborted run winds down through
-    // `persist(record, 'result')`, which writes even after the store is disposed, and so replaces
-    // the `interrupted` / `process_exit` record the restart re-drives with `stopped` /
-    // `caller_cancelled`.
-    //
-    // So the first manager keeps its stub (the helper's, or the one `spawnWith` installed), and the
-    // restarted manager gets an endpoint of its own. The stub the test counts is reached only
-    // through that endpoint, so a request the first manager makes late, whenever its held request
-    // ends, cannot be mistaken for one the restarted manager made.
+    // does not abort it, because in production the process is exiting. The first manager keeps its
+    // stub (the helper's, or the one `spawnWith` installed), and the restarted manager gets an
+    // endpoint of its own. The stub the test counts is reached only through that endpoint, so a
+    // request the first manager makes late, whenever its held request ends, cannot be mistaken for
+    // one the restarted manager made.
     const firstFetch = globalThis.fetch;
     const resumedFetch = vi.fn(async (_url: unknown, _init?: RequestInit) =>
       answered('resumed answer'),
@@ -2634,10 +2630,10 @@ describe('children re-driven after a restart', () => {
         /* already disposed */
       }
       // `first.dispose()` aborts the first manager's run, which was still alive (see above), and
-      // that run winds down afterwards, on its own: `persist(record, 'result')` writes its record
-      // even though the store is disposed. Returning before it has could leave that write to land
-      // while `afterEach` removes the directory, which can fail the removal (ENOTEMPTY) or recreate
-      // the directory behind it. The manager is idle once its run has settled, after that write.
+      // that run winds down afterwards, on its own. Returning before it has could leave a late
+      // write to land while `afterEach` removes the directory, which can fail the removal
+      // (ENOTEMPTY) or recreate the directory behind it. The manager is idle once its run has
+      // settled.
       await whenIdle(first);
     }
   }
@@ -2765,6 +2761,76 @@ describe('children re-driven after a restart', () => {
     // The schedule did happen: the first manager sent a request after its held one ended. Without
     // one, the 0 above would hold for any router.
     expect(firstManagerRequestsAfterClose).toBeGreaterThanOrEqual(1);
+  });
+});
+
+/**
+ * #490. `dispose()` records every live child as interrupted by the process ending, then aborts
+ * their runs. A run that winds down afterwards must not write its own ending over that record,
+ * whichever way it ends: the agent was interrupted by the process, not stopped by the caller.
+ */
+describe('a disposed manager keeps the records it wrote (#490)', () => {
+  /** How the child's run ends once `dispose()` has recorded it as interrupted. */
+  const endings = [
+    'returns normally once aborted',
+    'reports a provider error after the dispose',
+    'completes on its own after the dispose',
+    'throws on its own after the dispose',
+  ] as const;
+
+  it.each(endings)('a child whose run %s stays interrupted / process_exit', async (ending) => {
+    const root = tempRoot();
+    const storeRoot = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const manager = new AgentManager(config, [], {
+      storeRoot,
+      findGitRoot: async () => undefined,
+      createStore: (repoHash, requestedRoot, enabled) =>
+        new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
+      runLoop: async (_config, _registry, _prompt, history, callbacks, _mode, options) => {
+        started();
+        if (ending === 'returns normally once aborted') {
+          // What the real loop does on an abort: it reports a cancelled outcome and returns.
+          await new Promise<void>((resolve) =>
+            options?.signal?.addEventListener('abort', () => resolve(), { once: true }),
+          );
+          callbacks.onTerminal?.(createTerminalOutcome('cancelled', 'caller_cancelled'));
+          return history;
+        }
+        await released;
+        if (ending === 'throws on its own after the dispose') throw new Error('provider fell over');
+        if (ending === 'reports a provider error after the dispose') {
+          callbacks.onError?.('provider fell over');
+        }
+        return history;
+      },
+    });
+
+    try {
+      const spawned = await manager.spawn({ agent: 'explorer', prompt: 'survey' });
+      await running;
+      manager.dispose();
+      release();
+      await manager.waitForIdle();
+      // A run settles a few microtasks after the loop returns; the manager is idle after that.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const file = join(storeRoot, repositoryHash(root), 'records', `${spawned.id}.json`);
+      const persisted = JSON.parse(readFileSync(file, 'utf8')) as AgentRecord;
+      expect(persisted).toMatchObject({ status: 'interrupted', stopReason: 'process_exit' });
+    } finally {
+      release();
+      manager.dispose();
+    }
   });
 });
 
