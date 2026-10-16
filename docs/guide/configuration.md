@@ -74,6 +74,12 @@ carried to another endpoint, so switching to a bare id cannot hand your Anthropi
 `https://api.openai.com/v1`. The default endpoint is `BOOK_BASE_URL` (or the legacy
 `.bookrc.json` `baseUrl`) when set, and `https://api.openai.com/v1` otherwise.
 
+**Provider requests refuse HTTP redirects.** An endpoint that answers with a 3xx fails the request
+with an error naming the redirect target (scheme, host and path only), and nothing is sent there,
+so your key and prompt never reach a URL you did not configure. The usual causes are `http` where
+the endpoint wants `https`, a missing or extra path segment such as `/v1`, or a host that has moved.
+If the target the error names is the endpoint you meant, set the provider's base URL to it.
+
 **The advisor fails closed.** `advisorModel` (and `BOOK_ADVISOR_MODEL`, and `/advisor`) is a
 request you do not make yourself, so an id that is not `<provider>/<model>` for a provider in
 `provider` is refused, and nothing is sent, unless one of these holds:

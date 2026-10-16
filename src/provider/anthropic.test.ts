@@ -8,6 +8,7 @@ import {
   markLastMessageForCaching,
 } from './anthropic.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { createRedirectFixtures } from '../test/redirect-servers.js';
 import { patchTools } from '../tools/patch.js';
 import { todoTools } from '../tools/todo.js';
 import type { ProviderMessage } from '../types/providers.js';
@@ -952,5 +953,34 @@ describe('Anthropic error classification (#244 review)', () => {
     );
     expect(event).toMatchObject({ type: 'error', errorCode: 'bad_request' });
     expect(pulled).toBeLessThanOrEqual(64 * 1024 + 3 * 16_384);
+  });
+});
+
+describe('Anthropic provider redirects (#445)', () => {
+  const fixtures = createRedirectFixtures();
+  afterEach(() => fixtures.closeAll());
+
+  it('reports a redirect as a non-retryable not_found error naming the target', async () => {
+    const fx = await fixtures.start({ status: 307 });
+    const config = defaultConfig({
+      baseUrl: fx.urlA,
+      provider: 'anthropic',
+      apiKey: 'sk-ant-SECRET',
+    });
+
+    const events = [];
+    for await (const event of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'error',
+        errorCode: 'not_found',
+        error: expect.stringContaining(`http://localhost:${fx.portB}/steal`),
+      }),
+    ]);
+    expect(fx.requestsA()).toBe(1);
+    expect(fx.requestsB()).toBe(0);
   });
 });

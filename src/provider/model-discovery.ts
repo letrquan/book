@@ -8,6 +8,7 @@ export interface DiscoveredModel {
 }
 
 import { systemClock, type Clock } from '../clock.js';
+import { isRedirectResponse, refuseRedirect } from './reliability.js';
 
 export interface ModelDiscoveryOptions {
   type: ProviderProtocol;
@@ -134,7 +135,8 @@ async function fetchWithRetry(
 
     let response: Response | undefined;
     try {
-      response = await fetchImpl(url, { ...init, signal: controller.signal });
+      // `redirect` comes after the spread so no caller can turn following back on (#445).
+      response = await fetchImpl(url, { ...init, redirect: 'manual', signal: controller.signal });
     } catch (error) {
       if (options.signal?.aborted) {
         throw new ModelDiscoveryError('Model discovery was cancelled.', 'aborted');
@@ -143,6 +145,12 @@ async function fetchWithRetry(
     } finally {
       clearTimeout(timeout);
       options.signal?.removeEventListener('abort', abortFromCaller);
+    }
+
+    // Never retried: the key must not follow a redirect, and a second ask gets the same answer.
+    if (response && isRedirectResponse(response)) {
+      const refused = await refuseRedirect(response, url);
+      throw new ModelDiscoveryError(refused.message, 'request');
     }
 
     if (response && !(RETRYABLE_STATUSES.has(response.status) || response.status >= 500)) {
