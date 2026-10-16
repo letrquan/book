@@ -813,15 +813,25 @@ describe('AgentManager lifecycle', () => {
 
   describe('stopping an apply that is running (#491)', () => {
     /** A manager whose apply never settles until it is aborted or released by the test. */
-    async function managerWithPendingApplies(options: { obeyAbort?: boolean } = {}) {
+    async function managerWithPendingApplies(
+      options: {
+        obeyAbort?: boolean;
+        persist?: boolean;
+        /** How long after its signal aborts the apply takes to end, as a pick's rollback does. */
+        settleAfterAbortMs?: number;
+        onSettled?: () => void;
+      } = {},
+    ) {
       const root = tempRoot();
+      const storeRoot = tempRoot();
       const config = defaultConfig({ workspace: root });
-      config.settings.agents.persist = false;
+      config.settings.agents.persist = options.persist ?? false;
       const signals: AbortSignal[] = [];
+      const mutationSignals: Array<AbortSignal | undefined> = [];
       const releases: Array<(status: 'applied' | 'failed') => void> = [];
       const events: AgentRuntimeEvent[] = [];
       const manager = new AgentManager(config, [], {
-        storeRoot: tempRoot(),
+        storeRoot,
         worktreeRoot: tempRoot(),
         findGitRoot: async () => root,
         createSnapshot: async () => snapshot(root),
@@ -837,11 +847,19 @@ describe('AgentManager lifecycle', () => {
                 agentId: record.id,
               }
             : undefined,
-        applyCandidate: (_snapshot, _candidate, signal) =>
+        applyCandidate: (_snapshot, _candidate, signal, applyOptions) =>
           new Promise((resolve, reject) => {
             signals.push(signal!);
+            mutationSignals.push(applyOptions?.mutationSignal);
+            // Ends on the mutation step's signal, which is what a pick's rollback follows.
+            const stopping = applyOptions?.mutationSignal ?? signal!;
             if (options.obeyAbort ?? true) {
-              signal!.addEventListener('abort', () => reject(new Error('apply cancelled')));
+              stopping.addEventListener('abort', () =>
+                setTimeout(() => {
+                  options.onSettled?.();
+                  reject(new Error('apply cancelled'));
+                }, options.settleAfterAbortMs ?? 0),
+              );
             }
             releases.push((status) =>
               status === 'applied'
@@ -878,7 +896,17 @@ describe('AgentManager lifecycle', () => {
       await manager.wait(validator.id, 1000);
       await manager.reviewEvidence(validator.id, candidate.id, 'pass');
       events.length = 0;
-      return { manager, patcher, candidate, signals, releases, events };
+      return {
+        manager,
+        patcher,
+        candidate,
+        signals,
+        mutationSignals,
+        releases,
+        events,
+        root,
+        storeRoot,
+      };
     }
 
     it('stop aborts every running apply of the agent and leaves the agent completed', async () => {
@@ -911,41 +939,133 @@ describe('AgentManager lifecycle', () => {
       manager.dispose();
     });
 
-    it('dispose aborts a running apply and the apply then records nothing', async () => {
-      const { manager, patcher, candidate, signals, events } = await managerWithPendingApplies();
+    it('dispose aborts the reads of a running apply but not its mutation step, and stop aborts both', async () => {
+      const disposed = await managerWithPendingApplies();
+      const applying = disposed.manager
+        .apply(disposed.patcher.id, disposed.candidate.id)
+        .catch((error: unknown) => error);
+      await vi.waitFor(() => expect(disposed.signals).toHaveLength(1));
+
+      disposed.manager.dispose();
+
+      // A pick that is running is left to finish: the process is about to exit, and a pick that
+      // was killed would never see its rollback run.
+      expect(disposed.signals[0]!.aborted).toBe(true);
+      expect(disposed.mutationSignals[0]!.aborted).toBe(false);
+      disposed.releases[0]!('failed');
+      expect(await applying).toBeInstanceOf(Error);
+
+      const stopped = await managerWithPendingApplies();
+      const stopping = stopped.manager
+        .apply(stopped.patcher.id, stopped.candidate.id)
+        .catch((error: unknown) => error);
+      await vi.waitFor(() => expect(stopped.signals).toHaveLength(1));
+
+      await stopped.manager.stop(stopped.patcher.id);
+
+      expect(stopped.signals[0]!.aborted).toBe(true);
+      expect(stopped.mutationSignals[0]!.aborted).toBe(true);
+      expect(await stopping).toBeInstanceOf(Error);
+      stopped.manager.dispose();
+    });
+
+    it("the caller's signal stops the mutation step too", async () => {
+      const { manager, patcher, candidate, signals, mutationSignals } =
+        await managerWithPendingApplies();
+      const caller = new AbortController();
+      const applying = manager
+        .apply(patcher.id, candidate.id, { signal: caller.signal })
+        .catch((error: unknown) => error);
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+      caller.abort();
+
+      expect(signals[0]!.aborted).toBe(true);
+      expect(mutationSignals[0]!.aborted).toBe(true);
+      expect(await applying).toBeInstanceOf(Error);
+      manager.dispose();
+    });
+
+    it('stop does not return until the apply it aborted has settled', async () => {
+      let settled = false;
+      const { manager, patcher, candidate, signals } = await managerWithPendingApplies({
+        settleAfterAbortMs: 150,
+        onSettled: () => {
+          settled = true;
+        },
+      });
+      const applying = manager.apply(patcher.id, candidate.id).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+      await manager.stop(patcher.id);
+
+      // The rollback of a stopped pick is what "Stopped" has to wait for.
+      expect(settled).toBe(true);
+      expect(await applying).toBeInstanceOf(Error);
+      manager.dispose();
+    });
+
+    it('stop resolves when the apply it aborted rejects', async () => {
+      const { manager, patcher, candidate, signals } = await managerWithPendingApplies();
+      const applying = manager.apply(patcher.id, candidate.id).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+      await expect(manager.stop(patcher.id)).resolves.toMatchObject({ status: 'completed' });
+      expect(await applying).toBeInstanceOf(Error);
+      manager.dispose();
+    });
+
+    it('an apply that ends applied after dispose is recorded in memory, but not emitted', async () => {
+      // An apply function that ignores the abort and ends on its own afterwards.
+      const { manager, patcher, candidate, signals, releases, events } =
+        await managerWithPendingApplies({ obeyAbort: false });
+      const applying = manager.apply(patcher.id, candidate.id);
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+      manager.dispose();
+      releases[0]!('applied');
+
+      await expect(applying).resolves.toMatchObject({ status: 'applied' });
+      expect(events.filter((event) => event.type === 'agent_apply')).toEqual([]);
+      expect((await manager.get(patcher.id))?.applicationStatus).toBe('applied');
+    });
+
+    it('persists an apply that ends applied after dispose, without emitting it', async () => {
+      const { manager, patcher, candidate, signals, releases, events, root, storeRoot } =
+        await managerWithPendingApplies({ obeyAbort: false, persist: true });
+      const applying = manager.apply(patcher.id, candidate.id);
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+      manager.dispose();
+      releases[0]!('applied');
+      await expect(applying).resolves.toMatchObject({ status: 'applied' });
+
+      // What the next session reads: the pick is on the operator's branch, and the record says so.
+      const reader = new AgentStore(repositoryHash(root), storeRoot, true, UNCONTENDED);
+      try {
+        expect(reader.loadAgent(patcher.id)).toMatchObject({
+          status: 'completed',
+          applicationStatus: 'applied',
+        });
+      } finally {
+        reader.dispose();
+      }
+      expect(events.filter((event) => event.type === 'agent_apply')).toEqual([]);
+    });
+
+    it('an apply that fails after dispose leaves the record as it was', async () => {
+      const { manager, patcher, candidate, signals, releases, events } =
+        await managerWithPendingApplies({ obeyAbort: false });
       const applying = manager.apply(patcher.id, candidate.id).catch((error: unknown) => error);
       await vi.waitFor(() => expect(signals).toHaveLength(1));
 
       manager.dispose();
+      releases[0]!('failed');
 
-      expect(signals[0]!.aborted).toBe(true);
       expect(await applying).toBeInstanceOf(Error);
       expect(events.filter((event) => event.type === 'agent_apply')).toEqual([]);
       expect((await manager.get(patcher.id))?.applicationStatus).not.toBe('applied');
     });
-
-    it.each(['applied', 'failed'] as const)(
-      'an apply that ends %s after dispose does not persist or emit',
-      async (status) => {
-        // An apply function that ignores the abort and ends on its own afterwards.
-        const { manager, patcher, candidate, signals, releases, events } =
-          await managerWithPendingApplies({ obeyAbort: false });
-        const applying = manager.apply(patcher.id, candidate.id).then(
-          (result) => result,
-          (error: unknown) => error,
-        );
-        await vi.waitFor(() => expect(signals).toHaveLength(1));
-
-        manager.dispose();
-        releases[0]!(status);
-        const outcome = await applying;
-
-        if (status === 'applied') expect(outcome).toMatchObject({ status: 'applied' });
-        else expect(outcome).toBeInstanceOf(Error);
-        expect(events.filter((event) => event.type === 'agent_apply')).toEqual([]);
-        expect((await manager.get(patcher.id))?.applicationStatus).not.toBe('applied');
-      },
-    );
 
     it('does not start an apply once the manager is disposed', async () => {
       const { manager, patcher, candidate, signals } = await managerWithPendingApplies();

@@ -1176,12 +1176,45 @@ async function unmergedPathsAfterFailure(repoRoot: string): Promise<string[]> {
   }
 }
 
+/**
+ * What a caller can say about how an apply may be stopped, beyond the `signal` it is given.
+ *
+ * `signal` stops the apply's **reads**: the candidate resolution, the pending-pick check, the
+ * fingerprint, the delta, the pre-check and the signing configuration read. Those are where an
+ * operator's slow `gpg.ssh.defaultKeyCommand` can hold an apply for up to 30 s per call (#491), and
+ * none of them has written anything, so a stop there leaves nothing behind.
+ *
+ * `mutationSignal` stops the **mutation step**: the `cherry-pick`, or the `git apply -` of a dirty
+ * workspace. It is separate because stopping that step is not free: a stop SIGTERMs the pick and
+ * relies on the unsignalled `cherry-pick --abort` that follows to put the operator's repository
+ * back, and a caller whose process exits right after it aborts (`dispose()`) never lets that
+ * cleanup run. A caller that wants the reads stopped and nothing after them passes a signal here
+ * that it never aborts. Absent, the mutation step uses `signal`, so a caller that passes one signal
+ * gets one behaviour for all of it.
+ */
+export interface ApplyCandidateOptions {
+  mutationSignal?: AbortSignal;
+}
+
 export async function applyVerifiedCandidate(
   snapshot: AgentSnapshot,
   candidate: PatchCandidate,
   signal?: AbortSignal,
+  options?: ApplyCandidateOptions,
 ): Promise<AgentApplyResult> {
-  return applyCandidate(snapshot, candidate, signal, DEFAULT_MAX_BUFFER_BYTES);
+  return applyCandidate(snapshot, candidate, signal, DEFAULT_MAX_BUFFER_BYTES, options);
+}
+
+/**
+ * The error a stop ends an apply with, in place of a result.
+ *
+ * A stop is not a conflict the operator had: a returned `conflicted` is persisted and emitted as
+ * one. So the apply throws, and the message carries what the operator needs to know about the
+ * repository the stop left behind: whether the rollback ran, and what was unmerged.
+ */
+function stoppedApplyError(signal: AbortSignal | undefined, step: string, outcome: string): Error {
+  const reason = typeof signal?.reason === 'string' ? ` (${signal.reason})` : '';
+  return new Error(`The apply was stopped${reason} during ${step}. ${outcome}`);
 }
 
 /**
@@ -1206,7 +1239,9 @@ async function applyCandidate(
   candidate: PatchCandidate,
   signal: AbortSignal | undefined,
   signingBuffer: number,
+  options?: ApplyCandidateOptions,
 ): Promise<AgentApplyResult> {
+  const mutationSignal = options?.mutationSignal ?? signal;
   if (candidate.baseCommit !== snapshot.commit) {
     return {
       status: 'conflicted',
@@ -1247,6 +1282,11 @@ async function applyCandidate(
   try {
     await precheckDelta(snapshot, patch, signal);
   } catch (error) {
+    // Read before anything else: a stop is not a pre-check that failed on the patch.
+    const stopped = signal?.aborted === true;
+    if (stopped) {
+      throw stoppedApplyError(signal, 'the patch pre-check', 'No changes were applied.');
+    }
     return {
       status: 'conflicted',
       error: `Patch pre-check failed; no changes were applied: ${error instanceof Error ? error.message : String(error)}`,
@@ -1288,19 +1328,19 @@ async function applyCandidate(
       // Bounded because this is the one call that can start a program the operator named: a
       // signer waiting on a passphrase it will never be given is a hang, and an unbounded one
       // would outlive the session. The abort below then cleans up the pick this call started.
+      // Stopped by `mutationSignal` and not `signal`: see {@link ApplyCandidateOptions}.
       await git(snapshot.repoRoot, [...signingPins, 'cherry-pick', candidate.headCommit], {
         timeoutMs: CHERRY_PICK_TIMEOUT_MS,
-        signal,
+        signal: mutationSignal,
       });
-      const appliedCommit = (
-        await git(snapshot.repoRoot, ['rev-parse', 'HEAD'], { signal })
-      ).stdout.trim();
-      return { status: 'applied', commit: appliedCommit };
     } catch (error) {
+      // Whether it was a stop is read before the rollback runs, which takes its time and is what
+      // a later abort would otherwise be mistaken for.
+      const stopped = mutationSignal?.aborted === true;
       // Read what the pick left behind before the rollback removes it, and report whether the
       // rollback actually ran: see {@link cherryPickFailureResult} for why those are two
       // questions and not one.
-      // Deliberately without `signal`, here and in the abort below: this is the cleanup of a pick
+      // Deliberately without a signal, here and in the abort below: this is the cleanup of a pick
       // that a stop may be the reason for, and a call that an aborted signal refuses to start would
       // leave the operator's repository mid-pick.
       const unmergedPaths = await unmergedPathsAfterFailure(snapshot.repoRoot);
@@ -1313,18 +1353,44 @@ async function applyCandidate(
       } catch (abortFailure) {
         abortError = abortFailure instanceof Error ? abortFailure.message : String(abortFailure);
       }
+      if (stopped) {
+        throw stoppedApplyError(
+          mutationSignal,
+          'the cherry-pick',
+          [
+            abortError
+              ? `The rollback did not complete (${abortError}), so this repository may be left mid-cherry-pick: finish it with git cherry-pick --continue or undo it with git cherry-pick --abort.`
+              : 'The cherry-pick was rolled back.',
+            unmergedPaths.length > 0 ? `Unmerged paths: ${unmergedPaths.join(', ')}.` : undefined,
+          ]
+            .filter(Boolean)
+            .join(' '),
+        );
+      }
       return cherryPickFailureResult({
         pickError: error instanceof Error ? error.message : String(error),
         abortError,
         unmergedPaths,
       });
     }
+    // Outside the `try`, and without a signal: a pick that returned has landed, so a stop that
+    // arrives now must not run the rollback, which would find nothing to abort and report a commit
+    // on the operator's branch as rolled back.
+    const appliedCommit = (await git(snapshot.repoRoot, ['rev-parse', 'HEAD'])).stdout.trim();
+    return { status: 'applied', commit: appliedCommit };
   }
 
   try {
-    await git(snapshot.repoRoot, ['apply', '-'], { input: patch, signal });
+    await git(snapshot.repoRoot, ['apply', '-'], { input: patch, signal: mutationSignal });
     return { status: 'applied', commit: candidate.headCommit };
   } catch (error) {
+    if (mutationSignal?.aborted) {
+      throw stoppedApplyError(
+        mutationSignal,
+        'git apply',
+        'git apply was cut short, so check git status before applying again: the working tree may be partly changed.',
+      );
+    }
     return {
       status: 'conflicted',
       error: `Patch application failed: ${error instanceof Error ? error.message : String(error)}`,

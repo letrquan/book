@@ -23,6 +23,7 @@ import { evidenceTools } from '../tools/agent-tools.js';
 import { applyReviewFixes } from '../review/fix.js';
 import { fixRunnerFor } from '../review/runner.js';
 import { AgentManager } from './manager.js';
+import { AgentStore } from './store.js';
 import { canonicalizePath } from '../tools/path-utils.js';
 import {
   applyVerifiedCandidate,
@@ -32,6 +33,7 @@ import {
   findGitRoot,
   removeAgentWorktree,
   removeSnapshotRef,
+  repositoryHash,
 } from './git-isolation.js';
 import {
   applyVerifiedCandidateForTest,
@@ -1782,19 +1784,57 @@ describe('stopping an agent while its result is being applied (#491)', () => {
    * snapshot, worktree and committed candidate, and whose apply function is the real one, given
    * whatever signal the manager gives it. A stub for the apply would only prove the plumbing.
    */
-  async function applyUnderManager() {
+  async function applyUnderManager(
+    scenario: {
+      /**
+       * The operator signs with a program that takes a few seconds and then signs, so the
+       * cherry-pick itself is slow but finite, instead of a key command that never ends.
+       */
+      slowSigner?: boolean;
+      /** Whether the manager writes its records to a store the test can read back. */
+      persist?: boolean;
+    } = {},
+  ) {
     const sandbox = mkdtempSync(join(tmpdir(), 'book-apply-stop-'));
     roots.push(sandbox);
     const root = repository(join(sandbox, 'repo'));
     const pidFile = join(sandbox, 'key-command.pid');
     keyPidFile = pidFile;
-    const keyCommand = join(sandbox, 'key-command.sh');
-    writeFileSync(keyCommand, `#!/bin/sh\necho $$ > '${forwardSlashes(pidFile)}'\nexec sleep 60\n`);
-    chmodSync(keyCommand, 0o755);
-    writeGlobalConfig(
-      `[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n[gpg "ssh"]\n\tdefaultKeyCommand = ${forwardSlashes(keyCommand)}\n`,
-    );
-    git(root, 'config', 'user.signingKey', 'REPOSITORY-CHOSEN-KEY');
+    if (scenario.slowSigner) {
+      // Git's `gpg.program` contract: read the payload, answer `SIG_CREATED` on the status fd and
+      // the signature on stdout. The pid is written first, so the test knows the pick is inside
+      // its signing call and nowhere else.
+      const signer = join(sandbox, 'slow-signer.sh');
+      writeFileSync(
+        signer,
+        [
+          '#!/bin/sh',
+          `echo $$ > '${forwardSlashes(pidFile)}'`,
+          'cat > /dev/null',
+          'sleep 3',
+          "echo '[GNUPG:] SIG_CREATED ' >&2",
+          'echo -----BEGIN PGP SIGNATURE-----',
+          'echo c2xvdw==',
+          'echo -----END PGP SIGNATURE-----',
+          '',
+        ].join('\n'),
+      );
+      chmodSync(signer, 0o755);
+      writeGlobalConfig(
+        `[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = ${forwardSlashes(signer)}\n`,
+      );
+    } else {
+      const keyCommand = join(sandbox, 'key-command.sh');
+      writeFileSync(
+        keyCommand,
+        `#!/bin/sh\necho $$ > '${forwardSlashes(pidFile)}'\nexec sleep 60\n`,
+      );
+      chmodSync(keyCommand, 0o755);
+      writeGlobalConfig(
+        `[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n[gpg "ssh"]\n\tdefaultKeyCommand = ${forwardSlashes(keyCommand)}\n`,
+      );
+      git(root, 'config', 'user.signingKey', 'REPOSITORY-CHOSEN-KEY');
+    }
 
     const snapshot = await createSyntheticSnapshot(root, true);
     const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-apply-stop-wt-'));
@@ -1807,7 +1847,7 @@ describe('stopping an agent while its result is being applied (#491)', () => {
     const storeRoot = mkdtempSync(join(tmpdir(), 'book-apply-stop-store-'));
     roots.push(storeRoot);
     const config = defaultConfig({ workspace: root });
-    config.settings.agents.persist = false;
+    config.settings.agents.persist = scenario.persist ?? false;
     const manager: AgentManager = new AgentManager(config, evidenceTools, {
       storeRoot,
       worktreeRoot,
@@ -1817,8 +1857,8 @@ describe('stopping an agent while its result is being applied (#491)', () => {
       checkoutWorktree: async () => {},
       commitWork: async (record) =>
         record.role === 'patcher' ? { ...candidate, agentId: record.id } : undefined,
-      applyCandidate: (_snapshot, _candidate, signal) =>
-        applyVerifiedCandidate(snapshot, candidate, signal),
+      applyCandidate: (_snapshot, _candidate, signal, options) =>
+        applyVerifiedCandidate(snapshot, candidate, signal, options),
       runLoop: async (_childConfig, registry, prompt, history, callbacks, mode, options) => {
         if (options?.agentRole === 'validator') {
           const evidenceId = (await manager.listEvidence({ includeUnverified: true })).find(
@@ -1892,7 +1932,30 @@ describe('stopping an agent while its result is being applied (#491)', () => {
     const operatorBranchUnchanged = () =>
       readFileSync(join(root, 'staged.txt'), 'utf8').replace(/\r\n/g, '\n') === 'base staged.txt\n';
 
-    return { manager, keyCommandPid, verifiedPatcher, operatorBranchUnchanged };
+    /** No cherry-pick is left half done in the operator's repository. */
+    const noPickInProgress = () => !existsSync(join(root, '.git', 'CHERRY_PICK_HEAD'));
+
+    /** The agent's record as the next session would read it from disk. */
+    const recordOnDisk = (agentId: string): AgentRecord | undefined => {
+      const reader = new AgentStore(repositoryHash(root), storeRoot, true, {
+        writerOptions: { sleep: () => {} },
+      });
+      try {
+        return reader.loadAgent(agentId);
+      } finally {
+        reader.dispose();
+      }
+    };
+
+    return {
+      manager,
+      root,
+      keyCommandPid,
+      verifiedPatcher,
+      operatorBranchUnchanged,
+      noPickInProgress,
+      recordOnDisk,
+    };
   }
 
   it.skipIf(process.platform === 'win32')(
@@ -1998,6 +2061,77 @@ describe('stopping an agent while its result is being applied (#491)', () => {
     },
     15_000,
   );
+
+  describe('while the cherry-pick itself is running', () => {
+    it.skipIf(process.platform === 'win32')(
+      'lets a pick that has started finish when the manager is disposed, and records it',
+      async () => {
+        const { manager, keyCommandPid, verifiedPatcher, noPickInProgress, recordOnDisk, root } =
+          await applyUnderManager({ slowSigner: true, persist: true });
+        const { patcher, evidenceId } = await verifiedPatcher();
+        const applying = manager.apply(patcher.id, evidenceId).then(
+          (result) => result,
+          (error: unknown) => error,
+        );
+        // The signer is running, so the pick is inside its commit and no read is left.
+        await keyCommandPid();
+
+        manager.dispose();
+        const outcome = await applying;
+
+        // dispose() stops the reads and nothing after them: the pick was not killed, so there is
+        // no rollback that a process exit would have cut off.
+        expect(outcome).toMatchObject({ status: 'applied' });
+        expect(noPickInProgress()).toBe(true);
+        expect(readFileSync(join(root, 'staged.txt'), 'utf8').replace(/\r\n/g, '\n')).toBe(
+          'agent value\n',
+        );
+        expect(git(root, 'cat-file', 'commit', 'HEAD')).toContain('gpgsig');
+        // The manager and its store were disposed before the pick ended, and the fact is on disk.
+        expect(recordOnDisk(patcher.id)).toMatchObject({
+          status: 'completed',
+          applicationStatus: 'applied',
+        });
+      },
+      30_000,
+    );
+
+    it.skipIf(process.platform === 'win32')(
+      'ends the apply with an error when its agent is stopped, and leaves the repository alone',
+      async () => {
+        const {
+          manager,
+          keyCommandPid,
+          verifiedPatcher,
+          noPickInProgress,
+          operatorBranchUnchanged,
+        } = await applyUnderManager({ slowSigner: true });
+        try {
+          const { patcher, evidenceId } = await verifiedPatcher();
+          const before = (await manager.get(patcher.id))?.applicationStatus;
+          const applying = manager.apply(patcher.id, evidenceId).then(
+            (result) => result,
+            (error: unknown) => error,
+          );
+          await keyCommandPid();
+
+          await manager.stop(patcher.id);
+          const outcome = await applying;
+
+          // A stop is an error naming the stop, not a conflict the operator never had.
+          expect(outcome).toBeInstanceOf(Error);
+          expect((outcome as Error).message).toMatch(/stopped/i);
+          expect((outcome as Error).message).toMatch(/rolled back/i);
+          expect(noPickInProgress()).toBe(true);
+          expect(operatorBranchUnchanged()).toBe(true);
+          expect((await manager.get(patcher.id))?.applicationStatus).toBe(before);
+        } finally {
+          manager.dispose();
+        }
+      },
+      30_000,
+    );
+  });
 });
 
 describe('how failures are described (#357)', () => {

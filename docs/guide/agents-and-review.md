@@ -70,8 +70,13 @@ findings rather than presenting its own stopped passes as a result. `Ctrl+C` can
 without exiting; once it is cancelled, exiting takes the usual two presses (the first shows "Press
 Ctrl+C again to exit"). A cancelled `--fix` pass reports what it had already
 committed before stopping, and cancelling while a verified fix is being applied stops the apply
-itself, including a signing key command it is waiting on; stopping an agent (`AgentStop`) or
-closing the session does the same for an apply of that agent's result. Progress is a
+itself, including a signing key command it is waiting on; stopping an agent (`AgentStop`) does the
+same for an apply of that agent's result, and `AgentStop` returns only once the apply has ended and
+any cherry-pick it cut short has been rolled back. A stop ends the apply with an error that names the
+stop and says how the rollback went (and which paths were left unmerged),
+not with a conflict, so it is never reported as a failed fix. Closing the session stops only the
+apply's reads: a cherry-pick that has already started is left to finish, and its outcome is still
+recorded. Progress is a
 streaming-host feature: a print run has no silence to break, so its stdout stays exactly the report (the same target is on `data.target`).
 
 A plain `/review` runs one structured pass. `--deep` fans out four specialized reviewers

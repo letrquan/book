@@ -180,17 +180,34 @@ describe('applyReviewFixes cancellation', () => {
     expect(result.messages).toEqual(['Stopped while applying src/a.ts: review cancelled.']);
   });
 
-  it('reports an apply that returns unapplied after the abort as a stop too', async () => {
+  it('counts an apply that returns conflicted after the abort as a failed fix, not a stop', async () => {
     const controller = new AbortController();
     const runner = makeRunner();
     runner.apply = async () => {
       controller.abort();
-      return { status: 'not_applied', error: 'cancelled' };
+      return { status: 'conflicted', error: 'Patch pre-check failed' };
     };
 
     const result = await applyReviewFixes(runner, [finding], { signal: controller.signal });
 
-    expect(result).toMatchObject({ cancelled: true, applied: 0, failed: 0 });
+    // A returned result is a real outcome; a stop ends an apply by throwing.
+    expect(result).toMatchObject({ applied: 0, failed: 1 });
+    expect(result.cancelled).toBeUndefined();
+    expect(result.messages.join('\n')).toContain('conflicted');
+  });
+
+  it('counts an apply that returns applied after the abort as applied', async () => {
+    const controller = new AbortController();
+    const runner = makeRunner();
+    runner.apply = async () => {
+      controller.abort();
+      return { status: 'applied', commit: 'abc123' };
+    };
+
+    const result = await applyReviewFixes(runner, [finding], { signal: controller.signal });
+
+    expect(result).toMatchObject({ applied: 1, failed: 0 });
+    expect(result.cancelled).toBeUndefined();
   });
 
   it('still counts an apply that failed with no abort as a failed fix', async () => {

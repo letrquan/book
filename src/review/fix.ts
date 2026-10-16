@@ -187,7 +187,8 @@ export async function applyReviewFixes(
         applied = await runner.apply(patcher.id, candidate.id, { signal: options.signal });
       } catch (error) {
         if (!options.signal?.aborted) throw error;
-        // The abort is what ended the apply: a stop, not a fix that failed.
+        // A stop ends an apply by throwing; a result that was *returned* is a real outcome, applied
+        // or not, whatever the signal says by now.
         result.cancelled = true;
         result.messages.push(`Stopped while applying ${finding.file}: ${REVIEW_CANCELLED}.`);
         break;
@@ -197,11 +198,6 @@ export async function applyReviewFixes(
         result.messages.push(
           `Applied fix for ${finding.file}${applied.commit ? ` (${applied.commit})` : ''}.`,
         );
-      } else if (options.signal?.aborted) {
-        // An apply the cancel cut short is a stop, not a fix that failed on its merits.
-        result.cancelled = true;
-        result.messages.push(`Stopped while applying ${finding.file}: ${REVIEW_CANCELLED}.`);
-        break;
       } else {
         result.failed++;
         result.messages.push(
