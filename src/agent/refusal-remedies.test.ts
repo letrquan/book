@@ -156,6 +156,8 @@ describe('the remedy catalog', () => {
 
   it('points a streak of unparsed arguments at the route, not at a permission', () => {
     expect(REFUSAL_REMEDIES.malformed).toContain('never parsed as JSON');
+    expect(REFUSAL_REMEDIES.malformed).toContain('invalid_json_arguments:truncated_start');
+    expect(REFUSAL_REMEDIES.malformed).toContain('invalid_json_arguments:empty');
     expect(REFUSAL_REMEDIES.malformed).not.toContain('grant the permission');
   });
 });

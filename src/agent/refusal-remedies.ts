@@ -107,7 +107,7 @@ export const REFUSAL_REMEDIES: Readonly<Record<LocalRefusalKind, string>> = {
   question:
     'the model asked the user questions this run cannot put to anyone (dontAsk mode, or a declined question); it has to proceed without asking',
   malformed:
-    "the calls could not run as sent (arguments that never parsed as JSON or failed the tool's schema, or a tool that does not exist), which no permission rule or mode lifts; the model has to correct them, and if `book tool-stats` shows invalid_json_arguments:truncated_start the provider route is dropping the first fragment of calls",
+    "the calls could not run as sent (arguments that never parsed as JSON or failed the tool's schema, or a tool that does not exist), which no permission rule or mode lifts; the model has to correct them, and if `book tool-stats` shows invalid_json_arguments:truncated_start the provider route is dropping the first fragment of calls, and invalid_json_arguments:empty means the route is dropping the arguments of tool calls",
   other:
     "the calls were refused for a reason no permission rule or mode lifts; each refused call's own message names the cause",
 };

@@ -268,6 +268,73 @@ describe('tool argument validation', () => {
     expect(result.status).toBe('success');
     expect(result.data).toEqual({ pattern: 'x' });
   });
+
+  describe('refuses a definition whose ignored argument is also a real one (#449)', () => {
+    const search = (overrides: Record<string, unknown>) => ({
+      name: 'Search',
+      description: 'Search',
+      parameters: {
+        type: 'object',
+        properties: { pattern: { type: 'string' }, i: { type: 'boolean' } },
+        required: ['pattern'],
+      },
+      execute: async () => toolSuccess('ok'),
+      ...overrides,
+    });
+
+    it('rejects an ignored argument that is a schema property', () => {
+      expect(() =>
+        createRegistry().register(search({ ignoredArguments: ['pattern'] })),
+      ).toThrowError(/Search.*pattern/s);
+    });
+
+    it('rejects an ignored argument that is an alias key', () => {
+      expect(() =>
+        createRegistry().register(
+          search({ ignoredArguments: ['-i'], argumentAliases: { '-i': 'i' } }),
+        ),
+      ).toThrowError(/Search.*-i/s);
+    });
+
+    it('rejects an ignored argument that is an alias target', () => {
+      expect(() =>
+        createRegistry().register(
+          search({ ignoredArguments: ['filter'], argumentAliases: { '-i': 'filter' } }),
+        ),
+      ).toThrowError(/Search.*filter/s);
+    });
+
+    it('rejects it through registerAll too', () => {
+      expect(() =>
+        createRegistry().registerAll([search({ ignoredArguments: ['i'] })]),
+      ).toThrowError(/Search.*"i"/s);
+    });
+
+    it('accepts an ignored argument that is none of those', () => {
+      expect(() =>
+        createRegistry().register(
+          search({ ignoredArguments: ['n', '-n'], argumentAliases: { '-i': 'i' } }),
+        ),
+      ).not.toThrow();
+    });
+
+    it('registers every default tool', () => {
+      expect(() => createDefaultRegistry()).not.toThrow();
+    });
+  });
+
+  it('shows hooks and permission rules Grep -i as i and no -n (#449)', () => {
+    const normalized = createDefaultRegistry().normalizeCall({
+      id: 'grep-flags',
+      name: 'Grep',
+      arguments: { pattern: 'x', '-i': true, '-n': true },
+    });
+
+    expect(normalized.arguments).toEqual({ pattern: 'x', i: true });
+    expect(normalized.arguments).not.toHaveProperty('-i');
+    expect(normalized.arguments).not.toHaveProperty('-n');
+    expect(normalized.arguments).not.toHaveProperty('n');
+  });
 });
 
 describe('cross-harness argument compatibility', () => {
@@ -896,6 +963,83 @@ describe('typed unparsed arguments', () => {
     expect(distinct.structuredError?.remediation ?? '').not.toContain('already failed');
     expect(repeat.structuredError?.remediation ?? '').toContain('already failed');
     runtime.dispose();
+  });
+
+  describe('arguments empty on the wire (#403)', () => {
+    it('rejects the call as an empty wire shape, retryable, blaming the route', async () => {
+      const { registry, execute } = editLikeRegistry();
+
+      const result = await registry.execute(
+        { id: 'empty-1', name: 'Edit', arguments: {}, emptyOnWire: true },
+        ctx,
+      );
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(result.status).toBe('error');
+      expect(result.structuredError?.code).toBe('invalid_json_arguments');
+      expect(result.structuredError?.details?.shape).toBe('empty');
+      expect(result.structuredError?.retryable).toBe(true);
+      expect(result.structuredError?.message).toMatch(/empty/i);
+      expect(result.structuredError?.remediation).toMatch(/provider|router|route/i);
+    });
+
+    it('does not tell the model to stop retrying an identical resend', async () => {
+      const { registry } = editLikeRegistry();
+      const runtime = new SessionRuntime();
+      const context: ToolContext = { workspaceRoot: dir, env: {}, runtime };
+      const call = { name: 'Edit', arguments: {}, emptyOnWire: true as const };
+
+      await registry.execute({ id: 'empty-a', ...call }, context);
+      const second = await registry.execute({ id: 'empty-b', ...call }, context);
+      const third = await registry.execute({ id: 'empty-c', ...call }, context);
+
+      for (const result of [second, third]) {
+        expect(result.structuredError?.details?.shape).toBe('empty');
+        expect(result.structuredError?.remediation ?? '').not.toContain(
+          'Do not retry it unchanged',
+        );
+        expect(result.structuredError?.remediation ?? '').not.toContain('already failed');
+      }
+      runtime.dispose();
+    });
+
+    it('rejectBeforeGates returns the same rejection', () => {
+      const { registry } = editLikeRegistry();
+
+      const result = registry.rejectBeforeGates(
+        { id: 'empty-2', name: 'Edit', arguments: {}, emptyOnWire: true },
+        ctx,
+      );
+
+      expect(result?.structuredError?.details?.shape).toBe('empty');
+    });
+
+    it('still runs a tool with no required arguments, with {}', async () => {
+      const execute = vi.fn(async () => toolSuccess('ok'));
+      const registry = createRegistry();
+      registry.register({
+        name: 'Listing',
+        description: 'no required arguments',
+        parameters: { type: 'object', properties: { path: { type: 'string' } } },
+        execute,
+      });
+
+      const result = await registry.execute(
+        { id: 'empty-3', name: 'Listing', arguments: {}, emptyOnWire: true },
+        ctx,
+      );
+
+      expect(result.status).toBe('success');
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not reject a call streamed as a literal {} for a tool with required arguments as a wire shape', async () => {
+      const { registry } = editLikeRegistry();
+
+      const result = await registry.execute({ id: 'empty-4', name: 'Edit', arguments: {} }, ctx);
+
+      expect(result.structuredError?.code).toBe('invalid_arguments');
+    });
   });
 
   it('keeps a session-persisted {__raw} arguments object working as before', async () => {

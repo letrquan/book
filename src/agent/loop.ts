@@ -38,6 +38,7 @@ import {
 import { maskAtGate, maskBeforeCompacting } from './tool-output-masking.js';
 import { hasDeclaredContextWindow, resolveContextLimit, resolveModelKey } from '../models.js';
 import { compactsOnSessionModel } from '../config.js';
+import { collectProviderSecrets, redactToolResultSecrets } from '../provider-secrets.js';
 import { GOAL_DEFAULT_BLOCK_CAP, evaluateGoal, goalFeedbackMessage } from './goal.js';
 import type { GoalVerdict } from '../types/goal.js';
 import {
@@ -141,6 +142,8 @@ const SKILL_INFRASTRUCTURE_TOOLS = new Set(['InvokeSkill', 'ReadSkillResource', 
 const SHARED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'auth',
   'quota',
+  'usage_limit',
+  'rate_limit_wait',
   'network',
   'timeout',
   'rate_limited',
@@ -718,6 +721,7 @@ export async function runAgentLoop(
     memorySearchRoot: config.memoryContext?.dir,
     additionalRoots,
     memoryWrite,
+    providerSecrets: collectProviderSecrets(config),
     env: process.env as Record<string, string>,
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,
@@ -2004,6 +2008,10 @@ export async function runAgentLoop(
         const statedOverflow =
           !rateLimitedBySize &&
           streamErrorCode !== 'rate_limited' &&
+          // A 429 that states a long wait or a spent plan limit is a rate limit whatever else
+          // its text says (Bedrock's "Too many tokens, please wait"): never an overflow.
+          streamErrorCode !== 'rate_limit_wait' &&
+          streamErrorCode !== 'usage_limit' &&
           (streamErrorCode === 'context_overflow' || isContextOverflowError(streamError));
         const overflowBySize =
           !statedOverflow &&
@@ -2284,17 +2292,25 @@ export async function runAgentLoop(
                             message: streamError,
                             providerCode: streamErrorCode,
                           })
-                        : streamErrorCode === 'output_cap'
-                          ? createTerminalOutcome('failed', 'output_cap', {
+                        : // A spent plan limit, or a stated wait the retry layer cannot sit out
+                          // (#409): not a key to rotate, a reset to wait for.
+                          streamErrorCode === 'usage_limit' || streamErrorCode === 'rate_limit_wait'
+                          ? createTerminalOutcome('failed', 'quota_exhausted', {
                               partialOutput: hasPartialOutput(),
                               message: streamError,
                               providerCode: streamErrorCode,
                             })
-                          : createTerminalOutcome('failed', 'provider_error', {
-                              partialOutput: hasPartialOutput(),
-                              message: streamError,
-                              providerCode: streamErrorCode,
-                            });
+                          : streamErrorCode === 'output_cap'
+                            ? createTerminalOutcome('failed', 'output_cap', {
+                                partialOutput: hasPartialOutput(),
+                                message: streamError,
+                                providerCode: streamErrorCode,
+                              })
+                            : createTerminalOutcome('failed', 'provider_error', {
+                                partialOutput: hasPartialOutput(),
+                                message: streamError,
+                                providerCode: streamErrorCode,
+                              });
 
         // A transport fault is not a failure of the work. Everything needed to send
         // the turn again is already committed: the partial assistant message was
@@ -3285,8 +3301,15 @@ export async function runAgentLoop(
           });
         }
 
-        const bounded = await boundToolResultOutput(
+        // Once, here, before anything is derived from the text: the spill file, the clipped
+        // preview, `details`, the persisted session and the stream-json event all come from the
+        // clean result (#411). Never at render time: earlier turns' bytes must not change.
+        const redacted = redactToolResultSecrets(
           enrichToolResultPresentation(result, canonName, call.arguments),
+          context.providerSecrets ?? [],
+        );
+        const bounded = await boundToolResultOutput(
+          redacted,
           context.workspaceRoot,
           undefined,
           options?.toolOutputRoot,

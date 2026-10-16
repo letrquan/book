@@ -27,9 +27,15 @@ import {
   type PersistentShellState,
 } from './persistent-store.js';
 import { isProcessAlive, terminateProcessTree, waitForProcessClose } from './process-tree.js';
+import { secretSafeCut, secretSafeStart } from '../provider-secrets.js';
 
 const MAX_BACKGROUND_BUFFER = 1024 * 1024 * 5;
 const MAX_OUTPUT_RESULT = 32_000;
+/**
+ * While a job runs, how much of a line with no line break a read returns at once (see
+ * `takeUnread`). A fixed number, so it reveals nothing about any secret.
+ */
+const UNTERMINATED_READ_CAP = 1024;
 const MAX_RETAINED_TERMINAL_SHELLS = 20;
 const TERMINAL_SHELL_TTL_MS = 15 * 60_000;
 const PERSISTENT_HEARTBEAT_STALE_MS = 10_000;
@@ -197,6 +203,8 @@ export class ShellJobManager {
   >();
   /** Set by `dispose()`: a disposed manager takes on no new work. */
   private disposed = false;
+  /** Secrets the buffer trim must not cut (#411); the Bash tools hand over the session's set. */
+  private providerSecrets: readonly string[] = [];
 
   constructor(
     private readonly store: BackgroundShellStore,
@@ -206,6 +214,11 @@ export class ShellJobManager {
   }
 
   private readonly clock: Clock;
+
+  /** The provider secrets the 5 MB buffer trim keeps whole (#411). */
+  setProviderSecrets(secrets: readonly string[] | undefined): void {
+    this.providerSecrets = secrets ?? [];
+  }
 
   subscribe(listener: (event: ShellJobEvent) => void): () => void {
     this.subscribers.add(listener);
@@ -426,7 +439,16 @@ export class ShellJobManager {
     return cloneRecord(shell);
   }
 
-  readOutput(shellId: string, limit = MAX_OUTPUT_RESULT): ShellOutputResult | undefined {
+  /**
+   * The next unread chunk. `secrets` are values the caller will redact from what it gets back
+   * (#411): the chunk never ends inside one, so a key cut in half across two reads cannot slip past
+   * an exact-match redactor. `readOffset` and `remaining` follow the adjusted cut.
+   */
+  readOutput(
+    shellId: string,
+    limit = MAX_OUTPUT_RESULT,
+    secrets: readonly string[] = [],
+  ): ShellOutputResult | undefined {
     this.refreshPersistentJobs();
     this.pruneTerminalShells();
     const shell = this.store.shells.get(shellId);
@@ -439,36 +461,75 @@ export class ShellJobManager {
         shell.truncatedBytes += shell.readOffset - content.length;
         shell.readOffset = 0;
       }
-      const unread = content.slice(shell.readOffset);
-      const output = unread ? unread.slice(0, Math.max(1, limit)) : '(no new output)';
-      if (unread) shell.readOffset += output.length;
-      return {
-        shell: cloneRecord(shell),
-        output,
-        remaining: unread ? Math.max(0, unread.length - output.length) : 0,
-      };
+      return this.takeUnread(shell, content.slice(shell.readOffset), limit, secrets);
     }
-    const unread = shell.output.slice(shell.readOffset);
-    const output = unread ? unread.slice(0, Math.max(1, limit)) : '(no new output)';
-    if (unread) shell.readOffset += output.length;
+    return this.takeUnread(shell, shell.output.slice(shell.readOffset), limit, secrets);
+  }
+
+  /**
+   * Cut the next chunk out of `unread` and advance the cursor past it.
+   *
+   * With secrets configured, a running job's read stops after the last line break, so a key being
+   * written is not returned in halves: the unterminated trailing line waits until it ends or the
+   * job does. The rule looks at line breaks and length only, never at the secrets' values: a
+   * rule that held back "text that starts a key" would let a command probe the key by printing
+   * candidates and seeing which BashOutput comes back empty. A line with no break at all is
+   * returned in {@link UNTERMINATED_READ_CAP}-character pieces so a prompt or a long line is not
+   * held forever. The chunk never ends inside a whole key (`secretSafeCut`), and a finished job
+   * returns everything.
+   */
+  private takeUnread(
+    shell: BackgroundShellRecord,
+    unread: string,
+    limit: number,
+    secrets: readonly string[],
+  ): ShellOutputResult {
+    const none = { shell: cloneRecord(shell), output: '(no new output)', remaining: 0 };
+    if (!unread) return none;
+    // `reachable` is what this read can ever deliver now; `ceiling` is how far this one may go.
+    let reachable = unread.length;
+    let ceiling = unread.length;
+    if (secrets.length > 0 && !isTerminalShellStatus(shell.status)) {
+      const lineEnd = Math.max(unread.lastIndexOf('\n'), unread.lastIndexOf('\r'));
+      if (lineEnd >= 0) {
+        reachable = lineEnd + 1;
+        ceiling = reachable;
+      } else if (unread.length > UNTERMINATED_READ_CAP) {
+        ceiling = UNTERMINATED_READ_CAP;
+      } else {
+        return none;
+      }
+    }
+    const output = unread.slice(0, secretSafeCut(unread, Math.min(limit, ceiling), secrets));
+    shell.readOffset += output.length;
     return {
       shell: cloneRecord(shell),
       output,
-      remaining: unread ? Math.max(0, unread.length - output.length) : 0,
+      // What is held back is not available yet, so it is not reported as remaining.
+      remaining: Math.max(0, reachable - output.length),
     };
   }
 
-  readTail(shellId: string, limit = 4_000): string | undefined {
+  /**
+   * The last `limit` characters of the output. With `secrets`, a window whose front edge falls
+   * inside a key starts where that key starts, so the redactor the caller applies sees it whole.
+   */
+  readTail(shellId: string, limit = 4_000, secrets: readonly string[] = []): string | undefined {
     this.refreshPersistentJobs();
     const shell = this.store.shells.get(shellId);
+    let content: string | undefined;
     if (shell?.lifetime === 'persistent' && shell.persistentOutputPath) {
       try {
-        return readFileSync(shell.persistentOutputPath, 'utf8').slice(-Math.max(1, limit));
+        content = readFileSync(shell.persistentOutputPath, 'utf8');
       } catch {
         return '';
       }
+    } else {
+      content = shell?.output;
     }
-    return shell?.output.slice(-Math.max(1, limit));
+    if (content === undefined) return undefined;
+    const from = Math.max(0, content.length - Math.max(1, limit));
+    return content.slice(secretSafeStart(content, from, secrets));
   }
 
   async stop(shellId: string, reason: 'killed' | 'timed_out' = 'killed'): Promise<boolean> {
@@ -966,7 +1027,13 @@ export class ShellJobManager {
     if (!chunk) return;
     shell.output += chunk;
     if (shell.output.length > MAX_BACKGROUND_BUFFER) {
-      const extra = shell.output.length - MAX_BACKGROUND_BUFFER;
+      // The trim keeps a key the cap would have cut in half: its front edge is a window like any
+      // other (#411). The buffer runs over the cap by at most the key's length.
+      const extra = secretSafeStart(
+        shell.output,
+        shell.output.length - MAX_BACKGROUND_BUFFER,
+        this.providerSecrets,
+      );
       shell.output = shell.output.slice(extra);
       shell.truncatedBytes += extra;
       shell.readOffset = Math.max(0, shell.readOffset - extra);

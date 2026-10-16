@@ -447,7 +447,7 @@ export function describeUnresolvedProviderPrefix(
 }
 
 /** Whether the workspace declared `providerId` and it is not in `settings.provider`. */
-function isWithheldWorkspaceProvider(config: AgentConfig, providerId: string): boolean {
+export function isWithheldWorkspaceProvider(config: AgentConfig, providerId: string): boolean {
   return (
     !Object.hasOwn(config.settings.provider, providerId) &&
     (config.workspaceProviderGate?.withheld.includes(providerId) ?? false)

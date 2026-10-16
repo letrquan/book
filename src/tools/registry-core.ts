@@ -97,6 +97,7 @@ function stableStringify(value: unknown): string {
 const PRE_EXECUTION_DETAILS = { preExecution: true } as const;
 
 type InvalidJsonShape =
+  | 'empty'
   | 'truncated_start'
   | 'truncated_end'
   | 'wrapped'
@@ -135,8 +136,12 @@ function argumentErrors(tool: ToolDefinition, args: Record<string, unknown>): st
  * undefined when they were.
  *
  * The providers keep only the raw text, so it is parsed again here to recover
- * V8's error, and sorted into one of seven shapes with its own advice:
+ * V8's error, and sorted into one of eight shapes with its own advice:
  *
+ * - `empty`: the call's arguments were empty on the wire (a name and id, and no argument
+ *   fragment after them: #403) and the tool has required arguments, so `{}` could never
+ *   satisfy it. The route dropped them, not the model, so it resends as is. A tool with no
+ *   required arguments is not here: it runs with `{}`.
  * - `truncated_start`: the text does not begin with `{` and is the rest of an
  *   object, ending in its closing brace (`ls -la"}`, `unction f() { return 1;
  *   }", "path": "x"}`). Its first fragment is missing, so a router dropped the
@@ -164,7 +169,18 @@ function argumentErrors(tool: ToolDefinition, args: Record<string, unknown>): st
  * the position is quoted too. V8's message is shown with invisible characters
  * escaped rather than folded, so a rejected NUL or BOM is visible.
  */
-function describeInvalidJson(toolName: string, call: ToolCall): InvalidJsonArguments | undefined {
+function describeInvalidJson(
+  tool: ToolDefinition,
+  call: ToolCall,
+): InvalidJsonArguments | undefined {
+  const toolName = tool.name;
+  if (call.emptyOnWire && (tool.inputSchema?.required?.length ?? 0) > 0) {
+    return {
+      shape: 'empty',
+      message: `Invalid JSON arguments for ${toolName}: the call arrived with empty arguments, but ${toolName} requires ${tool.inputSchema!.required!.join(', ')}.`,
+      remediation: `The provider or router most likely dropped this call's arguments on its way to Book, so none were read; the call itself was not malformed. Resend the whole call with its arguments. ${ONLY_THIS_CALL}`,
+    };
+  }
   const raw = unparsedArgumentsText(call);
   // A call whose arguments parsed, whether or not they are right for this tool:
   // that is the schema's to judge.
@@ -519,6 +535,34 @@ async function waitForSettlement(settled: Promise<void>, timeoutMs: number): Pro
   }
 }
 
+/**
+ * Refuses, at registration, a definition whose `ignoredArguments` entry is also something the tool
+ * reads: a schema property, an alias key, or an alias target. Such an entry would drop a real
+ * argument without a word, so the definition is wrong and the error says which argument and tool.
+ */
+export function assertIgnoredArgumentsAreUnambiguous(tool: ToolDefinition): void {
+  const ignored = tool.ignoredArguments ?? [];
+  if (ignored.length === 0) return;
+  const aliases = tool.argumentAliases ?? {};
+  const roles = new Map<string, string>();
+  for (const property of Object.keys(tool.inputSchema?.properties ?? {})) {
+    roles.set(property, 'a schema property');
+  }
+  for (const [alias, target] of Object.entries(aliases)) {
+    roles.set(alias, 'an argument alias');
+    if (!roles.has(target)) roles.set(target, 'an argument alias target');
+  }
+  for (const argument of ignored) {
+    const role = roles.get(argument);
+    if (role) {
+      throw new Error(
+        `Tool ${tool.name} lists ${JSON.stringify(argument)} in ignoredArguments, but it is also ` +
+          `${role}; ignoring it would silently drop a real argument.`,
+      );
+    }
+  }
+}
+
 export function createRegistry() {
   const tools = new Map<string, ToolDefinition>();
 
@@ -651,9 +695,10 @@ export function createRegistry() {
       toolFailure(invalid.message, {
         toolCallId: normalizedCall.id,
         code: 'invalid_json_arguments',
-        // The model's own JSON was fine and the fix is to resend the same call, so
-        // `noteRepeatedFailure` must not answer that resend with "Do not retry it unchanged".
-        retryable: invalid.shape === 'truncated_start',
+        // The model's own JSON was fine (or, for `empty`, never reached us) and the fix is to
+        // resend the same call, so `noteRepeatedFailure` must not answer that resend with
+        // "Do not retry it unchanged".
+        retryable: invalid.shape === 'truncated_start' || invalid.shape === 'empty',
         remediation: invalid.remediation,
         details: {
           shape: invalid.shape,
@@ -704,6 +749,7 @@ export function createRegistry() {
     normalizeCall,
     register(tool: ToolDefinition): void {
       const normalized = normalizeToolDefinition(tool);
+      assertIgnoredArgumentsAreUnambiguous(normalized);
       tools.set(normalized.name, normalized);
     },
     registerAll(toolList: ToolDefinition[]): void {
@@ -732,7 +778,7 @@ export function createRegistry() {
       const resolved = resolveCall(call);
       if (!resolved) return unknownToolRejection(call, context);
       const { tool, normalizedCall } = resolved;
-      const invalid = describeInvalidJson(tool.name, normalizedCall);
+      const invalid = describeInvalidJson(tool, normalizedCall);
       if (invalid !== undefined) {
         if (!isVisible(normalizedCall, context))
           return inactiveRejection(call, normalizedCall, context);
@@ -777,7 +823,7 @@ export function createRegistry() {
       // Invalid JSON is named before the argument-scoped rules run: a rule such
       // as `Bash(git *)` cannot match text that never parsed, so the gate would
       // report a malformed call to an active tool as an inactive one.
-      const invalid = describeInvalidJson(tool.name, normalizedCall);
+      const invalid = describeInvalidJson(tool, normalizedCall);
       if (invalid)
         return {
           status: 'rejected',

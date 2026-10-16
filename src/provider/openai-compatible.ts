@@ -9,13 +9,11 @@ import type { Usage } from '../types/messages.js';
 import { createDebugLogger, isDebugEnabled } from '../debug-log.js';
 import { escapeInvisibleCharacters } from '../control-characters.js';
 import {
-  classifyApiError,
   classifyProviderError,
   fetchWithRetry,
-  formatApiError,
   readErrorBody,
   readStreamChunk,
-  wrappedUpstreamStatus,
+  statedWaitErrorEvent,
 } from './reliability.js';
 
 const log = createDebugLogger('provider');
@@ -286,12 +284,7 @@ export async function* chatCompletionStream(
 
   if (!response.ok) {
     const errorText = await readErrorBody(response, signal);
-    yield {
-      type: 'error',
-      error: formatApiError(response.status, errorText, undefined, { url, model: config.model }),
-      errorCode: classifyApiError(response.status, errorText),
-      upstreamStatus: wrappedUpstreamStatus(response.status, errorText),
-    };
+    yield statedWaitErrorEvent(response, errorText, { url, model: config.model });
     return;
   }
 
@@ -320,6 +313,17 @@ export async function* chatCompletionStream(
     for (const part of [...toolCallParts].sort((a, b) => a.index - b.index)) {
       if (!part.id && !part.name) continue;
       const { arguments: arguments_, unparsedArguments } = parseToolArguments(part.arguments);
+      // Nothing at all after the name and id: kept apart from a literal `{}` so the registry can
+      // blame the route, not the model, for a required argument that is missing (#403).
+      const emptyOnWire = !part.arguments.trim();
+      if (emptyOnWire) {
+        log.warn('tool call arrived with empty arguments', {
+          index: part.index,
+          id: part.id,
+          name: escapeInvisibleCharacters(part.name),
+          fragments: part.fragments,
+        });
+      }
       if (unparsedArguments) {
         // The head, not the whole text: enough to see whether the call arrived with its
         // first fragment missing (#260), which is a route's wire format, not the model's JSON.
@@ -339,6 +343,7 @@ export async function* chatCompletionStream(
           name: part.name,
           arguments: arguments_,
           ...(unparsedArguments ? { unparsedArguments } : {}),
+          ...(emptyOnWire ? { emptyOnWire: true as const } : {}),
         },
       };
     }

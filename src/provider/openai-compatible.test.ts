@@ -195,6 +195,50 @@ describe('chatCompletionStream retry — status codes', () => {
     expect(events.some((e) => e.type === 'text' && e.content === 'ok')).toBe(true);
   });
 
+  it('surfaces a far Retry-After as rate_limit_wait after one request (#409)', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return new Response('rate limited', { status: 429, headers: { 'retry-after': '7200' } });
+      }),
+    );
+
+    const events = [];
+    for await (const e of chatCompletionStream(
+      { ...config, retry: { ...config.retry, maxDelayMs: 100 } },
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      events.push(e);
+    }
+    expect(calls).toBe(1);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'error', errorCode: 'rate_limit_wait' });
+    expect(events[0]).toMatchObject({ error: expect.stringContaining('2 hours') });
+  });
+
+  it('surfaces a spent-plan 429 as usage_limit after one request (#409)', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return new Response("You've reached your weekly usage limit for your plan.", {
+          status: 429,
+        });
+      }),
+    );
+
+    const events = [];
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(e);
+    }
+    expect(calls).toBe(1);
+    expect(events[0]).toMatchObject({ type: 'error', errorCode: 'usage_limit' });
+  });
+
   it('retries on 500 and succeeds on 2nd attempt', async () => {
     let calls = 0;
     vi.stubGlobal(
@@ -1372,6 +1416,65 @@ describe('chatCompletionStream tool call streaming', () => {
         unparsedArguments: { raw, error: parseError },
       },
     ]);
+  });
+
+  describe('arguments that arrived empty on the wire (#403)', () => {
+    async function callsFor(deltas: string[]) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          const body = new ReadableStream({
+            start(c) {
+              const enc = new TextEncoder();
+              for (const delta of deltas) {
+                c.enqueue(enc.encode(`data: {"choices":[{"delta":${delta}}]}\n\n`));
+              }
+              c.enqueue(
+                enc.encode('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'),
+              );
+              c.enqueue(enc.encode('data: [DONE]\n\n'));
+              c.close();
+            },
+          });
+          return new Response(body, { status: 200 });
+        }),
+      );
+      const events = [];
+      for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+        events.push(e);
+      }
+      return events.filter((e) => e.type === 'tool_call').map((e) => e.toolCall);
+    }
+
+    it('marks a call whose arguments are an empty string and no further fragment', async () => {
+      const calls = await callsFor([
+        '{"tool_calls":[{"index":1,"id":"call_01a1","type":"function","function":{"name":"Read","arguments":""}}]}',
+      ]);
+      expect(calls).toEqual([{ id: 'call_01a1', name: 'Read', arguments: {}, emptyOnWire: true }]);
+    });
+
+    it('marks a call whose fragments are all whitespace or empty', async () => {
+      const calls = await callsFor([
+        '{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"Read","arguments":""}}]}',
+        '{"tool_calls":[{"index":0,"function":{"arguments":"  "}}]}',
+      ]);
+      expect(calls[0]).toMatchObject({ id: 'call_1', arguments: {}, emptyOnWire: true });
+    });
+
+    it('does not mark a call streamed as a literal {}', async () => {
+      const calls = await callsFor([
+        '{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"Read","arguments":"{}"}}]}',
+      ]);
+      expect(calls).toEqual([{ id: 'call_1', name: 'Read', arguments: {} }]);
+    });
+
+    it('does not mark a call whose later fragment carries the arguments', async () => {
+      const calls = await callsFor([
+        '{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"Read","arguments":""}}]}',
+        '{"tool_calls":[{"index":0,"function":{"arguments":"{\\"filePath\\":\\"a.ts\\"}"}}]}',
+      ]);
+      expect(calls).toEqual([{ id: 'call_1', name: 'Read', arguments: { filePath: 'a.ts' } }]);
+    });
   });
 
   it('does not hang when an already-open stream is aborted', async () => {

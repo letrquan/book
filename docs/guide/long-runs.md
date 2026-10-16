@@ -46,19 +46,19 @@ false**. It stops a run whose every tool call was refused on that many consecuti
 as `all_tools_blocked` and naming every tool refused over the streak and what lifts the refusal. Each
 kind of refusal gets its own remedy, because most of them cannot be lifted by a permission at all:
 
-| Refusal                                                                                                          | What lifts it                                                                                                                                                                                                                         |
-| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A permission (including one made by a `permissions.deny` rule, which no other rule or mode lifts)                | A grant, an allow rule, or another permission mode — for a deny rule, changing that rule                                                                                                                                              |
-| A PreToolUse hook                                                                                                | Changing or removing that hook                                                                                                                                                                                                        |
-| A tool that was not active for the turn, or arguments the run's allowed tools do not cover                       | Activating a deferred tool with `ToolSearch`, and an allowed-tools list that covers the tool and its arguments                                                                                                                        |
-| A managed agent's tool policy (its profile or definition)                                                        | Giving the step to an agent whose policy allows it                                                                                                                                                                                    |
-| A skill's activation policy or its allowed-tools                                                                 | Changing that skill's override under `skills.overrides`, or its allowed-tools                                                                                                                                                         |
-| A question the run cannot put to anyone (`dontAsk` mode, or a question the user declined)                        | Nothing — the model has to proceed without asking                                                                                                                                                                                     |
-| Calls that could not run as sent (arguments that never parsed, failed the schema, or a tool that does not exist) | Nothing — the model has to correct them; if `book tool-stats` shows `invalid_json_arguments:truncated_start`, the route is dropping the first fragment of calls                                                                       |
-| A private or special-use web destination                                                                         | `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment, which no rule or mode lifts, bypassPermissions included; the message names the refused destinations and warns that the variable lifts the policy for every destination |
-| A `WebSearch` whose every built-in provider resolved privately                                                   | Fixing the host's DNS or proxy; no setting relaxes the providers' strict validation. The message names the private addresses                                                                                                          |
-| A `WebFetch` stopped at a redirect to another origin                                                             | Nothing — the model has to fetch the target in its own `WebFetch` call, or stop fetching that page                                                                                                                                    |
-| Any other refusal                                                                                                | Whatever that refused call's own message names as the cause                                                                                                                                                                           |
+| Refusal                                                                                                          | What lifts it                                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A permission (including one made by a `permissions.deny` rule, which no other rule or mode lifts)                | A grant, an allow rule, or another permission mode — for a deny rule, changing that rule                                                                                                                                                 |
+| A PreToolUse hook                                                                                                | Changing or removing that hook                                                                                                                                                                                                           |
+| A tool that was not active for the turn, or arguments the run's allowed tools do not cover                       | Activating a deferred tool with `ToolSearch`, and an allowed-tools list that covers the tool and its arguments                                                                                                                           |
+| A managed agent's tool policy (its profile or definition)                                                        | Giving the step to an agent whose policy allows it                                                                                                                                                                                       |
+| A skill's activation policy or its allowed-tools                                                                 | Changing that skill's override under `skills.overrides`, or its allowed-tools                                                                                                                                                            |
+| A question the run cannot put to anyone (`dontAsk` mode, or a question the user declined)                        | Nothing — the model has to proceed without asking                                                                                                                                                                                        |
+| Calls that could not run as sent (arguments that never parsed, failed the schema, or a tool that does not exist) | Nothing — the model has to correct them; if `book tool-stats` shows `invalid_json_arguments:truncated_start`, the route is dropping the first fragment of calls, and `invalid_json_arguments:empty` means it is dropping their arguments |
+| A private or special-use web destination                                                                         | `BOOK_WEB_ALLOW_PRIVATE_NETWORK=true` in the host environment, which no rule or mode lifts, bypassPermissions included; the message names the refused destinations and warns that the variable lifts the policy for every destination    |
+| A `WebSearch` whose every built-in provider resolved privately                                                   | Fixing the host's DNS or proxy; no setting relaxes the providers' strict validation. The message names the private addresses                                                                                                             |
+| A `WebFetch` stopped at a redirect to another origin                                                             | Nothing — the model has to fetch the target in its own `WebFetch` call, or stop fetching that page                                                                                                                                       |
+| Any other refusal                                                                                                | Whatever that refused call's own message names as the cause                                                                                                                                                                              |
 
 A streak holding several kinds names each remedy. It is separate because a refusal spin never
 produces a tool-free turn, so the turn-end gate — and therefore every brake behind it — never fires:
@@ -146,13 +146,46 @@ decision is made on what arrived, so a router that sends its headers and then st
 attempt for the whole request timeout.
 
 A 408 or a 429 is retried like an outage. A 429 (plain or quoted by a router) that says a
-weekly/daily/monthly/N-hour usage or plan limit was reached, exceeded, or spent, or OpenAI's
-`insufficient_quota`, is answered once (unless `retry.watchdog` is enabled) and parks the run
-like a 402 (`credentials_rejected`, provider code `quota`), with a message naming the stated
-reset time and remedy, while `insufficient_quota` keeps the credits advice; naming a short
-window anywhere in the message keeps it a rate limit. On any retryable 429, a stated absolute
-`resets at <time>` within reach is waited for, up to `retry.maxDelayMs` per attempt, while a
-reset later than the retries can wait is not retried. A 400 or a 422, plain or quoted, a 404 that is neither the capacity outage above nor the model verdict below, and Anthropic's
+weekly/daily/monthly/N-hour usage or plan limit was reached, exceeded, or spent is answered once
+(unless `retry.watchdog` is enabled) and ends the run `failed/quota_exhausted` (provider code
+`usage_limit`), with a message naming the stated reset time and the remedy; naming a short window
+anywhere in the message keeps it a rate limit. OpenAI's `insufficient_quota` is answered once the
+same way but is about credits, so it stays with a 402: `credentials_rejected`, provider code
+`quota`, and the message keeps the credits advice.
+
+`quota_exhausted` is a park (`terminalRecovery` returns `park`), like `credentials_rejected`:
+nothing is wrong with the work and re-sending reproduces the refusal, so the loop does not
+re-issue it and a `Notification` hook alarm fires with `kind: "quota_exhausted"`. It differs from
+`credentials_rejected` in what the operator does. A rejected key (a 401, a 403, a 402, Anthropic's
+`billing_error`, `insufficient_quota`) is rotated or topped up; a spent limit is waited out until
+its reset, or the run moves to another model with `--model` or `/model`. Two provider codes end
+in it, both read from `outcome.providerCode`:
+
+- `usage_limit`: the 429 above, a spent usage or plan limit.
+- `rate_limit_wait`: a 429 whose stated wait is longer than the retries can sit out (below).
+
+On any retryable 429 (plain or quoted by a router) the provider's stated wait is the longer of
+two: its relative wait, a `Retry-After` header or, with no header, a router's `(reset after 3h)`
+cooldown, and an absolute `resets at <ISO time>`. A short `Retry-After` therefore never hides a
+far reset time in the body. The cooldown and the reset time are read from the error's message
+only (and a router's plain-text body), never from other text in a JSON body, which may echo the
+request.
+
+A stated wait shorter than 15 minutes is never parked, whatever `retry.maxAttempts` and
+`retry.maxDelayMs` are: it is waited for, capped at `retry.maxDelayMs` per attempt, and the
+request is retried, so a `Retry-After: 5` on a call with one short attempt is simply retried. Only
+a far wait, 15 minutes or more, can stop the call early. A far `Retry-After` or cooldown that is
+longer than what the call can still wait, the smaller of the remaining `retry.totalBudgetMs` and
+the remaining attempts times `retry.maxDelayMs`, is not retried: the response is returned after
+that one request instead of being clamped to `retry.maxDelayMs` and sent again on every attempt.
+An absolute reset keeps its own, earlier rule: any reset beyond that remaining wait returns the
+response at once. When the wait is far and also longer than any fresh call could wait, the stream
+ends with `rate_limit_wait`, and the run ends `failed/quota_exhausted` rather than being
+re-issued; the message states the wait or the reset time. A shorter wait, or a far one that only
+met the end of the attempts, stays an ordinary rate limit. `retry.watchdog` keeps waiting
+whatever the wait.
+
+A 400 or a 422, plain or quoted, a 404 that is neither the capacity outage above nor the model verdict below, and Anthropic's
 mid-stream `invalid_request_error` and `not_found_error` end the run on the first answer, since
 re-sending the same request reproduces them. One 403/404 verdict is read from the body rather than
 the status: when the body says the model itself is gone — a retirement notice, an OpenAI
@@ -220,8 +253,10 @@ the text, the envelope must be the whole answer, one `[Error] … request ID …
 that quotes such a line and goes on to explain it is an answer. With a usage block that reports
 zero tokens both ways (what a router reports for text it wrote itself), any answer that opens with
 `[Error]` counts, however many lines follow. A reply with no usage block at all keeps the one-line
-rule, since a model may have written it. If either repeats, the run ends
-`failed/provider_error` on that second request, never `completed`; the repeat is not re-issued
+rule, since a model may have written it. A one-line
+`[Error] The model failed to generate a response.` counts whatever the usage says: 9router writes
+an upstream `response.failed` that way after the upstream already streamed reasoning, so the usage
+is not zero. If either repeats, the run ends `failed/provider_error` on that second request, never `completed`; the repeat is not re-issued
 again, and no `[continuation]` message is written. Every retry is visible to a print-mode host: a
 `{"type":"retry","phase","attempt","max","delay_ms"}` record in `stream-json`, a `retry: …` line on
 stderr in `text` output. `phase` is `transport` for an HTTP-level retry inside one request,

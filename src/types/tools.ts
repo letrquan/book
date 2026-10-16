@@ -131,6 +131,13 @@ export interface ToolCall {
    * text is one of the three shapes `repairToolArguments` accepts).
    */
   unparsedArguments?: { raw: string; error: string };
+  /**
+   * Set when the call's arguments, joined across every streamed fragment, were empty or
+   * whitespace on the wire: the name and id arrived and no argument text followed. `arguments`
+   * is `{}` as for a literal `{}`, which this does not mark. The registry rejects such a call
+   * as a route's wire shape when the tool has required arguments, and runs it with `{}` otherwise.
+   */
+  emptyOnWire?: true;
 }
 
 /** Display-only trace for a tool invoked inside a Task subagent. */
@@ -362,6 +369,11 @@ export interface ToolContext {
    * `scope` is `learnings` when another agent drives the session. `sessionId` stamps provenance.
    */
   memoryWrite?: { root: string; scope: 'learnings' | 'full'; sessionId?: string };
+  /**
+   * The provider secrets the agent loop redacts from every tool result (#411), longest first.
+   * `BashOutput` reads with them so a chunk never ends inside one. Populated by the agent loop.
+   */
+  providerSecrets?: readonly string[];
   env: Record<string, string>;
   /** Explicit environment overrides safe to persist for opt-in persistent jobs. */
   envOverrides?: Record<string, string>;

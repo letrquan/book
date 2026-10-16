@@ -603,35 +603,32 @@ describe('composeToolErrorDetail with a failed command', () => {
       expect(rows(detail)).toBe(2);
     });
 
-    it('counts the rows its expanded output block draws, which an empty line does not take', () => {
-      // Real output ends in a newline, and Ink gives an empty line no height: the block draws a row
-      // for each line that is not empty, a line of spaces included, and none for the empty line
-      // after a final newline or the ones between two newlines. A one-line stdout read `+2 lines`.
+    it('counts the rows its expanded output block draws: every line but the empty ones it ends in', () => {
+      // The block draws a row for each line, an empty one too, and none for the empty line after
+      // the final newline real output ends in: a one-line stdout reads `+1 line`, not `+2`.
       // ToolCallBlock.test.tsx counts the rows that are drawn; these are the numbers it must find.
       const cases: [string, number][] = [
         ['X\n', 1],
         ['X', 1],
         // The block splits on the newline alone, so the \r stays on its line.
         ['X\r\n', 1],
-        ['A\n\nB\n   \nC\n', 4],
-        ['FAIL a\n\n\nexpected 1', 2],
-        ['\nFAIL a\n\n\nexpected 1\n', 2],
-        ['FAIL a\n\n  \nFAIL b\r\n\t\nFAIL c\n\n', 5],
+        ['A\n\nB\n   \nC\n', 5],
+        ['FAIL a\n\n\nexpected 1', 4],
+        ['\nFAIL a\n\n\nexpected 1\n', 5],
+        ['FAIL a\n\n  \nFAIL b\r\n\t\nFAIL c\n\n', 6],
+        ['A\n\nB\n\n\n', 3],
       ];
       for (const [out, rowsDrawn] of cases) {
         const noun = rowsDrawn === 1 ? 'line' : 'lines';
         const detail = composeToolErrorDetail(row, stderr, grid, { ...command, stdout: out });
         expect([out, detail.hint]).toEqual([out, `… +${rowsDrawn} ${noun} of output (Ctrl+E)`]);
-        // The rows are the lines the block is given that are not empty.
+        // The rows are the lines the block is given.
         const block = toolOutputDisplay(out, {
           success: false,
           showAllToolOutput: true,
           terminalWidth: 100,
         });
-        expect([out, block.lines.filter((line) => line.length > 0).length]).toEqual([
-          out,
-          rowsDrawn,
-        ]);
+        expect([out, block.lines.length]).toEqual([out, rowsDrawn]);
       }
     });
 
@@ -758,12 +755,12 @@ describe('composeToolErrorDetail with a failed command', () => {
         ...command,
         stdout: out,
       });
-      expect(detail.hint).toBe('… +2 lines, +2 lines of output (Ctrl+E)');
+      expect(detail.hint).toBe('… +2 lines, +5 lines of output (Ctrl+E)');
       const spaced = composeToolErrorDetail(row, source(6).join('\n'), grid, {
         ...command,
         stdout: 'A\n\nB\n   \nC\n',
       });
-      expect(spaced.hint).toBe('… +2 lines, +4 lines of output (Ctrl+E)');
+      expect(spaced.hint).toBe('… +2 lines, +5 lines of output (Ctrl+E)');
     });
 
     it('keeps the stderr count alone when the stdout has nothing to name', () => {
@@ -1743,6 +1740,35 @@ describe('exit code metadata', () => {
     expect(deriveToolPresentation('Bash', args, toolSuccess(stdout)).metadata).toEqual([
       '12 lines',
     ]);
+  });
+});
+
+describe('the line count a row header names', () => {
+  const args = { command: 'printf out' };
+
+  it('counts the lines of the output, not the empty ones it ends in', () => {
+    const cases: [string, string][] = [
+      ['X', '1 line'],
+      ['X\n', '1 line'],
+      ['A\nB\n', '2 lines'],
+      ['A\n\nB\n\n\n', '3 lines'],
+      ['\nA\n', '2 lines'],
+      ['A\n  \n\n', '2 lines'],
+    ];
+    for (const [out, named] of cases) {
+      expect([out, deriveToolPresentation('Bash', args, toolSuccess(out)).metadata]).toEqual([
+        out,
+        [named],
+      ]);
+    }
+  });
+
+  it('names no lines for an output that is only newlines', () => {
+    for (const out of ['\n', '\n\n\n']) {
+      expect(deriveToolPresentation('Bash', args, toolSuccess(out)).metadata.join(' ')).not.toMatch(
+        /lines?/,
+      );
+    }
   });
 });
 
