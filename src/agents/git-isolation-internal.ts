@@ -1,12 +1,29 @@
 /**
  * The seams `git-isolation.test.ts` reaches through, and the reason this module exists at all.
  *
- * Both exports are there for tests: `gitForTest` is the runner whose `input` branch no exported
- * path reaches without a real snapshot (#351), and `cherryPickFailureResult` is the one decision in
- * a failed apply that cannot be provoked from outside — a real conflict is unreachable through
+ * Every export is there for tests. `gitForTest` is the runner whose `input` branch no exported
+ * path reaches without a real snapshot (#351), `isolatedGitForTest` is the same runner behind the
+ * pins every call in the module carries, and `cherryPickFailureResult` is the one decision in a
+ * failed apply that cannot be provoked from outside — a real conflict is unreachable through
  * `applyVerifiedCandidate` by construction, because the drift check refuses to run a pick that
- * could conflict (#357). Keeping them here rather than in `git-isolation.ts` says they are not part
- * of the module's surface: nothing under `src/` imports this file, so a caller reaching for either
- * one is reaching past the API rather than using it.
+ * could conflict (#357).
+ *
+ * The other three are how the test of a signing read that overruns its buffer gets a buffer it can
+ * overrun cheaply (#453). `applyVerifiedCandidateForTest` is `applyVerifiedCandidate` with the
+ * runner of that read passed in, `hardenedRunnerForTest` builds the production runner with a
+ * buffer of its own, and `DEFAULT_MAX_BUFFER_BYTES` is the size production gives every call, so
+ * the full-size variant, which runs the public function with no seam, can check its padding
+ * against that size instead of repeating the number.
+ *
+ * Keeping them here rather than in `git-isolation.ts` says they are not part of the module's
+ * surface: nothing under `src/` imports this file, so a caller reaching for any of them is reaching
+ * past the API rather than using it.
  */
-export { cherryPickFailureResult, gitForTest, isolatedGitForTest } from './git-isolation.js';
+export {
+  applyVerifiedCandidateForTest,
+  cherryPickFailureResult,
+  DEFAULT_MAX_BUFFER_BYTES,
+  gitForTest,
+  hardenedRunnerForTest,
+  isolatedGitForTest,
+} from './git-isolation.js';

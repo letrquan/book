@@ -53,6 +53,15 @@ export interface RunOptions {
   input?: string;
   /** Added to Book's own environment and to the hardening every call carries. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * The most output, in bytes, the call may produce before it is stopped and rejected rather than
+   * resolved on what had arrived, which is what makes a truncated read fail instead of looking
+   * like a short one. A call that names none gets the 50 MiB `DEFAULT_MAX_BUFFER_BYTES` of
+   * `git-isolation.ts`, and production never names one: a test does, to overrun a small buffer
+   * without writing 50 MiB (#453). Not applied to a call that writes `input`, which collects its
+   * output without a cap.
+   */
+  maxBuffer?: number;
 }
 
 export interface RunResult {

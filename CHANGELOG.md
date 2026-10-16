@@ -113,6 +113,19 @@ All notable changes to this project are documented in this file.
   `BOOK_BASE_URL`, `BOOK_PROVIDER`, `BOOK_MODEL` and `BOOK_EFFORT`, which the TUI streaming tests
   pass to their child on purpose (#358). To keep an override while debugging, list it in
   `BOOK_TEST_KEEP_ENV`, for example `BOOK_TEST_KEEP_ENV=BOOK_DEBUG,BOOK_DEBUG_STDERR`.
+- **A git-isolation test no longer times out on Windows or leaves its repository locked** (#453).
+  The test that shows a signing read cut off at its buffer is refused (#348) padded `.git/config`
+  with 51 MiB so the read would overrun the 50 MiB buffer, and the apply it drives starts 23 git
+  processes that each parse all of it: about 18 s on the ubuntu leg of a green run and 76 s on its
+  Windows leg, against a 120 s budget. A slower Windows runner timed out, and the apply vitest had
+  given up on was still running git in the repository when cleanup tried to remove it (`EBUSY`),
+  which reddened unrelated PRs until a rerun. No git child outlives the refusal (all 23 had exited
+  when the apply returned, checked on Linux), so the cost was the cause and not a hang. The git
+  runner now accepts a `maxBuffer` (every call still gets 50 MiB unless a test names another), and
+  an internal test seam lets the test give the signing read a 64 KiB buffer against 256 KiB of
+  padding, so the refusal is still proven on every platform, in seconds. One variant keeps the real
+  buffer and 51 MiB of padding and is skipped on Windows. The file's cleanup also retries the
+  removal, as `config.test.ts` does. Book itself behaves exactly as before.
 - **A memory file is named by what reads it best.** The `Read` row of a memory file now shows
   `memory/<file>` like the `Write`/`Edit` rows, instead of the long absolute path, and a message
   about a memory file (`file_not_observed`, a stale read, `Created …`, an `ApplyPatch` diff header)
