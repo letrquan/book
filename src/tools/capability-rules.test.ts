@@ -92,6 +92,8 @@ describe('capability rule Bash(<glob>) refuses compound commands', () => {
     ['backticks', 'git log `id`'],
     ['redirect', 'git log > /etc/x'],
     ['quoted separator', 'git commit -m "a; b"'],
+    ['inner blank line', 'git status\n\nrm -rf ~'],
+    ['inner carriage return', 'git status\rrm -rf ~'],
   ])('refuses %s', (_label, command) => {
     expect(bash(command)).toBe(false);
     expect(isCompoundShellCommand(call('Bash', { command }))).toBe(true);
@@ -101,6 +103,14 @@ describe('capability rule Bash(<glob>) refuses compound commands', () => {
     expect(bash('git status')).toBe(true);
     expect(bash('git log --oneline -5')).toBe(true);
     expect(bash('npm test')).toBe(false);
+  });
+
+  it('ignores whitespace around the command', () => {
+    for (const command of ['git status\n', 'git status\r\n', '  git status  ', '\ngit status\n']) {
+      expect(bash(command), JSON.stringify(command)).toBe(true);
+      expect(isCompoundShellCommand(call('Bash', { command }))).toBe(false);
+    }
+    expect(bash('npm test\n')).toBe(false);
   });
 
   it('refuses a compound command under Bash(*) but not under a bare Bash or *', () => {

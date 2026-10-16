@@ -9,8 +9,10 @@
  *
  * - the "Always allow" ladder declines to offer a widened rule when the command it learned from is
  *   already compound: the user would be generalizing from an example whose shape they cannot see
- *   repeated;
+ *   repeated. It tests only the command's first line today, so a newline never reaches it
+ *   (tracked in #500);
  * - the capability layer (`allowed-tools` of a command, skill or agent role) refuses such a command
- *   under a `Bash(<glob>)` rule, so the model sends each command as its own call.
+ *   under a `Bash(<glob>)` rule, so the model sends each command as its own call. It reads the
+ *   whole command, trimmed, and also refuses an inner carriage return.
  */
 export const SHELL_CHAINING = /[;&|><`$(){}\n]/;

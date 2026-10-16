@@ -617,25 +617,27 @@ export function createRegistry() {
     call: ToolCall,
     normalizedCall: ToolCall,
     context: ToolContext,
-  ): ToolResult =>
-    noteRepeatedFailure(
+  ): ToolResult => {
+    const compound = isCompoundShellCommand(normalizedCall);
+    return noteRepeatedFailure(
       context,
       normalizedCall,
       toolFailure(
         `Tool "${call.name}" is active, but this run's allowed tools do not cover these arguments.${
-          isCompoundShellCommand(normalizedCall) ? ` ${COMPOUND_COMMAND_REFUSAL}` : ''
+          compound ? ` ${COMPOUND_COMMAND_REFUSAL}` : ''
         }`,
         {
           toolCallId: call.id,
           code: 'arguments_not_allowed',
           status: 'blocked',
-          remediation: isCompoundShellCommand(normalizedCall)
+          remediation: compound
             ? COMPOUND_COMMAND_REMEDIATION
             : "Use arguments the run's allowed-tools rules cover (--allowedTools, or a skill's or command's allowed-tools), or a different tool.",
           details: PRE_EXECUTION_DETAILS,
         },
       ),
     );
+  };
 
   /** The rejection for a call whose arguments never parsed, for an already classified shape. */
   const invalidJsonRejection = (

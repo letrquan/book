@@ -221,7 +221,10 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   ToolSearch" would name one that already has it and cannot lift the rule. Under a
   `Bash(<pattern>)` rule a command containing ``; & | < > ` $ ( ) { }`` or a newline is refused
   the same way, even inside quotes, and the refusal says to send each command as its own Bash
-  call; the whole command must also match the pattern. A bare `Bash` rule admits any command.
+  call; the whole command must also match the pattern. A bare `Bash` rule admits any command. The
+  rule constrains the command's text, not what the program does with its options (`Bash(git *)`
+  still admits `git -c core.fsmonitor=… status`), and is not a sandbox: narrow the pattern when
+  that matters.
 
 - **Retry-loop braking.** Repeating a call that already failed with identical arguments returns
   escalated guidance instead of the same error; structured `Fix:` remediation lines are rendered

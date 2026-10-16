@@ -491,8 +491,12 @@ describe('discovery gate and invalid JSON arguments', () => {
     );
     expect(compound.structuredError?.code).toBe('arguments_not_allowed');
     expect(compound.structuredError?.message).toContain('chains, pipes, redirects or substitutes');
-    expect(compound.structuredError?.message).toContain('; & | < > ` $ ( ) { }');
-    expect(compound.structuredError?.remediation).toContain('its own Bash call');
+    expect(compound.structuredError?.message).toContain('a backtick, or a newline');
+    const remediation = compound.structuredError?.remediation ?? '';
+    expect(remediation).toContain('its own Bash call');
+    expect(remediation).toContain('allowed-tools rules');
+    expect(remediation).toContain('without these characters');
+    expect(remediation).toContain('a different tool');
   });
 });
 
