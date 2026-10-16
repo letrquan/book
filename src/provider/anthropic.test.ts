@@ -932,6 +932,29 @@ describe('Anthropic error classification (#244 review)', () => {
     expect(event).toEqual({ type: 'error', error: 'refused', errorCode });
   });
 
+  it('surfaces a far Retry-After as rate_limit_wait, and a spent plan as usage_limit (#409)', async () => {
+    const far = await lastEvent(
+      () => new Response('slow down', { status: 429, headers: { 'retry-after': '7200' } }),
+    );
+    expect(far).toMatchObject({ type: 'error', errorCode: 'rate_limit_wait' });
+    expect(far).toMatchObject({ error: expect.stringContaining('2 hours') });
+
+    const plan = await lastEvent(
+      () =>
+        new Response(
+          JSON.stringify({
+            type: 'error',
+            error: {
+              type: 'rate_limit_error',
+              message: "You've reached your weekly usage limit for your plan.",
+            },
+          }),
+          { status: 429 },
+        ),
+    );
+    expect(plan).toMatchObject({ type: 'error', errorCode: 'usage_limit' });
+  });
+
   it('reads at most 64 KB of a non-retryable error body', async () => {
     let pulled = 0;
     const event = await lastEvent(

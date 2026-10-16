@@ -385,6 +385,9 @@ describe('Advisor tool', () => {
     for (const [code, retryable] of [
       ['auth', false],
       ['quota', false],
+      // A spent plan limit, and a stated wait beyond the retry budget (#409).
+      ['usage_limit', false],
+      ['rate_limit_wait', false],
       ['not_found', false],
       ['redirect', false],
       // A retired or misspelled model, and every verdict on the request itself.

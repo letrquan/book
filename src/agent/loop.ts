@@ -141,6 +141,8 @@ const SKILL_INFRASTRUCTURE_TOOLS = new Set(['InvokeSkill', 'ReadSkillResource', 
 const SHARED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'auth',
   'quota',
+  'usage_limit',
+  'rate_limit_wait',
   'network',
   'timeout',
   'rate_limited',
@@ -2004,6 +2006,10 @@ export async function runAgentLoop(
         const statedOverflow =
           !rateLimitedBySize &&
           streamErrorCode !== 'rate_limited' &&
+          // A 429 that states a long wait or a spent plan limit is a rate limit whatever else
+          // its text says (Bedrock's "Too many tokens, please wait"): never an overflow.
+          streamErrorCode !== 'rate_limit_wait' &&
+          streamErrorCode !== 'usage_limit' &&
           (streamErrorCode === 'context_overflow' || isContextOverflowError(streamError));
         const overflowBySize =
           !statedOverflow &&
@@ -2284,17 +2290,25 @@ export async function runAgentLoop(
                             message: streamError,
                             providerCode: streamErrorCode,
                           })
-                        : streamErrorCode === 'output_cap'
-                          ? createTerminalOutcome('failed', 'output_cap', {
+                        : // A spent plan limit, or a stated wait the retry layer cannot sit out
+                          // (#409): not a key to rotate, a reset to wait for.
+                          streamErrorCode === 'usage_limit' || streamErrorCode === 'rate_limit_wait'
+                          ? createTerminalOutcome('failed', 'quota_exhausted', {
                               partialOutput: hasPartialOutput(),
                               message: streamError,
                               providerCode: streamErrorCode,
                             })
-                          : createTerminalOutcome('failed', 'provider_error', {
-                              partialOutput: hasPartialOutput(),
-                              message: streamError,
-                              providerCode: streamErrorCode,
-                            });
+                          : streamErrorCode === 'output_cap'
+                            ? createTerminalOutcome('failed', 'output_cap', {
+                                partialOutput: hasPartialOutput(),
+                                message: streamError,
+                                providerCode: streamErrorCode,
+                              })
+                            : createTerminalOutcome('failed', 'provider_error', {
+                                partialOutput: hasPartialOutput(),
+                                message: streamError,
+                                providerCode: streamErrorCode,
+                              });
 
         // A transport fault is not a failure of the work. Everything needed to send
         // the turn again is already committed: the partial assistant message was

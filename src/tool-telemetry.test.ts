@@ -152,6 +152,22 @@ describe('aggregateToolUse', () => {
     expect(agg.tools[0].errorCodes).toEqual({ 'invalid_json_arguments:truncated_start': 1 });
     expect(agg.models[0].errorCodes).toEqual({ 'invalid_json_arguments:truncated_start': 1 });
   });
+
+  it('counts a route that sends empty arguments under its own shape (#403)', () => {
+    const empty = record({
+      tool: 'Read',
+      model: 'cmc/x',
+      provider: '9router',
+      status: 'error',
+      isFailure: true,
+      errorCode: 'invalid_json_arguments',
+      errorShape: 'empty',
+    });
+    const agg = aggregateToolUse([empty, empty]);
+    expect(agg.errorCodes).toEqual([{ code: 'invalid_json_arguments:empty', count: 2 }]);
+    expect(agg.tools[0].errorCodes).toEqual({ 'invalid_json_arguments:empty': 2 });
+    expect(agg.models[0].errorCodes).toEqual({ 'invalid_json_arguments:empty': 2 });
+  });
 });
 
 describe('telemetryProviderOf', () => {

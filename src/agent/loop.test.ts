@@ -30,7 +30,7 @@ import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { CompactRequestHints, CompactResult, PreparedCompaction } from '../types/sessions.js';
-import type { AgentTerminalOutcome } from '../types/terminal.js';
+import { terminalRecovery, type AgentTerminalOutcome } from '../types/terminal.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { MemoryModelWindowStore } from '../model-window-store.js';
 import type { LoadedMemoryContext } from '../memory-store.js';
@@ -6943,6 +6943,245 @@ describe('content filter and upstream error recoveries', () => {
     }
   });
 
+  describe('a spent limit parks as quota_exhausted (#409)', () => {
+    const planBody = JSON.stringify({
+      error: {
+        message:
+          "You've reached your weekly usage limit for your plan. Wait for the window to reset or upgrade your plan.",
+      },
+    });
+
+    async function runWith(
+      respond: () => Response,
+      retry: Partial<AgentConfig['retry']> = {},
+    ): Promise<{ outcomes: AgentTerminalOutcome[]; fetchCalls: number; retries: string[] }> {
+      let fetchCalls = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          fetchCalls++;
+          return respond();
+        }),
+      );
+      const retries: string[] = [];
+      const outcomes: AgentTerminalOutcome[] = [];
+      await runAgentLoop(
+        defaultConfig({
+          maxTurns: 1,
+          retry: {
+            ...defaultConfig().retry,
+            streamReissueAttempts: DEFAULT_SETTINGS.retry.streamReissueAttempts,
+            ...retry,
+          },
+        }),
+        createRegistry(),
+        'hello',
+        [],
+        noopCallbacks({
+          onRetry: (phase) => retries.push(phase),
+          onTerminal: (outcome) => outcomes.push(outcome),
+        }),
+        'default',
+        { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+      );
+      return { outcomes, fetchCalls, retries };
+    }
+
+    it('ends a spent-plan 429 failed / quota_exhausted after one request, parked', async () => {
+      for (const status of [429, 503]) {
+        const body = status === 429 ? planBody : `[commandcode/x] [429]: ${planBody}`;
+        const { outcomes, fetchCalls, retries } = await runWith(
+          () => new Response(body, { status }),
+        );
+        expect(fetchCalls, String(status)).toBe(1);
+        expect(retries, String(status)).toEqual([]);
+        expect(outcomes[0], String(status)).toMatchObject({
+          status: 'failed',
+          reason: 'quota_exhausted',
+          providerCode: 'usage_limit',
+        });
+        expect(terminalRecovery(outcomes[0])).toBe('park');
+        expect(outcomes[0].message).toContain('The usage limit for this plan is spent');
+      }
+    });
+
+    it('keeps a 402 and insufficient_quota credentials_rejected', async () => {
+      const cases: Array<[number, string]> = [
+        [402, 'Payment required'],
+        [
+          429,
+          JSON.stringify({
+            error: { code: 'insufficient_quota', message: 'You exceeded your current quota.' },
+          }),
+        ],
+      ];
+      for (const [status, body] of cases) {
+        const { outcomes, fetchCalls } = await runWith(() => new Response(body, { status }));
+        expect(fetchCalls, String(status)).toBe(1);
+        expect(outcomes[0], String(status)).toMatchObject({
+          status: 'failed',
+          reason: 'credentials_rejected',
+          providerCode: 'quota',
+        });
+        expect(terminalRecovery(outcomes[0])).toBe('park');
+      }
+    });
+
+    it('does not re-issue a bare absolute reset two days out', async () => {
+      const iso = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString();
+      const { outcomes, fetchCalls, retries } = await runWith(
+        () => new Response(`Too many requests. Your limit resets at ${iso}.`, { status: 429 }),
+      );
+      expect(fetchCalls).toBe(1);
+      expect(retries).toEqual([]);
+      expect(outcomes[0]).toMatchObject({
+        status: 'failed',
+        reason: 'quota_exhausted',
+        providerCode: 'rate_limit_wait',
+      });
+      expect(outcomes[0].message).toContain(`resets at ${iso}`);
+      expect(terminalRecovery(outcomes[0])).toBe('park');
+    });
+
+    it('does not re-issue a Retry-After of two hours', async () => {
+      const { outcomes, fetchCalls, retries } = await runWith(
+        () => new Response('busy', { status: 429, headers: { 'retry-after': '7200' } }),
+      );
+      expect(fetchCalls).toBe(1);
+      expect(retries).toEqual([]);
+      expect(outcomes[0]).toMatchObject({
+        status: 'failed',
+        reason: 'quota_exhausted',
+        providerCode: 'rate_limit_wait',
+      });
+      expect(outcomes[0].message).toContain('2 hours');
+    });
+
+    it('does not re-issue a router (reset after 3h) cooldown', async () => {
+      const { outcomes, fetchCalls } = await runWith(
+        () => new Response('rate limited (reset after 3h)', { status: 429 }),
+      );
+      expect(fetchCalls).toBe(1);
+      expect(outcomes[0]).toMatchObject({
+        status: 'failed',
+        reason: 'quota_exhausted',
+        providerCode: 'rate_limit_wait',
+      });
+    });
+
+    it('still re-issues a rate limit whose wait is short', async () => {
+      const { outcomes, fetchCalls, retries } = await runWith(
+        () => new Response('busy', { status: 429 }),
+        { maxAttempts: 0 },
+      );
+      expect(fetchCalls).toBe(4);
+      expect(retries).toEqual(['reissue', 'reissue', 'reissue']);
+      expect(outcomes[0]).toMatchObject({ reason: 'provider_error', providerCode: 'rate_limited' });
+    });
+
+    it('does not park a Retry-After of 301 s that the default 10 attempts cannot reach', async () => {
+      // The default is 10 attempts of at most 30 s, so 301 s is beyond the whole call. The delay
+      // cap is scaled down only so the retry's sleep is quick; the comparison is unchanged.
+      let answered = 0;
+      const { outcomes, fetchCalls, retries } = await runWith(
+        () =>
+          answered++ === 0
+            ? new Response('busy', { status: 429, headers: { 'retry-after': '301' } })
+            : new Response(textStream('ok'), { status: 200 }),
+        {
+          maxAttempts: DEFAULT_SETTINGS.retry.maxAttempts,
+          baseDelayMs: 1,
+          maxDelayMs: 20,
+        },
+      );
+      expect(fetchCalls).toBe(2);
+      // The one transport retry, not a loop-level re-issue.
+      expect(retries).toEqual(['transport']);
+      expect(outcomes[0]).not.toMatchObject({ reason: 'quota_exhausted' });
+      expect(outcomes[0]).toMatchObject({ status: 'completed' });
+    });
+
+    it('parks a Bedrock-style too-many-tokens 429 with a long wait, without compacting', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                error: { message: 'Too many tokens, please wait before trying again.' },
+              }),
+              { status: 429, headers: { 'retry-after': '7200' } },
+            ),
+        ),
+      );
+      const compact = vi.fn(async () => compactedForRetry());
+      const store = new MemoryModelWindowStore();
+      const outcomes: AgentTerminalOutcome[] = [];
+
+      await runAgentLoop(
+        defaultConfig({
+          maxTurns: 1,
+          model: 'router/bedrock-model',
+          autoCompactEnabled: true,
+          retry: { ...defaultConfig().retry, maxAttempts: 0 },
+        }),
+        createRegistry(),
+        'hello',
+        [userMsg('x'.repeat(100_000))],
+        noopCallbacks({ onCompact: compact, onTerminal: (outcome) => outcomes.push(outcome) }),
+        'default',
+        { isNewSession: false, modelWindowStore: store },
+      );
+
+      expect(compact).not.toHaveBeenCalled();
+      expect(store.get('router/bedrock-model')).toBeUndefined();
+      expect(outcomes[0]).toMatchObject({
+        status: 'failed',
+        reason: 'quota_exhausted',
+        providerCode: 'rate_limit_wait',
+      });
+    });
+
+    it('does not read a spent-plan 429 that mentions too many tokens as an overflow', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                error: {
+                  message:
+                    "You've reached your weekly usage limit for your plan. Too many tokens, please wait before trying again.",
+                },
+              }),
+              { status: 429 },
+            ),
+        ),
+      );
+      const compact = vi.fn(async () => compactedForRetry());
+      const store = new MemoryModelWindowStore();
+      const outcomes: AgentTerminalOutcome[] = [];
+
+      await runAgentLoop(
+        defaultConfig({
+          maxTurns: 1,
+          model: 'router/plan-model',
+          autoCompactEnabled: true,
+        }),
+        createRegistry(),
+        'hello',
+        [userMsg('x'.repeat(100_000))],
+        noopCallbacks({ onCompact: compact, onTerminal: (outcome) => outcomes.push(outcome) }),
+        'default',
+        { isNewSession: false, modelWindowStore: store },
+      );
+
+      expect(compact).not.toHaveBeenCalled();
+      expect(store.get('router/plan-model')).toBeUndefined();
+      expect(outcomes[0]).toMatchObject({ reason: 'quota_exhausted', providerCode: 'usage_limit' });
+    });
+  });
+
   it('does not re-issue a 422', async () => {
     const body = JSON.stringify({
       error: {
@@ -7090,6 +7329,80 @@ describe('content filter and upstream error recoveries', () => {
         providerCode: 'bad_request',
       });
     }
+  });
+
+  it('re-issues a router failure line that came with billed usage, and ends failed on its repeat (#404)', async () => {
+    // 9router writes an upstream `response.failed` as `[Error] <message>` after the upstream
+    // already streamed reasoning, so the usage is not 0/0.
+    const envelope = '[Error] The model failed to generate a response.';
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'text', content: envelope };
+        yield {
+          type: 'done',
+          usage: { promptTokens: 2000, completionTokens: 150, totalTokens: 2150 },
+          finishReasons: ['stop'],
+        };
+      },
+    };
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes[0]).toMatchObject({
+      status: 'failed',
+      reason: 'provider_error',
+      providerCode: 'error_envelope',
+    });
+    expect(history.some((m) => m.role === 'assistant' && m.content === envelope)).toBe(false);
+  });
+
+  it('answers after a router failure line with billed usage when the re-issue succeeds (#404)', async () => {
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        if (calls === 1) {
+          yield { type: 'text', content: '[Error] The model failed to generate a response.' };
+          yield {
+            type: 'done',
+            usage: { promptTokens: 2000, completionTokens: 150, totalTokens: 2150 },
+            finishReasons: ['stop'],
+          };
+          return;
+        }
+        yield { type: 'text', content: 'recovered answer' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes[0]).toMatchObject({ status: 'completed', reason: 'normal_completion' });
+    expect(history.at(-1)?.content).toBe('recovered answer');
   });
 
   it('re-issues a multi-line error envelope that came with 0/0 usage, and ends on its repeat', async () => {

@@ -10,13 +10,11 @@ import { createDebugLogger, isDebugEnabled } from '../debug-log.js';
 import { escapeInvisibleCharacters } from '../control-characters.js';
 import { RAW_ARGUMENTS_KEY } from '../tools/unparsed-arguments.js';
 import {
-  classifyApiError,
   classifyProviderError,
   fetchWithRetry,
-  formatApiError,
   readErrorBody,
   readStreamChunk,
-  wrappedUpstreamStatus,
+  statedWaitErrorEvent,
 } from './reliability.js';
 
 const log = createDebugLogger('provider:anthropic');
@@ -579,12 +577,7 @@ export async function* chatCompletionStream(
 
   if (!response.ok) {
     const errorText = await readErrorBody(response, signal);
-    yield {
-      type: 'error',
-      error: formatApiError(response.status, errorText, undefined, { url, model: config.model }),
-      errorCode: classifyApiError(response.status, errorText),
-      upstreamStatus: wrappedUpstreamStatus(response.status, errorText),
-    };
+    yield statedWaitErrorEvent(response, errorText, { url, model: config.model });
     return;
   }
 

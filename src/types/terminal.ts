@@ -20,6 +20,14 @@ export type AgentTerminalReason =
   | 'transport_interrupted'
   | 'output_cap'
   | 'credentials_rejected'
+  /**
+   * A usage or plan limit is spent, or the provider stated a wait longer than the
+   * retry layer can sit out (provider codes `usage_limit` and `rate_limit_wait`).
+   * Not a rejected key: nothing needs rotating, the run waits for the reset or an
+   * operator picks another model. A 402 and `insufficient_quota` stay
+   * `credentials_rejected`.
+   */
+  | 'quota_exhausted'
   | 'model_unavailable'
   | 'objective_complete'
   | 'continuation_limit'
@@ -46,9 +54,10 @@ export type AgentTerminalReason =
  *   output cap and should carry on. Kept distinct from `reissue` so a large
  *   generated file cannot drain the budget reserved for real transport faults.
  * - `park` — the run cannot proceed but nothing is wrong with the work; it needs
- *   an operator (an expired credential, or a model the provider no longer
- *   serves — the operator picks another). Distinguished from `none` so a
- *   supervisor can wait rather than declare failure.
+ *   an operator or time (an expired credential, a model the provider no longer
+ *   serves — the operator picks another — or a spent usage limit, which waits
+ *   for the reset or another model). Distinguished from `none` so a supervisor
+ *   can wait rather than declare failure.
  * - `none` — a genuine end: the budget is gone, policy refused, the user
  *   cancelled, the context will not fit.
  *
@@ -104,9 +113,12 @@ export function terminalRecovery(outcome: AgentTerminalOutcome): TerminalRecover
     case 'output_cap':
       return 'continue';
     case 'credentials_rejected':
+    case 'quota_exhausted':
     case 'model_unavailable':
       // A retired or unknown model is not a fault in the work either: re-sending
       // reproduces it, and only an operator choosing another model unblocks it.
+      // A spent limit is the same: the reset or another model is the remedy, and
+      // each re-send is one more refused request.
       return 'park';
     default:
       // Everything else — budget_exceeded, blocked_by_policy, user_cancelled,
