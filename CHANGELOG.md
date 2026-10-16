@@ -119,6 +119,10 @@ All notable changes to this project are documented in this file.
   `BOOK_BASE_URL`, `BOOK_PROVIDER`, `BOOK_MODEL` and `BOOK_EFFORT`, which the TUI streaming tests
   pass to their child on purpose (#358). To keep an override while debugging, list it in
   `BOOK_TEST_KEEP_ENV`, for example `BOOK_TEST_KEEP_ENV=BOOK_DEBUG,BOOK_DEBUG_STDERR`.
+- **A restart test no longer counts the first manager's requests as the restarted one's** (#413).
+  `children re-driven after a restart` flaked with `expected 1 to be +0` under the full integration
+  tier: its helper counted a request the first manager's child made late as a re-run. The helper
+  now counts only the restarted manager's requests. Test-only.
 - **A memory file is named by what reads it best.** The `Read` row of a memory file now shows
   `memory/<file>` like the `Write`/`Edit` rows, instead of the long absolute path, and a message
   about a memory file (`file_not_observed`, a stale read, `Created …`, an `ApplyPatch` diff header)
