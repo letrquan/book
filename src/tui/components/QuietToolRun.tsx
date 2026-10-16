@@ -30,6 +30,7 @@ function QuietToolRunInner({
   const row = composeToolRow(
     { title: summary.title, target: summary.target, metadata: summary.metadata },
     grid,
+    { metaMayGrow: true },
   );
 
   if (screenReader) {
