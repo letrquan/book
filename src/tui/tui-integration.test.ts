@@ -19,6 +19,7 @@ import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { replayTerminalOutput } from './terminal-screen.js';
+import { TUI_PROVIDER_ENV_VARS } from '../test/inherited-book-env.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -61,22 +62,13 @@ interface TuiSession {
   close(): Promise<void>;
 }
 
-/**
- * The provider settings a TUI session must inherit for a streaming test to mean anything.
- *
- * These are the settings that say *which* provider to talk to, not where Book keeps its state: a
- * session that dropped `BOOK_BASE_URL` would stream from the default provider, and the point of
- * running the streaming tests against a developer's own endpoint is that endpoint. `BOOK_HOME`,
- * `BOOK_WORKSPACE`, `BOOK_TUI_RENDERER` and everything else on the prefix are the ones that point
- * at a developer's own machine, so they still go.
- */
-const TUI_PROVIDER_ENV_VARS = [
-  'BOOK_API_KEY',
-  'BOOK_BASE_URL',
-  'BOOK_PROVIDER',
-  'BOOK_MODEL',
-  'BOOK_EFFORT',
-] as const;
+// TUI_PROVIDER_ENV_VARS (imported above) is the provider settings a TUI session must inherit for a
+// streaming test to mean anything: the settings that say *which* provider to talk to, not where
+// Book keeps its state. A session that dropped `BOOK_BASE_URL` would stream from the default
+// provider, and the point of running the streaming tests against a developer's own endpoint is
+// that endpoint. `BOOK_HOME`, `BOOK_WORKSPACE`, `BOOK_TUI_RENDERER` and everything else on the
+// prefix point at a developer's own machine, so they still go. The integration tier's setup keeps
+// the same list (src/test/inherited-book-env.ts), so these reach this file at all.
 
 /**
  * The environment a PTY session boots in, as a pure function of the inherited environment, the
@@ -100,7 +92,7 @@ export function buildTuiChildEnv(
   const withoutBookOverrides: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(inherited)) {
     if (!key.startsWith('BOOK_')) withoutBookOverrides[key] = value;
-    else if ((TUI_PROVIDER_ENV_VARS as readonly string[]).includes(key)) providerEnv[key] = value;
+    else if (TUI_PROVIDER_ENV_VARS.includes(key)) providerEnv[key] = value;
   }
 
   return {

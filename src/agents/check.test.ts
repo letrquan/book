@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { checkTools } from './check.js';
+import { toolResultModelContent } from '../tools/result.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
 import { sandboxBackendAvailable } from '../sandbox.js';
@@ -49,6 +50,75 @@ describe('Check', () => {
     expect(result.structuredError?.details).toEqual({ exitCode: 3 });
   });
 
+  // Issue 473: a runner prints its failing assertions on stdout while npm warns on stderr, and the
+  // failure used to keep only stderr.
+  const STDOUT_LINE = 'FAIL test/a.test.js > expected 1, got 2';
+  const STDERR_LINE = 'npm warn config something';
+  const stdoutAndStderrCheck = `node -e "console.log('${STDOUT_LINE}'); console.error('${STDERR_LINE}'); process.exit(1)"`;
+
+  it('reports a failing check the way a failed Bash does: stderr message, stdout content', async () => {
+    const result = await run(contextWith({ both: stdoutAndStderrCheck }), 'both');
+
+    expect(result.status).not.toBe('success');
+    expect(result.structuredError?.message).toContain(STDERR_LINE);
+    expect(result.structuredError?.message).not.toContain(STDOUT_LINE);
+    expect(result.content).toContain(STDOUT_LINE);
+    expect(result.content).not.toContain(STDERR_LINE);
+    expect(result.structuredError?.details).toEqual({ exitCode: 1 });
+  });
+
+  it('reports `Exit code: N` and keeps stdout as content when a failing check wrote no stderr', async () => {
+    const result = await run(
+      contextWith({ quiet: `node -e "console.log('${STDOUT_LINE}'); process.exit(1)"` }),
+      'quiet',
+    );
+
+    expect(result.status).not.toBe('success');
+    expect(result.structuredError?.message).toBe('Exit code: 1');
+    expect(result.content).toContain(STDOUT_LINE);
+    expect(result.structuredError?.details).toEqual({ exitCode: 1 });
+    const modelText = toolResultModelContent(result);
+    expect(modelText.split(STDOUT_LINE)).toHaveLength(2);
+  });
+
+  it('does not treat whitespace-only stderr as stderr', async () => {
+    const result = await run(
+      contextWith({
+        blank: `node -e "console.log('${STDOUT_LINE}'); process.stderr.write('\\n'); process.exit(1)"`,
+      }),
+      'blank',
+    );
+
+    expect(result.status).not.toBe('success');
+    expect(result.structuredError?.message).toBe('Exit code: 1');
+    expect(result.content).toContain(STDOUT_LINE);
+    expect(result.structuredError?.details).toEqual({ exitCode: 1 });
+  });
+
+  it('hands the model both streams of a failing check that wrote stdout and stderr', async () => {
+    const result = await run(contextWith({ both: stdoutAndStderrCheck }), 'both');
+
+    // The text the agent loop sends as the tool message (agent/context.ts).
+    const modelText = toolResultModelContent(result);
+
+    expect(modelText).toContain(STDOUT_LINE);
+    expect(modelText).toContain(STDERR_LINE);
+  });
+
+  it('reports the shell’s stderr for a command that does not exist', async () => {
+    const ctx = contextWith({ missing: 'book-no-such-command-473' });
+    const result = await run(ctx, 'missing');
+
+    expect(result.status).not.toBe('success');
+    // The shell reports the missing command on stderr, so it is a numeric exit: POSIX sh
+    // exits 127, Windows cmd.exe exits 1.
+    expect(result.structuredError?.details).toEqual({
+      exitCode: process.platform === 'win32' ? 1 : 127,
+    });
+    expect(result.structuredError?.message).toContain('book-no-such-command-473');
+    expect(result.structuredError?.message).not.toMatch(/^Exit code:/);
+  });
+
   it('distinguishes a timeout from a failing check', async () => {
     // The bug this guards: exec kills the child with SIGTERM on timeout, and
     // reporting that as an ordinary failure tells the agent its suite failed when
@@ -64,6 +134,22 @@ describe('Check', () => {
     expect(result.structuredError?.message).toContain('did not fail');
     expect(result.structuredError?.details).toMatchObject({ timeoutMs: 1_000 });
     expect(result.structuredError?.details).not.toHaveProperty('exitCode');
+  });
+
+  it('keeps both streams of a timed-out check', async () => {
+    const result = await run(
+      contextWith(
+        {
+          hang: `node -e "console.log('${STDOUT_LINE}'); console.error('${STDERR_LINE}'); setTimeout(() => {}, 10000)"`,
+        },
+        1_000,
+      ),
+      'hang',
+    );
+
+    expect(result.structuredError?.code).toBe('check_timed_out');
+    expect(result.content).toContain(STDOUT_LINE);
+    expect(result.content).toContain(STDERR_LINE);
   });
 
   it('honors a raised agents.checkTimeoutMs', async () => {
@@ -250,6 +336,36 @@ describe('Check and the sandbox', () => {
       }
     },
   );
+
+  it('explains the read-only git directory when the config error is on stdout', async () => {
+    // A fake wrapper stands in for bubblewrap: what is under test is that the note scans both
+    // streams, not that git ran inside a namespace.
+    const ctx = contextWith({ remote: 'git remote add origin https://example.test/repo.git' });
+    ctx.sandbox = {
+      ...SANDBOX_ENABLED,
+      filesystem: { ...SANDBOX_ENABLED.filesystem, allowGitWrites: false },
+    };
+    ctx.runtime = {
+      sandbox: () => ({
+        wrap: () => ({
+          file: process.execPath,
+          args: [
+            '-e',
+            "console.log('error: could not lock config file .git/config: Read-only file system'); console.error('fatal: unrelated stderr'); process.exit(1)",
+          ],
+        }),
+        describe: () => 'fake wrapper',
+      }),
+    } as unknown as ToolContext['runtime'];
+
+    const result = await run(ctx, 'remote');
+
+    expect(result.status).not.toBe('success');
+    expect(result.structuredError?.message).toContain('fatal: unrelated stderr');
+    expect(result.structuredError?.message).toContain(
+      "the repository's git directory is read-only inside the sandbox",
+    );
+  });
 
   it('leaves a check failure that was not about the config alone', async () => {
     const ctx = contextWith({ boom: `node -e "console.error('suite failed'); process.exit(1)"` });

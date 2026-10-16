@@ -2,6 +2,7 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterAll } from 'vitest';
+import { clearInheritedBookEnv, resolveKeptBookEnv } from './inherited-book-env.js';
 
 // React 19 only lets `act()` take over scheduling when the host declares itself an
 // act environment. Without this flag `act` prints "The current testing environment is
@@ -21,6 +22,18 @@ process.env.BOOK_TOOL_TELEMETRY_DIR = telemetryRoot;
 delete process.env.CLAUDECODE;
 delete process.env.AI_AGENT;
 delete process.env.BOOK_SESSION_DRIVER;
+
+// A suite is often run from inside a Book session or a shell that exports BOOK_* overrides
+// (BOOK_EFFORT, BOOK_MODEL, BOOK_MAX_TOKENS, ...), and an inherited override outranks the default a
+// test asserts (#467). So every BOOK_* variable is deleted here, in every tier, except:
+//   - BOOK_HOME and the telemetry root pinned above (see below);
+//   - in the integration tier (its config sets VITEST_BOOK_TIER=integration in `test.env`), the
+//     provider variables tui-integration.test.ts passes to its PTY child on purpose (#358);
+//   - anything named in BOOK_TEST_KEEP_ENV, a comma-separated escape hatch for debugging, e.g.
+//       BOOK_TEST_KEEP_ENV=BOOK_DEBUG,BOOK_DEBUG_STDERR npx vitest run src/headless.test.ts
+//     BOOK_TEST_KEEP_ENV is read first and then cleared itself, unless it lists itself.
+// A test that sets a variable itself does so after this runs and is unaffected.
+clearInheritedBookEnv(process.env, resolveKeptBookEnv(process.env));
 
 // BOOK_HOME is deliberately NOT pinned here, unlike the telemetry root above. Its being
 // unset is an observable production state rather than an accident: createRunAmbientSnapshot
