@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { getNestedValue, setNestedValue } from './cli/utils.js';
-import { isUserSettingsFile, resolveSettings } from './settings-loader.js';
+import { resolveSettings, settingsLayerPaths } from './settings-loader.js';
 import {
   formatSettingsDiagnostics,
   readSettingsDocument,
@@ -168,15 +168,35 @@ function describeEffectiveBreak(options: SettingWriteOptions): string | undefine
   try {
     const candidatePath = join(directory, 'settings.json');
     writeFileSync(candidatePath, JSON.stringify(candidate));
-    assertLoadable(options.workspace, options.settingsOverridePath, {
+    const candidatePaths: Record<string, string> = {
       [SCOPE_RESOLUTION_PATH[options.scope]]: candidatePath,
-    });
+    };
+    // At `$HOME` with `BOOK_HOME` unset the user file is also the project file, and the loader
+    // reads it once. Swapping the candidate in for only one of the two would leave the old file
+    // at the other path, and the loader would merge it again as a gated workspace layer.
+    if (options.scope !== 'local' && !isLoaderLayer(options.workspace, 'project')) {
+      candidatePaths.userSettingsPath = candidatePath;
+      candidatePaths.projectSettingsPath = candidatePath;
+    }
+    assertLoadable(options.workspace, options.settingsOverridePath, candidatePaths);
     return undefined;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+/**
+ * Whether the loader reads this scope's file as a layer of its own. Asked of the loader's own
+ * layer list, so it cannot drift: at `$HOME` with `BOOK_HOME` unset the project file is the user
+ * file, which is read once, as the user layer (#449).
+ */
+function isLoaderLayer(workspace: string, scope: SettingsScope): boolean {
+  // The first entry is always the user file, so a project path equal to it is only ever there
+  // as the user layer, not as a layer of its own.
+  const [, ...workspaceLayers] = settingsLayerPaths(workspace);
+  return workspaceLayers.includes(settingsScopePath(scope, workspace));
 }
 
 /** Resolve the merge and run the loader's own cross-layer assertions. */
@@ -217,11 +237,11 @@ function shadowingScopes(
 ): SettingShadow[] {
   const shadowing: SettingShadow[] = [];
   for (const candidate of SCOPES_RESOLVED_AFTER[scope]) {
+    // A file the loader does not read as a layer of its own cannot shadow the write that just
+    // changed it (#449). Skipped before the read, so it is not parsed only to be discarded. The
+    // `--settings` override below is a separate file and stays reported.
+    if (!isLoaderLayer(workspace, candidate)) continue;
     const layer = readScopeDocument(candidate, workspace);
-    // At `$HOME` with `BOOK_HOME` unset the project file is the user file, which the loader reads
-    // once, as the user layer: it cannot shadow the write that just changed it (#449). The local
-    // layer and the `--settings` override below are separate files and stay reported.
-    if (candidate === 'project' && isUserSettingsFile(layer.path)) continue;
     if (layer.status === 'unreadable') {
       shadowing.push({
         scope: candidate,

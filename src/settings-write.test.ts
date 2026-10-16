@@ -3,7 +3,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { applySettingWrite, describeSettingShadow, guardSettingWrite } from './settings-write.js';
+import { resolveSettings } from './settings-loader.js';
 import type { SettingsScope } from './settings-scope.js';
+
+// Delegates to the real loader. It is wrapped only so a test can see which layer paths the
+// pre-flight in `applySettingWrite` hands it: there is no refusal that depends on them today.
+vi.mock('./settings-loader.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./settings-loader.js')>();
+  return { ...actual, resolveSettings: vi.fn(actual.resolveSettings) };
+});
 
 /**
  * The one write both `book config set` and `/config <key>=<value>` go through.
@@ -359,6 +367,107 @@ describe('a workspace at the home directory (#449)', () => {
     expect(result.shadowedBy).toEqual([
       { scope: 'local', path: homeLayer('settings.local.json'), unreadable: false },
     ]);
+  });
+
+  /**
+   * The pre-flight resolves the merge with a candidate file standing in for the layer being
+   * written. At `$HOME` the user file is also the project file, so the candidate has to stand in
+   * for both: otherwise the loader no longer sees one file, and merges the old one again as a
+   * gated workspace layer (doubled rules, stale scalars, workspace-only sandbox filtering).
+   *
+   * No loader assertion refuses a write on that account today (the cross-layer harness rule that
+   * motivated the pre-flight is gone), so the contract is pinned at the boundary: the paths the
+   * pre-flight hands the loader.
+   */
+  describe('pre-flight merge', () => {
+    const preflightPaths = () =>
+      vi
+        .mocked(resolveSettings)
+        .mock.calls.map(([, , paths]) => paths)
+        .filter((paths) => paths !== undefined);
+
+    beforeEach(() => {
+      vi.mocked(resolveSettings).mockClear();
+    });
+
+    it('stands the candidate in for the one file a user write is both user and project', () => {
+      vi.stubEnv('BOOK_HOME', undefined);
+      writeFileSync(
+        homeLayer('settings.json'),
+        JSON.stringify({ sandbox: { excludedCommands: ['make'] } }),
+      );
+
+      const result = writeAtHome('sandbox.excludedCommands', ['docker']);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.error);
+      expect(JSON.parse(readFileSync(homeLayer('settings.json'), 'utf-8'))).toEqual({
+        sandbox: { excludedCommands: ['docker'] },
+      });
+      const [candidate] = preflightPaths();
+      expect(candidate?.userSettingsPath).toBeDefined();
+      expect(candidate?.userSettingsPath).not.toBe(homeLayer('settings.json'));
+      expect(candidate?.projectSettingsPath).toBe(candidate?.userSettingsPath);
+    });
+
+    it('does the same for a --project write at the home directory', () => {
+      vi.stubEnv('BOOK_HOME', undefined);
+      writeFileSync(homeLayer('settings.json'), JSON.stringify({ model: 'old' }));
+
+      const result = applySettingWrite({
+        workspace: home,
+        key: 'model',
+        value: 'y',
+        scope: 'project',
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.error);
+      expect(JSON.parse(readFileSync(homeLayer('settings.json'), 'utf-8'))).toEqual({
+        model: 'y',
+      });
+      const [candidate] = preflightPaths();
+      expect(candidate?.projectSettingsPath).toBeDefined();
+      expect(candidate?.projectSettingsPath).not.toBe(homeLayer('settings.json'));
+      expect(candidate?.userSettingsPath).toBe(candidate?.projectSettingsPath);
+    });
+
+    it('keeps <home>/.book/settings.json a workspace layer when BOOK_HOME is elsewhere', () => {
+      const elsewhere = mkdtempSync(join(tmpdir(), 'book-settings-write-elsewhere-'));
+      try {
+        vi.stubEnv('BOOK_HOME', elsewhere);
+        writeFileSync(homeLayer('settings.json'), JSON.stringify({ model: 'old' }));
+
+        const result = applySettingWrite({
+          workspace: home,
+          key: 'model',
+          value: 'y',
+          scope: 'project',
+        });
+
+        expect(result.ok).toBe(true);
+        const [candidate] = preflightPaths();
+        // Only the project layer is replaced; the user layer is the real one in BOOK_HOME.
+        expect(candidate?.projectSettingsPath).toBeDefined();
+        expect(candidate?.userSettingsPath).toBeUndefined();
+
+        // And a workspace-loosening value is still refused for that file, writing nothing.
+        const loosening = applySettingWrite({
+          workspace: home,
+          key: 'sandbox.excludedCommands',
+          value: ['*'],
+          scope: 'project',
+        });
+        expect(loosening.ok).toBe(false);
+        if (loosening.ok) throw new Error('expected the write to be refused');
+        expect(loosening.error).toContain('ignored');
+        expect(JSON.parse(readFileSync(homeLayer('settings.json'), 'utf-8'))).toEqual({
+          model: 'y',
+        });
+      } finally {
+        rmSync(elsewhere, { recursive: true, force: true });
+      }
+    });
   });
 });
 

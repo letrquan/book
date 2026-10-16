@@ -127,21 +127,20 @@ function pathKey(path: string): string {
 }
 
 /**
- * The key `skillRoots` dedupes roots by: the real path, so a home reached through a link and a
- * workspace given by its real path name one root. A root that does not exist has no real path
- * and falls back to its resolved path.
+ * The real path of a skill root, or undefined when it does not exist (it contributes no skills,
+ * so there is nothing to fold).
  *
- * Only for comparing roots. {@link pathKey} stays the path as written because it also builds the
- * skill id, which keys consent and execution overrides.
+ * Only for asking whether a project root is a user root reached another way. {@link pathKey}
+ * stays the path as written because it also builds the skill id, which keys consent and
+ * execution overrides, and it is what roots are otherwise deduped by.
  */
-function rootKey(path: string): string {
-  let real: string;
+function realRootPath(path: string): string | undefined {
   try {
-    real = realpathSync.native(path);
+    const real = realpathSync.native(path);
+    return process.platform === 'win32' ? real.toLowerCase() : real;
   } catch {
-    real = resolve(path);
+    return undefined;
   }
-  return process.platform === 'win32' ? real.toLowerCase() : real;
 }
 
 function isInside(root: string, candidate: string): boolean {
@@ -213,14 +212,28 @@ export function skillRoots(workspace: string, options: DiscoverSkillsOptions = {
       { path: join(directory, '.book', 'skills'), source: 'project', kind: 'book' },
     );
   }
+  // The real paths of the user roots, for the one fold below. Two roots that merely alias each
+  // other (a repository linking `.claude/skills` to `.book/skills`) are *not* merged: each keeps
+  // its slot, and the later one still wins, as it did before roots were compared by real path.
+  const userRealPaths = new Set<string>();
+  for (const root of roots) {
+    if (root.source !== 'user') continue;
+    const real = realRootPath(root.path);
+    if (real) userRealPaths.add(real);
+  }
   const byPath = new Map<string, SkillRoot>();
   for (const root of roots) {
-    const key = rootKey(root.path);
+    const key = pathKey(root.path);
     // A workspace at `$HOME` walks the user's own roots again as project roots. They stay
     // user roots: a project skill asks before the model may run it, and the user's own
-    // skills must not start asking because of where Book was launched (#429). Compared by
-    // real path, so a home reached through a link counts its own roots once too (#449).
+    // skills must not start asking because of where Book was launched (#429).
     if (byPath.get(key)?.source === 'user') continue;
+    // The same, when the home is reached through a link, so the project spelling of the path
+    // differs (#449). Only a project root is ever folded into a user root, never the reverse.
+    if (root.source === 'project' && userRealPaths.size > 0) {
+      const real = realRootPath(root.path);
+      if (real && userRealPaths.has(real)) continue;
+    }
     byPath.set(key, root);
   }
   return [...byPath.values()];

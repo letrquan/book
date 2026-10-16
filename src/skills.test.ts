@@ -454,6 +454,57 @@ describe('discoverSkills', () => {
     });
   });
 
+  // Roots that alias each other *without* involving a user root keep the order and the winner
+  // they had before roots were compared by real path (#449 review): the later root wins.
+  describe('aliased roots that are not a project root folded into a user root', () => {
+    function writeSkill(skillsDir: string, name: string, description: string): void {
+      mkdirSync(join(skillsDir, name), { recursive: true });
+      writeFileSync(
+        join(skillsDir, name, 'SKILL.md'),
+        ['---', `name: ${name}`, `description: ${description}`, '---', 'body'].join('\n'),
+      );
+    }
+
+    it('lets the .book root win when a repository links .claude/skills to .book/skills', () => {
+      const repo = join(dir, 'repo');
+      mkdirSync(join(repo, '.claude'), { recursive: true });
+      writeSkill(join(repo, '.agents', 'skills'), 'deploy', 'Agents version');
+      writeSkill(join(repo, '.book', 'skills'), 'deploy', 'Book version');
+      symlinkSync(join(repo, '.book', 'skills'), join(repo, '.claude', 'skills'), 'junction');
+
+      const roots = skillRoots(repo, { includeUser: false, projectRoot: repo });
+      expect(roots.map((root) => root.kind)).toEqual(['claude', 'agents', 'opencode', 'book']);
+
+      const deploy = discoverSkills(repo).filter((found) => found.name === 'deploy');
+      expect(deploy.map((found) => [found.rootKind, found.description])).toEqual([
+        ['book', 'Book version'],
+      ]);
+    });
+
+    it('lets the book user root win when ~/.claude/skills links to ~/.book/skills', () => {
+      const home = join(dir, 'home');
+      const repo = join(dir, 'repo');
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      mkdirSync(repo, { recursive: true });
+      writeSkill(join(home, '.book', 'skills'), 'tidy', 'Tidy skill');
+      symlinkSync(join(home, '.book', 'skills'), join(home, '.claude', 'skills'), 'junction');
+      const options = { homeDir: home, bookHomeDir: join(home, '.book'), projectRoot: repo };
+
+      const roots = skillRoots(repo, options).filter((root) => root.source === 'user');
+      expect(roots.map((root) => root.kind)).toEqual(['claude', 'agents', 'opencode', 'book']);
+
+      const [tidy, ...others] = discoverSkillsFromDisk(repo, {}, options).filter(
+        (found) => found.name === 'tidy',
+      );
+      expect(others).toEqual([]);
+      const entry = join(home, '.book', 'skills', 'tidy', 'SKILL.md');
+      expect(tidy.rootKind).toBe('book');
+      expect(tidy.id).toBe(
+        `book:${process.platform === 'win32' ? resolve(entry).toLowerCase() : resolve(entry)}`,
+      );
+    });
+  });
+
   // `BOOK_HOME` elsewhere: `<home>/.book/skills` is no user root, so it is a project root.
   it('keeps <home>/.book/skills a project root when BOOK_HOME is elsewhere', () => {
     const elsewhere = join(dir, 'elsewhere');
