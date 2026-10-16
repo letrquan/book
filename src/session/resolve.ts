@@ -147,6 +147,30 @@ export function discardUntouchedSession(
   }
 }
 
+/**
+ * The exit cleanup of an interactive host (#507): the launch's own session (when it created it)
+ * and every session `/new` or `/clear` created since, whether or not it is still current. Each
+ * is judged on its own by `discardUntouchedSession`, so a session that got a prompt, a name, or
+ * a record from a hook stays. Returns how many were removed.
+ */
+export function discardUntouchedSessions(
+  store: SessionStoreInterface | undefined,
+  launch: Pick<SessionBootstrap, 'sessionId' | 'created'>,
+  createdSessionIds: Iterable<string>,
+): number {
+  let removed = 0;
+  if (discardUntouchedSession(store, launch)) removed++;
+  for (const sessionId of createdSessionIds) {
+    if (
+      sessionId !== launch.sessionId &&
+      discardUntouchedSession(store, { sessionId, created: true })
+    ) {
+      removed++;
+    }
+  }
+  return removed;
+}
+
 export function resolveSessionBootstrap(
   store: SessionStoreInterface | undefined,
   options: ResolveSessionOptions,

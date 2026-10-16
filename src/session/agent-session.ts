@@ -332,6 +332,11 @@ export interface AgentSessionTransitionRequest {
   store?: SessionStoreInterface;
   timelineStore?: SessionStoreInterface;
   previousName?: string;
+  /**
+   * Receives the id of every session a transition creates, the moment it exists. The host owns
+   * the set and removes the ones still untouched at exit (#507).
+   */
+  createdSessions?: Set<string>;
   onTransitionStart?: () => void;
   onTransition?: (bootstrap: SessionBootstrap) => void;
 }
@@ -868,6 +873,7 @@ export class AgentSession {
         driver: request.config.sessionDriver,
       });
     }
+    if (request.store) request.createdSessions?.add(sessionId);
 
     const bootstrap = emptySessionBootstrap(
       sessionId,

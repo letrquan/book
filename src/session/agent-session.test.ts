@@ -19,6 +19,7 @@ import type {
 import type { Message, Usage } from '../types/messages.js';
 import { createSessionFixture } from '../test/session-fixture.js';
 import { SessionStore } from './store.js';
+import { discardUntouchedSessions, resolveSessionBootstrap } from './resolve.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { SessionRuntime } from './runtime.js';
 import type { ProviderResponseMetadata } from '../types/providers.js';
@@ -2975,5 +2976,145 @@ describe('AgentSession — /goal records', () => {
       expect.objectContaining({ outputTokens: 0 }),
       expect.objectContaining({ condition: 'tests pass', outputTokens: 1_200 }),
     ]);
+  });
+});
+
+// #507: what a process created with `/new` or `/clear` is removed at exit like the launch's own
+// session (#444), whether or not it is still the current one.
+describe('AgentSession.clearSession — exit cleanup of created sessions (#507)', () => {
+  const config = { ...defaultConfig(), workspace: '/proj' };
+  const noHooks = {
+    sessionStartRunner: async () => {},
+    sessionEndRunner: async () => {},
+  };
+  const sessionFiles = (root: string) =>
+    new SessionStore(root)
+      .list()
+      .map((meta) => meta.id)
+      .sort();
+
+  async function clear(
+    session: AgentSession,
+    store: SessionStore,
+    currentSessionId: string,
+    createdSessions: Set<string>,
+  ): Promise<string> {
+    const result = await session.clearSession({ config, currentSessionId, store, createdSessions });
+    if (result.status !== 'transitioned') throw new Error('Expected a session transition.');
+    return result.bootstrap.sessionId;
+  }
+
+  it('removes the session /new made when no prompt was sent in it', async () => {
+    const fixture = createSessionFixture('book-clear-exit-');
+    try {
+      const launch = resolveSessionBootstrap(fixture.store, { cwd: '/proj' });
+      fixture.store.append(launch.sessionId, {
+        type: 'user',
+        timestamp: 1,
+        data: { content: 'hi' },
+      });
+      const created = new Set<string>();
+      const session = new AgentSession(noHooks);
+      const next = await clear(session, fixture.store, launch.sessionId, created);
+
+      expect([...created]).toEqual([next]);
+      discardUntouchedSessions(fixture.store, launch, created);
+
+      expect(sessionFiles(fixture.root)).toEqual([launch.sessionId]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('keeps the session /new made once a prompt was sent in it', async () => {
+    const fixture = createSessionFixture('book-clear-exit-');
+    try {
+      const launch = resolveSessionBootstrap(fixture.store, { cwd: '/proj' });
+      const created = new Set<string>();
+      const session = new AgentSession(noHooks);
+      const next = await clear(session, fixture.store, launch.sessionId, created);
+      fixture.store.append(next, { type: 'user', timestamp: 2, data: { content: 'hello' } });
+
+      discardUntouchedSessions(fixture.store, launch, created);
+
+      expect(sessionFiles(fixture.root)).toEqual([next]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('removes a middle session of /new, /new that is no longer current', async () => {
+    const fixture = createSessionFixture('book-clear-exit-');
+    try {
+      const launch = resolveSessionBootstrap(fixture.store, { cwd: '/proj' });
+      fixture.store.append(launch.sessionId, {
+        type: 'user',
+        timestamp: 1,
+        data: { content: 'hi' },
+      });
+      const created = new Set<string>();
+      const session = new AgentSession(noHooks);
+      const middle = await clear(session, fixture.store, launch.sessionId, created);
+      const last = await clear(session, fixture.store, middle, created);
+      expect([...created]).toEqual([middle, last]);
+
+      discardUntouchedSessions(fixture.store, launch, created);
+
+      expect(sessionFiles(fixture.root)).toEqual([launch.sessionId]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('keeps a created session a SessionEnd hook wrote a record into', async () => {
+    const fixture = createSessionFixture('book-clear-exit-');
+    try {
+      const launch = resolveSessionBootstrap(fixture.store, { cwd: '/proj' });
+      const created = new Set<string>();
+      const session = new AgentSession({
+        sessionStartRunner: async () => {},
+        sessionEndRunner: async (_config, sessionId, reason) => {
+          if (reason === 'exit') fixture.store.patchMeta(sessionId, { driver: 'agent' });
+        },
+      });
+      const next = await clear(session, fixture.store, launch.sessionId, created);
+      // The exit's own SessionEnd runs before the cleanup, as in the TUI.
+      await session.endLifecycle(config, next, 'exit');
+
+      discardUntouchedSessions(fixture.store, launch, created);
+
+      expect(sessionFiles(fixture.root)).toEqual([next]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('never removes a resumed launch, however empty, and records nothing for /resume', async () => {
+    const fixture = createSessionFixture('book-clear-exit-');
+    try {
+      const earlier = fixture.store.create({ cwd: '/proj', name: 'earlier' });
+      const resumedLaunch = resolveSessionBootstrap(fixture.store, {
+        cwd: '/proj',
+        resume: 'earlier',
+      });
+      const other = fixture.store.create({ cwd: '/proj' });
+      const created = new Set<string>();
+      const session = new AgentSession(noHooks);
+      // `/resume` from inside the TUI creates nothing, so nothing is recorded.
+      await session.resumeSession({
+        config,
+        currentSessionId: resumedLaunch.sessionId,
+        store: fixture.store,
+        selector: other,
+        createdSessions: created,
+      });
+      expect([...created]).toEqual([]);
+
+      discardUntouchedSessions(fixture.store, resumedLaunch, created);
+
+      expect(sessionFiles(fixture.root)).toEqual([earlier, other].sort());
+    } finally {
+      fixture.cleanup();
+    }
   });
 });

@@ -60,8 +60,9 @@ writing bad JSON.
 A launch that ends before its first prompt (opening Book and quitting, or a print run or SDK query
 that fails before it records one) removes the session it created, so no empty session is left in
 `<BOOK_HOME>/sessions`. Anything recorded in a session keeps it, as does `--name`: a name you typed
-is kept even if no prompt followed. A session you resumed (`--resume`, `--continue`) is never
-removed.
+is kept even if no prompt followed. A session you resumed (`--resume`, `--continue`, `/resume`) is
+never removed. The same goes for the sessions `/new` and `/clear` create in the TUI: one that never
+got a prompt is removed when Book exits, including one you have since left with another `/new`.
 
 ## Common flags
 
