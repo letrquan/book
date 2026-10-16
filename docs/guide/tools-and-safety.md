@@ -224,10 +224,11 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   (``; & | < > ` $ ( ) { }``), uses `$` or a backtick inside double quotes, or has a line break or
   an unterminated quote is refused the same way, and the refusal says to send each command as its
   own Bash call; the whole command must also match the pattern. Quotes are read, so
-  `git commit -m "fix(x): y"` and `git stash show 'stash@{0}'` (not on Windows) pass `Bash(git *)`; a backslash or
-  caret before a quote and a typographic quote are refused because a shell may read them
-  differently, and on Windows any single quote is refused (PowerShell and Git Bash read it as a
-  quote, so use double quotes there). A bare `Bash` rule admits any command. The
+  `git commit -m "fix(x): y"` and `git stash show 'stash@{0}'` (on Windows only under Git Bash) pass
+  `Bash(git *)`; a backslash or caret before a quote and a typographic quote are refused because a
+  shell may read them differently, and on Windows any single quote is refused unless the session
+  shell is Git Bash and the command has a space, a tab or a `"` (use double quotes under
+  PowerShell). A bare `Bash` rule admits any command. The
   rule constrains the command's text, not what the program does with its options (`Bash(git *)`
   still admits `git -c core.fsmonitor=… status`), and is not a sandbox: narrow the pattern when
   that matters.
@@ -325,26 +326,55 @@ active instead of being refused.
 `permissions.allow`, `permissions.ask`, and `permissions.deny` are matched against every tool call.
 `deny` beats `ask`, and `ask` beats `allow`.
 
-**Bash `allow` rules read the whole command; `deny` and `ask` read only its first line.** A
-`Bash(<pattern>)` allow rule admits a call only when the whole command, trimmed, matches the
-pattern and is a single command. `Bash(*)` is a pattern rule like any other, so it too no longer
-admits a compound or multi-line command; such a call falls through to the prompt. A command that chains, pipes, redirects or substitutes outside
-quotes (``; & | < > ` $ ( ) { }``), uses `$` or a backtick inside double quotes, or has a line break
-or an unterminated quote does not match, so it falls through to the prompt: `Bash(git status)`
-does not admit `git status` followed by a second line, and `Bash(git *)` does not admit
-`git status && rm -rf ~`. Quoted arguments are fine (`git commit -m "fix(x): y"`), and whitespace
-around the command is ignored. On Windows a single-quoted argument is refused under a Bash rule,
-because PowerShell and Git Bash read `'` as a quote and cmd.exe does not; use double quotes there.
-A bare `Bash` allow rule (no pattern) still admits every Bash command.
+**How `allow`, `deny` and `ask` read a Bash command.** The Bash tool runs `command.trim()`, and
+`allow` rules are read against that:
+
+- An **exact rule** is a `Bash(<pattern>)` whose pattern has no `*`. It admits a call only when the
+  trimmed command is, character for character, the pattern, compared as plain text (so `?` and
+  `[` mean themselves): `Bash(cd x && npm test)` admits `cd x && npm test`, with or without
+  surrounding whitespace, and nothing else, not even `cd x && npm test; rm y`. It does so whether or
+  not the command is compound, because you wrote that exact line down. "Always allow" on a
+  one-line compound command saves exactly this rule.
+- A **glob rule** has a `*` (`Bash(git *)`, and `Bash(*)` too). It admits a call only when the whole
+  trimmed command matches and the command is a single command. A command that chains, pipes,
+  redirects or substitutes outside quotes (``; & | < > ` $ ( ) { }``), uses `$` or a backtick inside
+  double quotes, or has a line break or an unterminated quote does not match, so it falls through
+  to the prompt: `Bash(git *)` does not admit `git status && rm -rf ~`. Quoted arguments are fine
+  (`git commit -m "fix(x): y"`), and whitespace around the command is ignored.
+- A bare `Bash` rule (no pattern) admits every Bash command, except a compound one while a Bash
+  `deny` or `ask` rule exists (see below).
 
 `deny` and `ask` rules read only the first line of the command (and the first line of the trimmed
-command, so leading whitespace does not slide past them). A command chained after `&&`, `;` or
-`|`, or placed on a later line, is **not** checked against them: `Bash(rm *)` in `deny` does not
-stop `echo hi && rm x` or `echo hi` followed by a line `rm x`. A Bash `deny` rule is therefore not
-a guard against chaining in `auto` or `bypassPermissions`, which do not prompt for what no rule
-matched; this is tracked in #512. The same reading applies to the session's "approve all" rules.
-"Always allow" offers only the exact rule, with no widened `*` rungs, for a command that is
-multi-line, chains or redirects, or contains a quote character.
+command, so leading whitespace does not slide past them), plus the whole trimmed command as one
+glob. Book does not parse shell, so a command chained after `&&`, `;` or `|`, or placed on a later
+line, is not seen by them: `Bash(rm *)` in `deny` does not match `echo hi && rm x`, nor `echo hi`
+followed by a line `rm x`. A Bash `deny` rule is therefore **not** a complete guard on its own.
+What makes it safe to rely on is this: while any `deny` or `ask` rule names Bash (a rule on another
+tool, such as `Read(.env)`, does not count), a compound command that no rule matched is **always
+asked about**, in `auto` as well. Only an exact `allow` rule for that very line, or
+`bypassPermissions`, lets it run without the prompt; a bare `Bash` or glob `allow` rule does not.
+In `dontAsk` it is refused. The order for Bash is deny, then ask, then exact allow rules, then the
+compound prompt, then glob and bare allow rules. A command that only _quotes_ the text
+(`git commit -m "rm stuff"`) is not compound and is not prompted for. With no Bash `deny` or
+`ask` rule nothing changes. The same reading applies to the session's "approve all" rules: for a
+compound command under a Bash `deny` or `ask` rule only the exact rule counts.
+
+"Always allow" offers only the exact rule, with no widened `*` rungs, for a command that chains or
+redirects or contains a quote character. For a command whose exact rule could never admit it, it
+remembers nothing and offers no rule (the prompt says "this call only — no rule to save", and the
+call still runs once): a command that is multi-line after trimming, and a compound command that
+contains a `*` (its rule would be a glob rule, which refuses compound commands).
+
+**Windows and `'`.** `'` is a quote in Git Bash and PowerShell but not in cmd.exe, so on Windows a
+single-quoted argument (`git stash show 'stash@{0}'`) is treated as an ordinary argument only when
+the session shell is Git Bash (WSL's `bash.exe` in a Windows system directory does not count) _and_
+the command contains a space, a tab or a `"`. The reason is how Git Bash is started: Book passes the
+command as one argument, Node wraps an argument in `"…"` on the Windows command line only when it
+holds a space, a tab or a `"`, and the MSYS runtime rebuilds the arguments from that line itself,
+reading `'` as a quote and removing it in an unwrapped word. So `echo';id'` reaches bash as `echo;id`,
+two commands, while `git log 'x;y'` arrives intact. A command with a `'` and none of those
+characters, and every `'` under PowerShell, cmd.exe or any other shell, makes the command
+compound; use double quotes or add the space.
 
 Permission _modes_ decide whether you are prompted; they never relax a `deny` rule. A rule in
 `permissions.deny` blocks the matching call in every mode, including `auto` and
@@ -356,7 +386,7 @@ Modes differ only in what happens to calls that no `deny` rule matched:
 | `default`           | Checked against `allow`/`ask`, then prompted — except workspace reads, which run unless a rule covers them                    |
 | `acceptEdits`       | As `default`, and file mutations are approved without a prompt too                                                            |
 | `plan`              | Read-only tools only; mutations are refused until you approve a plan                                                          |
-| `auto`              | Run without a prompt                                                                                                          |
+| `auto`              | Run without a prompt, except any compound Bash command while a Bash `deny` or `ask` rule exists (see above)                   |
 | `dontAsk`           | Refused except for the tools below that never prompt — the mode never prompts, and a user `allow` rule does not exempt a call |
 | `bypassPermissions` | Run without a prompt                                                                                                          |
 
@@ -367,7 +397,8 @@ and `ToolSearch`, `EnterPlanMode` and the managed-agent lifecycle tools (every `
 `AgentApply`) never reach a prompt; `dontAsk` does not refuse any of them. A `permissions.deny` rule
 still blocks them in every mode. A `permissions.ask` rule that names one prompts in `default` and
 `acceptEdits`, refuses the call in `dontAsk`, and, as for every tool, is not consulted in `auto` or
-`bypassPermissions`.
+`bypassPermissions`. (Bash is the exception in `auto`: while any Bash `deny` or `ask` rule exists,
+every compound Bash command prompts there, whether or not a rule matched it.)
 
 **Memory writes.** `Write`, `Edit`, `MultiEdit` and `ApplyPatch` may write `*.md` files in the
 project's memory directory without a prompt, in `default`, `acceptEdits`, `auto` and `dontAsk`. A
@@ -498,13 +529,14 @@ interactive approver cannot show a prompt, so a call that would prompt is refuse
 that nothing in the run could approve it, not that a policy blocked it, and what would let the call
 through:
 
-| The call                                         | What lets it through                                           |
-| ------------------------------------------------ | -------------------------------------------------------------- |
-| Most calls                                       | A `permissions.allow` rule for it, or `--permission-mode auto` |
-| One an `ask` rule covers                         | Narrowing or removing that rule (it outranks allow), or `auto` |
-| A skill that asks for consent                    | A `permissions.allow` rule; `auto` still asks                  |
-| A persistent background shell                    | Only `--permission-mode bypassPermissions`                     |
-| A `Read`, `Glob` or `Grep` outside the workspace | Nothing: the tool cannot open it                               |
+| The call                                         | What lets it through                                                                                                                                                                                 |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Most calls                                       | A `permissions.allow` rule for it, or `--permission-mode auto`                                                                                                                                       |
+| One an `ask` rule covers                         | Narrowing or removing that rule (it outranks allow), or `auto`                                                                                                                                       |
+| A skill that asks for consent                    | A `permissions.allow` rule; `auto` still asks                                                                                                                                                        |
+| A compound Bash command under a Bash deny or ask | Sending each command as its own call, the exact rule `Bash(<whole command>)` in `permissions.allow`, or `bypassPermissions` (if an ask rule matches it, narrow that rule instead); `auto` still asks |
+| A persistent background shell                    | Only `--permission-mode bypassPermissions`                                                                                                                                                           |
+| A `Read`, `Glob` or `Grep` outside the workspace | Nothing: the tool cannot open it                                                                                                                                                                     |
 
 In print mode and the SDK, the first such refusal of each tool in a session also prints the remedy
 for the operator (on stderr in `text` output, as a `notice` event in `stream-json`); a call nothing

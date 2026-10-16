@@ -652,7 +652,11 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     if (!isActive(name)) return false;
     if (
       name !== 'ToolSearch' &&
-      ![...ruleSets.values()].every((rules) => isToolCallAllowed(rules, call))
+      ![...ruleSets.values()].every((rules) =>
+        // The session shell, exactly as the Bash tool and the permission gate read it, so a
+        // single-quoted argument is judged one way everywhere (#512).
+        isToolCallAllowed(rules, call, undefined, process.platform, context.shell ?? config.shell),
+      )
     )
       return false;
     if (state.loaded.has(name)) state.loaded.set(name, ++state.clock);

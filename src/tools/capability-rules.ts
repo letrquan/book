@@ -4,7 +4,7 @@ import { canonicalToolName } from './aliases.js';
 import { globToRegex } from './glob-regex.js';
 import { comparablePath } from './path-utils.js';
 import { getPrimaryArg } from './primary-arg.js';
-import { hasCompoundShellSyntax } from './shell-chaining.js';
+import { hasCompoundShellSyntax, type ScanShell } from './shell-chaining.js';
 import { strictRmMatchesGlob } from './strict-rm.js';
 
 /** Tools whose rule pattern names one file, so a call is matched by the path it really names. */
@@ -67,6 +67,7 @@ export function isToolCallAllowed(
   call: ToolCall,
   wildcardExclusions: ReadonlySet<string> = new Set(),
   platform: NodeJS.Platform = process.platform,
+  shell?: ScanShell,
 ): boolean {
   const canonical = canonicalToolName(call.name);
   const isFileTool = FILE_PATH_TOOLS.has(canonical);
@@ -106,7 +107,8 @@ export function isToolCallAllowed(
       // Under a command glob a compound command is refused outright, and the whole command is
       // matched: the primary argument is only its first line.
       const command = call.arguments.command;
-      if (typeof command !== 'string' || isCompoundShellCommand(call, platform)) return false;
+      if (typeof command !== 'string' || isCompoundShellCommand(call, platform, shell))
+        return false;
       return globToRegex(normalizedPattern).test(command.trim().replace(/^\.\//, ''));
     }
     return globToRegex(normalizedPattern).test(primary);
@@ -122,10 +124,11 @@ export function isToolCallAllowed(
 export function isCompoundShellCommand(
   call: ToolCall,
   platform: NodeJS.Platform = process.platform,
+  shell?: ScanShell,
 ): boolean {
   const command = call.arguments.command;
   if (canonicalToolName(call.name) !== 'Bash' || typeof command !== 'string') return false;
-  return hasCompoundShellSyntax(command, platform);
+  return hasCompoundShellSyntax(command, platform, shell);
 }
 
 /** What a capability refusal of a compound Bash command says was wrong with the command. */

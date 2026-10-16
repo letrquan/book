@@ -7,6 +7,8 @@ import { removeWhenReleased } from '../test/remove-when-released.js';
 import { persistentEnvironmentOverrides, shellTools, streamTail } from './shell.js';
 import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
+import { hasCompoundShellSyntax } from './shell-chaining.js';
+import { resolveShell } from '../shell-selection.js';
 import { PROVIDER_KEY_MARKER, redactToolResultSecrets } from '../provider-secrets.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
 import { SessionRuntime } from '../session/runtime.js';
@@ -1398,5 +1400,36 @@ describe('BashOutput result data', () => {
     expect(data.shell).toMatchObject({ id: shellId, status: 'failed', exitCode: 3 });
     expect(typeof data.output).toBe('string');
     expect(JSON.stringify(terminal.data)).not.toContain('"output":"buffered-line');
+  });
+});
+
+// The scanner reads `'` as a quote under Git Bash only when libuv wraps the argument (#512), which
+// rests on how the MSYS runtime rebuilds argv. This spawns the real Git Bash exactly as the Bash
+// tool does (`shellExecution` argv, no `windowsVerbatimArguments`), so it fails if that stops
+// being true. It runs only on Windows with Git Bash installed.
+const windowsGitBash = (() => {
+  if (process.platform !== 'win32') return undefined;
+  const resolved = resolveShell({ platform: 'win32', requested: 'bash' });
+  return resolved.kind === 'bash' && resolved.file ? resolved : undefined;
+})();
+
+describe.skipIf(!windowsGitBash)('Git Bash single quotes on Windows (#512)', () => {
+  it('passes a quoted argument with a space through intact', async () => {
+    const c: ToolContext = { workspaceRoot: dir, env: {}, shell: windowsGitBash };
+    contexts.push(c);
+    const result = await bash.execute({ command: "echo 'x;echo y'" }, c);
+    expect(result.content.trim()).toBe('x;echo y');
+  });
+
+  it('is why a space-free quoted command is refused by the scanner: MSYS strips the quotes', async () => {
+    const c: ToolContext = { workspaceRoot: dir, env: {}, shell: windowsGitBash };
+    contexts.push(c);
+    // No space, tab or `"`, so libuv leaves the argument unwrapped and MSYS strips the quotes.
+    expect(hasCompoundShellSyntax("echo';echo${IFS}y'", 'win32', windowsGitBash)).toBe(true);
+    const result = await bash.execute({ command: "echo';echo${IFS}y'" }, c);
+    // Stripped, bash runs `echo;echo${IFS}y`: `echo` prints an empty line, then `echo y` prints `y`.
+    // Had the quotes survived, bash would look for a command named `echo;echo${IFS}y` and print a
+    // "command not found" error instead.
+    expect(result.content.replace(/\s+/g, '')).toBe('y');
   });
 });

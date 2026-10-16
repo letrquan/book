@@ -1525,3 +1525,336 @@ describe('runAgentLoop under the /memory consolidate tool set', () => {
     expect(existsSync(join(workspace, 'pwned'))).toBe(false);
   });
 });
+
+/**
+ * #512, decision 2. A Bash deny or ask rule is a glob over one line, so a compound command slips
+ * past it; `auto` never prompts, so the `ask` verdict that catches it was ignored. These runs use a
+ * stub Bash tool that records what it was asked to run and never reaches a shell, so a gate that is
+ * wrong cannot execute anything.
+ */
+describe('runAgentLoop compound Bash commands under a Bash deny or ask rule (#512)', () => {
+  const COMPOUND = 'echo a && echo b';
+
+  async function run(options: {
+    command: string;
+    mode: 'default' | 'auto' | 'dontAsk' | 'bypassPermissions';
+    deny?: string[];
+    ask?: string[];
+    allow?: string[];
+    onPermissionRequired?: AgentLoopCallbacks['onPermissionRequired'];
+    notices?: string[];
+  }) {
+    const executed: string[] = [];
+    const registry = createDefaultRegistry();
+    registry.register({
+      ...registry.getTool('Bash')!,
+      execute: async (args) => {
+        executed.push(String(args.command));
+        return { ...okResult, content: 'stub ran' };
+      },
+    });
+    const config = defaultConfig({ workspace, maxTurns: 2 });
+    config.settings.permissions.deny = options.deny ?? [];
+    config.settings.permissions.ask = options.ask ?? [];
+    config.settings.permissions.allow = options.allow ?? [];
+    const prompt = vi.fn(options.onPermissionRequired ?? (async () => 'deny' as const));
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      config,
+      registry,
+      'run it',
+      [],
+      noopCallbacks({
+        onPermissionRequired: prompt,
+        onToolResult: (r) => results.push(r),
+        onNotice: (notice) => options.notices?.push(notice),
+      }),
+      options.mode,
+      {
+        provider: toolsThenText([
+          { id: 'b1', name: 'Bash', arguments: { command: options.command } },
+        ]),
+        isNewSession: false,
+      },
+    );
+    return { executed, prompt, result: byId(results, 'b1') };
+  }
+  const okResult = {
+    version: 2 as const,
+    toolCallId: '',
+    status: 'success' as const,
+    content: '',
+  };
+
+  it('prompts in auto, and does not run the command when it is denied', async () => {
+    const { executed, prompt, result } = await run({
+      command: COMPOUND,
+      mode: 'auto',
+      deny: ['Bash(rm *)'],
+    });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(executed).toEqual([]);
+    expect(result?.status).toBe('blocked');
+  });
+
+  it('runs it in auto once the prompt is approved', async () => {
+    const { executed, prompt } = await run({
+      command: COMPOUND,
+      mode: 'auto',
+      deny: ['Bash(rm *)'],
+      onPermissionRequired: async () => 'allow',
+    });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(executed).toEqual([COMPOUND]);
+  });
+
+  it('prompts in auto for an ask rule that matches the whole compound command', async () => {
+    const { executed, prompt } = await run({
+      command: 'echo a && echo b',
+      mode: 'auto',
+      ask: ['Bash(echo *)'],
+    });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(executed).toEqual([]);
+  });
+
+  it('prompts in auto for a bare Bash allow rule beside a Bash deny rule', async () => {
+    const { executed, prompt } = await run({
+      command: COMPOUND,
+      mode: 'auto',
+      allow: ['Bash'],
+      deny: ['Bash(rm *)'],
+    });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(executed).toEqual([]);
+  });
+
+  it('runs it unprompted in bypassPermissions', async () => {
+    const { executed, prompt } = await run({
+      command: COMPOUND,
+      mode: 'bypassPermissions',
+      deny: ['Bash(rm *)'],
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(executed).toEqual([COMPOUND]);
+  });
+
+  it('refuses it in dontAsk without prompting', async () => {
+    const { executed, prompt, result } = await run({
+      command: COMPOUND,
+      mode: 'dontAsk',
+      deny: ['Bash(rm *)'],
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(executed).toEqual([]);
+    expect(result?.content).toContain('dontAsk');
+  });
+
+  it('runs a compound command in auto unprompted when no Bash deny or ask rule exists', async () => {
+    for (const rules of [{}, { deny: ['Read(.env)'] }, { ask: ['Write(src/**)'] }]) {
+      const { executed, prompt } = await run({ command: COMPOUND, mode: 'auto', ...rules });
+      expect(prompt, JSON.stringify(rules)).not.toHaveBeenCalled();
+      expect(executed, JSON.stringify(rules)).toEqual([COMPOUND]);
+    }
+  });
+
+  it('keeps a non-compound command unprompted in auto, quoted rule text included', async () => {
+    for (const command of ['git commit -m "rm stuff"', 'echo "a && b"', 'echo hi']) {
+      const { executed, prompt } = await run({ command, mode: 'auto', deny: ['Bash(rm *)'] });
+      expect(prompt, command).not.toHaveBeenCalled();
+      expect(executed, command).toEqual([command]);
+    }
+  });
+
+  it('lets an exact allow rule admit its exact command in auto', async () => {
+    const { executed, prompt } = await run({
+      command: COMPOUND,
+      mode: 'auto',
+      allow: [`Bash(${COMPOUND})`],
+      deny: ['Bash(rm *)'],
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(executed).toEqual([COMPOUND]);
+  });
+
+  it('refuses it with the compound remedy, and no --permission-mode auto, when nobody can ask', async () => {
+    const notices: string[] = [];
+    const { executed, result } = await run({
+      command: COMPOUND,
+      mode: 'auto',
+      deny: ['Bash(rm *)'],
+      onPermissionRequired: noApprover,
+      notices,
+    });
+    expect(executed).toEqual([]);
+    const content = result?.content ?? '';
+    expect(content).toContain('as its own Bash call');
+    expect(content).toContain(`"Bash(${COMPOUND})"`);
+    expect(content).toContain('bypassPermissions');
+    expect(content).not.toContain('--permission-mode auto');
+    const refusals = notices.filter((notice) => notice.includes('needs approval'));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).not.toContain('--permission-mode auto');
+  });
+
+  it('omits the allow-rule option when no exact rule could admit the command', async () => {
+    const { result } = await run({
+      command: 'echo a\necho b',
+      mode: 'auto',
+      deny: ['Bash(rm *)'],
+      onPermissionRequired: noApprover,
+    });
+    const content = result?.content ?? '';
+    expect(content).toContain('as its own Bash call');
+    expect(content).not.toContain('permissions.allow');
+    expect(content).not.toContain('--permission-mode auto');
+  });
+
+  it.each(['echo a\necho b', 'ls *.ts && echo x'])(
+    'never tells the operator to add a bare Bash rule for %j, which no single rule covers',
+    async (command) => {
+      const notices: string[] = [];
+      const { executed, result } = await run({
+        command,
+        mode: 'default',
+        onPermissionRequired: noApprover,
+        notices,
+      });
+      expect(executed).toEqual([]);
+      const texts = [result?.content ?? '', ...notices.filter((n) => n.includes('needs approval'))];
+      expect(texts).toHaveLength(2);
+      for (const text of texts) {
+        expect(text).not.toMatch(/"Bash"/);
+        expect(text).toContain('no single permissions.allow rule');
+      }
+    },
+  );
+
+  it('still names the exact rule when one covers the command', async () => {
+    const { result } = await run({
+      command: 'cd x && npm test',
+      mode: 'default',
+      onPermissionRequired: noApprover,
+    });
+    expect(result?.content).toContain('"Bash(cd x && npm test)"');
+  });
+
+  describe('"Always allow"', () => {
+    it('saves the exact rule, which then admits the same call without a prompt', async () => {
+      const persisted: string[] = [];
+      const executed: string[] = [];
+      const registry = createDefaultRegistry();
+      registry.register({
+        ...registry.getTool('Bash')!,
+        execute: async (args) => {
+          executed.push(String(args.command));
+          return { ...okResult, content: 'stub ran' };
+        },
+      });
+      const config = defaultConfig({ workspace, maxTurns: 3 });
+      config.settings.permissions.deny = ['Bash(rm *)'];
+      const prompt = vi.fn(async () => 'always' as const);
+      let turn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          turn++;
+          if (turn <= 2) {
+            yield {
+              type: 'tool_call' as const,
+              toolCall: { id: `b${turn}`, name: 'Bash', arguments: { command: COMPOUND } },
+            };
+          } else {
+            yield { type: 'text' as const, content: 'done' };
+          }
+          yield { type: 'done' as const };
+        },
+      };
+      await runAgentLoop(
+        config,
+        registry,
+        'run it',
+        [],
+        noopCallbacks({
+          onPermissionRequired: prompt,
+          onPersistPermissionRule: (rule) => persisted.push(rule),
+        }),
+        'auto',
+        { provider, isNewSession: false },
+      );
+      expect(persisted).toEqual([`Bash(${COMPOUND})`]);
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(executed).toEqual([COMPOUND, COMPOUND]);
+    });
+
+    it('runs the call once and remembers nothing when no exact rule could admit it', async () => {
+      const { executed, prompt } = await run({
+        command: 'echo a\necho b',
+        mode: 'auto',
+        deny: ['Bash(rm *)'],
+        onPermissionRequired: async () => 'always',
+      });
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(executed).toEqual(['echo a\necho b']);
+    });
+
+    it('never lets a bare Bash or glob session rule skip the prompt for a flagged call', async () => {
+      for (const rule of ['Bash', 'Bash(echo *)']) {
+        const executed: string[] = [];
+        const registry = createDefaultRegistry();
+        registry.register({
+          ...registry.getTool('Bash')!,
+          execute: async (args) => {
+            executed.push(String(args.command));
+            return { ...okResult, content: 'stub ran' };
+          },
+        });
+        const config = defaultConfig({ workspace, maxTurns: 3 });
+        config.settings.permissions.deny = ['Bash(rm *)'];
+        let turn = 0;
+        const provider: Provider = {
+          id: 'scripted',
+          stream: async function* () {
+            turn++;
+            if (turn === 1) {
+              yield {
+                type: 'tool_call' as const,
+                toolCall: { id: 'b1', name: 'Bash', arguments: { command: 'echo seed' } },
+              };
+            } else if (turn === 2) {
+              yield {
+                type: 'tool_call' as const,
+                toolCall: { id: 'b2', name: 'Bash', arguments: { command: COMPOUND } },
+              };
+            } else {
+              yield { type: 'text' as const, content: 'done' };
+            }
+            yield { type: 'done' as const };
+          },
+        };
+        // The first call's "Always" answer carries the session rule under test; the second,
+        // compound call must still reach the approver, which denies it.
+        let asked = 0;
+        const answers: Array<PermissionDecision | 'deny'> = [{ result: 'always', rule }, 'deny'];
+        const compoundPrompts: string[] = [];
+        await runAgentLoop(
+          config,
+          registry,
+          'run it',
+          [],
+          noopCallbacks({
+            onPermissionRequired: async (call) => {
+              asked++;
+              if (call.arguments.command === COMPOUND) compoundPrompts.push(rule);
+              return answers[Math.min(asked - 1, answers.length - 1)];
+            },
+          }),
+          'default',
+          { provider, isNewSession: false },
+        );
+        expect(compoundPrompts, rule).toEqual([rule]);
+        expect(executed, rule).not.toContain(COMPOUND);
+      }
+    });
+  });
+});
