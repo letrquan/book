@@ -21,6 +21,7 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import { createProvider, type Provider } from '../provider/index.js';
 import { isTruncationFinishReason, TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
 import { buildMessages } from './context.js';
+import { renameToolUseBlocks, renderedToolCallIds, uniqueToolCallId } from './tool-call-ids.js';
 import type { PreparedToolCall, ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
 import {
@@ -1543,6 +1544,10 @@ export async function runAgentLoop(
       let assistantContent = '';
       let reasoningContent = '';
       const toolCalls: ToolCall[] = [];
+      // The ids the provider sent, for the in-batch duplicate guard: a call renamed
+      // below to keep ids unique across the conversation must not hide a repeat.
+      const rawToolCallIds: string[] = [];
+      let usedToolCallIds: Set<string> | undefined;
       const nestedTraceIds: string[] = [];
       let turnUsage: Usage | null = null;
       let responseMetadata: ProviderResponseMetadata | undefined;
@@ -1677,15 +1682,24 @@ export async function runAgentLoop(
           } else if (event.type === 'tool_call' && event.toolCall) {
             flushReasoning();
             assistantOutputProduced = true;
-            toolCalls.push(event.toolCall);
-            callbacks.onToolCall(event.toolCall);
+            // A provider may repeat an id from an earlier turn, and a request carrying
+            // two calls with one id is rejected for good (#410). Rename before anyone
+            // sees the call, so the id announced, executed and persisted is one.
+            usedToolCallIds ??= renderedToolCallIds(newHistory);
+            rawToolCallIds.push(event.toolCall.id);
+            const callId = uniqueToolCallId(usedToolCallIds, event.toolCall.id);
+            usedToolCallIds.add(callId);
+            const streamedCall =
+              callId === event.toolCall.id ? event.toolCall : { ...event.toolCall, id: callId };
+            toolCalls.push(streamedCall);
+            callbacks.onToolCall(streamedCall);
             if (options?.nestedToolObserver && options.parentToolTraceId) {
-              const traceId = `${options.parentToolTraceId}/${turn}-${nestedTraceIds.length + 1}:${event.toolCall.id}`;
+              const traceId = `${options.parentToolTraceId}/${turn}-${nestedTraceIds.length + 1}:${streamedCall.id}`;
               nestedTraceIds.push(traceId);
               options.nestedToolObserver.onToolCall({
                 traceId,
                 parentTraceId: options.parentToolTraceId,
-                call: event.toolCall,
+                call: streamedCall,
               });
             }
           } else if (event.type === 'error' && event.error) {
@@ -1707,7 +1721,10 @@ export async function runAgentLoop(
               responseId: event.responseId,
               finishReasons: event.finishReasons,
             };
-            assistantProviderMetadata = event.providerMetadata;
+            assistantProviderMetadata = renameToolUseBlocks(
+              event.providerMetadata,
+              rawToolCallIds.map((raw, i) => ({ raw, id: toolCalls[i].id })),
+            );
           }
           if (signal?.aborted) break;
         }
@@ -2430,9 +2447,7 @@ export async function runAgentLoop(
       };
 
       const duplicateIds = [
-        ...new Set(
-          toolCalls.map((call) => call.id).filter((id, index, ids) => ids.indexOf(id) !== index),
-        ),
+        ...new Set(rawToolCallIds.filter((id, index, ids) => ids.indexOf(id) !== index)),
       ];
       if (duplicateIds.length > 0) {
         const message = `Provider returned duplicate tool call IDs: ${duplicateIds.join(', ')}. The batch was rejected before execution.`;
@@ -2454,6 +2469,11 @@ export async function runAgentLoop(
             message,
           }),
         );
+        // The message carries no calls or results, so the provider's native `tool_use`
+        // blocks must not ride along: Anthropic replays them verbatim, and a `tool_use`
+        // with no `tool_result` is a 400 on every later request.
+        const rejectedMetadata = assistantProviderMetadata && { ...assistantProviderMetadata };
+        if (rejectedMetadata) delete rejectedMetadata.anthropicContentBlocks;
         const malformedMessage: Message = {
           id:
             (reissuedThisTurn ? undefined : options?.assistantMessageId?.(turn)) ??
@@ -2464,7 +2484,10 @@ export async function runAgentLoop(
             .join('\n\n'),
           hostNotice: true,
           reasoningContent: reasoningContent || undefined,
-          providerMetadata: assistantProviderMetadata,
+          providerMetadata:
+            rejectedMetadata && Object.keys(rejectedMetadata).length > 0
+              ? rejectedMetadata
+              : undefined,
           includeInContext: true,
           timestamp: Date.now(),
         };

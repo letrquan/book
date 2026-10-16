@@ -32,6 +32,7 @@ import { unparsedArgumentsText } from '../tools/unparsed-arguments.js';
 import { resolveContextLimit, resolveEditFormat, type EditFormat } from '../models.js';
 import { memoryWriteScope } from '../memory-store.js';
 import { denyRulesRefuseMemoryWrites } from '../memory-access.js';
+import { dedupeToolCallIds } from './tool-call-ids.js';
 
 interface StaticDiscovery {
   fingerprint: string;
@@ -739,7 +740,10 @@ export async function buildMessages(
     replayAllReasoning: config.replayAllReasoning,
   });
 
-  for (const [index, msg] of history.entries()) {
+  // The same id twice in a conversation is a 400 from some providers, and a session persisted
+  // that way must still resume: render later repeats under fresh ids, without touching the
+  // stored history (#410). Index-aligned with `history`, which `keepsReasoning` reads.
+  for (const [index, msg] of dedupeToolCallIds(history).entries()) {
     if (!msg.includeInContext) continue;
     if (msg.role === 'user') {
       // Checkpoint bytes render verbatim; drift is reported as session-state deltas.
