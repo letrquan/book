@@ -5,6 +5,7 @@ import { useReportLayout } from '../hooks/useReportLayout.js';
 import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN, PANEL_CHROME, frameGrid } from '../layout.js';
 import { useDensityMetrics } from '../density.js';
+import { useMemoryRoot } from '../memory-root.js';
 import { getPrimaryArg } from '../../tools/primary-arg.js';
 import { canonicalToolName } from '../../tools/aliases.js';
 import { isFileMutatingTool } from '../../tools/tool-capabilities.js';
@@ -306,6 +307,8 @@ export function PermissionButtons({
   // arguments against the file on disk. Nothing is written until the user
   // answers; the tool recomputes against the file it finds when it runs.
   const previewable = Boolean(workspaceRoot) && isPreviewableMutation(toolCall);
+  // The configured spelling of the memory directory (`roots[0]`), so a memory write previews.
+  const memoryRoot = useMemoryRoot()?.roots[0];
   const [preview, setPreview] = useState<MutationPreview | null>(null);
   const previewLoading = previewable && preview === null;
   // A managed agent's record is replaced wholesale on every agent event, so
@@ -317,7 +320,9 @@ export function PermissionButtons({
     setPreview(null);
     if (!previewable || !workspaceRoot) return;
     const controller = new AbortController();
-    previewMutation(toolCallRef.current, workspaceRoot, controller.signal)
+    previewMutation(toolCallRef.current, workspaceRoot, controller.signal, {
+      ...(memoryRoot ? { memoryRoot } : {}),
+    })
       .then((result) => {
         if (controller.signal.aborted || !result) return;
         setPreview(result);
@@ -330,7 +335,7 @@ export function PermissionButtons({
       // Only the abort from the cleanup below rejects; nothing to show for it.
       .catch(() => undefined);
     return () => controller.abort();
-  }, [canonical, previewable, toolCall.id, workspaceRoot]);
+  }, [canonical, memoryRoot, previewable, toolCall.id, workspaceRoot]);
 
   useReportLayout([expanded ? 'expanded' : 'collapsed', preview ? 'preview' : 'none'].join(':'), {
     onLayoutChange,

@@ -41,6 +41,7 @@ import { formatElapsedDuration } from './SubagentRow.js';
 import { foldControlCharacters, stripTerminalControls } from '../../control-characters.js';
 import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
 import { useUiClock } from '../ui-clock.js';
+import { useMemoryRoot } from '../memory-root.js';
 import type { ToolResult } from '../../types/tools.js';
 
 /**
@@ -295,6 +296,7 @@ function ToolCallBlockInner({
   const theme = useTheme();
   const registry = useToolRowInteractionRegistry();
   const expandTargetId = useContext(ToolExpandTargetContext);
+  const memoryRoot = useMemoryRoot();
   // Ctrl+E in the detailed transcript shows everything, so every footer names it. In the compact
   // one it expands the target row only: the others keep the footer and drop the key.
   const expandHint =
@@ -317,8 +319,9 @@ function ToolCallBlockInner({
         isPending,
         nestedActivityCount,
         unparsedArguments,
+        memoryRoot,
       }),
-    [args, isPending, name, nestedActivityCount, result, unparsedArguments],
+    [args, isPending, memoryRoot, name, nestedActivityCount, result, unparsedArguments],
   );
   const isRunning = presentation.status === 'running';
   // Under reducedMotion the row must not tick at all: the spinner is frozen,

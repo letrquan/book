@@ -252,3 +252,107 @@ describe('previewMutation', () => {
     expect(preview?.error).toBe('File is too large to preview');
   });
 });
+
+describe('previewMutation of a memory file', () => {
+  let memory: string;
+
+  beforeEach(() => {
+    memory = mkdtempSync(join(tmpdir(), 'book-mutation-preview-memory-'));
+    writeFileSync(join(memory, 'notes.md'), 'one\ntwo\n');
+    writeFileSync(join(memory, '.hidden.md'), 'secret\n');
+    mkdirSync(join(memory, '.inbox'));
+  });
+
+  afterEach(() => {
+    rmSync(memory, { recursive: true, force: true });
+  });
+
+  it('names a Write that creates a memory file memory/<file>', async () => {
+    const preview = await previewMutation(
+      call('Write', { filePath: join(memory, 'fresh.md'), content: 'hello\n' }),
+      workspace,
+      undefined,
+      { memoryRoot: memory },
+    );
+    expect(preview?.error).toBeUndefined();
+    const [file] = preview!.files;
+    expect(file.filePath).toBe('memory/fresh.md');
+    expect(file.kind).toBe('create');
+    expect(file.diff).toContain('+hello');
+  });
+
+  it('shows an Edit of an existing memory file without writing it', async () => {
+    const preview = await previewMutation(
+      call('Edit', { filePath: join(memory, 'notes.md'), oldString: 'two', newString: 'three' }),
+      workspace,
+      undefined,
+      { memoryRoot: memory },
+    );
+    expect(preview?.error).toBeUndefined();
+    const [file] = preview!.files;
+    expect(file.filePath).toBe('memory/notes.md');
+    expect(file.diff).toContain('-two');
+    expect(file.diff).toContain('+three');
+    expect(readFileSync(join(memory, 'notes.md'), 'utf8')).toBe('one\ntwo\n');
+  });
+
+  it('names a MultiEdit and an ApplyPatch of a memory file memory/<file>', async () => {
+    const multi = await previewMutation(
+      call('MultiEdit', {
+        filePath: join(memory, 'notes.md'),
+        edits: [{ oldString: 'one', newString: '1' }],
+      }),
+      workspace,
+      undefined,
+      { memoryRoot: memory },
+    );
+    expect(multi?.files.map((f) => f.filePath)).toEqual(['memory/notes.md']);
+    const patch = await previewMutation(
+      call('ApplyPatch', {
+        patch: `*** Begin Patch\n*** Add File: ${join(memory, 'added.md')}\n+x\n*** End Patch`,
+      }),
+      workspace,
+      undefined,
+      { memoryRoot: memory },
+    );
+    expect(patch?.error).toBeUndefined();
+    expect(patch?.files.map((f) => f.filePath)).toEqual(['memory/added.md']);
+  });
+
+  it('keeps reporting a memory file as outside the workspace without a memory root', async () => {
+    const target = join(memory, 'fresh.md');
+    const preview = await previewMutation(
+      call('Write', { filePath: target, content: 'hello\n' }),
+      workspace,
+    );
+    expect(preview).toEqual({ files: [], error: `Path outside workspace: ${target}` });
+  });
+
+  it.each([
+    ['a non-markdown file', 'data.json'],
+    ['a dot-file', '.hidden.md'],
+    ['a file in a dot directory', join('.inbox', 'pending.md')],
+    ['a .. escape', join('..', 'escape.md')],
+  ])('refuses %s as the tool does', async (_label, name) => {
+    const target = join(memory, name);
+    const preview = await previewMutation(
+      call('Write', { filePath: target, content: 'x\n' }),
+      workspace,
+      undefined,
+      { memoryRoot: memory },
+    );
+    expect(preview?.files).toEqual([]);
+    expect(preview?.error).toBe(`Path outside workspace: ${target}`);
+  });
+
+  it('refuses a relative path, which stays a workspace file', async () => {
+    const preview = await previewMutation(
+      call('Write', { filePath: 'fresh.md', content: 'x\n' }),
+      workspace,
+      undefined,
+      { memoryRoot: memory },
+    );
+    expect(preview?.error).toBeUndefined();
+    expect(preview?.files[0]?.filePath).toBe('fresh.md');
+  });
+});

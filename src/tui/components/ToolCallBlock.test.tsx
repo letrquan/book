@@ -10,6 +10,7 @@ import { displayWidth } from './word-wrap.js';
 import type { FileMutationSummary, ToolResult } from '../../types/tools.js';
 import { enrichToolResultPresentation, toolFailure, toolSuccess } from '../../tools/result.js';
 import { workloadRows } from '../../test/tool-expand-workload.js';
+import { MemoryRootContext, memoryRootDisplay } from '../memory-root.js';
 import { toolRowHidesContent } from '../tool-expansion.js';
 import { shouldDefaultExpandTool } from '../tool-presentation.js';
 
@@ -987,6 +988,62 @@ describe('ToolCallBlock failures', () => {
         .join(' '),
     ).toBe(MESSAGE);
     for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(80);
+  });
+
+  describe('memory files', () => {
+    const MEMORY = '/home/u/.book/projects/p/memory';
+    const memory = memoryRootDisplay({ roots: [MEMORY], platform: 'linux' });
+    const notes = `${MEMORY}/notes.md`;
+
+    function firstLine(element: React.ReactElement): string {
+      const view = render(withTheme(element));
+      return frame(view.lastFrame)
+        .split('\n')
+        .find((line) => line.trim().length > 0)!;
+    }
+
+    function inMemory(element: React.ReactElement): React.ReactElement {
+      return <MemoryRootContext.Provider value={memory}>{element}</MemoryRootContext.Provider>;
+    }
+
+    it('names a failed edit, which has no result path, `memory/<file>`', () => {
+      const row = (
+        <ToolCallBlock
+          name="Edit"
+          args={{ filePath: notes, oldString: 'a', newString: 'b' }}
+          result={enrichToolResultPresentation(
+            toolFailure(`${notes} has not been read in this session.`, {
+              code: 'file_not_observed',
+            }),
+            'Edit',
+            { filePath: notes },
+          )}
+          isExpanded={false}
+          terminalWidth={120}
+          reducedMotion
+        />
+      );
+
+      expect(firstLine(inMemory(row))).toMatch(/Edit\s+memory\/notes/);
+      expect(firstLine(inMemory(row))).not.toContain('/home/u');
+      // Without the provider the row keeps the path the model wrote.
+      expect(firstLine(row)).toContain('/home/u/.book/projects/p/memory/');
+    });
+
+    it('names a running read `memory/<file>`', () => {
+      const row = (
+        <ToolCallBlock
+          name="Read"
+          args={{ filePath: notes }}
+          isPending
+          isExpanded={false}
+          terminalWidth={120}
+          reducedMotion
+        />
+      );
+
+      expect(firstLine(inMemory(row))).toMatch(/Read\s+memory\/notes/);
+    });
   });
 
   it('greys a call the registry refused before it ran', () => {

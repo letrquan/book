@@ -7,6 +7,7 @@ import {
   isRenderableFileMutationDiff,
 } from './file-mutation-display.js';
 import { indentedGrid, transcriptGrid } from './layout.js';
+import type { MemoryRootDisplay } from './memory-root.js';
 import {
   countNestedToolInvocations,
   indexNestedToolInvocations,
@@ -41,6 +42,8 @@ export interface ToolRowPreviewInput {
   isPending?: boolean;
   /** A count, or a function that makes it: only a failure's detail needs it, so it is lazy. */
   nestedActivityCount?: number | (() => number);
+  /** Where the memory directory is: the failure detail names the row's target as the row does. */
+  memoryRoot?: MemoryRootDisplay;
 }
 
 /**
@@ -74,6 +77,7 @@ export function toolRowHidesContent(input: ToolRowPreviewInput): boolean {
       nestedActivityCount:
         typeof nestedActivityCount === 'function' ? nestedActivityCount() : nestedActivityCount,
       unparsedArguments: input.unparsedArguments,
+      memoryRoot: input.memoryRoot,
     });
     const detail = composeResultErrorDetail({
       presentation,
@@ -133,6 +137,8 @@ export interface ExpandTargetInput {
    * leaves one behind, and it must not take the target for the rest of the session.
    */
   running: boolean;
+  /** Where the memory directory is, for the target a failed row's detail is composed against. */
+  memoryRoot?: MemoryRootDisplay;
 }
 
 /**
@@ -155,6 +161,7 @@ function cachedToolRowHidesContent(input: ToolRowPreviewInput & { result: ToolRe
     input.screenReader ? 1 : 0,
     input.isExpanded ? 1 : 0,
     input.showAllToolOutput ? 1 : 0,
+    input.memoryRoot?.roots.join(';') ?? '',
   ].join('|');
   let answers = hidesContentCache.get(input.result);
   if (!answers) {
@@ -196,6 +203,7 @@ export function selectExpandTargetId({
   focusedToolId,
   automaticToolId,
   running,
+  memoryRoot,
 }: ExpandTargetInput): string | null {
   if (running && automaticToolId) return automaticToolId;
   if (transcriptMode === 'detailed') return focusedToolId ?? selectLatestToolId(messages);
@@ -227,6 +235,7 @@ export function selectExpandTargetId({
       terminalWidth: width,
       showAllToolOutput: showAllToolOutputIds.has(call.id),
       nestedActivityCount,
+      memoryRoot,
     });
 
   // The focused row wins only while it still hides content, given how it is drawn now: a click

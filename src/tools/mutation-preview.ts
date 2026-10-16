@@ -3,7 +3,7 @@ import { renderDiffWithStatsAsync, type DiffStats } from './diff.js';
 import { applySingleEdit } from './file.js';
 import { readTextSnapshot, type TextSnapshot } from './mutation.js';
 import { applyHunks, parsePatch, type PatchOperation } from './patch.js';
-import { resolveWorkspacePath } from './path-utils.js';
+import { mutationDisplayPath, resolveMutationPath } from './path-utils.js';
 import { toolResultErrorMessage } from './result.js';
 import type { ToolCall, ToolResult } from '../types/tools.js';
 
@@ -28,7 +28,10 @@ import type { ToolCall, ToolResult } from '../types/tools.js';
  */
 
 export interface MutationPreviewFile {
-  /** Workspace-relative path the tool will write, delete, or create. */
+  /**
+   * Path the tool will write, delete, or create: workspace-relative, or `memory/<file>` for a
+   * file in the project memory directory.
+   */
   filePath: string;
   kind: 'create' | 'update' | 'delete';
   /** Unified diff hunks, empty when the change is textually a no-op. */
@@ -79,17 +82,47 @@ function lineCount(text: string): number {
   return count;
 }
 
+/** What a preview may resolve beyond the workspace. */
+export interface MutationPreviewOptions {
+  /**
+   * Book's project memory directory. A `*.md` file in it is previewable on the memory write
+   * root's terms (see `resolveMutationPath`), and is named `memory/<file>`. Without it a memory
+   * file is outside the workspace, as for any other path.
+   */
+  memoryRoot?: string;
+}
+
+interface PreviewScope {
+  workspaceRoot: string;
+  memoryRoot?: string;
+}
+
 interface ResolvedTarget {
   filePath: string;
   canonicalPath: string;
   relativePath: string;
 }
 
-function resolveTarget(workspaceRoot: string, inputPath: string | undefined): ResolvedTarget {
+/**
+ * Resolved by the tools' own write resolution, so the preview refuses what the tool refuses. The
+ * memory root is tried first there too: a workspace that holds the memory directory still names
+ * its files `memory/<file>`.
+ */
+function resolveTarget(scope: PreviewScope, inputPath: string | undefined): ResolvedTarget {
   if (!inputPath) return fail('No file path given');
-  return (
-    resolveWorkspacePath(workspaceRoot, inputPath) ?? fail(`Path outside workspace: ${inputPath}`)
+  const resolved = resolveMutationPath(
+    {
+      workspaceRoot: scope.workspaceRoot,
+      ...(scope.memoryRoot ? { memoryWrite: { root: scope.memoryRoot } } : {}),
+    },
+    inputPath,
   );
+  if (!resolved) return fail(`Path outside workspace: ${inputPath}`);
+  return {
+    filePath: resolved.filePath,
+    canonicalPath: resolved.canonicalPath,
+    relativePath: mutationDisplayPath(resolved),
+  };
 }
 
 async function snapshotOf(target: ResolvedTarget, allowMissing: boolean): Promise<TextSnapshot> {
@@ -122,10 +155,10 @@ async function diffFile(
 
 async function previewWrite(
   args: Record<string, unknown>,
-  workspaceRoot: string,
+  scope: PreviewScope,
   signal?: AbortSignal,
 ): Promise<MutationPreview> {
-  const target = resolveTarget(workspaceRoot, stringArg(args, 'filePath'));
+  const target = resolveTarget(scope, stringArg(args, 'filePath'));
   const content = stringArg(args, 'content') ?? fail('No content given');
   const before = await snapshotOf(target, true);
   const after = before.exists ? content.replace(/\r\n/g, '\n') : content;
@@ -164,10 +197,10 @@ async function previewEdits(
   args: Record<string, unknown>,
   edits: EditSpec[],
   atomic: boolean,
-  workspaceRoot: string,
+  scope: PreviewScope,
   signal?: AbortSignal,
 ): Promise<MutationPreview> {
-  const target = resolveTarget(workspaceRoot, stringArg(args, 'filePath'));
+  const target = resolveTarget(scope, stringArg(args, 'filePath'));
   const snapshot = await snapshotOf(target, false);
   if (snapshot.mixedLineEndings)
     fail(
@@ -216,14 +249,12 @@ async function previewPatchOperation(
 
 async function previewPatch(
   args: Record<string, unknown>,
-  workspaceRoot: string,
+  scope: PreviewScope,
   signal?: AbortSignal,
 ): Promise<MutationPreview> {
   const parsed = parsePatch(args.patch);
   if ('version' in parsed) failWith(parsed);
-  const targets = parsed.operations.map((operation) =>
-    resolveTarget(workspaceRoot, operation.path),
-  );
+  const targets = parsed.operations.map((operation) => resolveTarget(scope, operation.path));
   // The tool refuses a patch that names one file twice, before touching anything.
   const seen = new Set<string>();
   for (const target of targets) {
@@ -249,18 +280,23 @@ export async function previewMutation(
   toolCall: ToolCall,
   workspaceRoot: string,
   signal?: AbortSignal,
+  options: MutationPreviewOptions = {},
 ): Promise<MutationPreview | null> {
+  const scope: PreviewScope = {
+    workspaceRoot,
+    ...(options.memoryRoot ? { memoryRoot: options.memoryRoot } : {}),
+  };
   const args = toolCall.arguments ?? {};
   try {
     switch (canonicalToolName(toolCall.name)) {
       case 'Write':
-        return await previewWrite(args, workspaceRoot, signal);
+        return await previewWrite(args, scope, signal);
       case 'Edit':
-        return await previewEdits(args, [editSpec(args)], false, workspaceRoot, signal);
+        return await previewEdits(args, [editSpec(args)], false, scope, signal);
       case 'MultiEdit':
-        return await previewEdits(args, multiEditSpecs(args), true, workspaceRoot, signal);
+        return await previewEdits(args, multiEditSpecs(args), true, scope, signal);
       case 'ApplyPatch':
-        return await previewPatch(args, workspaceRoot, signal);
+        return await previewPatch(args, scope, signal);
       default:
         return null;
     }

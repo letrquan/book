@@ -66,6 +66,11 @@ import type { RewindSnapshotStoreInterface, SessionStoreInterface } from '../typ
 import type { SessionBootstrap } from '../session/resolve.js';
 import { displaySessionName } from '../session/name.js';
 import { DensityContext, resolveTuiDensity } from './density.js';
+import {
+  MemoryRootContext,
+  resolveMemoryRootDisplay,
+  type MemoryRootDisplay,
+} from './memory-root.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
 import { commandEnforcementContext, parseSlashInput } from '../commands/resolve.js';
 import {
@@ -1767,6 +1772,13 @@ export function App({
   const focusedToolId = focusedToolIdsByTranscript.get(activeTranscriptScope) ?? null;
   const showAllToolOutputIds =
     showAllToolOutputIdsByTranscript.get(activeTranscriptScope) ?? EMPTY_SHOW_ALL_TOOL_OUTPUT_IDS;
+  // Where the memory directory is, for the tool rows that name a file in it `memory/<file>`.
+  // Built once per directory: it follows the directory's links with one realpath.
+  const memoryDir = liveConfig.memoryContext?.dir;
+  const memoryRoot = useMemo(
+    () => (memoryDir ? resolveMemoryRootDisplay(memoryDir, liveConfig.workspace) : undefined),
+    [memoryDir, liveConfig.workspace],
+  );
   // The row Ctrl+E acts on, and the one row whose truncated footer names the key. One computation
   // feeds both, so the hint and the key cannot disagree. The walk stops at the first match.
   const expandTargetId = useMemo(
@@ -1782,12 +1794,14 @@ export function App({
         focusedToolId,
         automaticToolId: activeExpandedToolId,
         running: isThinking,
+        memoryRoot,
       }),
     [
       activeExpandedToolId,
       activeTranscriptMessages,
       focusedToolId,
       isThinking,
+      memoryRoot,
       screenReader,
       showAllToolOutputIds,
       termHeight,
@@ -2701,7 +2715,7 @@ export function App({
       : 'Exiting…';
 
   return (
-    <AppProviders theme={currentTheme.tokens} density={density}>
+    <AppProviders theme={currentTheme.tokens} density={density} memoryRoot={memoryRoot}>
       <GlobalKeyHandler onInput={forwardInput} />
       <ErrorBoundary resumeCommand={resumeCommand} onExit={exitFromCrash}>
         <Box
@@ -3599,15 +3613,19 @@ export function App({
 function AppProviders({
   theme,
   density,
+  memoryRoot,
   children,
 }: {
   theme: ThemeTokens;
   density: ReturnType<typeof resolveTuiDensity>;
+  memoryRoot?: MemoryRootDisplay;
   children: ReactNode;
 }) {
   return (
     <ThemeContext.Provider value={theme}>
-      <DensityContext.Provider value={density}>{children}</DensityContext.Provider>
+      <DensityContext.Provider value={density}>
+        <MemoryRootContext.Provider value={memoryRoot}>{children}</MemoryRootContext.Provider>
+      </DensityContext.Provider>
     </ThemeContext.Provider>
   );
 }
