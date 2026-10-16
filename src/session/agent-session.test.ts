@@ -17,6 +17,8 @@ import type {
   TurnCheckpointRecordData,
 } from '../types/sessions.js';
 import type { Message, Usage } from '../types/messages.js';
+import { isTerminalShellStatus } from '../jobs/shell-manager.js';
+import { removeWhenReleased } from '../test/remove-when-released.js';
 import { createSessionFixture } from '../test/session-fixture.js';
 import { SessionStore } from './store.js';
 import { createAgentRunContext } from '../types/runs.js';
@@ -1280,11 +1282,23 @@ describe('AgentSession', () => {
         });
 
         expect(started.id).toBe('shell_4');
+        // `echo hi` exits at once; wait for that so the shell is not still running in the fixture's
+        // directory when it is removed.
+        const deadline = Date.now() + 10_000;
+        while (
+          !isTerminalShellStatus(
+            session.getRuntime().shellManager.get(started.id)?.status ?? 'lost',
+          )
+        ) {
+          if (Date.now() > deadline) throw new Error('The shell did not finish.');
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
       } finally {
         session.dispose();
       }
     } finally {
-      fixture.cleanup();
+      // Windows releases a finished shell's hold on its directory a moment late.
+      await removeWhenReleased(fixture.root);
     }
   });
 
