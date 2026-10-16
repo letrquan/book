@@ -8,12 +8,12 @@
  * `applyVerifiedCandidate` by construction, because the drift check refuses to run a pick that
  * could conflict (#357).
  *
- * The other three are how the test of a signing read that overruns its buffer gets a buffer it can
- * overrun cheaply (#453). `applyVerifiedCandidateForTest` is `applyVerifiedCandidate` with the
- * runner of that read passed in, `hardenedRunnerForTest` builds the production runner with a
- * buffer of its own, and `DEFAULT_MAX_BUFFER_BYTES` is the size production gives every call, so
- * the full-size variant, which runs the public function with no seam, can check its padding
- * against that size instead of repeating the number.
+ * The other two are how the test of a signing read that overruns its buffer gets a buffer it can
+ * overrun cheaply (#453). `applyVerifiedCandidateForTest` is `applyVerifiedCandidate` with the size
+ * of that read's buffer passed in: a number, for that one read, so a test can shrink the buffer but
+ * cannot swap the runner the read goes through, which is a way to make it pin nothing.
+ * `DEFAULT_MAX_BUFFER_BYTES` is the size production gives it, so a test that pads past it can read
+ * the size instead of repeating the number.
  *
  * Keeping them here rather than in `git-isolation.ts` says they are not part of the module's
  * surface: nothing under `src/` imports this file, so a caller reaching for any of them is reaching
@@ -24,6 +24,5 @@ export {
   cherryPickFailureResult,
   DEFAULT_MAX_BUFFER_BYTES,
   gitForTest,
-  hardenedRunnerForTest,
   isolatedGitForTest,
 } from './git-isolation.js';

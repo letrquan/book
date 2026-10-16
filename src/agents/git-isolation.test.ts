@@ -30,7 +30,6 @@ import {
   cherryPickFailureResult,
   DEFAULT_MAX_BUFFER_BYTES,
   gitForTest,
-  hardenedRunnerForTest,
   isolatedGitForTest,
 } from './git-isolation-internal.js';
 
@@ -1094,9 +1093,9 @@ describe('a cherry-pick Book did not start (#348)', () => {
  * keys after the padding, and apply an agent's result. The apply has to refuse.
  *
  * `signingBuffer` is the size that read's buffer is given through the `git-isolation-internal`
- * seam, which is what lets the padding be a few hundred KiB instead of 51 MiB (#453). Without it
- * the apply is the public `applyVerifiedCandidate` with the buffer production ships, and the
- * padding has to pass that one.
+ * seam, which is what lets the padding be a few hundred KiB instead of more than the production
+ * buffer (#453). Without it the apply is the public `applyVerifiedCandidate` with the buffer
+ * production ships, and the padding has to pass that one.
  */
 async function expectTruncatedReadRefused(options: {
   paddingBytes: number;
@@ -1148,12 +1147,7 @@ async function expectTruncatedReadRefused(options: {
   const applied =
     signingBuffer === undefined
       ? await applyVerifiedCandidate(snapshot, candidate!)
-      : await applyVerifiedCandidateForTest(
-          snapshot,
-          candidate!,
-          undefined,
-          hardenedRunnerForTest(signingBuffer),
-        );
+      : await applyVerifiedCandidateForTest(snapshot, candidate!, undefined, signingBuffer);
 
   // The security claim first, because it is the one that is not a nicety: no pick ran, so the
   // program the repository named never started, and there is nothing in the working tree for a
@@ -1176,7 +1170,8 @@ describe('a signing configuration that cannot be read whole (#348)', () => {
   it('refuses to apply, and starts no cherry-pick, when the read is truncated', async () => {
     // 64 KiB is the buffer the signing read gets here and 256 KiB the padding in front of the
     // keys, so every git process the apply starts parses a config a few hundred KiB long rather
-    // than 51 MiB: the apply costs what a test of this size should, on every platform (#453).
+    // than one that outgrows the production buffer: the apply costs what a test of this size
+    // should, on every platform (#453).
     await expectTruncatedReadRefused({ paddingBytes: 256 * 1024, signingBuffer: 64 * 1024 });
   }, 30_000);
 
@@ -1188,14 +1183,13 @@ describe('a signing configuration that cannot be read whole (#348)', () => {
   }
 
   // Skipped on win32 for #453. This is the same refusal at production size — the public
-  // `applyVerifiedCandidate`, the real 50 MiB buffer, 51 MiB of padding — and the variant above
-  // keeps the refusal covered on every platform, so what this adds is the proof that the buffer
-  // production ships is itself the one that refuses. Each of the 23 git processes the apply starts
-  // (11 calls, each a pin read and then the command, then the signing read) parses all 51 MiB:
-  // about 18 s on the ubuntu leg of a green run and 76 s on its Windows leg, against this test's
-  // 120 s budget. A slower Windows runner timed out, and the apply vitest had given up on was
-  // still running git in the repository when `afterEach` tried to remove it, which is the EBUSY in
-  // the issue.
+  // `applyVerifiedCandidate`, the production buffer, padding past it — and the only check that the
+  // public function hands that buffer to the signing read, which the variant above, with a buffer
+  // of its own, cannot show. Each of the 23 git processes the apply starts (11 calls, each a pin
+  // read and then the command, then the signing read) parses all of that padding: about 18 s on
+  // the ubuntu leg of a green run and 76 s on its Windows leg, against this test's 120 s budget. A
+  // slower Windows runner timed out, and the apply vitest had given up on was still running git in
+  // the repository when `afterEach` tried to remove it, which is the EBUSY in the issue.
   it.skipIf(process.platform === 'win32')(
     'refuses to apply, and starts no cherry-pick, when the production buffer truncates the read',
     async () => {
