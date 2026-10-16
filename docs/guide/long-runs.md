@@ -164,16 +164,26 @@ in it, both read from `outcome.providerCode`:
 - `usage_limit`: the 429 above, a spent usage or plan limit.
 - `rate_limit_wait`: a 429 whose stated wait is longer than the retries can sit out (below).
 
-On any retryable 429 (plain or quoted by a router) the provider's stated wait is read from the
-first source that gives one: a `Retry-After` header, a router's `(reset after 3h)` cooldown, or an
-absolute `resets at <ISO time>`. A wait within reach is waited for, up to `retry.maxDelayMs` per
-attempt. A wait longer than what the call can still wait, the smaller of the remaining
-`retry.totalBudgetMs` and the remaining attempts times `retry.maxDelayMs`, is not retried: the
-response is returned after that one request instead of being clamped to `retry.maxDelayMs` and
-sent again on every attempt. When it is also longer than any fresh call could wait, the stream
+On any retryable 429 (plain or quoted by a router) the provider's stated wait is the longer of
+two: its relative wait, a `Retry-After` header or, with no header, a router's `(reset after 3h)`
+cooldown, and an absolute `resets at <ISO time>`. A short `Retry-After` therefore never hides a
+far reset time in the body. The cooldown and the reset time are read from the error's message
+only (and a router's plain-text body), never from other text in a JSON body, which may echo the
+request.
+
+A stated wait shorter than 15 minutes is never parked, whatever `retry.maxAttempts` and
+`retry.maxDelayMs` are: it is waited for, capped at `retry.maxDelayMs` per attempt, and the
+request is retried, so a `Retry-After: 5` on a call with one short attempt is simply retried. Only
+a far wait, 15 minutes or more, can stop the call early. A far `Retry-After` or cooldown that is
+longer than what the call can still wait, the smaller of the remaining `retry.totalBudgetMs` and
+the remaining attempts times `retry.maxDelayMs`, is not retried: the response is returned after
+that one request instead of being clamped to `retry.maxDelayMs` and sent again on every attempt.
+An absolute reset keeps its own, earlier rule: any reset beyond that remaining wait returns the
+response at once. When the wait is far and also longer than any fresh call could wait, the stream
 ends with `rate_limit_wait`, and the run ends `failed/quota_exhausted` rather than being
-re-issued; the message states the wait or the reset time. A short wait that only met the end of
-the attempts stays an ordinary rate limit. `retry.watchdog` keeps waiting whatever the wait.
+re-issued; the message states the wait or the reset time. A shorter wait, or a far one that only
+met the end of the attempts, stays an ordinary rate limit. `retry.watchdog` keeps waiting
+whatever the wait.
 
 A 400 or a 422, plain or quoted, a 404 that is neither the capacity outage above nor the model verdict below, and Anthropic's
 mid-stream `invalid_request_error` and `not_found_error` end the run on the first answer, since

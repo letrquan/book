@@ -6,12 +6,14 @@ import {
   classifyApiError,
   classifyHttpStatus,
   ERROR_BODY_READ_TIMEOUT_MS,
+  FAR_STATED_WAIT_MS,
   fetchWithRetry,
   formatApiError,
   formatStatedWaitError,
   isContextOverflowError,
   isUpstreamErrorEnvelope,
   quotedUpstreamStatus,
+  statedWaitErrorEvent,
   statedWaitStop,
 } from './reliability.js';
 
@@ -425,8 +427,7 @@ describe('provider reliability transport', () => {
         {},
         {
           ...defaultConfig().retry,
-          // Six sleeps of 1 s reach the stated 5 s, so it is within reach and is only capped.
-          maxAttempts: 6,
+          maxAttempts: 1,
           maxDelayMs: 1_000,
           totalBudgetMs: 10_000,
           requestTimeoutMs: 0,
@@ -437,7 +438,7 @@ describe('provider reliability transport', () => {
       await vi.advanceTimersByTimeAsync(5_000);
 
       await expect(pending).resolves.toMatchObject({ status: 200 });
-      expect(retryEvents).toEqual([[1, 6, 1_000]]);
+      expect(retryEvents).toEqual([[1, 1, 1_000]]);
     });
   });
 
@@ -706,6 +707,13 @@ describe('upstream error envelope shapes (the contract, #244)', () => {
       name: 'the same wording explained over several lines, usage billed',
       text: '[Error] The model failed to generate a response.\nThat is what the router said.',
       usage: { promptTokens: 2_000, completionTokens: 150 },
+      envelope: false,
+    },
+    {
+      // The wording is the router's whole sentence, not any answer that contains the words.
+      name: 'a model answer that only contains the words, usage billed',
+      text: '[Error] The codegen step failed to generate a response file for /api/users.',
+      usage: billed,
       envelope: false,
     },
     {
@@ -1717,7 +1725,7 @@ describe('a stated wait beyond the retry budget (#409)', () => {
 
   it('stops when the remaining total budget cannot reach the wait', async () => {
     const { calls, response } = await farWait(
-      () => new Response('busy', { status: 429, headers: { 'retry-after': '120' } }),
+      () => new Response('busy', { status: 429, headers: { 'retry-after': '1800' } }),
       { ...retry, totalBudgetMs: 60_000 },
     );
     expect(calls).toBe(1);
@@ -1809,6 +1817,223 @@ describe('a stated wait beyond the retry budget (#409)', () => {
       vi.unstubAllGlobals();
       vi.useRealTimers();
     }
+  });
+
+  describe('only a far stated wait parks (15 minutes, whatever the retry settings)', () => {
+    // A wait of this length or more can be parked; anything shorter is retried.
+    const floorSeconds = FAR_STATED_WAIT_MS / 1_000;
+
+    /** Always 429, with fake timers so each retry's sleep passes at once. */
+    async function retried(
+      make: () => Response,
+      config: typeof retry,
+    ): Promise<{ calls: number; response: Response }> {
+      vi.useFakeTimers();
+      let calls = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          calls++;
+          return make();
+        }),
+      );
+      try {
+        const pending = fetchWithRetry('http://x/v1', {}, config);
+        await vi.advanceTimersByTimeAsync(60 * 60_000);
+        return { calls, response: await pending };
+      } finally {
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
+    }
+
+    it('retries a Retry-After of 5 s when one attempt and 1 s sleeps cannot reach it', async () => {
+      const { calls, response } = await retried(
+        () => new Response('busy', { status: 429, headers: { 'retry-after': '5' } }),
+        { ...retry, maxAttempts: 1, maxDelayMs: 1_000, requestTimeoutMs: 0 },
+      );
+      expect(calls).toBe(2);
+      expect(response.status).toBe(429);
+      expect(statedWaitStop(response)).toBeUndefined();
+    });
+
+    it('retries a Retry-After of 301 s under the default retry settings', async () => {
+      const { calls, response } = await retried(
+        () => new Response('busy', { status: 429, headers: { 'retry-after': '301' } }),
+        retry,
+      );
+      expect(calls).toBe(retry.maxAttempts + 1);
+      expect(statedWaitStop(response)).toBeUndefined();
+    });
+
+    it('retries a (reset after 14m) cooldown below the floor with two attempts', async () => {
+      const { calls, response } = await retried(
+        () => new Response('rate limited (reset after 14m)', { status: 429 }),
+        { ...retry, maxAttempts: 2 },
+      );
+      expect(calls).toBe(3);
+      expect(statedWaitStop(response)).toBeUndefined();
+    });
+
+    it('parks a wait at the floor and above after one request, whatever the settings', async () => {
+      for (const config of [
+        { ...retry, maxAttempts: 1, maxDelayMs: 1_000 },
+        { ...retry, maxAttempts: 2 },
+        retry,
+      ]) {
+        for (const make of [
+          () =>
+            new Response('busy', {
+              status: 429,
+              headers: { 'retry-after': String(floorSeconds) },
+            }),
+          () => new Response('busy', { status: 429, headers: { 'retry-after': '7200' } }),
+          () => new Response('rate limited (reset after 3h)', { status: 429 }),
+        ]) {
+          const { calls, response } = await farWait(make, config);
+          expect(calls).toBe(1);
+          expect(statedWaitStop(response)).toBeDefined();
+        }
+      }
+    });
+
+    it('returns a wait at the floor that the call could still sit out as a plain rate limit', async () => {
+      // 100 sleeps of 30 s reach 15 minutes, so the wait is only clamped and retried.
+      vi.useFakeTimers();
+      try {
+        const fetchMock = vi
+          .fn()
+          .mockResolvedValueOnce(
+            new Response('busy', {
+              status: 429,
+              headers: { 'retry-after': String(floorSeconds) },
+            }),
+          )
+          .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+        vi.stubGlobal('fetch', fetchMock);
+        const pending = fetchWithRetry('http://x/v1', {}, { ...retry, maxAttempts: 100 });
+        await vi.advanceTimersByTimeAsync(30_000);
+        await expect(pending).resolves.toMatchObject({ status: 200 });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not park a wait shorter than the floor even when the call could wait 0 s', async () => {
+      const { calls, response } = await retried(
+        () => new Response('busy', { status: 429, headers: { 'retry-after': '600' } }),
+        { ...retry, maxAttempts: 0, maxDelayMs: 1_000 },
+      );
+      expect(calls).toBe(1);
+      expect(response.status).toBe(429);
+      expect(statedWaitStop(response)).toBeUndefined();
+    });
+
+    it('measures "beyond any call" against zero waits when maxAttempts is 0', async () => {
+      // maxDelayMs of 20 minutes would cover a 16-minute wait if the call could sleep once,
+      // but with no retries it can sleep never.
+      const { calls, response } = await farWait(
+        () => new Response('busy', { status: 429, headers: { 'retry-after': '960' } }),
+        { ...retry, maxAttempts: 0, maxDelayMs: 20 * 60_000, totalBudgetMs: 0 },
+      );
+      expect(calls).toBe(1);
+      expect(statedWaitStop(response)?.waitMs).toBe(960_000);
+    });
+
+    it('returns an absolute reset beyond the remaining wait, short of the floor, as a plain rate limit', async () => {
+      const iso = new Date(Date.now() + 10 * 60_000).toISOString();
+      const { calls, response } = await farWait(
+        () => new Response(`Too many requests. Your limit resets at ${iso}.`, { status: 429 }),
+      );
+      expect(calls).toBe(1);
+      expect(response.status).toBe(429);
+      expect(statedWaitStop(response)).toBeUndefined();
+    });
+  });
+
+  describe('the longest stated wait wins', () => {
+    it('parks a far absolute reset that a short Retry-After header would mask', async () => {
+      const iso = new Date(Date.now() + 44 * 3600 * 1000).toISOString();
+      const { calls, response } = await farWait(
+        () =>
+          new Response(JSON.stringify({ error: { message: `Rate limit hit; resets at ${iso}` } }), {
+            status: 429,
+            headers: { 'retry-after': '30' },
+          }),
+      );
+      expect(calls).toBe(1);
+      expect(statedWaitStop(response)).toMatchObject({ source: 'reset-time', resetIso: iso });
+    });
+
+    it('parks the far wait when the header is the longer source', async () => {
+      const iso = new Date(Date.now() + 60_000).toISOString();
+      const { calls, response } = await farWait(
+        () =>
+          new Response(`Rate limit hit; resets at ${iso}`, {
+            status: 429,
+            headers: { 'retry-after': '7200' },
+          }),
+      );
+      expect(calls).toBe(1);
+      expect(statedWaitStop(response)).toEqual({ waitMs: 7_200_000, source: 'retry-after' });
+    });
+  });
+
+  describe('a cooldown is read from the message, not the rest of the body', () => {
+    it('does not park on (reset after 3h) echoed in the request text', async () => {
+      vi.useFakeTimers();
+      const body = JSON.stringify({
+        error: { message: 'Rate limit reached for requests' },
+        request: { messages: [{ role: 'user', content: 'the log said (reset after 3h)' }] },
+      });
+      const fetchMock = vi.fn(async () => new Response(body, { status: 429 }));
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        const pending = fetchWithRetry('http://x/v1', {}, { ...retry, maxAttempts: 2 });
+        await vi.advanceTimersByTimeAsync(120_000);
+        const response = await pending;
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(statedWaitStop(response)).toBeUndefined();
+      } finally {
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
+    });
+
+    it('still reads a cooldown in the message of a JSON error', async () => {
+      const { calls, response } = await farWait(
+        () =>
+          new Response(
+            JSON.stringify({ error: { message: '[openai/x] [429]: slow (reset after 3h)' } }),
+            { status: 503 },
+          ),
+      );
+      expect(calls).toBe(1);
+      expect(statedWaitStop(response)?.source).toBe('cooldown');
+    });
+  });
+
+  it('maps a response to one error event, parked or not, for every provider', async () => {
+    const request = { url: 'http://x/v1', model: 'm' };
+    const { response: parked } = await farWait(
+      () => new Response('busy', { status: 429, headers: { 'retry-after': '7200' } }),
+    );
+    expect(statedWaitErrorEvent(parked, 'busy', request)).toEqual({
+      type: 'error',
+      error: formatStatedWaitError(429, 'busy', statedWaitStop(parked)!, request),
+      errorCode: 'rate_limit_wait',
+      upstreamStatus: undefined,
+    });
+
+    const plain = new Response('Bad key', { status: 401 });
+    expect(statedWaitErrorEvent(plain, 'Bad key', request)).toEqual({
+      type: 'error',
+      error: formatApiError(401, 'Bad key', undefined, request),
+      errorCode: 'auth',
+      upstreamStatus: undefined,
+    });
   });
 
   it('words the error with the wait or the reset time and the remedy', async () => {

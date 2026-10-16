@@ -7072,6 +7072,108 @@ describe('content filter and upstream error recoveries', () => {
       expect(retries).toEqual(['reissue', 'reissue', 'reissue']);
       expect(outcomes[0]).toMatchObject({ reason: 'provider_error', providerCode: 'rate_limited' });
     });
+
+    it('does not park a Retry-After of 301 s that the default 10 attempts cannot reach', async () => {
+      // The default is 10 attempts of at most 30 s, so 301 s is beyond the whole call. The delay
+      // cap is scaled down only so the retry's sleep is quick; the comparison is unchanged.
+      let answered = 0;
+      const { outcomes, fetchCalls, retries } = await runWith(
+        () =>
+          answered++ === 0
+            ? new Response('busy', { status: 429, headers: { 'retry-after': '301' } })
+            : new Response(textStream('ok'), { status: 200 }),
+        {
+          maxAttempts: DEFAULT_SETTINGS.retry.maxAttempts,
+          baseDelayMs: 1,
+          maxDelayMs: 20,
+        },
+      );
+      expect(fetchCalls).toBe(2);
+      // The one transport retry, not a loop-level re-issue.
+      expect(retries).toEqual(['transport']);
+      expect(outcomes[0]).not.toMatchObject({ reason: 'quota_exhausted' });
+      expect(outcomes[0]).toMatchObject({ status: 'completed' });
+    });
+
+    it('parks a Bedrock-style too-many-tokens 429 with a long wait, without compacting', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                error: { message: 'Too many tokens, please wait before trying again.' },
+              }),
+              { status: 429, headers: { 'retry-after': '7200' } },
+            ),
+        ),
+      );
+      const compact = vi.fn(async () => compactedForRetry());
+      const store = new MemoryModelWindowStore();
+      const outcomes: AgentTerminalOutcome[] = [];
+
+      await runAgentLoop(
+        defaultConfig({
+          maxTurns: 1,
+          model: 'router/bedrock-model',
+          autoCompactEnabled: true,
+          retry: { ...defaultConfig().retry, maxAttempts: 0 },
+        }),
+        createRegistry(),
+        'hello',
+        [userMsg('x'.repeat(100_000))],
+        noopCallbacks({ onCompact: compact, onTerminal: (outcome) => outcomes.push(outcome) }),
+        'default',
+        { isNewSession: false, modelWindowStore: store },
+      );
+
+      expect(compact).not.toHaveBeenCalled();
+      expect(store.get('router/bedrock-model')).toBeUndefined();
+      expect(outcomes[0]).toMatchObject({
+        status: 'failed',
+        reason: 'quota_exhausted',
+        providerCode: 'rate_limit_wait',
+      });
+    });
+
+    it('does not read a spent-plan 429 that mentions too many tokens as an overflow', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                error: {
+                  message:
+                    "You've reached your weekly usage limit for your plan. Too many tokens, please wait before trying again.",
+                },
+              }),
+              { status: 429 },
+            ),
+        ),
+      );
+      const compact = vi.fn(async () => compactedForRetry());
+      const store = new MemoryModelWindowStore();
+      const outcomes: AgentTerminalOutcome[] = [];
+
+      await runAgentLoop(
+        defaultConfig({
+          maxTurns: 1,
+          model: 'router/plan-model',
+          autoCompactEnabled: true,
+        }),
+        createRegistry(),
+        'hello',
+        [userMsg('x'.repeat(100_000))],
+        noopCallbacks({ onCompact: compact, onTerminal: (outcome) => outcomes.push(outcome) }),
+        'default',
+        { isNewSession: false, modelWindowStore: store },
+      );
+
+      expect(compact).not.toHaveBeenCalled();
+      expect(store.get('router/plan-model')).toBeUndefined();
+      expect(outcomes[0]).toMatchObject({ reason: 'quota_exhausted', providerCode: 'usage_limit' });
+    });
   });
 
   it('does not re-issue a 422', async () => {

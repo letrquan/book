@@ -1989,6 +1989,10 @@ export async function runAgentLoop(
         const statedOverflow =
           !rateLimitedBySize &&
           streamErrorCode !== 'rate_limited' &&
+          // A 429 that states a long wait or a spent plan limit is a rate limit whatever else
+          // its text says (Bedrock's "Too many tokens, please wait"): never an overflow.
+          streamErrorCode !== 'rate_limit_wait' &&
+          streamErrorCode !== 'usage_limit' &&
           (streamErrorCode === 'context_overflow' || isContextOverflowError(streamError));
         const overflowBySize =
           !statedOverflow &&

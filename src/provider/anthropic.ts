@@ -10,15 +10,11 @@ import { createDebugLogger, isDebugEnabled } from '../debug-log.js';
 import { escapeInvisibleCharacters } from '../control-characters.js';
 import { RAW_ARGUMENTS_KEY } from '../tools/unparsed-arguments.js';
 import {
-  classifyApiError,
   classifyProviderError,
   fetchWithRetry,
-  formatApiError,
-  formatStatedWaitError,
   readErrorBody,
   readStreamChunk,
-  statedWaitStop,
-  wrappedUpstreamStatus,
+  statedWaitErrorEvent,
 } from './reliability.js';
 
 const log = createDebugLogger('provider:anthropic');
@@ -581,17 +577,7 @@ export async function* chatCompletionStream(
 
   if (!response.ok) {
     const errorText = await readErrorBody(response, signal);
-    // A stated wait the retries stopped on is parked by the loop, not re-issued (#409).
-    const waitStop = statedWaitStop(response);
-    const request = { url, model: config.model };
-    yield {
-      type: 'error',
-      error: waitStop
-        ? formatStatedWaitError(response.status, errorText, waitStop, request)
-        : formatApiError(response.status, errorText, undefined, request),
-      errorCode: waitStop ? 'rate_limit_wait' : classifyApiError(response.status, errorText),
-      upstreamStatus: wrappedUpstreamStatus(response.status, errorText),
-    };
+    yield statedWaitErrorEvent(response, errorText, { url, model: config.model });
     return;
   }
 
