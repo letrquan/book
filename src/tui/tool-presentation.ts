@@ -11,7 +11,12 @@ import { normalizePersistedTodos, type Todo } from '../tools/todo.js';
 import { stepProgress } from './steps.js';
 import { STATUS_INDICATORS } from './status-indicators.js';
 import { displayWidth, hardWrapLine, truncateDisplay, wordWrap } from './components/word-wrap.js';
-import { prepareToolOutputDisplay } from './components/tool-output.js';
+import {
+  countDrawnOutputLines,
+  countOutputLines,
+  formatToolOutputFooter,
+  prepareToolOutputDisplay,
+} from './components/tool-output.js';
 import {
   CONTENT_COLUMN,
   LABEL_COLUMN_WIDTH,
@@ -235,11 +240,6 @@ function memoryFileTarget(
   if (!memoryRoot || !MEMORY_MAPPED_TOOLS.has(canonicalName)) return undefined;
   const path = stringArg(args, 'filePath', 'file_path', 'notebook_path', 'path');
   return path ? memoryDisplayPath(memoryRoot, path) : undefined;
-}
-
-function countOutputLines(output: string | undefined): number {
-  if (!output) return 0;
-  return output.split('\n').length;
 }
 
 function countNonEmptyOutputLines(output: string | undefined): number {
@@ -899,8 +899,16 @@ export interface ToolErrorDetail {
    * and the key that shows them. An expanded detail names no key: `… +500 lines`. Set only
    * when the output kept its tail and the row budget had room for it; it reads before the
    * rows, as the lines it stands for did.
+   *
+   * A collapsed detail whose rows are a stderr message also counts the command's stdout, which
+   * they do not show, as the rows its expanded output block draws for it, in the same footer:
+   * `… +2 lines, +1 line of output (Ctrl+E)`. A row draws one footer and names the key once, and
+   * it reads before the rows while it counts lines they cut. With none of its own it is the
+   * stdout's alone, `… +1 line of output (Ctrl+E)`, and reads after the rows ({@link hintBelow}).
    */
   hint?: string;
+  /** `hint` counts only the command's stdout, which `lines` do not show: it reads after the rows. */
+  hintBelow?: boolean;
   /**
    * A message word-wrapped to the row's measure, the last line ending in `…` when more was
    * cut; a failed command's output as its last {@link TOOL_ERROR_TAIL_LINES} non-blank
@@ -921,11 +929,18 @@ export interface ToolErrorDetailOptions {
    * its lines and shows the last of them. Anything else is prose: folded, word-wrapped, cut.
    */
   commandOutput?: boolean;
-  /** The command's stdout, shown instead of a message that is only `Exit code: N`. */
+  /**
+   * The command's stdout, shown instead of a message that is only `Exit code: N`. Under any other
+   * message a collapsed detail counts the rows its expanded output block draws for it, in the
+   * footer: `… +1 line of output`. Each line that is not empty is a row, a line of spaces included,
+   * and an empty one, the end of a final newline among them, is none. A stdout with no non-blank
+   * line is not named.
+   */
   stdout?: string;
   /**
-   * The row's output block draws `stdout` in full under the detail. An expanded detail then shows
-   * no stdout fallback, which would draw the same lines twice. A collapsed one still tails it.
+   * The row's output block draws `stdout` under the detail. An expanded detail then shows no stdout
+   * fallback, which would draw the same lines twice. A collapsed one still tails that fallback, but
+   * names no stdout under a stderr message: the block counts what it cuts itself.
    */
   stdoutShownBelow?: boolean;
   /**
@@ -1005,6 +1020,23 @@ function wrappedTail(
   return { rows: blocks.reverse().flat(), wholeLines };
 }
 
+/**
+ * A character a line must hold to show anything once its control characters are folded to spaces:
+ * one that is neither whitespace nor a control character (`CONTROL_CHARACTERS`' own set).
+ */
+const SHOWS_TEXT =
+  /[^\s\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+
+/**
+ * Whether `text` has a line that is not blank, by the rule {@link nonBlankOutputLines} keeps its
+ * lines by: control characters fold to spaces, and a line of nothing else is blank. One scan that
+ * stops at the first character that shows and makes no lines: a newline is a control character
+ * itself, so no line break has to be found.
+ */
+export function hasNonBlankOutputLine(text: string): boolean {
+  return SHOWS_TEXT.test(text);
+}
+
 /** A failed command's output as hint, tail rows and note, inside `maxRows`. */
 function commandOutputDetail(
   error: string,
@@ -1052,10 +1084,31 @@ function commandOutputDetail(
     strategy: 'tail',
   });
   const lines = wrapped ? wrapped.rows : tail.lines;
-  const showHint = tail.hiddenLines > 0 && lines.length + note.length + 1 <= maxRows;
+  // Under a stderr message a collapsed row says nothing of the stdout unless its footer does, and
+  // Ctrl+E skips a row that hides nothing. A row draws one footer and names the key once, so it
+  // counts both: the stderr lines the tail cut, above the rows where that count always stood, and
+  // the rows Ctrl+E then draws for the stdout: the output block's lines that are not empty, so the
+  // newline real output ends in is not one. With no cut lines the footer is the stdout's alone,
+  // after the rows. There is no stdout to count when it is the rows (an exit-code-only message),
+  // when an open row's output block draws it, or when it has no text.
+  const stdoutLines =
+    !stdoutFallback && !expanded && !stdoutShownBelow && hasNonBlankOutputLine(stdout)
+      ? countDrawnOutputLines(stdout)
+      : 0;
+  const cutLines = tail.hiddenLines > 0;
+  const hint =
+    cutLines || stdoutLines > 0
+      ? formatToolOutputFooter({
+          hiddenLines: tail.hiddenLines,
+          truncatedLines: cutLines ? tail.truncatedLines : 0,
+          hint: expanded ? undefined : expandHint,
+          outputLines: stdoutLines,
+        })
+      : undefined;
+  const showHint = hint !== undefined && lines.length + note.length + 1 <= maxRows;
   return {
     column,
-    ...(showHint && tail.footer ? { hint: tail.footer } : {}),
+    ...(showHint ? { hint, ...(cutLines ? {} : { hintBelow: true }) } : {}),
     lines,
     ...(note.length > 0 ? { note } : {}),
   };
@@ -1216,8 +1269,9 @@ function lastNonBlankLines(text: string, max: number): string[] {
 /**
  * How many rows a result's error detail draws, without a width or a walk of its output: 0 for a
  * result that did not fail, {@link TOOL_ERROR_MAX_LINES} for prose, and for a command's output
- * the hint and tail (at most one row per non-blank line) plus the note's rows. Follows
- * {@link composeToolErrorDetail}'s rules; the virtual transcript sizes its spacers from it.
+ * the hint and tail (at most one row per non-blank line) plus the note's rows. The hint is one row
+ * whether it counts the stderr lines the tail cut, the stdout a stderr message leaves out, or both.
+ * Follows {@link composeToolErrorDetail}'s rules; the virtual transcript sizes its spacers from it.
  */
 export function estimateToolErrorDetailRows(result: ToolResult | undefined): number {
   if (!result || result.status === 'success' || !result.structuredError) return 0;
@@ -1228,9 +1282,13 @@ export function estimateToolErrorDetailRows(result: ToolResult | undefined): num
     lines.pop();
     noteRows = TOOL_ERROR_NOTE_LINES;
   }
-  const shown =
-    lines.length === 1 && EXIT_CODE_ONLY.test(lines[0]!.trim())
-      ? lastNonBlankLines(result.content ?? '', TOOL_ERROR_TAIL_LINES + 1).length
-      : lines.length;
-  return Math.min(TOOL_ERROR_TAIL_LINES + 1, shown) + noteRows;
+  const stdoutIsRows = lines.length === 1 && EXIT_CODE_ONLY.test(lines[0]!.trim());
+  const shown = stdoutIsRows
+    ? lastNonBlankLines(result.content ?? '', TOOL_ERROR_TAIL_LINES + 1).length
+    : lines.length;
+  // Under a stderr message, a stdout the detail names takes the hint's row when the tail cut
+  // nothing of its own, and shares the tail's hint when it did.
+  const stdoutRow =
+    !stdoutIsRows && shown + noteRows > 0 && hasNonBlankOutputLine(result.content ?? '') ? 1 : 0;
+  return Math.min(TOOL_ERROR_TAIL_LINES + 1, shown + stdoutRow) + noteRows;
 }

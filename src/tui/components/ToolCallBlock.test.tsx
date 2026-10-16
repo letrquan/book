@@ -1353,6 +1353,193 @@ describe('ToolCallBlock failures', () => {
     expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}FAIL test/case_12`);
   });
 
+  describe('a failed command with stdout under its stderr', () => {
+    const STDERR = 'npm warn config something';
+    const STDOUT = 'FAIL test/a.test.js > expected 1, got 2';
+    const failed = (name = 'Bash', args: Record<string, unknown> = { command: 'npm test' }) =>
+      enrichToolResultPresentation(
+        {
+          ...toolFailure(STDERR, { content: STDOUT, details: { exitCode: 1 } }),
+          metrics: { durationMs: 7 },
+        },
+        name,
+        args,
+      );
+    const draw = (
+      result: ToolResult,
+      view: {
+        targetId?: string;
+        name?: string;
+        args?: Record<string, unknown>;
+        isExpanded?: boolean;
+        showAllToolOutput?: boolean;
+        transcriptMode?: 'compact' | 'detailed';
+      } = {},
+    ) =>
+      colourFrame(
+        asTarget(
+          view.targetId ?? 'fail-1',
+          <ToolCallBlock
+            toolId="fail-1"
+            name={view.name ?? 'Bash'}
+            args={view.args ?? { command: 'npm test' }}
+            result={result}
+            isExpanded={view.isExpanded ?? false}
+            showAllToolOutput={view.showAllToolOutput ?? false}
+            transcriptMode={view.transcriptMode ?? 'compact'}
+            terminalWidth={100}
+            reducedMotion
+          />,
+        ),
+      );
+    const linesOf = (raw: string) =>
+      stripAnsi(raw)
+        .split('\n')
+        .filter((line) => line.trim().length > 0)
+        .map((line) => line.trim());
+
+    it('names the stdout under the stderr tail, and the key on the Ctrl+E target', () => {
+      const raw = draw(failed());
+      const lines = linesOf(raw);
+
+      expect(lines[0]).toMatch(/failed · exit 1 · 7ms/);
+      expect(lines.slice(1)).toEqual([STDERR, '… +1 line of output (Ctrl+E)']);
+      expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}${STDERR}`);
+      expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}… +1 line of output (Ctrl+E)`);
+      expect(stripAnsi(raw)).not.toContain(STDOUT);
+    });
+
+    it('drops the key from the footer of a row that Ctrl+E does not target', () => {
+      const lines = linesOf(draw(failed(), { targetId: 'some-other-row' }));
+      expect(lines.slice(1)).toEqual([STDERR, '… +1 line of output']);
+    });
+
+    it('does the same for a failed Check row', () => {
+      const view = { name: 'Check', args: { name: 'unit' } };
+      const lines = linesOf(draw(failed('Check', { name: 'unit' }), view));
+      expect(lines[0]).toMatch(/failed · exit 1 · 7ms/);
+      expect(lines.slice(1)).toEqual([STDERR, '… +1 line of output (Ctrl+E)']);
+    });
+
+    it('draws the stdout once, with no footer, when Ctrl+E has shown the row in full', () => {
+      const rendered = stripAnsi(draw(failed(), { isExpanded: true, showAllToolOutput: true }));
+      expect(rendered.split(STDERR)).toHaveLength(2);
+      expect(rendered.split(STDOUT)).toHaveLength(2);
+      expect(rendered).not.toContain('of output');
+      expect(rendered).not.toContain('… +');
+    });
+
+    it('draws the stdout once in a row that is open but not shown in full', () => {
+      // Clicked open, or in the detailed transcript (Ctrl+O): the output block draws the stdout.
+      for (const view of [
+        { isExpanded: true },
+        { isExpanded: true, transcriptMode: 'detailed' as const },
+      ]) {
+        const rendered = stripAnsi(draw(failed(), view));
+        expect(rendered.split(STDERR)).toHaveLength(2);
+        expect(rendered.split(STDOUT)).toHaveLength(2);
+        expect(rendered).not.toContain('of output');
+      }
+    });
+
+    it('reads after the sandbox note, as the last row of the detail', () => {
+      const note = 'Note: run it outside the sandbox.';
+      const result = toolFailure(`${STDERR}\n${note}`, {
+        content: STDOUT,
+        details: { exitCode: 128 },
+      });
+      expect(linesOf(draw(result)).slice(1)).toEqual([
+        STDERR,
+        note,
+        '… +1 line of output (Ctrl+E)',
+      ]);
+    });
+
+    describe('when stderr cuts lines of its own', () => {
+      const stderr = Array.from({ length: 12 }, (_, i) => `error: line ${i + 1}`);
+      const cut = toolFailure(stderr.join('\n'), {
+        content: STDOUT,
+        details: { exitCode: 1 },
+      });
+
+      it('carries both counts in the one footer above the tail, with the key once', () => {
+        const raw = draw(cut);
+        expect(linesOf(raw).slice(1)).toEqual([
+          '… +8 lines, +1 line of output (Ctrl+E)',
+          ...stderr.slice(-4),
+        ]);
+        expect(raw).toContain(
+          `${rgb(DEFAULT_THEME.inactive)}… +8 lines, +1 line of output (Ctrl+E)`,
+        );
+        expect(stripAnsi(raw)).not.toContain(STDOUT);
+      });
+
+      it('drops the key from it on a row that Ctrl+E does not target', () => {
+        const lines = linesOf(draw(cut, { targetId: 'some-other-row' })).slice(1);
+        expect(lines).toEqual(['… +8 lines, +1 line of output', ...stderr.slice(-4)]);
+      });
+
+      it('names no stdout when the row is open: the output block draws it', () => {
+        const rendered = stripAnsi(draw(cut, { isExpanded: true, showAllToolOutput: true }));
+        expect(rendered.split(STDOUT)).toHaveLength(2);
+        expect(rendered).not.toContain('of output');
+      });
+
+      it('counts a stdout that ends in a newline as the one row its block draws', () => {
+        const tail = toolFailure(stderr.join('\n'), {
+          content: 'OUT-A\n',
+          details: { exitCode: 1 },
+        });
+        expect(linesOf(draw(tail)).slice(1)[0]).toBe('… +8 lines, +1 line of output (Ctrl+E)');
+        const open = stripAnsi(draw(tail, { isExpanded: true, showAllToolOutput: true }));
+        expect(open.split('\n').filter((line) => line.includes('│'))).toHaveLength(1);
+        expect(open).toContain('OUT-A');
+      });
+    });
+
+    describe('names as many lines of output as the block then draws rows', () => {
+      /** The count in the footer, and the rows of the output block once Ctrl+E has shown the row. */
+      const namedAndDrawn = (stdout: string) => {
+        const result = toolFailure(STDERR, { content: stdout, details: { exitCode: 1 } });
+        const footer = /\+(\d+) lines? of output/.exec(stripAnsi(draw(result)));
+        const open = stripAnsi(draw(result, { isExpanded: true, showAllToolOutput: true }));
+        // Every row of the output block starts at its rail.
+        const rows = open.split('\n').filter((line) => line.includes('│')).length;
+        return { named: Number(footer?.[1]), rows };
+      };
+
+      it('takes no row for an empty line, which real output has in it and after it', () => {
+        // Ink gives an empty line no height: the block splits this into six lines and draws four.
+        expect(namedAndDrawn('A\n\nB\n   \nC\n')).toEqual({ named: 4, rows: 4 });
+      });
+
+      it('reads one line for the one line a command prints, with its newline or without', () => {
+        for (const stdout of ['BASH-OUT-LINE\n', 'BASH-OUT-LINE', 'BASH-OUT-LINE\r\n']) {
+          expect([stdout, namedAndDrawn(stdout)]).toEqual([stdout, { named: 1, rows: 1 }]);
+        }
+      });
+
+      it('leaves the \\r of a CRLF on its line, as the block does: a line of only a \\r is a row', () => {
+        expect(namedAndDrawn('A\r\n\r\nB\r\n')).toEqual({ named: 3, rows: 3 });
+        expect(namedAndDrawn('one\r\ntwo\r\n')).toEqual({ named: 2, rows: 2 });
+      });
+
+      it('takes a line of spaces for a row, and the empty lines around the text for none', () => {
+        expect(namedAndDrawn('\n\nFAIL a\n \n\nexpected 1\n\n')).toEqual({ named: 3, rows: 3 });
+      });
+    });
+
+    it('names no stdout that is only control characters', () => {
+      const result = toolFailure(STDERR, { content: '\u200e\n\u001b\n', details: { exitCode: 1 } });
+      expect(linesOf(draw(result)).slice(1)).toEqual([STDERR]);
+    });
+
+    it('names the stdout again once the row is folded back', () => {
+      const lines = linesOf(draw(failed(), { isExpanded: false, showAllToolOutput: true }));
+      expect(lines.slice(1)).toEqual([STDERR, '… +1 line of output (Ctrl+E)']);
+    });
+  });
+
   it('shows no detail rows for a command that failed with no output at all', () => {
     const result = toolFailure('Exit code: 3', { details: { exitCode: 3 } });
     const rendered = stripAnsi(
@@ -1576,6 +1763,54 @@ describe('ToolCallBlock Ctrl+E hint', () => {
       result: successResult(id, content),
       expanded,
     }));
+    // A failed command with stdout as well as stderr (#480): the footer names that stdout.
+    const failedWith = (
+      id: string,
+      stdout: string,
+      expanded: boolean,
+      name = 'Bash',
+      args: Record<string, unknown> = { command: 'npm test' },
+      stderr = 'npm warn config something',
+    ) => ({
+      call: { id, name, arguments: args },
+      result: enrichToolResultPresentation(
+        {
+          ...toolFailure(stderr, {
+            content: stdout,
+            details: { exitCode: 1 },
+          }),
+          toolCallId: id,
+        },
+        name,
+        args,
+      ),
+      expanded,
+    });
+    const cutStderr = Array.from({ length: 12 }, (_, i) => `error: line ${i + 1}`).join('\n');
+    const failures = [
+      failedWith('stdout-collapsed', 'FAIL a', false),
+      failedWith('stdout-many', output, false),
+      failedWith('stdout-open', 'FAIL a', true),
+      failedWith('stdout-open-long', output, true),
+      failedWith('stdout-blank', '\n  \n', false),
+      failedWith('stdout-controls', '\u200e\n\u001b\n', false),
+      failedWith('stdout-none', '', false),
+      failedWith('check-collapsed', 'FAIL a', false, 'Check', { name: 'unit' }),
+      // A stderr that cuts lines of its own: its footer is the row's one, and counts the stdout too.
+      failedWith('cut-and-stdout', 'FAIL a', false, 'Bash', { command: 'npm test' }, cutStderr),
+      failedWith('cut-and-open', 'FAIL a', true, 'Bash', { command: 'npm test' }, cutStderr),
+      failedWith('cut-and-blank', '\n \n', false, 'Bash', { command: 'npm test' }, cutStderr),
+      failedWith('cut-and-controls', '\u200e\n', false, 'Bash', { command: 'npm test' }, cutStderr),
+      failedWith('cut-only', '', false, 'Bash', { command: 'npm test' }, cutStderr),
+    ];
+    // The rows whose stdout the footer names: collapsed, with a non-blank stdout. An open row's
+    // output block draws that stdout itself, so naming it as well would draw it twice.
+    const namesStdout = new Set([
+      'stdout-collapsed',
+      'stdout-many',
+      'check-collapsed',
+      'cut-and-stdout',
+    ]);
     const cases = [
       ...rows.map((row) => ({
         call: row.call,
@@ -1583,6 +1818,7 @@ describe('ToolCallBlock Ctrl+E hint', () => {
         expanded: shouldDefaultExpandTool(row.call.name, row.result),
       })),
       ...extra,
+      ...failures,
     ];
     for (const { call, result, expanded } of cases) {
       const rendered = frame(
@@ -1611,6 +1847,10 @@ describe('ToolCallBlock Ctrl+E hint', () => {
         showAllToolOutput: false,
       });
       expect([call.id, rendered.includes('… +')]).toEqual([call.id, hides]);
+      expect([call.id, rendered.includes('of output')]).toEqual([
+        call.id,
+        namesStdout.has(call.id),
+      ]);
     }
   });
 });

@@ -398,6 +398,15 @@ function ToolCallBlockInner({
   // A failure whose collapsed detail hides lines can be expanded even when the row's own output
   // has nothing to reveal: stderr is not in `result.content`.
   const expandable = presentation.hasHiddenContent || Boolean(errorDetails?.collapsed?.hint);
+  // The footer counts what the rows cut and the stdout they leave out: above the rows while it
+  // counts lines they cut, below them when it is the stdout's alone.
+  const errorHint = errorDetail?.hint ? (
+    <Box height={1}>
+      <Text wrap="truncate-end" color={theme.inactive}>
+        {errorDetail.hint}
+      </Text>
+    </Box>
+  ) : null;
 
   useLayoutEffect(() => {
     if (!registry || !toolId) return;
@@ -465,13 +474,7 @@ function ToolCallBlockInner({
           summary row truncates: every row draws inside its own box. */}
       {errorDetail ? (
         <Box flexDirection="column" marginLeft={errorDetail.column}>
-          {errorDetail.hint ? (
-            <Box height={1}>
-              <Text wrap="truncate-end" color={theme.inactive}>
-                {errorDetail.hint}
-              </Text>
-            </Box>
-          ) : null}
+          {errorDetail.hintBelow ? null : errorHint}
           {errorDetail.lines.map((line, index) => (
             <Box key={index} height={1}>
               <Text
@@ -492,6 +495,7 @@ function ToolCallBlockInner({
               </Text>
             </Box>
           ))}
+          {errorDetail.hintBelow ? errorHint : null}
         </Box>
       ) : null}
       {isExpanded && result && isDiffOutput(name, result) ? (

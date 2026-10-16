@@ -479,9 +479,14 @@ async function bashForeground(
             // still gets the note, and the command is passed so a
             // `git config --global` — which writes `~/.gitconfig`, a
             // different file — is not told about the repository at all.
+            //
+            // A stderr of only whitespace (a bare `echo >&2`) says nothing, so the message is the
+            // exit code then, as it is for an empty one: a blank message is skipped by the
+            // transcript row, which then shows no stdout and is passed over by Ctrl+E. `Check`
+            // makes the same choice.
             fail(
               withGitConfigReadOnlyNotice(
-                stderr || `Exit code: ${code}`,
+                stderr.trim() ? stderr : `Exit code: ${code}`,
                 `${stdout}\n${stderr}`,
                 built.sandboxed,
                 built.command,

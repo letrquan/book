@@ -216,6 +216,41 @@ describe('Bash shell tools', () => {
     expect(result.structuredError?.details).toEqual({ exitCode: 3 });
   });
 
+  // A bare `echo >&2` writes one newline to stderr. The message used to be that newline, which the
+  // transcript row skips as blank: it drew no stdout, named none, and Ctrl+E passed over the row.
+  it.each([
+    ['a lone newline', '\\n'],
+    ['spaces, a tab and CRLF', '  \\t\\r\\n'],
+    ['several blank lines', '\\n\\n\\n'],
+  ])(
+    'reports `Exit code: N` when stderr is only %s, and keeps the stdout as the content',
+    async (_name, stderr) => {
+      const command = nodeCommand(
+        'whitespace-stderr.cjs',
+        `process.stdout.write('FAIL-LINE\\n');\nprocess.stderr.write('${stderr}');\nprocess.exitCode = 1;\n`,
+      );
+
+      const result = await bash.execute({ command }, ctx());
+
+      expect(result.status).toBe('error');
+      expect(result.structuredError?.message).toBe('Exit code: 1');
+      expect(result.structuredError?.details).toEqual({ exitCode: 1 });
+      expect(result.content).toBe('FAIL-LINE\n');
+    },
+  );
+
+  it('keeps a stderr that has text exactly as written, blank lines around it included', async () => {
+    const command = nodeCommand(
+      'padded-stderr.cjs',
+      `process.stderr.write('\\nboom\\n\\n');\nprocess.exitCode = 2;\n`,
+    );
+
+    const result = await bash.execute({ command }, ctx());
+
+    expect(result.structuredError?.message).toBe('\nboom\n\n');
+    expect(result.structuredError?.details).toEqual({ exitCode: 2 });
+  });
+
   it('cancels a foreground Bash process through the tool signal', async () => {
     const controller = new AbortController();
     const c = ctxWith({ workspaceRoot: process.cwd(), signal: controller.signal });
