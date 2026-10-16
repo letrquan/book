@@ -618,7 +618,7 @@ async function bashOutput(args: Record<string, unknown>, ctx: ToolContext): Prom
   }
   const waited = requestedWait !== undefined && requestedWait > 0;
   if (waited) await waitForShell(shells, shellId, requestedWait, ctx.signal);
-  const result = shells.readOutput(shellId);
+  const result = shells.readOutput(shellId, undefined, ctx.providerSecrets);
   if (!result) return fail(`Shell ${shellId} not found`);
   const parts = [`Shell ${result.shell.id}: ${result.shell.status}`];
   if (result.shell.pid !== undefined) parts.push(`pid=${result.shell.pid}`);

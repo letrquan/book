@@ -7,6 +7,7 @@ import { removeWhenReleased } from '../test/remove-when-released.js';
 import { persistentEnvironmentOverrides, shellTools } from './shell.js';
 import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
+import { PROVIDER_KEY_MARKER, redactToolResultSecrets } from '../provider-secrets.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from '../settings.js';
@@ -1253,5 +1254,52 @@ describe('sandbox.allowUnsandboxedCommands', () => {
 
     expect(result.status).toBe('success');
     expect(existsSync(marker)).toBe(true);
+  });
+});
+
+// #411: `BashOutput` reads in 32,000-character chunks, and the cut can land inside a provider key.
+// The loop redacts the result afterwards, by exact value, so the read itself must not split a key.
+describe('BashOutput and provider secrets', () => {
+  const KEY = 'sk-live-0123456789abcdef';
+
+  it('never ends a read inside a provider key', async () => {
+    const lead = 32_000 - 10;
+    const c = ctxWith({ providerSecrets: [KEY] });
+    const command = nodeCommand(
+      'key-at-the-cut.cjs',
+      `process.stdout.write('a'.repeat(${lead}) + ${JSON.stringify(KEY)} + 'b'.repeat(200) + '\\n');\n` +
+        `setTimeout(() => process.exit(0), 50);\n`,
+    );
+    const start = await bash.execute({ command, run_in_background: true }, c);
+    const shellId = shellIdFrom(start);
+
+    // Every poll consumes output, so every poll is kept. Polling starts once the job has exited, so
+    // the whole output is buffered before the first cut.
+    for (let i = 0; i < 200 && c.backgroundShells?.shells.get(shellId)?.status === 'running'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(c.backgroundShells?.shells.get(shellId)?.status).not.toBe('running');
+    const reads: ToolResult[] = [];
+    for (let i = 0; i < 10; i++) {
+      const read = await bashOutput.execute({ shell_id: shellId }, c);
+      reads.push(read);
+      if (!/call BashOutput again/.test(read.content)) break;
+    }
+
+    expect(reads.length).toBeGreaterThan(1);
+    // The read either holds the key whole (for the redactor to replace) or none of it: no read
+    // carries a part of the key that an exact-value redactor would miss.
+    for (const read of reads) {
+      if (read.content.includes(KEY)) continue;
+      for (let at = 0; at + 8 <= KEY.length; at++) {
+        expect(read.content).not.toContain(KEY.slice(at, at + 8));
+      }
+    }
+    // What the loop does next: redact each result.
+    const redacted = reads.map((read) => redactToolResultSecrets(read, [KEY]).content);
+    for (const content of redacted) expect(content).not.toContain(KEY);
+    const joined = redacted.join('');
+    expect(joined).toContain(PROVIDER_KEY_MARKER);
+    expect(joined).not.toContain(KEY);
   });
 });

@@ -27,6 +27,7 @@ import {
   type PersistentShellState,
 } from './persistent-store.js';
 import { isProcessAlive, terminateProcessTree, waitForProcessClose } from './process-tree.js';
+import { secretSafeCut } from '../provider-secrets.js';
 
 const MAX_BACKGROUND_BUFFER = 1024 * 1024 * 5;
 const MAX_OUTPUT_RESULT = 32_000;
@@ -413,7 +414,16 @@ export class ShellJobManager {
     return cloneRecord(shell);
   }
 
-  readOutput(shellId: string, limit = MAX_OUTPUT_RESULT): ShellOutputResult | undefined {
+  /**
+   * The next unread chunk. `secrets` are values the caller will redact from what it gets back
+   * (#411): the chunk never ends inside one, so a key cut in half across two reads cannot slip past
+   * an exact-match redactor. `readOffset` and `remaining` follow the adjusted cut.
+   */
+  readOutput(
+    shellId: string,
+    limit = MAX_OUTPUT_RESULT,
+    secrets: readonly string[] = [],
+  ): ShellOutputResult | undefined {
     this.refreshPersistentJobs();
     this.pruneTerminalShells();
     const shell = this.store.shells.get(shellId);
@@ -427,7 +437,9 @@ export class ShellJobManager {
         shell.readOffset = 0;
       }
       const unread = content.slice(shell.readOffset);
-      const output = unread ? unread.slice(0, Math.max(1, limit)) : '(no new output)';
+      const output = unread
+        ? unread.slice(0, secretSafeCut(unread, limit, secrets))
+        : '(no new output)';
       if (unread) shell.readOffset += output.length;
       return {
         shell: cloneRecord(shell),
@@ -436,7 +448,9 @@ export class ShellJobManager {
       };
     }
     const unread = shell.output.slice(shell.readOffset);
-    const output = unread ? unread.slice(0, Math.max(1, limit)) : '(no new output)';
+    const output = unread
+      ? unread.slice(0, secretSafeCut(unread, limit, secrets))
+      : '(no new output)';
     if (unread) shell.readOffset += output.length;
     return {
       shell: cloneRecord(shell),

@@ -630,6 +630,40 @@ by looking like something else. What is stripped instead is the environment `Too
 — Book's own, marker and all — since a copy of `process.env` is not a request for the default it
 carries.
 
+### Provider keys are redacted from tool output
+
+A command can print Book's own credentials: `$BOOK_API_KEY`, or a settings file such as
+`$BOOK_HOME/settings.json` that a test's assertion diff dumps. Every tool result is therefore
+redacted once, when it is finalized and before anything is derived from it: each configured
+provider secret is replaced by the fixed marker `[redacted: provider key]`. That one step covers
+what the model sees, the saved session, the `tool-output` file a clipped result spills into, the
+failure head/tail preview, and the `stream-json` `tool_result` event. It applies to every tool
+(`Bash`, `BashOutput`, `Read`, `Check`, MCP tools, subagent results), and to the content, the
+details, the error message and any string in the result's structured data. The output tail the
+interactive UI hands the model when a background shell finishes is redacted the same way.
+
+The secrets are `BOOK_API_KEY`, the session's own key, and the resolved `apiKey` of each configured
+provider (a literal, an `{env:VAR}` or a `{file:path}` reference). A provider that only the
+repository declares, and that you have not approved, is skipped, so a repository cannot use its
+`.book/settings.json` to erase a word from your output. A value shorter than 8 characters is never
+treated as a secret, so ordinary output is not mangled. Matching is by exact value: no pattern is
+guessed from the key. A `BashOutput` chunk never ends inside a key; it stops before it, or runs past
+it when the key opens the chunk.
+
+This only redacts. The environment a command gets is unchanged: `Bash` children still inherit
+`BOOK_HOME` and `BOOK_API_KEY`, so a nested `book` run keeps working.
+
+Limits:
+
+- A transformed key is not caught: base64, hex, or a key a program splits into separate writes with
+  a read in between.
+- The log file of a persistent background job on disk stays unredacted; only what `BashOutput`
+  returns is.
+- A file the model reads through redaction and then rewrites with `Write` gets the marker where the
+  key was.
+- Output is redacted when the result is finalized, not while the command runs, so the live output of
+  a running command is not redacted.
+
 ## Shell command timeouts
 
 A foreground `Bash` command is given **300000 ms** (five minutes) by default. The model can raise

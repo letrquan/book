@@ -592,3 +592,146 @@ setInterval(() => {}, 1000);\n`,
     expect(await next.stop(started.id)).toBe(true);
   }, 60_000);
 });
+
+// #411: a chunk limit that fell inside a provider key left half of it in each of two reads, and
+// neither half matches an exact-value redactor. The read now ends before the key (or after it, when
+// the key opens the chunk), and `readOffset`/`remaining` follow the adjusted cut.
+describe('ShellJobManager.readOutput with secrets', () => {
+  const KEY = 'sk-live-0123456789abcdef';
+
+  /** Every read until the job's output is drained. */
+  function drain(manager: ShellJobManager, id: string, limit: number): string[] {
+    const reads: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      const read = manager.readOutput(id, limit, [KEY]);
+      if (!read || read.output === '(no new output)') break;
+      reads.push(read.output);
+      if (read.remaining === 0) break;
+    }
+    return reads;
+  }
+
+  function expectNoKeyPart(reads: string[]): void {
+    for (const read of reads) {
+      expect(read).not.toContain(KEY);
+      // No 8-character window of the key survives in any read.
+      for (let at = 0; at + 8 <= KEY.length; at++) {
+        expect(read).not.toContain(KEY.slice(at, at + 8));
+      }
+    }
+  }
+
+  it('never ends a read inside the key of an in-memory job', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-secret-chunks-'));
+    const script = join(directory, 'emit.cjs');
+    writeFileSync(
+      script,
+      `process.stdout.write('a'.repeat(30) + ${JSON.stringify(KEY)} + 'b'.repeat(30));\n`,
+    );
+    const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+    const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+    managers.push(manager);
+    const started = await manager.start({
+      command,
+      effectiveCommand: command,
+      workdir: directory,
+      env: process.env,
+      envOverrides: {},
+      sandboxed: false,
+      workspace: directory,
+    });
+    await waitFor(
+      () => (manager.readTail(started.id) ?? '').endsWith('b'.repeat(30)),
+      'job output',
+    );
+
+    // 40 falls 10 characters into the key: the read stops where the key starts.
+    const first = manager.readOutput(started.id, 40, [KEY]);
+    expect(first?.output).toBe('a'.repeat(30));
+    expect(first?.remaining).toBe(KEY.length + 30);
+    expect(manager.get(started.id)?.readOffset).toBe(30);
+
+    // A limit smaller than the key, with the key opening the chunk: the read takes the whole key.
+    const second = manager.readOutput(started.id, 5, [KEY]);
+    expect(second?.output).toBe(KEY);
+    expect(second?.remaining).toBe(30);
+    expect(manager.readOutput(started.id, 5, [KEY])?.output).toBe('b'.repeat(5));
+  });
+
+  it('reads a key whole across every limit, in memory', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-secret-chunks-'));
+    const script = join(directory, 'emit.cjs');
+    writeFileSync(
+      script,
+      `process.stdout.write('a'.repeat(30) + ${JSON.stringify(KEY)} + 'b'.repeat(30));\n`,
+    );
+    const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+    const store: BackgroundShellStore = { nextId: 1, shells: new Map() };
+    const manager = new ShellJobManager(store);
+    managers.push(manager);
+    const started = await manager.start({
+      command,
+      effectiveCommand: command,
+      workdir: directory,
+      env: process.env,
+      envOverrides: {},
+      sandboxed: false,
+      workspace: directory,
+    });
+    await waitFor(
+      () => (manager.readTail(started.id) ?? '').endsWith('b'.repeat(30)),
+      'job output',
+    );
+    // Rewind the cursor each time so every limit is tried against the same output.
+    const full = 'a'.repeat(30) + KEY + 'b'.repeat(30);
+    for (let limit = 1; limit <= full.length; limit++) {
+      store.shells.get(started.id)!.readOffset = 0;
+      const reads = drain(manager, started.id, limit);
+      expect(reads.join('')).toBe(full);
+      expect(reads.some((read) => read.includes(KEY))).toBe(true);
+      // Each read either holds the key whole or none of it.
+      for (const read of reads) {
+        if (!read.includes(KEY)) expectNoKeyPart([read]);
+      }
+    }
+  });
+
+  it('never ends a read inside the key of a persistent job log', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-secret-chunks-persistent-'));
+    const persistentRoot = join(directory, 'jobs');
+    const script = join(directory, 'emit.cjs');
+    writeFileSync(
+      script,
+      `process.stdout.write('a'.repeat(30) + ${JSON.stringify(KEY)} + 'b'.repeat(30));\nsetInterval(() => {}, 1000);\n`,
+    );
+    const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+    const manager = new ShellJobManager(
+      { nextId: 1, shells: new Map() },
+      { persistentRoot, ...ciBudgets },
+    );
+    managers.push(manager);
+    manager.configureWorkspace(directory);
+    const started = await manager.start({
+      command,
+      effectiveCommand: command,
+      workdir: directory,
+      env: process.env,
+      envOverrides: {},
+      sandboxed: false,
+      lifetime: 'persistent',
+      workspace: directory,
+    });
+    await waitFor(
+      () => (manager.readTail(started.id) ?? '').endsWith('b'.repeat(30)),
+      'persistent shell output',
+      30_000,
+    );
+
+    const first = manager.readOutput(started.id, 40, [KEY]);
+    expect(first?.output).toBe('a'.repeat(30));
+    expect(first?.remaining).toBe(KEY.length + 30);
+    const second = manager.readOutput(started.id, 5, [KEY]);
+    expect(second?.output).toBe(KEY);
+    expect(second?.remaining).toBe(30);
+  }, 60_000);
+});
