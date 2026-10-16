@@ -8,6 +8,14 @@ import type { BackgroundShellStore } from '../types/runtime.js';
 const SESSION_SHELL_ID = /\bshell_(\d+)(?![\w-])/g;
 
 /**
+ * The highest `shell_<n>` a scan believes. The scan reads every string in a transcript (tool
+ * output, file contents, user text), and `shell_20261016` in a log is not a shell id. A value near
+ * `Number.MAX_SAFE_INTEGER` would also stop `nextId++` from advancing and hand out duplicate ids.
+ * No session starts a million shells, so a larger number is something else.
+ */
+export const MAX_SEEDED_SHELL_ID = 1_000_000;
+
+/**
  * The counter value that cannot collide with any `shell_<n>` id the given messages mention: one
  * past the highest, or 1 when there is none.
  *
@@ -23,7 +31,7 @@ export function nextShellIdAfter(...sources: unknown[]): number {
       if (typeof value === 'string') {
         for (const match of value.matchAll(SESSION_SHELL_ID)) {
           const id = Number(match[1]);
-          if (Number.isSafeInteger(id) && id > highest) highest = id;
+          if (id <= MAX_SEEDED_SHELL_ID && id > highest) highest = id;
         }
       }
       return value;

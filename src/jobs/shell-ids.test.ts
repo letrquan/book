@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BackgroundShellStore } from '../types/runtime.js';
-import { nextShellIdAfter, seedShellIds } from './shell-ids.js';
+import { MAX_SEEDED_SHELL_ID, nextShellIdAfter, seedShellIds } from './shell-ids.js';
 
 describe('nextShellIdAfter', () => {
   it('is 1 when nothing names a shell', () => {
@@ -36,6 +36,15 @@ describe('nextShellIdAfter', () => {
   it('compares ids as numbers, so shell_10 is past shell_9', () => {
     expect(nextShellIdAfter([{ content: 'shell_9 then shell_10' }])).toBe(11);
     expect(nextShellIdAfter([{ content: 'shell_10 then shell_9' }])).toBe(11);
+  });
+
+  it('ignores a number too large to be a shell counter, but counts one just under the cap', () => {
+    // A date, a build number or a byte count in a tool result is not a shell id, and a value near
+    // Number.MAX_SAFE_INTEGER would leave `nextId++` unable to move at all.
+    expect(nextShellIdAfter([{ content: 'built shell_20261016 today' }])).toBe(1);
+    expect(nextShellIdAfter([{ content: 'shell_9007199254740990' }])).toBe(1);
+    expect(nextShellIdAfter([{ content: 'shell_999999 and shell_2' }])).toBe(1_000_000);
+    expect(nextShellIdAfter([{ content: `shell_${MAX_SEEDED_SHELL_ID + 1}` }])).toBe(1);
   });
 
   it('does not match a longer word that ends in the id', () => {
