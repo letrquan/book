@@ -88,6 +88,12 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A failed `Check` reports the way a failed `Bash` does** (#473). A check that exited non-zero
+  reported `stderr || stdout`, so a runner that prints its failing assertions on stdout while npm
+  warns on stderr lost them: the model never saw them and neither did the transcript. The message is
+  now stderr, or `Exit code: N` when stderr is blank, and stdout is always the output, under the
+  same 50 KB bound every tool result gets. The read-only-git note reads both streams, and a
+  timed-out check keeps both its stdout and its stderr.
 - **The test suites no longer read your `BOOK_*` environment** (#467). A test that expects a
   default (`BOOK_EFFORT` unset, no `BOOK_MAX_TOKENS`) failed whenever the suite ran from inside a
   Book session, or from any shell exporting an override: eight tests in `compact-eval-settings`,
