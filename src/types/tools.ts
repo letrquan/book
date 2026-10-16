@@ -369,6 +369,11 @@ export interface ToolContext {
    * `scope` is `learnings` when another agent drives the session. `sessionId` stamps provenance.
    */
   memoryWrite?: { root: string; scope: 'learnings' | 'full'; sessionId?: string };
+  /**
+   * The provider secrets the agent loop redacts from every tool result (#411), longest first.
+   * `BashOutput` reads with them so a chunk never ends inside one. Populated by the agent loop.
+   */
+  providerSecrets?: readonly string[];
   env: Record<string, string>;
   /** Explicit environment overrides safe to persist for opt-in persistent jobs. */
   envOverrides?: Record<string, string>;

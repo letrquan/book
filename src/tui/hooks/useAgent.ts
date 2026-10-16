@@ -40,6 +40,7 @@ import {
   resolveCompactModelConfig,
   resolveModelProviderConfig,
 } from '../../config.js';
+import { collectProviderSecrets, redactSecrets } from '../../provider-secrets.js';
 import type { ProviderResponseMetadata } from '../../types/providers.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types/runtime.js';
@@ -1587,7 +1588,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
   const sendBackgroundShellCompletion = useCallback(
     async (shell: BackgroundShellRecord): Promise<boolean> => {
-      const tail = agentSession.getRuntime().shellManager.readTail(shell.id, 4_000) ?? '';
+      // This tail goes to the model as a context message, outside any tool result (#411).
+      const secrets = collectProviderSecrets(liveConfigRef.current);
+      const tail = redactSecrets(
+        agentSession.getRuntime().shellManager.readTail(shell.id, 4_000, secrets) ?? '',
+        secrets,
+      );
       const exit = shell.exitCode !== undefined ? ` exit=${shell.exitCode ?? 'none'}` : '';
       // A retried command keeps its title; the id tells the two completions apart (#425).
       const id = shell.title && shell.title !== shell.id ? ` (${shell.id})` : '';

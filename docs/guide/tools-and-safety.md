@@ -637,6 +637,67 @@ by looking like something else. What is stripped instead is the environment `Too
 — Book's own, marker and all — since a copy of `process.env` is not a request for the default it
 carries.
 
+### Provider keys are redacted from tool output
+
+A command can print Book's own credentials: `$BOOK_API_KEY`, or a settings file such as
+`$BOOK_HOME/settings.json` that a test's assertion diff dumps. Every tool result is therefore
+redacted once, when it is finalized and before anything is derived from it: each configured
+provider secret is replaced by the fixed marker `[redacted: provider key]`. That one step covers
+what the model sees, the saved session, the `tool-output` file a clipped result spills into, the
+failure head/tail preview, and the `stream-json` `tool_result` event. It applies to every tool
+(`Bash`, `BashOutput`, `Read`, `Check`, MCP tools, subagent results), and to the content, the
+details, the error message and any string in the result's structured data. The output tail the
+interactive UI hands the model when a background shell finishes is redacted the same way.
+
+The secrets are `BOOK_API_KEY`, the session's own key, and the resolved `apiKey` of each configured
+provider (a literal, an `{env:VAR}` or a `{file:path}` reference). A provider that only the
+repository declares, and that you have not approved, is skipped, so a repository cannot use its
+`.book/settings.json` to erase a word from your output. A value shorter than 8 characters is never
+treated as a secret, so ordinary output is not mangled. Neither is a well-known placeholder key that
+keyless local endpoints ask for (`not-needed`, `lm-studio`, `sk-no-key-required`,
+`no-key-required`, `no-api-key`, `dummy-key`, `placeholder`, compared case-insensitively): they are
+ordinary words, and erasing them would mangle code and break `Edit` matches. Matching is by exact
+value: no pattern is guessed from the key.
+
+A window onto output never cuts a key in half, because neither half would match. A `BashOutput`
+chunk stops before a key the limit would split, or runs past it when the key opens the chunk. A tail
+(the completion message of a background shell, the 64 KB tail of a command moved to the background)
+and the 5 MB background buffer start at a key they would otherwise cut into, so the whole key is
+there to be replaced.
+
+A key can also be half written when a running job is read. When a provider key is configured and
+the job is still running, a `BashOutput` read therefore stops after the last line break, and the unterminated last line waits until it ends
+or the job does; a line with no break at all is returned in pieces of at most 1024 characters, so a
+prompt is not held forever. This rule looks only at line breaks and length, never at the key's
+value: a rule that held back text resembling the start of a key would let a command guess the key
+character by character from which reads come back empty. A finished job returns everything. A
+`BashOutput` result also leaves the job's whole buffer out of the record it stores in the session.
+
+This only redacts. The environment a command gets is unchanged: `Bash` children still inherit
+`BOOK_HOME` and `BOOK_API_KEY`, so a nested `book` run keeps working.
+
+Limits:
+
+- A transformed key is not caught: base64, hex, or a key a program splits into separate writes with
+  a read in between.
+- The log file of a persistent background job on disk stays unredacted; only what `BashOutput`
+  returns is.
+- A key that log rotation splits across files is not caught.
+- `PostToolUse` hooks receive the raw output. They run with your environment and can read the key
+  directly, so redacting their input would protect nothing.
+- Output is redacted when the result is finalized, not while the command runs, so the live output of
+  a running command is not redacted.
+
+#### Writing the marker back
+
+The model only ever sees the marker where a key is, so reading a file that holds a key and writing
+the whole file back with `Write` would replace the real credential with the marker. `Write`, `Edit`
+and `MultiEdit` therefore refuse, with the error code `redacted_secret_overwrite` and the file left
+unchanged, when the file on disk holds a configured provider key **and** the new content (or an
+`Edit`'s `new_string`) contains the marker. The remedy is an `Edit` on only the lines that need to
+change, leaving out the line that shows the marker, or asking you to make the change. Writing the
+marker into a file that holds no key is still allowed, so Book's own docs and tests are unaffected.
+
 ## Shell command timeouts
 
 A foreground `Bash` command is given **300000 ms** (five minutes) by default. The model can raise

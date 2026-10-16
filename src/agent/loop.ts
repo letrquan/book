@@ -38,6 +38,7 @@ import {
 import { maskAtGate, maskBeforeCompacting } from './tool-output-masking.js';
 import { hasDeclaredContextWindow, resolveContextLimit, resolveModelKey } from '../models.js';
 import { compactsOnSessionModel } from '../config.js';
+import { collectProviderSecrets, redactToolResultSecrets } from '../provider-secrets.js';
 import { GOAL_DEFAULT_BLOCK_CAP, evaluateGoal, goalFeedbackMessage } from './goal.js';
 import type { GoalVerdict } from '../types/goal.js';
 import {
@@ -720,6 +721,7 @@ export async function runAgentLoop(
     memorySearchRoot: config.memoryContext?.dir,
     additionalRoots,
     memoryWrite,
+    providerSecrets: collectProviderSecrets(config),
     env: process.env as Record<string, string>,
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,
@@ -3299,8 +3301,15 @@ export async function runAgentLoop(
           });
         }
 
-        const bounded = await boundToolResultOutput(
+        // Once, here, before anything is derived from the text: the spill file, the clipped
+        // preview, `details`, the persisted session and the stream-json event all come from the
+        // clean result (#411). Never at render time: earlier turns' bytes must not change.
+        const redacted = redactToolResultSecrets(
           enrichToolResultPresentation(result, canonName, call.arguments),
+          context.providerSecrets ?? [],
+        );
+        const bounded = await boundToolResultOutput(
+          redacted,
           context.workspaceRoot,
           undefined,
           options?.toolOutputRoot,

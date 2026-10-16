@@ -4,9 +4,10 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { removeWhenReleased } from '../test/remove-when-released.js';
-import { persistentEnvironmentOverrides, shellTools } from './shell.js';
+import { persistentEnvironmentOverrides, shellTools, streamTail } from './shell.js';
 import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
+import { PROVIDER_KEY_MARKER, redactToolResultSecrets } from '../provider-secrets.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from '../settings.js';
@@ -1253,5 +1254,123 @@ describe('sandbox.allowUnsandboxedCommands', () => {
 
     expect(result.status).toBe('success');
     expect(existsSync(marker)).toBe(true);
+  });
+});
+
+// #411: `BashOutput` reads in 32,000-character chunks, and the cut can land inside a provider key.
+// The loop redacts the result afterwards, by exact value, so the read itself must not split a key.
+describe('BashOutput and provider secrets', () => {
+  const KEY = 'sk-live-0123456789abcdef';
+
+  it('never ends a read inside a provider key', async () => {
+    const lead = 32_000 - 10;
+    const c = ctxWith({ providerSecrets: [KEY] });
+    const command = nodeCommand(
+      'key-at-the-cut.cjs',
+      `process.stdout.write('a'.repeat(${lead}) + ${JSON.stringify(KEY)} + 'b'.repeat(200) + '\\n');\n` +
+        `setTimeout(() => process.exit(0), 50);\n`,
+    );
+    const start = await bash.execute({ command, run_in_background: true }, c);
+    const shellId = shellIdFrom(start);
+
+    // Every poll consumes output, so every poll is kept. Polling starts once the job has exited, so
+    // the whole output is buffered before the first cut.
+    for (let i = 0; i < 200 && c.backgroundShells?.shells.get(shellId)?.status === 'running'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(c.backgroundShells?.shells.get(shellId)?.status).not.toBe('running');
+    const reads: ToolResult[] = [];
+    for (let i = 0; i < 10; i++) {
+      const read = await bashOutput.execute({ shell_id: shellId }, c);
+      reads.push(read);
+      if (!/call BashOutput again/.test(read.content)) break;
+    }
+
+    expect(reads.length).toBeGreaterThan(1);
+    // The read either holds the key whole (for the redactor to replace) or none of it: no read
+    // carries a part of the key that an exact-value redactor would miss.
+    for (const read of reads) {
+      if (read.content.includes(KEY)) continue;
+      for (let at = 0; at + 8 <= KEY.length; at++) {
+        expect(read.content).not.toContain(KEY.slice(at, at + 8));
+      }
+    }
+    // What the loop does next: redact each result.
+    const redacted = reads.map((read) => redactToolResultSecrets(read, [KEY]).content);
+    for (const content of redacted) expect(content).not.toContain(KEY);
+    const joined = redacted.join('');
+    expect(joined).toContain(PROVIDER_KEY_MARKER);
+    expect(joined).not.toContain(KEY);
+  });
+});
+
+// #411: the 64 KB tail of a command that is moved to the background (or overflows its buffer) is a
+// front cut, and a key it starts inside would reach the model as an unmatched fragment.
+describe('the output tail of a command and provider secrets', () => {
+  const KEY = 'sk-live-0123456789abcdef';
+  const TAIL = 64 * 1024;
+
+  function expectNoPartialKey(text: string): void {
+    if (text.includes(KEY)) return;
+    for (let at = 0; at + 8 <= KEY.length; at++) {
+      expect(text).not.toContain(KEY.slice(at, at + 8));
+    }
+  }
+
+  it('keeps a key that straddles the 64 KB cut whole', () => {
+    // The last 64 KB begin 14 characters into the key.
+    const text = 'x'.repeat(100) + KEY + 'b'.repeat(TAIL - 10);
+
+    expect(streamTail(text, [])).toHaveLength(TAIL);
+    expect(streamTail(text, [])).not.toContain(KEY);
+
+    const kept = streamTail(text, [KEY]);
+    expect(kept.startsWith(KEY)).toBe(true);
+    expect(kept).toHaveLength(TAIL + 14);
+    expectNoPartialKey(redactToolResultSecrets(fakeResult(kept), [KEY]).content);
+    expect(streamTail('short', [KEY])).toBe('short');
+  });
+
+  it('does so for a command moved to the background at its timeout', async () => {
+    const c = ctxWith({ providerSecrets: [KEY] });
+    const command = nodeCommand(
+      'straddle.cjs',
+      `process.stdout.write('x'.repeat(100) + ${JSON.stringify(KEY)} + 'b'.repeat(${TAIL - 10}));\n` +
+        `setInterval(() => {}, 1000);\n`,
+    );
+
+    const result = await bash.execute({ command, timeout: 1500 }, c);
+
+    expect(result.content).toMatch(/moved to background shell/);
+    expect(result.content).toContain(KEY);
+    const redacted = redactToolResultSecrets(result, [KEY]).content;
+    expect(redacted).toContain(PROVIDER_KEY_MARKER);
+    expect(redacted).not.toContain(KEY);
+    expectNoPartialKey(redacted);
+  });
+});
+
+function fakeResult(content: string): ToolResult {
+  return { version: 2, toolCallId: 'c', status: 'success', content };
+}
+
+// #411: `data` is persisted with the session, and the shell record's `output` is the job's whole
+// in-memory buffer (up to 5 MB). Nothing reads it from a BashOutput result, so it is not carried.
+describe('BashOutput result data', () => {
+  it('omits the shell buffer from data.shell, and keeps what readers use', async () => {
+    const c = ctx();
+    const command = nodeCommand(
+      'data-shape.cjs',
+      `console.log('buffered-line');\nsetTimeout(() => process.exit(3), 50);\n`,
+    );
+    const start = await bash.execute({ command, run_in_background: true }, c);
+    const shellId = shellIdFrom(start);
+    const terminal = await waitForOutput(c, shellId, /exit=3/);
+
+    const data = terminal.data as { shell: Record<string, unknown>; output: string };
+    expect(data.shell).not.toHaveProperty('output');
+    expect(data.shell).toMatchObject({ id: shellId, status: 'failed', exitCode: 3 });
+    expect(typeof data.output).toBe('string');
+    expect(JSON.stringify(terminal.data)).not.toContain('"output":"buffered-line');
   });
 });
