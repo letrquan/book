@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,10 +17,12 @@ import {
   composeToolErrorDetail,
   composeToolRow,
   estimateToolErrorDetailRows,
+  hasNonBlankOutputLine,
   planMark,
   toolErrorDetailOptions,
+  toolOutputDisplay,
 } from './tool-presentation.js';
-import { CONTROL_CHARACTERS } from '../control-characters.js';
+import { CONTROL_CHARACTERS, foldControlCharacters } from '../control-characters.js';
 import {
   CONTENT_COLUMN,
   GUTTER_WIDTH,
@@ -601,12 +603,47 @@ describe('composeToolErrorDetail with a failed command', () => {
       expect(rows(detail)).toBe(2);
     });
 
-    it('counts the non-blank lines, and says lines from two on', () => {
-      const detail = composeToolErrorDetail(row, stderr, grid, {
-        ...command,
-        stdout: 'FAIL a\n\n  \nFAIL b\r\n\t\nFAIL c\n\n',
-      });
-      expect(detail.hint).toBe('… +3 lines of output (Ctrl+E)');
+    it('counts the lines its expanded output block draws, the blank ones among them', () => {
+      // The block is given every line of the stdout: one more than it has newlines, so the empty
+      // line after a final newline is one of them. Counting only the non-blank ones said less than
+      // Ctrl+E then opened.
+      const cases: [string, number][] = [
+        ['FAIL a\n\n\nexpected 1', 4],
+        ['\nFAIL a\n\n\nexpected 1\n', 6],
+        ['FAIL a\n\n  \nFAIL b\r\n\t\nFAIL c\n\n', 8],
+      ];
+      for (const [out, expected] of cases) {
+        const drawn = toolOutputDisplay(out, {
+          success: false,
+          showAllToolOutput: true,
+          terminalWidth: 100,
+        }).lines.length;
+        expect(drawn).toBe(expected);
+        const detail = composeToolErrorDetail(row, stderr, grid, { ...command, stdout: out });
+        expect(detail.hint).toBe(`… +${drawn} lines of output (Ctrl+E)`);
+      }
+    });
+
+    it('counts a large stdout without splitting it into lines', () => {
+      // A failed command's stdout can be ten megabytes, and this runs each time a row is composed:
+      // an array of a million lines is what the count and the blank scan must not make.
+      const big = 'x\n'.repeat(1_000_000);
+      const split = vi.spyOn(String.prototype, 'split');
+      try {
+        const detail = composeToolErrorDetail(row, stderr, grid, { ...command, stdout: big });
+        expect(detail.hint).toBe('… +1000001 lines of output (Ctrl+E)');
+        const widest = Math.max(0, ...split.mock.contexts.map((text) => String(text).length));
+        expect(widest).toBeLessThan(1000);
+      } finally {
+        split.mockRestore();
+      }
+    });
+
+    it('says lines from two on, and line for a stdout of one', () => {
+      const one = composeToolErrorDetail(row, stderr, grid, { ...command, stdout: 'FAIL a' });
+      expect(one.hint).toBe('… +1 line of output (Ctrl+E)');
+      const two = composeToolErrorDetail(row, stderr, grid, { ...command, stdout: 'FAIL a\nb' });
+      expect(two.hint).toBe('… +2 lines of output (Ctrl+E)');
     });
 
     it('names no key for a row that Ctrl+E does not target', () => {
@@ -615,10 +652,22 @@ describe('composeToolErrorDetail with a failed command', () => {
       expect(detail.hintBelow).toBe(true);
     });
 
-    it('says nothing of a stdout with no non-blank line', () => {
-      for (const blank of [undefined, '', '\n  \n', '\t\r\n\u0007']) {
+    it('says nothing of a stdout with no non-blank line, control characters folded first', () => {
+      const blanks = [
+        undefined,
+        '',
+        '\n  \n',
+        '\t\r\n\u0007',
+        // Each folds to a space before the line is judged, so none of them shows anything.
+        '\u200e\n',
+        '\u001b\n',
+        '\u2028',
+        ' \u0007 \u202e\n\u2066\u2069\r\n',
+        '\u061c\u0000\u007f\u009f',
+      ];
+      for (const blank of blanks) {
         const detail = composeToolErrorDetail(row, stderr, grid, { ...command, stdout: blank });
-        expect(detail.hint).toBeUndefined();
+        expect([blank, detail.hint]).toEqual([blank, undefined]);
         expect(detail.hintBelow).toBeUndefined();
         expect(detail.lines).toEqual([stderr]);
       }
@@ -652,12 +701,87 @@ describe('composeToolErrorDetail with a failed command', () => {
       expect(noted.hint).toBeUndefined();
     });
 
-    it('keeps the stderr hint when stderr hides lines of its own, and draws no second footer', () => {
-      const detail = composeToolErrorDetail(row, source(40).join('\n'), grid, withStdout);
-      expect(detail.hint).toBe('… +36 lines (Ctrl+E)');
+    it('names both in the one footer above the rows when stderr hides lines of its own', () => {
+      const detail = composeToolErrorDetail(row, source(6).join('\n'), grid, withStdout);
+      expect(detail.lines).toEqual(source(6).slice(-4));
+      expect(detail.hint).toBe('… +2 lines, +1 line of output (Ctrl+E)');
       expect(detail.hintBelow).toBeUndefined();
-      expect(detail.lines).toEqual(source(40).slice(-4));
+      // The hint stands first, for the stderr lines cut above the rows, and the footer is one row.
       expect(rows(detail)).toBe(5);
+
+      const long = composeToolErrorDetail(row, source(40).join('\n'), grid, withStdout);
+      expect(long.hint).toBe('… +36 lines, +1 line of output (Ctrl+E)');
+      expect(long.hintBelow).toBeUndefined();
+      expect(long.lines).toEqual(source(40).slice(-4));
+      expect(rows(long)).toBe(5);
+    });
+
+    it('names the key once, and only on the row Ctrl+E targets', () => {
+      const detail = composeToolErrorDetail(row, source(6).join('\n'), grid, {
+        ...withStdout,
+        expandHint: '',
+      });
+      expect(detail.hint).toBe('… +2 lines, +1 line of output');
+      expect(detail.hintBelow).toBeUndefined();
+    });
+
+    it('keeps the shortened lines with the stderr count, ahead of the stdout', () => {
+      const long = 'x'.repeat(300);
+      const message = [assertion(1), assertion(2), assertion(3), long, assertion(5), assertion(6)];
+      const detail = composeToolErrorDetail(row, message.join('\n'), grid, withStdout);
+      expect(detail.hint).toBe('… +2 lines, 1 long line shortened, +1 line of output (Ctrl+E)');
+      expect(detail.lines).toHaveLength(4);
+      expect(detail.lines[1]!.endsWith('…')).toBe(true);
+    });
+
+    it('counts the stdout’s lines as the output block draws them in the combined footer too', () => {
+      const out = '\nFAIL a\n\n\nexpected 1\n';
+      const detail = composeToolErrorDetail(row, source(6).join('\n'), grid, {
+        ...command,
+        stdout: out,
+      });
+      expect(detail.hint).toBe('… +2 lines, +6 lines of output (Ctrl+E)');
+    });
+
+    it('keeps the stderr count alone when the stdout has nothing to name', () => {
+      for (const blank of [undefined, '', '\n  \n', '\u200e\n', '\u001b\n']) {
+        const detail = composeToolErrorDetail(row, source(40).join('\n'), grid, {
+          ...command,
+          stdout: blank,
+        });
+        expect([blank, detail.hint]).toEqual([blank, '… +36 lines (Ctrl+E)']);
+        expect(detail.hintBelow).toBeUndefined();
+      }
+    });
+
+    it('leaves the stdout out beside a cut stderr when its block draws it or the detail is expanded', () => {
+      const cut = source(40).join('\n');
+      const drawnBelow = composeToolErrorDetail(row, cut, grid, {
+        ...withStdout,
+        stdoutShownBelow: true,
+      });
+      expect(drawnBelow.hint).toBe('… +36 lines (Ctrl+E)');
+      for (const view of [{ expanded: true, stdoutShownBelow: true }, { expanded: true }]) {
+        const expanded = composeToolErrorDetail(row, cut, grid, { ...withStdout, ...view });
+        expect(expanded.hint).toBeUndefined();
+        expect(expanded.lines).toEqual(source(40));
+      }
+      // Past an expanded detail's own ceiling: its count of the lines it cut, and no stdout.
+      const huge = composeToolErrorDetail(row, source(2500).join('\n'), grid, {
+        ...withStdout,
+        expanded: true,
+      });
+      expect(huge.hint).toBe('… +500 lines');
+    });
+
+    it('leaves the stdout out of a stderr that is only the exit code and a note: it is the detail', () => {
+      const detail = composeToolErrorDetail(row, 'Exit code: 1\nNote: run it outside.', grid, {
+        ...command,
+        stdout: source(12).join('\n'),
+      });
+      expect(detail.lines).toEqual(source(12).slice(8));
+      expect(detail.hint).toBe('… +8 lines (Ctrl+E)');
+      expect(detail.hintBelow).toBeUndefined();
     });
 
     it('takes the row that a stderr hint would have taken from a full four-line tail', () => {
@@ -691,6 +815,18 @@ describe('composeToolErrorDetail with a failed command', () => {
       expect(at(1).lines).toEqual([stderr]);
       expect(at(0).hint).toBeUndefined();
       expect(at(0).lines).toEqual([]);
+    });
+
+    it('takes the same one row beside a cut stderr, and goes first when the budget has no room', () => {
+      const six = source(6).join('\n');
+      const at = (maxRows: number) =>
+        composeToolErrorDetail(row, six, grid, { ...withStdout, maxRows });
+      expect(at(5).hint).toBe('… +2 lines, +1 line of output (Ctrl+E)');
+      expect(rows(at(5))).toBe(5);
+      expect(at(4).hint).toBeUndefined();
+      expect(at(4).lines).toEqual(source(6).slice(-4));
+      expect(at(3).hint).toBeUndefined();
+      expect(at(3).lines).toEqual(source(6).slice(-3));
     });
 
     it('never takes more rows than the budget, at any size', () => {
@@ -964,6 +1100,59 @@ describe('toolErrorDetailOptions', () => {
   });
 });
 
+describe('hasNonBlankOutputLine', () => {
+  /** How the detail keeps a line: its control characters fold to spaces, and it is not blank once trimmed. */
+  const keptByTheDetail = (text: string) =>
+    text.split(/\r?\n/).some((line) => foldControlCharacters(line).trim() !== '');
+
+  it('judges every character as the detail does: folded to a space if a control, then trimmed', () => {
+    const disagreements: string[] = [];
+    for (let code = 0; code <= 0xffff; code++) {
+      const char = String.fromCharCode(code);
+      if (hasNonBlankOutputLine(char) !== keptByTheDetail(char)) {
+        disagreements.push(code.toString(16).padStart(4, '0'));
+      }
+    }
+    expect(disagreements).toEqual([]);
+  });
+
+  it('agrees with the detail on every short text made of the characters that tell blank from not', () => {
+    // Controls the detail folds, whitespace it trims, line breaks of both kinds, and text.
+    const alphabet = ['x', ' ', '\t', '\n', '\r', '\u001b', '\u200e', '\u00a0', '\ufeff', '\u2028'];
+    const disagreements: string[] = [];
+    let texts = [''];
+    for (let length = 1; length <= 4; length++) {
+      texts = texts.flatMap((text) => alphabet.map((char) => text + char));
+      for (const text of texts) {
+        if (hasNonBlankOutputLine(text) !== keptByTheDetail(text)) {
+          disagreements.push(JSON.stringify(text));
+        }
+      }
+    }
+    expect(disagreements).toEqual([]);
+  });
+
+  it('finds a non-blank line wherever it stands among blank ones', () => {
+    expect(hasNonBlankOutputLine('')).toBe(false);
+    expect(hasNonBlankOutputLine('\n \r\n\t\n')).toBe(false);
+    expect(hasNonBlankOutputLine('\n \n\u001b\n\u200e\r\n')).toBe(false);
+    expect(hasNonBlankOutputLine('\n\n\nFAIL a')).toBe(true);
+    expect(hasNonBlankOutputLine('FAIL a\n\n\n')).toBe(true);
+    expect(hasNonBlankOutputLine(`${' \n'.repeat(1000)}x`)).toBe(true);
+  });
+
+  it('keeps a line of escape sequences: folded, its text is visible in the detail and the block', () => {
+    expect(hasNonBlankOutputLine('\u001b[?25h')).toBe(true);
+  });
+
+  it('answers for ten megabytes of blank lines, and for one more character after them', () => {
+    const blank = ' \n'.repeat(5_000_000);
+    expect(hasNonBlankOutputLine(blank)).toBe(false);
+    expect(hasNonBlankOutputLine(`${blank}x`)).toBe(true);
+    expect(hasNonBlankOutputLine(`x${blank}`)).toBe(true);
+  });
+});
+
 describe('estimateToolErrorDetailRows', () => {
   const failure = (message: string, content = '', details?: Record<string, unknown>) =>
     toolFailure(message, { content, ...(details ? { details } : {}) });
@@ -1021,6 +1210,42 @@ describe('estimateToolErrorDetailRows', () => {
     expect(rows('Exit code: 1', lines(2))).toBe(2);
   });
 
+  it('takes one row for the footer that counts both a cut stderr and the stdout', () => {
+    const rows = (message: string, content: string) =>
+      estimateToolErrorDetailRows(failure(message, content, { exitCode: 1 }));
+    // `… +2 lines, +1 line of output (Ctrl+E)` above the last four rows, where `… +2 lines` stood.
+    expect(rows(lines(6), 'FAIL a')).toBe(5);
+    expect(rows(lines(6), '')).toBe(5);
+    expect(rows(lines(6), lines(30))).toBe(5);
+  });
+
+  it('reads a large stdout without splitting it into lines', () => {
+    const big = 'x\n'.repeat(1_000_000);
+    const split = vi.spyOn(String.prototype, 'split');
+    try {
+      expect(estimateToolErrorDetailRows(failure('boom', big, { exitCode: 1 }))).toBe(2);
+      expect(estimateToolErrorDetailRows(failure('Exit code: 1', big, { exitCode: 1 }))).toBe(5);
+      const widest = Math.max(0, ...split.mock.contexts.map((text) => String(text).length));
+      expect(widest).toBeLessThan(1000);
+    } finally {
+      split.mockRestore();
+    }
+  });
+
+  it('finds a stdout blank as the detail does, control characters folded first', () => {
+    const rows = (message: string, content: string) =>
+      estimateToolErrorDetailRows(failure(message, content, { exitCode: 1 }));
+    // Nothing but controls: the detail names no stdout, so the estimate gives it no row.
+    expect(rows('boom', '\u200e\n')).toBe(1);
+    expect(rows('boom', '\u001b\n')).toBe(1);
+    expect(rows('boom', '\u2028\u202e \u0007\r\n')).toBe(1);
+    expect(rows(lines(4), '\u200e\n')).toBe(4);
+    expect(rows(`${lines(2)}\nNote: run it outside.`, '\u001b\n')).toBe(4);
+    // Whatever shows is named, a line of escape sequences included.
+    expect(rows('boom', '\u200e\nFAIL a')).toBe(2);
+    expect(rows('boom', '\u001b[?25h')).toBe(2);
+  });
+
   it('agrees with the rows composeToolErrorDetail draws', () => {
     const grid = transcriptGrid(100);
     const row = { title: 'Bash', target: 'npm test' };
@@ -1037,6 +1262,10 @@ describe('estimateToolErrorDetailRows', () => {
       [lines(9), lines(3)],
       ['Exit code: 1\nboom', 'FAIL a'],
       [`${lines(2)}\nNote: ${wide} ${wide} ${wide} ${wide}`, lines(3)],
+      [lines(6), 'FAIL a'],
+      [lines(40), lines(30)],
+      ['boom', '\u200e\n'],
+      ['boom', '\u001b[?25h'],
     ];
     for (const [message, content] of cases) {
       const result = failure(message, content, { exitCode: 1 });

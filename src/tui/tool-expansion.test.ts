@@ -2,15 +2,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { assistantMsg } from '../test/fixtures.js';
 import { workloadMessages, workloadRows } from '../test/tool-expand-workload.js';
 import { enrichToolResultPresentation, toolFailure } from '../tools/result.js';
+import { shellTools } from '../tools/shell.js';
 import type { Message } from '../types/messages.js';
+import type { ResolvedShell } from '../types/runtime.js';
 import type { ToolCall, ToolResult } from '../types/tools.js';
 import { getCompletedTimelineWindow } from './components/ChatPanel.js';
+import { indentedGrid, transcriptGrid } from './layout.js';
 import {
   selectExpandTargetId,
   toolRowHidesContent,
   type ExpandTargetInput,
 } from './tool-expansion.js';
-import { mutationDiffPreviewInput } from './tool-presentation.js';
+import {
+  composeResultErrorDetail,
+  deriveToolPresentation,
+  mutationDiffPreviewInput,
+} from './tool-presentation.js';
 
 // Counts the diff parser's callers: the walk must not re-parse a row whose result did not change.
 const diffParser = vi.hoisted(() => ({ calls: 0 }));
@@ -450,6 +457,65 @@ describe('a failed command whose stdout its row leaves out', () => {
       const failed = failedCommand('BashOutput', { shell_id: 'shell-1' });
       expect(hides(failed)).toBe(true);
       expect(target({ messages: [turn(failed, newerOk())] })).toBe(failed.call.id);
+    });
+  });
+
+  describe('a command whose stderr was only whitespace', () => {
+    // `echo >&2` writes one newline. The shell tool used to report that newline as the message,
+    // which a row skips as blank: it drew no stdout, and Ctrl+E passed over it. It now reports
+    // `Exit code: N`, so the row is any other command that said nothing on stderr.
+    const bash = shellTools.find((tool) => tool.name === 'Bash')!;
+    const shell: ResolvedShell =
+      process.platform === 'win32'
+        ? { kind: 'cmd', label: 'cmd.exe', source: 'fallback' }
+        : { kind: 'sh', label: '/bin/sh', source: 'detected' };
+
+    /** What the real Bash tool returns for a command that prints `lines` lines, then a bare newline to stderr. */
+    async function silentFailure(lines: number): Promise<Row> {
+      const script = `for (let i = 1; i <= ${lines}; i++) console.log('FAIL-LINE ' + i); process.stderr.write('\\n'); process.exitCode = 1`;
+      const command = `node -e "${script}"`;
+      const id = 'whitespace-stderr';
+      const result = await bash.execute(
+        { command },
+        { workspaceRoot: process.cwd(), env: {}, shell },
+      );
+      return {
+        call: { id, name: 'Bash', arguments: { command } },
+        result: enrichToolResultPresentation({ ...result, toolCallId: id }, 'Bash', { command }),
+      };
+    }
+
+    it('shows its stdout as the detail, as any command that said nothing on stderr does', async () => {
+      const row = await silentFailure(12);
+      expect(row.result.structuredError?.message).toBe('Exit code: 1');
+      const detail = composeResultErrorDetail({
+        presentation: deriveToolPresentation('Bash', row.call.arguments, row.result),
+        message: row.result.structuredError!.message,
+        result: row.result,
+        rowGrid: indentedGrid(transcriptGrid(WIDTH)),
+        isFileChild: false,
+        expanded: false,
+        stdoutShownBelow: false,
+      });
+      expect(detail?.lines).toEqual([
+        'FAIL-LINE 9',
+        'FAIL-LINE 10',
+        'FAIL-LINE 11',
+        'FAIL-LINE 12',
+      ]);
+      expect(detail?.hint).toBe('… +8 lines (Ctrl+E)');
+    });
+
+    it('hides its cut stdout, so Ctrl+E reaches the row although a newer row hides nothing', async () => {
+      const row = await silentFailure(12);
+      expect(hides(row)).toBe(true);
+      expect(target({ messages: [turn(row, newerOk())] })).toBe(row.call.id);
+    });
+
+    it('hides nothing when the whole stdout fits under the row', async () => {
+      const row = await silentFailure(2);
+      expect(hides(row)).toBe(false);
+      expect(target({ messages: [turn(row, newerOk())] })).toBe('newer-ok');
     });
   });
 });

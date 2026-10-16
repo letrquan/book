@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { formatToolOutputFooter, prepareToolOutputDisplay } from './tool-output.js';
+import {
+  countOutputLines,
+  formatToolOutputFooter,
+  prepareToolOutputDisplay,
+} from './tool-output.js';
 import { displayWidth } from './word-wrap.js';
 
 describe('prepareToolOutputDisplay', () => {
@@ -108,18 +112,91 @@ describe('formatToolOutputFooter', () => {
     );
   });
 
-  it('says what the hidden lines are lines of, with the same plural and the same hint', () => {
-    const footer = (hiddenLines: number, hint?: string) =>
-      formatToolOutputFooter({ hiddenLines, truncatedLines: 0, hint, of: 'output' });
+  it('counts the lines of a command’s output apart, with the same plural and the same hint', () => {
+    const footer = (outputLines: number, hint?: string) =>
+      formatToolOutputFooter({ hiddenLines: 0, truncatedLines: 0, hint, outputLines });
     expect(footer(7, 'Ctrl+E')).toBe('… +7 lines of output (Ctrl+E)');
     expect(footer(1, 'Ctrl+E')).toBe('… +1 line of output (Ctrl+E)');
     expect(footer(1, '')).toBe('… +1 line of output');
     expect(footer(2)).toBe('… +2 lines of output');
   });
 
-  it('names no subject when no lines are hidden', () => {
+  it('carries the hidden lines and the output lines in one footer, with the key once at its end', () => {
+    const footer = (hiddenLines: number, outputLines: number, hint?: string) =>
+      formatToolOutputFooter({ hiddenLines, truncatedLines: 0, hint, outputLines });
+    expect(footer(2, 1, 'Ctrl+E')).toBe('… +2 lines, +1 line of output (Ctrl+E)');
+    expect(footer(1, 3, 'Ctrl+E')).toBe('… +1 line, +3 lines of output (Ctrl+E)');
+    expect(footer(2, 1, '')).toBe('… +2 lines, +1 line of output');
+    expect(footer(36, 1)).toBe('… +36 lines, +1 line of output');
+  });
+
+  it('keeps the shortened lines with the hidden ones, ahead of the output', () => {
     expect(
-      formatToolOutputFooter({ hiddenLines: 0, truncatedLines: 2, hint: 'Ctrl+E', of: 'output' }),
+      formatToolOutputFooter({
+        hiddenLines: 2,
+        truncatedLines: 1,
+        hint: 'Ctrl+E',
+        outputLines: 3,
+      }),
+    ).toBe('… +2 lines, 1 long line shortened, +3 lines of output (Ctrl+E)');
+  });
+
+  it('names no output when none of its lines are counted', () => {
+    expect(
+      formatToolOutputFooter({
+        hiddenLines: 0,
+        truncatedLines: 2,
+        hint: 'Ctrl+E',
+        outputLines: 0,
+      }),
     ).toBe('… 2 long lines shortened (Ctrl+E)');
+  });
+});
+
+describe('countOutputLines', () => {
+  it('finds no line in an empty output, and a line after every newline in any other', () => {
+    expect(countOutputLines('')).toBe(0);
+    expect(countOutputLines('a')).toBe(1);
+    expect(countOutputLines('a\nb')).toBe(2);
+    // A final newline ends in an empty line, as the block splits it: the block draws that one too.
+    expect(countOutputLines('a\n')).toBe(2);
+    expect(countOutputLines('\n')).toBe(2);
+    expect(countOutputLines('\n\n')).toBe(3);
+    expect(countOutputLines('\nFAIL a\n\n\nexpected 1\n')).toBe(6);
+  });
+
+  it('counts what prepareToolOutputDisplay splits the same output into', () => {
+    const outputs = [
+      '',
+      'a',
+      'a\n',
+      '\n',
+      '\n\n\n',
+      'a\nb',
+      'a\n\nb',
+      ' \n\t\n',
+      '\nFAIL a\n\n\nexpected 1\n',
+      'one\r\ntwo\r\n',
+      '\u001b[31mred\u001b[0m\n\u200e\n',
+      '🙂\n🙂\n',
+      'x'.repeat(5000),
+      Array.from({ length: 2500 }, (_, i) => `line ${i}`).join('\n'),
+    ];
+    for (const output of outputs) {
+      const display = prepareToolOutputDisplay(output, {
+        maxLines: 10,
+        maxLineWidth: 120,
+        strategy: 'tail',
+      });
+      expect([JSON.stringify(output.slice(0, 20)), countOutputLines(output)]).toEqual([
+        JSON.stringify(output.slice(0, 20)),
+        display.totalLines,
+      ]);
+    }
+  });
+
+  it('counts a large output: a million empty lines, and ten megabytes of short ones', () => {
+    expect(countOutputLines('\n'.repeat(1_000_000))).toBe(1_000_001);
+    expect(countOutputLines('x\n'.repeat(5_000_000))).toBe(5_000_001);
   });
 });

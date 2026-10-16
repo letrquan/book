@@ -398,7 +398,8 @@ function ToolCallBlockInner({
   // A failure whose collapsed detail hides lines can be expanded even when the row's own output
   // has nothing to reveal: stderr is not in `result.content`.
   const expandable = presentation.hasHiddenContent || Boolean(errorDetails?.collapsed?.hint);
-  // The footer counts what the rows cut, above them, or the stdout they leave out, below them.
+  // The footer counts what the rows cut and the stdout they leave out: above the rows while it
+  // counts lines they cut, below them when it is the stdout's alone.
   const errorHint = errorDetail?.hint ? (
     <Box height={1}>
       <Text wrap="truncate-end" color={theme.inactive}>
