@@ -13,8 +13,16 @@ import {
 import { tmpdir } from 'os';
 import { delimiter, dirname, join, relative } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { Message } from '../types/messages.js';
+import type { ToolContext } from '../types/tools.js';
 import type { AgentApplyResult, AgentRecord } from './types.js';
 import type { RunResult } from './git-signing.js';
+import type { ReviewFinding } from '../review/types.js';
+import { defaultConfig } from '../test/fixtures.js';
+import { evidenceTools } from '../tools/agent-tools.js';
+import { applyReviewFixes } from '../review/fix.js';
+import { fixRunnerFor } from '../review/runner.js';
+import { AgentManager } from './manager.js';
 import { canonicalizePath } from '../tools/path-utils.js';
 import {
   applyVerifiedCandidate,
@@ -1764,6 +1772,229 @@ describe('stopping an agent while its result is being applied (#491)', () => {
       expect(readFileSync(join(root, 'staged.txt'), 'utf8').replace(/\r\n/g, '\n')).toBe(
         'base staged.txt\n',
       );
+    },
+    15_000,
+  );
+
+  /**
+   * The apply that `/review --fix`, `AgentStop` and `dispose()` have to be able to stop, run the way
+   * production runs it: through a real `AgentManager`, whose stubs hand back a real repository's
+   * snapshot, worktree and committed candidate, and whose apply function is the real one, given
+   * whatever signal the manager gives it. A stub for the apply would only prove the plumbing.
+   */
+  async function applyUnderManager() {
+    const sandbox = mkdtempSync(join(tmpdir(), 'book-apply-stop-'));
+    roots.push(sandbox);
+    const root = repository(join(sandbox, 'repo'));
+    const pidFile = join(sandbox, 'key-command.pid');
+    keyPidFile = pidFile;
+    const keyCommand = join(sandbox, 'key-command.sh');
+    writeFileSync(keyCommand, `#!/bin/sh\necho $$ > '${forwardSlashes(pidFile)}'\nexec sleep 60\n`);
+    chmodSync(keyCommand, 0o755);
+    writeGlobalConfig(
+      `[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n[gpg "ssh"]\n\tdefaultKeyCommand = ${forwardSlashes(keyCommand)}\n`,
+    );
+    git(root, 'config', 'user.signingKey', 'REPOSITORY-CHOSEN-KEY');
+
+    const snapshot = await createSyntheticSnapshot(root, true);
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-apply-stop-wt-'));
+    roots.push(worktreeRoot);
+    const worktree = await createAgentWorktree(snapshot, 'managed-agent', worktreeRoot);
+    writeFileSync(join(worktree.path, 'staged.txt'), 'agent value\n');
+    const candidate = (await commitAgentWork(agentRecord('managed-agent', worktree), snapshot))!;
+    expect(candidate).toBeDefined();
+
+    const storeRoot = mkdtempSync(join(tmpdir(), 'book-apply-stop-store-'));
+    roots.push(storeRoot);
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const manager: AgentManager = new AgentManager(config, evidenceTools, {
+      storeRoot,
+      worktreeRoot,
+      findGitRoot: async () => root,
+      createSnapshot: async () => snapshot,
+      createWorktree: async () => worktree,
+      checkoutWorktree: async () => {},
+      commitWork: async (record) =>
+        record.role === 'patcher' ? { ...candidate, agentId: record.id } : undefined,
+      applyCandidate: (_snapshot, _candidate, signal) =>
+        applyVerifiedCandidate(snapshot, candidate, signal),
+      runLoop: async (_childConfig, registry, prompt, history, callbacks, mode, options) => {
+        if (options?.agentRole === 'validator') {
+          const evidenceId = (await manager.listEvidence({ includeUnverified: true })).find(
+            (item) => item.kind === 'patch_candidate',
+          )?.id;
+          const review = registry.getTool('EvidenceReview')!;
+          const outcome = await review.execute(
+            { evidenceId, verdict: 'pass', notes: 'Exact patch and checks are valid.' },
+            {
+              workspaceRoot: root,
+              env: {},
+              availableTools: registry.getDefinitions(),
+              currentMode: mode as ToolContext['currentMode'],
+              agentId: options.agentId,
+              agentManager: manager,
+            },
+          );
+          expect(outcome.status).toBe('success');
+        }
+        callbacks.onDone();
+        return [
+          ...history,
+          {
+            id: `u-${prompt}`,
+            role: 'user',
+            content: prompt,
+            includeInContext: true,
+            timestamp: 1,
+          },
+          {
+            id: `a-${prompt}`,
+            role: 'assistant',
+            content: 'done',
+            includeInContext: true,
+            timestamp: 2,
+          },
+        ] as Message[];
+      },
+    });
+
+    /** Resolves with the key command's pid once the apply has reached it. */
+    const keyCommandPid = async (): Promise<number> => {
+      const started = Date.now();
+      let pid = Number.NaN;
+      while (Date.now() - started < 10_000) {
+        pid = existsSync(pidFile) ? Number.parseInt(readFileSync(pidFile, 'utf8').trim(), 10) : NaN;
+        if (Number.isInteger(pid)) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(Number.isInteger(pid), 'the key command should have been started').toBe(true);
+      expect(processAlive(pid)).toBe(true);
+      return pid;
+    };
+
+    /** A completed patcher whose candidate a distinct validator has passed. */
+    const verifiedPatcher = async () => {
+      const patcher = await manager.spawn({ agent: 'patcher', prompt: 'patch' });
+      await manager.wait(patcher.id, 10_000);
+      const evidence = (await manager.listEvidence()).find(
+        (item) => item.kind === 'patch_candidate',
+      )!;
+      const validator = await manager.spawn({
+        agent: 'validator',
+        prompt: 'validate',
+        evidenceIds: [evidence.id],
+      });
+      await manager.wait(validator.id, 10_000);
+      return { patcher, evidenceId: evidence.id };
+    };
+
+    const operatorBranchUnchanged = () =>
+      readFileSync(join(root, 'staged.txt'), 'utf8').replace(/\r\n/g, '\n') === 'base staged.txt\n';
+
+    return { manager, keyCommandPid, verifiedPatcher, operatorBranchUnchanged };
+  }
+
+  it.skipIf(process.platform === 'win32')(
+    'stops a running apply when /review --fix is cancelled',
+    async () => {
+      const { manager, keyCommandPid, operatorBranchUnchanged } = await applyUnderManager();
+      const finding: ReviewFinding = {
+        id: 'finding-1',
+        severity: 'major',
+        category: 'correctness',
+        file: 'staged.txt',
+        line: 1,
+        summary: 'bad behavior',
+        evidence: 'return bad',
+        failure: 'the path fails',
+        suggestedFix: 'return good',
+        confidence: 95,
+        verification: 'confirmed',
+      };
+      try {
+        const controller = new AbortController();
+        const fixing = applyReviewFixes(fixRunnerFor(manager), [finding], {
+          signal: controller.signal,
+        });
+        const pid = await keyCommandPid();
+
+        const aborted = Date.now();
+        controller.abort();
+        const outcome = await fixing;
+        const elapsed = Date.now() - aborted;
+
+        expect(elapsed, `the fix pass took ${elapsed} ms to return after the abort`).toBeLessThan(
+          1_500,
+        );
+        expect(await waitForExit(pid), `the key command (pid ${pid}) should be gone`).toBe(true);
+        expect(outcome).toMatchObject({ cancelled: true, applied: 0, failed: 0 });
+        expect(outcome.messages.join('\n')).toMatch(/stopped/i);
+        expect(operatorBranchUnchanged()).toBe(true);
+      } finally {
+        manager.dispose();
+      }
+    },
+    15_000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'stops a running apply when its agent is stopped, and leaves the agent completed',
+    async () => {
+      const { manager, keyCommandPid, verifiedPatcher, operatorBranchUnchanged } =
+        await applyUnderManager();
+      try {
+        const { patcher, evidenceId } = await verifiedPatcher();
+        const applying = manager.apply(patcher.id, evidenceId).then(
+          (result) => result,
+          (error: unknown) => error,
+        );
+        const pid = await keyCommandPid();
+
+        const stopped = Date.now();
+        await manager.stop(patcher.id);
+        const outcome = await applying;
+        const elapsed = Date.now() - stopped;
+
+        expect(elapsed, `the apply took ${elapsed} ms to return after the stop`).toBeLessThan(
+          1_500,
+        );
+        expect(await waitForExit(pid), `the key command (pid ${pid}) should be gone`).toBe(true);
+        expect(outcome).toBeInstanceOf(Error);
+        expect(operatorBranchUnchanged()).toBe(true);
+        expect((await manager.get(patcher.id))?.status).toBe('completed');
+      } finally {
+        manager.dispose();
+      }
+    },
+    15_000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'stops a running apply when the manager is disposed',
+    async () => {
+      const { manager, keyCommandPid, verifiedPatcher, operatorBranchUnchanged } =
+        await applyUnderManager();
+      try {
+        const { patcher, evidenceId } = await verifiedPatcher();
+        const applying = manager.apply(patcher.id, evidenceId).then(
+          (result) => result,
+          (error: unknown) => error,
+        );
+        const pid = await keyCommandPid();
+
+        const disposed = Date.now();
+        manager.dispose();
+        const outcome = await applying;
+        const elapsed = Date.now() - disposed;
+
+        expect(elapsed, `the apply took ${elapsed} ms to return after dispose`).toBeLessThan(1_500);
+        expect(await waitForExit(pid), `the key command (pid ${pid}) should be gone`).toBe(true);
+        expect(outcome).toBeInstanceOf(Error);
+        expect(operatorBranchUnchanged()).toBe(true);
+      } finally {
+        manager.dispose();
+      }
     },
     15_000,
   );

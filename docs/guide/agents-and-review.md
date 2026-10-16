@@ -69,8 +69,10 @@ cancel — the in-flight agents are stopped, and a cancelled review reports `inc
 findings rather than presenting its own stopped passes as a result. `Ctrl+C` cancels the review too
 without exiting; once it is cancelled, exiting takes the usual two presses (the first shows "Press
 Ctrl+C again to exit"). A cancelled `--fix` pass reports what it had already
-committed before stopping. Progress is a streaming-host feature: a print run has no silence to
-break, so its stdout stays exactly the report (the same target is on `data.target`).
+committed before stopping, and cancelling while a verified fix is being applied stops the apply
+itself, including a signing key command it is waiting on; stopping an agent (`AgentStop`) or
+closing the session does the same for an apply of that agent's result. Progress is a
+streaming-host feature: a print run has no silence to break, so its stdout stays exactly the report (the same target is on `data.target`).
 
 A plain `/review` runs one structured pass. `--deep` fans out four specialized reviewers
 (correctness, security, simplification, efficiency), merges and deduplicates their findings, drops

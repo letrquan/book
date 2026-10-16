@@ -163,6 +163,50 @@ describe('applyReviewFixes cancellation', () => {
     expect(runner.stopped).toEqual(['agent-0']);
   });
 
+  it('hands the abort signal to the apply and reports a cancel that ends it as a stop', async () => {
+    const controller = new AbortController();
+    const runner = makeRunner();
+    let handed: AbortSignal | undefined;
+    runner.apply = async (_agentId, _evidenceId, options) => {
+      handed = options?.signal;
+      controller.abort();
+      throw new Error('git was cancelled');
+    };
+
+    const result = await applyReviewFixes(runner, [finding], { signal: controller.signal });
+
+    expect(handed).toBe(controller.signal);
+    expect(result).toMatchObject({ cancelled: true, applied: 0, failed: 0, attempted: 0 });
+    expect(result.messages).toEqual(['Stopped while applying src/a.ts: review cancelled.']);
+  });
+
+  it('reports an apply that returns unapplied after the abort as a stop too', async () => {
+    const controller = new AbortController();
+    const runner = makeRunner();
+    runner.apply = async () => {
+      controller.abort();
+      return { status: 'not_applied', error: 'cancelled' };
+    };
+
+    const result = await applyReviewFixes(runner, [finding], { signal: controller.signal });
+
+    expect(result).toMatchObject({ cancelled: true, applied: 0, failed: 0 });
+  });
+
+  it('still counts an apply that failed with no abort as a failed fix', async () => {
+    const runner = makeRunner();
+    runner.apply = async () => {
+      throw new Error('boom');
+    };
+
+    const result = await applyReviewFixes(runner, [finding], {
+      signal: new AbortController().signal,
+    });
+
+    expect(result).toMatchObject({ applied: 0, failed: 1 });
+    expect(result.cancelled).toBeUndefined();
+  });
+
   it('counts only findings whose outcome is known as attempted', async () => {
     const controller = new AbortController();
     const findings = [finding, { ...finding, id: 'f2', file: 'src/b.ts' }];

@@ -804,8 +804,156 @@ describe('AgentManager lifecycle', () => {
       },
     );
     expect(applyCandidate).toHaveBeenCalledOnce();
-    expect(applyCandidate.mock.calls[0]?.[2]).toBe(stop.signal);
+    const handed = applyCandidate.mock.calls[0]?.[2] as AbortSignal | undefined;
+    expect(handed?.aborted).toBe(false);
+    stop.abort();
+    expect(handed?.aborted).toBe(true);
     manager.dispose();
+  });
+
+  describe('stopping an apply that is running (#491)', () => {
+    /** A manager whose apply never settles until it is aborted or released by the test. */
+    async function managerWithPendingApplies(options: { obeyAbort?: boolean } = {}) {
+      const root = tempRoot();
+      const config = defaultConfig({ workspace: root });
+      config.settings.agents.persist = false;
+      const signals: AbortSignal[] = [];
+      const releases: Array<(status: 'applied' | 'failed') => void> = [];
+      const events: AgentRuntimeEvent[] = [];
+      const manager = new AgentManager(config, [], {
+        storeRoot: tempRoot(),
+        worktreeRoot: tempRoot(),
+        findGitRoot: async () => root,
+        createSnapshot: async () => snapshot(root),
+        createWorktree: async (_snapshot, agentId) => ({ path: root, branch: `branch-${agentId}` }),
+        checkoutWorktree: async () => {},
+        eventSink: (event) => events.push(event),
+        commitWork: async (record) =>
+          record.role === 'patcher'
+            ? {
+                baseCommit: 'snapshot-commit',
+                headCommit: 'head',
+                branch: record.branch!,
+                agentId: record.id,
+              }
+            : undefined,
+        applyCandidate: (_snapshot, _candidate, signal) =>
+          new Promise((resolve, reject) => {
+            signals.push(signal!);
+            if (options.obeyAbort ?? true) {
+              signal!.addEventListener('abort', () => reject(new Error('apply cancelled')));
+            }
+            releases.push((status) =>
+              status === 'applied'
+                ? resolve({ status, commit: 'head' })
+                : reject(new Error('boom')),
+            );
+          }),
+        runLoop: async (_config, _registry, prompt, history, callbacks) => {
+          callbacks.onDone();
+          return [
+            ...history,
+            { id: `a-${prompt}`, role: 'assistant', content: 'done', timestamp: 2 },
+          ] as Message[];
+        },
+      });
+      const plan = await manager.createPlan({
+        taskShape: 'patch and validate',
+        issueQuality: 'clear',
+        topology: 'patch_validate',
+        rationale: 'independent validation',
+        agentBudget: 2,
+      });
+      const patcher = await manager.spawn({ agent: 'patcher', prompt: 'patch', planId: plan.id });
+      await manager.wait(patcher.id, 1000);
+      const candidate = (await manager.listEvidence()).find(
+        (item) => item.kind === 'patch_candidate',
+      )!;
+      const validator = await manager.spawn({
+        agent: 'validator',
+        prompt: 'validate',
+        planId: plan.id,
+        evidenceIds: [candidate.id],
+      });
+      await manager.wait(validator.id, 1000);
+      await manager.reviewEvidence(validator.id, candidate.id, 'pass');
+      events.length = 0;
+      return { manager, patcher, candidate, signals, releases, events };
+    }
+
+    it('stop aborts every running apply of the agent and leaves the agent completed', async () => {
+      const { manager, patcher, candidate, signals } = await managerWithPendingApplies();
+      const first = manager.apply(patcher.id, candidate.id).catch((error: unknown) => error);
+      const second = manager.apply(patcher.id, candidate.id).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(signals).toHaveLength(2));
+
+      const stopped = await manager.stop(patcher.id, 'requested');
+
+      expect(signals.map((signal) => signal.aborted)).toEqual([true, true]);
+      expect(stopped.status).toBe('completed');
+      expect(await first).toBeInstanceOf(Error);
+      expect(await second).toBeInstanceOf(Error);
+      expect((await manager.get(patcher.id))?.status).toBe('completed');
+      manager.dispose();
+    });
+
+    it('forgets an apply once it has ended, so a late stop reaches nothing', async () => {
+      const { manager, patcher, candidate, signals, releases } = await managerWithPendingApplies();
+      const applying = manager.apply(patcher.id, candidate.id);
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      releases[0]!('applied');
+      await expect(applying).resolves.toMatchObject({ status: 'applied' });
+
+      await manager.stop(patcher.id);
+
+      // The finished apply's controller was removed, so a late stop reaches nothing.
+      expect(signals[0]!.aborted).toBe(false);
+      manager.dispose();
+    });
+
+    it('dispose aborts a running apply and the apply then records nothing', async () => {
+      const { manager, patcher, candidate, signals, events } = await managerWithPendingApplies();
+      const applying = manager.apply(patcher.id, candidate.id).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+      manager.dispose();
+
+      expect(signals[0]!.aborted).toBe(true);
+      expect(await applying).toBeInstanceOf(Error);
+      expect(events.filter((event) => event.type === 'agent_apply')).toEqual([]);
+      expect((await manager.get(patcher.id))?.applicationStatus).not.toBe('applied');
+    });
+
+    it.each(['applied', 'failed'] as const)(
+      'an apply that ends %s after dispose does not persist or emit',
+      async (status) => {
+        // An apply function that ignores the abort and ends on its own afterwards.
+        const { manager, patcher, candidate, signals, releases, events } =
+          await managerWithPendingApplies({ obeyAbort: false });
+        const applying = manager.apply(patcher.id, candidate.id).then(
+          (result) => result,
+          (error: unknown) => error,
+        );
+        await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+        manager.dispose();
+        releases[0]!(status);
+        const outcome = await applying;
+
+        if (status === 'applied') expect(outcome).toMatchObject({ status: 'applied' });
+        else expect(outcome).toBeInstanceOf(Error);
+        expect(events.filter((event) => event.type === 'agent_apply')).toEqual([]);
+        expect((await manager.get(patcher.id))?.applicationStatus).not.toBe('applied');
+      },
+    );
+
+    it('does not start an apply once the manager is disposed', async () => {
+      const { manager, patcher, candidate, signals } = await managerWithPendingApplies();
+      manager.dispose();
+
+      await expect(manager.apply(patcher.id, candidate.id)).rejects.toThrow('disposed');
+      expect(signals).toHaveLength(0);
+    });
   });
 
   it('runs the complete review fix adapter against manager evidence locks', async () => {

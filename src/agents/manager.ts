@@ -184,6 +184,12 @@ export class AgentManager {
   private readonly snapshotPromises = new Map<string, Promise<AgentSnapshot>>();
   private readonly queue: string[] = [];
   private readonly controllers = new Map<string, AbortController>();
+  /**
+   * Applies in flight, per agent. An apply runs after its agent has finished, so no run controller
+   * covers it; `stop` and `dispose` abort these instead. A set because one agent can be applied
+   * more than once at a time.
+   */
+  private readonly applyControllers = new Map<string, Set<AbortController>>();
   private readonly questionResolvers = new Map<string, (response: UserQuestionResponse) => void>();
   private readonly permissionResolvers = new Map<
     string,
@@ -587,6 +593,9 @@ export class AgentManager {
     }
     for (const cancel of [...this.pendingWaits]) cancel();
     for (const controller of this.controllers.values()) controller.abort('manager_disposed');
+    for (const applies of this.applyControllers.values()) {
+      for (const controller of [...applies]) controller.abort('manager_disposed');
+    }
     for (const timer of this.textTimers.values()) clearTimeout(timer);
     this.textTimers.clear();
     this.textBuffers.clear();
@@ -1209,6 +1218,11 @@ export class AgentManager {
     this.assertMutable(agentId);
     const record = this.agents.get(agentId);
     if (!record) throw new Error(`Agent ${agentId} was not found.`);
+    // An apply outlives its agent's run, so it is stopped here, before a terminal record returns.
+    // The record itself is left as it is: a completed patcher stays completed.
+    for (const controller of [...(this.applyControllers.get(agentId) ?? [])]) {
+      controller.abort(reason);
+    }
     if (TERMINAL_STATUSES.has(record.status)) return this.recordForReturn(record);
     record.stopReason = reason;
     record.status = 'stopped';
@@ -1344,6 +1358,7 @@ export class AgentManager {
     options?: { signal?: AbortSignal },
   ): Promise<AgentApplyResult> {
     await this.ensureInitialized();
+    if (this.disposed) throw new Error('The agent manager was disposed.');
     this.assertMutable(agentId);
     const record = this.agents.get(agentId);
     if (!record) throw new Error(`Agent ${agentId} was not found.`);
@@ -1370,11 +1385,30 @@ export class AgentManager {
     }
     const snapshot = record.snapshotId ? this.snapshots.get(record.snapshotId) : undefined;
     if (!snapshot) throw new Error('Agent snapshot is unavailable.');
-    const result = await (this.options.applyCandidate ?? applyVerifiedCandidate)(
-      snapshot,
-      evidence.patchCandidate,
-      options?.signal,
-    );
+    // The apply's own controller is what `stop` and `dispose` reach; the caller's signal is the
+    // other way to end it, so the apply function is given both.
+    const controller = new AbortController();
+    const applies = this.applyControllers.get(agentId) ?? new Set<AbortController>();
+    this.applyControllers.set(agentId, applies);
+    applies.add(controller);
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, controller.signal])
+      : controller.signal;
+    let result: AgentApplyResult;
+    try {
+      result = await (this.options.applyCandidate ?? applyVerifiedCandidate)(
+        snapshot,
+        evidence.patchCandidate,
+        signal,
+      );
+    } finally {
+      applies.delete(controller);
+      if (applies.size === 0 && this.applyControllers.get(agentId) === applies) {
+        this.applyControllers.delete(agentId);
+      }
+    }
+    // A disposed manager has already written its records and closed its subscribers.
+    if (this.disposed) return result;
     record.applicationStatus = result.status;
     this.persist(record);
     this.emit({

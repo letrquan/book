@@ -26,7 +26,12 @@ export interface FixEvidence {
 export interface FixAgentRunner extends ReviewAgentRunner {
   findPatchCandidateEvidence(agentId: string): Promise<FixEvidence | undefined>;
   getEvidence(evidenceId: string): Promise<FixEvidence | undefined>;
-  apply(agentId: string, evidenceId: string): Promise<FixApplyResult>;
+  /** `options.signal` stops an apply that is already running. */
+  apply(
+    agentId: string,
+    evidenceId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<FixApplyResult>;
 }
 
 export interface FixRunResult {
@@ -177,12 +182,26 @@ export async function applyReviewFixes(
         continue;
       }
 
-      const applied = await runner.apply(patcher.id, candidate.id);
+      let applied: FixApplyResult;
+      try {
+        applied = await runner.apply(patcher.id, candidate.id, { signal: options.signal });
+      } catch (error) {
+        if (!options.signal?.aborted) throw error;
+        // The abort is what ended the apply: a stop, not a fix that failed.
+        result.cancelled = true;
+        result.messages.push(`Stopped while applying ${finding.file}: ${REVIEW_CANCELLED}.`);
+        break;
+      }
       if (applied.status === 'applied') {
         result.applied++;
         result.messages.push(
           `Applied fix for ${finding.file}${applied.commit ? ` (${applied.commit})` : ''}.`,
         );
+      } else if (options.signal?.aborted) {
+        // An apply the cancel cut short is a stop, not a fix that failed on its merits.
+        result.cancelled = true;
+        result.messages.push(`Stopped while applying ${finding.file}: ${REVIEW_CANCELLED}.`);
+        break;
       } else {
         result.failed++;
         result.messages.push(
