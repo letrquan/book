@@ -94,6 +94,18 @@ All notable changes to this project are documented in this file.
   now stderr, or `Exit code: N` when stderr is blank, and stdout is always the output, under the
   same 50 KB bound every tool result gets. The read-only-git note reads both streams, and a
   timed-out check keeps both its stdout and its stderr.
+- **The test suites no longer read your `BOOK_*` environment** (#467). A test that expects a
+  default (`BOOK_EFFORT` unset, no `BOOK_MAX_TOKENS`) failed whenever the suite ran from inside a
+  Book session, or from any shell exporting an override: eight tests in `compact-eval-settings`,
+  `edit-eval-settings`, `doctor` and `trust-cmd` saw the session's effort, model or token cap
+  instead. Every config (watch mode and a bare `vitest run <file>`, unit, contract, coverage and
+  integration) now deletes every inherited `BOOK_*` variable before each test file, in the shared
+  `src/test/vitest-setup.ts`, matching the names case-insensitively and keeping only `BOOK_HOME`,
+  which the suite leaves as launched, and the telemetry directory that setup pins. A test that sets
+  a variable itself is unaffected. The integration tier also keeps your provider's `BOOK_API_KEY`,
+  `BOOK_BASE_URL`, `BOOK_PROVIDER`, `BOOK_MODEL` and `BOOK_EFFORT`, which the TUI streaming tests
+  pass to their child on purpose (#358). To keep an override while debugging, list it in
+  `BOOK_TEST_KEEP_ENV`, for example `BOOK_TEST_KEEP_ENV=BOOK_DEBUG,BOOK_DEBUG_STDERR`.
 - **A memory file is named by what reads it best.** The `Read` row of a memory file now shows
   `memory/<file>` like the `Write`/`Edit` rows, instead of the long absolute path, and a message
   about a memory file (`file_not_observed`, a stale read, `Created …`, an `ApplyPatch` diff header)
