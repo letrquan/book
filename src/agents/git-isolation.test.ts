@@ -220,6 +220,7 @@ afterEach(() => {
   // Retried, because Windows refuses to remove a directory something still holds open — a git child
   // that is a moment slow to go, a scanner reading what was just written — with EBUSY, which
   // `force: true` does not suppress, and a throw from this hook fails the test it follows (#453).
+  // For a handle Windows is still releasing, not an abandoned apply: the fast variant removes that.
   for (const root of roots.splice(0).reverse()) {
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
