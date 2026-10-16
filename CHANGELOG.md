@@ -111,6 +111,12 @@ All notable changes to this project are documented in this file.
   `Exit code: N`, as `Check` already did, so its stdout is the detail like that of any command that
   said nothing on stderr. A `BashOutput` read of a shell that failed is a successful read of one
   buffer that holds both streams, so it has no stderr to put a stdout under and is unchanged.
+- **The atomic-write tests no longer fail with `busy` on a loaded machine** (#450). Three of them
+  inject one contention and expect the writer to try again, but ran on the real clock against its
+  500ms deadline, so the fsyncs before the first rename could use up the whole budget and the writer
+  returned `busy` without a second attempt. They now run on a clock that only the writer's own
+  back-off moves; the writer is unchanged, and `busy` once the deadline has passed is still its
+  documented result.
 - **A finished compaction is shown only in the transcript.** Its row, `✓ Compact conversation`,
   is now the whole record of a successful compaction: the post-compaction card and the
   `Compacted 100%` bar no longer appear above the input or linger until the next message. A
@@ -136,6 +142,10 @@ All notable changes to this project are documented in this file.
   `BOOK_BASE_URL`, `BOOK_PROVIDER`, `BOOK_MODEL` and `BOOK_EFFORT`, which the TUI streaming tests
   pass to their child on purpose (#358). To keep an override while debugging, list it in
   `BOOK_TEST_KEEP_ENV`, for example `BOOK_TEST_KEEP_ENV=BOOK_DEBUG,BOOK_DEBUG_STDERR`.
+- **A restart test no longer counts the first manager's requests as the restarted one's** (#413).
+  `children re-driven after a restart` flaked with `expected 1 to be +0` under the full integration
+  tier: its helper counted a request the first manager's child made late as a re-run. The helper
+  now counts only the restarted manager's requests. Test-only.
 - **A memory file is named by what reads it best.** The `Read` row of a memory file now shows
   `memory/<file>` like the `Write`/`Edit` rows, instead of the long absolute path, and a message
   about a memory file (`file_not_observed`, a stale read, `Created …`, an `ApplyPatch` diff header)
