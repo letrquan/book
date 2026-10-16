@@ -110,9 +110,13 @@ describe('Check', () => {
     const result = await run(ctx, 'missing');
 
     expect(result.status).not.toBe('success');
-    // The shell reports the missing command on stderr with exit 127, so it is a numeric exit.
-    expect(result.structuredError?.details).toEqual({ exitCode: 127 });
+    // The shell reports the missing command on stderr, so it is a numeric exit: POSIX sh
+    // exits 127, Windows cmd.exe exits 1.
+    expect(result.structuredError?.details).toEqual({
+      exitCode: process.platform === 'win32' ? 1 : 127,
+    });
     expect(result.structuredError?.message).toContain('book-no-such-command-473');
+    expect(result.structuredError?.message).not.toMatch(/^Exit code:/);
   });
 
   it('distinguishes a timeout from a failing check', async () => {
