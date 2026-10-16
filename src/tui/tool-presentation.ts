@@ -701,6 +701,9 @@ const SHORT_LABELS: Record<string, string> = {
 /** Columns a failed row's metadata may take: `failed · exit 255 · 1m 12s` fits. */
 const FAILED_META_WIDTH = 28;
 
+/** Most of a row's measure its metadata may take: two fifths. */
+const META_ROW_SHARE = 0.4;
+
 /** The metadata item {@link exitMetadata} writes. */
 const EXIT_METADATA = /^exit -?\d+$/;
 
@@ -757,23 +760,33 @@ export function composeToolRow(
   // `exit 2 · 12 lines · 7ms`, runs past the grid's 20-column meta column, and the duration is
   // what a cut there would take. It gets room for them, never more than two fifths of the row.
   // A row without one keeps the column.
-  const metaBudget =
+  const maxMetaWidth = Math.floor(measure * META_ROW_SHARE);
+  const fixedMetaBudget =
     grid.meta > 0 && metaSource.some((part) => EXIT_METADATA.test(part))
-      ? Math.max(grid.meta, Math.min(FAILED_META_WIDTH, Math.floor(measure * 0.4)))
+      ? Math.max(grid.meta, Math.min(FAILED_META_WIDTH, maxMetaWidth))
       : grid.meta;
+
+  // The target is a tool argument: it may hold a newline, an ESC, or a bidi
+  // override, none of which survive a one-line row.
+  const fullTarget = `${inlinePrefix}${foldControlCharacters(presentation.target) ?? ''}`;
+
+  // The metadata may also grow into the columns a short target leaves empty, so `1 file · 1 search
+  // · 1 listing` on `Read a.js` is not cut at the meta column. The growth is opportunistic: it
+  // takes only what is left after the label, the whole target and the gap, so a target that needs
+  // its columns keeps them and the metadata stays at its fixed budget. The grown budget never
+  // exceeds those leftover columns, so the row cannot pass the measure, and the `Math.max(4, …)`
+  // floor below can only bite a target shorter than 4 columns, which fits in its own width.
+  const freeForMeta = measure - labelWidth - displayWidth(fullTarget) - 1;
+  const metaBudget =
+    grid.meta > 0 ? Math.max(fixedMetaBudget, Math.min(maxMetaWidth, freeForMeta)) : 0;
   const meta = metaBudget > 0 ? truncateDisplay(joinMetadata(metaSource), metaBudget) : '';
 
   const metaWidth = displayWidth(meta);
   // The budget covers the whole truncated string, prefix included — subtracting
   // the prefix here as well clipped an inline-label row by exactly the width of
-  // its own verb, and `gap` then padded those columns back with spaces. The
-  // target is a tool argument: it may hold a newline, an ESC, or a bidi
-  // override, none of which survive a one-line row.
+  // its own verb, and `gap` then padded those columns back with spaces.
   const targetBudget = Math.max(4, measure - labelWidth - metaWidth - (metaWidth > 0 ? 1 : 0));
-  const target = truncateDisplay(
-    `${inlinePrefix}${foldControlCharacters(presentation.target) ?? ''}`,
-    targetBudget,
-  );
+  const target = truncateDisplay(fullTarget, targetBudget);
 
   const used = labelWidth + displayWidth(target) + metaWidth;
   const gap = ' '.repeat(Math.max(metaWidth > 0 ? 1 : 0, measure - used));

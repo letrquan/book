@@ -1243,13 +1243,113 @@ describe('composeToolRow meta width of a failed row', () => {
   });
 
   it('keeps the default meta width for a failed row without an exit code', () => {
+    // A long target keeps its columns, so only the exit-code rule could have widened the meta.
     const row = composeToolRow(
-      { title: 'Bash', target: 'npm test', metadata: ['failed', 'attempt 3', '1m 12s elapsed'] },
+      {
+        title: 'Bash',
+        target: `npm test -- ${'--some-long-flag '.repeat(8)}`,
+        metadata: ['failed', 'attempt 3', '1m 12s elapsed'],
+      },
       grid,
     );
     expect(displayWidth(row.meta)).toBeLessThanOrEqual(grid.meta);
     expect(row.meta.endsWith('…')).toBe(true);
   });
+});
+
+describe('composeToolRow meta growth into free target columns', () => {
+  const WIDTHS = [120, 80, 60, 40, 25];
+  const THREE = ['1 file', '1 search', '1 listing'];
+  const FOUR = ['1 file', '1 search', '1 listing', '2 git'];
+  const LONG_TARGET = `${'src/some/very/long/directory/structure/that/keeps/going/'.repeat(3)}file.ts`;
+  const LONG_META = ['12 files', '8 searches', '3 listings', '14 git reads'];
+
+  function line(row: ReturnType<typeof composeToolRow>): string {
+    return `${row.label}${row.label ? ' ' : ''}${row.target}${row.gap}${row.meta}`;
+  }
+
+  /** The row's display width as the TUI draws it: the label column and its space, then the rest. */
+  function rowWidth(row: ReturnType<typeof composeToolRow>, grid: { label: number }): number {
+    return (row.label ? grid.label + 1 : 0) + displayWidth(`${row.target}${row.gap}${row.meta}`);
+  }
+
+  it('shows three metadata parts uncut on a short target at 120 columns', () => {
+    const grid = transcriptGrid(120);
+    const row = composeToolRow({ title: 'Read', target: 'a.js', metadata: THREE }, grid);
+    expect(row.meta).toBe('1 file · 1 search · 1 listing');
+    expect(displayWidth(row.meta)).toBeGreaterThan(grid.meta);
+  });
+
+  it('shows four metadata parts uncut on a short target at 120 columns', () => {
+    const row = composeToolRow(
+      { title: 'Read', target: 'a.js', metadata: FOUR },
+      transcriptGrid(120),
+    );
+    expect(row.meta).toBe('1 file · 1 search · 1 listing · 2 git');
+  });
+
+  it('keeps the current budget and truncates the target first when the target is long', () => {
+    const grid = transcriptGrid(120);
+    const row = composeToolRow({ title: 'Read', target: LONG_TARGET, metadata: LONG_META }, grid);
+    expect(displayWidth(row.meta)).toBe(grid.meta);
+    expect(row.meta.endsWith('…')).toBe(true);
+    expect(row.target.endsWith('…')).toBe(true);
+    expect(displayWidth(row.target)).toBe(grid.row - (grid.label + 1) - grid.meta - 1);
+  });
+
+  it('renders metadata that fits the meta column exactly as before', () => {
+    const grid = transcriptGrid(120);
+    const row = composeToolRow({ title: 'Read', target: 'a.js', metadata: ['1 file'] }, grid);
+    // label column, target, padding to the measure, then the metadata flush right
+    const padding = ' '.repeat(grid.row - (grid.label + 1) - 'a.js'.length - '1 file'.length);
+    expect(line(row)).toBe(`${'Read'.padEnd(grid.label)} a.js${padding}1 file`);
+    // A long-target row ends on the same column.
+    const sibling = composeToolRow(
+      { title: 'Read', target: LONG_TARGET, metadata: ['1 file'] },
+      grid,
+    );
+    expect(rowWidth(sibling, grid)).toBe(rowWidth(row, grid));
+  });
+
+  it('keeps the exit-code budget for a long target', () => {
+    const grid = transcriptGrid(120);
+    const row = composeToolRow(
+      {
+        title: 'Bash',
+        target: LONG_TARGET,
+        metadata: ['failed', 'exit 255', '1m 12s', 'attempt 3', 'a very long item'],
+      },
+      grid,
+    );
+    expect(displayWidth(row.meta)).toBe(28);
+    expect(row.meta.endsWith('…')).toBe(true);
+  });
+
+  const cases: Array<[string, string, string[]]> = [
+    ['three parts', 'a.js', THREE],
+    ['four parts', 'a.js', FOUR],
+    ['long target, long metadata', LONG_TARGET, LONG_META],
+    ['fitting metadata', 'a.js', ['1 file']],
+    ['exit code, long target', LONG_TARGET, ['failed', 'exit 255', '1m 12s', 'attempt 3']],
+    ['exit code, short target', 'npm test', ['failed', 'exit 255', '1m 12s']],
+    ['no metadata', 'a.js', []],
+  ];
+
+  for (const width of WIDTHS) {
+    for (const [name, target, metadata] of cases) {
+      it(`fills the measure on one line at ${width} columns: ${name}`, () => {
+        const grid = transcriptGrid(width);
+        const row = composeToolRow({ title: 'Read', target, metadata }, grid);
+        for (const column of [row.label, row.target, row.gap, row.meta]) {
+          expect(column).not.toMatch(/[\r\n]/);
+        }
+        const total = rowWidth(row, grid);
+        expect(total).toBeLessThanOrEqual(grid.row);
+        // A row with no room for its minimum target may pass the measure only if it already did.
+        if (grid.row >= 20) expect(total).toBe(grid.row);
+      });
+    }
+  }
 });
 
 describe('TodoWrite row mark', () => {

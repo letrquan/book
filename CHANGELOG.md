@@ -88,6 +88,10 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A short quiet-run summary row shows all its metadata** (#469). `Read a.js` with
+  `1 file · 1 search · 1 listing` was cut to `1 file · 1 search ·…` at the 20-column meta column
+  even though most of the row was empty; the metadata now takes the columns a short target leaves
+  free, up to two fifths of the row, and a long target still keeps its priority.
 - **Ctrl+E expands the newest truncated tool row, and only that row's footer names the key**
   (#470). In the compact transcript every cut diff, output and failed-command footer read
   `(Ctrl+E)`, but the key expanded the latest row, so a 150-line `Write` followed by a capped `Edit`
