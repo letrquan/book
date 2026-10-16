@@ -651,14 +651,19 @@ export function isErrorEnvelopeShape(text: string, usage?: EnvelopeUsage): boole
  * A router that answers 200 with the upstream's error as the assistant text has
  * not answered. The envelope shape (`isErrorEnvelopeShape`) is required; then
  * either a usage block reporting zero tokens both ways or the upstream's own
- * server-error wording confirms it. The supported shapes are the table in
+ * failure wording confirms it. The supported shapes are the table in
  * `reliability.test.ts`:
  *   - OpenAI's `[Error] An error occurred while processing your request. …
  *     help.openai.com … Please include the request ID <id> in your message.`,
  *     whatever the usage says;
  *   - any other one-line server error that names its request ID;
+ *   - 9router's `[Error] The model failed to generate a response.`, whatever the
+ *     usage says: it writes an upstream `response.failed` that way after the
+ *     upstream already streamed reasoning, so the turn's usage is not zero (#404);
  *   - with a usage block that reports zero tokens both ways, any answer that
  *     opens with `[Error]`, one line or many.
+ * A model's own one-line `[Error] …` answer with billed usage and none of this
+ * wording stays an answer.
  */
 export function isUpstreamErrorEnvelope(text: string, usage?: EnvelopeUsage): boolean {
   if (!isErrorEnvelopeShape(text, usage)) return false;
@@ -666,7 +671,8 @@ export function isUpstreamErrorEnvelope(text: string, usage?: EnvelopeUsage): bo
     isZeroUsage(usage) ||
     /\brequest id\b/i.test(text) ||
     /help\.openai\.com/i.test(text) ||
-    /error occurred while processing/i.test(text)
+    /error occurred while processing/i.test(text) ||
+    /failed to generate a response/i.test(text)
   );
 }
 

@@ -687,6 +687,25 @@ describe('upstream error envelope shapes (the contract, #244)', () => {
       envelope: true,
     },
     {
+      // 9router writes an upstream `response.failed` after the upstream already streamed
+      // reasoning, so the turn's usage is non-zero (#404).
+      name: 'one-line router failure after streamed reasoning, usage billed',
+      text: '[Error] The model failed to generate a response.',
+      usage: { promptTokens: 2_000, completionTokens: 150 },
+      envelope: true,
+    },
+    {
+      name: 'one-line router failure with no usage block',
+      text: '[Error] The model failed to generate a response.',
+      envelope: true,
+    },
+    {
+      name: 'the same wording explained over several lines, usage billed',
+      text: '[Error] The model failed to generate a response.\nThat is what the router said.',
+      usage: { promptTokens: 2_000, completionTokens: 150 },
+      envelope: false,
+    },
+    {
       name: 'one-line [Error] with billed usage and no router wording',
       text: '[Error] the build failed',
       usage: billed,

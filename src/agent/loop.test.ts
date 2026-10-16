@@ -7086,6 +7086,80 @@ describe('content filter and upstream error recoveries', () => {
     }
   });
 
+  it('re-issues a router failure line that came with billed usage, and ends failed on its repeat (#404)', async () => {
+    // 9router writes an upstream `response.failed` as `[Error] <message>` after the upstream
+    // already streamed reasoning, so the usage is not 0/0.
+    const envelope = '[Error] The model failed to generate a response.';
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'text', content: envelope };
+        yield {
+          type: 'done',
+          usage: { promptTokens: 2000, completionTokens: 150, totalTokens: 2150 },
+          finishReasons: ['stop'],
+        };
+      },
+    };
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes[0]).toMatchObject({
+      status: 'failed',
+      reason: 'provider_error',
+      providerCode: 'error_envelope',
+    });
+    expect(history.some((m) => m.role === 'assistant' && m.content === envelope)).toBe(false);
+  });
+
+  it('answers after a router failure line with billed usage when the re-issue succeeds (#404)', async () => {
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        if (calls === 1) {
+          yield { type: 'text', content: '[Error] The model failed to generate a response.' };
+          yield {
+            type: 'done',
+            usage: { promptTokens: 2000, completionTokens: 150, totalTokens: 2150 },
+            finishReasons: ['stop'],
+          };
+          return;
+        }
+        yield { type: 'text', content: 'recovered answer' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+    const outcomes: AgentTerminalOutcome[] = [];
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes[0]).toMatchObject({ status: 'completed', reason: 'normal_completion' });
+    expect(history.at(-1)?.content).toBe('recovered answer');
+  });
+
   it('re-issues a multi-line error envelope that came with 0/0 usage, and ends on its repeat', async () => {
     const envelope = '[Error] Upstream failed\nrequest id abc';
     let calls = 0;
