@@ -327,6 +327,17 @@ export async function* chatCompletionStream(
     for (const part of [...toolCallParts].sort((a, b) => a.index - b.index)) {
       if (!part.id && !part.name) continue;
       const { arguments: arguments_, unparsedArguments } = parseToolArguments(part.arguments);
+      // Nothing at all after the name and id: kept apart from a literal `{}` so the registry can
+      // blame the route, not the model, for a required argument that is missing (#403).
+      const emptyOnWire = !part.arguments.trim();
+      if (emptyOnWire) {
+        log.warn('tool call arrived with empty arguments', {
+          index: part.index,
+          id: part.id,
+          name: escapeInvisibleCharacters(part.name),
+          fragments: part.fragments,
+        });
+      }
       if (unparsedArguments) {
         // The head, not the whole text: enough to see whether the call arrived with its
         // first fragment missing (#260), which is a route's wire format, not the model's JSON.
@@ -346,6 +357,7 @@ export async function* chatCompletionStream(
           name: part.name,
           arguments: arguments_,
           ...(unparsedArguments ? { unparsedArguments } : {}),
+          ...(emptyOnWire ? { emptyOnWire: true as const } : {}),
         },
       };
     }

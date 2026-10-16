@@ -131,6 +131,13 @@ export interface ToolCall {
    * text is one of the three shapes `repairToolArguments` accepts).
    */
   unparsedArguments?: { raw: string; error: string };
+  /**
+   * Set when the call's arguments, joined across every streamed fragment, were empty or
+   * whitespace on the wire: the name and id arrived and no argument text followed. `arguments`
+   * is `{}` as for a literal `{}`, which this does not mark. The registry rejects such a call
+   * as a route's wire shape when the tool has required arguments, and runs it with `{}` otherwise.
+   */
+  emptyOnWire?: true;
 }
 
 /** Display-only trace for a tool invoked inside a Task subagent. */

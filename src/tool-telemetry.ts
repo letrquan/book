@@ -353,7 +353,7 @@ export function formatToolStatsReport(aggregate: ToolUseAggregate): string {
     lines.push('By model:');
     for (const row of aggregate.models) {
       // The route's own codes, so a model line that fails tells you how: a run of
-      // `truncated_start` is the provider's wire format, not the model's JSON.
+      // `truncated_start` and `empty` are the provider's wire format, not the model's JSON.
       const codes = Object.entries(row.errorCodes ?? {})
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
         .slice(0, 3)
