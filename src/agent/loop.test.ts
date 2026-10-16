@@ -9077,6 +9077,10 @@ describe('tool-output masking at the preflight gate (compaction v3)', () => {
 });
 
 describe('runAgentLoop tool-call id uniqueness across the conversation (#410)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   type WireMessage = {
     role: string;
     tool_calls?: Array<{ id: string }>;
@@ -9275,5 +9279,74 @@ describe('runAgentLoop tool-call id uniqueness across the conversation (#410)', 
     expect(
       results.every((result) => result.structuredError?.code === 'duplicate_tool_call_id'),
     ).toBe(true);
+  });
+
+  const toolUse = (id: string) => ({ type: 'tool_use', id, name: 'Echo', input: {} });
+
+  it('carries a live rename into the replayed tool_use block', async () => {
+    const provider: Provider = {
+      id: 'anthropic',
+      stream: async function* () {
+        yield { type: 'tool_call', toolCall: { id: 'call_1', name: 'Echo', arguments: {} } };
+        yield {
+          type: 'done',
+          providerMetadata: { anthropicContentBlocks: [toolUse('call_1')] },
+        };
+      },
+    };
+    const { registry } = echoRegistry();
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 2 }),
+      registry,
+      'carry on',
+      [
+        userMsg('earlier'),
+        assistantMsg('', [fixtureCall('call_1', 'Echo')], [fixtureResult('call_1', 'earlier')]),
+      ],
+      noopCallbacks(),
+      'bypassPermissions',
+      { provider, isNewSession: false },
+    );
+
+    const live = history.find((m) => m.toolCalls?.[0].id === 'call_1_2');
+    expect(live?.providerMetadata?.anthropicContentBlocks?.map((b) => b.id)).toEqual(['call_1_2']);
+  });
+
+  it('drops the tool_use blocks from a rejected in-batch duplicate batch', async () => {
+    const provider: Provider = {
+      id: 'anthropic',
+      stream: async function* () {
+        yield { type: 'tool_call', toolCall: { id: 'dup', name: 'Echo', arguments: {} } };
+        yield { type: 'tool_call', toolCall: { id: 'dup', name: 'Echo', arguments: {} } };
+        yield {
+          type: 'done',
+          providerMetadata: {
+            anthropicContentBlocks: [
+              { type: 'thinking', thinking: 'plan', signature: 'sig' },
+              toolUse('dup'),
+              toolUse('dup'),
+            ],
+          },
+        };
+      },
+    };
+    const { registry, executed } = echoRegistry();
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'run tools',
+      [],
+      noopCallbacks(),
+      'bypassPermissions',
+      { provider, isNewSession: false },
+    );
+
+    expect(executed()).toBe(0);
+    const rejected = history.find((message) => message.hostNotice);
+    expect(rejected?.content).toContain('duplicate tool call IDs');
+    expect(rejected?.toolCalls).toBeUndefined();
+    expect(rejected?.providerMetadata?.anthropicContentBlocks).toBeUndefined();
   });
 });

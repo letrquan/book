@@ -1546,8 +1546,6 @@ export async function runAgentLoop(
       // The ids the provider sent, for the in-batch duplicate guard: a call renamed
       // below to keep ids unique across the conversation must not hide a repeat.
       const rawToolCallIds: string[] = [];
-      // Raw id -> the id this turn gave the call, for per-call structures keyed by id.
-      const renamedToolCallIds = new Map<string, string>();
       let usedToolCallIds: Set<string> | undefined;
       const nestedTraceIds: string[] = [];
       let turnUsage: Usage | null = null;
@@ -1692,9 +1690,6 @@ export async function runAgentLoop(
             usedToolCallIds.add(callId);
             const streamedCall =
               callId === event.toolCall.id ? event.toolCall : { ...event.toolCall, id: callId };
-            if (streamedCall !== event.toolCall) {
-              renamedToolCallIds.set(event.toolCall.id, callId);
-            }
             toolCalls.push(streamedCall);
             callbacks.onToolCall(streamedCall);
             if (options?.nestedToolObserver && options.parentToolTraceId) {
@@ -1727,7 +1722,7 @@ export async function runAgentLoop(
             };
             assistantProviderMetadata = renameToolUseBlocks(
               event.providerMetadata,
-              renamedToolCallIds,
+              rawToolCallIds.map((raw, i) => ({ raw, id: toolCalls[i].id })),
             );
           }
           if (signal?.aborted) break;
@@ -2473,6 +2468,11 @@ export async function runAgentLoop(
             message,
           }),
         );
+        // The message carries no calls or results, so the provider's native `tool_use`
+        // blocks must not ride along: Anthropic replays them verbatim, and a `tool_use`
+        // with no `tool_result` is a 400 on every later request.
+        const rejectedMetadata = assistantProviderMetadata && { ...assistantProviderMetadata };
+        if (rejectedMetadata) delete rejectedMetadata.anthropicContentBlocks;
         const malformedMessage: Message = {
           id:
             (reissuedThisTurn ? undefined : options?.assistantMessageId?.(turn)) ??
@@ -2483,7 +2483,10 @@ export async function runAgentLoop(
             .join('\n\n'),
           hostNotice: true,
           reasoningContent: reasoningContent || undefined,
-          providerMetadata: assistantProviderMetadata,
+          providerMetadata:
+            rejectedMetadata && Object.keys(rejectedMetadata).length > 0
+              ? rejectedMetadata
+              : undefined,
           includeInContext: true,
           timestamp: Date.now(),
         };

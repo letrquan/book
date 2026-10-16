@@ -31,63 +31,72 @@ function collectIds(messages: readonly Message[]): Set<string> {
   return ids;
 }
 
+/** A call's id as the provider sent it, paired with the id it is rendered under. */
+export interface ToolCallIdPair {
+  raw: string;
+  id: string;
+}
+
 /**
- * `metadata` with the `tool_use` content blocks of renamed calls carrying their new
- * id (the Anthropic path replays these blocks verbatim), or `metadata` itself when
- * no block is affected.
+ * `metadata` with its `tool_use` content blocks carrying the ids their calls were
+ * rendered under (the Anthropic path replays these blocks verbatim), or `metadata`
+ * itself when no block changes. `pairs` lists every call of the message in order,
+ * and blocks follow the same order: the n-th block with raw id X takes the id of the
+ * n-th call with raw id X, so a message that repeats an id keeps its first occurrence.
  */
 export function renameToolUseBlocks(
   metadata: ProviderMessageMetadata | undefined,
-  renames: ReadonlyMap<string, string>,
+  pairs: readonly ToolCallIdPair[],
 ): ProviderMessageMetadata | undefined {
   const blocks = metadata?.anthropicContentBlocks;
-  if (!metadata || !blocks || renames.size === 0) return metadata;
+  if (!metadata || !blocks || pairs.every((pair) => pair.raw === pair.id)) return metadata;
+  const queues = new Map<string, string[]>();
+  for (const pair of pairs) {
+    const queue = queues.get(pair.raw) ?? [];
+    queue.push(pair.id);
+    queues.set(pair.raw, queue);
+  }
+  const taken = new Map<string, number>();
   let changed = false;
   const renamed = blocks.map((block) => {
-    const next = block.type === 'tool_use' ? renames.get(String(block.id)) : undefined;
-    if (next === undefined) return block;
+    if (block.type !== 'tool_use') return block;
+    const raw = String(block.id);
+    const n = taken.get(raw) ?? 0;
+    taken.set(raw, n + 1);
+    const next = queues.get(raw)?.[n];
+    if (next === undefined || next === raw) return block;
     changed = true;
     return { ...block, id: next };
   });
   return changed ? { ...metadata, anthropicContentBlocks: renamed } : metadata;
 }
 
-function renameMessage(message: Message, used: Set<string>, seen: Set<string>): Message {
-  const calls = message.toolCalls;
-  if (!calls?.length) return message;
-
+/** `message` with its calls replaced by `renamedCalls` (same order), and results and blocks following. */
+function applyCallRenames(message: Message, renamedCalls: readonly ToolCall[]): Message {
+  const pairs = (message.toolCalls ?? []).map((call, i) => ({
+    raw: call.id,
+    id: renamedCalls[i].id,
+  }));
   // New id for each occurrence of a raw id on this message, in call order.
   const occurrences = new Map<string, string[]>();
-  const renames = new Map<string, string>();
-  const renamedCalls: ToolCall[] = calls.map((call) => {
-    let id = call.id;
-    if (seen.has(id)) {
-      id = uniqueToolCallId(used, id);
-      used.add(id);
-      renames.set(call.id, id);
-    }
-    seen.add(id);
-    const list = occurrences.get(call.id) ?? [];
-    list.push(id);
-    occurrences.set(call.id, list);
-    return id === call.id ? call : { ...call, id };
-  });
-  if (renames.size === 0) return message;
-
+  for (const pair of pairs) {
+    const list = occurrences.get(pair.raw) ?? [];
+    list.push(pair.id);
+    occurrences.set(pair.raw, list);
+  }
   const consumed = new Map<string, number>();
   const toolResults = message.toolResults?.map((result): ToolResult => {
-    const list = occurrences.get(result.toolCallId);
     const k = consumed.get(result.toolCallId) ?? 0;
     consumed.set(result.toolCallId, k + 1);
-    const id = list?.[k];
+    const id = occurrences.get(result.toolCallId)?.[k];
     return id === undefined || id === result.toolCallId ? result : { ...result, toolCallId: id };
   });
   return {
     ...message,
-    toolCalls: renamedCalls,
+    toolCalls: [...renamedCalls],
     ...(toolResults ? { toolResults } : {}),
     ...(message.providerMetadata
-      ? { providerMetadata: renameToolUseBlocks(message.providerMetadata, renames) }
+      ? { providerMetadata: renameToolUseBlocks(message.providerMetadata, pairs) }
       : {}),
   };
 }
@@ -100,24 +109,28 @@ function renameMessage(message: Message, used: Set<string>, seen: Set<string>): 
  */
 export function dedupeToolCallIds(messages: readonly Message[]): readonly Message[] {
   const seen = new Set<string>();
+  // Every id in the conversation, so a fresh one never lands on an id a later message
+  // carries. Built on the first rename: a conversation with unique ids never pays for it.
   let used: Set<string> | undefined;
   let out: Message[] | undefined;
   for (const [index, message] of messages.entries()) {
-    if (!message.includeInContext || !message.toolCalls?.length) continue;
     const calls = message.toolCalls;
-    // Common path: a message whose ids are all new claims them and moves on.
-    const clashes = calls.some(
-      (call, i) => seen.has(call.id) || calls.findIndex((other) => other.id === call.id) !== i,
-    );
-    if (!clashes) {
-      for (const call of calls) seen.add(call.id);
-      continue;
+    if (!message.includeInContext || !calls?.length) continue;
+    let renamedCalls: ToolCall[] | undefined;
+    for (const [i, call] of calls.entries()) {
+      let id = call.id;
+      if (seen.has(id)) {
+        used ??= collectIds(messages);
+        id = uniqueToolCallId(used, id);
+        used.add(id);
+        renamedCalls ??= calls.slice(0, i);
+      }
+      seen.add(id);
+      renamedCalls?.push(id === call.id ? call : { ...call, id });
     }
-    used ??= collectIds(messages);
-    const renamed = renameMessage(message, used, seen);
-    if (renamed === message) continue;
+    if (!renamedCalls) continue;
     out ??= [...messages];
-    out[index] = renamed;
+    out[index] = applyCallRenames(message, renamedCalls);
   }
   return out ?? messages;
 }

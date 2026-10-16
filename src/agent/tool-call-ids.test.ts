@@ -95,6 +95,42 @@ describe('dedupeToolCallIds', () => {
     expect(blocks[1].id).toBe('dup');
   });
 
+  describe('one message holding the same raw id twice', () => {
+    const useBlocks = (...ids: string[]) =>
+      ids.map((id) => ({ type: 'tool_use', id, name: 'Echo', input: {} }));
+    const twin = (): Message => ({
+      ...assistantMsg(
+        '',
+        [toolCall('call_1', 'Echo'), toolCall('call_1', 'Echo')],
+        [toolResult('call_1', 'first'), toolResult('call_1', 'second')],
+      ),
+      id: 'twin',
+      providerMetadata: {
+        anthropicContentBlocks: [{ type: 'text', text: 'go' }, ...useBlocks('call_1', 'call_1')],
+      },
+    });
+    const blockIds = (message: Message) =>
+      message.providerMetadata?.anthropicContentBlocks
+        ?.filter((block) => block.type === 'tool_use')
+        .map((block) => block.id);
+
+    it('renames each tool_use block with its own call, keeping the first', () => {
+      const [out] = dedupeToolCallIds([twin()]);
+      expect(out.toolCalls?.map((c) => c.id)).toEqual(['call_1', 'call_1_2']);
+      expect(blockIds(out)).toEqual(['call_1', 'call_1_2']);
+      expect(out.toolResults?.map((r) => [r.toolCallId, r.content])).toEqual([
+        ['call_1', 'first'],
+        ['call_1_2', 'second'],
+      ]);
+    });
+
+    it('does the same when the id also appeared in an earlier turn', () => {
+      const out = dedupeToolCallIds([turn('a1', 'call_1'), twin()]);
+      expect(out[1].toolCalls?.map((c) => c.id)).toEqual(['call_1_2', 'call_1_3']);
+      expect(blockIds(out[1])).toEqual(['call_1_2', 'call_1_3']);
+    });
+  });
+
   it('ignores messages that are not sent to the model', () => {
     const hidden: Message = { ...turn('a1', 'call_1'), includeInContext: false };
     const messages = [hidden, turn('a2', 'call_1')];
@@ -110,10 +146,23 @@ describe('renderedToolCallIds', () => {
 });
 
 describe('renameToolUseBlocks', () => {
+  const block = (id: string) => ({ type: 'tool_use', id });
+
   it('returns the same metadata when there is nothing to rename', () => {
-    const metadata = { anthropicContentBlocks: [{ type: 'tool_use', id: 'a' }] };
-    expect(renameToolUseBlocks(metadata, new Map())).toBe(metadata);
-    expect(renameToolUseBlocks(metadata, new Map([['b', 'c']]))).toBe(metadata);
-    expect(renameToolUseBlocks(undefined, new Map([['a', 'b']]))).toBeUndefined();
+    const metadata = { anthropicContentBlocks: [block('a')] };
+    expect(renameToolUseBlocks(metadata, [])).toBe(metadata);
+    expect(renameToolUseBlocks(metadata, [{ raw: 'a', id: 'a' }])).toBe(metadata);
+    expect(renameToolUseBlocks(metadata, [{ raw: 'b', id: 'c' }])).toBe(metadata);
+    expect(renameToolUseBlocks(undefined, [{ raw: 'a', id: 'b' }])).toBeUndefined();
+  });
+
+  it('maps the n-th block with a raw id to the n-th call with that raw id', () => {
+    const metadata = { anthropicContentBlocks: [block('a'), block('b'), block('a')] };
+    const out = renameToolUseBlocks(metadata, [
+      { raw: 'a', id: 'a' },
+      { raw: 'b', id: 'b' },
+      { raw: 'a', id: 'a_2' },
+    ]);
+    expect(out?.anthropicContentBlocks?.map((b) => b.id)).toEqual(['a', 'b', 'a_2']);
   });
 });
