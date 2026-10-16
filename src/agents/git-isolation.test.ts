@@ -1680,6 +1680,95 @@ describe('the internal git runner is bounded (#357)', () => {
   );
 });
 
+describe('stopping an agent while its result is being applied (#491)', () => {
+  let keyPidFile: string | undefined;
+
+  afterEach(() => {
+    // Whatever the key command left behind, whether or not the test got as far as asserting on it.
+    if (keyPidFile && existsSync(keyPidFile)) {
+      const pid = Number.parseInt(readFileSync(keyPidFile, 'utf8').trim(), 10);
+      if (Number.isInteger(pid) && pid > 0) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Already gone, which is what the test is about.
+        }
+      }
+    }
+    keyPidFile = undefined;
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    "stops the operator's ssh key command and returns soon after the abort",
+    async () => {
+      const sandbox = mkdtempSync(join(tmpdir(), 'book-apply-stop-'));
+      roots.push(sandbox);
+      const root = repository(join(sandbox, 'repo'));
+
+      // The operator's key command is the only way to a signing key, and the repository names a
+      // key of its own, which is what makes Book run the command at all. It records the pid that
+      // will be left running — `exec`, so that is the sleeper itself and not a shell above it.
+      const pidFile = join(sandbox, 'key-command.pid');
+      keyPidFile = pidFile;
+      const keyCommand = join(sandbox, 'key-command.sh');
+      writeFileSync(
+        keyCommand,
+        `#!/bin/sh\necho $$ > '${forwardSlashes(pidFile)}'\nexec sleep 60\n`,
+      );
+      chmodSync(keyCommand, 0o755);
+      writeGlobalConfig(
+        `[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n[gpg "ssh"]\n\tdefaultKeyCommand = ${forwardSlashes(keyCommand)}\n`,
+      );
+      git(root, 'config', 'user.signingKey', 'REPOSITORY-CHOSEN-KEY');
+
+      const snapshot = await createSyntheticSnapshot(root, true);
+      expect(snapshot.dirty).toBe(false);
+      const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-apply-stop-wt-'));
+      roots.push(worktreeRoot);
+      const worktree = await createAgentWorktree(snapshot, 'stopped-agent', worktreeRoot);
+      writeFileSync(join(worktree.path, 'staged.txt'), 'agent value\n');
+      const candidate = await commitAgentWork(agentRecord('stopped-agent', worktree), snapshot);
+      expect(candidate).toBeDefined();
+
+      const controller = new AbortController();
+      const applying = applyVerifiedCandidate(snapshot, candidate!, controller.signal).then(
+        (result) => result,
+        (error: unknown) => error,
+      );
+
+      const started = Date.now();
+      let pid = Number.NaN;
+      while (Date.now() - started < 10_000) {
+        pid = existsSync(pidFile) ? Number.parseInt(readFileSync(pidFile, 'utf8').trim(), 10) : NaN;
+        if (Number.isInteger(pid)) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(Number.isInteger(pid), 'the key command should have been started').toBe(true);
+      expect(processAlive(pid)).toBe(true);
+
+      const aborted = Date.now();
+      controller.abort();
+      const outcome = await applying;
+      const elapsed = Date.now() - aborted;
+
+      // A stop ends the apply the way an abort at any other call does: it is not reported as a
+      // conflict that the operator would then go and resolve.
+      expect(outcome).toBeInstanceOf(Error);
+
+      expect(elapsed, `the apply took ${elapsed} ms to return after the abort`).toBeLessThan(1_500);
+      expect(
+        await waitForExit(pid),
+        `the key command (pid ${pid}) should have been stopped with the apply`,
+      ).toBe(true);
+      // The pick never started, so nothing was applied to the operator's branch.
+      expect(readFileSync(join(root, 'staged.txt'), 'utf8').replace(/\r\n/g, '\n')).toBe(
+        'base staged.txt\n',
+      );
+    },
+    15_000,
+  );
+});
+
 describe('how failures are described (#357)', () => {
   it.skipIf(process.platform === 'win32')(
     'reports stdout text when stderr is only a newline (Fix 6)',

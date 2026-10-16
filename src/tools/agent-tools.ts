@@ -291,6 +291,7 @@ async function agentApply(args: Record<string, unknown>, ctx: ToolContext): Prom
       await manager(ctx).apply(
         typeof args.agentId === 'string' ? args.agentId : '',
         typeof args.evidenceId === 'string' ? args.evidenceId : undefined,
+        { signal: ctx.signal },
       ),
     );
   } catch (error) {

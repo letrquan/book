@@ -1214,7 +1214,7 @@ async function applyCandidate(
     };
   }
   const actualHead = (
-    await git(snapshot.repoRoot, ['rev-parse', candidate.headCommit])
+    await git(snapshot.repoRoot, ['rev-parse', candidate.headCommit], { signal })
   ).stdout.trim();
   if (actualHead !== candidate.headCommit) {
     return { status: 'conflicted', error: 'Patch candidate commit no longer resolves exactly.' };
@@ -1275,8 +1275,10 @@ async function applyCandidate(
     // `--abort` would follow to a repository that has nothing to abort.
     let signingPins: string[];
     try {
-      signingPins = await signingPinArgs(snapshot.repoRoot, signingRunner);
+      signingPins = await signingPinArgs(snapshot.repoRoot, signingRunner, signal);
     } catch (error) {
+      // A stop is not a conflict: it ends the apply the way an abort at any other call does.
+      if (signal?.aborted) throw error;
       return {
         status: 'conflicted',
         error: `Could not read the signing configuration for the cherry-pick: ${error instanceof Error ? error.message : String(error)}`,
@@ -1298,6 +1300,9 @@ async function applyCandidate(
       // Read what the pick left behind before the rollback removes it, and report whether the
       // rollback actually ran: see {@link cherryPickFailureResult} for why those are two
       // questions and not one.
+      // Deliberately without `signal`, here and in the abort below: this is the cleanup of a pick
+      // that a stop may be the reason for, and a call that an aborted signal refuses to start would
+      // leave the operator's repository mid-pick.
       const unmergedPaths = await unmergedPathsAfterFailure(snapshot.repoRoot);
       let abortError: string | undefined;
       try {

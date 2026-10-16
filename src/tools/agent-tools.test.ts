@@ -174,6 +174,61 @@ describe('AgentWait against the registry backstop (#423)', () => {
   });
 });
 
+describe('AgentApply carries the turn signal to the manager (#491)', () => {
+  it('hands the manager a signal that the turn aborting aborts', async () => {
+    const calls: { agentId: string; evidenceId?: string; signal?: AbortSignal }[] = [];
+    let finish!: () => void;
+    const applying = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const manager = {
+      updateConfig: () => undefined,
+      setPermissionMode: () => undefined,
+      setEventSink: () => undefined,
+      dispose: () => undefined,
+      apply: async (agentId: string, evidenceId?: string, options?: { signal?: AbortSignal }) => {
+        calls.push({ agentId, evidenceId, signal: options?.signal });
+        await applying;
+        return { status: 'applied' as const, commit: 'head' };
+      },
+    };
+    const runtime = new SessionRuntime();
+    runtime.agentManager = manager as unknown as AgentManager;
+    const registry = createRegistry();
+    registry.registerAll(agentLifecycleTools);
+    const controller = new AbortController();
+    const context: ToolContext = {
+      workspaceRoot: '.',
+      env: {},
+      agentConfig: defaultConfig(),
+      availableTools: [],
+      currentMode: 'bypassPermissions',
+      runtime,
+      signal: controller.signal,
+    };
+    try {
+      const pending = registry.execute(
+        { id: 'apply-1', name: 'AgentApply', arguments: { agentId: 'agent-1', evidenceId: 'e-1' } },
+        context,
+      );
+
+      await vi.waitFor(() => expect(calls).toHaveLength(1));
+      expect(calls[0]).toMatchObject({ agentId: 'agent-1', evidenceId: 'e-1' });
+      // The registry derives the tool's signal from the turn's, so it is the abort that has to
+      // arrive, not the identity.
+      expect(calls[0]?.signal).toBeInstanceOf(AbortSignal);
+      expect(calls[0]?.signal?.aborted).toBe(false);
+      controller.abort();
+      expect(calls[0]?.signal?.aborted).toBe(true);
+      finish();
+      await pending;
+    } finally {
+      finish();
+      runtime.dispose();
+    }
+  });
+});
+
 describe('managed-agent manager reuse', () => {
   it('refreshes a cached root manager before using it', async () => {
     const root = mkdtempSync(join(tmpdir(), 'book-agent-tools-refresh-'));

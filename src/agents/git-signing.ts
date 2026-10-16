@@ -153,26 +153,33 @@ export interface SigningPinsInputs {
 export async function readSigningConfig(
   repoRoot: string,
   run: HardenedRunner,
+  signal?: AbortSignal,
 ): Promise<SigningConfigEntry[]> {
   const result = await run(
     'git',
     ['config', '--show-scope', '-z', '--get-regexp', SIGNING_KEY_PATTERN],
-    { cwd: repoRoot, allowExitCodes: [1, 129], timeoutMs: READ_TIMEOUT_MS },
+    { cwd: repoRoot, allowExitCodes: [1, 129], timeoutMs: READ_TIMEOUT_MS, signal },
   );
   if (result.code === 129 || /unknown option/i.test(result.stderr)) {
     throw new Error(
-      `Applying an agent's result needs git ${MINIMUM_GIT} or later (for \`git config --show-scope\`); this git is ${await gitVersion(run, repoRoot)}`,
+      `Applying an agent's result needs git ${MINIMUM_GIT} or later (for \`git config --show-scope\`); this git is ${await gitVersion(run, repoRoot, signal)}`,
     );
   }
   return parseSigningConfig(result.stdout);
 }
 
-async function gitVersion(run: HardenedRunner, repoRoot: string): Promise<string> {
+async function gitVersion(
+  run: HardenedRunner,
+  repoRoot: string,
+  signal?: AbortSignal,
+): Promise<string> {
   try {
     return (
-      await run('git', ['--version'], { cwd: repoRoot, timeoutMs: READ_TIMEOUT_MS })
+      await run('git', ['--version'], { cwd: repoRoot, timeoutMs: READ_TIMEOUT_MS, signal })
     ).stdout.trim();
-  } catch {
+  } catch (error) {
+    // A stop is not a git of an unknown version.
+    if (signal?.aborted) throw error;
     return 'of an unknown version';
   }
 }
@@ -350,8 +357,12 @@ export function committerSigningIdentity(ident: string): string {
  * The `-c` arguments for a cherry-pick in this repository: its signing configuration, read through
  * the hardened runner, turned into pins.
  */
-export async function signingPinArgs(repoRoot: string, run: HardenedRunner): Promise<string[]> {
-  const entries = await readSigningConfig(repoRoot, run);
+export async function signingPinArgs(
+  repoRoot: string,
+  run: HardenedRunner,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const entries = await readSigningConfig(repoRoot, run, signal);
   const facts = signingFacts(entries);
   // Each of these is a process, and most applies need neither: a repository that sets no signing
   // key has nothing to decide, and an operator who has a key of their own has already answered it.
@@ -362,10 +373,11 @@ export async function signingPinArgs(repoRoot: string, run: HardenedRunner): Pro
       await run('git', ['var', 'GIT_COMMITTER_IDENT'], {
         cwd: repoRoot,
         timeoutMs: READ_TIMEOUT_MS,
+        signal,
       })
     ).stdout;
   } else if (source === 'ssh-default-key-command') {
-    inputs.sshDefaultKey = await sshDefaultSigningKey(facts, repoRoot, run);
+    inputs.sshDefaultKey = await sshDefaultSigningKey(facts, repoRoot, run, signal);
   }
   return pinsFor(facts, inputs);
 }
@@ -388,16 +400,24 @@ export async function sshDefaultSigningKey(
   facts: SigningFacts,
   repoRoot: string,
   run: HardenedRunner,
+  signal?: AbortSignal,
 ): Promise<string> {
   const command = lastOperatorValue(facts, ['gpg.ssh.defaultkeycommand'])?.trim();
   if (!command) return '';
   // Git's own splitting: whitespace-separated words, the first the program, no shell.
   const [program, ...args] = command.split(/\s+/);
   try {
-    const result = await run(program, args, { cwd: repoRoot, timeoutMs: READ_TIMEOUT_MS });
+    const result = await run(program, args, {
+      cwd: repoRoot,
+      timeoutMs: READ_TIMEOUT_MS,
+      signal,
+    });
     const first = result.stdout.split(/\r?\n/)[0]?.trim() ?? '';
     return first.startsWith('key::') ? first : '';
-  } catch {
+  } catch (error) {
+    // A stop is not a key command that failed: the empty pin below is for a command that ran and
+    // gave no key, and answering a stop with it would carry on into a cherry-pick nobody wants.
+    if (signal?.aborted) throw error;
     return '';
   }
 }
