@@ -4,7 +4,7 @@ import { extname } from 'path';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
-import { pathOutsideWorkspaceResult, resolveMutationPath } from './path-utils.js';
+import { messagePathFor, pathOutsideWorkspaceResult, resolveMutationPath } from './path-utils.js';
 import {
   observeFile,
   requireFreshObservation,
@@ -187,9 +187,10 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   const resolved = resolveMutationPath(ctx, notebookPath);
   if (!resolved) return pathOutsideWorkspaceResult(notebookPath);
   const { filePath, relativePath } = resolved;
-  const stale = await requireFreshObservation(ctx, filePath, relativePath);
+  const shownPath = messagePathFor(resolved);
+  const stale = await requireFreshObservation(ctx, filePath, shownPath);
   if (stale) return fail(stale);
-  const unobserved = requireObservationForMutation(ctx, filePath, relativePath, 'notebook edit');
+  const unobserved = requireObservationForMutation(ctx, filePath, shownPath, 'notebook edit');
   if (unobserved) return unobserved;
 
   let original: string;

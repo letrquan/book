@@ -88,6 +88,10 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A memory file is named by what reads it best.** The `Read` row of a memory file now shows
+  `memory/<file>` like the `Write`/`Edit` rows, instead of the long absolute path, and a message
+  about a memory file (`file_not_observed`, a stale read, `Created …`, an `ApplyPatch` diff header)
+  names its absolute path instead of `../home/.book/…`. A workspace file keeps its relative path.
 - **Ctrl+E expands the newest truncated tool row, and only that row's footer names the key**
   (#470). In the compact transcript every cut diff, output and failed-command footer read
   `(Ctrl+E)`, but the key expanded the latest row, so a 150-line `Write` followed by a capped `Edit`
