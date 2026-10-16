@@ -5,6 +5,9 @@ export default mergeConfig(
   baseConfig,
   defineConfig({
     test: {
+      // mergeConfig concatenates arrays, so this runs after the base config's vitest-setup.ts.
+      // The integration tier deliberately does not list it (see vitest-setup-clean-env.ts).
+      setupFiles: ['./src/test/vitest-setup-clean-env.ts'],
       exclude: [
         '**/node_modules/**',
         '**/dist/**',

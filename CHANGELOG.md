@@ -88,6 +88,16 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The unit and contract suites no longer read your `BOOK_*` environment** (#467). A test that
+  expects a default (`BOOK_EFFORT` unset, no `BOOK_MAX_TOKENS`) failed whenever the suite ran from
+  inside a Book session, or from any shell exporting an override: eight tests in
+  `compact-eval-settings`, `edit-eval-settings`, `doctor` and `trust-cmd` saw the session's effort,
+  model or token cap instead. Both tiers now delete every inherited `BOOK_*` variable before each
+  test file (`src/test/vitest-setup-clean-env.ts`), keeping only `BOOK_HOME`, which the suite
+  leaves as launched, and the telemetry directory the shared setup pins. A test that sets a
+  variable itself is unaffected. The integration tier is unchanged: the TUI streaming tests pass
+  your provider's `BOOK_API_KEY`, `BOOK_BASE_URL`, `BOOK_PROVIDER`, `BOOK_MODEL` and `BOOK_EFFORT`
+  to their child on purpose (#358).
 - **Ctrl+E expands the newest truncated tool row, and only that row's footer names the key**
   (#470). In the compact transcript every cut diff, output and failed-command footer read
   `(Ctrl+E)`, but the key expanded the latest row, so a 150-line `Write` followed by a capped `Edit`
