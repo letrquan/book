@@ -190,6 +190,10 @@ describe('the remedy catalog', () => {
     expect(REFUSAL_REMEDIES.route).toContain('invalid_json_arguments:empty');
     expect(REFUSAL_REMEDIES.route).toContain('provider route');
     expect(REFUSAL_REMEDIES.route).toContain('the model is not at fault');
+    // Nothing re-issues the provider request for these calls: the model resends each one, and
+    // the remedy says what happened, not a recovery attempt that never ran.
+    expect(REFUSAL_REMEDIES.route).toContain('every resend');
+    expect(REFUSAL_REMEDIES.route).not.toMatch(/re-?issu/i);
     expect(REFUSAL_REMEDIES.route).not.toContain('the model has to correct them');
     expect(REFUSAL_REMEDIES.route).not.toContain('grant the permission');
   });

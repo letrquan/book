@@ -152,27 +152,72 @@ describe('formatApiError words an absent body and an empty one differently', () 
 });
 
 describe('formatApiError names the origin when the body says nothing useful (#424)', () => {
+  const CAME_FROM = 'The reply came from api.example.test for model m-1.';
+  const CHECK = 'Check the base URL and model id.';
+
   it.each([
-    ['404 page not found', 'Go net/http'],
-    ['404 page not found\n', 'Go net/http with its newline'],
-    ['{}', 'an empty JSON object'],
-    ['[]', 'an empty JSON array'],
-    ['  { }  ', 'an empty JSON object with whitespace'],
+    ['404 page not found', '404 page not found', 'Go net/http'],
+    ['404 page not found\n', '404 page not found', 'Go net/http with its newline'],
+    ['{}', '{}', 'an empty JSON object'],
+    ['[]', '[]', 'an empty JSON array'],
+    ['  { }  ', '{ }', 'an empty JSON object with whitespace'],
+  ])('keeps %j and says where the reply came from (%s)', (body, shown) => {
+    expect(formatApiError(404, body, undefined, request)).toBe(
+      `API Error: 404 ${shown}. ${CAME_FROM} ${CHECK}`,
+    );
+  });
+
+  it('reads the hint as a statement, not an instruction', () => {
+    expect(formatApiError(404, '404 page not found', undefined, request)).not.toMatch(/\bReply\b/);
+  });
+
+  it.each([
     [
       '<html><head><title>404 Not Found</title></head><body><h1>Not Found</h1></body></html>',
-      'an HTML page',
+      'an HTML page titled "404 Not Found"',
     ],
-    ['<!DOCTYPE html>\n<html lang="en"><body>Oops</body></html>', 'an HTML document'],
-  ])('adds the host and model to %j (%s)', (body) => {
+    [
+      '<!DOCTYPE html>\n<html lang="en"><head>\n<title>\n  Bad   Gateway \n</title></head></html>',
+      'an HTML page titled "Bad Gateway"',
+    ],
+    ['<!DOCTYPE html>\n<html lang="en"><body>Oops</body></html>', 'an HTML page'],
+  ])('shows an HTML body as %s, never as its markup', (body, shown) => {
     const text = formatApiError(404, body, undefined, request);
-    expect(text).toContain('api.example.test');
-    expect(text).toContain('m-1');
-    // The body text is kept, not replaced.
-    expect(text).toContain(body.trim().slice(0, 12));
+    expect(text).toBe(`API Error: 404 ${shown}. ${CAME_FROM} ${CHECK}`);
+    expect(text).not.toContain('<');
+  });
+
+  it('finds the title of an HTML page past the first 200 characters', () => {
+    const body = `<!DOCTYPE html><html><head>${'<meta name="x" content="y">'.repeat(12)}<title>Not Found</title></head></html>`;
+    expect(body.indexOf('<title>')).toBeGreaterThan(200);
+    expect(formatApiError(404, body, undefined, request)).toContain(
+      'an HTML page titled "Not Found"',
+    );
+  });
+
+  it('keeps control characters of a page title off the terminal', () => {
+    const text = formatApiError(
+      404,
+      `<html><title>Nope${String.fromCharCode(0x1b)}[2J</title></html>`,
+      undefined,
+      request,
+    );
+    expect(text).not.toContain(String.fromCharCode(0x1b));
   });
 
   it('adds nothing when there is no request to name', () => {
     expect(formatApiError(404, '404 page not found')).toBe('API Error: 404 404 page not found');
+  });
+
+  it('still summarises an HTML page when there is no request to name', () => {
+    expect(formatApiError(404, '<html><head><title>404 Not Found</title></head></html>')).toBe(
+      `API Error: 404 an HTML page titled "404 Not Found". ${CHECK}`,
+    );
+  });
+
+  it('words the other statuses the same way', () => {
+    expect(formatApiError(502, '{}', undefined, request)).toContain(`{}. ${CAME_FROM}`);
+    expect(formatApiError(401, '{}', undefined, request)).toContain(`{}. ${CAME_FROM}`);
   });
 
   it.each([
@@ -275,7 +320,42 @@ describe('a body that never arrived stays "not received" through the retry wrapp
     const response = await pending;
 
     // The read signal is aborted now, so only the carried fact can say why it is empty.
-    expect(await readErrorBody(response)).toEqual({ text: '', received: false });
+    expect(await readErrorBody(response, controller.signal)).toEqual({
+      text: '',
+      received: false,
+    });
+  });
+
+  it('hands the adapter the body it already read when the signal aborted during the backoff', async () => {
+    vi.useFakeTimers();
+    const body = '{"error":{"message":"overloaded"}}';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(body, { status: 503 })),
+    );
+    const controller = new AbortController();
+
+    const pending = fetchWithRetry(
+      'https://api.example.test/v1',
+      {},
+      { ...retry, baseDelayMs: 1_000, maxDelayMs: 1_000 },
+      controller.signal,
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    controller.abort();
+    const response = await pending;
+
+    // The adapter reads with the same, now aborted, signal. The body is in memory, so the abort
+    // must not make it read as an empty one.
+    const errorBody = await readErrorBody(response, controller.signal);
+    expect(errorBody).toEqual({ text: body, received: true });
+    const event = statedWaitErrorEvent(response, errorBody.text, {
+      ...request,
+      bodyReceived: errorBody.received,
+    });
+    expect(event.error).toContain('overloaded');
+    expect(event.error).not.toContain(EMPTY_BODY);
+    expect(event.error).not.toContain(NO_BODY);
   });
 });
 

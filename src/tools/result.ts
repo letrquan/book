@@ -264,7 +264,7 @@ export async function boundToolResultOutput(
   input: ToolResult,
   _workspaceRoot: string,
   maxBytes = TOOL_RESULT_MAX_BYTES,
-  artifactRoot = toolOutputDirectory(),
+  artifactRoot?: string,
 ): Promise<ToolResult> {
   const result = normalizeToolResult(input);
   const modelContent = rawToolResultModelContent(result);
@@ -276,7 +276,8 @@ export async function boundToolResultOutput(
 
   let outputPath = result.artifacts?.outputPath;
   if (!outputPath) {
-    const outputFile = join(artifactRoot, `${crypto.randomUUID()}.txt`);
+    // Resolved here, not as a default: most results fit and never spill.
+    const outputFile = join(artifactRoot ?? toolOutputDirectory(), `${crypto.randomUUID()}.txt`);
     try {
       await mkdir(dirname(outputFile), { recursive: true });
       await writeFile(

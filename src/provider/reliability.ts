@@ -5,6 +5,7 @@ interface RetryLogger {
 }
 
 import { systemClock, type Clock, type MonotonicMs } from '../clock.js';
+import { foldControlCharacters } from '../control-characters.js';
 
 export type ProviderErrorCode =
   | 'network'
@@ -501,7 +502,7 @@ function requestOrigin(request: ApiErrorRequest | undefined): string {
  */
 function isUninformativeDetail(text: string): boolean {
   if (/^(?:\d{3}\s+)?page not found\.?$/i.test(text)) return true;
-  if (/^<(?:!doctype\s+html|html|head|body)\b/i.test(text)) return true;
+  if (isHtmlDetail(text)) return true;
   if (!/^[[{]/.test(text)) return false;
   try {
     const parsed: unknown = JSON.parse(text);
@@ -512,6 +513,37 @@ function isUninformativeDetail(text: string): boolean {
   }
 }
 
+function isHtmlDetail(text: string): boolean {
+  return /^<(?:!doctype\s+html|html|head|body)\b/i.test(text);
+}
+
+/** How long a page title may be before it is cut: it is shown inside an error sentence. */
+const MAX_SHOWN_TITLE_CHARS = 100;
+
+/**
+ * An HTML error page as one phrase: `an HTML page`, plus its `<title>` when it has one. The page
+ * is never shown as markup (the first 200 characters of one end mid-tag), and its title is
+ * folded to one line since it came from the network. `body` is the whole body, not the 200
+ * characters `detail` keeps, because the title often comes after a long `<head>` preamble.
+ */
+function describeHtmlPage(body: string): string {
+  const title = body.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  const shown = title ? foldControlCharacters(title).replace(/\s+/g, ' ').trim() : '';
+  if (!shown) return 'an HTML page';
+  const clipped =
+    shown.length > MAX_SHOWN_TITLE_CHARS ? `${shown.slice(0, MAX_SHOWN_TITLE_CHARS)}…` : shown;
+  return `an HTML page titled "${clipped}"`;
+}
+
+interface DetailSentence {
+  sentence: string;
+  /**
+   * True when the sentence is not just the body's own text: an HTML page summarised, or the
+   * origin added to a body that says nothing. The one decision both callers act on.
+   */
+  rewritten: boolean;
+}
+
 /**
  * The provider's message as one sentence for Book's advice to follow (#424). A
  * message that already ends in `.`, `!`, or `?` gets no second period. An empty
@@ -519,16 +551,26 @@ function isUninformativeDetail(text: string): boolean {
  * request went, since a bare status cannot tell a wrong base URL from a wrong
  * model id.
  */
-function detailSentence(detail: string, request?: ApiErrorRequest): string {
+function detailSentence(
+  detail: string,
+  request?: ApiErrorRequest,
+  body: string = detail,
+): DetailSentence {
   const text = detail.trim();
   const origin = requestOrigin(request);
   if (!text) {
     const absent =
       request?.bodyReceived === false ? 'no response body received' : 'empty response body';
-    return `${origin ? `${origin} ` : ''}(${absent}).`;
+    return { sentence: `${origin ? `${origin} ` : ''}(${absent}).`, rewritten: false };
   }
-  const sentence = /[.!?]$/.test(text) ? text : `${text}.`;
-  return origin && isUninformativeDetail(text) ? `${sentence} Reply ${origin}.` : sentence;
+  const uninformative = isUninformativeDetail(text);
+  const shown = isHtmlDetail(text) ? describeHtmlPage(body) : text;
+  const sentence = /[.!?]$/.test(shown) ? shown : `${shown}.`;
+  const hinted = uninformative && origin !== '';
+  return {
+    sentence: hinted ? `${sentence} The reply came ${origin}.` : sentence,
+    rewritten: hinted || shown !== text,
+  };
 }
 
 export function formatApiError(
@@ -539,7 +581,7 @@ export function formatApiError(
 ): string {
   const code = classifyApiError(status, body, quotedStatus);
   const detail = safeErrorDetail(body);
-  const said = detailSentence(detail, request);
+  const { sentence: said, rewritten } = detailSentence(detail, request, body);
   const base = `API Error: ${status}`;
   switch (code) {
     case 'context_overflow':
@@ -565,7 +607,7 @@ export function formatApiError(
     case 'model_unavailable': {
       // Not a credential problem (#387): the key is fine, the model is not
       // served here any more. Name the remedy, never the API key.
-      const modelDetail = detailSentence(safeModelUnavailableDetail(body));
+      const modelDetail = detailSentence(safeModelUnavailableDetail(body)).sentence;
       return `${base} ${modelDetail} This model is not available on this provider or route — choose another with --model or /model.`;
     }
     case 'usage_limit': {
@@ -576,9 +618,7 @@ export function formatApiError(
     case 'quota':
       return `${base} ${said} Check your usage/credits.`;
     default:
-      if (detail.trim() && !(requestOrigin(request) && isUninformativeDetail(detail.trim()))) {
-        return `${base} ${detail}`;
-      }
+      if (detail.trim() && !rewritten) return `${base} ${detail}`;
       return code === 'not_found'
         ? `${base} ${said} Check the base URL and model id.`
         : `${base} ${said}`;
@@ -754,18 +794,14 @@ export interface ErrorBody {
  *
  * `received` is what lets the text shown tell a provider that sent an empty body
  * from a read that got nothing. A response `fetchWithRetry` rebuilt from a body it
- * had already read carries that answer with it (`BufferedErrorResponse`), since
- * reading its copy again always completes.
+ * had already read hands that text and answer back as they are
+ * (`BufferedErrorResponse`), before any signal check: the body is in memory, so a
+ * signal that aborted since cannot make it unread.
  */
 export async function readErrorBody(response: Response, signal?: AbortSignal): Promise<ErrorBody> {
-  const body = await readBodyBytes(response, signal);
-  if (body.text === '' && response instanceof BufferedErrorResponse) {
-    return { text: '', received: response.bodyReceived };
+  if (response instanceof BufferedErrorResponse) {
+    return { text: response.bufferedText, received: response.bodyReceived };
   }
-  return body;
-}
-
-async function readBodyBytes(response: Response, signal?: AbortSignal): Promise<ErrorBody> {
   if (signal?.aborted) return { text: '', received: false };
   if (!response.body) return { text: '', received: true };
   let reader: ReadableStreamDefaultReader<Uint8Array>;
@@ -778,9 +814,8 @@ async function readBodyBytes(response: Response, signal?: AbortSignal): Promise<
   const decoder = new TextDecoder();
   let text = '';
   let received = 0;
-  let finished = false;
-  // Set by the deadline and the abort, and by a stream error: ways the body ends that are not
-  // the provider finishing it.
+  // Set by the deadline, the abort and a stream error: the ways the body ends that are not the
+  // provider finishing it.
   let interrupted = false;
   // Cancelling resolves the pending read as done, which ends the loop below.
   const stop = (): void => {
@@ -792,10 +827,7 @@ async function readBodyBytes(response: Response, signal?: AbortSignal): Promise<
   try {
     while (received < ERROR_BODY_MAX_BYTES) {
       const chunk = await reader.read();
-      if (chunk.done) {
-        finished = !interrupted;
-        break;
-      }
+      if (chunk.done) break;
       const bytes = chunk.value.subarray(0, ERROR_BODY_MAX_BYTES - received);
       received += bytes.byteLength;
       text += decoder.decode(bytes, { stream: true });
@@ -806,7 +838,8 @@ async function readBodyBytes(response: Response, signal?: AbortSignal): Promise<
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', stop);
-    if (!finished) reader.cancel().catch(() => {});
+    // Cancelling a body that already ended is a no-op; one stopped at the cap is released here.
+    reader.cancel().catch(() => {});
     try {
       reader.releaseLock();
     } catch {
@@ -818,14 +851,17 @@ async function readBodyBytes(response: Response, signal?: AbortSignal): Promise<
 
 /**
  * A response `fetchWithRetry` rebuilt from an error body it had already read, so that the
- * adapter's own read of it can still tell whether that body ever arrived (`bodyReceived`):
- * a copy of an unread-because-timed-out body is empty, and reads as one that completed.
+ * adapter's own read of it (`readErrorBody`) gets that text and whether it ever arrived
+ * (`bodyReceived`) as they were: reading the copy's stream would make a body that timed out
+ * look like one that completed empty, and an aborted signal would hide the text altogether.
  */
 class BufferedErrorResponse extends Response {
+  readonly bufferedText: string;
   readonly bodyReceived: boolean;
 
   constructor(body: string, init: ResponseInit, bodyReceived: boolean) {
     super(body, init);
+    this.bufferedText = body;
     this.bodyReceived = bodyReceived;
   }
 }
@@ -1261,7 +1297,7 @@ export function formatStatedWaitError(
   stop: StatedWait,
   request?: ApiErrorRequest,
 ): string {
-  const said = detailSentence(safeErrorDetail(body), request);
+  const said = detailSentence(safeErrorDetail(body), request, body).sentence;
   const when =
     stop.resetIso !== undefined
       ? `The limit resets at ${stop.resetIso}, in about ${describeWait(stop.waitMs)}`

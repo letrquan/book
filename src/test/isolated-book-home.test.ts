@@ -2,115 +2,179 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { unpinnedDriveLines } from './book-home-guard.js';
 import { enterIsolatedHome, isolateBookHome, leaveIsolatedHome } from './isolated-book-home.js';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..');
-// This file's own fixture strings spell out every pattern the predicates look for.
-const GUARD_FILE = basename(fileURLToPath(import.meta.url));
 
-/**
- * True when the source can reach the print-mode runner, which writes a record of every run
- * under BOOK_HOME (#421): a static or dynamic import of an `sdk.js` at any depth, or a call to
- * `runHeadless(` or `runMainAction(`.
- */
-function drivesRunner(source: string): boolean {
-  return (
-    /\bfrom\s+['"][^'"]*\/sdk\.js['"]/.test(source) ||
-    /\bimport\(\s*['"][^'"]*\/sdk\.js['"]\s*\)/.test(source) ||
-    /\brunHeadless\(/.test(source) ||
-    /\brunMainAction\(/.test(source)
-  );
-}
+/** Fixture sources are parsed, never run, so this file's own strings cannot flag it. */
+const unpinned = (source: string): number[] => unpinnedDriveLines(source);
 
-/** The source without its line and block comments (a URL's `//` is not a comment). */
-function withoutComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-}
-
-/**
- * True when the whole file runs under a pinned BOOK_HOME: an `isolateBookHome(` call at the top
- * level of the file (a call scoped to one `describe` leaves the others unpinned), or a real
- * `process.env.BOOK_HOME =` assignment, or the same through `vi.stubEnv('BOOK_HOME', …)` or the
- * `stashEnv('BOOK_HOME', …)` helper the `cli/run*` suites each define for it. A mention in a
- * comment is not a pin.
- */
-function pinsHome(source: string): boolean {
-  const code = withoutComments(source);
-  return (
-    /^(?:(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*)?isolateBookHome\(/m.test(code) ||
-    /\bprocess\.env\.BOOK_HOME\s*=(?!=)/.test(code) ||
-    /\b(?:vi\.stubEnv|stashEnv)\(\s*['"]BOOK_HOME['"]/.test(code)
-  );
-}
-
-describe('drivesRunner', () => {
+describe('what drives the print-mode runner', () => {
   it.each([
-    "import { query } from './sdk.js';",
-    "import { query } from '../sdk.js';",
-    'import { query } from "../../sdk.js";',
-    "import {\n  query,\n} from '../../../src/sdk.js';",
-    "const { query } = await import('./sdk.js');",
-    "const sdk = import('../sdk.js');",
-    'const { query } = await import("../../sdk.js");',
-    'await runHeadless(config, options);',
-    'await runMainAction({ print: "hi" });',
-  ])('matches %s', (source) => {
-    expect(drivesRunner(source)).toBe(true);
+    ['a runHeadless call', 'await runHeadless(config, options);'],
+    ['a runMainAction call', 'await runMainAction({ print: "hi" });'],
+    ['a member call of either', 'await cli.runMainAction(options);'],
+    ['a call of a name imported from ./sdk.js', "import { query } from './sdk.js';\nquery(a);"],
+    ['a call of a name imported from ../sdk.js', "import { query } from '../sdk.js';\nquery(a);"],
+    [
+      'a call of a name imported from a deep sdk.js',
+      'import {\n  query as ask,\n} from "../../../src/sdk.js";\nask(a);',
+    ],
+    ['a call of a default import from sdk.js', "import q from './sdk.js';\nq();"],
+    ['a member call of a namespace import', "import * as sdk from './sdk.js';\nsdk.query(a);"],
+    ['an awaited dynamic import', "const { query } = await import('./sdk.js');"],
+    ['a bare dynamic import', "const sdk = import('../sdk.js');"],
+    ['a dynamic import in double quotes', 'await import("../../sdk.js");'],
+  ])('flags %s', (_name, source) => {
+    expect(unpinned(source)).not.toEqual([]);
   });
 
   it.each([
-    "import { runHeadless } from './headless.js';",
-    "import { createSdkTools } from './sdk-tools.js';",
-    "import { query } from './not-sdk.js.map';",
-    'const runMainActionOptions = {};',
-  ])('does not match %s', (source) => {
-    expect(drivesRunner(source)).toBe(false);
+    [
+      'a type-only import from sdk.js',
+      "import type { Options } from './sdk.js';\nconst o: Options = {};",
+    ],
+    ['an import of sdk.js that is never called', "import { query } from './sdk.js';\nvoid 0;"],
+    ['a runner imported but not called', "import { runHeadless } from './headless.js';"],
+    ['a name that only resembles the runner', 'const runMainActionOptions = {};'],
+    ['a similarly named module', "import { query } from './sdk-tools.js';\nquery(a);"],
+    ['a call in a line comment', '// await runHeadless(config);'],
+    ['a call in a block comment', '/* await runMainAction(options); */'],
+    ['a call in a string', "const text = 'await runHeadless(config)';"],
+    ['a mocked sdk module', "vi.mock('./sdk.js', () => ({ query: vi.fn() }));"],
+  ])('does not flag %s', (_name, source) => {
+    expect(unpinned(source)).toEqual([]);
+  });
+
+  it('reports the line of each unpinned drive point', () => {
+    expect(unpinned('const a = 1;\n\nawait runHeadless(a);\nawait runMainAction(a);')).toEqual([
+      3, 4,
+    ]);
   });
 });
 
-describe('pinsHome', () => {
+describe('what pins BOOK_HOME for a drive point', () => {
+  const drive = "it('runs', async () => {\n  await runHeadless(config);\n});";
+
   it.each([
-    "isolateBookHome('x-');",
-    "const bookHome = isolateBookHome('x-');",
-    "import { isolateBookHome } from './isolated-book-home.js';\n\nisolateBookHome();\n",
-    'beforeEach(() => {\n  process.env.BOOK_HOME = home;\n});',
-    'process.env.BOOK_HOME=home;',
-    "vi.stubEnv('BOOK_HOME', home);",
-    "stashEnv('BOOK_HOME', home);",
-    "const u = 'https://x.test'; process.env.BOOK_HOME = home;",
-  ])('accepts %s', (source) => {
-    expect(pinsHome(source)).toBe(true);
+    ['a top-level isolateBookHome', `isolateBookHome('x-');\n${drive}`],
+    ['a top-level isolateBookHome kept in a variable', `const home = isolateBookHome();\n${drive}`],
+    [
+      'a top-level beforeEach assignment',
+      `beforeEach(() => {\n  process.env.BOOK_HOME = home;\n});\n${drive}`,
+    ],
+    [
+      'a top-level beforeAll assignment',
+      `beforeAll(() => {\n  process.env['BOOK_HOME'] = home;\n});\n${drive}`,
+    ],
+    ['a top-level assignment', `process.env.BOOK_HOME = home;\n${drive}`],
+    ['a top-level vi.stubEnv', `vi.stubEnv('BOOK_HOME', home);\n${drive}`],
+    ['a top-level stashEnv', `stashEnv('BOOK_HOME', home);\n${drive}`],
+    [
+      'a pin earlier in the same it',
+      `it('runs', async () => {\n  stashEnv('BOOK_HOME', h);\n  await runHeadless(c);\n});`,
+    ],
+    [
+      'a pin in a helper function, which counts for the whole file',
+      `function makeConfig() {\n  process.env.BOOK_HOME = tempDir();\n}\n${drive}`,
+    ],
+    [
+      'a pin in an arrow helper',
+      `const launch = async () => {\n  stashEnv('BOOK_HOME', home);\n};\n${drive}`,
+    ],
+    [
+      'a pin in the beforeEach of the describe that holds the drive point',
+      `describe('a', () => {\n  beforeEach(() => {\n    process.env.BOOK_HOME = h;\n  });\n  ${drive}\n});`,
+    ],
+    [
+      'an isolateBookHome inside the describe that holds the drive point',
+      `describe('a', () => {\n  isolateBookHome();\n  ${drive}\n});`,
+    ],
+    [
+      'a pin next to a glob string that a comment regex would mistake for a comment',
+      `const glob = 'src/**/*.ts';\nprocess.env.BOOK_HOME = home;\nconst other = 'https://x.test'; // done\n${drive}`,
+    ],
+  ])('accepts %s', (_name, source) => {
+    expect(unpinned(source)).toEqual([]);
   });
 
   it.each([
-    '// BOOK_HOME is not pinned here',
-    '/* process.env.BOOK_HOME = home; */',
-    '// process.env.BOOK_HOME = home;',
-    "// isolateBookHome('x-');",
-    "describe('suite', () => {\n  const home = isolateBookHome('x-');\n});",
-    "import { isolateBookHome } from './isolated-book-home.js';",
-    "expect(process.env.BOOK_HOME).toBe('x');",
-    'if (process.env.BOOK_HOME === undefined) return;',
-    "vi.stubEnv('BOOK_API_KEY', 'k');",
-    "// stashEnv('BOOK_HOME', home);",
-    "const u = 'https://x.test'; // process.env.BOOK_HOME = home;",
-  ])('rejects %s', (source) => {
-    expect(pinsHome(source)).toBe(false);
+    ['no pin at all', drive],
+    [
+      'only a restore in afterEach',
+      `const previous = process.env.BOOK_HOME;\nafterEach(() => {\n  if (previous === undefined) delete process.env.BOOK_HOME;\n  else process.env.BOOK_HOME = previous;\n});\n${drive}`,
+    ],
+    [
+      'only a restore of a saved value, outside any afterEach',
+      `let saved: string | undefined;\nbeforeEach(() => {\n  saved = process.env.BOOK_HOME;\n});\nfunction restore() {\n  process.env.BOOK_HOME = saved;\n}\n${drive}`,
+    ],
+    [
+      'an assignment in afterEach, whatever it assigns',
+      `afterEach(() => {\n  process.env.BOOK_HOME = '/somewhere';\n});\n${drive}`,
+    ],
+    ['an afterAll stubEnv', `afterAll(() => {\n  vi.stubEnv('BOOK_HOME', '');\n});\n${drive}`],
+    [
+      'a pin only in a finally block',
+      `it('a', async () => {\n  try {\n    await runHeadless(c);\n  } finally {\n    process.env.BOOK_HOME = '/x';\n  }\n});`,
+    ],
+    [
+      'a pin in one it with the runner called in another',
+      `it('pins', () => {\n  process.env.BOOK_HOME = home;\n});\n${drive}`,
+    ],
+    [
+      'a pin later in the same it than the call',
+      `it('late', async () => {\n  await runHeadless(c);\n  process.env.BOOK_HOME = home;\n});`,
+    ],
+    [
+      'an isolateBookHome in one describe, the call in a sibling',
+      `describe('a', () => {\n  isolateBookHome();\n});\ndescribe('b', () => {\n  ${drive}\n});`,
+    ],
+    [
+      'a beforeEach pin in one describe, the call at the top level',
+      `describe('a', () => {\n  beforeEach(() => {\n    process.env.BOOK_HOME = h;\n  });\n});\n${drive}`,
+    ],
+    ['a mention of BOOK_HOME in a comment', `// process.env.BOOK_HOME = home;\n${drive}`],
+    ['a mention in a block comment', `/* isolateBookHome(); */\n${drive}`],
+    ['a mention in a string', `const s = "process.env.BOOK_HOME = home";\n${drive}`],
+    ['a read', `expect(process.env.BOOK_HOME).toBe('x');\n${drive}`],
+    ['a comparison', `if (process.env.BOOK_HOME === 'x') {}\n${drive}`],
+    ['a stubEnv of another variable', `vi.stubEnv('BOOK_API_KEY', 'k');\n${drive}`],
+  ])('rejects %s', (_name, source) => {
+    expect(unpinned(source)).not.toEqual([]);
+  });
+
+  it('covers a drive point only inside the describe that holds the pin', () => {
+    const source = [
+      "describe('pinned', () => {",
+      '  isolateBookHome();',
+      "  it('a', async () => {",
+      '    await runHeadless(c);',
+      '  });',
+      '});',
+      "describe('not pinned', () => {",
+      "  it('b', async () => {",
+      '    await runHeadless(c);',
+      '  });',
+      '});',
+    ].join('\n');
+    expect(unpinned(source)).toEqual([9]);
   });
 });
 
 // A suite that drives the print-mode runner (directly, or through the SDK) without a
 // pinned home writes each run's record into the developer's real ~/.book/runs (#421).
 describe('the suites', () => {
-  it('pin BOOK_HOME in every suite that drives the print-mode runner', () => {
-    const unpinned = readdirSync(SRC, { recursive: true, encoding: 'utf8' })
-      .filter((file) => /\.test\.tsx?$/.test(file) && basename(file) !== GUARD_FILE)
-      .filter((file) => {
-        const source = readFileSync(join(SRC, file), 'utf8');
-        return drivesRunner(source) && !pinsHome(source);
-      })
+  it('pin BOOK_HOME wherever they drive the print-mode runner', () => {
+    const gaps = readdirSync(SRC, { recursive: true, encoding: 'utf8' })
+      .filter((file) => /\.test\.tsx?$/.test(file))
+      .flatMap((file) =>
+        unpinnedDriveLines(readFileSync(join(SRC, file), 'utf8'), file).map(
+          (line) => `${file.split('\\').join('/')}:${line}`,
+        ),
+      )
       .sort();
-    expect(unpinned).toEqual([]);
+    expect(gaps).toEqual([]);
   });
 });
 
