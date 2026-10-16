@@ -174,6 +174,10 @@ export function buildContextReport(
     );
   } else if (source === 'learned') {
     lines.push('This window was learned from a previous provider context-overflow refusal.');
+  } else if (source === 'reported') {
+    lines.push(
+      "This window is the limit the provider's model list reported; a contextWindow you set, or one learned from an overflow, takes precedence.",
+    );
   }
   const pct =
     ambient.maxTokens > 0

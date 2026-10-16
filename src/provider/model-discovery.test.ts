@@ -99,7 +99,7 @@ describe('discoverModels', () => {
     );
   });
 
-  it('records the exact Anthropic input limit as contextWindow, and never the output limit', async () => {
+  it('records the exact Anthropic input limit as reportedContextWindow, and never the output limit', async () => {
     const fetchImpl = vi.fn(
       async () =>
         new Response(
@@ -133,36 +133,42 @@ describe('discoverModels', () => {
     });
 
     const byId = Object.fromEntries(models.map((model) => [model.id, model]));
-    expect(byId['claude-sonnet-5-5'].contextWindow).toBe(1_000_000);
-    expect(byId['claude-sonnet-4-5-20250929'].contextWindow).toBe(200_000);
+    expect(byId['claude-sonnet-5-5'].reportedContextWindow).toBe(1_000_000);
+    expect(byId['claude-sonnet-4-5-20250929'].reportedContextWindow).toBe(200_000);
     for (const id of ['zero', 'negative', 'float', 'string', 'unsafe', 'missing']) {
-      expect(Object.hasOwn(byId[id], 'contextWindow')).toBe(false);
+      expect(Object.hasOwn(byId[id], 'reportedContextWindow')).toBe(false);
     }
-    for (const model of models) expect(Object.hasOwn(model, 'maxOutputTokens')).toBe(false);
+    // The user's own field and the output limit are never written by discovery.
+    for (const model of models) {
+      expect(Object.hasOwn(model, 'contextWindow')).toBe(false);
+      expect(Object.hasOwn(model, 'maxOutputTokens')).toBe(false);
+    }
   });
 
-  it('keeps contextWindow through the dedup step', async () => {
-    const fetchImpl = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            data: [
-              { id: 'claude-x', display_name: 'X', max_input_tokens: 200_000 },
-              { id: 'claude-x', max_input_tokens: 1_000_000 },
-            ],
-          }),
-          { status: 200 },
-        ),
-    );
-    await expect(
+  it('merges duplicate ids field by field, so a label and a limit from different entries both survive', async () => {
+    const page = (data: unknown[]) =>
+      vi.fn(async () => new Response(JSON.stringify({ data }), { status: 200 }));
+    const run = (data: unknown[]) =>
       discoverModels({
         type: 'anthropic',
         baseUrl: 'https://api.anthropic.com',
         apiKey: 'key',
         retry,
-        fetchImpl: fetchImpl as typeof fetch,
-      }),
-    ).resolves.toEqual([{ id: 'claude-x', label: 'X', contextWindow: 200_000 }]);
+        fetchImpl: page(data) as typeof fetch,
+      });
+    await expect(
+      run([
+        { id: 'claude-x', max_input_tokens: 1_000_000 },
+        { id: 'claude-x', display_name: 'X' },
+      ]),
+    ).resolves.toEqual([{ id: 'claude-x', label: 'X', reportedContextWindow: 1_000_000 }]);
+    // First non-empty value wins per field.
+    await expect(
+      run([
+        { id: 'claude-x', display_name: 'First', max_input_tokens: 200_000 },
+        { id: 'claude-x', display_name: 'Second', max_input_tokens: 1_000_000 },
+      ]),
+    ).resolves.toEqual([{ id: 'claude-x', label: 'First', reportedContextWindow: 200_000 }]);
   });
 
   it('does not record an OpenAI-compatible router context figure', async () => {
@@ -186,7 +192,10 @@ describe('discoverModels', () => {
       fetchImpl: fetchImpl as typeof fetch,
     });
     expect(models).toHaveLength(2);
-    for (const model of models) expect(Object.hasOwn(model, 'contextWindow')).toBe(false);
+    for (const model of models) {
+      expect(Object.hasOwn(model, 'reportedContextWindow')).toBe(false);
+      expect(Object.hasOwn(model, 'contextWindow')).toBe(false);
+    }
   });
 
   it.each([

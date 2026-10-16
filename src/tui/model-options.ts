@@ -1,4 +1,7 @@
+import { resolveModelProviderConfig } from '../config.js';
 import { AVAILABLE_MODELS, modelSupportsEffort } from '../models.js';
+import { providerPrefixOf } from '../provider-approvals.js';
+import type { AgentConfig } from '../types/runtime.js';
 import type { ProviderConfig, ResolvedSettings } from '../settings.js';
 import {
   normalizeProviderBaseUrl,
@@ -164,9 +167,14 @@ export function providerConfigFromDraft(
           : (model.label ?? previous?.label),
       manual: draft.manual ? true : undefined,
     };
-    // A window already on the entry wins: it may be the user's own, and a refresh must not undo it.
-    const contextWindow = previous?.contextWindow ?? model.contextWindow;
-    if (contextWindow !== undefined) models[model.id].contextWindow = contextWindow;
+    // The reported window is the endpoint's current answer, so it replaces whatever an earlier
+    // discovery wrote, and goes away when the endpoint no longer reports one. `contextWindow` is
+    // the user's: `...previous` carries it untouched and discovery never sets it.
+    if (model.reportedContextWindow !== undefined) {
+      models[model.id].reportedContextWindow = model.reportedContextWindow;
+    } else {
+      delete models[model.id].reportedContextWindow;
+    }
     if (!models[model.id].label) delete models[model.id].label;
     // Discovery now vouches for this id, so it no longer needs the manual
     // marker to survive the next refresh.
@@ -203,4 +211,18 @@ export function providerConfigForSave(
   const draft: ProviderSaveRequest =
     own && catalogOnly ? { ...request, type: own.type, baseURL: '', apiKey: '' } : request;
   return providerConfigFromDraft(draft, own, request.replaceModels);
+}
+
+/**
+ * A save that does not activate (a catalog refresh) updates `settings.provider` and leaves the
+ * live `modelInfo` as it was, so `/context`, the status line and compaction would keep the old
+ * window until restart. When the live selection belongs to `providerId`, re-resolve just its
+ * `modelInfo` from the provider `config.settings` now holds; the selection, effort, maxTokens and
+ * everything else stay as they are. Any other selection returns `config` itself.
+ */
+export function refreshLiveModelInfo(config: AgentConfig, providerId: string): AgentConfig {
+  const selection = (config.modelSelection ?? config.model).trim();
+  if (providerPrefixOf(selection) !== providerId) return config;
+  const { modelInfo } = resolveModelProviderConfig(config, selection, { trustedSelection: true });
+  return { ...config, modelInfo };
 }

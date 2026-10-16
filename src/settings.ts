@@ -223,6 +223,12 @@ export const effortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max'
 export const providerModelSchema = z.object({
   label: z.string().optional(),
   contextWindow: unboundedInt().positive().optional(),
+  /**
+   * The input limit the endpoint's model list reported. Written by discovery and overwritten on
+   * every refresh; ranks below a declared `contextWindow` and a learned ceiling, so a figure that
+   * is too large can still be corrected.
+   */
+  reportedContextWindow: unboundedInt().positive().optional(),
   maxOutputTokens: unboundedInt().positive().optional(),
   /** Whether this model accepts image input. Unknown models remain optimistic. */
   vision: z.boolean().optional(),

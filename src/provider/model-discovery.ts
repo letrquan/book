@@ -6,11 +6,11 @@ export interface DiscoveredModel {
   id: string;
   label?: string;
   /**
-   * The model's exact input limit, from Anthropic's `max_input_tokens`. Present only for a valid
-   * figure from an Anthropic endpoint: a persisted value counts as declared, and an
-   * OpenAI-compatible router's figure is not authoritative.
+   * The model's input limit as the endpoint reported it, from Anthropic's `max_input_tokens`.
+   * Present only for a valid figure from an Anthropic endpoint: an OpenAI-compatible router's
+   * figure is not authoritative. It is stored apart from the user's `contextWindow`.
    */
-  contextWindow?: number;
+  reportedContextWindow?: number;
 }
 
 import { systemClock, type Clock } from '../clock.js';
@@ -230,7 +230,7 @@ function parseModels(payload: unknown, type: ProviderProtocol): DiscoveredModel[
       Number.isSafeInteger(limit) &&
       limit > 0
     ) {
-      model.contextWindow = limit;
+      model.reportedContextWindow = limit;
     }
     models.push(model);
   }
@@ -298,7 +298,16 @@ export async function discoverModels(options: ModelDiscoveryOptions): Promise<Di
   const deduped = new Map<string, DiscoveredModel>();
   for (const model of discovered) {
     const existing = deduped.get(model.id);
-    deduped.set(model.id, existing?.label ? existing : model);
+    if (!existing) {
+      deduped.set(model.id, model);
+      continue;
+    }
+    // Field by field, first non-empty value wins: the entries may each know a different part.
+    const label = existing.label || model.label;
+    const reportedContextWindow = existing.reportedContextWindow ?? model.reportedContextWindow;
+    const merged: DiscoveredModel = { id: model.id, label };
+    if (reportedContextWindow !== undefined) merged.reportedContextWindow = reportedContextWindow;
+    deduped.set(model.id, merged);
   }
   const models = [...deduped.values()].sort((a, b) => a.id.localeCompare(b.id));
   if (models.length === 0) {

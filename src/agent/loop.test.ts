@@ -2246,6 +2246,42 @@ describe('runAgentLoop streaming render callbacks', () => {
     expect(store.get('router/test-overflow-model')).toBeGreaterThan(0);
   });
 
+  it('still records a learned ceiling when the model only has a reported window', async () => {
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield { type: 'error', error: 'maximum context length exceeded' };
+          return;
+        }
+        yield { type: 'text', content: 'recovered' };
+        yield { type: 'done' };
+      },
+    };
+    const store = new MemoryModelWindowStore();
+    const config = defaultConfig({
+      maxTurns: 1,
+      model: 'router/reported-model',
+      autoCompactEnabled: true,
+      modelInfo: { reportedContextWindow: 1_000_000 },
+    });
+
+    await runAgentLoop(
+      config,
+      createRegistry(),
+      'hello',
+      [userMsg('x'.repeat(100_000))],
+      noopCallbacks({ onCompact: async () => compactedForRetry() }),
+      'default',
+      { provider, isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(providerCalls).toBe(2);
+    expect(store.get('router/reported-model')).toBeGreaterThan(0);
+  });
+
   it('records floor(size * 0.8) on context overflow, not the refused size', async () => {
     let providerCalls = 0;
     const provider: Provider = {

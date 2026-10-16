@@ -426,6 +426,46 @@ describe('resolveContextWindow', () => {
   });
 });
 
+describe('reportedContextWindow resolution', () => {
+  // The family table sizes claude-sonnet-4-5 differently from every figure below.
+  const model = 'claude-sonnet-4-5-20250929';
+
+  it('ranks below a declared contextWindow', () => {
+    expect(
+      resolveContextWindow({
+        model,
+        modelInfo: { contextWindow: 150_000, reportedContextWindow: 1_000_000 },
+      }),
+    ).toEqual({ window: 150_000, source: 'declared' });
+  });
+
+  it('ranks below a learned ceiling', () => {
+    const store = new MemoryModelWindowStore({
+      [model]: { contextWindow: 55_000, learnedAt: 1000 },
+    });
+    expect(
+      resolveContextWindow({ model, modelInfo: { reportedContextWindow: 1_000_000 } }, store),
+    ).toEqual({ window: 55_000, source: 'learned' });
+  });
+
+  it('ranks above the family table', () => {
+    expect(resolveFamilyContextWindow(model)).not.toBe(345_678);
+    expect(resolveContextWindow({ model, modelInfo: { reportedContextWindow: 345_678 } })).toEqual({
+      window: 345_678,
+      source: 'reported',
+    });
+    expect(resolveContextLimit({ model, modelInfo: { reportedContextWindow: 345_678 } })).toBe(
+      345_678,
+    );
+  });
+
+  it('is not a declaration: the overflow ratchet stays on', () => {
+    expect(hasDeclaredContextWindow({ modelInfo: { reportedContextWindow: 1_000_000 } })).toBe(
+      false,
+    );
+  });
+});
+
 describe('resolveContextLimit', () => {
   it('returns the declared window when present', () => {
     expect(resolveContextLimit({ modelInfo: { contextWindow: 200_000 } })).toBe(200_000);
