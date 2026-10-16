@@ -126,6 +126,24 @@ function pathKey(path: string): string {
   return process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
 }
 
+/**
+ * The key `skillRoots` dedupes roots by: the real path, so a home reached through a link and a
+ * workspace given by its real path name one root. A root that does not exist has no real path
+ * and falls back to its resolved path.
+ *
+ * Only for comparing roots. {@link pathKey} stays the path as written because it also builds the
+ * skill id, which keys consent and execution overrides.
+ */
+function rootKey(path: string): string {
+  let real: string;
+  try {
+    real = realpathSync.native(path);
+  } catch {
+    real = resolve(path);
+  }
+  return process.platform === 'win32' ? real.toLowerCase() : real;
+}
+
 function isInside(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
@@ -197,10 +215,11 @@ export function skillRoots(workspace: string, options: DiscoverSkillsOptions = {
   }
   const byPath = new Map<string, SkillRoot>();
   for (const root of roots) {
-    const key = pathKey(root.path);
+    const key = rootKey(root.path);
     // A workspace at `$HOME` walks the user's own roots again as project roots. They stay
     // user roots: a project skill asks before the model may run it, and the user's own
-    // skills must not start asking because of where Book was launched (#429).
+    // skills must not start asking because of where Book was launched (#429). Compared by
+    // real path, so a home reached through a link counts its own roots once too (#449).
     if (byPath.get(key)?.source === 'user') continue;
     byPath.set(key, root);
   }

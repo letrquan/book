@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import {
   applySkillOverrides,
   buildSkillListing,
@@ -367,6 +367,105 @@ describe('discoverSkills', () => {
     }
     // The one project-only root at that directory is still a project root.
     expect(at(join(dir, '.opencode', 'skills')).map((root) => root.source)).toEqual(['project']);
+  });
+
+  describe('a home directory reached through a link (#449)', () => {
+    let realHome: string;
+    let linkedHome: string;
+
+    function writeDemoSkill(root: string): string {
+      const skillDir = join(root, '.claude', 'skills', 'demo');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        ['---', 'name: demo', 'description: Demo skill', '---', 'body'].join('\n'),
+      );
+      return join(skillDir, 'SKILL.md');
+    }
+
+    beforeEach(() => {
+      realHome = join(dir, 'realhome');
+      linkedHome = join(dir, 'linkhome');
+      mkdirSync(realHome, { recursive: true });
+      symlinkSync(realHome, linkedHome, 'junction');
+    });
+
+    it('counts the user roots once, as user roots, when the workspace is given by its real path', () => {
+      writeDemoSkill(realHome);
+      const options = {
+        homeDir: linkedHome,
+        bookHomeDir: join(linkedHome, '.book'),
+        projectRoot: realHome,
+      };
+
+      const claudeRoots = skillRoots(realHome, options).filter((root) => root.kind === 'claude');
+      expect(claudeRoots.map((root) => [root.source, root.path])).toEqual([
+        ['user', join(linkedHome, '.claude', 'skills')],
+      ]);
+
+      const demos = discoverSkillsFromDisk(realHome, {}, options).filter(
+        (found) => found.name === 'demo',
+      );
+      expect(demos.map((found) => [found.source, found.shadowed.length])).toEqual([['user', 0]]);
+    });
+
+    // The id keys consent and execution overrides. Comparing roots by real path must not move it
+    // for a skill nothing folds: here a project skill under a linked directory.
+    it('builds the id of a skill under a linked path from the path as written', () => {
+      const realRepo = join(dir, 'realrepo');
+      const linkedRepo = join(dir, 'linkrepo');
+      mkdirSync(realRepo, { recursive: true });
+      symlinkSync(realRepo, linkedRepo, 'junction');
+      const skillDir = join(realRepo, '.book', 'skills', 'demo');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        ['---', 'name: demo', 'description: Demo skill', '---', 'body'].join('\n'),
+      );
+
+      const [demo] = discoverSkills(linkedRepo, {}, { projectRoot: linkedRepo });
+
+      const asWritten = join(linkedRepo, '.book', 'skills', 'demo', 'SKILL.md');
+      expect(demo.source).toBe('project');
+      expect(demo.id).toBe(
+        `book:${process.platform === 'win32' ? resolve(asWritten).toLowerCase() : resolve(asWritten)}`,
+      );
+    });
+
+    it('keeps a skill id built from the path as written, not its real path', () => {
+      const entry = writeDemoSkill(realHome);
+      const linkedEntry = join(linkedHome, '.claude', 'skills', 'demo', 'SKILL.md');
+      const options = {
+        homeDir: linkedHome,
+        bookHomeDir: join(linkedHome, '.book'),
+        projectRoot: realHome,
+      };
+
+      const [demo] = discoverSkillsFromDisk(realHome, {}, options).filter(
+        (found) => found.name === 'demo',
+      );
+
+      // Skill ids key consent and execution overrides, so they must not move when the roots are
+      // compared by real path.
+      const lowerOnWindows = (path: string) =>
+        process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
+      expect(demo.id).toBe(`claude:${lowerOnWindows(linkedEntry)}`);
+      expect(demo.id).not.toBe(`claude:${lowerOnWindows(entry)}`);
+    });
+  });
+
+  // `BOOK_HOME` elsewhere: `<home>/.book/skills` is no user root, so it is a project root.
+  it('keeps <home>/.book/skills a project root when BOOK_HOME is elsewhere', () => {
+    const elsewhere = join(dir, 'elsewhere');
+    mkdirSync(elsewhere, { recursive: true });
+
+    const roots = skillRoots(dir, { homeDir: dir, bookHomeDir: elsewhere, projectRoot: dir });
+
+    const at = (path: string) => roots.filter((root) => root.path === path);
+    expect(at(join(dir, '.book', 'skills')).map((root) => root.source)).toEqual(['project']);
+    expect(at(join(elsewhere, 'skills')).map((root) => root.source)).toEqual(['user']);
+    // The user roots under home are still folded, as they are for any home-directory session.
+    expect(at(join(dir, '.claude', 'skills')).map((root) => root.source)).toEqual(['user']);
   });
 
   it.skipIf(process.platform !== 'win32')(

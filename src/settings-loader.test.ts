@@ -16,6 +16,7 @@ import {
   workspaceLayerThatEnabledSandbox,
 } from './settings-loader.js';
 import { hookFingerprint } from './hook-approvals.js';
+import { collectWithheldProjectNotices } from './project-approval-notices.js';
 import { updateWorkspaceTrust } from './workspace-trust.js';
 import {
   persistWorkspaceProviderChoice,
@@ -507,6 +508,99 @@ describe('resolveSettings — layered merging', () => {
         false,
       );
       expect(settingsLayerPaths(dir, undefined, { home: userDir })).toHaveLength(3);
+    });
+
+    // #449. With `BOOK_HOME` elsewhere, `<home>/.book/settings.json` is no one's user file: it is
+    // the workspace's checked-in layer like any repository's, and is gated like it.
+    it('gates <home>/.book/settings.json as a project layer when BOOK_HOME is elsewhere', () => {
+      const elsewhere = mkdtempSync(join(tmpdir(), 'book-user-elsewhere-'));
+      try {
+        vi.stubEnv('HOME', dir);
+        vi.stubEnv('USERPROFILE', dir);
+        vi.stubEnv('BOOK_HOME', elsewhere);
+        mkdirSync(join(dir, '.book'), { recursive: true });
+        writeFileSync(
+          join(dir, '.book', 'settings.json'),
+          JSON.stringify({
+            hooks: { PreToolUse: [{ command: 'home-hook' }] },
+            permissions: { allow: ['Bash(curl *)'] },
+            mcp: { projectServers: { evil: { fingerprint: 'abc123', choice: 'approved' } } },
+          }),
+        );
+
+        expect(isUserSettingsFile(join(dir, '.book', 'settings.json'))).toBe(false);
+        expect(settingsLayerPaths(dir)).toEqual([
+          join(elsewhere, 'settings.json'),
+          join(dir, '.book', 'settings.json'),
+          join(dir, '.book', 'settings.local.json'),
+        ]);
+
+        // Withheld exactly as for any repository: nothing runs or is allowed, and an approval
+        // the file carries for itself is dropped.
+        const withheld = resolveSettings(dir);
+        expect(withheld.hooks.PreToolUse).toEqual([]);
+        expect(withheld.permissions.allow).toEqual([]);
+        expect(withheld.mcp.projectServers).toEqual({});
+
+        // ...and released only by a decision in the user-global store.
+        updateWorkspaceTrust(
+          dir,
+          (trust) => {
+            trust.hookEntries[hookFingerprint('PreToolUse', { command: 'home-hook', env: {} })] =
+              'approved';
+            trust.permissionAllowRules['Bash(curl *)'] = 'approved';
+          },
+          join(elsewhere, 'trust.json'),
+        );
+        const released = resolveSettings(dir);
+        expect(released.hooks.PreToolUse.map((hook) => hook.command)).toEqual(['home-hook']);
+        expect(released.permissions.allow).toEqual(['Bash(curl *)']);
+      } finally {
+        rmSync(elsewhere, { recursive: true, force: true });
+      }
+    });
+
+    // #449. A repository plants `.book` as a link to the user's own directory. The file is still
+    // read once, as the user's, so the link neither doubles an accumulating rule nor makes a
+    // gate out of the user's own settings — and it widens nothing: the user file was trusted
+    // before the link existed.
+    it('reads the user file once when a repository links its .book to the home .book', () => {
+      const repo = join(dir, 'repo');
+      mkdirSync(repo, { recursive: true });
+      mkdirSync(join(userDir, '.book'), { recursive: true });
+      writeFileSync(
+        join(userDir, '.book', 'settings.json'),
+        JSON.stringify({
+          model: 'user-model',
+          hooks: { Stop: [{ command: 'user-hook' }] },
+          permissions: { allow: ['Read(*)'] },
+        }),
+      );
+      symlinkSync(join(userDir, '.book'), join(repo, '.book'), 'junction');
+      vi.stubEnv('HOME', userDir);
+      vi.stubEnv('USERPROFILE', userDir);
+      vi.stubEnv('BOOK_HOME', undefined);
+
+      const viaRepo = resolveSettings(repo);
+      const atHome = resolveSettings(userDir);
+
+      expect(viaRepo.permissions.allow).toEqual(['Read(*)']);
+      expect(viaRepo.hooks.Stop.map((hook) => hook.command)).toEqual(['user-hook']);
+      expect(viaRepo.model).toBe('user-model');
+      expect(viaRepo.permissions).toEqual(atHome.permissions);
+      expect(viaRepo.hooks).toEqual(atHome.hooks);
+      expect(settingsLayerPaths(repo)).toEqual([
+        join(userDir, '.book', 'settings.json'),
+        join(repo, '.book', 'settings.local.json'),
+      ]);
+      expect(isUserSettingsFile(join(repo, '.book', 'settings.json'))).toBe(true);
+      expect(
+        collectWithheldProjectNotices({
+          workspace: repo,
+          settings: viaRepo,
+          settingsEnabled: true,
+        }),
+      ).toEqual([]);
     });
   });
 

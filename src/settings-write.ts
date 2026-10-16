@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { getNestedValue, setNestedValue } from './cli/utils.js';
-import { resolveSettings } from './settings-loader.js';
+import { isUserSettingsFile, resolveSettings } from './settings-loader.js';
 import {
   formatSettingsDiagnostics,
   readSettingsDocument,
@@ -218,6 +218,10 @@ function shadowingScopes(
   const shadowing: SettingShadow[] = [];
   for (const candidate of SCOPES_RESOLVED_AFTER[scope]) {
     const layer = readScopeDocument(candidate, workspace);
+    // At `$HOME` with `BOOK_HOME` unset the project file is the user file, which the loader reads
+    // once, as the user layer: it cannot shadow the write that just changed it (#449). The local
+    // layer and the `--settings` override below are separate files and stay reported.
+    if (candidate === 'project' && isUserSettingsFile(layer.path)) continue;
     if (layer.status === 'unreadable') {
       shadowing.push({
         scope: candidate,

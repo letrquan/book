@@ -383,6 +383,79 @@ describe('book trust targeting', () => {
 });
 
 /**
+ * #449 (via #429). At `$HOME` with `BOOK_HOME` unset, `~/.book/settings.json` is the user's own
+ * file and has nothing to decide; with `BOOK_HOME` elsewhere the same file is a repository layer
+ * like any other, and its declarations are decidable.
+ */
+describe('book trust at the home directory', () => {
+  let home: string;
+  const homeFile = () => join(home, '.book', 'settings.json');
+  const declarations = {
+    hooks: { PreToolUse: [{ command: 'lint-staged.sh' }] },
+    permissions: { allow: ['Bash(npm run *)'] },
+  };
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'book-trust-cmd-userhome-'));
+    mkdirSync(join(home, '.book'), { recursive: true });
+    writeFileSync(homeFile(), JSON.stringify(declarations));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('has nothing to decide, and records nothing, when BOOK_HOME is unset', async () => {
+    vi.stubEnv('BOOK_HOME', undefined);
+    const trustFile = join(home, '.book', 'trust.json');
+    const fingerprint = hookFingerprint('PreToolUse', { command: 'lint-staged.sh', env: {} });
+
+    const hooks = await run('hook', undefined, { allPending: true, workspace: home });
+    expect(hooks.exitCode).toBeUndefined();
+    expect(hooks.out).toContain('No project-declared hooks are awaiting a decision');
+
+    const rules = await run('rule', undefined, { allPending: true, workspace: home });
+    expect(rules.exitCode).toBeUndefined();
+    expect(rules.out).toContain('No project-declared allow rules are awaiting a decision');
+
+    // Naming one is refused: the user's own declaration is not a repository's to approve.
+    const named = await run('hook', fingerprint, { workspace: home });
+    expect(named.exitCode).toBe(1);
+    expect(named.err).toContain('no project-declared hook');
+    expect(named.err).toContain('Nothing is awaiting a decision');
+    const namedRule = await run('rule', 'Bash(npm run *)', { workspace: home });
+    expect(namedRule.exitCode).toBe(1);
+    expect(namedRule.err).toContain('declares no project allow rule');
+
+    expect(existsSync(trustFile)).toBe(false);
+    expect(resolveSettings(home).hooks.PreToolUse).toEqual([
+      { command: 'lint-staged.sh', env: {} },
+    ]);
+  });
+
+  it('still decides the same declarations when BOOK_HOME is elsewhere', async () => {
+    vi.stubEnv('BOOK_HOME', bookHome);
+    const fingerprint = hookFingerprint('PreToolUse', { command: 'lint-staged.sh', env: {} });
+    expect(resolveSettings(home).hooks.PreToolUse).toEqual([]);
+
+    const hooks = await run('hook', undefined, { allPending: true, workspace: home });
+    const rules = await run('rule', undefined, { allPending: true, workspace: home });
+
+    expect(hooks.exitCode).toBeUndefined();
+    expect(rules.exitCode).toBeUndefined();
+    const trust = loadWorkspaceTrust(home, storePath());
+    expect(trust.hookEntries).toEqual({ [fingerprint]: 'approved' });
+    expect(trust.permissionAllowRules).toEqual({ 'Bash(npm run *)': 'approved' });
+    expect(resolveSettings(home).hooks.PreToolUse).toEqual([
+      { command: 'lint-staged.sh', env: {} },
+    ]);
+  });
+});
+
+/**
  * #300. `book trust dir` is the one way a repository-declared directory becomes an honored root,
  * and the whole safety of that decision rests on it being keyed and displayed by the directory's
  * **real** path: the repository chooses the text, and a symlink can make that text point anywhere.

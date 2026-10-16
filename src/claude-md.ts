@@ -58,7 +58,8 @@ export function discoverProjectInstructions(
     // A file is loaded once, at its first scope. `$HOME` is an ancestor of almost every
     // workspace, so the walk below meets `~/.claude/CLAUDE.md` again, and a workspace inside
     // `BOOK_HOME` meets its `AGENTS.md`; both stay user instructions (#430). Real paths, so a
-    // linked home, or a CLAUDE.md linked to the AGENTS.md beside it, counts once too.
+    // linked home, or a CLAUDE.md linked to the AGENTS.md beside it, counts once too. A CLAUDE.md
+    // linked to CLAUDE.local.md loads that file at the link's own project position, not as local.
     const key = realPathOf(path);
     if (loaded.has(key)) return;
     loaded.add(key);

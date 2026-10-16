@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -289,6 +289,76 @@ describe('shadow projection', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.shadowedBy).toEqual([]);
+  });
+});
+
+/**
+ * #449. A session at `$HOME` with `BOOK_HOME` unset has `~/.book/settings.json` as its user layer
+ * *and* as its project file. The loader reads it once, as the user's; the shadow report has to
+ * agree, or `book config set` warns that a write is overridden by the very file it just wrote.
+ */
+describe('a workspace at the home directory (#449)', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'book-settings-write-userhome-'));
+    mkdirSync(join(home, '.book'), { recursive: true });
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const homeLayer = (name: 'settings.json' | 'settings.local.json') => join(home, '.book', name);
+  const writeAtHome = (key: string, value: unknown) =>
+    applySettingWrite({ workspace: home, key, value, scope: 'user' });
+
+  it('does not report the user file as a project layer shadowing its own write', () => {
+    vi.stubEnv('BOOK_HOME', undefined);
+    writeFileSync(homeLayer('settings.json'), JSON.stringify({ model: 'old' }));
+
+    const result = writeAtHome('model', 'x');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.path).toBe(homeLayer('settings.json'));
+    expect(result.shadowedBy).toEqual([]);
+  });
+
+  it('reports the project file as a shadow when BOOK_HOME is elsewhere', () => {
+    const elsewhere = mkdtempSync(join(tmpdir(), 'book-settings-write-elsewhere-'));
+    try {
+      vi.stubEnv('BOOK_HOME', elsewhere);
+      writeFileSync(homeLayer('settings.json'), JSON.stringify({ model: 'project-model' }));
+
+      const result = writeAtHome('model', 'x');
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.error);
+      expect(result.path).toBe(join(elsewhere, 'settings.json'));
+      expect(result.shadowedBy).toEqual([
+        { scope: 'project', path: homeLayer('settings.json'), unreadable: false },
+      ]);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('still reports the local layer', () => {
+    vi.stubEnv('BOOK_HOME', undefined);
+    writeFileSync(homeLayer('settings.json'), JSON.stringify({ model: 'old' }));
+    writeFileSync(homeLayer('settings.local.json'), JSON.stringify({ model: 'local-model' }));
+
+    const result = writeAtHome('model', 'x');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.shadowedBy).toEqual([
+      { scope: 'local', path: homeLayer('settings.local.json'), unreadable: false },
+    ]);
   });
 });
 
