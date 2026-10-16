@@ -88,12 +88,12 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
-- **A failed `Check` keeps its stdout when it also wrote stderr** (#473). A check that exited
-  non-zero reported `stderr || stdout`, so a runner that prints its failing assertions on stdout
-  while npm warns on stderr lost them: the model never saw them and neither did the transcript. The
-  message stays stderr, and stdout now travels as the result's output, the way a failed `Bash` does,
-  under the same 50 KB bound every tool result gets. A check that wrote nothing to stderr is
-  unchanged: its stdout is the message and is not repeated.
+- **A failed `Check` reports the way a failed `Bash` does** (#473). A check that exited non-zero
+  reported `stderr || stdout`, so a runner that prints its failing assertions on stdout while npm
+  warns on stderr lost them: the model never saw them and neither did the transcript. The message is
+  now stderr, or `Exit code: N` when stderr is blank, and stdout is always the output, under the
+  same 50 KB bound every tool result gets. The read-only-git note reads both streams, and a
+  timed-out check keeps both its stdout and its stderr.
 - **Ctrl+E expands the newest truncated tool row, and only that row's footer names the key**
   (#470). In the compact transcript every cut diff, output and failed-command footer read
   `(Ctrl+E)`, but the key expanded the latest row, so a 150-line `Write` followed by a capped `Edit`
