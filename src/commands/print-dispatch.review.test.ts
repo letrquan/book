@@ -22,6 +22,8 @@ import type { AgentManager } from '../agents/manager.js';
 import type { ReviewJsonReport } from '../review/host.js';
 import { createAgentRunContext, type AgentRunContext } from '../types/runs.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { aggregateToolUse } from '../tool-telemetry.js';
+import type { ToolUseRecord } from '../types/tool-telemetry.js';
 
 let workspace: string;
 let home: string;
@@ -61,6 +63,7 @@ interface SpawnRequest {
   parentSessionId?: string;
   rootRunId?: string;
   parentRunId?: string;
+  notifyParentOnCompletion?: boolean;
 }
 
 interface StubManager {
@@ -282,6 +285,54 @@ describe('book -p /review — scope forms', () => {
   });
 });
 
+describe('book -p /review — session attribution (#448)', () => {
+  /**
+   * The tool-use record a child agent's call leaves behind. The manager stamps a
+   * child run with `parentSessionId ?? 'agent:<id>'` (`agents/manager.ts`), and the
+   * loop copies that run context's session into `ToolUseRecord.sessionId`.
+   */
+  function toolUseRecord(request: SpawnRequest, index: number): ToolUseRecord {
+    return {
+      ts: 1_000 + index,
+      session: 'trace-of-the-print-run',
+      sessionId: request.parentSessionId ?? `agent:agent-${index}`,
+      tool: 'Read',
+      status: 'success',
+      isFailure: false,
+      retries: 0,
+      model: 'test-model',
+      subagent: true,
+      agentRole: 'reviewer',
+    };
+  }
+
+  it('spawns every reviewer, lens and verifier under the host session and run', async () => {
+    const stub = stubManager(deepResults());
+    const run = reviewRunContext();
+
+    await resolvePrintCommand('/review --deep', env(stub, run));
+
+    expect(stub.spawns).toHaveLength(5);
+    for (const spawn of stub.spawns) {
+      expect(spawn).toMatchObject({
+        parentSessionId: 'session-review-1',
+        rootRunId: run.rootRunId,
+        parentRunId: run.runId,
+      });
+    }
+  });
+
+  it('counts the whole review as one session in tool-stats', async () => {
+    const stub = stubManager(deepResults());
+
+    await resolvePrintCommand('/review --deep', env(stub));
+
+    const aggregate = aggregateToolUse(stub.spawns.map(toolUseRecord));
+    expect(aggregate.totalCalls).toBe(5);
+    expect(aggregate.sessions).toBe(1);
+  });
+});
+
 describe('book -p /review — paths that must end the run', () => {
   it('refuses --fix and never spawns a patcher', async () => {
     const stub = stubManager(deepResults());
@@ -346,10 +397,11 @@ describe('book -p /review — paths that must end the run', () => {
     for (const spawn of stub.spawns) {
       expect(spawn.rootRunId).toBe(runContext.rootRunId);
       expect(spawn.parentRunId).toBe(runContext.runId);
-      // Not the parent session: that would route each finished reviewer's
-      // completion notification back into the host as an extra model turn,
-      // re-narrating a report the host already rendered.
-      expect(spawn.parentSessionId).toBeUndefined();
+      // Owned by the host session (#448), but never delivered to it: a finished
+      // reviewer's completion notification would re-narrate a report the host already
+      // rendered as an extra model turn. Ownership and delivery are separate switches.
+      expect(spawn.parentSessionId).toBe(runContext.sessionId);
+      expect(spawn.notifyParentOnCompletion).toBe(false);
     }
   });
 

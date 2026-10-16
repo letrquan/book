@@ -21,12 +21,15 @@ import type { ReviewAgentRunner } from './orchestration.js';
  * Ownership and delivery are different questions; conflating them is what cost
  * the review its progress display.
  *
- * A host with no session to attach to (print mode) simply omits it.
+ * It is also the session id each agent's tool-use telemetry is recorded under, so a
+ * host passes it even when nothing displays the agents (print mode and the SDK):
+ * left out, every agent's records name a made-up `agent:<id>` session (#448). Only a
+ * host with no stored session at all omits it.
  */
 export interface ReviewRunAttribution {
   rootRunId?: string;
   parentRunId?: string;
-  /** Session that owns the spawned agents, for progress display only. */
+  /** Session that owns the spawned agents: their panel, and their telemetry session id. */
   parentSessionId?: string;
 }
 
