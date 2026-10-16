@@ -782,6 +782,29 @@ function mangledEditProvider(): Provider {
 }
 
 /**
+ * A provider whose route delivers every Edit with `"arguments": ""` (#403), turn after turn. The
+ * model's JSON was never the problem: the arguments were dropped on the way to Book. A turn listed
+ * in `schemaErrorTurns` (1-based) sends an Edit with arguments that parse but miss the required
+ * fields instead, which is the model's own mistake.
+ */
+function emptyArgumentsProvider(schemaErrorTurns: number[] = []): Provider {
+  let turn = 0;
+  return {
+    id: 'scripted',
+    stream: async function* () {
+      turn++;
+      yield {
+        type: 'tool_call',
+        toolCall: schemaErrorTurns.includes(turn)
+          ? { id: `schema-${turn}`, name: 'Edit', arguments: { filePath: 'a.ts' } }
+          : { id: `empty-${turn}`, name: 'Edit', arguments: {}, emptyOnWire: true },
+      };
+      yield { type: 'done' };
+    },
+  } as unknown as Provider;
+}
+
+/**
  * A provider that calls a tool no registry holds on every turn. The call is refused before it
  * runs, so no permission was ever asked for, and nothing a run can grant makes the name exist:
  * the streak has to stop with the remedy for calls that could not run as sent.
@@ -880,6 +903,58 @@ describe('the refusal brake names the cause it stopped on', () => {
     expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
     expect(outcome?.message).toContain('never parsed as JSON');
     expect(outcome?.message).not.toContain('grant the permission');
+  });
+
+  it('blames the route when every refusal in the streak is an empty-arguments call (#403)', async () => {
+    const { outcome } = await runRefusals(emptyArgumentsProvider(), 'bypassPermissions');
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('provider route');
+    expect(outcome?.message).toContain('invalid_json_arguments:empty');
+    expect(outcome?.message).toContain('the model is not at fault');
+    expect(outcome?.message).not.toContain('the model has to correct them');
+    expect(outcome?.message).not.toContain('grant the permission');
+  });
+
+  it('keeps the malformed-call text when the streak mixes an empty call with a schema error', async () => {
+    // The schema error is the model's own, so "the model has to correct them" is still true of
+    // the streak, and it stays the whole message about these calls.
+    const { outcome } = await runRefusals(emptyArgumentsProvider([2]), 'bypassPermissions');
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('the model has to correct them');
+    expect(outcome?.message).not.toContain('the model is not at fault');
+  });
+
+  it('still names the permission remedy next to the route when both refused', async () => {
+    // A route that drops arguments does not excuse a Write that was refused for permission.
+    let turn = 0;
+    const provider = {
+      id: 'scripted',
+      stream: async function* () {
+        turn++;
+        yield {
+          type: 'tool_call',
+          toolCall: { id: `empty-${turn}`, name: 'Edit', arguments: {}, emptyOnWire: true },
+        };
+        yield {
+          type: 'tool_call',
+          toolCall: {
+            id: `write-${turn}`,
+            name: 'Write',
+            arguments: { filePath: 'a.ts', content: 'x' },
+          },
+        };
+        yield { type: 'done' };
+      },
+    } as unknown as Provider;
+
+    const { outcome } = await runRefusals(provider, 'default');
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    expect(outcome?.message).toContain('the model is not at fault');
+    expect(outcome?.message).toContain('grant the permission');
+    expect(outcome?.message).not.toContain('the model has to correct them');
   });
 
   it('stops a streak of calls to a tool that does not exist, and names that as the cause', async () => {

@@ -107,6 +107,37 @@ describe('refusalKind', () => {
     expect(refusalKind(blocked('arguments_not_allowed'))).toBe('inactive');
   });
 
+  it('blames the route, not the model, for a call that arrived with empty arguments (#403)', () => {
+    const invalidJson = (shape: string): ToolResult =>
+      toolFailure('refused', {
+        code: 'invalid_json_arguments',
+        status: 'blocked',
+        details: { shape },
+      });
+    expect(refusalKind(invalidJson('empty'))).toBe('route');
+    // Every other shape is the model's own JSON, and a result with no shape at all stays malformed.
+    for (const shape of [
+      'truncated_start',
+      'truncated',
+      'concatenated',
+      'single_quoted',
+      'syntax',
+    ]) {
+      expect(refusalKind(invalidJson(shape)), shape).toBe('malformed');
+    }
+    expect(refusalKind(blocked('invalid_json_arguments'))).toBe('malformed');
+    // The shape only means anything on an invalid_json_arguments refusal.
+    expect(
+      refusalKind(
+        toolFailure('x', {
+          code: 'invalid_arguments',
+          status: 'blocked',
+          details: { shape: 'empty' },
+        }),
+      ),
+    ).toBe('malformed');
+  });
+
   it('counts a plain permission refusal as a permission', () => {
     expect(refusalKind(blocked('permission_denied'))).toBe('permission');
   });
@@ -152,6 +183,15 @@ describe('the remedy catalog', () => {
     expect(REFUSAL_REMEDIES.inactive).toContain('ToolSearch');
     expect(REFUSAL_REMEDIES.inactive).not.toContain('grant the permission');
     expect(kinds).toContain('inactive');
+  });
+
+  it('lists the route kind right after malformed, and names the route as the cause (#403)', () => {
+    expect(REFUSAL_KIND_ORDER.indexOf('route')).toBe(REFUSAL_KIND_ORDER.indexOf('malformed') + 1);
+    expect(REFUSAL_REMEDIES.route).toContain('invalid_json_arguments:empty');
+    expect(REFUSAL_REMEDIES.route).toContain('provider route');
+    expect(REFUSAL_REMEDIES.route).toContain('the model is not at fault');
+    expect(REFUSAL_REMEDIES.route).not.toContain('the model has to correct them');
+    expect(REFUSAL_REMEDIES.route).not.toContain('grant the permission');
   });
 
   it('points a streak of unparsed arguments at the route, not at a permission', () => {
