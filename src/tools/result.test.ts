@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
+import { enterIsolatedHome, leaveIsolatedHome } from '../test/isolated-book-home.js';
 import type { ToolContext } from '../types/tools.js';
 import { createRegistry } from './registry.js';
 import { fileTools } from './file.js';
@@ -10,6 +11,7 @@ import {
   readLineMetadata,
   readResultMetadata,
   boundToolResultOutput,
+  TOOL_RESULT_MAX_BYTES,
   replaceToolResult,
   toolFailure,
   toolResultModelContent,
@@ -79,6 +81,25 @@ describe('ToolResult V2', () => {
       expect(content).toContain('Fix: Re-read the target and adjust.');
     } finally {
       rmSync(artifactRoot, { recursive: true, force: true });
+    }
+  });
+
+  // The default artifact directory follows BOOK_HOME as it is when the output is clipped, not as it
+  // was when this module was first imported (#449): a suite pins the home after its imports run.
+  it('spills clipped output under the BOOK_HOME set after the module was imported', async () => {
+    const home = enterIsolatedHome('book-result-home-');
+    try {
+      const huge = toolSuccess('y'.repeat(TOOL_RESULT_MAX_BYTES + 1_000));
+      const bounded = await boundToolResultOutput(huge, process.cwd());
+      const directory = join(home.home, 'tool-output');
+      const artifacts = readdirSync(directory);
+      expect(artifacts).toHaveLength(1);
+      expect(readFileSync(join(directory, artifacts[0]!), 'utf8')).toBe(
+        'y'.repeat(TOOL_RESULT_MAX_BYTES + 1_000),
+      );
+      expect(toolResultModelContent(bounded)).toContain(basename(artifacts[0]!));
+    } finally {
+      leaveIsolatedHome(home);
     }
   });
 

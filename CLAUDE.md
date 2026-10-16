@@ -127,7 +127,8 @@ src/
     notebook.ts         NotebookEdit
     skills-tool.ts      InvokeSkill / ReadSkillResource
     diff.ts             Unified diff generator
-  test/                 Shared test doubles (scripted-provider, async-event-collector)
+  test/                 Shared test doubles (scripted-provider, async-event-collector,
+                        isolated-book-home)
   tui/                  Ink/React TUI (see below) — a leaf of the import graph
   tui/__benchmarks__/   ui.bench.tsx (bench:ui), runtime.bench.ts (bench:runtime)
 ```
@@ -189,7 +190,7 @@ npm run test:watch     # watch mode (base config)
 
 - Tests are co-located with source (`*.test.ts` / `*.test.tsx`; contract tests are `*.contract.test.ts`).
 - Use `mkdtempSync` for temp directories (cleanup via `afterEach`).
-- Shared test doubles live in `src/test/` (`scripted-provider`, `async-event-collector`).
+- Shared test doubles live in `src/test/` (`scripted-provider`, `async-event-collector`, `isolated-book-home`: call `isolateBookHome()` at the top level of any suite that drives the print-mode runner).
 
 ## Development
 

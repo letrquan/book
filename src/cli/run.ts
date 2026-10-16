@@ -50,7 +50,10 @@ import { resolveBookHome } from '../book-home.js';
 import { isReaderGoneError } from '../reader-gone.js';
 import { cleanupRunStatus } from '../run-status.js';
 
-const SESSION_ROOT = join(resolveBookHome(), 'sessions');
+/** Read at each use, so a BOOK_HOME set after this module loads is honoured. */
+function sessionRoot(): string {
+  return join(resolveBookHome(), 'sessions');
+}
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
 const EXIT_ALT_SCREEN = '\x1b[?1049l';
 /**
@@ -290,7 +293,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         const mode = resolvePermissionMode(config.settings, options.permissionMode);
 
         const sessionStore = (options.sessionPersistence as boolean)
-          ? new SessionStore(SESSION_ROOT)
+          ? new SessionStore(sessionRoot())
           : undefined;
         const bootstrap = resolveSessionBootstrap(sessionStore, {
           cwd: config.workspace,
@@ -378,7 +381,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     }
 
     const sessionStore = (options.sessionPersistence as boolean)
-      ? new SessionStore(SESSION_ROOT)
+      ? new SessionStore(sessionRoot())
       : undefined;
     const ephemeralRewind = sessionStore
       ? undefined
