@@ -97,6 +97,16 @@ interface ManagerOptions {
   createStore?: (repoHash: string, root: string | undefined, enabled: boolean) => AgentStore;
 }
 
+/** An apply in flight: see `AgentManager.applies`. */
+interface RunningApply {
+  /** Stops the whole apply, the cherry-pick included. */
+  stop: AbortController;
+  /** Stops its reads only. */
+  dispose: AbortController;
+  /** Settles, either way, once the apply has ended and its cleanup has run. */
+  settled: Promise<unknown>;
+}
+
 interface SubscribeOptions {
   snapshot?: boolean;
 }
@@ -184,6 +194,18 @@ export class AgentManager {
   private readonly snapshotPromises = new Map<string, Promise<AgentSnapshot>>();
   private readonly queue: string[] = [];
   private readonly controllers = new Map<string, AbortController>();
+  /**
+   * Applies in flight, per agent. An apply runs after its agent has finished, so no run controller
+   * covers it; `stop` and `dispose` abort these instead. A set because one agent can be applied
+   * more than once at a time.
+   *
+   * Two controllers because the two ways in are not the same stop. `stop` ends the whole apply,
+   * including a cherry-pick that is running, whose rollback it then waits for (`settled`).
+   * `dispose` ends only the reads: it is synchronous and the process usually exits right after it,
+   * so a pick it killed would never be rolled back and the operator's repository would be left
+   * mid-pick. The pick that is running finishes, bounded by its own timeout.
+   */
+  private readonly applies = new Map<string, Set<RunningApply>>();
   private readonly questionResolvers = new Map<string, (response: UserQuestionResponse) => void>();
   private readonly permissionResolvers = new Map<
     string,
@@ -587,6 +609,10 @@ export class AgentManager {
     }
     for (const cancel of [...this.pendingWaits]) cancel();
     for (const controller of this.controllers.values()) controller.abort('manager_disposed');
+    // Only the reads of an apply are stopped; see `applies`.
+    for (const running of this.applies.values()) {
+      for (const apply of [...running]) apply.dispose.abort('manager_disposed');
+    }
     for (const timer of this.textTimers.values()) clearTimeout(timer);
     this.textTimers.clear();
     this.textBuffers.clear();
@@ -1209,6 +1235,15 @@ export class AgentManager {
     this.assertMutable(agentId);
     const record = this.agents.get(agentId);
     if (!record) throw new Error(`Agent ${agentId} was not found.`);
+    // An apply outlives its agent's run, so it is stopped here, before a terminal record returns.
+    // The record itself is left as it is: a completed patcher stays completed.
+    const stoppedApplies = [...(this.applies.get(agentId) ?? [])];
+    for (const apply of stoppedApplies) apply.stop.abort(reason);
+    // The caller is told "stopped" only once the applies have ended: a pick that was cut short is
+    // still being rolled back in the operator's repository until then, and a git command run in the
+    // meantime would race it for `index.lock`. The rollback's own timeouts bound the wait, and an
+    // apply that rejected (as a stopped one does) is not a reason for this to.
+    await Promise.allSettled(stoppedApplies.map((apply) => apply.settled));
     if (TERMINAL_STATUSES.has(record.status)) return this.recordForReturn(record);
     record.stopReason = reason;
     record.status = 'stopped';
@@ -1344,6 +1379,7 @@ export class AgentManager {
     options?: { signal?: AbortSignal },
   ): Promise<AgentApplyResult> {
     await this.ensureInitialized();
+    if (this.disposed) throw new Error('The agent manager was disposed.');
     this.assertMutable(agentId);
     const record = this.agents.get(agentId);
     if (!record) throw new Error(`Agent ${agentId} was not found.`);
@@ -1370,11 +1406,45 @@ export class AgentManager {
     }
     const snapshot = record.snapshotId ? this.snapshots.get(record.snapshotId) : undefined;
     if (!snapshot) throw new Error('Agent snapshot is unavailable.');
-    const result = await (this.options.applyCandidate ?? applyVerifiedCandidate)(
-      snapshot,
-      evidence.patchCandidate,
-      options?.signal,
-    );
+    // The apply's own controllers are what `stop` and `dispose` reach; the caller's signal is the
+    // other way to end it. `signal` stops the reads and also ends on dispose; `mutationSignal` stops
+    // the cherry-pick or `git apply` and does not (see `applies`).
+    const stop = new AbortController();
+    const dispose = new AbortController();
+    const mutationSignal = options?.signal
+      ? AbortSignal.any([options.signal, stop.signal])
+      : stop.signal;
+    const signal = AbortSignal.any([mutationSignal, dispose.signal]);
+    const running = this.applies.get(agentId) ?? new Set<RunningApply>();
+    this.applies.set(agentId, running);
+    const apply: RunningApply = { stop, dispose, settled: Promise.resolve() };
+    running.add(apply);
+    const attempt = (async (): Promise<AgentApplyResult> => {
+      try {
+        return await (this.options.applyCandidate ?? applyVerifiedCandidate)(
+          snapshot,
+          evidence.patchCandidate!,
+          signal,
+          { mutationSignal },
+        );
+      } finally {
+        running.delete(apply);
+        if (running.size === 0 && this.applies.get(agentId) === running) {
+          this.applies.delete(agentId);
+        }
+      }
+    })();
+    apply.settled = attempt;
+    const result = await attempt;
+    if (this.disposed) {
+      // The store was disposed, so this is the one write that still has to land: a pick that
+      // finished after `dispose()` is on the operator's branch, and nothing else records that. No
+      // event or telemetry, since the subscribers are gone.
+      record.applicationStatus = result.status;
+      record.updatedAt = Date.now();
+      this.store?.saveAgent(record, { afterDispose: true });
+      return result;
+    }
     record.applicationStatus = result.status;
     this.persist(record);
     this.emit({

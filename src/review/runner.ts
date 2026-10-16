@@ -106,8 +106,8 @@ export function fixRunnerFor(
       const evidence = (await manager.listEvidence({ ids: [evidenceId] }))[0];
       return evidence ? evidenceProjection(evidence) : undefined;
     },
-    async apply(agentId, evidenceId) {
-      const result = await manager.apply(agentId, evidenceId);
+    async apply(agentId, evidenceId, options) {
+      const result = await manager.apply(agentId, evidenceId, options);
       return { status: result.status, commit: result.commit, error: result.error };
     },
   };
