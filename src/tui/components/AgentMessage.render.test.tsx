@@ -645,6 +645,33 @@ describe('AgentMessage work steps', () => {
     expect(lines[0]!.trimEnd()).toMatch(/…$/);
   });
 
+  it('lets a quiet summary show all its metadata in the free columns of a short target', () => {
+    const width = 100;
+    const grid = transcriptGrid(width);
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <Box width={width}>
+          <QuietToolRun
+            summary={{
+              title: 'Read',
+              target: 'a.js',
+              metadata: ['1 file', '1 search', '1 listing', '2 lookups'],
+              running: false,
+            }}
+            grid={grid}
+            reducedMotion
+          />
+        </Box>
+      </ThemeContext.Provider>,
+    );
+
+    const lines = stripAnsi(view.lastFrame())
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.trimEnd()).toMatch(/1 file · 1 search · 1 listing · 2 lookups$/);
+  });
+
   it('renders mutation group summary as exactly one line ending in … at narrow width with long target', () => {
     const width = 20;
     const grid = transcriptGrid(width);

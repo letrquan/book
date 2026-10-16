@@ -1291,6 +1291,131 @@ describe('composeToolRow meta width of a failed row', () => {
   });
 });
 
+describe('composeToolRow meta growth into free target columns', () => {
+  const WIDTHS = [120, 80, 60, 40, 25, 20];
+  const GROW = { metaMayGrow: true };
+  const THREE = ['1 file', '1 search', '1 listing'];
+  const FOUR = ['1 file', '1 search', '1 listing', '2 lookups'];
+  const FOUR_TEXT = '1 file · 1 search · 1 listing · 2 lookups';
+  const LONG_TARGET = `${'src/some/very/long/directory/structure/that/keeps/going/'.repeat(3)}file.ts`;
+  const LONG_META = ['12 files', '8 searches', '3 listings', '14 git reads'];
+
+  function line(row: ReturnType<typeof composeToolRow>): string {
+    return `${row.label}${row.label ? ' ' : ''}${row.target}${row.gap}${row.meta}`;
+  }
+
+  /** The row's display width as the TUI draws it: the label column and its space, then the rest. */
+  function rowWidth(row: ReturnType<typeof composeToolRow>, grid: { label: number }): number {
+    return (row.label ? grid.label + 1 : 0) + displayWidth(`${row.target}${row.gap}${row.meta}`);
+  }
+
+  it('shows three metadata parts uncut on a short target at 120 columns', () => {
+    const grid = transcriptGrid(120);
+    const row = composeToolRow({ title: 'Read', target: 'a.js', metadata: THREE }, grid, GROW);
+    expect(row.meta).toBe('1 file · 1 search · 1 listing');
+    expect(displayWidth(row.meta)).toBeGreaterThan(grid.meta);
+  });
+
+  for (const width of [120, 80, 60]) {
+    it(`shows four metadata parts uncut on a short target at ${width} columns`, () => {
+      const row = composeToolRow(
+        { title: 'Read', target: 'a.js', metadata: FOUR },
+        transcriptGrid(width),
+        GROW,
+      );
+      expect(row.meta).toBe(FOUR_TEXT);
+    });
+  }
+
+  it('does not grow the metadata unless the caller opts in', () => {
+    const grid = transcriptGrid(120);
+    const row = composeToolRow({ title: 'Read', target: 'a.js', metadata: THREE }, grid);
+    expect(displayWidth(row.meta)).toBe(grid.meta);
+    expect(row.meta.endsWith('…')).toBe(true);
+  });
+
+  it('renders a running row with an elapsed time as before: the meta is cut at the column', () => {
+    const grid = transcriptGrid(120);
+    const row = composeToolRow(
+      { title: 'Bash', target: 'npm test', metadata: ['12 lines', '3 matches'] },
+      grid,
+      { elapsed: '1m 12s elapsed' },
+    );
+    expect(grid.meta).toBe(20);
+    expect(row.meta).toBe('12 lines · 3 matche…');
+    expect(rowWidth(row, grid)).toBe(grid.row);
+  });
+
+  it('keeps the fixed budget and truncates the target first when the target is long', () => {
+    const grid = transcriptGrid(120);
+    const row = composeToolRow(
+      { title: 'Read', target: LONG_TARGET, metadata: LONG_META },
+      grid,
+      GROW,
+    );
+    expect(displayWidth(row.meta)).toBe(grid.meta);
+    expect(row.meta.endsWith('…')).toBe(true);
+    expect(row.target.endsWith('…')).toBe(true);
+    expect(displayWidth(row.target)).toBe(grid.row - (grid.label + 1) - grid.meta - 1);
+  });
+
+  it('renders metadata that fits the meta column exactly as before', () => {
+    const grid = transcriptGrid(120);
+    const row = composeToolRow({ title: 'Read', target: 'a.js', metadata: ['1 file'] }, grid, GROW);
+    // label column, target, padding to the measure, then the metadata flush right
+    const padding = ' '.repeat(grid.row - (grid.label + 1) - 'a.js'.length - '1 file'.length);
+    expect(line(row)).toBe(`${'Read'.padEnd(grid.label)} a.js${padding}1 file`);
+    // A long-target row ends on the same column.
+    const sibling = composeToolRow(
+      { title: 'Read', target: LONG_TARGET, metadata: ['1 file'] },
+      grid,
+      GROW,
+    );
+    expect(rowWidth(sibling, grid)).toBe(rowWidth(row, grid));
+  });
+
+  it('keeps the exit-code budget for a long target', () => {
+    const grid = transcriptGrid(120);
+    const row = composeToolRow(
+      {
+        title: 'Bash',
+        target: LONG_TARGET,
+        metadata: ['failed', 'exit 255', '1m 12s', 'attempt 3', 'a very long item'],
+      },
+      grid,
+    );
+    expect(displayWidth(row.meta)).toBe(28);
+    expect(row.meta.endsWith('…')).toBe(true);
+  });
+
+  const cases: Array<[string, string, string[]]> = [
+    ['three parts', 'a.js', THREE],
+    ['four parts', 'a.js', FOUR],
+    ['long target, long metadata', LONG_TARGET, LONG_META],
+    ['fitting metadata', 'a.js', ['1 file']],
+    ['exit code, long target', LONG_TARGET, ['failed', 'exit 255', '1m 12s', 'attempt 3']],
+    ['exit code, short target', 'npm test', ['failed', 'exit 255', '1m 12s']],
+    ['no metadata', 'a.js', []],
+  ];
+
+  for (const width of WIDTHS) {
+    for (const [name, target, metadata] of cases) {
+      for (const grow of [false, true]) {
+        it(`fills the measure on one line at ${width} columns: ${name}${grow ? ' (growing)' : ''}`, () => {
+          const grid = transcriptGrid(width);
+          const row = composeToolRow({ title: 'Read', target, metadata }, grid, {
+            metaMayGrow: grow,
+          });
+          for (const column of [row.label, row.target, row.gap, row.meta]) {
+            expect(column).not.toMatch(/[\r\n]/);
+          }
+          expect(rowWidth(row, grid)).toBe(grid.row);
+        });
+      }
+    }
+  }
+});
+
 describe('TodoWrite row mark', () => {
   const todos = [
     { content: 'Clone the repo', status: 'in_progress' },
