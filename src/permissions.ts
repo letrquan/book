@@ -6,7 +6,12 @@ import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex, globWalkPlan } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
-import { ANY_QUOTE, SHELL_CHAINING, hasCompoundShellSyntax } from './tools/shell-chaining.js';
+import {
+  ANY_QUOTE,
+  LINE_BREAK,
+  SHELL_CHAINING,
+  hasCompoundShellSyntax,
+} from './tools/shell-chaining.js';
 import { strictRmOfMarkdownUnder } from './tools/strict-rm.js';
 import {
   canonicalizePath,
@@ -291,18 +296,48 @@ function ruleMatches(rule: ParsedRule, toolName: string, primaryArg: string): bo
  * compound: a glob cannot say "and nothing else", and the primary argument is only the first line,
  * so `Bash(git status)` must not admit `git status` followed by a second line, nor `Bash(git *)`
  * `git status && rm -rf ~`. Otherwise the rule does not match and the call falls through to the
- * prompt. `deny` and `ask` do not use this: they keep reading the first line.
+ * prompt. `deny` and `ask` do not use this: they read the first line and the trimmed command, see
+ * {@link bashRestrictiveCandidates}.
+ *
+ * `reading` is the command's trimmed text and compound verdict, computed once per call by
+ * {@link readBashCommand}; it is computed here when the caller has none.
  */
 function bashAllowRuleMatches(
   rule: ParsedRule,
   command: unknown,
   platform: NodeJS.Platform,
+  reading?: BashCommandReading,
 ): boolean {
   if (!toolNameMatchesRule(rule.toolName, 'Bash')) return false;
   if (rule.pattern === null) return true;
   if (typeof command !== 'string') return false;
-  if (hasCompoundShellSyntax(command, platform)) return false;
-  return ruleMatchesCandidate(rule, 'Bash', command.trim(), false);
+  const { trimmed, compound } = reading ?? readBashCommand(command, platform);
+  if (compound) return false;
+  return ruleMatchesCandidate(rule, 'Bash', trimmed, false);
+}
+
+interface BashCommandReading {
+  /** What the Bash tool runs: `command.trim()`. */
+  trimmed: string;
+  /** Whether {@link hasCompoundShellSyntax} refuses it. */
+  compound: boolean;
+}
+
+function readBashCommand(command: string, platform: NodeJS.Platform): BashCommandReading {
+  return { trimmed: command.trim(), compound: hasCompoundShellSyntax(command, platform) };
+}
+
+/**
+ * What a `deny` or `ask` rule is tested against for a Bash call: the first line as written, the
+ * first line of the trimmed command, and the whole trimmed command. The Bash tool runs
+ * `command.trim()`, so a rule that read only the untrimmed first line would be slid past by leading
+ * whitespace (`' git push x'`) into a broader allow rule. The first is what these rules always
+ * read; the others only widen what they match.
+ */
+function bashRestrictiveCandidates(command: unknown, firstLine: string): string[] {
+  if (typeof command !== 'string') return [firstLine];
+  const trimmed = command.trim();
+  return [...new Set([firstLine, trimmed.split('\n')[0], trimmed])];
 }
 
 /**
@@ -388,7 +423,7 @@ export function permissionRuleLadder(call: ToolCall): string[] {
     !command ||
     SHELL_CHAINING.test(command) ||
     ANY_QUOTE.test(command) ||
-    command.includes('\r')
+    LINE_BREAK.test(command)
   ) {
     return [exact];
   }
@@ -1040,7 +1075,8 @@ export function evaluatePermissionDetail(
   // `D:/ws/.env` and `src/../.env`, which the glob on the raw argument misses. Resolved only when
   // a rule names the tool, since resolving touches the file system.
   const candidates: string[] = [getPrimaryArg(args)];
-  let restrictiveCandidates: string[] = candidates;
+  let restrictiveCandidates: string[] =
+    tool === 'Bash' ? bashRestrictiveCandidates(args.command, candidates[0]) : candidates;
   if (scope && paths && PATH_RULE_TOOLS.has(tool) && rulesName(parsed, tool)) {
     restrictiveCandidates = [...candidates, ...pathRuleSpellings(paths, tool, args, true)];
     // `allow` is offered only the spellings a `Write` would have written: the raw argument, the
@@ -1092,10 +1128,14 @@ export function evaluatePermissionDetail(
     }
   }
   const platform = options.platform ?? process.platform;
+  const bashReading =
+    tool === 'Bash' && typeof args.command === 'string'
+      ? readBashCommand(args.command, platform)
+      : undefined;
   for (const entry of parsed.allow) {
     const matched =
       tool === 'Bash'
-        ? bashAllowRuleMatches(entry.parsed, args.command, platform)
+        ? bashAllowRuleMatches(entry.parsed, args.command, platform, bashReading)
         : matchesRule(entry.parsed, false);
     if (matched) {
       return { decision: 'allow', matchedRule: entry.text, source: 'allow' };

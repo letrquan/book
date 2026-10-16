@@ -21,8 +21,9 @@
  *
  * It stays conservative across sh/bash, PowerShell and cmd.exe: whatever any of them could read as
  * something other than a quote refuses the command (a backslash or caret before a quote, a
- * typographic quote, an unterminated quote). On Windows a single quote is not a quote at all,
- * because cmd.exe has none.
+ * typographic quote, an unterminated quote). On Windows any single quote refuses the command: cmd.exe
+ * has no single quote, but the Windows session shell is usually PowerShell or Git Bash, which both
+ * read it as a real one, so the scanner cannot tell which characters are quoted.
  *
  * The "Always allow" ladder (`permissionRuleLadder`) stays quote-blind on purpose and uses
  * {@link SHELL_CHAINING} raw: a tokenizer that knew quotes would offer rungs with a dangling quote.
@@ -30,13 +31,15 @@
 export const SHELL_CHAINING = /[;&|><`$(){}\n]/;
 
 /** Line breaks in any shell: LF, CR, NEL, and the Unicode line and paragraph separators. */
-const LINE_BREAK = /[\n\r\u0085\u2028\u2029]/;
+export const LINE_BREAK = /[\n\r\u0085\u2028\u2029]/;
 
 /** Typographic quotes U+2018 to U+201E, which PowerShell reads as quote characters. */
-const TYPOGRAPHIC_QUOTE = /[\u2018-\u201E]/;
+const TYPOGRAPHIC_QUOTE_RANGE = '\\u2018-\\u201E';
+
+const TYPOGRAPHIC_QUOTE = new RegExp(`[${TYPOGRAPHIC_QUOTE_RANGE}]`);
 
 /** Every character that can open or close a quote in some shell. */
-export const ANY_QUOTE = /['"\u2018-\u201E]/;
+export const ANY_QUOTE = new RegExp(`['"${TYPOGRAPHIC_QUOTE_RANGE}]`);
 
 /**
  * Whether a command contains shell syntax a `Bash(<pattern>)` rule cannot vouch for, so it must be
@@ -50,34 +53,36 @@ export const ANY_QUOTE = /['"\u2018-\u201E]/;
  * - a quote is still open at the end;
  * - a line break appears in any state: in sh `#` can comment out an opening quote, and PowerShell
  *   reads a bare CR as a line break, so no quote state can be trusted across one;
- * - a backslash comes right before `'` or `"` outside single quotes: sh reads it as a literal
- *   quote, PowerShell and cmd.exe read `\"` as a closing quote, so the scanner cannot tell which
- *   characters are quoted;
+ * - a backslash comes right before `'` or `"` in any state, single quotes included: sh reads it as
+ *   a literal quote outside single quotes, PowerShell and cmd.exe read `\"` as a closing quote, and
+ *   fish reads `\'` inside single quotes as an escaped quote. The `shell` setting can name any
+ *   executable (an unknown one is treated as `sh`), so the scanner cannot tell which characters are
+ *   quoted;
  * - a caret comes right before `'` or `"` outside quotes: `^` escapes the quote in cmd.exe;
- * - a typographic quote appears anywhere.
- *
- * On `win32` a single quote is an ordinary character, not a quote.
+ * - a typographic quote appears anywhere;
+ * - on `win32`, an ASCII `'` appears anywhere (PowerShell and Git Bash both read it as a quote).
  */
 export function hasCompoundShellSyntax(
   command: string,
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   const text = command.trim();
-  const singleQuotes = platform !== 'win32';
+  const windows = platform === 'win32';
   let state: 'outside' | 'single' | 'double' = 'outside';
 
   for (let i = 0; i < text.length; i += 1) {
     const char = text[i];
     if (LINE_BREAK.test(char) || TYPOGRAPHIC_QUOTE.test(char)) return true;
+    if (windows && char === "'") return true;
+
+    const next = text[i + 1];
+    const quoteFollows = next === '"' || next === "'";
+    if (char === '\\' && quoteFollows) return true;
 
     if (state === 'single') {
       if (char === "'") state = 'outside';
       continue;
     }
-
-    const next = text[i + 1];
-    const quoteFollows = next === '"' || next === "'";
-    if (char === '\\' && quoteFollows) return true;
 
     if (state === 'double') {
       if (char === '$' || char === '`') return true;
@@ -87,7 +92,7 @@ export function hasCompoundShellSyntax(
 
     if (char === '^' && quoteFollows) return true;
     if (char === '"') state = 'double';
-    else if (char === "'" && singleQuotes) state = 'single';
+    else if (char === "'") state = 'single';
     else if (SHELL_CHAINING.test(char)) return true;
   }
 

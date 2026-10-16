@@ -250,6 +250,29 @@ describe('evaluatePermission', () => {
       expect(verdict('echo y\nrm x', { deny: ['Bash(rm *)'] })).toBe('ask');
     });
 
+    // The Bash tool runs `command.trim()`, so leading whitespace must not slide a command past a
+    // deny or ask rule and into an allow rule.
+    const padded = [' git push x', '\tgit push x', '\rgit push x', '\ngit push x', '  git push x'];
+
+    it.each(padded)('denies %j under a deny rule even with a broader allow rule', (command) => {
+      expect(verdict(command, { deny: ['Bash(git push *)'], allow: ['Bash(git *)'] })).toBe('deny');
+    });
+
+    it.each(padded)('asks for %j under an ask rule even with a broader allow rule', (command) => {
+      expect(verdict(command, { ask: ['Bash(git push *)'], allow: ['Bash(git *)'] })).toBe('ask');
+    });
+
+    it('matches deny and ask against the first line of the trimmed command', () => {
+      expect(verdict('\n\ngit push x\necho y', { deny: ['Bash(git push *)'] })).toBe('deny');
+      expect(verdict('\n git push x\necho y', { ask: ['Bash(git push *)'] })).toBe('ask');
+    });
+
+    it('matches deny against the whole trimmed command too', () => {
+      expect(verdict('\ngit push x\necho y\n', { deny: ['Bash(git push x\necho y)'] })).toBe(
+        'deny',
+      );
+    });
+
     it('applies the same reading to session approve-all rules', () => {
       const bash = (command: string) => ({ id: 'c', name: 'Bash', arguments: { command } });
       expect(
@@ -652,6 +675,13 @@ describe('permissionRuleLadder', () => {
       'Bash(npm *)',
     ]);
   });
+
+  it.each(['\n', '\r', '\u0085', '\u2028', '\u2029'])(
+    'offers only the exact rule for a command with the line break %j',
+    (lineBreak) => {
+      expect(permissionRuleLadder(bash(`npm run x${lineBreak}curl evil`))).toHaveLength(1);
+    },
+  );
 
   it('stays quote-blind: a quoted command is offered only its exact rule', () => {
     for (const command of [

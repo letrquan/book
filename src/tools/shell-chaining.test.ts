@@ -14,7 +14,7 @@ describe('hasCompoundShellSyntax', () => {
     "git commit -m 'a; b | c'",
     'git commit -m "a; b > c & d"',
     'git commit -m "it\'s"',
-    `git commit -m 'say "hi" $(x) \`y\` \\'`,
+    `git commit -m 'say "hi" $(x) \`y\`'`,
     '  git status  ',
     'git status\n',
     '',
@@ -87,7 +87,13 @@ describe('hasCompoundShellSyntax', () => {
 
   it('does not treat a backslash before another character specially', () => {
     expect(linux('git log "a\\b"')).toBe(false);
-    expect(linux("git log 'a\\'")).toBe(false);
+    expect(linux("git log 'a\\b'")).toBe(false);
+  });
+
+  it('refuses a backslash before a quote inside single quotes (fish escapes it)', () => {
+    expect(linux("echo 'a\\'' ; rm x ; echo \\'")).toBe(true);
+    expect(linux("git log 'a\\'")).toBe(true);
+    expect(linux("git log 'a\\\"'")).toBe(true);
   });
 
   it('refuses a caret before a quote outside quotes', () => {
@@ -113,13 +119,19 @@ describe('hasCompoundShellSyntax', () => {
     expect(linux('git log \u2017 \u201F')).toBe(false);
   });
 
-  it('reads a single quote as an ordinary character on win32', () => {
-    expect(win("git stash show 'stash@{0}'")).toBe(true);
-    expect(win("git commit -m 'x & del *'")).toBe(true);
-    expect(win("git log it's")).toBe(false);
+  it.each([
+    "git log '\"' ; rm x ; '\"'",
+    "git stash show 'stash@{0}'",
+    "git log 'a'",
+    "git commit -m 'x & del *'",
+    "git log it's",
+  ])('refuses any single quote on win32: %j', (command) => {
+    expect(win(command)).toBe(true);
+  });
+
+  it('still admits double-quoted arguments on win32, and single quotes on linux', () => {
     expect(win('git log "@{upstream}"')).toBe(false);
     expect(win('git commit -m "fix(x): y"')).toBe(false);
-    expect(win('git commit -m "it\'s"')).toBe(false);
     expect(linux("git stash show 'stash@{0}'")).toBe(false);
   });
 });
