@@ -2,6 +2,7 @@ import {
   existsSync,
   fsyncSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -482,29 +483,13 @@ describe('AtomicJsonWriter rename retry past the deadline (#493)', () => {
   const SLOW_FSYNC_MS = 600;
   const SLOW_TEST_TIMEOUT_MS = 20_000;
 
-  /** A handle whose `sync` takes `milliseconds` before it reaches the disk. */
-  function slowSyncHandle(handle: FileHandle, milliseconds: number): FileHandle {
+  /** A handle that runs `before` each time its `sync` is called, then reaches the disk. */
+  function syncHook(handle: FileHandle, before: () => void | Promise<void>): FileHandle {
     return new Proxy(handle, {
       get(source, property) {
         if (property === 'sync') {
           return async () => {
-            await delay(milliseconds);
-            return source.sync();
-          };
-        }
-        const value: unknown = Reflect.get(source, property, source);
-        return typeof value === 'function' ? value.bind(source) : value;
-      },
-    });
-  }
-
-  /** A handle whose `sync` advances an injected clock instead of waiting. */
-  function clockedSyncHandle(handle: FileHandle, tick: () => void): FileHandle {
-    return new Proxy(handle, {
-      get(source, property) {
-        if (property === 'sync') {
-          return async () => {
-            tick();
+            await before();
             return source.sync();
           };
         }
@@ -559,7 +544,7 @@ describe('AtomicJsonWriter rename retry past the deadline (#493)', () => {
         hostname: 'test-host',
         fsAsync: {
           open: async (path, flags, mode) =>
-            slowSyncHandle(await openAsync(path, flags, mode), SLOW_FSYNC_MS),
+            syncHook(await openAsync(path, flags, mode), () => delay(SLOW_FSYNC_MS)),
           rename: async (source, destination) => {
             renameCalls++;
             events.push('rename');
@@ -646,7 +631,7 @@ describe('AtomicJsonWriter rename retry past the deadline (#493)', () => {
       },
       fsAsync: {
         open: async (path, flags, mode) =>
-          clockedSyncHandle(await openAsync(path, flags, mode), () => {
+          syncHook(await openAsync(path, flags, mode), () => {
             now += SLOW_FSYNC_MS;
           }),
         rename: async () => {
@@ -677,6 +662,149 @@ describe('AtomicJsonWriter rename retry past the deadline (#493)', () => {
     expect(readFileSync(target, 'utf8')).toBe('{"version":"old"}\n');
   });
 
+  // The back-off before the guaranteed retry: the clamped ladder step while there is budget, and
+  // with little or none left the first rename step, never the 80ms step a long lock wait climbed to.
+  it('backs off the first rename step with 1ms of the budget left, then retries (write)', () => {
+    const { target } = fixture();
+    const requestedSleeps: number[] = [];
+    let now = 0;
+    let renameCalls = 0;
+    const writer = new AtomicJsonWriter({
+      instanceId: INSTANCE,
+      pid: 10,
+      hostname: 'test-host',
+      now: () => now,
+      sleep: (milliseconds) => {
+        requestedSleeps.push(milliseconds);
+        now += milliseconds;
+      },
+      fs: {
+        renameSync: (source, destination) => {
+          if (renameCalls++ === 0) {
+            now = 499;
+            throw contention('EBUSY');
+          }
+          return renameSync(source, destination);
+        },
+      },
+    });
+
+    const result = writer.write(target, { version: 'late' });
+
+    expect(result.status).toBe('ok');
+    expect(renameCalls).toBe(2);
+    expect(requestedSleeps).toEqual([10]);
+    expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ version: 'late' });
+  });
+
+  it('backs off the first rename step with 1ms of the budget left, then retries (writeAsync)', async () => {
+    const { target } = fixture();
+    const requestedSleeps: number[] = [];
+    let now = 0;
+    let renameCalls = 0;
+    const writer = new AtomicJsonWriter({
+      instanceId: INSTANCE,
+      pid: 10,
+      hostname: 'test-host',
+      now: () => now,
+      sleepAsync: async (milliseconds) => {
+        requestedSleeps.push(milliseconds);
+        now += milliseconds;
+      },
+      fsAsync: {
+        rename: async (source, destination) => {
+          if (renameCalls++ === 0) {
+            now = 499;
+            throw contention('EBUSY');
+          }
+          return renameAsync(source, destination);
+        },
+      },
+    });
+
+    const result = await writer.writeAsync(target, { version: 'late' });
+
+    expect(result.status).toBe('ok');
+    expect(renameCalls).toBe(2);
+    expect(requestedSleeps).toEqual([10]);
+    expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ version: 'late' });
+  });
+
+  it('does not sleep the 80ms lock-ladder step before the retry past the deadline (write)', () => {
+    const { target } = fixture();
+    const requestedSleeps: number[] = [];
+    let now = 0;
+    let lockCalls = 0;
+    let renameCalls = 0;
+    const writer = new AtomicJsonWriter({
+      instanceId: INSTANCE,
+      pid: 10,
+      hostname: 'test-host',
+      now: () => now,
+      sleep: (milliseconds) => {
+        requestedSleeps.push(milliseconds);
+        now += milliseconds;
+      },
+      fs: {
+        openSync: ((path, flags, mode) => {
+          if (String(path).endsWith('.lock') && lockCalls++ < 4) throw contention('EBUSY');
+          return openSync(path, flags, mode);
+        }) as typeof openSync,
+        fsyncSync: (descriptor) => {
+          now += SLOW_FSYNC_MS;
+          fsyncSync(descriptor);
+        },
+        renameSync: (source, destination) => {
+          if (renameCalls++ === 0) throw contention('EBUSY');
+          return renameSync(source, destination);
+        },
+      },
+    });
+
+    const result = writer.write(target, { version: 'late' });
+
+    expect(result.status).toBe('ok');
+    // Four contended lock opens climb the ladder to its 80ms step; the rename retry starts there.
+    expect(requestedSleeps).toEqual([5, 10, 20, 40, 10]);
+    expect(renameCalls).toBe(2);
+  });
+
+  it('does not sleep the 80ms lock-ladder step before the retry past the deadline (writeAsync)', async () => {
+    const { target } = fixture();
+    const requestedSleeps: number[] = [];
+    let now = 0;
+    let lockCalls = 0;
+    let renameCalls = 0;
+    const writer = new AtomicJsonWriter({
+      instanceId: INSTANCE,
+      pid: 10,
+      hostname: 'test-host',
+      now: () => now,
+      sleepAsync: async (milliseconds) => {
+        requestedSleeps.push(milliseconds);
+        now += milliseconds;
+      },
+      fsAsync: {
+        open: async (path, flags, mode) => {
+          if (path.endsWith('.lock') && lockCalls++ < 4) throw contention('EBUSY');
+          return syncHook(await openAsync(path, flags, mode), () => {
+            now += SLOW_FSYNC_MS;
+          });
+        },
+        rename: async (source, destination) => {
+          if (renameCalls++ === 0) throw contention('EBUSY');
+          return renameAsync(source, destination);
+        },
+      },
+    });
+
+    const result = await writer.writeAsync(target, { version: 'late' });
+
+    expect(result.status).toBe('ok');
+    expect(requestedSleeps).toEqual([5, 10, 20, 40, 10]);
+    expect(renameCalls).toBe(2);
+  });
+
   it('lets canCommit withdraw the extra attempt past the deadline', async () => {
     const { target } = fixture();
     let now = 0;
@@ -692,7 +820,7 @@ describe('AtomicJsonWriter rename retry past the deadline (#493)', () => {
       },
       fsAsync: {
         open: async (path, flags, mode) =>
-          clockedSyncHandle(await openAsync(path, flags, mode), () => {
+          syncHook(await openAsync(path, flags, mode), () => {
             now += SLOW_FSYNC_MS;
           }),
         rename: async (source, destination) => {

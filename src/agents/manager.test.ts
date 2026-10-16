@@ -722,7 +722,10 @@ describe('AgentManager lifecycle', () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = false;
-    const applyCandidate = vi.fn(async () => ({ status: 'applied' as const, commit: 'head' }));
+    const applyCandidate = vi.fn(async (..._args: unknown[]) => ({
+      status: 'applied' as const,
+      commit: 'head',
+    }));
     const checkoutWorktree = vi.fn(async () => {});
     const manager = new AgentManager(config, [], {
       storeRoot: tempRoot(),
@@ -792,11 +795,16 @@ describe('AgentManager lifecycle', () => {
       'validator',
     );
     await manager.reviewEvidence(validator.id, candidate.id, 'pass');
-    await expect(manager.apply(patcher.id, candidate.id)).resolves.toEqual({
-      status: 'applied',
-      commit: 'head',
-    });
+    // The signal the caller stopped the apply with is the one the apply function is handed (#491).
+    const stop = new AbortController();
+    await expect(manager.apply(patcher.id, candidate.id, { signal: stop.signal })).resolves.toEqual(
+      {
+        status: 'applied',
+        commit: 'head',
+      },
+    );
     expect(applyCandidate).toHaveBeenCalledOnce();
+    expect(applyCandidate.mock.calls[0]?.[2]).toBe(stop.signal);
     manager.dispose();
   });
 
@@ -2776,6 +2784,7 @@ describe('a disposed manager keeps the records it wrote (#490)', () => {
     'reports a provider error after the dispose',
     'completes on its own after the dispose',
     'throws on its own after the dispose',
+    'streams an assistant message after the dispose',
   ] as const;
 
   it.each(endings)('a child whose run %s stays interrupted / process_exit', async (ending) => {
@@ -2808,6 +2817,16 @@ describe('a disposed manager keeps the records it wrote (#490)', () => {
         }
         await released;
         if (ending === 'throws on its own after the dispose') throw new Error('provider fell over');
+        if (ending === 'streams an assistant message after the dispose') {
+          callbacks.onAssistantMessageComplete?.({
+            id: 'late-message',
+            role: 'assistant',
+            content: 'too late',
+            includeInContext: true,
+            timestamp: 1,
+          });
+          callbacks.onTerminal?.(createTerminalOutcome('cancelled', 'caller_cancelled'));
+        }
         if (ending === 'reports a provider error after the dispose') {
           callbacks.onError?.('provider fell over');
         }
@@ -2820,13 +2839,21 @@ describe('a disposed manager keeps the records it wrote (#490)', () => {
       await running;
       manager.dispose();
       release();
+      // The manager is idle only once the run's promise has settled, which is after its last write.
       await manager.waitForIdle();
-      // A run settles a few microtasks after the loop returns; the manager is idle after that.
-      await new Promise((resolve) => setTimeout(resolve, 50));
 
       const file = join(storeRoot, repositoryHash(root), 'records', `${spawned.id}.json`);
       const persisted = JSON.parse(readFileSync(file, 'utf8')) as AgentRecord;
       expect(persisted).toMatchObject({ status: 'interrupted', stopReason: 'process_exit' });
+      expect(persisted.transcript.map((message) => message.id)).not.toContain('late-message');
+      // The in-memory record is the one `dispose()` wrote too: the loop's own cancellation is not
+      // a new ending for it.
+      const live = (manager as unknown as { agents: Map<string, AgentRecord> }).agents.get(
+        spawned.id,
+      );
+      expect(live).toMatchObject({ status: 'interrupted', stopReason: 'process_exit' });
+      expect(live?.runOutcome?.status).not.toBe('cancelled');
+      expect(live?.runOutcome?.reason).not.toBe('caller_cancelled');
     } finally {
       release();
       manager.dispose();

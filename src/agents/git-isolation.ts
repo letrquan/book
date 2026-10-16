@@ -1277,6 +1277,8 @@ async function applyCandidate(
     try {
       signingPins = await signingPinArgs(snapshot.repoRoot, signingRunner, signal);
     } catch (error) {
+      // A stop is not a conflict: it ends the apply the way an abort at any other call does.
+      if (signal?.aborted) throw error;
       return {
         status: 'conflicted',
         error: `Could not read the signing configuration for the cherry-pick: ${error instanceof Error ? error.message : String(error)}`,

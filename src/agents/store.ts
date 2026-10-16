@@ -731,6 +731,12 @@ export class AgentStore {
     agent: AgentRecord,
     options: { defer?: boolean; required?: boolean } = {},
   ): AtomicWriteResult {
+    // A disposed store has flushed what it had pending and removed its lease: a record saved now
+    // would be a write by an owner that is gone. Refused here, and only here, because `dispose()`
+    // itself runs `flushPending`, which is not a save. The cache is left alone for the same reason.
+    if (this.disposed) {
+      return { status: 'cancelled', target: this.agentPath(agent.id), attempts: 0, elapsedMs: 0 };
+    }
     let persisted = structuredClone(agent);
     if (this.summaryAgentIds.has(agent.id)) {
       const detailed = this.readJson<PersistedAgentRecord>(this.agentPath(agent.id), false);

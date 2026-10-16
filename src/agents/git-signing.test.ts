@@ -529,6 +529,37 @@ describe('signingPinArgs', () => {
       for (const call of calls) expect(call.options.signal).toBe(controller.signal);
     });
 
+    it('rejects with the abort when a stop ends the version read, not "an unknown version"', async () => {
+      const controller = new AbortController();
+      const { run } = scriptedRunner({
+        config: { stdout: '', stderr: "error: unknown option `show-scope'\n", code: 129 },
+        failOn: (_command, args) => {
+          if (args[0] !== '--version') return undefined;
+          controller.abort();
+          return 'git --version was cancelled';
+        },
+      });
+
+      const outcome = await signingPinArgs('/repo', run, controller.signal).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toBe('git --version was cancelled');
+    });
+
+    it('still names an unknown version when the version read fails without a stop', async () => {
+      const { run } = scriptedRunner({
+        config: { stdout: '', stderr: "error: unknown option `show-scope'\n", code: 129 },
+        failOn: (_command, args) => (args[0] === '--version' ? 'spawn git ENOENT' : undefined),
+      });
+
+      await expect(signingPinArgs('/repo', run, new AbortController().signal)).rejects.toThrow(
+        'of an unknown version',
+      );
+    });
+
     it('rejects when a stop killed the key command, rather than pinning the key empty', async () => {
       const controller = new AbortController();
       const { run } = scriptedRunner({

@@ -1338,7 +1338,11 @@ export class AgentManager {
     return clone(reviewed);
   }
 
-  async apply(agentId: string, evidenceId?: string): Promise<AgentApplyResult> {
+  async apply(
+    agentId: string,
+    evidenceId?: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<AgentApplyResult> {
     await this.ensureInitialized();
     this.assertMutable(agentId);
     const record = this.agents.get(agentId);
@@ -1369,6 +1373,7 @@ export class AgentManager {
     const result = await (this.options.applyCandidate ?? applyVerifiedCandidate)(
       snapshot,
       evidence.patchCandidate,
+      options?.signal,
     );
     record.applicationStatus = result.status;
     this.persist(record);
@@ -1645,6 +1650,9 @@ export class AgentManager {
           startedAt: Date.now(),
           status: 'running',
         };
+        // A run that outlives `dispose()` is no longer reported on: the record stays as `dispose()`
+        // wrote it (#490).
+        if (this.disposed) return activity;
         const byCall = this.activities.get(record.id) ?? new Map<string, AgentActivity>();
         byCall.set(id, activity);
         this.activities.set(record.id, byCall);
@@ -1658,6 +1666,7 @@ export class AgentManager {
         failed: boolean,
         result?: ToolResult,
       ): void => {
+        if (this.disposed) return;
         const activity = this.activities.get(record.id)?.get(activityId);
         if (!activity) return;
         activity.finishedAt = Date.now();
@@ -1671,6 +1680,7 @@ export class AgentManager {
         finishActivityById(result.toolCallId ?? '', result.status !== 'success', result);
       };
       const finishRunningActivities = (failed: boolean): void => {
+        if (this.disposed) return;
         for (const activity of this.activities.get(record.id)?.values() ?? []) {
           if (activity.status !== 'running') continue;
           activity.finishedAt = Date.now();
@@ -1708,6 +1718,7 @@ export class AgentManager {
         }),
       );
       const recordUsage = (usage: Usage): void => {
+        if (this.disposed) return;
         record.usage = accumulateUsage(record.usage, usage);
         record.runUsage = accumulateUsage(record.runUsage, usage);
         this.store?.saveAgent(record, { defer: true });
@@ -1730,6 +1741,7 @@ export class AgentManager {
             this.queueTextDelta(record.id, text);
           },
           onToolCall: (call) => {
+            if (this.disposed) return;
             record.runMetrics!.toolCalls++;
             startActivity('tool', `Using ${call.name}`, call.name, call.id, clone(call));
           },
@@ -1751,11 +1763,16 @@ export class AgentManager {
           },
           onDone: () => {},
           onTerminal: (outcome) => {
+            // After `dispose()` the record is the interrupted one it wrote; see the check after the
+            // loop (#490).
+            if (this.disposed) return;
             terminalOutcome = outcome;
             record.runOutcome = outcome;
           },
           onPermissionRequired: async (toolCall: ToolCall) => {
-            if (!this.interactivePermissions) {
+            // Nobody is left to answer once the manager is disposed, and a pending request would
+            // turn the interrupted record into a waiting one.
+            if (this.disposed || !this.interactivePermissions) {
               return { result: 'deny', reason: 'no_approver' } as const;
             }
             const request: AgentPermissionRequest = {
@@ -1780,6 +1797,7 @@ export class AgentManager {
           },
           onUsage: recordUsage,
           onAssistantMessageComplete: (message) => {
+            if (this.disposed) return;
             this.flushTextDelta(record.id);
             if (!record.transcript.some((candidate) => candidate.id === message.id)) {
               record.transcript.push(message);
@@ -1788,6 +1806,9 @@ export class AgentManager {
             this.emit({ type: 'agent_message', agentId: record.id, message: clone(message) });
           },
           onUserQuestionRequired: async (request) => {
+            if (this.disposed) {
+              return { action: 'cancel', message: 'The agent manager was disposed.' };
+            }
             if (!this.interactivePermissions) {
               return {
                 action: 'cancel',
@@ -1821,7 +1842,7 @@ export class AgentManager {
             });
           },
           onCompact: (history, usage, hints) => {
-            record.runMetrics!.compactions++;
+            if (!this.disposed) record.runMetrics!.compactions++;
             const activity = startActivity('compacting', 'Compacting context');
             return (this.options.compactRunner ?? runCompact)(agentConfig, history, {
               ...hints,
@@ -1849,6 +1870,7 @@ export class AgentManager {
             );
           },
           onRetry: () => {
+            if (this.disposed) return;
             record.runMetrics!.retries++;
             this.store?.saveAgent(record, { defer: true });
           },

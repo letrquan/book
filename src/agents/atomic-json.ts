@@ -99,8 +99,9 @@ export interface AtomicJsonWriterOptions {
    * fsyncs alone can use it up. The budget bounds the back-off ladder, not the work already done,
    * so a rename that hits contention is always retried once after its back-off, even when the
    * budget is gone by then; after that retry the deadline applies and the write returns `busy`.
-   * A write whose rename fails every time therefore ends within the budget plus one back-off of
-   * the first contended rename. The lock phase has no such retry: a lock still contended at the
+   * That back-off is the clamped ladder step while the budget lasts, and with little or none left
+   * it is the first rename step at least and the current step at most. A write whose rename
+   * fails every time therefore ends within the budget plus one such back-off. The lock phase has no such retry: a lock still contended at the
    * deadline is `busy`.
    */
   deadlineMs?: number;
@@ -152,6 +153,12 @@ const LOCK_CONTENTION_CODES = new Set(['EEXIST', ...FILE_CONTENTION_CODES]);
 const DEFAULT_DEADLINE_MS = 500;
 const DEFAULT_STALE_LOCK_MS = 30_000;
 const BACKOFF_MS = [5, 10, 20, 40, 80];
+/**
+ * The shortest back-off before the retry that a contended rename is guaranteed. The ladder is
+ * indexed by attempt, and a rename's first retry is at least the second attempt, so this is the
+ * first step a rename can ever be asked to wait.
+ */
+const MIN_RENAME_BACKOFF_MS = BACKOFF_MS[1] ?? 10;
 
 const defaultFileSystem: AtomicJsonFileSystem = {
   closeSync,
@@ -648,13 +655,17 @@ export class AtomicJsonWriter {
 
   /**
    * How long to back off before `attempt`: the ladder step, cut short by the time left to the
-   * deadline. `guaranteed` is the one retry past the deadline, which keeps its whole step: a retry
-   * with no back-off would hit the same contention again.
+   * deadline. `guaranteed` is the one retry past the deadline, after the first contended rename.
+   * Cut to nothing, that retry would hit the same contention again; so it waits at least the first
+   * rename step, whatever is left, and never more than the ladder step: the ladder is shared with
+   * the lock phase, and a step it has climbed to could block the main thread for a long time past
+   * the deadline.
    */
   private backoffMs(attempt: number, deadline: number, guaranteed: boolean): number {
-    const requested = BACKOFF_MS[Math.min(attempt - 1, BACKOFF_MS.length - 1)] ?? 80;
+    const step = BACKOFF_MS[Math.min(attempt - 1, BACKOFF_MS.length - 1)] ?? 80;
     const remaining = deadline - this.now();
-    return Math.max(0, Math.min(requested, guaranteed && remaining <= 0 ? requested : remaining));
+    if (guaranteed) return Math.min(step, Math.max(remaining, MIN_RENAME_BACKOFF_MS));
+    return Math.max(0, Math.min(step, remaining));
   }
 
   private pause(attempt: number, deadline: number, guaranteed = false): void {

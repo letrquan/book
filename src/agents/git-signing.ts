@@ -177,7 +177,9 @@ async function gitVersion(
     return (
       await run('git', ['--version'], { cwd: repoRoot, timeoutMs: READ_TIMEOUT_MS, signal })
     ).stdout.trim();
-  } catch {
+  } catch (error) {
+    // A stop is not a git of an unknown version.
+    if (signal?.aborted) throw error;
     return 'of an unknown version';
   }
 }

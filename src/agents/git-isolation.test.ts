@@ -1748,8 +1748,12 @@ describe('stopping an agent while its result is being applied (#491)', () => {
 
       const aborted = Date.now();
       controller.abort();
-      await applying;
+      const outcome = await applying;
       const elapsed = Date.now() - aborted;
+
+      // A stop ends the apply the way an abort at any other call does: it is not reported as a
+      // conflict that the operator would then go and resolve.
+      expect(outcome).toBeInstanceOf(Error);
 
       expect(elapsed, `the apply took ${elapsed} ms to return after the abort`).toBeLessThan(1_500);
       expect(

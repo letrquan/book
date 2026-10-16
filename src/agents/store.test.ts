@@ -1213,3 +1213,34 @@ describe('AgentStore retry logging', () => {
     store.dispose();
   });
 });
+
+describe('AgentStore after dispose (#490)', () => {
+  it('flushes a write deferred before dispose, and refuses a save after it', () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const store = new AgentStore('repo', root, true, {
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 12345,
+      hostname: 'test-host',
+    });
+    const file = join(root, 'repo', 'records', 'late-agent.json');
+    const record = recordFixture('late-agent');
+
+    // Deferred: nothing is on disk until the timer or `dispose()` flushes it.
+    store.saveAgent(record, { defer: true });
+    expect(existsSync(file)).toBe(false);
+
+    store.dispose();
+    const flushed = readFileSync(file, 'utf8');
+    expect(JSON.parse(flushed)).toMatchObject({ id: 'late-agent', status: 'queued' });
+
+    record.status = 'completed';
+    record.updatedAt = 2;
+    for (const options of [undefined, { defer: true }, { required: true }]) {
+      const result = store.saveAgent(record, options);
+      expect(result.status).toBe('cancelled');
+    }
+
+    expect(readFileSync(file, 'utf8')).toBe(flushed);
+    expect(store.listAgents().find((agent) => agent.id === 'late-agent')?.status).toBe('queued');
+  });
+});
