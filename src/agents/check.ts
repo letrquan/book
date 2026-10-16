@@ -49,8 +49,12 @@ function configuredChecks(ctx: ToolContext): Record<string, string> {
   return result;
 }
 
-function fail(error: string, details?: Record<string, unknown>): ToolResult {
-  return toolFailure(error, details ? { details } : {});
+/**
+ * `content` is the output the model reads after the message, as for a failed `Bash`. It is
+ * left empty unless the message is something other than that output.
+ */
+function fail(error: string, details?: Record<string, unknown>, content = ''): ToolResult {
+  return toolFailure(error, { content, ...(details ? { details } : {}) });
 }
 
 /**
@@ -128,6 +132,10 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
             // The transcript's `exit N` and the command-output layout read this, as for Bash.
             // A spawn failure's `code` is a string such as `ENOENT`, and records nothing.
             typeof error.code === 'number' ? { exitCode: error.code } : undefined,
+            // With stderr the message is stderr, so stdout -- where many runners print their
+            // failing assertions -- goes in `content` (issue 473). Without it the message is
+            // already stdout, and a second copy would reach the model twice.
+            stderr ? stdout : '',
           ),
         );
         return;

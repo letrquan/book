@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { checkTools } from './check.js';
+import { toolResultModelContent } from '../tools/result.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
 import { sandboxBackendAvailable } from '../sandbox.js';
@@ -47,6 +48,47 @@ describe('Check', () => {
     const result = await run(contextWith({ boom: 'exit 3' }), 'boom');
     expect(result.status).not.toBe('success');
     expect(result.structuredError?.details).toEqual({ exitCode: 3 });
+  });
+
+  // Issue 473: a runner prints its failing assertions on stdout while npm warns on stderr, and the
+  // failure used to keep only stderr.
+  const STDOUT_LINE = 'FAIL test/a.test.js > expected 1, got 2';
+  const STDERR_LINE = 'npm warn config something';
+  const stdoutAndStderrCheck = `node -e "console.log('${STDOUT_LINE}'); console.error('${STDERR_LINE}'); process.exit(1)"`;
+
+  it('keeps the stdout of a failing check that also wrote stderr', async () => {
+    const result = await run(contextWith({ both: stdoutAndStderrCheck }), 'both');
+
+    expect(result.status).not.toBe('success');
+    expect(result.structuredError?.message).toContain(STDERR_LINE);
+    expect(result.structuredError?.message).not.toContain(STDOUT_LINE);
+    expect(result.content).toContain(STDOUT_LINE);
+    expect(result.content).not.toContain(STDERR_LINE);
+    expect(result.structuredError?.details).toEqual({ exitCode: 1 });
+  });
+
+  it('does not repeat the stdout of a failing check that wrote no stderr', async () => {
+    const result = await run(
+      contextWith({ quiet: `node -e "console.log('${STDOUT_LINE}'); process.exit(1)"` }),
+      'quiet',
+    );
+
+    expect(result.status).not.toBe('success');
+    expect(result.structuredError?.message).toContain(STDOUT_LINE);
+    expect(result.content).toBe('');
+    expect(result.structuredError?.details).toEqual({ exitCode: 1 });
+    const modelText = toolResultModelContent(result);
+    expect(modelText.split(STDOUT_LINE)).toHaveLength(2);
+  });
+
+  it('hands the model the stdout of a failing check that also wrote stderr', async () => {
+    const result = await run(contextWith({ both: stdoutAndStderrCheck }), 'both');
+
+    // The text the agent loop sends as the tool message (agent/context.ts).
+    const modelText = toolResultModelContent(result);
+
+    expect(modelText).toContain('FAIL test/a.test.js');
+    expect(modelText).toContain(STDERR_LINE);
   });
 
   it('distinguishes a timeout from a failing check', async () => {
