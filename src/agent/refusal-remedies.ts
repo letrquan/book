@@ -23,6 +23,7 @@ export type LocalRefusalKind =
   | 'skill'
   | 'question'
   | 'malformed'
+  | 'route'
   | 'other';
 
 /**
@@ -81,6 +82,9 @@ export function refusalKind(
     case 'user_declined':
       return 'question';
     case 'invalid_json_arguments':
+      // A call that arrived with empty arguments was dropped on the way to Book, not written
+      // wrongly by the model (#403), so its remedy blames the route and not the model.
+      return result?.structuredError?.details?.shape === 'empty' ? 'route' : 'malformed';
     case 'invalid_arguments':
     case 'unknown_tool':
       return 'malformed';
@@ -108,6 +112,8 @@ export const REFUSAL_REMEDIES: Readonly<Record<LocalRefusalKind, string>> = {
     'the model asked the user questions this run cannot put to anyone (dontAsk mode, or a declined question); it has to proceed without asking',
   malformed:
     "the calls could not run as sent (arguments that never parsed as JSON or failed the tool's schema, or a tool that does not exist), which no permission rule or mode lifts; the model has to correct them, and if `book tool-stats` shows invalid_json_arguments:truncated_start the provider route is dropping the first fragment of calls, and invalid_json_arguments:empty means the route is dropping the arguments of tool calls",
+  route:
+    'the provider route delivered tool calls with empty arguments (invalid_json_arguments:empty in `book tool-stats`) and every resend in the streak arrived empty again; the model is not at fault — switch to another route or provider for this model',
   other:
     "the calls were refused for a reason no permission rule or mode lifts; each refused call's own message names the cause",
 };

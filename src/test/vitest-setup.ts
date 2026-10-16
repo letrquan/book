@@ -39,8 +39,9 @@ clearInheritedBookEnv(process.env, resolveKeptBookEnv(process.env));
 // unset is an observable production state rather than an accident: createRunAmbientSnapshot
 // attributes `isolation: 'shared'` and reports `book_home_isolation` as a missing source from
 // exactly that, and tui/persist.test.ts exercises the homedir() fallback a global pin would
-// make unreachable. Suites that must not see the developer's ~/.book pin their own (see
-// config.test.ts).
+// make unreachable. Suites that must not see the developer's ~/.book pin their own with
+// `isolateBookHome()` (isolated-book-home.ts); a suite that drives the print-mode runner and
+// does not pin one fails the guard in isolated-book-home.test.ts.
 
 afterAll(() => {
   rmSync(telemetryRoot, { recursive: true, force: true });

@@ -21,9 +21,12 @@ export const TOOL_RESULT_MAX_BYTES = 50 * 1024;
 export const READ_EMPTY_FILE_NOTICE = '[Empty file: 0 lines.]';
 /**
  * Where clipped tool output is saved in full. The loop lets `Read` open each file
- * it clipped a result into, never the whole directory.
+ * it clipped a result into, never the whole directory. A function, not a constant: the home
+ * is read when a result is clipped, so a BOOK_HOME set after this module loads is honoured.
  */
-const TOOL_OUTPUT_DIRECTORY = join(resolveBookHome(), 'tool-output');
+function toolOutputDirectory(): string {
+  return join(resolveBookHome(), 'tool-output');
+}
 
 interface ToolResultOptions<TData> {
   toolCallId?: string;
@@ -261,7 +264,7 @@ export async function boundToolResultOutput(
   input: ToolResult,
   _workspaceRoot: string,
   maxBytes = TOOL_RESULT_MAX_BYTES,
-  artifactRoot = TOOL_OUTPUT_DIRECTORY,
+  artifactRoot?: string,
 ): Promise<ToolResult> {
   const result = normalizeToolResult(input);
   const modelContent = rawToolResultModelContent(result);
@@ -273,7 +276,8 @@ export async function boundToolResultOutput(
 
   let outputPath = result.artifacts?.outputPath;
   if (!outputPath) {
-    const outputFile = join(artifactRoot, `${crypto.randomUUID()}.txt`);
+    // Resolved here, not as a default: most results fit and never spill.
+    const outputFile = join(artifactRoot ?? toolOutputDirectory(), `${crypto.randomUUID()}.txt`);
     try {
       await mkdir(dirname(outputFile), { recursive: true });
       await writeFile(

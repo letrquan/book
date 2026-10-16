@@ -576,8 +576,12 @@ export async function* chatCompletionStream(
   log.debug('response received', { status: response.status, ok: response.ok });
 
   if (!response.ok) {
-    const errorText = await readErrorBody(response, signal);
-    yield statedWaitErrorEvent(response, errorText, { url, model: config.model });
+    const errorBody = await readErrorBody(response, signal);
+    yield statedWaitErrorEvent(response, errorBody.text, {
+      url,
+      model: config.model,
+      bodyReceived: errorBody.received,
+    });
     return;
   }
 

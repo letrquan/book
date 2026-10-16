@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { shellArgument } from './trust-command.js';
 import type { HeadlessOptions } from './types/public-sdk.js';
+import { isolateBookHome } from './test/isolated-book-home.js';
 import { createSessionFixture, type SessionFixture } from './test/session-fixture.js';
 
 const state = vi.hoisted(() => {
@@ -68,11 +69,13 @@ import { runHeadless } from './headless.js';
 
 let sessionFixture: SessionFixture | undefined;
 let previousApiKey: string | undefined;
-let previousBookHome: string | undefined;
+
+// `query()` writes a run record under BOOK_HOME, so every test pins a home of its own; the tests
+// that need a particular one set it themselves, and the helper puts the original value back.
+isolateBookHome('book-sdk-contract-home-');
 
 beforeEach(() => {
   previousApiKey = process.env.BOOK_API_KEY;
-  previousBookHome = process.env.BOOK_HOME;
   process.env.BOOK_API_KEY = 'test-key';
 });
 
@@ -81,8 +84,6 @@ afterEach(() => {
   sessionFixture = undefined;
   if (previousApiKey === undefined) delete process.env.BOOK_API_KEY;
   else process.env.BOOK_API_KEY = previousApiKey;
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
 });
 
 describe('SDK runtime event bridge', () => {

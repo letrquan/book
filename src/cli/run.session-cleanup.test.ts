@@ -1,8 +1,9 @@
 /**
  * A launch that ends before its first prompt must not leave an empty session behind (#444).
  *
- * `SESSION_ROOT` in run.ts is read from BOOK_HOME when the module loads, so each test points
- * BOOK_HOME at a fresh directory and imports the module graph again afterwards.
+ * run.ts resolves its session root from BOOK_HOME each time it creates a session store, so a
+ * test only has to point BOOK_HOME at a fresh directory before the launch. `launch()` also
+ * imports the module graph again afterwards, which keeps the other modules' state per test.
  */
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -109,6 +110,25 @@ describe('runMainAction — print mode leaves no empty session behind', () => {
     expect(provider.requests).toHaveLength(0);
     expect(sessionFiles(sessionsDir)).toEqual([]);
     expect(indexedIds(sessionsDir)).toEqual([]);
+  });
+
+  it('keeps the session under the BOOK_HOME in force at launch, not the one run.ts loaded with', async () => {
+    const loadedWith = await launch();
+    const later = mkdtempSync(join(tmpdir(), 'book-cleanup-later-home-'));
+    tempDirs.push(later);
+    stashEnv('BOOK_HOME', later);
+    vi.stubGlobal(
+      'fetch',
+      createRepeatingScriptedProvider(() =>
+        sseResponse([JSON.stringify({ choices: [{ delta: { content: 'Done.' } }] })]),
+      ).fetch,
+    );
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await loadedWith.runMainAction(printOptions(loadedWith.workspace));
+
+    expect(sessionFiles(join(later, 'sessions'))).toHaveLength(1);
+    expect(sessionFiles(loadedWith.sessionsDir)).toEqual([]);
   });
 
   it('keeps the session of a run that recorded a prompt', async () => {

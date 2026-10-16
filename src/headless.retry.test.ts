@@ -1,27 +1,13 @@
-import { mkdtempSync, rmSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runHeadless } from './headless.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
+import { isolateBookHome } from './test/isolated-book-home.js';
 import type { AgentConfig } from './types/runtime.js';
 
 // Pin Book's home: a run writes its liveness file under it, and the real one is the
 // developer's own ~/.book.
-const previousBookHome = process.env.BOOK_HOME;
-let bookHome: string;
-
-beforeEach(() => {
-  bookHome = mkdtempSync(join(tmpdir(), 'book-home-'));
-  process.env.BOOK_HOME = bookHome;
-});
-
-afterEach(() => {
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
-  rmSync(bookHome, { recursive: true, force: true });
-});
+const bookHome = isolateBookHome('book-home-');
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -61,7 +47,7 @@ function textDelta(content: string): string {
 
 function config(retry: Partial<AgentConfig['retry']> = {}): AgentConfig {
   // The home doubles as the workspace, so nothing lands in the repository either.
-  const base = defaultConfig({ baseUrl: 'http://localhost/v1', workspace: bookHome });
+  const base = defaultConfig({ baseUrl: 'http://localhost/v1', workspace: bookHome() });
   return { ...base, retry: { ...base.retry, ...retry } };
 }
 

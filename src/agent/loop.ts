@@ -3614,9 +3614,13 @@ export async function runAgentLoop(
         });
         // Each kind of refusal has its own remedy, and a streak that mixes kinds names each one,
         // because every refused call needs its own fix before anything can proceed. The
-        // network-policy remedies come last and name the destinations the streak refused.
-        const remedies: string[] = REFUSAL_KIND_ORDER.filter((kind) =>
-          blockedStreakCauses.has(kind),
+        // network-policy remedies come last and name the destinations the streak refused. A route
+        // that dropped arguments (`route`) is only the whole story when nothing else in the streak
+        // was the model's own malformed call: with one, the `malformed` remedy already covers it.
+        const remedies: string[] = REFUSAL_KIND_ORDER.filter(
+          (kind) =>
+            blockedStreakCauses.has(kind) &&
+            !(kind === 'route' && blockedStreakCauses.has('malformed')),
         ).map((kind) => REFUSAL_REMEDIES[kind]);
         remedies.push(...networkPolicyRemedies(blockedStreakNetworkRefusals));
         if (remedies.length === 0) remedies.push(REFUSAL_REMEDIES.permission);
