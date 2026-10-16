@@ -100,6 +100,9 @@ All notable changes to this project are documented in this file.
   `BOOK_BASE_URL`, `BOOK_PROVIDER`, `BOOK_MODEL` and `BOOK_EFFORT`, which the TUI streaming tests
   pass to their child on purpose (#358). To keep an override while debugging, list it in
   `BOOK_TEST_KEEP_ENV`, for example `BOOK_TEST_KEEP_ENV=BOOK_DEBUG,BOOK_DEBUG_STDERR`.
+- **A short quiet-run summary row shows all its metadata** (#469). `Read a.js` with
+  `1 file · 1 search · 1 listing` was cut at the 20-column meta column; the summary row's metadata
+  now takes the columns its target leaves free, and a long target keeps its priority.
 - **Ctrl+E expands the newest truncated tool row, and only that row's footer names the key**
   (#470). In the compact transcript every cut diff, output and failed-command footer read
   `(Ctrl+E)`, but the key expanded the latest row, so a 150-line `Write` followed by a capped `Edit`
