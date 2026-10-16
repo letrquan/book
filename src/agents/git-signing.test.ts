@@ -485,6 +485,72 @@ describe('signingPinArgs', () => {
     const { run } = scriptedRunner({ config: { stdout: '', stderr: '', code: 1 } });
     expect(await signingPinArgs('/repo', run)).toEqual(ALWAYS_PINNED);
   });
+
+  describe("carries the caller's signal into every call it makes (#491)", () => {
+    const repositoryKey = ['local', 'user.signingKey', 'REPO-KEY'] as const;
+    const signingOn = ['global', 'commit.gpgSign', 'true'] as const;
+
+    it.each([
+      ['the configuration read alone', [signingOn], ['config']],
+      ['the configuration read and `git var`', [repositoryKey, signingOn], ['config', 'var']],
+      [
+        'the configuration read and the ssh key command',
+        [
+          repositoryKey,
+          signingOn,
+          ['global', 'gpg.format', 'ssh'],
+          ['global', 'gpg.ssh.defaultKeyCommand', 'ssh-add -L'],
+        ],
+        ['config', '-L'],
+      ],
+    ] as const)('%s', async (_name, configured, expectedFirstArgs) => {
+      const { run, calls } = scriptedRunner({
+        config: { stdout: stream(...configured), stderr: '', code: 0 },
+        keyCommand: () => ({ stdout: 'key::ssh-ed25519 AAAA fake\n', stderr: '', code: 0 }),
+      });
+      const controller = new AbortController();
+
+      await signingPinArgs('/repo', run, controller.signal);
+
+      expect(calls.map((call) => call.args[0])).toEqual(expectedFirstArgs);
+      for (const call of calls) expect(call.options.signal).toBe(controller.signal);
+    });
+
+    it('carries it into the version read of a git too old for --show-scope', async () => {
+      const { run, calls } = scriptedRunner({
+        config: { stdout: '', stderr: "error: unknown option `show-scope'\n", code: 129 },
+        version: { stdout: 'git version 2.20.3\n', stderr: '', code: 0 },
+      });
+      const controller = new AbortController();
+
+      await expect(signingPinArgs('/repo', run, controller.signal)).rejects.toThrow('2.26');
+
+      expect(calls.map((call) => call.args[0])).toEqual(['config', '--version']);
+      for (const call of calls) expect(call.options.signal).toBe(controller.signal);
+    });
+
+    it('rejects when a stop killed the key command, rather than pinning the key empty', async () => {
+      const controller = new AbortController();
+      const { run } = scriptedRunner({
+        config: {
+          stdout: stream(
+            repositoryKey,
+            signingOn,
+            ['global', 'gpg.format', 'ssh'],
+            ['global', 'gpg.ssh.defaultKeyCommand', 'ssh-add -L'],
+          ),
+          stderr: '',
+          code: 0,
+        },
+        keyCommand: () => {
+          controller.abort();
+          throw new Error('ssh-add -L was cancelled');
+        },
+      });
+
+      await expect(signingPinArgs('/repo', run, controller.signal)).rejects.toThrow('cancelled');
+    });
+  });
 });
 
 describe('readSigningConfig', () => {
