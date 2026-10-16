@@ -109,25 +109,39 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
         // `exec` signals a timeout by killing the child; a genuine non-zero exit
         // carries a code and no signal.
         if (error.killed === true && error.signal) {
-          resolve(timedOut(command, timeoutMs, stdout || stderr || ''));
+          // Both streams: a hang's reason is often on stderr while the progress is on stdout.
+          resolve(
+            timedOut(
+              command,
+              timeoutMs,
+              [stdout, stderr].filter((stream) => stream.trim()).join('\n'),
+            ),
+          );
           return;
         }
+        // The shape of a failed `Bash`: the message is stderr (or the exit code), and stdout --
+        // where many runners print their failing assertions -- is the content (issue 473).
+        // A spawn failure's `code` is a string such as `ENOENT`, and records no exitCode.
+        //
         // A project check is run inside the same namespace a `Bash` command is,
         // so a `git` command among them hits the same read-only git dir
         // (issue 373) and says so in words that name no cause. Appended here,
-        // once.
+        // once, from both streams.
+        const exitCode = typeof error.code === 'number' ? error.code : undefined;
+        const fallback = exitCode === undefined ? error.message : `Exit code: ${exitCode}`;
         resolve(
-          fail(
+          toolFailure(
             withGitConfigReadOnlyNotice(
-              stderr || stdout || error.message,
-              stderr || stdout,
+              stderr.trim() ? stderr : fallback,
+              `${stdout}\n${stderr}`,
               decision.sandboxed,
               command,
               decision.gitDirReadOnly,
             ),
-            // The transcript's `exit N` and the command-output layout read this, as for Bash.
-            // A spawn failure's `code` is a string such as `ENOENT`, and records nothing.
-            typeof error.code === 'number' ? { exitCode: error.code } : undefined,
+            {
+              content: stdout,
+              ...(exitCode === undefined ? {} : { details: { exitCode } }),
+            },
           ),
         );
         return;
