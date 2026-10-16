@@ -2424,9 +2424,21 @@ describe('children re-driven after a restart', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  /**
+   * A restart is two managers in one process, and both reach the provider through the one global
+   * `fetch`: a stub cannot tell whose request it is serving, except by where it was sent. Each
+   * manager is therefore configured with an endpoint of its own, and the stub routes on it (#413).
+   */
+  const FIRST_PROCESS_URL = 'http://first-process.invalid/v1';
+  const RESTARTED_PROCESS_URL = 'http://restarted-process.invalid/v1';
+
+  /** The controller of every stream `held` has handed out. Closing one ends that request. */
+  const heldStreams: ReadableStreamDefaultController[] = [];
+
   function held(signal?: AbortSignal | null): Response {
     const stream = new ReadableStream({
       start(controller) {
+        heldStreams.push(controller);
         signal?.addEventListener('abort', () => {
           try {
             controller.close();
@@ -2455,16 +2467,20 @@ describe('children re-driven after a restart', () => {
     return new Response(stream, { status: 200 });
   }
 
-  /** Spawns a child, kills the process while it runs, restarts, and collects completions. */
+  /**
+   * Spawns a child, kills the process while it runs, restarts, and collects completions.
+   * `requests` is what the restarted manager sent to the provider, and nothing else (#413).
+   */
   async function restartAndCollect(
     parentToolCallId: string | undefined,
     spawnWith?: (manager: AgentManager) => Promise<{ id: string }>,
   ) {
     root = mkdtempSync(join(tmpdir(), 'resume-child-'));
     process.env.BOOK_HOME = join(root, 'book-home');
-    const config = defaultConfig({ workspace: root });
+    const config = defaultConfig({ workspace: root, baseUrl: FIRST_PROCESS_URL });
     config.settings.agents.persist = true;
     config.settings.agents.resumeInterrupted = true;
+    heldStreams.length = 0;
 
     vi.stubGlobal(
       'fetch',
@@ -2493,9 +2509,35 @@ describe('children re-driven after a restart', () => {
     process.off('exit', internals.exitHandler);
     internals.store?.dispose?.();
 
-    const resumedFetch = vi.fn(async () => answered('resumed answer'));
-    vi.stubGlobal('fetch', resumedFetch);
-    const second = new AgentManager(config, [], {
+    // The first manager's run is still alive here: `exitHandler()` records it as interrupted but
+    // does not abort it, because in production the process is exiting. Aborting it now with
+    // `dispose()` is no way out, because the aborted run winds down through
+    // `persist(record, 'result')`, which writes even after the store is disposed, and so replaces
+    // the `interrupted` / `process_exit` record the restart re-drives with `stopped` /
+    // `caller_cancelled`.
+    //
+    // So the first manager keeps its stub (the helper's, or the one `spawnWith` installed), and the
+    // restarted manager gets an endpoint of its own. The stub the test counts is reached only
+    // through that endpoint, so a request the first manager makes late, whenever its held request
+    // ends, cannot be mistaken for one the restarted manager made.
+    const firstFetch = globalThis.fetch;
+    const resumedFetch = vi.fn(async (_url: unknown, _init?: RequestInit) =>
+      answered('resumed answer'),
+    );
+    const strays: string[] = [];
+    let firstManagerRequests = 0;
+    vi.stubGlobal('fetch', (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const endpoint =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (endpoint.startsWith(RESTARTED_PROCESS_URL)) return resumedFetch(input, init);
+      if (endpoint.startsWith(FIRST_PROCESS_URL)) {
+        firstManagerRequests++;
+        return firstFetch(input, init);
+      }
+      strays.push(endpoint);
+      return Promise.reject(new Error(`request to an endpoint neither manager owns: ${endpoint}`));
+    });
+    const second = new AgentManager({ ...config, baseUrl: RESTARTED_PROCESS_URL }, [], {
       storeRoot: root,
       findGitRoot: async () => undefined,
     });
@@ -2504,11 +2546,33 @@ describe('children re-driven after a restart', () => {
       if (event.type === 'agent_completion') completions.push(event.type);
     });
     try {
+      // The worst case, forced instead of left to the machine's load: right after the restart
+      // began, every request the first manager still holds ends, the way a stall, an abort or a
+      // dropped connection ends it, and its run reacts before the restarted manager starts (the
+      // loop re-issues the turn through the global `fetch`). Every test that restarts runs this
+      // schedule.
+      for (const controller of heldStreams.splice(0)) {
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
+      }
+      await vi.waitFor(
+        () => {
+          if (firstManagerRequests === 0) {
+            throw new Error('the first manager made no request after the restart began');
+          }
+        },
+        { timeout: 5_000 },
+      );
+      // A manager reads the store when it is first used, so the restarted one reads it only now.
       await second.list();
       await new Promise((resolve) => setTimeout(resolve, 300));
       await second.waitForIdle();
       await new Promise((resolve) => setTimeout(resolve, 100));
       const record = await second.get(spawned.id);
+      expect(strays, 'requests to an endpoint neither manager owns').toEqual([]);
       // The last user message of each request after the restart: the task each re-run ran.
       const tasks = (resumedFetch.mock.calls as unknown as Array<[unknown, RequestInit?]>).map(
         ([, init]) => {
