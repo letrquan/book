@@ -12,6 +12,7 @@ import { stepProgress } from './steps.js';
 import { STATUS_INDICATORS } from './status-indicators.js';
 import { displayWidth, hardWrapLine, truncateDisplay, wordWrap } from './components/word-wrap.js';
 import {
+  countDrawnOutputLines,
   countOutputLines,
   formatToolOutputFooter,
   prepareToolOutputDisplay,
@@ -900,7 +901,7 @@ export interface ToolErrorDetail {
    * rows, as the lines it stands for did.
    *
    * A collapsed detail whose rows are a stderr message also counts the command's stdout, which
-   * they do not show, as the lines its output block draws, in the same footer:
+   * they do not show, as the rows its expanded output block draws for it, in the same footer:
    * `… +2 lines, +1 line of output (Ctrl+E)`. A row draws one footer and names the key once, and
    * it reads before the rows while it counts lines they cut. With none of its own it is the
    * stdout's alone, `… +1 line of output (Ctrl+E)`, and reads after the rows ({@link hintBelow}).
@@ -930,8 +931,10 @@ export interface ToolErrorDetailOptions {
   commandOutput?: boolean;
   /**
    * The command's stdout, shown instead of a message that is only `Exit code: N`. Under any other
-   * message a collapsed detail counts its lines, as its output block draws them and blank ones
-   * among them, in the footer: `… +1 line of output`. A stdout with no non-blank line is not named.
+   * message a collapsed detail counts the rows its expanded output block draws for it, in the
+   * footer: `… +1 line of output`. Each line that is not empty is a row, a line of spaces included,
+   * and an empty one, the end of a final newline among them, is none. A stdout with no non-blank
+   * line is not named.
    */
   stdout?: string;
   /**
@@ -1084,12 +1087,13 @@ function commandOutputDetail(
   // Under a stderr message a collapsed row says nothing of the stdout unless its footer does, and
   // Ctrl+E skips a row that hides nothing. A row draws one footer and names the key once, so it
   // counts both: the stderr lines the tail cut, above the rows where that count always stood, and
-  // the stdout's lines as its output block draws them. With no cut lines the footer is the
-  // stdout's alone, after the rows. There is no stdout to count when it is the rows (an
-  // exit-code-only message), when an open row's output block draws it, or when it has no text.
+  // the rows Ctrl+E then draws for the stdout: the output block's lines that are not empty, so the
+  // newline real output ends in is not one. With no cut lines the footer is the stdout's alone,
+  // after the rows. There is no stdout to count when it is the rows (an exit-code-only message),
+  // when an open row's output block draws it, or when it has no text.
   const stdoutLines =
     !stdoutFallback && !expanded && !stdoutShownBelow && hasNonBlankOutputLine(stdout)
-      ? countOutputLines(stdout)
+      ? countDrawnOutputLines(stdout)
       : 0;
   const cutLines = tail.hiddenLines > 0;
   const hint =

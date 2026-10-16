@@ -603,24 +603,35 @@ describe('composeToolErrorDetail with a failed command', () => {
       expect(rows(detail)).toBe(2);
     });
 
-    it('counts the lines its expanded output block draws, the blank ones among them', () => {
-      // The block is given every line of the stdout: one more than it has newlines, so the empty
-      // line after a final newline is one of them. Counting only the non-blank ones said less than
-      // Ctrl+E then opened.
+    it('counts the rows its expanded output block draws, which an empty line does not take', () => {
+      // Real output ends in a newline, and Ink gives an empty line no height: the block draws a row
+      // for each line that is not empty, a line of spaces included, and none for the empty line
+      // after a final newline or the ones between two newlines. A one-line stdout read `+2 lines`.
+      // ToolCallBlock.test.tsx counts the rows that are drawn; these are the numbers it must find.
       const cases: [string, number][] = [
-        ['FAIL a\n\n\nexpected 1', 4],
-        ['\nFAIL a\n\n\nexpected 1\n', 6],
-        ['FAIL a\n\n  \nFAIL b\r\n\t\nFAIL c\n\n', 8],
+        ['X\n', 1],
+        ['X', 1],
+        // The block splits on the newline alone, so the \r stays on its line.
+        ['X\r\n', 1],
+        ['A\n\nB\n   \nC\n', 4],
+        ['FAIL a\n\n\nexpected 1', 2],
+        ['\nFAIL a\n\n\nexpected 1\n', 2],
+        ['FAIL a\n\n  \nFAIL b\r\n\t\nFAIL c\n\n', 5],
       ];
-      for (const [out, expected] of cases) {
-        const drawn = toolOutputDisplay(out, {
+      for (const [out, rowsDrawn] of cases) {
+        const noun = rowsDrawn === 1 ? 'line' : 'lines';
+        const detail = composeToolErrorDetail(row, stderr, grid, { ...command, stdout: out });
+        expect([out, detail.hint]).toEqual([out, `… +${rowsDrawn} ${noun} of output (Ctrl+E)`]);
+        // The rows are the lines the block is given that are not empty.
+        const block = toolOutputDisplay(out, {
           success: false,
           showAllToolOutput: true,
           terminalWidth: 100,
-        }).lines.length;
-        expect(drawn).toBe(expected);
-        const detail = composeToolErrorDetail(row, stderr, grid, { ...command, stdout: out });
-        expect(detail.hint).toBe(`… +${drawn} lines of output (Ctrl+E)`);
+        });
+        expect([out, block.lines.filter((line) => line.length > 0).length]).toEqual([
+          out,
+          rowsDrawn,
+        ]);
       }
     });
 
@@ -631,7 +642,7 @@ describe('composeToolErrorDetail with a failed command', () => {
       const split = vi.spyOn(String.prototype, 'split');
       try {
         const detail = composeToolErrorDetail(row, stderr, grid, { ...command, stdout: big });
-        expect(detail.hint).toBe('… +1000001 lines of output (Ctrl+E)');
+        expect(detail.hint).toBe('… +1000000 lines of output (Ctrl+E)');
         const widest = Math.max(0, ...split.mock.contexts.map((text) => String(text).length));
         expect(widest).toBeLessThan(1000);
       } finally {
@@ -734,13 +745,25 @@ describe('composeToolErrorDetail with a failed command', () => {
       expect(detail.lines[1]!.endsWith('…')).toBe(true);
     });
 
-    it('counts the stdout’s lines as the output block draws them in the combined footer too', () => {
+    it('counts the rows its output block draws in the combined footer too', () => {
+      // The one-line stdout of a real command, newline and all, under a stderr tail that cut two.
+      const one = composeToolErrorDetail(row, source(6).join('\n'), grid, {
+        ...command,
+        stdout: 'OUT-A\n',
+      });
+      expect(one.hint).toBe('… +2 lines, +1 line of output (Ctrl+E)');
+      expect(one.hintBelow).toBeUndefined();
       const out = '\nFAIL a\n\n\nexpected 1\n';
       const detail = composeToolErrorDetail(row, source(6).join('\n'), grid, {
         ...command,
         stdout: out,
       });
-      expect(detail.hint).toBe('… +2 lines, +6 lines of output (Ctrl+E)');
+      expect(detail.hint).toBe('… +2 lines, +2 lines of output (Ctrl+E)');
+      const spaced = composeToolErrorDetail(row, source(6).join('\n'), grid, {
+        ...command,
+        stdout: 'A\n\nB\n   \nC\n',
+      });
+      expect(spaced.hint).toBe('… +2 lines, +4 lines of output (Ctrl+E)');
     });
 
     it('keeps the stderr count alone when the stdout has nothing to name', () => {

@@ -1484,19 +1484,49 @@ describe('ToolCallBlock failures', () => {
         expect(rendered.split(STDOUT)).toHaveLength(2);
         expect(rendered).not.toContain('of output');
       });
+
+      it('counts a stdout that ends in a newline as the one row its block draws', () => {
+        const tail = toolFailure(stderr.join('\n'), {
+          content: 'OUT-A\n',
+          details: { exitCode: 1 },
+        });
+        expect(linesOf(draw(tail)).slice(1)[0]).toBe('… +8 lines, +1 line of output (Ctrl+E)');
+        const open = stripAnsi(draw(tail, { isExpanded: true, showAllToolOutput: true }));
+        expect(open.split('\n').filter((line) => line.includes('│'))).toHaveLength(1);
+        expect(open).toContain('OUT-A');
+      });
     });
 
-    it('counts as many lines as the output block then draws, blank ones included', () => {
-      // Each line of the stdout is a row of the expanded block. An empty line takes no height in
-      // Ink, so the blank lines here hold a space; counting only the non-blank ones said 2.
-      const stdout = ['FAIL a', ' ', ' ', 'expected 1'].join('\n');
-      const result = toolFailure(STDERR, { content: stdout, details: { exitCode: 1 } });
-      const named = /\+(\d+) lines? of output/.exec(stripAnsi(draw(result)));
-      const open = stripAnsi(draw(result, { isExpanded: true, showAllToolOutput: true }));
-      // Every row of the output block starts at its rail.
-      const drawn = open.split('\n').filter((line) => line.includes('│')).length;
-      expect(named?.[1]).toBe('4');
-      expect(drawn).toBe(4);
+    describe('names as many lines of output as the block then draws rows', () => {
+      /** The count in the footer, and the rows of the output block once Ctrl+E has shown the row. */
+      const namedAndDrawn = (stdout: string) => {
+        const result = toolFailure(STDERR, { content: stdout, details: { exitCode: 1 } });
+        const footer = /\+(\d+) lines? of output/.exec(stripAnsi(draw(result)));
+        const open = stripAnsi(draw(result, { isExpanded: true, showAllToolOutput: true }));
+        // Every row of the output block starts at its rail.
+        const rows = open.split('\n').filter((line) => line.includes('│')).length;
+        return { named: Number(footer?.[1]), rows };
+      };
+
+      it('takes no row for an empty line, which real output has in it and after it', () => {
+        // Ink gives an empty line no height: the block splits this into six lines and draws four.
+        expect(namedAndDrawn('A\n\nB\n   \nC\n')).toEqual({ named: 4, rows: 4 });
+      });
+
+      it('reads one line for the one line a command prints, with its newline or without', () => {
+        for (const stdout of ['BASH-OUT-LINE\n', 'BASH-OUT-LINE', 'BASH-OUT-LINE\r\n']) {
+          expect([stdout, namedAndDrawn(stdout)]).toEqual([stdout, { named: 1, rows: 1 }]);
+        }
+      });
+
+      it('leaves the \\r of a CRLF on its line, as the block does: a line of only a \\r is a row', () => {
+        expect(namedAndDrawn('A\r\n\r\nB\r\n')).toEqual({ named: 3, rows: 3 });
+        expect(namedAndDrawn('one\r\ntwo\r\n')).toEqual({ named: 2, rows: 2 });
+      });
+
+      it('takes a line of spaces for a row, and the empty lines around the text for none', () => {
+        expect(namedAndDrawn('\n\nFAIL a\n \n\nexpected 1\n\n')).toEqual({ named: 3, rows: 3 });
+      });
     });
 
     it('names no stdout that is only control characters', () => {

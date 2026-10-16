@@ -20,9 +20,11 @@ export interface ToolOutputDisplay {
 }
 
 /**
- * The lines OutputBlock draws for `output`: none for an empty output, otherwise one for each piece
- * between newlines, so a final newline ends in an empty line of its own. {@link countOutputLines}
- * counts the same lines without making them: keep the two in step.
+ * The lines {@link prepareToolOutputDisplay} makes of `output`, which OutputBlock gives a row each
+ * unless they are empty: none for an empty output, otherwise one for each piece between newlines,
+ * so a final newline ends in an empty line of its own. Only a newline splits: the `\r` of a CRLF
+ * stays at the end of its line. {@link countOutputLines} counts these lines without making them and
+ * {@link countDrawnOutputLines} the ones that get a row: keep the three in step.
  */
 function splitOutputLines(output: string): string[] {
   return output.length === 0 ? [] : output.split('\n');
@@ -30,13 +32,36 @@ function splitOutputLines(output: string): string[] {
 
 /**
  * How many lines {@link prepareToolOutputDisplay} makes of `output` (its `totalLines`), found by
- * scanning for newlines: a large output costs one pass and no allocation per line.
+ * scanning for newlines: a large output costs one pass and no allocation per line. The empty line
+ * after a final newline is one of them; {@link countDrawnOutputLines} leaves it out, as the block
+ * draws no row for it.
  */
 export function countOutputLines(output: string): number {
   if (output.length === 0) return 0;
   let lines = 1;
   for (let at = output.indexOf('\n'); at !== -1; at = output.indexOf('\n', at + 1)) lines++;
   return lines;
+}
+
+/**
+ * How many rows OutputBlock draws for `output` once it shows every line: the lines
+ * {@link splitOutputLines} makes of it that are not empty. Ink gives an empty line no height, so
+ * the ones between two newlines and the one after a final newline take no row, while a line of
+ * spaces takes one. A newline alone splits, as in the block: the `\r` of a CRLF stays on its line,
+ * so `"X\r\n"` is one row and a line that is only a `\r` is a row too.
+ *
+ * Found by scanning for newlines and making no line, so a large output costs one pass and no
+ * allocation per line. A line of nothing but the escape sequences Ink strips (cursor movement,
+ * erasing) draws no row either, but telling it from text takes the sequences parsed: it is counted.
+ */
+export function countDrawnOutputLines(output: string): number {
+  let drawn = 0;
+  let start = 0;
+  for (let at = output.indexOf('\n'); at !== -1; at = output.indexOf('\n', start)) {
+    if (at > start) drawn++;
+    start = at + 1;
+  }
+  return output.length > start ? drawn + 1 : drawn;
 }
 
 /**

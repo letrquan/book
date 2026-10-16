@@ -93,21 +93,24 @@ All notable changes to this project are documented in this file.
   the `FAIL test/a.test.js > expected 1, got 2` that said what broke belonged. The model read both,
   but nothing under the row said the stdout existed, and Ctrl+E skipped the row unless it was the
   latest, because the compact transcript took it to hide nothing. The collapsed detail of a failed
-  `Bash` or `Check` now ends with `… +1 line of output (Ctrl+E)`, counting the lines its output
-  block draws for the stdout, blank ones included (only the row Ctrl+E acts on names the key; the
-  others read `… +1 line of output`), and the row counts as hiding content, so Ctrl+E picks it even
-  when a newer row hides nothing. Pressing it shows the whole stderr and the stdout in the output
-  block, and the next press moves up to the next truncated row. A stderr tail that cuts lines of its
-  own keeps its footer above the rows and counts the stdout in it, one footer and one key:
-  `… +2 lines, +1 line of output (Ctrl+E)`. A stdout with no text in it (blank lines, control
-  characters) is not named. A message that is only `Exit code: N` is unchanged, since its stdout is
-  the detail, and a row that is open (Ctrl+E, a click, or Ctrl+O's detailed transcript) draws the
-  stdout in its output block alone. A `Bash` command whose stderr held only whitespace (a bare
-  `echo >&2`) used to report that whitespace as its message, which the row skips as blank: it drew
-  no stdout and named none, and Ctrl+E passed over it. It now reports `Exit code: N`, as `Check`
-  already did, so its stdout is the detail like that of any command that said nothing on stderr. A
-  `BashOutput` read of a shell that failed is a successful read of one buffer that holds both
-  streams, so it has no stderr to put a stdout under and is unchanged.
+  `Bash` or `Check` now ends with `… +1 line of output (Ctrl+E)`, counting the rows the output
+  block then draws for the stdout (only the row Ctrl+E acts on names the key; the others read
+  `… +1 line of output`), and the row counts as hiding content, so Ctrl+E picks it even when a
+  newer row hides nothing. Pressing it shows the whole stderr and the stdout in the output block,
+  and the next press moves up to the next truncated row. The block draws a row for each line that
+  is not empty, and Ink gives an empty line no height: the newline real output ends in adds no row
+  (a stdout of `hi` and its newline reads `+1 line`), nor does an empty line between two others,
+  and a line of spaces is one (`A\n\nB\n   \nC\n` reads `+4 lines`, as many as Ctrl+E then draws).
+  A stderr tail that cuts lines of its own keeps its footer above the rows and counts the stdout in
+  it, one footer and one key: `… +2 lines, +1 line of output (Ctrl+E)`. A stdout with no text in it
+  (blank lines, control characters) is not named. A message that is only `Exit code: N` is
+  unchanged, since its stdout is the detail, and a row that is open (Ctrl+E, a click, or Ctrl+O's
+  detailed transcript) draws the stdout in its output block alone. A `Bash` command whose stderr
+  held only whitespace (a bare `echo >&2`) used to report that whitespace as its message, which the
+  row skips as blank: it drew no stdout and named none, and Ctrl+E passed over it. It now reports
+  `Exit code: N`, as `Check` already did, so its stdout is the detail like that of any command that
+  said nothing on stderr. A `BashOutput` read of a shell that failed is a successful read of one
+  buffer that holds both streams, so it has no stderr to put a stdout under and is unchanged.
 - **A finished compaction is shown only in the transcript.** Its row, `✓ Compact conversation`,
   is now the whole record of a successful compaction: the post-compaction card and the
   `Compacted 100%` bar no longer appear above the input or linger until the next message. A
