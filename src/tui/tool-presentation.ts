@@ -12,7 +12,6 @@ import { stepProgress } from './steps.js';
 import { STATUS_INDICATORS } from './status-indicators.js';
 import { displayWidth, hardWrapLine, truncateDisplay, wordWrap } from './components/word-wrap.js';
 import {
-  countDrawnOutputLines,
   countOutputLines,
   formatToolOutputFooter,
   prepareToolOutputDisplay,
@@ -252,6 +251,8 @@ function outputSizeMetadata(result: ToolResult | undefined): string | undefined 
   // Line count only. The byte size rode along on every row that produced any
   // output and told the reader nothing they would act on.
   const lines = countOutputLines(result.content);
+  // Output that is only newlines has no line to count.
+  if (lines === 0) return undefined;
   return `${lines} ${lines === 1 ? 'line' : 'lines'}`;
 }
 
@@ -1092,7 +1093,7 @@ function commandOutputDetail(
   // when an open row's output block draws it, or when it has no text.
   const stdoutLines =
     !stdoutFallback && !expanded && !stdoutShownBelow && hasNonBlankOutputLine(stdout)
-      ? countDrawnOutputLines(stdout)
+      ? countOutputLines(stdout)
       : 0;
   const cutLines = tail.hiddenLines > 0;
   const hint =

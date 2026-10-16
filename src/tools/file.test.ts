@@ -2062,12 +2062,45 @@ describe('grep', () => {
         ['hello(?i)', '(?i)'],
         ['(?ix)hello', '(?ix)'],
         ['(?i)(?x)hello', '(?x)'],
+        ['(?s)(?i)(?U)hello', '(?U)'],
       ])('names the inline flag group it cannot read in %s', async (pattern, construct) => {
         const result = await run({ pattern }, portable);
         expect(result.status).toBe('error');
         expect(result.structuredError?.code).toBe('invalid_regex');
-        expect(result.structuredError?.message).toContain(construct);
+        // The message opens with the pattern itself, so only this phrase proves the group is named.
+        expect(result.structuredError?.message).toContain(`inline flag group ${construct} is not`);
         expect(result.structuredError?.message).toContain('i: true');
+      });
+
+      it.each(['(?i)foo(', '(?is)foo(', '(?i)(?s)foo('])(
+        'does not blame a translated flag group for the real error in %s',
+        async (pattern) => {
+          const result = await run({ pattern }, portable);
+          expect(result.status).toBe('error');
+          expect(result.structuredError?.code).toBe('invalid_regex');
+          expect(result.structuredError?.message).toBe(`Invalid regex: ${pattern}`);
+          expect(result.structuredError?.message).not.toContain('inline flag group');
+        },
+      );
+
+      it('leaves $ and . to the line, as ripgrep does, when a CRLF file is searched by line', async () => {
+        writeFileSync(join(dir, 'crlf.txt'), 'foo\r\nbar\r\n');
+        // `m` and `s` mean nothing per line; kept as flags they would match before or at the \r.
+        for (const pattern of ['(?m)foo$', '(?s)foo.', '(?ms)foo$', '(?s)foo.$']) {
+          const result = await run({ pattern }, portable);
+          expect(result.status, pattern).toBe('success');
+          expect(result.content, pattern).toBe('No matches found');
+        }
+        const plain = await run({ pattern: '(?m)^foo' }, portable);
+        expect(plain.content).toContain('crlf.txt:1: foo');
+      });
+
+      it('still lets (?s) and (?m) reach a multiline search', async () => {
+        writeFileSync(join(dir, 'crlf.txt'), 'foo\nbar\n');
+        const dot = await run({ pattern: 'foo.bar', multiline: true }, portable);
+        expect(dot.content).toContain('crlf.txt:1');
+        const anchor = await run({ pattern: '(?m)^bar$', multiline: true }, portable);
+        expect(anchor.content).toContain('crlf.txt:2');
       });
 
       it('still reports a plain invalid pattern as invalid_regex', async () => {
@@ -2138,6 +2171,52 @@ describe('grep', () => {
         expect(result.status).toBe('error');
         expect(result.structuredError?.code).toBe('invalid_regex');
         expect(result.structuredError?.message).toContain('unclosed group');
+      });
+
+      // rg exits 2 for a file it could not read as well as for a pattern it could not compile, and
+      // only the second is a reason to ask the portable engine: it would reject an rg-only pattern
+      // and blame it for a permission error.
+      describe('when rg exits 2 for a reason that is not the pattern', () => {
+        const fakeRg = (stderrLine: string) => {
+          const bin = mkdtempSync(join(tmpdir(), 'book-fake-rg-'));
+          const script = `process.stderr.write(${JSON.stringify(stderrLine + '\n')});\nprocess.exit(2);`;
+          writeFileSync(join(bin, 'rg'), `#!/usr/bin/env node\n${script}\n`);
+          chmodSync(join(bin, 'rg'), 0o755);
+          return { bin, env: { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` } };
+        };
+
+        it.skipIf(process.platform === 'win32')(
+          'reports rg own answer, not an invalid pattern',
+          async () => {
+            writeFileSync(join(dir, 'a.txt'), 'nothing here');
+            const { bin, env } = fakeRg('rg: ./locked.txt: Permission denied (os error 13)');
+            try {
+              // JavaScript cannot compile `(?x)`: falling back would answer invalid_regex.
+              const result = await run({ pattern: '(?x)foo bar' }, env);
+              expect(result.status).toBe('success');
+              expect(result.content).toBe('No matches found');
+            } finally {
+              rmSync(bin, { recursive: true, force: true });
+            }
+          },
+        );
+
+        it.skipIf(process.platform === 'win32')(
+          'still asks the portable engine when the stderr is a regex parse error',
+          async () => {
+            writeFileSync(join(dir, 'a.txt'), 'foobar');
+            const { bin, env } = fakeRg(
+              'rg: regex parse error:\n    (?:foo(?=bar))\nerror: look-around',
+            );
+            try {
+              const result = await run({ pattern: 'foo(?=bar)' }, env);
+              expect(result.status).toBe('success');
+              expect(result.content).toContain('a.txt:1: foobar');
+            } finally {
+              rmSync(bin, { recursive: true, force: true });
+            }
+          },
+        );
       });
     });
   });

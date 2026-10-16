@@ -2037,7 +2037,13 @@ async function grepSearchPortable(
   );
 
   // The flags a leading `(?i)` / `(?s)` / `(?m)` stands for, merged with the call's own once each.
-  const compiled = portablePattern(pattern, `${multiline ? 'gms' : 'g'}${ignoreCase ? 'i' : ''}`);
+  const translated = portablePattern(pattern, `${multiline ? 'gms' : 'g'}${ignoreCase ? 'i' : ''}`);
+  // Searched a line at a time, the lines are split on `\n` alone and a CRLF line keeps its `\r`:
+  // `m` would let `$` match before it and `s` would let `.` match it, which ripgrep does not do.
+  // Neither flag means anything for one line, so they go.
+  const compiled = multiline
+    ? translated
+    : { source: translated.source, flags: translated.flags.replace(/[ms]/g, '') };
   const invalidPattern = () =>
     toolFailure(describeInvalidPattern(pattern, rgError), { code: 'invalid_regex' });
   try {
@@ -2373,7 +2379,10 @@ type RipgrepOutcome =
   | { kind: 'success'; result: ToolResult }
   | {
       kind: 'fallback';
-      /** `not_found`: no `rg` to spawn; `bad_output`: stdout was not JSON events; `failed`: exit 2. */
+      /**
+       * `not_found`: no `rg` to spawn; `bad_output`: stdout was not JSON events; `failed`: a
+       * pattern error, or a run that failed without matches.
+       */
       reason: 'not_found' | 'bad_output' | 'failed';
       /** What `rg` wrote to stderr, bounded. */
       stderr: string;
@@ -2395,6 +2404,14 @@ function ripgrepErrorText(stderr: string): string | undefined {
   return text || undefined;
 }
 
+/**
+ * Whether ripgrep's stderr is a complaint about the pattern itself. rg exits 2 for that and also
+ * for a file it could not read, and only the first says anything about the pattern.
+ */
+function ripgrepRejectedPattern(stderr: string): boolean {
+  return /regex parse error|error parsing regex/i.test(stderr);
+}
+
 /** What a search pinned to ripgrep reports when ripgrep did not answer it. */
 function pinnedRipgrepFailure(
   pattern: string,
@@ -2413,7 +2430,7 @@ function pinnedRipgrepFailure(
     );
   }
   const said = ripgrepErrorText(outcome.stderr);
-  const isPatternError = /regex parse error|error parsing regex/i.test(outcome.stderr);
+  const isPatternError = ripgrepRejectedPattern(outcome.stderr);
   return toolFailure(
     `${isPatternError ? `Invalid regex: ${pattern}` : 'ripgrep could not run this search'}` +
       (said ? `\nripgrep said:\n${said}` : ''),
@@ -2723,7 +2740,17 @@ async function grepSearchWithRipgrep(
     proc.stdout?.on('data', (chunk: string) => reader.push(chunk));
     proc.once('close', (code) => {
       if (settled) return;
-      if (code !== 0 && code !== 1 && totalMatches === 0 && !outputTruncated) {
+      // Exit 2 with a complaint about something other than the pattern (a file it could not read)
+      // is rg's own answer, "no matches" included: asking the portable engine would blame an rg-only
+      // pattern for a permission error. Any other failure to run is still the portable engine's.
+      const unreadableFileOnly = code === 2 && !ripgrepRejectedPattern(stderr);
+      if (
+        code !== 0 &&
+        code !== 1 &&
+        !unreadableFileOnly &&
+        totalMatches === 0 &&
+        !outputTruncated
+      ) {
         finish({ kind: 'fallback', reason: 'failed', stderr });
         return;
       }

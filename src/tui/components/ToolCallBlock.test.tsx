@@ -1004,8 +1004,70 @@ describe('ToolCallBlock output rows keep their empty lines (#494)', () => {
   it('adds no row for the newline that real output ends in', () => {
     expect(outputRows('S1\nS2\n')).toEqual(['S1', 'S2']);
     expect(outputRows('S1\nS2')).toEqual(['S1', 'S2']);
-    // An empty line before that newline is a row of its own.
-    expect(outputRows('S1\n\n')).toEqual(['S1', '']);
+    // Nor does any empty line the output ends in: they are the end of it, not lines of it.
+    expect(outputRows('S1\n\n')).toEqual(['S1']);
+    expect(outputRows('A\n\nB\n\n\n')).toEqual(['A', '', 'B']);
+    // A line of spaces is a line, and so is an empty one with a line after it.
+    expect(outputRows('A\n  \n\n')).toEqual(['A', '']);
+    expect(outputRows('\nA\n')).toEqual(['', 'A']);
+  });
+
+  it('draws no row for an output that is only newlines, such as a bare echo', () => {
+    expect(outputRows('\n')).toEqual([]);
+    expect(outputRows('\n\n\n')).toEqual([]);
+  });
+
+  it('counts the rows it draws in the row header, with no footer for them', () => {
+    const header = (content: string) => {
+      const rendered = render(
+        withTheme(
+          <ToolCallBlock
+            name="Bash"
+            args={{ command: 'printf out' }}
+            result={successResult('call-1', content)}
+            isExpanded
+            reducedMotion
+          />,
+        ),
+      );
+      return frame(rendered.lastFrame);
+    };
+    const one = header('X\n');
+    expect(one).toMatch(/\b1 line\b/);
+    expect(one).not.toMatch(/\b2 lines\b/);
+    expect(one).not.toContain('… +');
+    expect(one.split('\n').filter((line) => line.includes('│'))).toHaveLength(1);
+
+    const three = header('A\n\nB\n\n\n');
+    expect(three).toMatch(/\b3 lines\b/);
+    expect(three.split('\n').filter((line) => line.includes('│'))).toHaveLength(3);
+    expect(three).not.toContain('… +');
+  });
+
+  it('previews the last real lines of a failed output that ends in blank lines', () => {
+    const stdout = [...Array.from({ length: 12 }, (_, i) => `out ${i + 1}`), 'FAIL x', '', '', ''];
+    const result = toolFailure('boom', { content: stdout.join('\n'), details: { exitCode: 1 } });
+    const rendered = render(
+      withTheme(
+        <ToolCallBlock
+          name="Bash"
+          args={{ command: 'run' }}
+          result={{ ...result, status: 'error' }}
+          isExpanded
+          transcriptMode="detailed"
+          reducedMotion
+        />,
+      ),
+    );
+    const rows = frame(rendered.lastFrame)
+      .split('\n')
+      .filter((line) => line.includes('│'))
+      .map((line) => line.slice(line.indexOf('│') + 1).trim());
+    // 13 lines under a 10-line tail preview: the last nine and `FAIL x`, then the footer.
+    expect(rows.at(-1)).toMatch(/^… \+3 lines/);
+    expect(rows.at(-2)).toBe('FAIL x');
+    expect(rows).toHaveLength(11);
+    expect(rows).not.toContain('');
   });
 
   it('keeps the empty lines of a highlighted output too', () => {
@@ -1607,8 +1669,8 @@ describe('ToolCallBlock failures', () => {
         expect(namedAndDrawn('one\r\ntwo\r\n')).toEqual({ named: 2, rows: 2 });
       });
 
-      it('counts the empty lines around the text, which the block draws as rows', () => {
-        expect(namedAndDrawn('\n\nFAIL a\n \n\nexpected 1\n\n')).toEqual({ named: 7, rows: 7 });
+      it('counts the empty lines before and inside the text, which the block draws as rows', () => {
+        expect(namedAndDrawn('\n\nFAIL a\n \n\nexpected 1\n\n')).toEqual({ named: 6, rows: 6 });
       });
     });
 

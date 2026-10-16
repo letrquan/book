@@ -68,9 +68,13 @@ function firstInlineFlagGroup(pattern: string): string | undefined {
 /**
  * The reason the portable engine cannot run a pattern, in the words the model is told.
  * `rgError` is ripgrep's own message when ripgrep was asked first and rejected it too.
+ *
+ * Only what is left after the translatable leading groups are removed is searched: a `(?i)` that
+ * {@link portablePattern} already turned into a flag is supported, and naming it would blame the
+ * wrong thing for whatever else is wrong with the pattern.
  */
 export function describeInvalidPattern(pattern: string, rgError?: string): string {
-  const construct = firstInlineFlagGroup(pattern);
+  const construct = firstInlineFlagGroup(portablePattern(pattern, '').source);
   const reason = construct
     ? `\nThe inline flag group ${construct} is not supported by the portable regex engine: only ` +
       'leading (?i), (?s) and (?m) are. Use i: true for case-insensitive search (and ' +

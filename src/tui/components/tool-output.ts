@@ -20,42 +20,41 @@ export interface ToolOutputDisplay {
 }
 
 /**
- * The lines {@link prepareToolOutputDisplay} makes of `output`: none for an empty output, otherwise
- * one for each piece between newlines, so a final newline ends in an empty line of its own. Only a
- * newline splits: the `\r` of a CRLF stays at the end of its line. {@link countOutputLines} counts
- * these lines without making them.
+ * Where the lines of `output` end: before the newlines it ends in. Those are no lines of the output
+ * but what its last newline (real output ends in one) and any blank lines after its last text leave
+ * behind, so a block draws nothing for them and a count does not name them.
+ */
+function outputLinesEnd(output: string): number {
+  let end = output.length;
+  while (end > 0 && output.charCodeAt(end - 1) === 10) end--;
+  return end;
+}
+
+/**
+ * THE definition of a tool output's lines, and the only one: the pieces between newlines, with
+ * every empty line the output ends in dropped. The empty lines inside it stay (a blank line between
+ * two paragraphs is a row), and so does a line of whitespace, which is not empty. Only a newline
+ * splits: the `\r` of a CRLF stays at the end of its line. A header's line count, the block's rows,
+ * its `… +N lines` footers and the hint that counts a command's hidden stdout all read it, so they
+ * cannot disagree: {@link countOutputLines} counts these lines without making them.
  */
 function splitOutputLines(output: string): string[] {
-  return output.length === 0 ? [] : output.split('\n');
+  const end = outputLinesEnd(output);
+  return end === 0 ? [] : output.slice(0, end).split('\n');
 }
 
 /**
- * How many lines {@link prepareToolOutputDisplay} makes of `output` (its `totalLines`), found by
- * scanning for newlines: a large output costs one pass and no allocation per line. The empty line
- * after a final newline is one of them; {@link countDrawnOutputLines} leaves it out, as the block
- * draws no row for it.
+ * How many lines {@link splitOutputLines} makes of `output` (the `totalLines` of its display), found
+ * by scanning for newlines: a large output costs one pass and no allocation per line.
  */
 export function countOutputLines(output: string): number {
-  if (output.length === 0) return 0;
+  const end = outputLinesEnd(output);
+  if (end === 0) return 0;
   let lines = 1;
-  for (let at = output.indexOf('\n'); at !== -1; at = output.indexOf('\n', at + 1)) lines++;
+  for (let at = output.indexOf('\n'); at !== -1 && at < end; at = output.indexOf('\n', at + 1)) {
+    lines++;
+  }
   return lines;
-}
-
-/**
- * How many rows OutputBlock draws for `output` once it shows every line: one for each line the
- * output makes, an empty one included (the blank line between two paragraphs is a row), except the
- * empty line after a final newline. That one is no line of the output but what its last newline
- * leaves behind, so real output (`"X\n"`) is one row, as {@link prepareToolOutputDisplay} shows it.
- * A newline alone splits, as in the block: the `\r` of a CRLF stays on its line, so `"X\r\n"` is
- * one row.
- *
- * Found by scanning for newlines and making no line, so a large output costs one pass and no
- * allocation per line. A line of nothing but the escape sequences Ink strips (cursor movement,
- * erasing) draws no row either, but telling it from text takes the sequences parsed: it is counted.
- */
-export function countDrawnOutputLines(output: string): number {
-  return countOutputLines(output) - (output.endsWith('\n') ? 1 : 0);
 }
 
 /**
@@ -67,10 +66,7 @@ export function prepareToolOutputDisplay(
   output: string,
   { maxLines, maxLineWidth, hint, strategy = 'head' }: ToolOutputDisplayOptions,
 ): ToolOutputDisplay {
-  const splitLines = splitOutputLines(output);
-  // The empty line a final newline leaves is no line of the output: nothing is drawn for it, so it
-  // is neither shown nor counted as hidden. `totalLines` still counts it, as `countOutputLines` does.
-  const rawLines = output.endsWith('\n') ? splitLines.slice(0, -1) : splitLines;
+  const rawLines = splitOutputLines(output);
   const lineLimit = Math.max(0, Math.floor(maxLines));
   const widthLimit = Math.max(0, Math.floor(maxLineWidth));
   const visibleIndices = selectVisibleLineIndices(rawLines.length, lineLimit, strategy);
@@ -89,7 +85,7 @@ export function prepareToolOutputDisplay(
 
   return {
     lines,
-    totalLines: splitLines.length,
+    totalLines: rawLines.length,
     totalChars: output.length,
     hiddenLines,
     truncatedLines,

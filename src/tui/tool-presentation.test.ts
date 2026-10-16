@@ -603,7 +603,7 @@ describe('composeToolErrorDetail with a failed command', () => {
       expect(rows(detail)).toBe(2);
     });
 
-    it('counts the rows its expanded output block draws, empty lines included', () => {
+    it('counts the rows its expanded output block draws: every line but the empty ones it ends in', () => {
       // The block draws a row for each line, an empty one too, and none for the empty line after
       // the final newline real output ends in: a one-line stdout reads `+1 line`, not `+2`.
       // ToolCallBlock.test.tsx counts the rows that are drawn; these are the numbers it must find.
@@ -615,7 +615,8 @@ describe('composeToolErrorDetail with a failed command', () => {
         ['A\n\nB\n   \nC\n', 5],
         ['FAIL a\n\n\nexpected 1', 4],
         ['\nFAIL a\n\n\nexpected 1\n', 5],
-        ['FAIL a\n\n  \nFAIL b\r\n\t\nFAIL c\n\n', 7],
+        ['FAIL a\n\n  \nFAIL b\r\n\t\nFAIL c\n\n', 6],
+        ['A\n\nB\n\n\n', 3],
       ];
       for (const [out, rowsDrawn] of cases) {
         const noun = rowsDrawn === 1 ? 'line' : 'lines';
@@ -1739,6 +1740,35 @@ describe('exit code metadata', () => {
     expect(deriveToolPresentation('Bash', args, toolSuccess(stdout)).metadata).toEqual([
       '12 lines',
     ]);
+  });
+});
+
+describe('the line count a row header names', () => {
+  const args = { command: 'printf out' };
+
+  it('counts the lines of the output, not the empty ones it ends in', () => {
+    const cases: [string, string][] = [
+      ['X', '1 line'],
+      ['X\n', '1 line'],
+      ['A\nB\n', '2 lines'],
+      ['A\n\nB\n\n\n', '3 lines'],
+      ['\nA\n', '2 lines'],
+      ['A\n  \n\n', '2 lines'],
+    ];
+    for (const [out, named] of cases) {
+      expect([out, deriveToolPresentation('Bash', args, toolSuccess(out)).metadata]).toEqual([
+        out,
+        [named],
+      ]);
+    }
+  });
+
+  it('names no lines for an output that is only newlines', () => {
+    for (const out of ['\n', '\n\n\n']) {
+      expect(deriveToolPresentation('Bash', args, toolSuccess(out)).metadata.join(' ')).not.toMatch(
+        /lines?/,
+      );
+    }
   });
 });
 
