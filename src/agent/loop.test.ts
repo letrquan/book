@@ -24,7 +24,7 @@ import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { CompactRequestHints, CompactResult, PreparedCompaction } from '../types/sessions.js';
-import type { AgentTerminalOutcome } from '../types/terminal.js';
+import { terminalRecovery, type AgentTerminalOutcome } from '../types/terminal.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { MemoryModelWindowStore } from '../model-window-store.js';
 import type { LoadedMemoryContext } from '../memory-store.js';
@@ -6935,6 +6935,143 @@ describe('content filter and upstream error recoveries', () => {
         providerCode: 'unknown',
       });
     }
+  });
+
+  describe('a spent limit parks as quota_exhausted (#409)', () => {
+    const planBody = JSON.stringify({
+      error: {
+        message:
+          "You've reached your weekly usage limit for your plan. Wait for the window to reset or upgrade your plan.",
+      },
+    });
+
+    async function runWith(
+      respond: () => Response,
+      retry: Partial<AgentConfig['retry']> = {},
+    ): Promise<{ outcomes: AgentTerminalOutcome[]; fetchCalls: number; retries: string[] }> {
+      let fetchCalls = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          fetchCalls++;
+          return respond();
+        }),
+      );
+      const retries: string[] = [];
+      const outcomes: AgentTerminalOutcome[] = [];
+      await runAgentLoop(
+        defaultConfig({
+          maxTurns: 1,
+          retry: {
+            ...defaultConfig().retry,
+            streamReissueAttempts: DEFAULT_SETTINGS.retry.streamReissueAttempts,
+            ...retry,
+          },
+        }),
+        createRegistry(),
+        'hello',
+        [],
+        noopCallbacks({
+          onRetry: (phase) => retries.push(phase),
+          onTerminal: (outcome) => outcomes.push(outcome),
+        }),
+        'default',
+        { isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+      );
+      return { outcomes, fetchCalls, retries };
+    }
+
+    it('ends a spent-plan 429 failed / quota_exhausted after one request, parked', async () => {
+      for (const status of [429, 503]) {
+        const body = status === 429 ? planBody : `[commandcode/x] [429]: ${planBody}`;
+        const { outcomes, fetchCalls, retries } = await runWith(
+          () => new Response(body, { status }),
+        );
+        expect(fetchCalls, String(status)).toBe(1);
+        expect(retries, String(status)).toEqual([]);
+        expect(outcomes[0], String(status)).toMatchObject({
+          status: 'failed',
+          reason: 'quota_exhausted',
+          providerCode: 'usage_limit',
+        });
+        expect(terminalRecovery(outcomes[0])).toBe('park');
+        expect(outcomes[0].message).toContain('The usage limit for this plan is spent');
+      }
+    });
+
+    it('keeps a 402 and insufficient_quota credentials_rejected', async () => {
+      const cases: Array<[number, string]> = [
+        [402, 'Payment required'],
+        [
+          429,
+          JSON.stringify({
+            error: { code: 'insufficient_quota', message: 'You exceeded your current quota.' },
+          }),
+        ],
+      ];
+      for (const [status, body] of cases) {
+        const { outcomes, fetchCalls } = await runWith(() => new Response(body, { status }));
+        expect(fetchCalls, String(status)).toBe(1);
+        expect(outcomes[0], String(status)).toMatchObject({
+          status: 'failed',
+          reason: 'credentials_rejected',
+          providerCode: 'quota',
+        });
+        expect(terminalRecovery(outcomes[0])).toBe('park');
+      }
+    });
+
+    it('does not re-issue a bare absolute reset two days out', async () => {
+      const iso = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString();
+      const { outcomes, fetchCalls, retries } = await runWith(
+        () => new Response(`Too many requests. Your limit resets at ${iso}.`, { status: 429 }),
+      );
+      expect(fetchCalls).toBe(1);
+      expect(retries).toEqual([]);
+      expect(outcomes[0]).toMatchObject({
+        status: 'failed',
+        reason: 'quota_exhausted',
+        providerCode: 'rate_limit_wait',
+      });
+      expect(outcomes[0].message).toContain(`resets at ${iso}`);
+      expect(terminalRecovery(outcomes[0])).toBe('park');
+    });
+
+    it('does not re-issue a Retry-After of two hours', async () => {
+      const { outcomes, fetchCalls, retries } = await runWith(
+        () => new Response('busy', { status: 429, headers: { 'retry-after': '7200' } }),
+      );
+      expect(fetchCalls).toBe(1);
+      expect(retries).toEqual([]);
+      expect(outcomes[0]).toMatchObject({
+        status: 'failed',
+        reason: 'quota_exhausted',
+        providerCode: 'rate_limit_wait',
+      });
+      expect(outcomes[0].message).toContain('2 hours');
+    });
+
+    it('does not re-issue a router (reset after 3h) cooldown', async () => {
+      const { outcomes, fetchCalls } = await runWith(
+        () => new Response('rate limited (reset after 3h)', { status: 429 }),
+      );
+      expect(fetchCalls).toBe(1);
+      expect(outcomes[0]).toMatchObject({
+        status: 'failed',
+        reason: 'quota_exhausted',
+        providerCode: 'rate_limit_wait',
+      });
+    });
+
+    it('still re-issues a rate limit whose wait is short', async () => {
+      const { outcomes, fetchCalls, retries } = await runWith(
+        () => new Response('busy', { status: 429 }),
+        { maxAttempts: 0 },
+      );
+      expect(fetchCalls).toBe(4);
+      expect(retries).toEqual(['reissue', 'reissue', 'reissue']);
+      expect(outcomes[0]).toMatchObject({ reason: 'provider_error', providerCode: 'rate_limited' });
+    });
   });
 
   it('does not re-issue a 422', async () => {

@@ -18,6 +18,18 @@ export type ProviderErrorCode =
   | 'not_found'
   | 'unprocessable'
   | 'quota'
+  /**
+   * A 429 that states a spent usage or plan limit (#409): the run ends
+   * `quota_exhausted`, not `credentials_rejected`. A 402 and OpenAI's
+   * `insufficient_quota` stay `quota`.
+   */
+  | 'usage_limit'
+  /**
+   * A 429 whose stated wait (Retry-After, `(reset after …)`, `resets at <ISO>`)
+   * is longer than the retry layer can wait. Not produced by `classifyApiError`:
+   * the retry layer's early stop carries it out (`statedWaitStop`).
+   */
+  | 'rate_limit_wait'
   | 'model_unavailable'
   | 'unknown';
 
@@ -416,8 +428,11 @@ export function classifyApiError(
         ? quotedStatus
         : status
       : (wrappedUpstreamStatus(status, body) ?? status);
-  if (effective === 429 && (statesSpentUsageLimit(body) || hasInsufficientQuotaName(body))) {
-    return 'quota';
+  if (effective === 429) {
+    // The split `formatApiError` has always made: `insufficient_quota` is about credits, a
+    // long-window plan limit is about a reset.
+    if (hasInsufficientQuotaName(body)) return 'quota';
+    if (statesSpentUsageLimit(body)) return 'usage_limit';
   }
   const code = classifyHttpStatus(effective).code;
   if ((effective === 403 || effective === 404) && statesModelUnavailable(body, effective)) {
@@ -522,20 +537,13 @@ export function formatApiError(
       const modelDetail = detailSentence(safeModelUnavailableDetail(body));
       return `${base} ${modelDetail} This model is not available on this provider or route — choose another with --model or /model.`;
     }
-    case 'quota': {
-      const effective =
-        quotedStatus !== undefined
-          ? classifyHttpStatus(status).retryable
-            ? quotedStatus
-            : status
-          : (wrappedUpstreamStatus(status, body) ?? status);
-      if (effective === 429 && statesSpentUsageLimit(body) && !hasInsufficientQuotaName(body)) {
-        const reset = parseAbsoluteReset(body);
-        const resetClause = reset !== undefined ? `; it resets at ${reset.iso}` : '';
-        return `${base} ${said} The usage limit for this plan is spent${resetClause}. Wait for the reset, or choose another model with --model or /model.`;
-      }
-      return `${base} ${said} Check your usage/credits.`;
+    case 'usage_limit': {
+      const reset = parseAbsoluteReset(body);
+      const resetClause = reset !== undefined ? `; it resets at ${reset.iso}` : '';
+      return `${base} ${said} The usage limit for this plan is spent${resetClause}. Wait for the reset, or choose another model with --model or /model.`;
     }
+    case 'quota':
+      return `${base} ${said} Check your usage/credits.`;
     default:
       if (detail.trim()) return `${base} ${detail}`;
       return code === 'not_found'
@@ -798,7 +806,8 @@ export async function fetchWithRetry(
       });
     }
 
-    if (classifyApiError(response.status, bodyText, quoted) === 'quota' && !retry.watchdog) {
+    const errorCode = classifyApiError(response.status, bodyText, quoted);
+    if ((errorCode === 'quota' || errorCode === 'usage_limit') && !retry.watchdog) {
       logger?.warn('usage limit reached; not retrying', {
         status: response.status,
       });
@@ -829,14 +838,13 @@ export async function fetchWithRetry(
       });
     }
 
-    // For a retryable 429 (plain or quoted) whose body states an absolute reset: if the reset
-    // is longer than what this call can still wait, return at once rather than burning attempts.
-    if ((quoted ?? response.status) === 429) {
-      const reset = parseAbsoluteReset(bodyText);
-      if (reset !== undefined && !retry.watchdog) {
-        // Wall clock on purpose, exactly like parseRetryAfter: the server sent an
-        // absolute timestamp, which is a point on the wall clock by definition.
-        // Subtracting a monotonic reading from it would be meaningless.
+    // For a retryable 429 (plain or quoted) that states how long to wait, by whichever source
+    // (Retry-After, a router's `(reset after …)`, an absolute reset): if that is longer than what
+    // this call can still wait, return at once rather than clamping it to `maxDelayMs` and
+    // burning every attempt on a request the provider has said will be refused (#409).
+    if ((quoted ?? response.status) === 429 && !retry.watchdog) {
+      const stated = statedWait(response.headers.get('retry-after'), bodyText);
+      if (stated !== undefined) {
         const attemptsWaitMs = (maxAttempts - attempt) * retry.maxDelayMs;
         const remainingBudgetMs =
           retry.totalBudgetMs > 0
@@ -846,15 +854,26 @@ export async function fetchWithRetry(
           remainingBudgetMs !== undefined
             ? Math.min(remainingBudgetMs, attemptsWaitMs)
             : attemptsWaitMs;
-        if (reset.epochMs - Date.now() > remainingWaitMs) {
-          logger?.warn('reset time beyond retry budget; not retrying', {
+        if (stated.waitMs > remainingWaitMs) {
+          logger?.warn('stated wait beyond retry budget; not retrying', {
             status: response.status,
+            source: stated.source,
           });
-          return new Response(bodyText, {
+          const init = {
             status: response.status,
             statusText: response.statusText,
             headers: response.headers,
-          });
+          };
+          // Only a wait that no fresh call could sit out either is carried to the loop as a
+          // park. A short wait that merely met the end of the attempts is an ordinary exhausted
+          // rate limit, which the loop may send again.
+          const wholeCallMs = Math.max(1, maxAttempts) * retry.maxDelayMs;
+          const beyondAnyCall =
+            stated.waitMs >
+            (retry.totalBudgetMs > 0 ? Math.min(retry.totalBudgetMs, wholeCallMs) : wholeCallMs);
+          return beyondAnyCall
+            ? new WaitStoppedResponse(bodyText, init, stated)
+            : new Response(bodyText, init);
         }
       }
     }
@@ -983,19 +1002,98 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** Where a provider's stated wait came from. */
+export type StatedWaitSource = 'retry-after' | 'cooldown' | 'reset-time';
+
+/** How long a provider says to wait before the next request (#409). */
+export interface StatedWait {
+  waitMs: number;
+  source: StatedWaitSource;
+  /** The absolute reset time, for `reset-time` only. */
+  resetIso?: string;
+}
+
+/**
+ * The wait a provider states, from the first source that states one: a Retry-After header, a
+ * router's relative `(reset after …)` hint, then an absolute `resets at <ISO>` that is still
+ * ahead. One reading shared by the backoff delay and the early stop, so a wait that is honoured
+ * and a wait that is refused are measured the same way.
+ */
+function statedWait(retryAfter?: string | null, body?: string): StatedWait | undefined {
+  const header = parseRetryAfter(retryAfter);
+  if (header !== undefined) return { waitMs: header, source: 'retry-after' };
+  const cooldown = parseCooldownReset(body);
+  if (cooldown !== undefined) return { waitMs: cooldown, source: 'cooldown' };
+  const reset = parseAbsoluteReset(body);
+  // Wall clock on purpose, exactly like parseRetryAfter: the server sent an absolute
+  // timestamp, which is a point on the wall clock by definition. Subtracting a monotonic
+  // reading from it would be meaningless.
+  const resetWaitMs = reset !== undefined ? reset.epochMs - Date.now() : 0;
+  if (reset !== undefined && resetWaitMs > 0) {
+    return { waitMs: resetWaitMs, source: 'reset-time', resetIso: reset.iso };
+  }
+  return undefined;
+}
+
+/**
+ * The response `fetchWithRetry` returns when it stopped because the provider's stated wait is
+ * longer than any call could sit out. It is the provider's own response, body and all; the
+ * subclass only carries the wait to the provider adapter, which reports it under the
+ * `rate_limit_wait` error code so the loop parks instead of re-issuing the request.
+ */
+class WaitStoppedResponse extends Response {
+  readonly statedWait: StatedWait;
+
+  constructor(body: string, init: ResponseInit, wait: StatedWait) {
+    super(body, init);
+    this.statedWait = wait;
+  }
+}
+
+/** The stated wait that stopped the retries on `response`, if one did (#409). */
+export function statedWaitStop(response: Response): StatedWait | undefined {
+  return response instanceof WaitStoppedResponse ? response.statedWait : undefined;
+}
+
+/** `7200000` as `2 hours`: the coarsest unit that keeps the figure readable. */
+function describeWait(waitMs: number): string {
+  const count = (value: number, unit: string): string =>
+    `${value} ${unit}${value === 1 ? '' : 's'}`;
+  const seconds = Math.max(1, Math.round(waitMs / 1_000));
+  if (seconds < 90) return count(seconds, 'second');
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return count(minutes, 'minute');
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return count(hours, 'hour');
+  return count(Math.round(hours / 24), 'day');
+}
+
+/**
+ * The error text for a response `fetchWithRetry` stopped on (`statedWaitStop`): what the
+ * provider said, how long it asked for, and the two remedies.
+ */
+export function formatStatedWaitError(
+  status: number,
+  body: string,
+  stop: StatedWait,
+  request?: ApiErrorRequest,
+): string {
+  const said = detailSentence(safeErrorDetail(body), request);
+  const when =
+    stop.resetIso !== undefined
+      ? `The limit resets at ${stop.resetIso}, in about ${describeWait(stop.waitMs)}`
+      : `The provider asks for a wait of about ${describeWait(stop.waitMs)}`;
+  return `API Error: ${status} ${said} ${when}, longer than this request will wait. Wait for the reset, or choose another model with --model or /model.`;
+}
+
 function backoffMs(
   attempt: number,
   retry: RetryConfig,
   retryAfter?: string | null,
   body?: string,
 ): number {
-  const absoluteReset = parseAbsoluteReset(body);
-  const absoluteWaitMs =
-    absoluteReset !== undefined && absoluteReset.epochMs > Date.now()
-      ? absoluteReset.epochMs - Date.now()
-      : undefined;
-  const retryAfterMs = parseRetryAfter(retryAfter) ?? parseCooldownReset(body) ?? absoluteWaitMs;
-  if (retryAfterMs !== undefined) return Math.min(retryAfterMs, retry.maxDelayMs);
+  const stated = statedWait(retryAfter, body);
+  if (stated !== undefined) return Math.min(stated.waitMs, retry.maxDelayMs);
   const exponential = Math.min(retry.baseDelayMs * 2 ** attempt, retry.maxDelayMs);
   return Math.round(exponential * (0.5 + Math.random()));
 }

@@ -195,6 +195,50 @@ describe('chatCompletionStream retry — status codes', () => {
     expect(events.some((e) => e.type === 'text' && e.content === 'ok')).toBe(true);
   });
 
+  it('surfaces a far Retry-After as rate_limit_wait after one request (#409)', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return new Response('rate limited', { status: 429, headers: { 'retry-after': '7200' } });
+      }),
+    );
+
+    const events = [];
+    for await (const e of chatCompletionStream(
+      { ...config, retry: { ...config.retry, maxDelayMs: 100 } },
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      events.push(e);
+    }
+    expect(calls).toBe(1);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'error', errorCode: 'rate_limit_wait' });
+    expect(events[0]).toMatchObject({ error: expect.stringContaining('2 hours') });
+  });
+
+  it('surfaces a spent-plan 429 as usage_limit after one request (#409)', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return new Response("You've reached your weekly usage limit for your plan.", {
+          status: 429,
+        });
+      }),
+    );
+
+    const events = [];
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(e);
+    }
+    expect(calls).toBe(1);
+    expect(events[0]).toMatchObject({ type: 'error', errorCode: 'usage_limit' });
+  });
+
   it('retries on 500 and succeeds on 2nd attempt', async () => {
     let calls = 0;
     vi.stubGlobal(

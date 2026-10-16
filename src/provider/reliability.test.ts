@@ -8,9 +8,11 @@ import {
   ERROR_BODY_READ_TIMEOUT_MS,
   fetchWithRetry,
   formatApiError,
+  formatStatedWaitError,
   isContextOverflowError,
   isUpstreamErrorEnvelope,
   quotedUpstreamStatus,
+  statedWaitStop,
 } from './reliability.js';
 
 afterEach(() => {
@@ -423,7 +425,8 @@ describe('provider reliability transport', () => {
         {},
         {
           ...defaultConfig().retry,
-          maxAttempts: 1,
+          // Six sleeps of 1 s reach the stated 5 s, so it is within reach and is only capped.
+          maxAttempts: 6,
           maxDelayMs: 1_000,
           totalBudgetMs: 10_000,
           requestTimeoutMs: 0,
@@ -434,7 +437,7 @@ describe('provider reliability transport', () => {
       await vi.advanceTimersByTimeAsync(5_000);
 
       await expect(pending).resolves.toMatchObject({ status: 200 });
-      expect(retryEvents).toEqual([[1, 1, 1_000]]);
+      expect(retryEvents).toEqual([[1, 6, 1_000]]);
     });
   });
 
@@ -1363,9 +1366,9 @@ describe('spent usage limit (#400)', () => {
     },
   });
 
-  it('classifies the issue body and equivalent plain 429 as quota', () => {
-    expect(classifyApiError(503, issueBody)).toBe('quota');
-    expect(classifyApiError(429, issueBody)).toBe('quota');
+  it('classifies the issue body and equivalent plain 429 as usage_limit', () => {
+    expect(classifyApiError(503, issueBody)).toBe('usage_limit');
+    expect(classifyApiError(429, issueBody)).toBe('usage_limit');
   });
 
   it('keeps short per-minute rate limits as rate_limited', () => {
@@ -1382,15 +1385,15 @@ describe('spent usage limit (#400)', () => {
     ).toBe('rate_limited');
   });
 
-  it('classifies long-window limits and insufficient_quota as quota', () => {
+  it('classifies long-window plan limits as usage_limit and insufficient_quota as quota', () => {
     expect(
       classifyApiError(
         429,
         '{"error":{"code":"insufficient_quota","message":"Billing limit reached"}}',
       ),
     ).toBe('quota');
-    expect(classifyApiError(429, 'Your daily quota is exhausted.')).toBe('quota');
-    expect(classifyApiError(429, "You've hit your 5-hour usage limit.")).toBe('quota');
+    expect(classifyApiError(429, 'Your daily quota is exhausted.')).toBe('usage_limit');
+    expect(classifyApiError(429, "You've hit your 5-hour usage limit.")).toBe('usage_limit');
   });
 
   it('answers the issue body with exactly one request and no retry', async () => {
@@ -1529,6 +1532,7 @@ describe('spent usage limit (#400)', () => {
       },
     });
     expect(classifyApiError(429, insufficientQuotaBody)).toBe('quota');
+    expect(classifyApiError(402, 'Monthly usage limit exceeded.')).toBe('quota');
     const msg429 = formatApiError(429, insufficientQuotaBody);
     expect(msg429).toContain('Check your usage/credits.');
     expect(msg429).not.toContain('Wait for the reset');
@@ -1594,5 +1598,235 @@ describe('spent usage limit (#400)', () => {
     expect(rateLimitWithFutureReset).toContain(`It resets at ${futureIso}.`);
     expect(rateLimitWithFutureReset).not.toContain('Try again in a moment');
     expect(rateLimitWithFutureReset).not.toContain('temporary capacity');
+  });
+});
+
+describe('a spent plan limit is its own provider code (#409)', () => {
+  const planBody = "You've reached your weekly usage limit for your plan.";
+
+  it('classifies a spent-plan 429, plain, quoted or router-wrapped, as usage_limit', () => {
+    expect(classifyApiError(429, planBody)).toBe('usage_limit');
+    expect(classifyApiError(429, JSON.stringify({ error: { message: planBody } }))).toBe(
+      'usage_limit',
+    );
+    expect(classifyApiError(503, `[commandcode/x] [429]: ${planBody}`)).toBe('usage_limit');
+    expect(classifyApiError(503, JSON.stringify({ error: { message: planBody, code: 429 } }))).toBe(
+      'usage_limit',
+    );
+  });
+
+  it('keeps a 402, insufficient_quota and a billing refusal as quota', () => {
+    expect(classifyApiError(402, planBody)).toBe('quota');
+    expect(classifyApiError(402, 'Payment required')).toBe('quota');
+    expect(
+      classifyApiError(
+        429,
+        '{"error":{"code":"insufficient_quota","message":"You exceeded your current quota, weekly usage limit reached."}}',
+      ),
+    ).toBe('quota');
+    expect(classifyApiError(401, planBody)).toBe('auth');
+    expect(classifyApiError(403, planBody)).toBe('auth');
+  });
+
+  it('is answered once, and not under the watchdog', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return new Response(planBody, { status: 429 });
+      }),
+    );
+    try {
+      const response = await fetchWithRetry('http://x/v1', {}, DEFAULT_SETTINGS.retry);
+      expect(response.status).toBe(429);
+      expect(calls).toBe(1);
+      // A plan limit is not a far stated wait: the provider code alone says it.
+      expect(statedWaitStop(response)).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('formats a usage_limit with the plan wording and no credits advice', () => {
+    const text = formatApiError(429, planBody);
+    expect(text).toContain('The usage limit for this plan is spent.');
+    expect(text).not.toContain('Check your usage/credits');
+  });
+});
+
+describe('a stated wait beyond the retry budget (#409)', () => {
+  // Ten attempts of at most 30 s: nothing past five minutes is within reach.
+  const retry = DEFAULT_SETTINGS.retry;
+
+  async function farWait(
+    make: () => Response,
+    config = retry,
+  ): Promise<{ calls: number; response: Response }> {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return make();
+      }),
+    );
+    try {
+      const response = await fetchWithRetry('http://x/v1', {}, config);
+      return { calls, response };
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it('returns a Retry-After of two hours after one request', async () => {
+    const { calls, response } = await farWait(
+      () => new Response('busy', { status: 429, headers: { 'retry-after': '7200' } }),
+    );
+    expect(calls).toBe(1);
+    expect(response.status).toBe(429);
+    expect(await response.text()).toBe('busy');
+    expect(statedWaitStop(response)).toEqual({ waitMs: 7_200_000, source: 'retry-after' });
+  });
+
+  it('returns a router (reset after 3h) cooldown after one request', async () => {
+    const { calls, response } = await farWait(
+      () => new Response('rate limited (reset after 3h)', { status: 429 }),
+    );
+    expect(calls).toBe(1);
+    expect(statedWaitStop(response)).toEqual({ waitMs: 10_800_000, source: 'cooldown' });
+  });
+
+  it('returns a router-wrapped 429 with a far cooldown after one request', async () => {
+    const { calls, response } = await farWait(
+      () => new Response('[openai/gpt-x] [429]: slow down (reset after 3h)', { status: 503 }),
+    );
+    expect(calls).toBe(1);
+    expect(response.status).toBe(503);
+    expect(statedWaitStop(response)?.source).toBe('cooldown');
+  });
+
+  it('returns an absolute reset two days out after one request, and names the time', async () => {
+    const iso = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString();
+    const { calls, response } = await farWait(
+      () => new Response(`Too many requests. Your limit resets at ${iso}.`, { status: 429 }),
+    );
+    expect(calls).toBe(1);
+    expect(statedWaitStop(response)).toMatchObject({ source: 'reset-time', resetIso: iso });
+  });
+
+  it('stops when the remaining total budget cannot reach the wait', async () => {
+    const { calls, response } = await farWait(
+      () => new Response('busy', { status: 429, headers: { 'retry-after': '120' } }),
+      { ...retry, totalBudgetMs: 60_000 },
+    );
+    expect(calls).toBe(1);
+    expect(statedWaitStop(response)?.source).toBe('retry-after');
+  });
+
+  it('keeps waiting for a far wait under the watchdog', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response('busy', { status: 429, headers: { 'retry-after': '7200' } }),
+        )
+        .mockResolvedValueOnce(new Response('rate limited (reset after 3h)', { status: 429 }))
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = fetchWithRetry('http://x/v1', {}, { ...retry, watchdog: true });
+      await vi.advanceTimersByTimeAsync(100_000);
+      await expect(pending).resolves.toMatchObject({ status: 200 });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('still honours a Retry-After within reach', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response('busy', { status: 429, headers: { 'retry-after': '20' } }),
+        )
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const delays: number[] = [];
+      const pending = fetchWithRetry('http://x/v1', {}, retry, undefined, (_a, _m, delay) =>
+        delays.push(delay),
+      );
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(pending).resolves.toMatchObject({ status: 200 });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(delays).toEqual([20_000]);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('still clamps a Retry-After above maxDelayMs that the attempts can reach', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response('busy', { status: 429, headers: { 'retry-after': '45' } }),
+        )
+        .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const delays: number[] = [];
+      const pending = fetchWithRetry('http://x/v1', {}, retry, undefined, (_a, _m, delay) =>
+        delays.push(delay),
+      );
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(pending).resolves.toMatchObject({ status: 200 });
+      expect(delays).toEqual([30_000]);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not call a short wait that merely ran out of attempts a far one', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(
+        async () => new Response('busy', { status: 429, headers: { 'retry-after': '5' } }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = fetchWithRetry('http://x/v1', {}, { ...retry, maxAttempts: 1 });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const response = await pending;
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(response.status).toBe(429);
+      expect(statedWaitStop(response)).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('words the error with the wait or the reset time and the remedy', async () => {
+    const { response } = await farWait(
+      () => new Response('busy', { status: 429, headers: { 'retry-after': '7200' } }),
+    );
+    const stop = statedWaitStop(response)!;
+    const text = formatStatedWaitError(429, 'busy', stop);
+    expect(text).toContain('API Error: 429 busy.');
+    expect(text).toContain('2 hours');
+    expect(text).toContain('--model');
+
+    const iso = '2099-01-01T00:00:00.000Z';
+    const reset = formatStatedWaitError(429, 'Too many requests', {
+      waitMs: 3 * 24 * 3600 * 1000,
+      source: 'reset-time',
+      resetIso: iso,
+    });
+    expect(reset).toContain(`resets at ${iso}`);
   });
 });

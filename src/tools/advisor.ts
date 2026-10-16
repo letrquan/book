@@ -131,7 +131,8 @@ export interface AdvisorToolOptions {
 /**
  * Provider verdicts a repeated consult would only reproduce: every verdict on the request
  * itself (`NON_REISSUABLE_PROVIDER_CODES`: a 400, 404 or 422, a content filter), a rejected
- * key or account (`auth`, `quota`), a retired or misspelled model (`model_unavailable`) and a
+ * key or account (`auth`, `quota`), a spent plan limit (`usage_limit`) or a stated wait beyond
+ * the retry budget (`rate_limit_wait`), a retired or misspelled model (`model_unavailable`) and a
  * transcript the advisor's window cannot hold (`context_overflow`). Marking them retryable
  * invites the agent to send the same request, and the same key, again. `rate_limited`,
  * `overloaded`, `server_error`, `network`, `timeout` and `unknown` stay retryable.
@@ -140,6 +141,8 @@ const NON_RETRYABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
   ...NON_REISSUABLE_PROVIDER_CODES,
   'auth',
   'quota',
+  'usage_limit',
+  'rate_limit_wait',
   'model_unavailable',
   'context_overflow',
 ]);

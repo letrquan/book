@@ -13,8 +13,10 @@ import {
   classifyProviderError,
   fetchWithRetry,
   formatApiError,
+  formatStatedWaitError,
   readErrorBody,
   readStreamChunk,
+  statedWaitStop,
   wrappedUpstreamStatus,
 } from './reliability.js';
 
@@ -286,10 +288,15 @@ export async function* chatCompletionStream(
 
   if (!response.ok) {
     const errorText = await readErrorBody(response, signal);
+    // A stated wait the retries stopped on is parked by the loop, not re-issued (#409).
+    const waitStop = statedWaitStop(response);
+    const request = { url, model: config.model };
     yield {
       type: 'error',
-      error: formatApiError(response.status, errorText, undefined, { url, model: config.model }),
-      errorCode: classifyApiError(response.status, errorText),
+      error: waitStop
+        ? formatStatedWaitError(response.status, errorText, waitStop, request)
+        : formatApiError(response.status, errorText, undefined, request),
+      errorCode: waitStop ? 'rate_limit_wait' : classifyApiError(response.status, errorText),
       upstreamStatus: wrappedUpstreamStatus(response.status, errorText),
     };
     return;

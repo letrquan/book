@@ -146,13 +146,36 @@ decision is made on what arrived, so a router that sends its headers and then st
 attempt for the whole request timeout.
 
 A 408 or a 429 is retried like an outage. A 429 (plain or quoted by a router) that says a
-weekly/daily/monthly/N-hour usage or plan limit was reached, exceeded, or spent, or OpenAI's
-`insufficient_quota`, is answered once (unless `retry.watchdog` is enabled) and parks the run
-like a 402 (`credentials_rejected`, provider code `quota`), with a message naming the stated
-reset time and remedy, while `insufficient_quota` keeps the credits advice; naming a short
-window anywhere in the message keeps it a rate limit. On any retryable 429, a stated absolute
-`resets at <time>` within reach is waited for, up to `retry.maxDelayMs` per attempt, while a
-reset later than the retries can wait is not retried. A 400 or a 422, plain or quoted, a 404 that is neither the capacity outage above nor the model verdict below, and Anthropic's
+weekly/daily/monthly/N-hour usage or plan limit was reached, exceeded, or spent is answered once
+(unless `retry.watchdog` is enabled) and ends the run `failed/quota_exhausted` (provider code
+`usage_limit`), with a message naming the stated reset time and the remedy; naming a short window
+anywhere in the message keeps it a rate limit. OpenAI's `insufficient_quota` is answered once the
+same way but is about credits, so it stays with a 402: `credentials_rejected`, provider code
+`quota`, and the message keeps the credits advice.
+
+`quota_exhausted` is a park (`terminalRecovery` returns `park`), like `credentials_rejected`:
+nothing is wrong with the work and re-sending reproduces the refusal, so the loop does not
+re-issue it and a `Notification` hook alarm fires with `kind: "quota_exhausted"`. It differs from
+`credentials_rejected` in what the operator does. A rejected key (a 401, a 403, a 402, Anthropic's
+`billing_error`, `insufficient_quota`) is rotated or topped up; a spent limit is waited out until
+its reset, or the run moves to another model with `--model` or `/model`. Two provider codes end
+in it, both read from `outcome.providerCode`:
+
+- `usage_limit`: the 429 above, a spent usage or plan limit.
+- `rate_limit_wait`: a 429 whose stated wait is longer than the retries can sit out (below).
+
+On any retryable 429 (plain or quoted by a router) the provider's stated wait is read from the
+first source that gives one: a `Retry-After` header, a router's `(reset after 3h)` cooldown, or an
+absolute `resets at <ISO time>`. A wait within reach is waited for, up to `retry.maxDelayMs` per
+attempt. A wait longer than what the call can still wait, the smaller of the remaining
+`retry.totalBudgetMs` and the remaining attempts times `retry.maxDelayMs`, is not retried: the
+response is returned after that one request instead of being clamped to `retry.maxDelayMs` and
+sent again on every attempt. When it is also longer than any fresh call could wait, the stream
+ends with `rate_limit_wait`, and the run ends `failed/quota_exhausted` rather than being
+re-issued; the message states the wait or the reset time. A short wait that only met the end of
+the attempts stays an ordinary rate limit. `retry.watchdog` keeps waiting whatever the wait.
+
+A 400 or a 422, plain or quoted, a 404 that is neither the capacity outage above nor the model verdict below, and Anthropic's
 mid-stream `invalid_request_error` and `not_found_error` end the run on the first answer, since
 re-sending the same request reproduces them. One 403/404 verdict is read from the body rather than
 the status: when the body says the model itself is gone — a retirement notice, an OpenAI
@@ -220,8 +243,10 @@ the text, the envelope must be the whole answer, one `[Error] … request ID …
 that quotes such a line and goes on to explain it is an answer. With a usage block that reports
 zero tokens both ways (what a router reports for text it wrote itself), any answer that opens with
 `[Error]` counts, however many lines follow. A reply with no usage block at all keeps the one-line
-rule, since a model may have written it. If either repeats, the run ends
-`failed/provider_error` on that second request, never `completed`; the repeat is not re-issued
+rule, since a model may have written it. A one-line
+`[Error] The model failed to generate a response.` counts whatever the usage says: 9router writes
+an upstream `response.failed` that way after the upstream already streamed reasoning, so the usage
+is not zero. If either repeats, the run ends `failed/provider_error` on that second request, never `completed`; the repeat is not re-issued
 again, and no `[continuation]` message is written. Every retry is visible to a print-mode host: a
 `{"type":"retry","phase","attempt","max","delay_ms"}` record in `stream-json`, a `retry: …` line on
 stderr in `text` output. `phase` is `transport` for an HTTP-level retry inside one request,

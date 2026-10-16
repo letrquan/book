@@ -66,6 +66,22 @@ describe('terminalRecovery', () => {
     expect(recoveryFor('credentials_rejected')).toBe('park');
   });
 
+  it('parks on a spent usage limit or a far stated wait, apart from a rejected key', () => {
+    // Wait for the reset or pick another model: re-issuing would reproduce it.
+    expect(recoveryFor('quota_exhausted')).toBe('park');
+    for (const providerCode of ['usage_limit', 'rate_limit_wait']) {
+      expect(
+        terminalRecovery(
+          createTerminalOutcome('failed', 'quota_exhausted', {
+            partialOutput: false,
+            providerCode,
+          }),
+        ),
+        providerCode,
+      ).toBe('park');
+    }
+  });
+
   it('parks on a retired or unknown model instead of re-issuing or ending', () => {
     // Nothing is wrong with the work; an operator has to pick another model.
     // Re-issuing would reproduce it, and the park lets a supervisor wait.
