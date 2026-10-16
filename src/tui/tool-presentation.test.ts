@@ -1243,13 +1243,8 @@ describe('composeToolRow meta width of a failed row', () => {
   });
 
   it('keeps the default meta width for a failed row without an exit code', () => {
-    // A long target keeps its columns, so only the exit-code rule could have widened the meta.
     const row = composeToolRow(
-      {
-        title: 'Bash',
-        target: `npm test -- ${'--some-long-flag '.repeat(8)}`,
-        metadata: ['failed', 'attempt 3', '1m 12s elapsed'],
-      },
+      { title: 'Bash', target: 'npm test', metadata: ['failed', 'attempt 3', '1m 12s elapsed'] },
       grid,
     );
     expect(displayWidth(row.meta)).toBeLessThanOrEqual(grid.meta);
@@ -1258,9 +1253,11 @@ describe('composeToolRow meta width of a failed row', () => {
 });
 
 describe('composeToolRow meta growth into free target columns', () => {
-  const WIDTHS = [120, 80, 60, 40, 25];
+  const WIDTHS = [120, 80, 60, 40, 25, 20];
+  const GROW = { metaMayGrow: true };
   const THREE = ['1 file', '1 search', '1 listing'];
-  const FOUR = ['1 file', '1 search', '1 listing', '2 git'];
+  const FOUR = ['1 file', '1 search', '1 listing', '2 lookups'];
+  const FOUR_TEXT = '1 file · 1 search · 1 listing · 2 lookups';
   const LONG_TARGET = `${'src/some/very/long/directory/structure/that/keeps/going/'.repeat(3)}file.ts`;
   const LONG_META = ['12 files', '8 searches', '3 listings', '14 git reads'];
 
@@ -1275,22 +1272,48 @@ describe('composeToolRow meta growth into free target columns', () => {
 
   it('shows three metadata parts uncut on a short target at 120 columns', () => {
     const grid = transcriptGrid(120);
-    const row = composeToolRow({ title: 'Read', target: 'a.js', metadata: THREE }, grid);
+    const row = composeToolRow({ title: 'Read', target: 'a.js', metadata: THREE }, grid, GROW);
     expect(row.meta).toBe('1 file · 1 search · 1 listing');
     expect(displayWidth(row.meta)).toBeGreaterThan(grid.meta);
   });
 
-  it('shows four metadata parts uncut on a short target at 120 columns', () => {
-    const row = composeToolRow(
-      { title: 'Read', target: 'a.js', metadata: FOUR },
-      transcriptGrid(120),
-    );
-    expect(row.meta).toBe('1 file · 1 search · 1 listing · 2 git');
+  for (const width of [120, 80, 60]) {
+    it(`shows four metadata parts uncut on a short target at ${width} columns`, () => {
+      const row = composeToolRow(
+        { title: 'Read', target: 'a.js', metadata: FOUR },
+        transcriptGrid(width),
+        GROW,
+      );
+      expect(row.meta).toBe(FOUR_TEXT);
+    });
+  }
+
+  it('does not grow the metadata unless the caller opts in', () => {
+    const grid = transcriptGrid(120);
+    const row = composeToolRow({ title: 'Read', target: 'a.js', metadata: THREE }, grid);
+    expect(displayWidth(row.meta)).toBe(grid.meta);
+    expect(row.meta.endsWith('…')).toBe(true);
   });
 
-  it('keeps the current budget and truncates the target first when the target is long', () => {
+  it('renders a running row with an elapsed time as before: the meta is cut at the column', () => {
     const grid = transcriptGrid(120);
-    const row = composeToolRow({ title: 'Read', target: LONG_TARGET, metadata: LONG_META }, grid);
+    const row = composeToolRow(
+      { title: 'Bash', target: 'npm test', metadata: ['12 lines', '3 matches'] },
+      grid,
+      { elapsed: '1m 12s elapsed' },
+    );
+    expect(grid.meta).toBe(20);
+    expect(row.meta).toBe('12 lines · 3 matche…');
+    expect(rowWidth(row, grid)).toBe(grid.row);
+  });
+
+  it('keeps the fixed budget and truncates the target first when the target is long', () => {
+    const grid = transcriptGrid(120);
+    const row = composeToolRow(
+      { title: 'Read', target: LONG_TARGET, metadata: LONG_META },
+      grid,
+      GROW,
+    );
     expect(displayWidth(row.meta)).toBe(grid.meta);
     expect(row.meta.endsWith('…')).toBe(true);
     expect(row.target.endsWith('…')).toBe(true);
@@ -1299,7 +1322,7 @@ describe('composeToolRow meta growth into free target columns', () => {
 
   it('renders metadata that fits the meta column exactly as before', () => {
     const grid = transcriptGrid(120);
-    const row = composeToolRow({ title: 'Read', target: 'a.js', metadata: ['1 file'] }, grid);
+    const row = composeToolRow({ title: 'Read', target: 'a.js', metadata: ['1 file'] }, grid, GROW);
     // label column, target, padding to the measure, then the metadata flush right
     const padding = ' '.repeat(grid.row - (grid.label + 1) - 'a.js'.length - '1 file'.length);
     expect(line(row)).toBe(`${'Read'.padEnd(grid.label)} a.js${padding}1 file`);
@@ -1307,6 +1330,7 @@ describe('composeToolRow meta growth into free target columns', () => {
     const sibling = composeToolRow(
       { title: 'Read', target: LONG_TARGET, metadata: ['1 file'] },
       grid,
+      GROW,
     );
     expect(rowWidth(sibling, grid)).toBe(rowWidth(row, grid));
   });
@@ -1337,17 +1361,18 @@ describe('composeToolRow meta growth into free target columns', () => {
 
   for (const width of WIDTHS) {
     for (const [name, target, metadata] of cases) {
-      it(`fills the measure on one line at ${width} columns: ${name}`, () => {
-        const grid = transcriptGrid(width);
-        const row = composeToolRow({ title: 'Read', target, metadata }, grid);
-        for (const column of [row.label, row.target, row.gap, row.meta]) {
-          expect(column).not.toMatch(/[\r\n]/);
-        }
-        const total = rowWidth(row, grid);
-        expect(total).toBeLessThanOrEqual(grid.row);
-        // A row with no room for its minimum target may pass the measure only if it already did.
-        if (grid.row >= 20) expect(total).toBe(grid.row);
-      });
+      for (const grow of [false, true]) {
+        it(`fills the measure on one line at ${width} columns: ${name}${grow ? ' (growing)' : ''}`, () => {
+          const grid = transcriptGrid(width);
+          const row = composeToolRow({ title: 'Read', target, metadata }, grid, {
+            metaMayGrow: grow,
+          });
+          for (const column of [row.label, row.target, row.gap, row.meta]) {
+            expect(column).not.toMatch(/[\r\n]/);
+          }
+          expect(rowWidth(row, grid)).toBe(grid.row);
+        });
+      }
     }
   }
 });

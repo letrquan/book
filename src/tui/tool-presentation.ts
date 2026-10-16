@@ -701,9 +701,6 @@ const SHORT_LABELS: Record<string, string> = {
 /** Columns a failed row's metadata may take: `failed · exit 255 · 1m 12s` fits. */
 const FAILED_META_WIDTH = 28;
 
-/** Most of a row's measure its metadata may take: two fifths. */
-const META_ROW_SHARE = 0.4;
-
 /** The metadata item {@link exitMetadata} writes. */
 const EXIT_METADATA = /^exit -?\d+$/;
 
@@ -732,14 +729,16 @@ function usesLabelColumn(title: string, grid: TranscriptGrid): boolean {
  * Lay a tool row out as `[label][target] … [meta]`.
  *
  * The label and meta columns are fixed so the eye can scan straight down a
- * column of rows; only the target flexes. Below the grid's label threshold the
- * label column collapses and the verb runs inline, because a fixed column would
- * leave nothing for the path.
+ * column of rows; only the target flexes. A quiet-run summary, which opts in
+ * with `metaMayGrow`, may widen its meta column into the target columns a short
+ * target leaves free. Below the grid's label threshold the label column
+ * collapses and the verb runs inline, because a fixed column would leave
+ * nothing for the path.
  */
 export function composeToolRow(
   presentation: Pick<ToolPresentation, 'title' | 'target' | 'metadata'>,
   grid: TranscriptGrid,
-  extra: { elapsed?: string } = {},
+  extra: { elapsed?: string; metaMayGrow?: boolean } = {},
 ): ToolRowColumns {
   const title = shortLabel(presentation.title);
   const useLabelColumn = usesLabelColumn(title, grid);
@@ -759,26 +758,27 @@ export function composeToolRow(
   // A row's metadata with an exit code, `failed · exit 1 · 7ms` or a shell read's
   // `exit 2 · 12 lines · 7ms`, runs past the grid's 20-column meta column, and the duration is
   // what a cut there would take. It gets room for them, never more than two fifths of the row.
-  // A row without one keeps the column.
-  const maxMetaWidth = Math.floor(measure * META_ROW_SHARE);
+  // Rows without an exit code keep the column unless the caller opts in to growth.
   const fixedMetaBudget =
     grid.meta > 0 && metaSource.some((part) => EXIT_METADATA.test(part))
-      ? Math.max(grid.meta, Math.min(FAILED_META_WIDTH, maxMetaWidth))
+      ? Math.max(grid.meta, Math.min(FAILED_META_WIDTH, Math.floor(measure * 0.4)))
       : grid.meta;
 
   // The target is a tool argument: it may hold a newline, an ESC, or a bidi
   // override, none of which survive a one-line row.
   const fullTarget = `${inlinePrefix}${foldControlCharacters(presentation.target) ?? ''}`;
 
-  // The metadata may also grow into the columns a short target leaves empty, so `1 file · 1 search
-  // · 1 listing` on `Read a.js` is not cut at the meta column. The growth is opportunistic: it
-  // takes only what is left after the label, the whole target and the gap, so a target that needs
-  // its columns keeps them and the metadata stays at its fixed budget. The grown budget never
-  // exceeds those leftover columns, so the row cannot pass the measure, and the `Math.max(4, …)`
-  // floor below can only bite a target shorter than 4 columns, which fits in its own width.
-  const freeForMeta = measure - labelWidth - displayWidth(fullTarget) - 1;
-  const metaBudget =
-    grid.meta > 0 ? Math.max(fixedMetaBudget, Math.min(maxMetaWidth, freeForMeta)) : 0;
+  // A quiet summary's metadata may grow into the columns a short target leaves empty, so
+  // `1 file · 1 search · 1 listing` on `Read a.js` is not cut at the meta column. It takes only
+  // what is left after the label, the whole target and the gap, so a target that needs its
+  // columns keeps them and the metadata stays at its fixed budget. The target is measured here
+  // once, and only for a row that may grow.
+  let targetWidth: number | undefined;
+  let metaBudget = fixedMetaBudget;
+  if (extra.metaMayGrow && grid.meta > 0) {
+    targetWidth = displayWidth(fullTarget);
+    metaBudget = Math.max(fixedMetaBudget, measure - labelWidth - targetWidth - 1);
+  }
   const meta = metaBudget > 0 ? truncateDisplay(joinMetadata(metaSource), metaBudget) : '';
 
   const metaWidth = displayWidth(meta);
@@ -786,9 +786,11 @@ export function composeToolRow(
   // the prefix here as well clipped an inline-label row by exactly the width of
   // its own verb, and `gap` then padded those columns back with spaces.
   const targetBudget = Math.max(4, measure - labelWidth - metaWidth - (metaWidth > 0 ? 1 : 0));
-  const target = truncateDisplay(fullTarget, targetBudget);
+  const fitWidth =
+    targetWidth !== undefined && targetWidth <= targetBudget ? targetWidth : undefined;
+  const target = fitWidth === undefined ? truncateDisplay(fullTarget, targetBudget) : fullTarget;
 
-  const used = labelWidth + displayWidth(target) + metaWidth;
+  const used = labelWidth + (fitWidth ?? displayWidth(target)) + metaWidth;
   const gap = ' '.repeat(Math.max(metaWidth > 0 ? 1 : 0, measure - used));
   return { label, target, gap, meta };
 }
