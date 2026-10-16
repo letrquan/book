@@ -167,6 +167,40 @@ describe('useAgent activeGoal', () => {
     expect(latest!.activeGoal).toEqual({ condition: 'every test passes', setAt: goal.setAt });
   });
 
+  it('names a fresh session after the goal condition, not the "Goal set:" line (#443)', async () => {
+    const { config, session, timeline } = fixture();
+    render(<Harness config={config} session={session} />);
+    await tick();
+
+    latest!.setGoal('`npm test` exits 0 and the output is shown');
+    await waitFor(() => timeline.load(session.sessionId).meta.name !== undefined);
+    await tick();
+
+    const expected = '`npm test` exits 0 and the output is shown';
+    expect(timeline.load(session.sessionId).meta.name).toBe(expected);
+    expect(latest!.sessionName).toBe(expected);
+    // The transcript still shows the goal line the user typed.
+    expect(latest!.messages.find((m) => m.role === 'user')?.content).toContain('Goal set:');
+  });
+
+  it('keeps the existing session name when /goal is set mid-session (#443)', async () => {
+    const { config, session, timeline } = fixture();
+    render(<Harness config={config} session={session} />);
+    await tick();
+
+    await latest!.send('fix the login bug');
+    await tick();
+    expect(timeline.load(session.sessionId).meta.name).toBe('Fix the login bug');
+
+    latest!.setGoal('every test passes');
+    await tick();
+    await tick();
+
+    expect(timeline.load(session.sessionId).meta.name).toBe('Fix the login bug');
+    expect(latest!.sessionName).toBe('Fix the login bug');
+    expect(loopScript.runs).toBe(2);
+  });
+
   it.each(['met', 'failed'] as const)(
     'drops the goal when the loop reports it %s',
     async (state) => {

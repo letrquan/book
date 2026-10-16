@@ -6,10 +6,16 @@ const MAX_SESSION_NAME_LENGTH = 56;
 /** Return a compact, deterministic title suitable for user-facing session lists. */
 export function deriveSessionName(prompt: string): string {
   const normalized = prompt
+    // A leading fence line (```ts) names no task; the code after it does.
+    .replace(/^\s*`{3,}[^\n`]*\r?\n/, '')
     .replace(/\r?\n/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .replace(/^[/!#>*_`~-]+\s*/, '')
+    // A fence opened on one line, then any other command marker. A single backtick is
+    // not a marker: it opens an inline code span the name keeps.
+    .replace(/^`{3,}[\w+-]*\s*/, '')
+    .replace(/^[/!#>*_~-]+\s*/, '')
+    .replace(/\s*`{3,}$/, '')
     .replace(/[.!?,;:]+$/, '')
     .trim();
   if (!normalized) return UNTITLED_SESSION_NAME;

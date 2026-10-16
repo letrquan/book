@@ -16,6 +16,22 @@ describe('session names', () => {
     expect(name.length).toBeLessThanOrEqual(56);
   });
 
+  it('keeps an inline code span intact (#449)', () => {
+    expect(deriveSessionName('`npm test` exits 0 and the output is shown')).toBe(
+      '`npm test` exits 0 and the output is shown',
+    );
+  });
+
+  it('drops a leading code fence and its language tag', () => {
+    expect(deriveSessionName('```ts\nconsole.log(1)\n```')).toBe('Console.log(1)');
+    expect(deriveSessionName('```\nrun the migration\n```')).toBe('Run the migration');
+    expect(deriveSessionName('```ts run the migration```')).toBe('Run the migration');
+    expect(deriveSessionName('````md\nfix the build')).toBe('Fix the build');
+    for (const prompt of ['```ts\nconst x = 1;\n```', '```\nfoo\n```', '```ts const x = 1```']) {
+      expect(deriveSessionName(prompt).startsWith('`')).toBe(false);
+    }
+  });
+
   it('uses a neutral label when no name exists', () => {
     expect(displaySessionName()).toBe(UNTITLED_SESSION_NAME);
     expect(displaySessionName('  ')).toBe(UNTITLED_SESSION_NAME);
