@@ -5,6 +5,8 @@ import { join, resolve } from 'path';
 import {
   canonicalizePath,
   isBookLocalSettingsPath,
+  memoryReadDisplayPath,
+  messagePathFor,
   mutationDisplayPath,
   realWorkspaceRoot,
   resolveMutationPath,
@@ -332,6 +334,48 @@ describe('resolveMutationPath with a memory write root', () => {
     )!;
     expect(resolved.relativePath).toBe('mem/topic.md');
     expect(mutationDisplayPath(resolved)).toBe('memory/topic.md');
+  });
+
+  it('names a memory file by its absolute path in model-facing text, and any other by relativePath', () => {
+    const withRoot = withMemory();
+    const topic = resolveMutationPath(withRoot, join(memory, 'topic.md'))!;
+    expect(messagePathFor(topic)).toBe(join(memory, 'topic.md'));
+    expect(messagePathFor(topic)).not.toContain('..');
+
+    // Even when the workspace holds the memory directory, where relativePath is `mem/topic.md`.
+    const inside = join(workspace, 'mem');
+    mkdirSync(inside);
+    const held = resolveMutationPath(
+      roots({ memoryWrite: { root: inside } }),
+      join(inside, 'topic.md'),
+    )!;
+    expect(messagePathFor(held)).toBe(join(inside, 'topic.md'));
+
+    const other = resolveMutationPath(withRoot, 'src/a.ts')!;
+    expect(messagePathFor(other)).toBe('src/a.ts');
+  });
+
+  it('names a file memory/<name> in a Read row only when it lies in the memory directory', () => {
+    const memoryRoots = roots({ memorySearchRoot: memory, readOnlyRoots: [memory] });
+    const page = resolveReadablePath(memoryRoots, join(memory, 'sub', 'deep.md'))!;
+    expect(memoryReadDisplayPath(memoryRoots, page)).toBe('memory/sub/deep.md');
+    // A dot-entry is readable, so it is named too.
+    const hidden = resolveReadablePath(memoryRoots, join(memory, '.inbox', 'x.md'))!;
+    expect(memoryReadDisplayPath(memoryRoots, hidden)).toBe('memory/.inbox/x.md');
+
+    // Memory read through the workspace (Book run from a directory that holds it).
+    const inside = join(workspace, 'mem');
+    mkdirSync(inside);
+    const heldRoots = roots({ memorySearchRoot: inside });
+    const held = resolveReadablePath(heldRoots, join(inside, 'topic.md'))!;
+    expect(held.inWorkspace).toBe(true);
+    expect(memoryReadDisplayPath(heldRoots, held)).toBe('memory/topic.md');
+
+    // Anything else, and every file when no memory directory is configured, has no memory name.
+    writeFileSync(join(workspace, 'a.md'), 'a');
+    const plain = resolveReadablePath(memoryRoots, 'a.md')!;
+    expect(memoryReadDisplayPath(memoryRoots, plain)).toBeUndefined();
+    expect(memoryReadDisplayPath(roots(), page)).toBeUndefined();
   });
 
   it('refuses everything the rules exclude', () => {
