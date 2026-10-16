@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -7,7 +7,21 @@ import { removeWhenReleased } from '../test/remove-when-released.js';
 import type { BackgroundShellStore } from '../types/runtime.js';
 import { persistentJobPaths } from './persistent-store.js';
 import { isProcessAlive } from './process-tree.js';
-import { ShellJobManager } from './shell-manager.js';
+import { DEFAULT_RUNNER_START_BUDGET_MS, ShellJobManager } from './shell-manager.js';
+
+/** Every runner this file spawns, so a test can find the one a failed start must have killed. */
+const spawnedProcesses = vi.hoisted(() => [] as { args: readonly string[]; pid?: number }[]);
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: ((...args: Parameters<typeof actual.spawn>) => {
+      const child = actual.spawn(...args);
+      spawnedProcesses.push({ args: Array.isArray(args[1]) ? args[1] : [], pid: child.pid });
+      return child;
+    }) as typeof actual.spawn,
+  };
+});
 
 let directory: string;
 let managers: ShellJobManager[] = [];
@@ -55,7 +69,7 @@ async function waitForWorkerToDisappear(workerPid: number): Promise<void> {
 
 /**
  * Contended windows-latest runners push the detached runner's start and stop
- * transitions past the interactive-host defaults (3s/5s). The transitions are
+ * transitions past the interactive-host defaults (the 10s start and 5s stop defaults). The transitions are
  * eventual, so every persistent test observes them through these wide windows:
  * a ceiling, not a wait, and a green run never gets near it.
  */
@@ -591,4 +605,97 @@ setInterval(() => {}, 1000);\n`,
     next.configureWorkspace(directory);
     expect(await next.stop(started.id)).toBe(true);
   }, 60_000);
+});
+
+// A persistent start waits for the detached runner (node), which starts its supervisor (node), which
+// starts the command. A loaded Windows runner took over the old 3s budget (#495). These tests drive
+// the budget's clock by hand, so neither needs a real multi-second wait.
+describe('ShellJobManager persistent start budget', () => {
+  function idleCommand(): string {
+    const script = join(directory, 'idle.cjs');
+    writeFileSync(script, 'setInterval(() => {}, 1000);\n');
+    return `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+  }
+
+  it('is ten seconds', () => {
+    expect(DEFAULT_RUNNER_START_BUDGET_MS).toBe(10_000);
+  });
+
+  it('starts a job whose runner takes longer than three seconds under the default budget', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
+    const persistentRoot = join(directory, 'jobs');
+    const command = idleCommand();
+    // 0, 2000, 4000, then still: by the third reading the old 3s budget is spent, as if the runner
+    // had taken about 4s. The test hands the clock back to real time once the start returns, so the
+    // stop in `afterEach` is not waiting on a clock that never moves.
+    let readings = 0;
+    const live: { since?: number } = {};
+    const clock = {
+      monotonicNowMs: () => {
+        if (live.since !== undefined) return 4_000 + (performance.now() - live.since);
+        return Math.min(readings++ * 2_000, 4_000);
+      },
+      wallNowMs: () => Date.now(),
+    };
+    const manager = new ShellJobManager(
+      { nextId: 1, shells: new Map() },
+      { persistentRoot, runnerStopBudgetMs: 30_000, clock },
+    );
+    managers.push(manager);
+    manager.configureWorkspace(directory);
+
+    const started = await manager.start({
+      command,
+      effectiveCommand: command,
+      workdir: directory,
+      env: process.env,
+      envOverrides: {},
+      sandboxed: false,
+      lifetime: 'persistent',
+      workspace: directory,
+    });
+    live.since = performance.now();
+
+    expect(readings).toBeGreaterThanOrEqual(3);
+    expect(['starting', 'running']).toContain(started.status);
+    expect(manager.get(started.id)).toBeDefined();
+  }, 30_000);
+
+  it('kills the runner, forgets the job and throws when a start outlasts the default budget', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
+    const persistentRoot = join(directory, 'jobs');
+    const command = idleCommand();
+    let readings = 0;
+    const clock = {
+      // The first reading opens the budget; the next is already past it.
+      monotonicNowMs: () => (readings++ === 0 ? 0 : DEFAULT_RUNNER_START_BUDGET_MS + 1_000),
+      wallNowMs: () => Date.now(),
+    };
+    const store: BackgroundShellStore = { nextId: 1, shells: new Map() };
+    const manager = new ShellJobManager(store, { persistentRoot, clock });
+    managers.push(manager);
+    manager.configureWorkspace(directory);
+    const specs = persistentJobPaths(directory, persistentRoot).specs;
+    spawnedProcesses.length = 0;
+
+    await expect(
+      manager.start({
+        command,
+        effectiveCommand: command,
+        workdir: directory,
+        env: process.env,
+        envOverrides: {},
+        sandboxed: false,
+        lifetime: 'persistent',
+        workspace: directory,
+      }),
+    ).rejects.toThrow(`did not start within ${DEFAULT_RUNNER_START_BUDGET_MS}ms`);
+
+    const runner = spawnedProcesses.find((entry) => entry.args.at(-1)?.startsWith(specs));
+    expect(runner?.pid).toBeDefined();
+    await waitFor(() => !isProcessAlive(runner!.pid!), 'the runner to be killed', 10_000);
+    expect(store.shells.size).toBe(0);
+    expect(manager.list()).toEqual([]);
+    expect(existsSync(specs) ? readdirSync(specs) : []).toEqual([]);
+  }, 30_000);
 });

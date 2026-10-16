@@ -106,6 +106,13 @@ export interface ShellOutputResult {
   remaining: number;
 }
 
+/**
+ * How long a persistent start waits for the detached runner to report its job (#495). Starting node
+ * twice (the runner, then its supervisor) plus the command took over the old three seconds on a
+ * loaded Windows machine, and a start that is refused kills a job that would have run.
+ */
+export const DEFAULT_RUNNER_START_BUDGET_MS = 10_000;
+
 export interface ShellJobManagerOptions {
   persistentRoot?: string;
   /**
@@ -664,8 +671,8 @@ export class ShellJobManager {
       controlToken: token,
     };
     this.store.shells.set(id, shell);
-    const startBudgetMs = this.options.runnerStartBudgetMs ?? 3_000;
-    // Monotonic: this is "wait up to three seconds", not "wait until 12:04".
+    const startBudgetMs = this.options.runnerStartBudgetMs ?? DEFAULT_RUNNER_START_BUDGET_MS;
+    // Monotonic: this is "wait up to ten seconds", not "wait until 12:04".
     const deadline = this.clock.monotonicNowMs() + startBudgetMs;
     while (this.clock.monotonicNowMs() < deadline) {
       const state = readJsonFile<PersistentShellState>(recordPath);

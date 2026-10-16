@@ -1046,7 +1046,13 @@ console.log('alive-still'); setInterval(() => {}, 1000);
     // and writes its record files.
     const store: BackgroundShellStore = { nextId: 1, shells: new Map() };
     c.backgroundShells = store;
-    c.shellManager = new ShellJobManager(store, { persistentRoot: join(dir, 'jobs') });
+    // A wide start budget, not the production default: the budget is a ceiling a green run never
+    // nears, and a loaded Windows runner needs more than a few seconds to start two node processes.
+    c.shellManager = new ShellJobManager(store, {
+      persistentRoot: join(dir, 'jobs'),
+      runnerStartBudgetMs: 30_000,
+      runnerStopBudgetMs: 30_000,
+    });
     const command = nodeCommand(
       'wait-persistent.cjs',
       `setTimeout(() => { console.log('persistent-done'); process.exit(0); }, 400);\n`,
