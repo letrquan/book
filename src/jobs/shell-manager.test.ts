@@ -625,15 +625,19 @@ describe('ShellJobManager persistent start budget', () => {
     directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
     const persistentRoot = join(directory, 'jobs');
     const command = idleCommand();
-    // 0, 2000, 4000, then still: by the third reading the old 3s budget is spent, as if the runner
-    // had taken about 4s. The test hands the clock back to real time once the start returns, so the
-    // stop in `afterEach` is not waiting on a clock that never moves.
+    // 0, 2000, 4000, then held: by the third reading the old 3s budget is spent, as if the runner
+    // had taken about 4s. The hold is bounded in real time. Once it ends the clock runs a thousand
+    // times fast, so the start, and the stop in `afterEach`, end inside the timeouts even when the
+    // runner never starts, instead of hanging on a clock that never reaches its deadline.
+    const HOLD_REAL_MS = 20_000;
+    const createdAt = performance.now();
     let readings = 0;
-    const live: { since?: number } = {};
     const clock = {
       monotonicNowMs: () => {
-        if (live.since !== undefined) return 4_000 + (performance.now() - live.since);
-        return Math.min(readings++ * 2_000, 4_000);
+        const reading = readings++;
+        const real = performance.now() - createdAt;
+        if (real < HOLD_REAL_MS) return Math.min(reading * 2_000, 4_000);
+        return 4_000 + (real - HOLD_REAL_MS) * 1_000;
       },
       wallNowMs: () => Date.now(),
     };
@@ -654,10 +658,10 @@ describe('ShellJobManager persistent start budget', () => {
       lifetime: 'persistent',
       workspace: directory,
     });
-    live.since = performance.now();
 
     expect(readings).toBeGreaterThanOrEqual(3);
-    expect(['starting', 'running']).toContain(started.status);
+    // `start()` only returns once the runner has reported, and an idle command is still running.
+    expect(started.status).toBe('running');
     expect(manager.get(started.id)).toBeDefined();
   }, 30_000);
 

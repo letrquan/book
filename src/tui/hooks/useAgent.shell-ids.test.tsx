@@ -42,7 +42,7 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'book-use-agent-shell-ids-'));
   roots.push(root);
   // User preferences persist to the user-global layer, which resolves through BOOK_HOME.
-  process.env.BOOK_HOME = join(root, 'home');
+  vi.stubEnv('BOOK_HOME', join(root, 'home'));
   const workspace = join(root, 'workspace');
   const timeline = new SessionStore(join(root, 'sessions'));
   const sessionId = timeline.create({ cwd: workspace });
@@ -72,6 +72,7 @@ function tick(): Promise<void> {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   cleanup();
   latest = undefined;
   vi.restoreAllMocks();
