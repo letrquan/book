@@ -473,6 +473,12 @@ export interface ApiErrorRequest {
   /** The request URL. Only its host is shown, never a path or query string. */
   url?: string;
   model?: string;
+  /**
+   * False when the error body never arrived (the read timed out, the stream broke or was aborted
+   * before a byte came), as `readErrorBody` reports it. An absent body then reads "no response
+   * body received" instead of "(empty response body)", which says the provider sent none.
+   */
+  bodyReceived?: boolean;
 }
 
 function requestOrigin(request: ApiErrorRequest | undefined): string {
@@ -488,18 +494,41 @@ function requestOrigin(request: ApiErrorRequest | undefined): string {
 }
 
 /**
+ * True for a body that tells the user nothing about what went wrong, so that where the request
+ * went is the only useful thing to add: Go's `404 page not found`, an empty JSON object or
+ * array, and an HTML page (a proxy's or gateway's own error page). Kept narrow on purpose: a
+ * body with any message of its own is never one of these.
+ */
+function isUninformativeDetail(text: string): boolean {
+  if (/^(?:\d{3}\s+)?page not found\.?$/i.test(text)) return true;
+  if (/^<(?:!doctype\s+html|html|head|body)\b/i.test(text)) return true;
+  if (!/^[[{]/.test(text)) return false;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed.length === 0;
+    return typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The provider's message as one sentence for Book's advice to follow (#424). A
- * message that already ends in `.`, `!`, or `?` gets no second period, and an
- * empty body says so and names where the request went, since a bare status
- * cannot tell a wrong base URL from a wrong model id.
+ * message that already ends in `.`, `!`, or `?` gets no second period. An empty
+ * body, one that never arrived, or one that says nothing useful names where the
+ * request went, since a bare status cannot tell a wrong base URL from a wrong
+ * model id.
  */
 function detailSentence(detail: string, request?: ApiErrorRequest): string {
   const text = detail.trim();
+  const origin = requestOrigin(request);
   if (!text) {
-    const origin = requestOrigin(request);
-    return `${origin ? `${origin} ` : ''}(empty response body).`;
+    const absent =
+      request?.bodyReceived === false ? 'no response body received' : 'empty response body';
+    return `${origin ? `${origin} ` : ''}(${absent}).`;
   }
-  return /[.!?]$/.test(text) ? text : `${text}.`;
+  const sentence = /[.!?]$/.test(text) ? text : `${text}.`;
+  return origin && isUninformativeDetail(text) ? `${sentence} Reply ${origin}.` : sentence;
 }
 
 export function formatApiError(
@@ -547,7 +576,9 @@ export function formatApiError(
     case 'quota':
       return `${base} ${said} Check your usage/credits.`;
     default:
-      if (detail.trim()) return `${base} ${detail}`;
+      if (detail.trim() && !(requestOrigin(request) && isUninformativeDetail(detail.trim()))) {
+        return `${base} ${detail}`;
+      }
       return code === 'not_found'
         ? `${base} ${said} Check the base URL and model id.`
         : `${base} ${said}`;
@@ -701,6 +732,17 @@ export const ERROR_BODY_READ_TIMEOUT_MS = 5_000;
 /** The most of an error body that is ever read; the rest is cancelled unread. */
 const ERROR_BODY_MAX_BYTES = 65_536;
 
+/** What `readErrorBody` got from an error response. */
+export interface ErrorBody {
+  text: string;
+  /**
+   * False when no body arrived at all: the signal was already aborted, the body was unreadable,
+   * or the read timed out, failed or was aborted before its first byte. An empty body that
+   * completed is `received: true`; so is a partial one.
+   */
+  received: boolean;
+}
+
 /**
  * Read at most ERROR_BODY_MAX_BYTES of an error body, for at most
  * ERROR_BODY_READ_TIMEOUT_MS. What arrived before the cap, the deadline, an
@@ -708,23 +750,41 @@ const ERROR_BODY_MAX_BYTES = 65_536;
  *
  * Every error body goes through here, retryable or not: a non-retryable one is
  * what the classification and the text the user is shown are both read from, so
- * an unbounded read there is a socket held for as long as the provider sends.
+ * an unbounded read there is a socket held for as long as the provider sent.
+ *
+ * `received` is what lets the text shown tell a provider that sent an empty body
+ * from a read that got nothing. A response `fetchWithRetry` rebuilt from a body it
+ * had already read carries that answer with it (`BufferedErrorResponse`), since
+ * reading its copy again always completes.
  */
-export async function readErrorBody(response: Response, signal?: AbortSignal): Promise<string> {
-  if (signal?.aborted || !response.body) return '';
+export async function readErrorBody(response: Response, signal?: AbortSignal): Promise<ErrorBody> {
+  const body = await readBodyBytes(response, signal);
+  if (body.text === '' && response instanceof BufferedErrorResponse) {
+    return { text: '', received: response.bodyReceived };
+  }
+  return body;
+}
+
+async function readBodyBytes(response: Response, signal?: AbortSignal): Promise<ErrorBody> {
+  if (signal?.aborted) return { text: '', received: false };
+  if (!response.body) return { text: '', received: true };
   let reader: ReadableStreamDefaultReader<Uint8Array>;
   try {
     reader = response.body.getReader();
   } catch {
     // A body something else already locked has nothing left to read here.
-    return '';
+    return { text: '', received: false };
   }
   const decoder = new TextDecoder();
   let text = '';
   let received = 0;
   let finished = false;
+  // Set by the deadline and the abort, and by a stream error: ways the body ends that are not
+  // the provider finishing it.
+  let interrupted = false;
   // Cancelling resolves the pending read as done, which ends the loop below.
   const stop = (): void => {
+    interrupted = true;
     reader.cancel().catch(() => {});
   };
   const timer = setTimeout(stop, ERROR_BODY_READ_TIMEOUT_MS);
@@ -733,7 +793,7 @@ export async function readErrorBody(response: Response, signal?: AbortSignal): P
     while (received < ERROR_BODY_MAX_BYTES) {
       const chunk = await reader.read();
       if (chunk.done) {
-        finished = true;
+        finished = !interrupted;
         break;
       }
       const bytes = chunk.value.subarray(0, ERROR_BODY_MAX_BYTES - received);
@@ -742,17 +802,32 @@ export async function readErrorBody(response: Response, signal?: AbortSignal): P
     }
   } catch {
     // A body that fails part-way still leaves what arrived before it.
+    interrupted = true;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', stop);
-    if (!finished) stop();
+    if (!finished) reader.cancel().catch(() => {});
     try {
       reader.releaseLock();
     } catch {
       // Nothing is pending once the loop has ended.
     }
   }
-  return text + decoder.decode();
+  return { text: text + decoder.decode(), received: received > 0 || !interrupted };
+}
+
+/**
+ * A response `fetchWithRetry` rebuilt from an error body it had already read, so that the
+ * adapter's own read of it can still tell whether that body ever arrived (`bodyReceived`):
+ * a copy of an unread-because-timed-out body is empty, and reads as one that completed.
+ */
+class BufferedErrorResponse extends Response {
+  readonly bodyReceived: boolean;
+
+  constructor(body: string, init: ResponseInit, bodyReceived: boolean) {
+    super(body, init);
+    this.bodyReceived = bodyReceived;
+  }
 }
 
 /**
@@ -872,14 +947,19 @@ export async function fetchWithRetry(
     if (!classification.retryable) return response;
     lastError = `API error ${response.status}`;
 
-    const bodyText = await readErrorBody(response, signal);
+    const errorBody = await readErrorBody(response, signal);
+    const bodyText = errorBody.text;
+    // Every response returned below is a copy of this read body. `bodyReceived` rides along so
+    // the adapter's own read of the copy can still tell an empty body from one that never came.
+    const buffered = (init: ResponseInit): BufferedErrorResponse =>
+      new BufferedErrorResponse(bodyText, init, errorBody.received);
     const quoted = quotedUpstreamStatus(bodyText);
     if (quoted !== undefined && !classifyHttpStatus(quoted).retryable) {
       logger?.warn('upstream error quoted in retryable status; not retrying', {
         status: response.status,
         upstreamStatus: quoted,
       });
-      return new Response(bodyText, {
+      return buffered({
         status: response.status,
         statusText: response.statusText,
         headers: response.headers,
@@ -891,7 +971,7 @@ export async function fetchWithRetry(
       logger?.warn('usage limit reached; not retrying', {
         status: response.status,
       });
-      return new Response(bodyText, {
+      return buffered({
         status: response.status,
         statusText: response.statusText,
         headers: response.headers,
@@ -911,7 +991,7 @@ export async function fetchWithRetry(
       logger?.warn('rate limit on a request too large to ever fit; not retrying', {
         status: response.status,
       });
-      return new Response(bodyText, {
+      return buffered({
         status: response.status,
         statusText: response.statusText,
         headers: response.headers,
@@ -961,8 +1041,8 @@ export async function fetchWithRetry(
             stated.waitMs >
               (retry.totalBudgetMs > 0 ? Math.min(retry.totalBudgetMs, wholeCallMs) : wholeCallMs);
           return farWait
-            ? new WaitStoppedResponse(bodyText, init, stated)
-            : new Response(bodyText, init);
+            ? new WaitStoppedResponse(bodyText, init, stated, errorBody.received)
+            : buffered(init);
         }
       }
     }
@@ -970,7 +1050,7 @@ export async function fetchWithRetry(
     const watchdogRetry = retry.watchdog && (response.status === 429 || response.status === 529);
     const effectiveMax = watchdogRetry ? Number.MAX_SAFE_INTEGER : maxAttempts;
     if (attempt >= effectiveMax || budgetExhausted(clock, startMs, retry.totalBudgetMs)) {
-      return new Response(bodyText, {
+      return buffered({
         status: response.status,
         statusText: response.statusText,
         headers: response.headers,
@@ -992,7 +1072,7 @@ export async function fetchWithRetry(
     try {
       await sleep(delay, signal);
     } catch {
-      return new Response(bodyText, {
+      return buffered({
         status: response.status,
         statusText: response.statusText,
         headers: response.headers,
@@ -1144,11 +1224,11 @@ function statedWait(retryAfter?: string | null, body?: string): StatedWait | und
  * subclass only carries the wait to the provider adapter, which reports it under the
  * `rate_limit_wait` error code so the loop parks instead of re-issuing the request.
  */
-class WaitStoppedResponse extends Response {
+class WaitStoppedResponse extends BufferedErrorResponse {
   readonly statedWait: StatedWait;
 
-  constructor(body: string, init: ResponseInit, wait: StatedWait) {
-    super(body, init);
+  constructor(body: string, init: ResponseInit, wait: StatedWait, bodyReceived: boolean) {
+    super(body, init, bodyReceived);
     this.statedWait = wait;
   }
 }
