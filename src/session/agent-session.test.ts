@@ -2843,6 +2843,93 @@ describe('AgentSession.recordUserMessage — one pass over what the user typed',
   });
 });
 
+describe('AgentSession.recordUserMessage — session names (#446)', () => {
+  async function recordTurn(options: { kind?: Message['kind']; sessionName?: string }) {
+    const patches: unknown[] = [];
+    const userMessage: Message = {
+      id: 'user-1',
+      role: 'user',
+      content: '<subagent_notification> Atlas finished',
+      includeInContext: true,
+      kind: options.kind,
+      timestamp: 10,
+    };
+    const result = await new AgentSession().recordUserMessage({
+      config: defaultConfig(),
+      sessionId: 'session-1',
+      displayMessage: userMessage.content,
+      contextMessage: userMessage.content,
+      userMessage,
+      sessionName: options.sessionName,
+      timelineStore: { append: () => {}, patchMeta: (_id, patch) => patches.push(patch) },
+    });
+    return { result, patches };
+  }
+
+  it('never names or renames a session after an agent notification', async () => {
+    const named = await recordTurn({ kind: 'agent-notification', sessionName: 'Fix the build' });
+    expect(named.result.sessionName).toBe('Fix the build');
+    expect(named.patches).toEqual([]);
+
+    // Even with no name yet: the notification text is not a title.
+    const unnamed = await recordTurn({ kind: 'agent-notification' });
+    // `undefined` stays `undefined`: the TUI writes this straight into its name state, and
+    // "no name yet" must not become an empty-string name.
+    expect(unnamed.result.sessionName).toBeUndefined();
+    expect(unnamed.patches).toEqual([]);
+  });
+
+  it('hands the host an undefined name for a notification turn on an unnamed session', async () => {
+    const message: Message = {
+      id: 'assistant-1',
+      role: 'assistant',
+      content: 'Noted.',
+      includeInContext: true,
+      timestamp: 20,
+    };
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, _prompt, _history, callbacks) => {
+        callbacks.onAssistantMessageComplete?.(message);
+        return [message];
+      },
+    });
+    const patches: unknown[] = [];
+    let prepared: { sessionName?: string } | undefined;
+
+    await session.send({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      displayMessage: 'Atlas completed: found it',
+      contextMessage: '<subagent_notification>Atlas</subagent_notification>',
+      createUserMessage: () => ({
+        id: 'user-1',
+        role: 'user',
+        content: 'Atlas completed: found it',
+        kind: 'agent-notification',
+        includeInContext: true,
+        timestamp: 10,
+      }),
+      history: [],
+      sessionId: 'session-1',
+      timelineStore: { append: () => {}, patchMeta: (_id, patch) => patches.push(patch) },
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+      onPrepared: (result) => {
+        prepared = result;
+      },
+    });
+
+    expect(prepared).toBeDefined();
+    expect(prepared?.sessionName).toBeUndefined();
+    expect(patches).toEqual([]);
+  });
+
+  it('still names an unnamed session after an ordinary turn', async () => {
+    const { result, patches } = await recordTurn({ kind: 'conversation' });
+    expect(result.sessionName).toBe('<subagent_notification> Atlas finished');
+    expect(patches).toEqual([{ name: '<subagent_notification> Atlas finished' }]);
+  });
+});
+
 describe('AgentSession — /goal records', () => {
   const goalsIn = (records: SessionRecord[]) =>
     records

@@ -9,6 +9,9 @@ import type {
 import type { Message, Usage } from '../types/messages.js';
 import type { SessionDriver } from '../types/runtime.js';
 import { normalizeWorkspace } from './store.js';
+import { createDebugLogger } from '../debug-log.js';
+
+const log = createDebugLogger('session:resolve');
 
 export type SessionStartSource = 'startup' | 'resume' | 'clear';
 
@@ -115,6 +118,32 @@ export function persistHistory(
               fileObservations: message.fileObservations,
             },
     });
+  }
+}
+
+/**
+ * Exit cleanup for a launch that ended before its first prompt (#444): remove the session
+ * this launch created if nothing was ever recorded in it. A host calls it once its own work
+ * is over, after the SessionEnd hooks, so a record a hook wrote keeps the session.
+ *
+ * Only a session the launch created (`created`) is ever a candidate: a resumed or continued
+ * one is the user's, empty or not. Whether it is untouched is read from the stored file by the
+ * store, never from a flag in memory; a store without `removeUntouched` (an SDK caller's own)
+ * keeps everything. Exit must not fail over housekeeping, so nothing is thrown: a file another
+ * process holds, or any other failure, leaves the session where it is.
+ */
+export function discardUntouchedSession(
+  store: SessionStoreInterface | undefined,
+  launch: Pick<SessionBootstrap, 'sessionId' | 'created'>,
+): boolean {
+  if (!store || !launch.created) return false;
+  try {
+    return store.removeUntouched?.(launch.sessionId) ?? false;
+  } catch (error) {
+    log.warn('could not remove the untouched session', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
   }
 }
 

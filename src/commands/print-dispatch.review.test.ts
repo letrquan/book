@@ -61,6 +61,7 @@ interface SpawnRequest {
   parentSessionId?: string;
   rootRunId?: string;
   parentRunId?: string;
+  notifyParentOnCompletion?: boolean;
 }
 
 interface StubManager {
@@ -282,6 +283,27 @@ describe('book -p /review — scope forms', () => {
   });
 });
 
+describe('book -p /review — session attribution (#448)', () => {
+  // The spawn requests only. That those requests end up as the `sessionId` of each agent's
+  // tool-use records, and as one session in tool-stats, goes through the real manager and loop
+  // in src/headless.review.test.ts.
+  it('spawns every reviewer, lens and verifier under the host session and run', async () => {
+    const stub = stubManager(deepResults());
+    const run = reviewRunContext();
+
+    await resolvePrintCommand('/review --deep', env(stub, run));
+
+    expect(stub.spawns).toHaveLength(5);
+    for (const spawn of stub.spawns) {
+      expect(spawn).toMatchObject({
+        parentSessionId: 'session-review-1',
+        rootRunId: run.rootRunId,
+        parentRunId: run.runId,
+      });
+    }
+  });
+});
+
 describe('book -p /review — paths that must end the run', () => {
   it('refuses --fix and never spawns a patcher', async () => {
     const stub = stubManager(deepResults());
@@ -346,10 +368,11 @@ describe('book -p /review — paths that must end the run', () => {
     for (const spawn of stub.spawns) {
       expect(spawn.rootRunId).toBe(runContext.rootRunId);
       expect(spawn.parentRunId).toBe(runContext.runId);
-      // Not the parent session: that would route each finished reviewer's
-      // completion notification back into the host as an extra model turn,
-      // re-narrating a report the host already rendered.
-      expect(spawn.parentSessionId).toBeUndefined();
+      // Owned by the host session (#448), but never delivered to it: a finished
+      // reviewer's completion notification would re-narrate a report the host already
+      // rendered as an extra model turn. Ownership and delivery are separate switches.
+      expect(spawn.parentSessionId).toBe(runContext.sessionId);
+      expect(spawn.notifyParentOnCompletion).toBe(false);
     }
   });
 

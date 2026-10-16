@@ -235,6 +235,10 @@ async function performPrintReview(
     // Every reviewer, lens and verifier agent is spawned under the host's run,
     // so the whole pipeline is billed and budgeted as one root.
     runner: reviewRunnerFor(env.agents.manager(), {
+      // The stored session the run belongs to, as the TUI passes its own. Without it
+      // each agent's tool-use records carry a made-up `agent:<id>` session id that
+      // matches no session file, and `book tool-stats` counts every one separately.
+      parentSessionId: env.agents.runContext.sessionId,
       rootRunId: env.agents.runContext.rootRunId,
       parentRunId: env.agents.runContext.runId,
     }),

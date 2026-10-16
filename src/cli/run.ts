@@ -19,7 +19,11 @@ import { join } from 'path';
 import type { AgentConfig } from '../types/runtime.js';
 import type { RewindSnapshotStoreInterface } from '../types/sessions.js';
 import type { HeadlessResult } from '../types/public-sdk.js';
-import { resolveSessionBootstrap } from '../session/resolve.js';
+import {
+  discardUntouchedSession,
+  resolveSessionBootstrap,
+  type SessionBootstrap,
+} from '../session/resolve.js';
 import { parseSessionDriver, resolveSessionDriver } from '../session-driver.js';
 import {
   createRewindSnapshotStore,
@@ -184,6 +188,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
   // a run cancelled or interrupted before it returned has no `result` to read.
   let printInterrupt: PrintInterrupt | undefined;
   let printSignal: AbortSignal | undefined;
+  // The session this launch opened, for the `finally` below: a launch that ends before its
+  // first prompt, however it ends, must not leave an empty session behind (#444).
+  let launched: { store: SessionStore | undefined; bootstrap: SessionBootstrap } | undefined;
   try {
     const requestedWorkspace = options.workspace as string | undefined;
     // Validated again here rather than trusted from commander: the option parser
@@ -294,6 +301,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           forkSession: options.forkSession as boolean | undefined,
           driver: config.sessionDriver,
         });
+        launched = { store: sessionStore, bootstrap };
         sessionStore?.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
 
         // Once a reader is gone, stderr and a `text` or `json` answer (written once, at the end)
@@ -397,6 +405,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       forkSession: options.forkSession as boolean | undefined,
       driver: config.sessionDriver,
     });
+    launched = { store: sessionStore, bootstrap };
     sessionStore?.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
     if (!sessionStore) {
       timelineStore.create({
@@ -494,5 +503,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     // reason it exited at once — Ink holding stdin — no longer holds; its `finally` has
     // unmounted Ink and restored the screen by now.
     setExitCode(1);
+  } finally {
+    // After every SessionEnd hook the launch ran (the print run and the TUI both await theirs),
+    // so a record a hook wrote keeps the session. Never throws.
+    if (launched) discardUntouchedSession(launched.store, launched.bootstrap);
   }
 }

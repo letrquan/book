@@ -1096,6 +1096,9 @@ export async function runHeadless(
           displayMessage,
           contextMessage: userMessage.contextContent,
           userMessage,
+          // The local name is deliberately not reassigned from the result: a
+          // notification never names the session (#446).
+          sessionName,
           timelineStore: store && sessionId ? store : undefined,
           expandShellInput: false,
           runtime,

@@ -1,6 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SessionStore } from './store.js';
-import { appendFileSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -604,6 +613,22 @@ describe('SessionStore', () => {
     expect(s.findByName('Investigate legacy session labels')?.id).toBe(id);
   });
 
+  it('never derives a display name from an agent-notification turn (#446)', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'user',
+      timestamp: 1,
+      data: { content: 'Atlas completed: found it', kind: 'agent-notification' },
+    });
+    // The live index entry, then one rebuilt from the file.
+    expect(s.findById(id)?.name).toBeUndefined();
+    expect(new SessionStore(dir).load(id).meta.name).toBeUndefined();
+
+    s.append(id, { type: 'user', timestamp: 2, data: { content: 'fix the build' } });
+    expect(new SessionStore(dir).load(id).meta.name).toBe('Fix the build');
+  });
+
   it('applies append-only metadata patches without counting them as messages', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });
@@ -784,5 +809,184 @@ describe('SessionStore — host notices survive a reload (#248)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('SessionStore — removeUntouched (#444)', () => {
+  const indexedIds = (root: string) =>
+    Object.keys(
+      (
+        JSON.parse(readFileSync(join(root, 'session-index.json'), 'utf-8')) as {
+          sessions: Record<string, unknown>;
+        }
+      ).sessions,
+    );
+
+  it('removes a session holding only its header, and its index entry, for every reader', () => {
+    const s = new SessionStore(dir);
+    const kept = s.create({ cwd: '/proj', name: 'kept' });
+    const id = s.create({ cwd: '/proj', driver: 'human' });
+    expect(indexedIds(dir)).toContain(id);
+
+    expect(s.removeUntouched(id)).toBe(true);
+
+    expect(existsSync(join(dir, `${id}.jsonl`))).toBe(false);
+    expect(indexedIds(dir)).toEqual([kept]);
+    expect(s.findById(id)).toBeUndefined();
+    // A store opened afterwards, from the files, agrees.
+    expect(new SessionStore(dir).findById(id)).toBeUndefined();
+  });
+
+  it.each([
+    ['a user turn', { type: 'user', timestamp: 2, data: { content: 'hi' } }],
+    ['a local message', { type: 'local', timestamp: 2, data: { content: 'note' } }],
+    ['an assistant turn', { type: 'assistant', timestamp: 2, data: { content: 'ok' } }],
+    ['a usage record', { type: 'usage', timestamp: 2, data: {} }],
+    [
+      'a metadata patch',
+      { type: 'session_meta', timestamp: 2, data: { kind: 'session_meta_patch' } },
+    ],
+  ] as const)('keeps a session that holds %s', (_label, record) => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, record as never);
+
+    expect(s.removeUntouched(id)).toBe(false);
+
+    expect(existsSync(join(dir, `${id}.jsonl`))).toBe(true);
+    expect(indexedIds(dir)).toContain(id);
+  });
+
+  it('keeps a session a hook wrote a line into behind the store`s back', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    appendFileSync(join(dir, `${id}.jsonl`), 'not even json\n', 'utf-8');
+
+    expect(s.removeUntouched(id)).toBe(false);
+    expect(existsSync(join(dir, `${id}.jsonl`))).toBe(true);
+  });
+
+  it('keeps a session the user named', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj', name: 'release-work' });
+
+    expect(s.removeUntouched(id)).toBe(false);
+    expect(s.findByName('release-work')?.id).toBe(id);
+  });
+
+  it('reports a session that is already gone without throwing', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    rmSync(join(dir, `${id}.jsonl`));
+
+    expect(s.removeUntouched(id)).toBe(false);
+    expect(s.removeUntouched('never-existed')).toBe(false);
+  });
+
+  it.each(['EBUSY', 'EPERM'])(
+    'leaves the session in place when another process holds the file (%s)',
+    (code) => {
+      const s = new SessionStore(dir);
+      const id = s.create({ cwd: '/proj' });
+      // Windows refuses the unlink while another process has the file open.
+      const held = s as unknown as { discardSession(id: string): void };
+      vi.spyOn(held, 'discardSession').mockImplementation(() => {
+        throw Object.assign(new Error(code), { code });
+      });
+
+      expect(s.removeUntouched(id)).toBe(false);
+
+      expect(existsSync(join(dir, `${id}.jsonl`))).toBe(true);
+      expect(indexedIds(dir)).toContain(id);
+    },
+  );
+
+  describe('when the attachment directory cannot be removed', () => {
+    const internals = (s: SessionStore) =>
+      s as unknown as {
+        removeAttachments(id: string): void;
+        unlinkSessionFile(id: string): void;
+      };
+
+    it.each(['EPERM', 'EBUSY'])('still drops the file and both index entries (%s)', (code) => {
+      const s = new SessionStore(dir);
+      const id = s.create({ cwd: '/proj' });
+      vi.spyOn(internals(s), 'removeAttachments').mockImplementation(() => {
+        throw Object.assign(new Error(code), { code });
+      });
+
+      expect(s.removeUntouched(id)).toBe(true);
+
+      expect(existsSync(join(dir, `${id}.jsonl`))).toBe(false);
+      expect(indexedIds(dir)).not.toContain(id);
+      expect(s.findById(id)).toBeUndefined();
+      expect(new SessionStore(dir).findById(id)).toBeUndefined();
+    });
+
+    it('drops the entries and tries the attachments when the file is already gone (ENOENT)', () => {
+      const s = new SessionStore(dir);
+      const id = s.create({ cwd: '/proj' });
+      vi.spyOn(internals(s), 'unlinkSessionFile').mockImplementation(() => {
+        throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+      });
+      const attachments = vi.spyOn(internals(s), 'removeAttachments');
+
+      expect(s.removeUntouched(id)).toBe(true);
+
+      expect(attachments).toHaveBeenCalledWith(id);
+      expect(indexedIds(dir)).not.toContain(id);
+      expect(s.findById(id)).toBeUndefined();
+    });
+
+    // A real refusal, with no stub: a read-only subdirectory makes the recursive remove fail.
+    it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+      'returns true even when removing the directory fails for real',
+      () => {
+        const s = new SessionStore(dir);
+        const id = s.create({ cwd: '/proj' });
+        const locked = join(dir, 'attachments', id, 'locked');
+        mkdirSync(locked, { recursive: true });
+        writeFileSync(join(locked, 'image.png'), 'x');
+        chmodSync(locked, 0o555);
+        try {
+          expect(s.removeUntouched(id)).toBe(true);
+          expect(existsSync(join(dir, `${id}.jsonl`))).toBe(false);
+          expect(indexedIds(dir)).not.toContain(id);
+        } finally {
+          chmodSync(locked, 0o755);
+        }
+      },
+    );
+  });
+
+  it('decides from the index alone when the session already shows messages', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, { type: 'user', timestamp: 2, data: { content: 'hello' } });
+    // The index already shows a message, so the file need not be opened at all.
+    const probe = vi.spyOn(s as unknown as { isUntouched(id: string): boolean }, 'isUntouched');
+
+    expect(s.removeUntouched(id)).toBe(false);
+
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('keeps a session whose file is larger than a header, without reading all of it', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    // Behind the store's back, as a hook would: a second line, far larger than any header.
+    appendFileSync(join(dir, `${id}.jsonl`), `${'x'.repeat(2_000_000)}\n`, 'utf-8');
+
+    expect(s.removeUntouched(id)).toBe(false);
+    expect(existsSync(join(dir, `${id}.jsonl`))).toBe(true);
+  });
+
+  it('removes a header-only file without a trailing newline', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    const path = join(dir, `${id}.jsonl`);
+    writeFileSync(path, readFileSync(path, 'utf-8').trimEnd(), 'utf-8');
+
+    expect(s.removeUntouched(id)).toBe(true);
   });
 });

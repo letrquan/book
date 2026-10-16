@@ -15,6 +15,8 @@ import { runHeadless } from './headless.js';
 import { UnsupportedPrintCommandError } from './commands/print-dispatch.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
+import { SessionStore } from './session/store.js';
+import { aggregateToolUse, readToolUseRecords } from './tool-telemetry.js';
 import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
 import type { ScriptedProvider } from './test/scripted-provider.js';
 import type { AgentConfig } from './types/runtime.js';
@@ -216,6 +218,76 @@ describe('runHeadless — /review', () => {
     expect(hostRun).toBeDefined();
     expect(reviewerRun?.context.rootRunId).toBe(hostRun?.context.rootRunId);
     expect(finished.usage?.totalTokens).toBe(42);
+  }, 30000);
+
+  // #448: nothing below the provider is stubbed, so this walks the whole path the fix depends on:
+  // print-dispatch hands the host session to the real AgentManager, the manager puts it on each
+  // agent's run context, and the loop writes it into every ToolUseRecord it appends.
+  it("records every reviewer tool call under the run's stored session (#448)", async () => {
+    const telemetryRoot = mkdtempSync(join(tmpdir(), 'book-headless-review-telemetry-'));
+    const previousTelemetryDir = process.env.BOOK_TOOL_TELEMETRY_DIR;
+    process.env.BOOK_TOOL_TELEMETRY_DIR = telemetryRoot;
+    try {
+      // Every agent reads a file, then answers: a lens or reviewer with its report, the
+      // falsification pass with a verdict list.
+      const provider = createRepeatingScriptedProvider((_input, init) => {
+        const body = String(init?.body);
+        if (!body.includes('"role":"tool"')) {
+          return sseResponse([
+            JSON.stringify({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'read-1',
+                        function: { name: 'Read', arguments: '{"filePath":"a.ts"}' },
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+          ]);
+        }
+        const answer = body.includes('DISPROVE')
+          ? JSON.stringify({
+              verdicts: [{ findingId: 'finding-1', state: 'confirmed', reason: 'ok' }],
+            })
+          : REVIEWER_REPORT;
+        return sseResponse([JSON.stringify({ choices: [{ delta: { content: answer } }] })]);
+      });
+      vi.stubGlobal('fetch', provider.fetch);
+      const store = new SessionStore(join(home, 'sessions'));
+      const config = makeConfig();
+      config.settings.observability.toolTelemetry = true;
+
+      const finished = await run(config, '/review --deep', {
+        persistSession: true,
+        sessionStore: store,
+      }).result;
+
+      const sessionId = finished.sessionId;
+      expect(sessionId).toBeTruthy();
+      expect(store.findById(sessionId!)).toBeDefined();
+      // Telemetry is appended fire-and-forget, so wait for the five agents' records.
+      let records = await readToolUseRecords(telemetryRoot);
+      for (let attempt = 0; attempt < 100 && records.length < 5; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        records = await readToolUseRecords(telemetryRoot);
+      }
+      expect(records.length).toBeGreaterThanOrEqual(5);
+      for (const record of records) {
+        expect(record).toMatchObject({ tool: 'Read', subagent: true, agentRole: 'reviewer' });
+        expect(record.sessionId).toBe(sessionId);
+      }
+      expect(aggregateToolUse(records).sessions).toBe(1);
+    } finally {
+      if (previousTelemetryDir === undefined) delete process.env.BOOK_TOOL_TELEMETRY_DIR;
+      else process.env.BOOK_TOOL_TELEMETRY_DIR = previousTelemetryDir;
+      rmSync(telemetryRoot, { recursive: true, force: true });
+    }
   }, 30000);
 
   // The parent-turn path refuses before any provider call when the budget

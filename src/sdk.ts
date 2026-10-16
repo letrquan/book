@@ -13,7 +13,7 @@ import { resolveMcpServerList } from './mcp-config.js';
 import { collectWithheldProjectNotices } from './project-approval-notices.js';
 import { AgentManager } from './agents/manager.js';
 import { SessionStore } from './session/store.js';
-import { resolveSessionBootstrap } from './session/resolve.js';
+import { discardUntouchedSession, resolveSessionBootstrap } from './session/resolve.js';
 import type { AgentEvent } from './session/agent-events.js';
 import {
   cleanupDebugLogs,
@@ -234,7 +234,14 @@ export async function* query(
   } finally {
     controller.abort(new Error('SDK event consumer stopped'));
     options.signal?.removeEventListener('abort', abortFromCaller);
-    await running;
+    try {
+      await running;
+    } finally {
+      // The run has ended, SessionEnd hooks included, whether it resolved or rejected: a
+      // query that stopped before it recorded its prompt leaves no empty session behind
+      // (#444). A rejection still propagates.
+      discardUntouchedSession(sessionStore, bootstrap);
+    }
   }
 }
 
