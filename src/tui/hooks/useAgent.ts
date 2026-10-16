@@ -231,17 +231,11 @@ export function resolveConfigAfterProviderRemoval(
 
 /** UI-only compact status — never appended to provider history. */
 export type CompactUiState = {
-  phase: 'working' | 'diff' | 'done' | 'error' | 'skipped';
+  phase: 'working' | 'error' | 'skipped';
   trigger: CompactTrigger;
   preMessages?: number;
   preContextTokens?: number;
   message?: string;
-  degraded?: boolean;
-  warning?: string;
-  strategy?: Extract<CompactResult, { status: 'compacted' }>['strategy'];
-  modelCalls?: number;
-  /** The reducer ran while the turn went on and a judge read the steps taken meanwhile. */
-  judge?: Extract<CompactResult, { status: 'compacted' }>['judge'];
 };
 
 function buildObservationLedger(messages: Message[]) {
@@ -981,23 +975,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               },
             });
             const autoResult = autoOutcome.result;
-            if (stillCurrent() && autoResult.status === 'compacted' && autoOutcome.boundary) {
-              setCompactUi({
-                phase: 'diff',
-                trigger: 'auto',
-                preMessages: autoResult.preMessageCount,
-                preContextTokens: autoResult.preContextTokens,
-                message: autoResult.degraded
-                  ? 'Conversation compacted with reduced fidelity'
-                  : 'Conversation compacted',
-                degraded: autoResult.degraded,
-                warning: autoResult.warning,
-                strategy: autoResult.strategy,
-                modelCalls: autoResult.modelCalls,
-              });
-            } else if (stillCurrent()) {
-              // A PreCompact hook that refused is the one skip worth a line: the
-              // user's own script made a decision on evidence they cannot see
+            if (stillCurrent()) {
+              // A finished compaction is shown by its row in the transcript alone, so the
+              // running state ends. A PreCompact hook that refused is the one skip worth a
+              // line: the user's own script made a decision on evidence they cannot see
               // otherwise, and the oversized request that follows will not say why.
               setCompactUi(
                 autoResult.status === 'skipped' && autoResult.reason === 'blocked'
@@ -1277,19 +1258,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (result.status === 'compacted' && outcome.boundary) {
               // The row sits below this message; the turn's next output goes below the row.
               if (placement.afterStreaming) streamOutputRef.current.closed = true;
-              setCompactUi({
-                phase: 'diff',
-                trigger: 'auto',
-                preMessages: result.preMessageCount,
-                preContextTokens: result.preContextTokens,
-                message: result.degraded
-                  ? 'Conversation compacted with reduced fidelity'
-                  : 'Conversation compacted',
-                degraded: result.degraded,
-                warning: result.warning,
-                strategy: result.strategy,
-                modelCalls: result.modelCalls,
-              });
             } else if (result.status === 'skipped' && result.reason === 'blocked') {
               // Same as the pre-turn path: a hook's refusal is shown, with its reason.
               setCompactUi({
@@ -1370,20 +1338,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (result.status === 'compacted' && outcome.boundary) {
               // The row sits below this message; the turn's next output goes below the row.
               if (placement.afterStreaming) streamOutputRef.current.closed = true;
-              setCompactUi({
-                phase: 'diff',
-                trigger: 'auto',
-                preMessages: result.preMessageCount,
-                preContextTokens: result.preContextTokens,
-                message: result.degraded
-                  ? 'Conversation compacted with reduced fidelity'
-                  : 'Conversation compacted',
-                degraded: result.degraded,
-                warning: result.warning,
-                strategy: result.strategy,
-                modelCalls: result.modelCalls,
-                judge: result.judge,
-              });
             }
             return result;
           },
@@ -1794,21 +1748,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           return;
         }
 
-        if (!outcome.boundary) return;
-        if (!stillCurrent()) return;
-        setCompactUi({
-          phase: 'diff',
-          trigger: 'manual',
-          preMessages: result.preMessageCount,
-          preContextTokens: result.preContextTokens,
-          message: result.degraded
-            ? 'Conversation compacted with reduced fidelity'
-            : 'Conversation compacted',
-          degraded: result.degraded,
-          warning: result.warning,
-          strategy: result.strategy,
-          modelCalls: result.modelCalls,
-        });
+        // Success is the boundary row in the transcript; the running state just ends.
+        setCompactUi(null);
       } catch (e) {
         if (stillCurrent()) {
           setCompactUi(
@@ -2551,7 +2492,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     isCompactCommitted,
     isRewinding,
     compactUi,
-    setCompactUi,
     streamingMessageId,
     error,
     currentTurn,

@@ -194,6 +194,50 @@ function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 30));
 }
 
+/** A committed compaction as `runCompact` reports it, with the fields a test varies. */
+function compactedResult(overrides: Record<string, unknown> = {}) {
+  return {
+    status: 'compacted',
+    trigger: 'auto',
+    replacementHistory: [
+      {
+        id: 'checkpoint-1',
+        role: 'assistant',
+        content: 'compact summary',
+        kind: 'checkpoint',
+        includeInContext: true,
+        timestamp: 1,
+      },
+    ],
+    summary: 'compact summary',
+    compactId: 'compact-1',
+    generation: 1,
+    checkpoint: {
+      version: 2,
+      generation: 1,
+      state: { summary: 'compact summary', status: 'active' },
+      constraints: [],
+      files: [],
+      episodes: [],
+      openThreads: [],
+      statistics: { summarizedMessages: 1, retainedMessages: 0, preTokens: 100, postTokens: 10 },
+    },
+    checkpointVersion: 2,
+    summarizedCount: 1,
+    retainedCount: 0,
+    preContextTokens: 100,
+    postContextTokens: 10,
+    preMessageCount: 2,
+    strategy: 'single-pass',
+    modelCalls: 1,
+    ...overrides,
+  };
+}
+
+function localMessages() {
+  return latest!.messages.filter((message) => (message as { kind?: string }).kind === 'local');
+}
+
 const originalBookHome = process.env.BOOK_HOME;
 
 afterEach(() => {
@@ -368,7 +412,83 @@ describe('useAgent rewind integration', () => {
     expect(latest!.messages.map((message) => message.content)).toContain('before compact');
     expect(latest!.messages.map((message) => message.content)).toContain('continued after compact');
     expect(latest!.compactBoundaries).toHaveLength(1);
-    expect(latest!.compactUi).toMatchObject({ phase: 'diff', trigger: 'auto' });
+    expect(latest!.compactUi).toBeNull();
+  });
+
+  it('puts a compaction warning on its boundary, not in the transcript', async () => {
+    const { config, timeline, sessionId } = fixture();
+    compactMockState.results.push(
+      compactedResult({
+        trigger: 'manual',
+        degraded: true,
+        warning: 'summary-truncated coverage',
+      }),
+    );
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    await latest!.compact();
+    await tick();
+
+    expect(latest!.compactBoundaries).toHaveLength(1);
+    expect(latest!.compactBoundaries[0]).toMatchObject({
+      degraded: true,
+      warning: 'summary-truncated coverage',
+    });
+    expect(localMessages()).toHaveLength(0);
+    // The session record keeps the warning at its top level, not on the boundary it restores.
+    const record = timeline.readRecords(sessionId).find((entry) => entry.type === 'compact');
+    const data = record?.data as { warning?: string; boundary: Record<string, unknown> };
+    expect(data.warning).toBe('summary-truncated coverage');
+    expect(data.boundary).not.toHaveProperty('warning');
+    expect(data.boundary).not.toHaveProperty('degraded');
+  });
+
+  it('puts the warning of a mid-turn compaction on its boundary, and none on a clean one', async () => {
+    const { config, timeline, sessionId } = fixture();
+    compactMockState.results.push(
+      { status: 'skipped', reason: 'small', message: 'small' },
+      compactedResult({ warning: 'events addressed the summarizer' }),
+    );
+    agentLoopState.compactDuringRun = true;
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    await latest!.send('keep going');
+    await tick();
+    expect(latest!.compactBoundaries).toHaveLength(1);
+    expect(latest!.compactBoundaries[0]).toMatchObject({
+      warning: 'events addressed the summarizer',
+    });
+    expect(latest!.compactBoundaries[0]).not.toHaveProperty('degraded');
+
+    compactMockState.results.push(compactedResult({ compactId: 'compact-2', generation: 2 }));
+    await latest!.compact();
+    await tick();
+    expect(latest!.compactBoundaries).toHaveLength(2);
+    expect(latest!.compactBoundaries[1]).not.toHaveProperty('warning');
+    expect(localMessages()).toHaveLength(0);
+  });
+
+  it('leaves no compaction card behind a successful compaction', async () => {
+    const { config, timeline, sessionId } = fixture();
+    compactMockState.results.push(
+      compactedResult({ trigger: 'manual', warning: 'reduced coverage', degraded: true }),
+      { status: 'skipped', reason: 'small', message: 'Not enough messages to compact.' },
+    );
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    await latest!.compact();
+    await tick();
+    expect(latest!.compactBoundaries).toHaveLength(1);
+    expect(latest!.compactUi).toBeNull();
+    expect(latest!.isCompacting).toBe(false);
+
+    // A skip is a card, and it stays.
+    await latest!.compact();
+    await tick();
+    expect(latest!.compactUi).toMatchObject({ phase: 'skipped', trigger: 'manual' });
   });
 
   it('captures after pre-turn compaction and before @/! expansion', async () => {

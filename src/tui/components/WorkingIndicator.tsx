@@ -25,8 +25,6 @@ interface WorkingIndicatorProps {
   isCompacting?: boolean;
   /** Auto vs manual compact busy label. */
   compactTrigger?: 'manual' | 'auto';
-  /** True only after compaction has completed successfully. */
-  compactComplete?: boolean;
   messages: Message[];
   streamingMessageId?: string | null;
   pendingPermission?: PendingPermissionRequest | null;
@@ -139,7 +137,6 @@ export function WorkingIndicator({
   isThinking,
   isCompacting = false,
   compactTrigger,
-  compactComplete = false,
   messages,
   streamingMessageId,
   pendingPermission,
@@ -189,8 +186,7 @@ export function WorkingIndicator({
   // activity label and every tool row start on the same column.
   const horizontalInset = CONTENT_COLUMN;
   const contentWidth = Math.max(8, width - horizontalInset - 1);
-  const showCompactProgress =
-    (isCompacting || compactComplete) && retryPhase === 'none' && !motionDisabled;
+  const showCompactProgress = isCompacting && retryPhase === 'none' && !motionDisabled;
   const compactProgress = useAnimatedProgress(isCompacting, 2_400, motionDisabled);
   const spinner = useGradientSpinner(
     Boolean(activity) && !showCompactProgress && !motionDisabled && !activity?.blocked,
@@ -200,20 +196,16 @@ export function WorkingIndicator({
 
   if (!activity && !showCompactProgress) return null;
   if (showCompactProgress) {
-    const displayProgress = compactComplete ? 100 : compactProgress;
-    const compactLabel = compactComplete
-      ? width < 30
-        ? 'Done'
-        : 'Compacted'
-      : compactTrigger === 'auto'
+    const compactLabel =
+      compactTrigger === 'auto'
         ? width < 36
           ? 'Auto'
           : 'Auto-compacting'
         : width < 30
           ? 'Compact'
           : 'Compacting';
-    const percent = `${String(displayProgress).padStart(3, ' ')}%`;
-    const hint = isCompacting && !compactComplete && width >= 52 ? ' · Esc to cancel' : '';
+    const percent = `${String(compactProgress).padStart(3, ' ')}%`;
+    const hint = isCompacting && width >= 52 ? ' · Esc to cancel' : '';
     const barWidth = Math.max(
       1,
       Math.min(
@@ -221,19 +213,18 @@ export function WorkingIndicator({
         contentWidth - displayWidth(compactLabel) - displayWidth(percent) - displayWidth(hint) - 2,
       ),
     );
-    const filled = Math.min(barWidth, Math.round((displayProgress / 100) * barWidth));
-    const progressColor = compactComplete ? theme.success : theme.brand;
+    const filled = Math.min(barWidth, Math.round((compactProgress / 100) * barWidth));
 
     return (
       <Box paddingLeft={horizontalInset} width={width} flexDirection="row" flexWrap="nowrap">
         <Text color={theme.subtle} dimColor>
           {compactLabel}{' '}
         </Text>
-        <Text color={progressColor}>{'█'.repeat(filled)}</Text>
+        <Text color={theme.brand}>{'█'.repeat(filled)}</Text>
         <Text color={theme.subtle} dimColor>
           {'░'.repeat(barWidth - filled)}
         </Text>
-        <Text color={compactComplete ? theme.success : theme.brandShimmer}> {percent}</Text>
+        <Text color={theme.brandShimmer}> {percent}</Text>
         {hint ? (
           <Text color={theme.subtle} dimColor>
             {hint}
