@@ -4,11 +4,14 @@ import { cleanup, render } from 'ink-testing-library';
 import { Box } from 'ink';
 import { act } from 'react';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
-import { ToolCallBlock } from './ToolCallBlock.js';
+import { ToolCallBlock, ToolExpandTargetContext } from './ToolCallBlock.js';
 import { ToolRowInteractionContext } from './tool-row-interactions.js';
 import { displayWidth } from './word-wrap.js';
 import type { FileMutationSummary, ToolResult } from '../../types/tools.js';
 import { enrichToolResultPresentation, toolFailure, toolSuccess } from '../../tools/result.js';
+import { workloadRows } from '../../test/tool-expand-workload.js';
+import { toolRowHidesContent } from '../tool-expansion.js';
+import { shouldDefaultExpandTool } from '../tool-presentation.js';
 
 function successResult(
   toolCallId: string,
@@ -44,6 +47,13 @@ function frame(lastFrame: () => string | undefined): string {
 
 function withTheme(children: React.ReactElement): React.ReactElement {
   return <ThemeContext.Provider value={DEFAULT_THEME}>{children}</ThemeContext.Provider>;
+}
+
+/** A compact row names the Ctrl+E key only inside a provider whose target is that row. */
+function asTarget(toolId: string, block: React.ReactElement): React.ReactElement {
+  return (
+    <ToolExpandTargetContext.Provider value={toolId}>{block}</ToolExpandTargetContext.Provider>
+  );
 }
 
 afterEach(() => {
@@ -103,13 +113,17 @@ describe('ToolCallBlock', () => {
     const output = Array.from({ length: 8 }, (_, i) => `line ${i + 1}`).join('\n');
     const view = render(
       withTheme(
-        <ToolCallBlock
-          name="Bash"
-          args={{ command: 'seq 8' }}
-          result={successResult('call-1', output)}
-          isExpanded
-          reducedMotion
-        />,
+        asTarget(
+          'call-1',
+          <ToolCallBlock
+            toolId="call-1"
+            name="Bash"
+            args={{ command: 'seq 8' }}
+            result={successResult('call-1', output)}
+            isExpanded
+            reducedMotion
+          />,
+        ),
       ),
     );
 
@@ -308,19 +322,23 @@ describe('ToolCallBlock', () => {
 
     function writeBlock(showAllToolOutput: boolean) {
       return withTheme(
-        <ToolCallBlock
-          name="Write"
-          args={{ filePath: 'src/new.ts' }}
-          result={successResult('call-create', newFileDiff, {
-            kind: 'create',
-            filePath: 'src/new.ts',
-            addedLines: 150,
-            removedLines: 0,
-          })}
-          isExpanded
-          showAllToolOutput={showAllToolOutput}
-          reducedMotion
-        />,
+        asTarget(
+          'call-create',
+          <ToolCallBlock
+            toolId="call-create"
+            name="Write"
+            args={{ filePath: 'src/new.ts' }}
+            result={successResult('call-create', newFileDiff, {
+              kind: 'create',
+              filePath: 'src/new.ts',
+              addedLines: 150,
+              removedLines: 0,
+            })}
+            isExpanded
+            showAllToolOutput={showAllToolOutput}
+            reducedMotion
+          />,
+        ),
       );
     }
 
@@ -357,19 +375,23 @@ describe('ToolCallBlock', () => {
       props: { transcriptMode?: 'compact' | 'detailed'; showAllToolOutput?: boolean } = {},
     ) {
       return withTheme(
-        <ToolCallBlock
-          name="Edit"
-          args={{ filePath: 'src/a.ts' }}
-          result={successResult('call-edit-long', longEditOutput, {
-            kind: 'update',
-            filePath: 'src/a.ts',
-            addedLines: 100,
-            removedLines: 100,
-          })}
-          isExpanded
-          reducedMotion
-          {...props}
-        />,
+        asTarget(
+          'call-edit-long',
+          <ToolCallBlock
+            toolId="call-edit-long"
+            name="Edit"
+            args={{ filePath: 'src/a.ts' }}
+            result={successResult('call-edit-long', longEditOutput, {
+              kind: 'update',
+              filePath: 'src/a.ts',
+              addedLines: 100,
+              removedLines: 100,
+            })}
+            isExpanded
+            reducedMotion
+            {...props}
+          />,
+        ),
       );
     }
 
@@ -424,18 +446,22 @@ describe('ToolCallBlock', () => {
       ].join('\n');
       const view = render(
         withTheme(
-          <ToolCallBlock
-            name="Edit"
-            args={{ filePath: 'src/a.ts', replaceAll: true }}
-            result={successResult('call-rename', output, {
-              kind: 'update',
-              filePath: 'src/a.ts',
-              addedLines: 12,
-              removedLines: 12,
-            })}
-            isExpanded
-            reducedMotion
-          />,
+          asTarget(
+            'call-rename',
+            <ToolCallBlock
+              toolId="call-rename"
+              name="Edit"
+              args={{ filePath: 'src/a.ts', replaceAll: true }}
+              result={successResult('call-rename', output, {
+                kind: 'update',
+                filePath: 'src/a.ts',
+                addedLines: 12,
+                removedLines: 12,
+              })}
+              isExpanded
+              reducedMotion
+            />,
+          ),
         ),
       );
       const rendered = frame(view.lastFrame);
@@ -513,7 +539,17 @@ describe('ToolCallBlock', () => {
       };
       const view = render(
         withTheme(
-          <ToolCallBlock name="ApplyPatch" args={{}} result={result} isExpanded reducedMotion />,
+          asTarget(
+            'call-multi-compact',
+            <ToolCallBlock
+              toolId="call-multi-compact"
+              name="ApplyPatch"
+              args={{}}
+              result={result}
+              isExpanded
+              reducedMotion
+            />,
+          ),
         ),
       );
       const rendered = frame(view.lastFrame);
@@ -1006,14 +1042,18 @@ describe('ToolCallBlock failures', () => {
       { command: 'bash scripts/fail.sh' },
     );
     const raw = colourFrame(
-      <ToolCallBlock
-        name="Bash"
-        args={{ command: 'bash scripts/fail.sh' }}
-        result={result}
-        isExpanded={false}
-        terminalWidth={100}
-        reducedMotion
-      />,
+      asTarget(
+        'fail-1',
+        <ToolCallBlock
+          toolId="fail-1"
+          name="Bash"
+          args={{ command: 'bash scripts/fail.sh' }}
+          result={result}
+          isExpanded={false}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
     );
     const rendered = stripAnsi(raw);
     const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
@@ -1079,15 +1119,19 @@ describe('ToolCallBlock failures', () => {
     );
     const rendered = stripAnsi(
       colourFrame(
-        <ToolCallBlock
-          name="Bash"
-          args={{ command: 'bash scripts/fail.sh' }}
-          result={result}
-          isExpanded={false}
-          showAllToolOutput
-          terminalWidth={100}
-          reducedMotion
-        />,
+        asTarget(
+          'fail-1',
+          <ToolCallBlock
+            toolId="fail-1"
+            name="Bash"
+            args={{ command: 'bash scripts/fail.sh' }}
+            result={result}
+            isExpanded={false}
+            showAllToolOutput
+            terminalWidth={100}
+            reducedMotion
+          />,
+        ),
       ),
     );
     const lines = rendered
@@ -1111,15 +1155,19 @@ describe('ToolCallBlock failures', () => {
     const draw = (isExpanded: boolean) =>
       stripAnsi(
         colourFrame(
-          <ToolCallBlock
-            name="Bash"
-            args={{ command: 'npm test' }}
-            result={result}
-            isExpanded={isExpanded}
-            showAllToolOutput
-            terminalWidth={100}
-            reducedMotion
-          />,
+          asTarget(
+            'npm-1',
+            <ToolCallBlock
+              toolId="npm-1"
+              name="Bash"
+              args={{ command: 'npm test' }}
+              result={result}
+              isExpanded={isExpanded}
+              showAllToolOutput
+              terminalWidth={100}
+              reducedMotion
+            />,
+          ),
         ),
       );
     const rendered = draw(true);
@@ -1219,14 +1267,18 @@ describe('ToolCallBlock failures', () => {
       { command: 'npm test' },
     );
     const raw = colourFrame(
-      <ToolCallBlock
-        name="Bash"
-        args={{ command: 'npm test' }}
-        result={result}
-        isExpanded={false}
-        terminalWidth={100}
-        reducedMotion
-      />,
+      asTarget(
+        'npm-1',
+        <ToolCallBlock
+          toolId="npm-1"
+          name="Bash"
+          args={{ command: 'npm test' }}
+          result={result}
+          isExpanded={false}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
     );
     const rendered = stripAnsi(raw);
     const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
@@ -1340,5 +1392,168 @@ describe('ToolCallBlock plan rows', () => {
 
   it('checks a finished plan', () => {
     expect(planFrame(['completed', 'completed'])).toMatch(/✓ Steps\s+2 of 2 done/);
+  });
+});
+
+describe('ToolCallBlock Ctrl+E hint', () => {
+  const rows = workloadRows();
+  const byId = (id: string) => rows.find((row) => row.call.id === id)!;
+
+  function renderRow(
+    id: string,
+    props: {
+      target?: string | null;
+      transcriptMode?: 'compact' | 'detailed';
+      isExpanded?: boolean;
+    } = {},
+  ): string {
+    const row = byId(id);
+    const { target, transcriptMode = 'compact' } = props;
+    const isExpanded = props.isExpanded ?? shouldDefaultExpandTool(row.call.name, row.result);
+    const block = (
+      <ToolCallBlock
+        toolId={row.call.id}
+        name={row.call.name}
+        args={row.call.arguments}
+        result={row.result}
+        isExpanded={isExpanded}
+        transcriptMode={transcriptMode}
+        terminalWidth={100}
+        reducedMotion
+      />
+    );
+    return frame(
+      render(
+        withTheme(
+          target === undefined ? (
+            block
+          ) : (
+            <ToolExpandTargetContext.Provider value={target}>
+              {block}
+            </ToolExpandTargetContext.Provider>
+          ),
+        ),
+      ).lastFrame,
+    );
+  }
+
+  it.each([
+    ['a diff', 'write-new', '… +140 lines'],
+    ['a capped edit', 'edit-long', '… +180 lines'],
+    ['a failed command', 'bash-fail', '… +36 lines'],
+  ])('drops the key from %s footer when another row is the target', (_name, id, footer) => {
+    const rendered = renderRow(id, { target: 'some-other-row' });
+    expect(rendered).toContain(footer);
+    expect(rendered).not.toContain('Ctrl+E');
+  });
+
+  it('drops the key from an output footer when another row is the target', () => {
+    const output = Array.from({ length: 8 }, (_, i) => `line ${i + 1}`).join('\n');
+    const render1 = (target: string) =>
+      frame(
+        render(
+          withTheme(
+            <ToolExpandTargetContext.Provider value={target}>
+              <ToolCallBlock
+                toolId="out-1"
+                name="Bash"
+                args={{ command: 'seq 8' }}
+                result={successResult('out-1', output)}
+                isExpanded
+                reducedMotion
+              />
+            </ToolExpandTargetContext.Provider>,
+          ),
+        ).lastFrame,
+      );
+    expect(render1('other')).toContain('… +2 lines');
+    expect(render1('other')).not.toContain('Ctrl+E');
+    expect(render1('out-1')).toContain('… +2 lines (Ctrl+E)');
+  });
+
+  it.each([
+    ['a diff', 'write-new', '… +140 lines (Ctrl+E)'],
+    ['a capped edit', 'edit-long', '… +180 lines (Ctrl+E)'],
+    ['a failed command', 'bash-fail', '… +36 lines (Ctrl+E)'],
+  ])('names the key in %s footer when the row is the target', (_name, id, footer) => {
+    expect(renderRow(id, { target: id })).toContain(footer);
+  });
+
+  it('names no key in the compact transcript outside a provider', () => {
+    // With no provider nothing says Ctrl+E acts on this row, so it must not claim the key.
+    const rendered = renderRow('write-new');
+    expect(rendered).toContain('… +140 lines');
+    expect(rendered).not.toContain('Ctrl+E');
+  });
+
+  it('names the key in the detailed transcript outside a provider', () => {
+    const rendered = renderRow('write-new', { transcriptMode: 'detailed', isExpanded: true });
+    expect(rendered).toContain('(Ctrl+E)');
+  });
+
+  it('names no key when the target is null', () => {
+    expect(renderRow('write-new', { target: null })).not.toContain('Ctrl+E');
+  });
+
+  it.each([
+    ['write-new', '… +'],
+    ['bash-fail', '… +36 lines (Ctrl+E)'],
+  ])('keeps the key on %s in the detailed transcript whoever the target is', (id, footer) => {
+    const rendered = renderRow(id, {
+      target: 'some-other-row',
+      transcriptMode: 'detailed',
+      isExpanded: true,
+    });
+    expect(rendered).toContain(footer);
+    expect(rendered).toContain('(Ctrl+E)');
+  });
+
+  it("agrees with the target's predicate: a footer is drawn exactly where a row hides content", () => {
+    const output = Array.from({ length: 30 }, (_, i) => `row ${i}`).join('\n');
+    const extra = [
+      { id: 'bash-long', content: output, expanded: true },
+      { id: 'bash-short', content: 'a\nb', expanded: true },
+      { id: 'bash-folded', content: output, expanded: false },
+    ].map(({ id, content, expanded }) => ({
+      call: { id, name: 'Bash', arguments: { command: 'cmd' } },
+      result: successResult(id, content),
+      expanded,
+    }));
+    const cases = [
+      ...rows.map((row) => ({
+        call: row.call,
+        result: row.result,
+        expanded: shouldDefaultExpandTool(row.call.name, row.result),
+      })),
+      ...extra,
+    ];
+    for (const { call, result, expanded } of cases) {
+      const rendered = frame(
+        render(
+          withTheme(
+            <ToolCallBlock
+              toolId={call.id}
+              name={call.name}
+              args={call.arguments}
+              result={result}
+              isExpanded={expanded}
+              transcriptMode="compact"
+              terminalWidth={100}
+              reducedMotion
+            />,
+          ),
+        ).lastFrame,
+      );
+      const hides = toolRowHidesContent({
+        name: call.name,
+        args: call.arguments,
+        result,
+        isExpanded: expanded,
+        transcriptMode: 'compact',
+        terminalWidth: 100,
+        showAllToolOutput: false,
+      });
+      expect([call.id, rendered.includes('… +')]).toEqual([call.id, hides]);
+    }
   });
 });

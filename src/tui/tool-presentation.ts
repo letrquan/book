@@ -13,12 +13,18 @@ import { STATUS_INDICATORS } from './status-indicators.js';
 import { displayWidth, hardWrapLine, truncateDisplay, wordWrap } from './components/word-wrap.js';
 import { prepareToolOutputDisplay } from './components/tool-output.js';
 import {
+  CONTENT_COLUMN,
   LABEL_COLUMN_WIDTH,
   MIN_TARGET_WIDTH,
+  nestedGrid,
   toolRowTargetOffset,
   type TranscriptGrid,
 } from './layout.js';
-import { isRenderableFileMutationDiff } from './file-mutation-display.js';
+import {
+  isRenderableFileMutationDiff,
+  type FileMutationDisplaySummary,
+} from './file-mutation-display.js';
+import { networkPolicyRefusal } from '../tools/web-policy.js';
 
 export type TranscriptMode = 'compact' | 'detailed';
 export type TranscriptShortcutAction = 'enter-detailed' | 'exit-detailed' | 'expand-output';
@@ -774,6 +780,26 @@ export function composeToolRow(
   return { label, target, gap, meta };
 }
 
+/** The key that shows a truncated row in full. */
+export const EXPAND_KEY = 'Ctrl+E';
+
+/**
+ * What `mutationDiffPreview` is given for a mutation row. One new file previews its first lines;
+ * any other diff is previewed by transcript mode. The one copy of that rule: the row draws its
+ * diff from it and the Ctrl+E target asks whether the same diff hides rows.
+ */
+export function mutationDiffPreviewInput(
+  mutationSummary: Pick<FileMutationDisplaySummary, 'kind' | 'fileCount'> | undefined,
+  view: { transcriptMode: TranscriptMode; screenReader: boolean },
+): { createsSingleNewFile: boolean; transcriptMode: TranscriptMode; screenReader: boolean } {
+  return {
+    createsSingleNewFile:
+      mutationSummary?.kind === 'create' && (mutationSummary.fileCount ?? 1) <= 1,
+    transcriptMode: view.transcriptMode,
+    screenReader: view.screenReader,
+  };
+}
+
 /** Most rows a failure's message takes under its tool row. */
 export const TOOL_ERROR_MAX_LINES = 2;
 
@@ -846,6 +872,11 @@ export interface ToolErrorDetailOptions {
    * no stdout fallback, which would draw the same lines twice. A collapsed one still tails it.
    */
   stdoutShownBelow?: boolean;
+  /**
+   * The key the collapsed hint names: `… +36 lines (Ctrl+E)`. Defaults to `Ctrl+E`; `''` keeps
+   * the footer and drops the key, for a row Ctrl+E does not currently target.
+   */
+  expandHint?: string;
   /**
    * Show the whole failure, not its tail: the row was expanded (Ctrl+E). A command's output keeps
    * its last {@link EXPANDED_OUTPUT_MAX_LINES} rows, a line wider than the row continuing on the
@@ -927,6 +958,7 @@ function commandOutputDetail(
   maxRows: number,
   expanded: boolean,
   stdoutShownBelow: boolean,
+  expandHint: string,
 ): ToolErrorDetail {
   const messageLines = nonBlankOutputLines(error);
   // Book's own note ends the message. It is advice for the reader, not output: it keeps rows of
@@ -960,7 +992,7 @@ function commandOutputDetail(
   const tail = prepareToolOutputDisplay(source.join('\n'), {
     maxLines: wrapped ? wrapped.wholeLines : budget,
     maxLineWidth: wrapped ? Number.MAX_SAFE_INTEGER : width,
-    hint: expanded ? undefined : 'Ctrl+E',
+    hint: expanded ? undefined : expandHint,
     strategy: 'tail',
   });
   const lines = wrapped ? wrapped.rows : tail.lines;
@@ -1014,6 +1046,7 @@ export function composeToolErrorDetail(
       options.maxRows ?? (expanded ? TOOL_ERROR_EXPANDED_MAX_ROWS : TOOL_ERROR_COMMAND_MAX_ROWS),
       expanded,
       options.stdoutShownBelow === true,
+      options.expandHint ?? EXPAND_KEY,
     );
   }
   const text = (foldControlCharacters(error) ?? '').trim();
@@ -1025,6 +1058,90 @@ export function composeToolErrorDetail(
       options.maxRows ?? (expanded ? EXPANDED_OUTPUT_MAX_LINES : TOOL_ERROR_MAX_LINES),
     ),
   };
+}
+
+/**
+ * A blocked result shows its reason only for a network-policy refusal or a stopped cross-origin
+ * redirect, which the user needs to understand. `networkPolicyRefusal` classifies both, and the
+ * loop's stop message uses the same classifier.
+ */
+export function showsErrorMessage(result: ToolResult | undefined): boolean {
+  if (!result?.structuredError) return false;
+  return result.status !== 'blocked' || networkPolicyRefusal(result) !== undefined;
+}
+
+export interface ResultErrorDetailInput {
+  presentation: Pick<ToolPresentation, 'title' | 'target'>;
+  /** The message the row shows: `result.structuredError.message`. */
+  message: string;
+  result: ToolResult | undefined;
+  /** The grid the row itself is laid out on. */
+  rowGrid: TranscriptGrid;
+  /** The row sits under an aggregate mutation heading, on the nested grid. */
+  isFileChild: boolean;
+  expanded: boolean;
+  /** The row's output block draws a command's stdout in full under the detail. */
+  stdoutShownBelow: boolean;
+  expandHint?: string;
+}
+
+/**
+ * A failed row's error detail, composed the one way ToolCallBlock draws it and the one way the
+ * Ctrl+E target is chosen. A command that failed with no output has nothing to show: undefined.
+ */
+export function composeResultErrorDetail({
+  presentation,
+  message,
+  result,
+  rowGrid,
+  isFileChild,
+  expanded,
+  stdoutShownBelow,
+  expandHint,
+}: ResultErrorDetailInput): ToolErrorDetail | undefined {
+  // A result with an exit code carries a command's output; its message keeps its lines.
+  const options: ToolErrorDetailOptions = {
+    ...toolErrorDetailOptions(result),
+    expanded,
+    stdoutShownBelow,
+    ...(expandHint === undefined ? {} : { expandHint }),
+  };
+  const detail = isFileChild
+    ? composeToolErrorDetail(
+        { title: '', target: undefined },
+        message,
+        nestedGrid(rowGrid),
+        options,
+      )
+    : composeToolErrorDetail(presentation, message, rowGrid, options);
+  return detail.lines.length > 0 || detail.note ? detail : undefined;
+}
+
+/** Everything {@link toolOutputDisplay} needs to preview a row's output block. */
+export interface ToolOutputDisplayInput {
+  success: boolean;
+  /** The row is shown in full: the large rendering ceiling instead of a short preview. */
+  showAllToolOutput: boolean;
+  /** The block's width: the row grid's content width, outer indentation included. */
+  terminalWidth: number;
+  /** The key the footer names; `''` for none. */
+  expandHint?: string;
+}
+
+/** Columns of the output block's content: the rail's border plus its padding take the gutter. */
+export function toolOutputContentWidth(terminalWidth: number): number {
+  return Math.max(8, Math.floor(terminalWidth) - CONTENT_COLUMN - 2);
+}
+
+/** The preview OutputBlock draws for a row's output; the Ctrl+E target reads the same one. */
+export function toolOutputDisplay(output: string, input: ToolOutputDisplayInput) {
+  const { success, showAllToolOutput, terminalWidth, expandHint = EXPAND_KEY } = input;
+  return prepareToolOutputDisplay(output, {
+    maxLines: showAllToolOutput ? EXPANDED_OUTPUT_MAX_LINES : success ? 6 : 10,
+    maxLineWidth: toolOutputContentWidth(terminalWidth),
+    hint: showAllToolOutput ? undefined : expandHint || undefined,
+    strategy: showAllToolOutput ? 'head' : success ? 'head-tail' : 'tail',
+  });
 }
 
 /** The last `max` non-blank lines of `text`, read from its end: the cost is theirs, not its size. */
