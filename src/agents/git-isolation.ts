@@ -74,7 +74,14 @@ import {
  * `GIT_INDEX_FILE` would redirect Book's own writes into another checkout, which is a write
  * nobody asked about in a repository nobody named. See {@link internalGitEnv}.
  */
-function run(command: string, args: string[], options: RunOptions): Promise<RunResult> {
+function run(
+  command: string,
+  args: string[],
+  options: RunOptions,
+  // A parameter of its own, not a field of `options`, so that only code in this file can name a
+  // size. See {@link DEFAULT_MAX_BUFFER_BYTES}.
+  maxBuffer = DEFAULT_MAX_BUFFER_BYTES,
+): Promise<RunResult> {
   const env = internalGitEnv(options.env);
   const timeoutMs = options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
   const signal = options.signal;
@@ -243,10 +250,10 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
         cwd: options.cwd,
         env,
         encoding: 'utf8',
-        // One buffer for every call: a signing read that overruns it has to fail rather than
-        // resolve on a prefix, and this size is what makes that impractical rather than what makes
-        // it correct.
-        maxBuffer: 50 * 1024 * 1024,
+        // Each of stdout and stderr is capped here, and a call that overruns the cap fails rather
+        // than resolving on what had arrived. Only this branch is capped: the `input` branch above
+        // collects its output without a limit. See {@link DEFAULT_MAX_BUFFER_BYTES}.
+        maxBuffer,
         // No `timeout` and no `signal` option here. `execFile`'s own timeout kills the child but
         // still waits for its output to close, and a grandchild holding that pipe — a shell script,
         // a `credential.helper` that started something of its own — means it never does, so the
@@ -319,6 +326,25 @@ function run(command: string, args: string[], options: RunOptions): Promise<RunR
  * through it a session, open forever (#357). The cherry-pick still names its own, longer budget.
  */
 const DEFAULT_GIT_TIMEOUT_MS = 120_000;
+
+/**
+ * How much a call may collect on each of stdout and stderr before it is stopped and rejected
+ * rather than resolved on what had arrived (50 MiB).
+ *
+ * The rejection is the point. A signing read that overruns its buffer has to fail rather than
+ * resolve on a prefix, and this size is what makes that impractical rather than what makes it
+ * correct (#348). It bounds the calls that go through `execFile`: a call that writes `input` — the
+ * ones that hand git a patch — collects its output without a cap and does not use it.
+ *
+ * {@link run} takes it as a parameter of its own and not as a field of {@link RunOptions}, so that
+ * only code in this file can choose a size: `git-signing.ts` reads through a runner built from
+ * `run`, and a field would let any caller of that runner change what a truncated read does. The
+ * one caller that passes a size at all is {@link applyCandidate}, which hands the signing read the
+ * size it was given — this constant for {@link applyVerifiedCandidate}, a small one for the test
+ * that has to overrun it cheaply (#453). It is exported so that such a test can pad past it,
+ * through `git-isolation-internal.ts`, instead of repeating the number.
+ */
+export const DEFAULT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 
 /**
  * How long a signalled child has to be on its way out before it is killed outright.
@@ -594,9 +620,6 @@ function rawGit(
 
 export const gitForTest = rawGit;
 export const isolatedGitForTest = git;
-
-/** The runner `git-signing.ts` reads the signing configuration through; see {@link HardenedRunner}. */
-const hardenedRunner: HardenedRunner = run;
 
 /**
  * What Book reports about a cherry-pick that failed, given what the pick left behind and what the
@@ -1158,6 +1181,32 @@ export async function applyVerifiedCandidate(
   candidate: PatchCandidate,
   signal?: AbortSignal,
 ): Promise<AgentApplyResult> {
+  return applyCandidate(snapshot, candidate, signal, DEFAULT_MAX_BUFFER_BYTES);
+}
+
+/**
+ * {@link applyVerifiedCandidate} with the size of its signing read's buffer as an argument; the
+ * public function is this one, given {@link DEFAULT_MAX_BUFFER_BYTES}.
+ *
+ * The refusal when that read overruns its buffer is a security property (#348), and a test of it
+ * has to overrun the buffer. At the production size that means padding `.git/config` past
+ * {@link DEFAULT_MAX_BUFFER_BYTES}, which every git process the apply starts then parses — 23 of
+ * them, 76 s on a Windows runner against a 120 s test budget (#453) — so the test gives that one
+ * read a small buffer instead.
+ *
+ * What the test can choose is a number, and only for that one read. It cannot choose the runner:
+ * one that resolves an empty answer makes the read pin nothing, which is exactly what the refusal
+ * exists to prevent. And it is not a field of {@link RunOptions}, which every caller of the
+ * hardened runner could set. The size is an argument to a function of its own, rather than module
+ * state or another parameter of the public function, so the public signature and the production
+ * behaviour are exactly what they were. Reached through `git-isolation-internal.ts`.
+ */
+async function applyCandidate(
+  snapshot: AgentSnapshot,
+  candidate: PatchCandidate,
+  signal: AbortSignal | undefined,
+  signingBuffer: number,
+): Promise<AgentApplyResult> {
   if (candidate.baseCommit !== snapshot.commit) {
     return {
       status: 'conflicted',
@@ -1204,6 +1253,12 @@ export async function applyVerifiedCandidate(
     };
   }
 
+  // The runner the signing read goes through is `run` itself, so its environment, its exit-code
+  // rules and its stop-and-escalate handling are production's; only the size of its buffer is the
+  // argument. See {@link HardenedRunner}.
+  const signingRunner: HardenedRunner = (command, args, options) =>
+    run(command, args, options, signingBuffer);
+
   if (!snapshot.dirty) {
     // Signing is what this closes for the cherry-pick: it is the only call here that writes a
     // commit into the operator's history, so it is the only one that signs, and a
@@ -1220,7 +1275,7 @@ export async function applyVerifiedCandidate(
     // `--abort` would follow to a repository that has nothing to abort.
     let signingPins: string[];
     try {
-      signingPins = await signingPinArgs(snapshot.repoRoot, hardenedRunner);
+      signingPins = await signingPinArgs(snapshot.repoRoot, signingRunner);
     } catch (error) {
       return {
         status: 'conflicted',
@@ -1271,3 +1326,5 @@ export async function applyVerifiedCandidate(
     };
   }
 }
+
+export const applyVerifiedCandidateForTest = applyCandidate;

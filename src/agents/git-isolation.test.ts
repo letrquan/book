@@ -26,7 +26,9 @@ import {
   removeSnapshotRef,
 } from './git-isolation.js';
 import {
+  applyVerifiedCandidateForTest,
   cherryPickFailureResult,
+  DEFAULT_MAX_BUFFER_BYTES,
   gitForTest,
   isolatedGitForTest,
 } from './git-isolation-internal.js';
@@ -215,7 +217,13 @@ afterEach(() => {
   if (savedGitConfigSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM;
   else process.env.GIT_CONFIG_SYSTEM = savedGitConfigSystem;
   restoreGitEnv(scrubbedGitEnv);
-  for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
+  // Retried, because Windows refuses to remove a directory something still holds open — a git child
+  // that is a moment slow to go, a scanner reading what was just written — with EBUSY, which
+  // `force: true` does not suppress, and a throw from this hook fails the test it follows (#453).
+  // For a handle Windows is still releasing, not an abandoned apply: the fast variant removes that.
+  for (const root of roots.splice(0).reverse()) {
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
 });
 
 describe('synthetic agent snapshots', () => {
@@ -1081,63 +1089,137 @@ describe('a cherry-pick Book did not start (#348)', () => {
   });
 });
 
+/**
+ * Pad the repository's `.git/config` past the buffer the signing read goes into, with the signing
+ * keys after the padding, and apply an agent's result. The apply has to refuse.
+ *
+ * `signingBuffer` is the size that read's buffer is given through the `git-isolation-internal`
+ * seam, which is what lets the padding be a few hundred KiB instead of more than the production
+ * buffer (#453). Without it the apply is the public `applyVerifiedCandidate` with the buffer
+ * production ships, and the padding has to pass that one.
+ */
+async function expectTruncatedReadRefused(options: {
+  paddingBytes: number;
+  signingBuffer?: number;
+}): Promise<void> {
+  const { paddingBytes, signingBuffer } = options;
+  // The padding is what truncates the read, so it is checked rather than left to two numbers written
+  // far apart: a buffer raised past the padding fails here, naming the cause, instead of as an apply
+  // that unexpectedly went through.
+  expect(
+    paddingBytes,
+    'the padding must exceed the buffer the signing read goes into, or nothing is truncated',
+  ).toBeGreaterThan(signingBuffer ?? DEFAULT_MAX_BUFFER_BYTES);
+
+  // The read fails open if a truncated answer is taken for an empty configuration, and
+  // `git config --get-regexp` exits 1 for both "no match" and "nothing useful came back". A
+  // repository can reach the second one: pad `.git/config` past the buffer the answer is read
+  // into, with the signing keys after the padding, and truncation loses exactly the two keys
+  // that would have been pinned. Resolving that as an empty answer would pin nothing and hand
+  // the cherry-pick straight to the program the padding was there to hide.
+  const sandbox = mkdtempSync(join(tmpdir(), 'book-apply-oversized-'));
+  roots.push(sandbox);
+  const root = repository(join(sandbox, 'repo'));
+  const program = markerProgram(sandbox, 'oversized-gpg-program');
+
+  const snapshot = await createSyntheticSnapshot(root, true);
+  const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-oversized-wt-'));
+  roots.push(worktreeRoot);
+  const worktree = await createAgentWorktree(snapshot, 'oversized-agent', worktreeRoot);
+  writeFileSync(join(worktree.path, 'staged.txt'), 'agent value\n');
+  const candidate = await commitAgentWork(agentRecord('oversized-agent', worktree), snapshot);
+  expect(candidate).toBeDefined();
+
+  // Padded after the candidate exists, so the only calls that parse the padding are the ones the
+  // apply itself makes. The padding has to exceed the buffer the answer is read into, and the keys
+  // have to follow the padding, where a truncated answer would never have seen them.
+  appendFileSync(
+    join(root, '.git', 'config'),
+    `[gpg]\n\tpad = ${'x'.repeat(paddingBytes)}\n\tprogram = ${forwardSlashes(
+      program.path,
+    )}\n[commit]\n\tgpgsign = true\n`,
+  );
+  // Read back rather than assumed: the fixture really does arm the program, so "no marker"
+  // below is about Book.
+  expect(git(root, 'config', '--show-scope', '--get', 'gpg.program')).toBe(
+    `local\t${forwardSlashes(program.path)}`,
+  );
+
+  const applied =
+    signingBuffer === undefined
+      ? await applyVerifiedCandidate(snapshot, candidate!)
+      : await applyVerifiedCandidateForTest(snapshot, candidate!, undefined, signingBuffer);
+
+  // The security claim first, because it is the one that is not a nicety: no pick ran, so the
+  // program the repository named never started, and there is nothing in the working tree for a
+  // rollback to have rolled back.
+  expect(applied.status).toBe('conflicted');
+  expect(existsSync(program.marker), 'the repository gpg.program should not have run').toBe(false);
+  // Reported as what it is — a read that failed, before any pick started — rather than as a
+  // cherry-pick that failed and was rolled back, which is what the same failure reported while
+  // the read sat inside the pick's own `try`.
+  expect(applied.error).toContain('Could not read the signing configuration');
+  // And failed for the reason the padding is there to cause. Any other failed read satisfies the
+  // line above, and a test that passes without a truncation proves nothing about one.
+  expect(applied.error).toContain('ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+  expect(git(root, 'rev-parse', 'HEAD')).toBe(snapshot.baseHead);
+  expect(() => git(root, 'rev-parse', '-q', '--verify', 'CHERRY_PICK_HEAD')).toThrow();
+  expect(readFileSync(join(root, 'staged.txt'), 'utf8')).toContain('base staged.txt');
+}
+
 describe('a signing configuration that cannot be read whole (#348)', () => {
-  it('refuses to apply, and starts no cherry-pick, when the read is truncated', async () => {
-    // The read fails open if a truncated answer is taken for an empty configuration, and
-    // `git config --get-regexp` exits 1 for both "no match" and "nothing useful came back". A
-    // repository can reach the second one: pad `.git/config` past the buffer the answer is read
-    // into, with the signing keys after the padding, and truncation loses exactly the two keys
-    // that would have been pinned. Resolving that as an empty answer would pin nothing and hand
-    // the cherry-pick straight to the program the padding was there to hide.
-    const sandbox = mkdtempSync(join(tmpdir(), 'book-apply-oversized-'));
-    roots.push(sandbox);
-    const root = repository(join(sandbox, 'repo'));
-    const program = markerProgram(sandbox, 'oversized-gpg-program');
-
-    const snapshot = await createSyntheticSnapshot(root, true);
-    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-oversized-wt-'));
-    roots.push(worktreeRoot);
-    const worktree = await createAgentWorktree(snapshot, 'oversized-agent', worktreeRoot);
-    writeFileSync(join(worktree.path, 'staged.txt'), 'agent value\n');
-    const candidate = await commitAgentWork(agentRecord('oversized-agent', worktree), snapshot);
-    expect(candidate).toBeDefined();
-
-    // Padded after the candidate exists, so the only calls that pay to parse a 50+ MiB config
-    // are the ones the apply itself makes. `MAX_BUFFER` is the size that answer is read into, so
-    // the padding has to exceed it and the keys have to follow the padding, where a truncated
-    // answer would never have seen them.
+  // The refusal at its lowest level, which is cheap enough for every platform: one read shaped like
+  // the signing read, through the production runner at the buffer it ships with, against a
+  // `.git/config` padded just past that buffer. It is one git process where the apply at this size
+  // starts 23 and does not fit a Windows runner's budget (#453). What it shows is that the runner
+  // rejects an overrun instead of resolving on what had arrived, though the codes it is told to
+  // allow include the 1 that means "no match". That `applyVerifiedCandidate` hands this buffer to
+  // its signing read is for the full-size variant below to show.
+  it('rejects a signing-style read that overruns the production buffer, on every platform', async () => {
+    const root = repository();
+    // The padding as the full-size variant writes it, a megabyte past the buffer, with the signing
+    // keys after it, where a truncated answer would never have seen them.
+    const padding = 'x'.repeat(DEFAULT_MAX_BUFFER_BYTES + 1024 * 1024);
     appendFileSync(
       join(root, '.git', 'config'),
-      `[gpg]\n\tpad = ${'x'.repeat(51 * 1024 * 1024)}\n\tprogram = ${forwardSlashes(
-        program.path,
-      )}\n[commit]\n\tgpgsign = true\n`,
-    );
-    // Read back rather than assumed: the fixture really does arm the program, so "no marker"
-    // below is about Book.
-    expect(git(root, 'config', '--show-scope', '--get', 'gpg.program')).toBe(
-      `local\t${forwardSlashes(program.path)}`,
+      `[gpg]\n\tpad = ${padding}\n\tprogram = oversized-gpg\n[commit]\n\tgpgsign = true\n`,
     );
 
-    const applied = await applyVerifiedCandidate(snapshot, candidate!);
+    // The arguments and the pattern `readSigningConfig` asks with (`git-signing.ts`), and the exit
+    // codes it allows. The 30 s is its own budget too, and it is under this test's, so a git that
+    // hangs is stopped by the runner instead of being left running when the test gives up.
+    const signingKeys = '^(commit\\.gpgsign|gpg\\..*|user\\.signingkey)$';
+    await expect(
+      gitForTest(root, ['config', '--show-scope', '-z', '--get-regexp', signingKeys], {
+        allowExitCodes: [1, 129],
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow('ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+  }, 60_000);
 
-    // The security claim first, because it is the one that is not a nicety: no pick ran, so the
-    // program the repository named never started, and there is nothing in the working tree for a
-    // rollback to have rolled back.
-    expect(applied.status).toBe('conflicted');
-    expect(existsSync(program.marker), 'the repository gpg.program should not have run').toBe(
-      false,
-    );
-    // Reported as what it is — a read that failed, before any pick started — rather than as a
-    // cherry-pick that failed and was rolled back, which is what the same failure reported while
-    // the read sat inside the pick's own `try`.
-    expect(applied.error).toContain('Could not read the signing configuration');
-    expect(git(root, 'rev-parse', 'HEAD')).toBe(snapshot.baseHead);
-    expect(() => git(root, 'rev-parse', '-q', '--verify', 'CHERRY_PICK_HEAD')).toThrow();
-    expect(readFileSync(join(root, 'staged.txt'), 'utf8')).toContain('base staged.txt');
-    // Every git call in the apply re-reads and re-parses the whole padded config, which is about a
-    // second a call here and eleven calls; the budget above is for that parse, not for a wait, and
-    // every assertion above is about what the apply did.
-  }, 120_000);
+  it('refuses to apply, and starts no cherry-pick, when the read is truncated', async () => {
+    // 64 KiB is the buffer the signing read gets here and 256 KiB the padding in front of the
+    // keys, so every git process the apply starts parses a config a few hundred KiB long rather
+    // than one that outgrows the production buffer: the apply costs what a test of this size
+    // should, on every platform (#453).
+    await expectTruncatedReadRefused({ paddingBytes: 256 * 1024, signingBuffer: 64 * 1024 });
+  }, 30_000);
+
+  // Skipped on win32 for #453. This is the same refusal at production size — the public
+  // `applyVerifiedCandidate`, the production buffer, padding past it — and the only check that the
+  // public function hands that buffer to the signing read, which the variant above, with a buffer
+  // of its own, cannot show. Each of the 23 git processes the apply starts (11 calls, each a pin
+  // read and then the command, then the signing read) parses all of that padding: about 18 s on
+  // the ubuntu leg of a green run and 76 s on its Windows leg, against this test's 120 s budget. A
+  // slower Windows runner timed out, and the apply vitest had given up on was still running git in
+  // the repository when `afterEach` tried to remove it, which is the EBUSY in the issue.
+  it.skipIf(process.platform === 'win32')(
+    'refuses to apply, and starts no cherry-pick, when the production buffer truncates the read',
+    async () => {
+      await expectTruncatedReadRefused({ paddingBytes: 51 * 1024 * 1024 });
+    },
+    120_000,
+  );
 });
 
 /**

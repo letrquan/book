@@ -119,6 +119,16 @@ All notable changes to this project are documented in this file.
   `BOOK_BASE_URL`, `BOOK_PROVIDER`, `BOOK_MODEL` and `BOOK_EFFORT`, which the TUI streaming tests
   pass to their child on purpose (#358). To keep an override while debugging, list it in
   `BOOK_TEST_KEEP_ENV`, for example `BOOK_TEST_KEEP_ENV=BOOK_DEBUG,BOOK_DEBUG_STDERR`.
+- **A git-isolation test no longer times out on Windows or leaves its repository locked** (#453).
+  The test that shows a signing read cut off at its buffer is refused (#348) padded `.git/config`
+  past the production buffer, so each of the 23 git processes the apply starts parsed all of it:
+  76 s of a 120 s budget on a green Windows run, and a timeout on a slower one, which left the apply
+  running in the repository when cleanup tried to remove it (`EBUSY`). The buffer is now a private
+  parameter of the git runner (default `DEFAULT_MAX_BUFFER_BYTES`), and the one internal test seam
+  takes the size of the signing read's buffer, so on every platform the refusal is proven in
+  seconds with a 64 KiB buffer, and a single read through the production runner shows that its own
+  buffer refuses an overrun too. One full-size variant, skipped on Windows, shows the apply wires
+  that buffer in. Cleanup also retries the removal. Book itself behaves exactly as before.
 - **A restart test no longer counts the first manager's requests as the restarted one's** (#413).
   `children re-driven after a restart` flaked with `expected 1 to be +0` under the full integration
   tier: its helper counted a request the first manager's child made late as a re-run. The helper
