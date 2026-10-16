@@ -137,10 +137,8 @@ export function discardUntouchedSession(
   launch: Pick<SessionBootstrap, 'sessionId' | 'created'>,
 ): boolean {
   if (!store || !launch.created) return false;
-  const remover = store as { removeUntouched?: (id: string) => boolean };
-  if (typeof remover.removeUntouched !== 'function') return false;
   try {
-    return remover.removeUntouched(launch.sessionId);
+    return store.removeUntouched?.(launch.sessionId) ?? false;
   } catch (error) {
     log.warn('could not remove the untouched session', {
       error: error instanceof Error ? error.message : String(error),

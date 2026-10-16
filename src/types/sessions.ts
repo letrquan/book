@@ -647,5 +647,10 @@ export interface SessionStoreInterface {
     image: { bytes: Uint8Array; mediaType: ImageAttachment['mediaType']; displayName?: string },
   ): ImageAttachment;
   readImageAttachment?(sessionId: string, attachment: ImageAttachment): Uint8Array;
+  /**
+   * Remove a session nothing was ever recorded in (a bare header, no name), file and index
+   * entry together. Returns whether it was removed. A store that omits it keeps every session.
+   */
+  removeUntouched?(id: string): boolean;
   cleanup(days: number, preserveIds?: ReadonlySet<string>): number;
 }

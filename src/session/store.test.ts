@@ -1,6 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SessionStore } from './store.js';
-import { appendFileSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -891,4 +900,93 @@ describe('SessionStore — removeUntouched (#444)', () => {
       expect(indexedIds(dir)).toContain(id);
     },
   );
+
+  describe('when the attachment directory cannot be removed', () => {
+    const internals = (s: SessionStore) =>
+      s as unknown as {
+        removeAttachments(id: string): void;
+        unlinkSessionFile(id: string): void;
+      };
+
+    it.each(['EPERM', 'EBUSY'])('still drops the file and both index entries (%s)', (code) => {
+      const s = new SessionStore(dir);
+      const id = s.create({ cwd: '/proj' });
+      vi.spyOn(internals(s), 'removeAttachments').mockImplementation(() => {
+        throw Object.assign(new Error(code), { code });
+      });
+
+      expect(s.removeUntouched(id)).toBe(true);
+
+      expect(existsSync(join(dir, `${id}.jsonl`))).toBe(false);
+      expect(indexedIds(dir)).not.toContain(id);
+      expect(s.findById(id)).toBeUndefined();
+      expect(new SessionStore(dir).findById(id)).toBeUndefined();
+    });
+
+    it('drops the entries and tries the attachments when the file is already gone (ENOENT)', () => {
+      const s = new SessionStore(dir);
+      const id = s.create({ cwd: '/proj' });
+      vi.spyOn(internals(s), 'unlinkSessionFile').mockImplementation(() => {
+        throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+      });
+      const attachments = vi.spyOn(internals(s), 'removeAttachments');
+
+      expect(s.removeUntouched(id)).toBe(true);
+
+      expect(attachments).toHaveBeenCalledWith(id);
+      expect(indexedIds(dir)).not.toContain(id);
+      expect(s.findById(id)).toBeUndefined();
+    });
+
+    // A real refusal, with no stub: a read-only subdirectory makes the recursive remove fail.
+    it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+      'returns true even when removing the directory fails for real',
+      () => {
+        const s = new SessionStore(dir);
+        const id = s.create({ cwd: '/proj' });
+        const locked = join(dir, 'attachments', id, 'locked');
+        mkdirSync(locked, { recursive: true });
+        writeFileSync(join(locked, 'image.png'), 'x');
+        chmodSync(locked, 0o555);
+        try {
+          expect(s.removeUntouched(id)).toBe(true);
+          expect(existsSync(join(dir, `${id}.jsonl`))).toBe(false);
+          expect(indexedIds(dir)).not.toContain(id);
+        } finally {
+          chmodSync(locked, 0o755);
+        }
+      },
+    );
+  });
+
+  it('decides from the index alone when the session already shows messages', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, { type: 'user', timestamp: 2, data: { content: 'hello' } });
+    // The index already shows a message, so the file need not be opened at all.
+    const probe = vi.spyOn(s as unknown as { isUntouched(id: string): boolean }, 'isUntouched');
+
+    expect(s.removeUntouched(id)).toBe(false);
+
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('keeps a session whose file is larger than a header, without reading all of it', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    // Behind the store's back, as a hook would: a second line, far larger than any header.
+    appendFileSync(join(dir, `${id}.jsonl`), `${'x'.repeat(2_000_000)}\n`, 'utf-8');
+
+    expect(s.removeUntouched(id)).toBe(false);
+    expect(existsSync(join(dir, `${id}.jsonl`))).toBe(true);
+  });
+
+  it('removes a header-only file without a trailing newline', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    const path = join(dir, `${id}.jsonl`);
+    writeFileSync(path, readFileSync(path, 'utf-8').trimEnd(), 'utf-8');
+
+    expect(s.removeUntouched(id)).toBe(true);
+  });
 });
