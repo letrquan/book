@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { removeWhenReleased } from '../test/remove-when-released.js';
-import { persistentEnvironmentOverrides, shellTools } from './shell.js';
+import { persistentEnvironmentOverrides, shellTools, streamTail } from './shell.js';
 import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
 import { PROVIDER_KEY_MARKER, redactToolResultSecrets } from '../provider-secrets.js';
@@ -1303,3 +1303,53 @@ describe('BashOutput and provider secrets', () => {
     expect(joined).not.toContain(KEY);
   });
 });
+
+// #411: the 64 KB tail of a command that is moved to the background (or overflows its buffer) is a
+// front cut, and a key it starts inside would reach the model as an unmatched fragment.
+describe('the output tail of a command and provider secrets', () => {
+  const KEY = 'sk-live-0123456789abcdef';
+  const TAIL = 64 * 1024;
+
+  function expectNoPartialKey(text: string): void {
+    if (text.includes(KEY)) return;
+    for (let at = 0; at + 8 <= KEY.length; at++) {
+      expect(text).not.toContain(KEY.slice(at, at + 8));
+    }
+  }
+
+  it('keeps a key that straddles the 64 KB cut whole', () => {
+    // The last 64 KB begin 14 characters into the key.
+    const text = 'x'.repeat(100) + KEY + 'b'.repeat(TAIL - 10);
+
+    expect(streamTail(text, [])).toHaveLength(TAIL);
+    expect(streamTail(text, [])).not.toContain(KEY);
+
+    const kept = streamTail(text, [KEY]);
+    expect(kept.startsWith(KEY)).toBe(true);
+    expect(kept).toHaveLength(TAIL + 14);
+    expectNoPartialKey(redactToolResultSecrets(fakeResult(kept), [KEY]).content);
+    expect(streamTail('short', [KEY])).toBe('short');
+  });
+
+  it('does so for a command moved to the background at its timeout', async () => {
+    const c = ctxWith({ providerSecrets: [KEY] });
+    const command = nodeCommand(
+      'straddle.cjs',
+      `process.stdout.write('x'.repeat(100) + ${JSON.stringify(KEY)} + 'b'.repeat(${TAIL - 10}));\n` +
+        `setInterval(() => {}, 1000);\n`,
+    );
+
+    const result = await bash.execute({ command, timeout: 1500 }, c);
+
+    expect(result.content).toMatch(/moved to background shell/);
+    expect(result.content).toContain(KEY);
+    const redacted = redactToolResultSecrets(result, [KEY]).content;
+    expect(redacted).toContain(PROVIDER_KEY_MARKER);
+    expect(redacted).not.toContain(KEY);
+    expectNoPartialKey(redacted);
+  });
+});
+
+function fakeResult(content: string): ToolResult {
+  return { version: 2, toolCallId: 'c', status: 'success', content };
+}

@@ -11,6 +11,7 @@ import { decideSandboxExecution, withGitConfigReadOnlyNotice } from '../sandbox.
 import { buildChildEnv } from '../child-env.js';
 import { isTerminalShellStatus, ShellJobManager } from '../jobs/shell-manager.js';
 import { terminateForegroundProcess } from '../jobs/process-tree.js';
+import { secretSafeStart } from '../provider-secrets.js';
 import { toolFailure, toolSuccess } from './result.js';
 import {
   MAX_SAFE_TIMEOUT_MS,
@@ -32,8 +33,13 @@ const STDIO_DRAIN_GRACE_MS = 500;
 /** Per-stream cap when reporting output that already blew the buffer limit. */
 const OVERFLOW_STREAM_TAIL = 64 * 1024;
 
-function tail(stream: string): string {
-  return stream.length <= OVERFLOW_STREAM_TAIL ? stream : stream.slice(-OVERFLOW_STREAM_TAIL);
+/**
+ * The last 64 KB of a stream. A key the front edge would cut stays whole (`secrets`, #411), so the
+ * loop's redactor replaces it instead of leaving a fragment.
+ */
+export function streamTail(stream: string, secrets: readonly string[] = []): string {
+  if (stream.length <= OVERFLOW_STREAM_TAIL) return stream;
+  return stream.slice(secretSafeStart(stream, stream.length - OVERFLOW_STREAM_TAIL, secrets));
 }
 
 /** The line a killed command's silence speaks with. */
@@ -105,11 +111,13 @@ export function persistentEnvironmentOverrides(ctx: ToolContext): Record<string,
 }
 
 function manager(ctx: ToolContext): ShellJobManager {
-  if (ctx.runtime) return ctx.runtime.shellManager;
-  ctx.shellManager ??= new ShellJobManager(
-    (ctx.backgroundShells ??= { nextId: 1, shells: new Map() }),
-  );
-  return ctx.shellManager;
+  const shells =
+    ctx.runtime?.shellManager ??
+    (ctx.shellManager ??= new ShellJobManager(
+      (ctx.backgroundShells ??= { nextId: 1, shells: new Map() }),
+    ));
+  shells.setProviderSecrets(ctx.providerSecrets);
+  return shells;
 }
 
 interface EffectiveCommand {
@@ -357,7 +365,11 @@ async function bashForeground(
               // The output so far, as the buffer-cap path reports it, so the model has the
               // progress the command made before the move and not only a shell id. A command that
               // has printed nothing says so without claiming it was killed — it was not.
-              labelStreams(tail(stdout), tail(stderr), SILENT_SO_FAR),
+              labelStreams(
+                streamTail(stdout, ctx.providerSecrets),
+                streamTail(stderr, ctx.providerSecrets),
+                SILENT_SO_FAR,
+              ),
               `Command still running after ${timeout}ms; moved to background shell ${adopted.id}${
                 adopted.pid ? ` (pid ${adopted.pid})` : ''
               }, not killed. Its output so far is above. Next: BashOutput with shell_id="${adopted.id}" and wait_ms to wait for it to finish, or KillShell with shell_id="${adopted.id}" to stop it.`,
@@ -456,7 +468,10 @@ async function bashForeground(
       void finish(
         fail(
           `Command output exceeded ${MAX_FOREGROUND_BUFFER} characters`,
-          labelStreams(tail(stdout), tail(stderr)),
+          labelStreams(
+            streamTail(stdout, ctx.providerSecrets),
+            streamTail(stderr, ctx.providerSecrets),
+          ),
         ),
       );
     };

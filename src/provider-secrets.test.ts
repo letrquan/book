@@ -4,11 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from './config.js';
 import {
+  PLACEHOLDER_PROVIDER_KEYS,
   PROVIDER_KEY_MARKER,
   collectProviderSecrets,
   redactSecrets,
   redactToolResultSecrets,
   secretSafeCut,
+  secretSafeStart,
+  trailingSecretPrefix,
 } from './provider-secrets.js';
 import { defaultConfig } from './test/fixtures.js';
 import type { ToolResult } from './types/tools.js';
@@ -271,5 +274,104 @@ describe('secretSafeCut', () => {
     const second = `${KEY.slice(-8)}-and-more`;
     const chained = `xx${KEY}-and-more`;
     expect(secretSafeCut(chained, 2 + KEY.length - 3, [KEY, second])).toBe(2);
+  });
+});
+
+describe('secretSafeStart', () => {
+  const text = `${'a'.repeat(10)}${KEY}${'b'.repeat(10)}`;
+  const start = 10;
+  const end = start + KEY.length;
+
+  it('leaves a clean start where it is', () => {
+    expect(secretSafeStart(text, 0, [KEY])).toBe(0);
+    expect(secretSafeStart(text, 5, [KEY])).toBe(5);
+    expect(secretSafeStart(text, start, [KEY])).toBe(start);
+    expect(secretSafeStart(text, end, [KEY])).toBe(end);
+    expect(secretSafeStart(text, text.length, [KEY])).toBe(text.length);
+    expect(secretSafeStart(text, 15, [])).toBe(15);
+  });
+
+  it('moves a start inside the key back to where the key starts', () => {
+    expect(secretSafeStart(text, start + 1, [KEY])).toBe(start);
+    expect(secretSafeStart(text, end - 1, [KEY])).toBe(start);
+  });
+
+  it('follows overlapping occurrences back to the earliest start', () => {
+    const second = `${KEY.slice(-8)}-and-more`;
+    const chained = `xx${KEY}-and-more`;
+    // Inside both occurrences: the earlier one wins.
+    expect(secretSafeStart(chained, 2 + KEY.length - 3, [KEY, second])).toBe(2);
+    // Inside only the second one, whose start is itself inside the first: the chain ends at 2.
+    expect(secretSafeStart(chained, 2 + KEY.length + 3, [KEY, second])).toBe(2);
+    // The second one alone starts where it starts.
+    expect(secretSafeStart(chained, 2 + KEY.length + 3, [second])).toBe(2 + KEY.length - 8);
+  });
+
+  it('keeps the whole key for the redactor when a front trim lands inside it', () => {
+    const cut = secretSafeStart(text, start + 6, [KEY]);
+    const kept = text.slice(cut);
+    expect(redactSecrets(kept, [KEY])).toBe(`${PROVIDER_KEY_MARKER}${'b'.repeat(10)}`);
+  });
+});
+
+describe('trailingSecretPrefix', () => {
+  it('is the length of the longest proper secret prefix at the end of the text', () => {
+    expect(trailingSecretPrefix(`out ${KEY.slice(0, 9)}`, [KEY])).toBe(9);
+    expect(trailingSecretPrefix(`out ${KEY.slice(0, 1)}`, [KEY])).toBe(1);
+    expect(trailingSecretPrefix(KEY.slice(0, 5), [KEY])).toBe(5);
+  });
+
+  it('is 0 for a whole key, an unrelated tail, or no secrets', () => {
+    expect(trailingSecretPrefix(`out ${KEY}`, [KEY])).toBe(0);
+    expect(trailingSecretPrefix('out zzz', [KEY])).toBe(0);
+    expect(trailingSecretPrefix(`out ${KEY.slice(0, 9)}`, [])).toBe(0);
+    expect(trailingSecretPrefix('', [KEY])).toBe(0);
+  });
+});
+
+describe('placeholder provider keys', () => {
+  it('lists the well-known dummy keys of keyless local endpoints', () => {
+    expect([...PLACEHOLDER_PROVIDER_KEYS].sort()).toEqual(
+      [
+        'dummy-key',
+        'lm-studio',
+        'no-api-key',
+        'no-key-required',
+        'not-needed',
+        'placeholder',
+        'sk-no-key-required',
+      ].sort(),
+    );
+  });
+
+  it('does not collect a placeholder, whatever its case or padding', () => {
+    process.env.BOOK_API_KEY = ' LM-Studio ';
+    const config = configWithProviders(
+      {
+        a: { apiKey: 'not-needed' },
+        b: { apiKey: 'Sk-No-Key-Required' },
+        c: { apiKey: 'no-key-required' },
+        d: { apiKey: 'NO-API-KEY' },
+        e: { apiKey: 'dummy-key' },
+        f: { apiKey: '  placeholder  ' },
+        real: { apiKey: KEY },
+      },
+      { apiKey: 'lm-studio' },
+    );
+
+    expect(collectProviderSecrets(config)).toEqual([KEY]);
+  });
+
+  it('still collects a real key of the same length as a placeholder', () => {
+    // `placeholder` and `lm-studio` are 11 and 9 characters long.
+    const config = configWithProviders({
+      a: { apiKey: 'realkey-123' },
+      b: { apiKey: 'real-key-9' },
+      c: { apiKey: 'lm-studiO2' },
+    });
+
+    expect(collectProviderSecrets(config).sort()).toEqual(
+      ['real-key-9', 'realkey-123', 'lm-studiO2'].sort(),
+    );
   });
 });

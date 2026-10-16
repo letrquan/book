@@ -27,7 +27,7 @@ import {
   type PersistentShellState,
 } from './persistent-store.js';
 import { isProcessAlive, terminateProcessTree, waitForProcessClose } from './process-tree.js';
-import { secretSafeCut } from '../provider-secrets.js';
+import { secretSafeCut, secretSafeStart, trailingSecretPrefix } from '../provider-secrets.js';
 
 const MAX_BACKGROUND_BUFFER = 1024 * 1024 * 5;
 const MAX_OUTPUT_RESULT = 32_000;
@@ -185,6 +185,8 @@ export class ShellJobManager {
   >();
   /** Set by `dispose()`: a disposed manager takes on no new work. */
   private disposed = false;
+  /** Secrets the buffer trim must not cut (#411); the Bash tools hand over the session's set. */
+  private providerSecrets: readonly string[] = [];
 
   constructor(
     private readonly store: BackgroundShellStore,
@@ -194,6 +196,11 @@ export class ShellJobManager {
   }
 
   private readonly clock: Clock;
+
+  /** The provider secrets the 5 MB buffer trim keeps whole (#411). */
+  setProviderSecrets(secrets: readonly string[] | undefined): void {
+    this.providerSecrets = secrets ?? [];
+  }
 
   subscribe(listener: (event: ShellJobEvent) => void): () => void {
     this.subscribers.add(listener);
@@ -436,40 +443,61 @@ export class ShellJobManager {
         shell.truncatedBytes += shell.readOffset - content.length;
         shell.readOffset = 0;
       }
-      const unread = content.slice(shell.readOffset);
-      const output = unread
-        ? unread.slice(0, secretSafeCut(unread, limit, secrets))
-        : '(no new output)';
-      if (unread) shell.readOffset += output.length;
-      return {
-        shell: cloneRecord(shell),
-        output,
-        remaining: unread ? Math.max(0, unread.length - output.length) : 0,
-      };
+      return this.takeUnread(shell, content.slice(shell.readOffset), limit, secrets);
     }
-    const unread = shell.output.slice(shell.readOffset);
-    const output = unread
-      ? unread.slice(0, secretSafeCut(unread, limit, secrets))
-      : '(no new output)';
-    if (unread) shell.readOffset += output.length;
+    return this.takeUnread(shell, shell.output.slice(shell.readOffset), limit, secrets);
+  }
+
+  /**
+   * Cut the next chunk out of `unread` and advance the cursor past it. The chunk never ends inside a
+   * secret, and while the job is still running it also stops before a trailing partial secret: that
+   * prefix is the first half of a key still being written, and the rest of it arrives on a later
+   * read. Once the job has finished, everything is returned.
+   */
+  private takeUnread(
+    shell: BackgroundShellRecord,
+    unread: string,
+    limit: number,
+    secrets: readonly string[],
+  ): ShellOutputResult {
+    if (!unread) {
+      return { shell: cloneRecord(shell), output: '(no new output)', remaining: 0 };
+    }
+    const held = isTerminalShellStatus(shell.status) ? 0 : trailingSecretPrefix(unread, secrets);
+    const available = unread.length - held;
+    if (available <= 0) {
+      return { shell: cloneRecord(shell), output: '(no new output)', remaining: 0 };
+    }
+    const output = unread.slice(0, secretSafeCut(unread, Math.min(limit, available), secrets));
+    shell.readOffset += output.length;
     return {
       shell: cloneRecord(shell),
       output,
-      remaining: unread ? Math.max(0, unread.length - output.length) : 0,
+      // What is held back is not available yet, so it is not reported as remaining.
+      remaining: Math.max(0, available - output.length),
     };
   }
 
-  readTail(shellId: string, limit = 4_000): string | undefined {
+  /**
+   * The last `limit` characters of the output. With `secrets`, a window whose front edge falls
+   * inside a key starts where that key starts, so the redactor the caller applies sees it whole.
+   */
+  readTail(shellId: string, limit = 4_000, secrets: readonly string[] = []): string | undefined {
     this.refreshPersistentJobs();
     const shell = this.store.shells.get(shellId);
+    let content: string | undefined;
     if (shell?.lifetime === 'persistent' && shell.persistentOutputPath) {
       try {
-        return readFileSync(shell.persistentOutputPath, 'utf8').slice(-Math.max(1, limit));
+        content = readFileSync(shell.persistentOutputPath, 'utf8');
       } catch {
         return '';
       }
+    } else {
+      content = shell?.output;
     }
-    return shell?.output.slice(-Math.max(1, limit));
+    if (content === undefined) return undefined;
+    const from = Math.max(0, content.length - Math.max(1, limit));
+    return content.slice(secretSafeStart(content, from, secrets));
   }
 
   async stop(shellId: string, reason: 'killed' | 'timed_out' = 'killed'): Promise<boolean> {
@@ -955,7 +983,13 @@ export class ShellJobManager {
     if (!chunk) return;
     shell.output += chunk;
     if (shell.output.length > MAX_BACKGROUND_BUFFER) {
-      const extra = shell.output.length - MAX_BACKGROUND_BUFFER;
+      // The trim keeps a key the cap would have cut in half: its front edge is a window like any
+      // other (#411). The buffer runs over the cap by at most the key's length.
+      const extra = secretSafeStart(
+        shell.output,
+        shell.output.length - MAX_BACKGROUND_BUFFER,
+        this.providerSecrets,
+      );
       shell.output = shell.output.slice(extra);
       shell.truncatedBytes += extra;
       shell.readOffset = Math.max(0, shell.readOffset - extra);

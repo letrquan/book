@@ -646,9 +646,18 @@ The secrets are `BOOK_API_KEY`, the session's own key, and the resolved `apiKey`
 provider (a literal, an `{env:VAR}` or a `{file:path}` reference). A provider that only the
 repository declares, and that you have not approved, is skipped, so a repository cannot use its
 `.book/settings.json` to erase a word from your output. A value shorter than 8 characters is never
-treated as a secret, so ordinary output is not mangled. Matching is by exact value: no pattern is
-guessed from the key. A `BashOutput` chunk never ends inside a key; it stops before it, or runs past
-it when the key opens the chunk.
+treated as a secret, so ordinary output is not mangled. Neither is a well-known placeholder key that
+keyless local endpoints ask for (`not-needed`, `lm-studio`, `sk-no-key-required`,
+`no-key-required`, `no-api-key`, `dummy-key`, `placeholder`, compared case-insensitively): they are
+ordinary words, and erasing them would mangle code and break `Edit` matches. Matching is by exact
+value: no pattern is guessed from the key.
+
+A window onto output never cuts a key in half, because neither half would match. A `BashOutput`
+chunk stops before a key the limit would split, or runs past it when the key opens the chunk; while
+the job is still running it also holds back a trailing partial key until the rest is written. A tail
+(the completion message of a background shell, the 64 KB tail of a command moved to the background)
+and the 5 MB background buffer start at a key they would otherwise cut into, so the whole key is
+there to be replaced.
 
 This only redacts. The environment a command gets is unchanged: `Bash` children still inherit
 `BOOK_HOME` and `BOOK_API_KEY`, so a nested `book` run keeps working.
@@ -659,10 +668,21 @@ Limits:
   a read in between.
 - The log file of a persistent background job on disk stays unredacted; only what `BashOutput`
   returns is.
-- A file the model reads through redaction and then rewrites with `Write` gets the marker where the
-  key was.
+- A key that log rotation splits across files is not caught.
+- `PostToolUse` hooks receive the raw output. They run with your environment and can read the key
+  directly, so redacting their input would protect nothing.
 - Output is redacted when the result is finalized, not while the command runs, so the live output of
   a running command is not redacted.
+
+#### Writing the marker back
+
+The model only ever sees the marker where a key is, so reading a file that holds a key and writing
+the whole file back with `Write` would replace the real credential with the marker. `Write`, `Edit`
+and `MultiEdit` therefore refuse, with the error code `redacted_secret_overwrite` and the file left
+unchanged, when the file on disk holds a configured provider key **and** the new content (or an
+`Edit`'s `new_string`) contains the marker. The remedy is an `Edit` on only the lines that need to
+change, leaving out the line that shows the marker, or asking you to make the change. Writing the
+marker into a file that holds no key is still allowed, so Book's own docs and tests are unaffected.
 
 ## Shell command timeouts
 

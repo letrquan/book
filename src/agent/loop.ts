@@ -3268,7 +3268,7 @@ export async function runAgentLoop(
         // clean result (#411). Never at render time: earlier turns' bytes must not change.
         const redacted = redactToolResultSecrets(
           enrichToolResultPresentation(result, canonName, call.arguments),
-          collectProviderSecrets(config),
+          context.providerSecrets ?? [],
         );
         const bounded = await boundToolResultOutput(
           redacted,

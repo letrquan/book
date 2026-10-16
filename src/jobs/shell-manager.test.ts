@@ -8,6 +8,7 @@ import type { BackgroundShellStore } from '../types/runtime.js';
 import { persistentJobPaths } from './persistent-store.js';
 import { isProcessAlive } from './process-tree.js';
 import { ShellJobManager } from './shell-manager.js';
+import { PROVIDER_KEY_MARKER, redactSecrets } from '../provider-secrets.js';
 
 let directory: string;
 let managers: ShellJobManager[] = [];
@@ -734,4 +735,205 @@ describe('ShellJobManager.readOutput with secrets', () => {
     expect(second?.output).toBe(KEY);
     expect(second?.remaining).toBe(30);
   }, 60_000);
+});
+
+// #411 review fixes: the front of a window (a tail, a trimmed buffer) and the end of a read of a job
+// that is still writing can each split a key, and neither half then matches an exact-value redactor.
+describe('ShellJobManager and keys split at the edge of a window', () => {
+  const KEY = 'sk-live-0123456789abcdef';
+  const HALF = KEY.slice(0, 12);
+  const MAX_BUFFER = 5 * 1024 * 1024;
+
+  function expectNoPartialKey(text: string): void {
+    if (text.includes(KEY)) return;
+    for (let at = 0; at + 8 <= KEY.length; at++) {
+      expect(text).not.toContain(KEY.slice(at, at + 8));
+    }
+  }
+
+  async function startNode(
+    manager: ShellJobManager,
+    source: string,
+    options: { persistent?: boolean } = {},
+  ) {
+    const script = join(directory, `job-${Math.random().toString(36).slice(2)}.cjs`);
+    writeFileSync(script, source);
+    const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+    return manager.start({
+      command,
+      effectiveCommand: command,
+      workdir: directory,
+      env: process.env,
+      envOverrides: {},
+      sandboxed: false,
+      workspace: directory,
+      ...(options.persistent ? { lifetime: 'persistent' as const } : {}),
+    });
+  }
+
+  const isRunning = (manager: ShellJobManager, id: string) =>
+    manager.get(id)?.status === 'running' || manager.get(id)?.status === 'starting';
+
+  describe('readTail', () => {
+    const source = `process.stdout.write('a'.repeat(10) + ${JSON.stringify(KEY)} + 'b'.repeat(10));\n`;
+
+    it('returns a key that straddles the front edge whole', async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-secret-tail-'));
+      const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+      managers.push(manager);
+      const started = await startNode(manager, source);
+      await waitFor(() => (manager.readTail(started.id) ?? '').endsWith('b'.repeat(10)), 'output');
+
+      // 30 characters from the end is 14 characters into the key.
+      const plain = manager.readTail(started.id, 30);
+      expect(plain).toHaveLength(30);
+      expect(plain).not.toContain(KEY);
+
+      const tail = manager.readTail(started.id, 30, [KEY]);
+      expect(tail).toBe(KEY + 'b'.repeat(10));
+      // What the completion message carries after redaction: the marker, and no part of the key.
+      const redacted = redactSecrets(tail ?? '', [KEY]);
+      expect(redacted).toBe(`${PROVIDER_KEY_MARKER}${'b'.repeat(10)}`);
+      expectNoPartialKey(redacted);
+      // A clean edge is untouched.
+      expect(manager.readTail(started.id, 10, [KEY])).toBe('b'.repeat(10));
+    });
+
+    it('does the same for a persistent job log', async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-secret-tail-persistent-'));
+      const manager = new ShellJobManager(
+        { nextId: 1, shells: new Map() },
+        { persistentRoot: join(directory, 'jobs'), ...ciBudgets },
+      );
+      managers.push(manager);
+      manager.configureWorkspace(directory);
+      const started = await startNode(manager, `${source}setInterval(() => {}, 1000);\n`, {
+        persistent: true,
+      });
+      await waitFor(
+        () => (manager.readTail(started.id) ?? '').endsWith('b'.repeat(10)),
+        'persistent output',
+        30_000,
+      );
+
+      expect(manager.readTail(started.id, 30, [KEY])).toBe(KEY + 'b'.repeat(10));
+    }, 60_000);
+  });
+
+  describe('the background buffer trim', () => {
+    it('leaves no fragment of a key at the front of the buffer', async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-secret-trim-'));
+      const store: BackgroundShellStore = { nextId: 1, shells: new Map() };
+      const manager = new ShellJobManager(store);
+      managers.push(manager);
+      manager.setProviderSecrets([KEY]);
+      // The key sits 100 characters in; the buffer ends up 112 characters over its cap, so a plain
+      // trim would cut 12 characters into it.
+      const tail = MAX_BUFFER - 12;
+      const started = await startNode(
+        manager,
+        `process.stdout.write('a'.repeat(100) + ${JSON.stringify(KEY)} + 'b'.repeat(${tail}));\n`,
+      );
+      await waitFor(() => !isRunning(manager, started.id), 'job exit', 20_000);
+
+      const shell = store.shells.get(started.id)!;
+      expect(shell.output.slice(0, 64)).toMatch(/^(sk-live-0123456789abcdef)?b+/);
+      expectNoPartialKey(shell.output.slice(0, 64));
+      // Every character is either kept or counted as truncated.
+      expect(shell.truncatedBytes + shell.output.length).toBe(100 + KEY.length + tail);
+      expect(shell.readOffset).toBe(0);
+    }, 60_000);
+  });
+
+  describe('a job that is still writing', () => {
+    function twoStageSource(go: string, firstWrite: string, secondWrite: string): string {
+      return [
+        `const fs = require('fs');`,
+        `process.stdout.write(${JSON.stringify(firstWrite)});`,
+        `const timer = setInterval(() => {`,
+        `  if (!fs.existsSync(${JSON.stringify(go)})) return;`,
+        `  clearInterval(timer);`,
+        `  process.stdout.write(${JSON.stringify(secondWrite)});`,
+        `  setTimeout(() => process.exit(0), 50);`,
+        `}, 20);`,
+      ].join('\n');
+    }
+
+    async function exerciseTwoReads(manager: ShellJobManager, persistent: boolean): Promise<void> {
+      const go = join(directory, 'go');
+      const started = await startNode(
+        manager,
+        twoStageSource(go, `head-${HALF}`, `${KEY.slice(12)}-tail\n`),
+        { persistent },
+      );
+      await waitFor(
+        () => (manager.readTail(started.id) ?? '').endsWith(HALF),
+        'half a key',
+        30_000,
+      );
+
+      const first = manager.readOutput(started.id, undefined, [KEY]);
+      expect(first?.output).toBe('head-');
+      expect(first?.output).not.toContain(HALF);
+      expect(first?.remaining).toBe(0);
+
+      writeFileSync(go, '');
+      await waitFor(() => !isRunning(manager, started.id), 'job exit', 30_000);
+      const second = manager.readOutput(started.id, undefined, [KEY]);
+      expect(second?.output).toBe(`${KEY}-tail\n`);
+      expect(redactSecrets(second?.output ?? '', [KEY])).toBe(`${PROVIDER_KEY_MARKER}-tail\n`);
+      expect(manager.readOutput(started.id, undefined, [KEY])?.output).toBe('(no new output)');
+    }
+
+    it('holds back a trailing partial key until the rest is written (in memory)', async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-secret-running-'));
+      const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+      managers.push(manager);
+      await exerciseTwoReads(manager, false);
+    });
+
+    it('holds back a trailing partial key until the rest is written (persistent)', async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-secret-running-persistent-'));
+      const manager = new ShellJobManager(
+        { nextId: 1, shells: new Map() },
+        { persistentRoot: join(directory, 'jobs'), ...ciBudgets },
+      );
+      managers.push(manager);
+      manager.configureWorkspace(directory);
+      await exerciseTwoReads(manager, true);
+    }, 90_000);
+
+    it('reports no new output while all that is unread is a partial key', async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-secret-running-only-'));
+      const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+      managers.push(manager);
+      const started = await startNode(
+        manager,
+        `process.stdout.write(${JSON.stringify(HALF)});\nsetInterval(() => {}, 1000);\n`,
+      );
+      await waitFor(() => (manager.readTail(started.id) ?? '') === HALF, 'half a key');
+
+      const read = manager.readOutput(started.id, undefined, [KEY]);
+      expect(read?.output).toBe('(no new output)');
+      expect(read?.remaining).toBe(0);
+      expect(manager.get(started.id)?.readOffset).toBe(0);
+      // Without secrets nothing is held back.
+      expect(manager.readOutput(started.id)?.output).toBe(HALF);
+    });
+
+    it('returns a finished job’s trailing text in full', async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-secret-finished-'));
+      const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+      managers.push(manager);
+      const started = await startNode(
+        manager,
+        `process.stdout.write('done ' + ${JSON.stringify(HALF)});\n`,
+      );
+      await waitFor(() => !isRunning(manager, started.id), 'job exit');
+
+      const read = manager.readOutput(started.id, undefined, [KEY]);
+      expect(read?.output).toBe(`done ${HALF}`);
+      expect(read?.remaining).toBe(0);
+    });
+  });
 });

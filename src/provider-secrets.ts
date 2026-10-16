@@ -24,6 +24,22 @@ export const PROVIDER_KEY_MARKER = '[redacted: provider key]';
 export const MIN_PROVIDER_SECRET_LENGTH = 8;
 
 /**
+ * Well-known dummy keys that keyless local endpoints (LM Studio, llama.cpp, Ollama-style servers)
+ * ask for. They are ordinary strings, not credentials: treating one as a secret would erase every
+ * mention of `lm-studio` from all tool output and make an Edit `old_string` that names it stop
+ * matching. Compared case-insensitively, after trimming.
+ */
+export const PLACEHOLDER_PROVIDER_KEYS: readonly string[] = [
+  'not-needed',
+  'lm-studio',
+  'sk-no-key-required',
+  'no-key-required',
+  'no-api-key',
+  'dummy-key',
+  'placeholder',
+];
+
+/**
  * The secret values to redact, longest first and without duplicates.
  *
  * A provider the workspace declared and the user has not approved is skipped: its `apiKey` is
@@ -40,7 +56,9 @@ export function collectProviderSecrets(config: AgentConfig): string[] {
   for (const candidate of candidates) {
     if (typeof candidate !== 'string') continue;
     const value = candidate.trim();
-    if (value.length >= MIN_PROVIDER_SECRET_LENGTH) secrets.add(value);
+    if (value.length < MIN_PROVIDER_SECRET_LENGTH) continue;
+    if (PLACEHOLDER_PROVIDER_KEYS.includes(value.toLowerCase())) continue;
+    secrets.add(value);
   }
   return [...secrets].sort((a, b) => b.length - a.length || (a < b ? -1 : a > b ? 1 : 0));
 }
@@ -118,6 +136,49 @@ export function secretSafeCut(text: string, limit: number, secrets: readonly str
     forward = Math.max(...spans.map(([, end]) => end));
   }
   return forward;
+}
+
+/**
+ * Where a window of `text` may start so that no secret is cut by its front edge: the mirror of
+ * {@link secretSafeCut}. A start inside an occurrence moves back to where the occurrence starts, so
+ * the whole key stays in the window and the redactor replaces it; otherwise the fragment that
+ * remained would match nothing.
+ */
+export function secretSafeStart(text: string, start: number, secrets: readonly string[]): number {
+  let safe = Math.min(Math.max(0, start), text.length);
+  if (safe === 0 || safe >= text.length || secrets.length === 0) return safe;
+  for (;;) {
+    let earliest = safe;
+    for (const secret of secrets) {
+      if (!secret) continue;
+      const from = Math.max(0, safe - secret.length + 1);
+      for (let at = text.indexOf(secret, from); at !== -1 && at < safe;) {
+        earliest = Math.min(earliest, at);
+        at = text.indexOf(secret, at + 1);
+      }
+    }
+    if (earliest === safe) return safe;
+    safe = earliest;
+  }
+}
+
+/**
+ * How many characters at the end of `text` are a proper prefix of a secret: the part of a key a
+ * still-running command may have written before the rest. Zero when the text ends with a whole key
+ * or with nothing that starts one.
+ */
+export function trailingSecretPrefix(text: string, secrets: readonly string[]): number {
+  let longest = 0;
+  for (const secret of secrets) {
+    const most = Math.min(secret.length - 1, text.length);
+    for (let length = most; length > longest; length--) {
+      if (text.endsWith(secret.slice(0, length))) {
+        longest = length;
+        break;
+      }
+    }
+  }
+  return longest;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
