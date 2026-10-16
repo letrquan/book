@@ -22,8 +22,6 @@ import type { AgentManager } from '../agents/manager.js';
 import type { ReviewJsonReport } from '../review/host.js';
 import { createAgentRunContext, type AgentRunContext } from '../types/runs.js';
 import { defaultConfig } from '../test/fixtures.js';
-import { aggregateToolUse } from '../tool-telemetry.js';
-import type { ToolUseRecord } from '../types/tool-telemetry.js';
 
 let workspace: string;
 let home: string;
@@ -286,26 +284,9 @@ describe('book -p /review — scope forms', () => {
 });
 
 describe('book -p /review — session attribution (#448)', () => {
-  /**
-   * The tool-use record a child agent's call leaves behind. The manager stamps a
-   * child run with `parentSessionId ?? 'agent:<id>'` (`agents/manager.ts`), and the
-   * loop copies that run context's session into `ToolUseRecord.sessionId`.
-   */
-  function toolUseRecord(request: SpawnRequest, index: number): ToolUseRecord {
-    return {
-      ts: 1_000 + index,
-      session: 'trace-of-the-print-run',
-      sessionId: request.parentSessionId ?? `agent:agent-${index}`,
-      tool: 'Read',
-      status: 'success',
-      isFailure: false,
-      retries: 0,
-      model: 'test-model',
-      subagent: true,
-      agentRole: 'reviewer',
-    };
-  }
-
+  // The spawn requests only. That those requests end up as the `sessionId` of each agent's
+  // tool-use records, and as one session in tool-stats, goes through the real manager and loop
+  // in src/headless.review.test.ts.
   it('spawns every reviewer, lens and verifier under the host session and run', async () => {
     const stub = stubManager(deepResults());
     const run = reviewRunContext();
@@ -320,16 +301,6 @@ describe('book -p /review — session attribution (#448)', () => {
         parentRunId: run.runId,
       });
     }
-  });
-
-  it('counts the whole review as one session in tool-stats', async () => {
-    const stub = stubManager(deepResults());
-
-    await resolvePrintCommand('/review --deep', env(stub));
-
-    const aggregate = aggregateToolUse(stub.spawns.map(toolUseRecord));
-    expect(aggregate.totalCalls).toBe(5);
-    expect(aggregate.sessions).toBe(1);
   });
 });
 
