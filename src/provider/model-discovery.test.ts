@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultConfig } from '../test/fixtures.js';
+import { createRedirectFixtures } from '../test/redirect-servers.js';
 import {
   discoverModels,
   ModelDiscoveryError,
@@ -171,5 +172,49 @@ describe('discoverModels', () => {
         fetchImpl: fetchImpl as typeof fetch,
       }),
     ).rejects.toMatchObject({ code: 'aborted' });
+  });
+});
+
+describe('discoverModels redirects (#445)', () => {
+  const fixtures = createRedirectFixtures();
+  afterEach(() => fixtures.closeAll());
+
+  it.each(['openai', 'anthropic'] as const)(
+    'refuses a redirect for %s without following or retrying it',
+    async (type) => {
+      const fx = await fixtures.start({ status: 307 });
+
+      const error = await discoverModels({
+        type,
+        baseUrl: fx.urlA,
+        apiKey: 'sk-ant-SECRET',
+        retry: { ...retry, maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 2 },
+      }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ModelDiscoveryError);
+      expect((error as ModelDiscoveryError).code).toBe('request');
+      const { message } = error as Error;
+      expect(message).toContain(`redirected to http://127.0.0.1:${fx.portB}/steal (HTTP 307)`);
+      expect(message).toContain("Check the provider's base URL.");
+      expect(message).not.toMatch(/prompt|API key/);
+      expect(message.length).toBeLessThanOrEqual(200);
+      expect(fx.requestsA()).toBe(1);
+      expect(fx.requestsB()).toBe(0);
+    },
+  );
+
+  it('passes redirect: manual to the injected fetch', async () => {
+    const fetchImpl = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(JSON.stringify({ data: [{ id: 'm' }] })),
+    );
+    await discoverModels({
+      type: 'openai',
+      baseUrl: 'https://gateway.test/v1',
+      apiKey: 'key',
+      retry,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    expect(fetchImpl.mock.calls[0][1]?.redirect).toBe('manual');
   });
 });
