@@ -190,7 +190,7 @@ describe('hasCompoundShellSyntax on win32 reads the session shell (#512, decisio
 describe('hasCompoundShellSyntax under Git Bash: a space-free command is not wrapped (#512)', () => {
   const gitBash = { kind: 'bash', file: 'C:/Program Files/Git/bin/bash.exe' } as const;
 
-  it.each(["echo';id'", "echo'1;echo'2", "ls'x'", "echo'", "  echo';id'  "])(
+  it.each(["echo';id'", "echo'1;echo'2", "ls'x'", "echo'", "  echo';id'  ", "echo';echo${IFS}y'"])(
     'refuses %j: MSYS would strip the quotes and run two commands',
     (command) => {
       expect(hasCompoundShellSyntax(command, 'win32', gitBash)).toBe(true);

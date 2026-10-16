@@ -1398,10 +1398,12 @@ describe.skipIf(!windowsGitBash)('Git Bash single quotes on Windows (#512)', () 
   it('is why a space-free quoted command is refused by the scanner: MSYS strips the quotes', async () => {
     const c: ToolContext = { workspaceRoot: dir, env: {}, shell: windowsGitBash };
     contexts.push(c);
-    expect(hasCompoundShellSyntax("echo';echo y'", 'win32', windowsGitBash)).toBe(true);
-    const result = await bash.execute({ command: "echo';echo y'" }, c);
-    // Two commands ran: `echo` printed an empty line, then `echo y` printed `y`. Had the quotes
-    // survived, the output would be the literal text `;echo y`.
+    // No space, tab or `"`, so libuv leaves the argument unwrapped and MSYS strips the quotes.
+    expect(hasCompoundShellSyntax("echo';echo${IFS}y'", 'win32', windowsGitBash)).toBe(true);
+    const result = await bash.execute({ command: "echo';echo${IFS}y'" }, c);
+    // Stripped, bash runs `echo;echo${IFS}y`: `echo` prints an empty line, then `echo y` prints `y`.
+    // Had the quotes survived, bash would look for a command named `echo;echo${IFS}y` and print a
+    // "command not found" error instead.
     expect(result.content.replace(/\s+/g, '')).toBe('y');
   });
 });
