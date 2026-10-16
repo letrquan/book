@@ -93,6 +93,16 @@ export interface AtomicJsonWriterOptions {
   instanceId: string;
   pid?: number;
   hostname: string;
+  /**
+   * The budget of one write, counted on `now` from before the lock is taken: the lock, the
+   * fsyncs of the lock and temp files, and the rename retries all spend it, so on a slow disk the
+   * fsyncs alone can use it up. The budget bounds the back-off ladder, not the work already done,
+   * so a rename that hits contention is always retried once after its back-off, even when the
+   * budget is gone by then; after that retry the deadline applies and the write returns `busy`.
+   * A write whose rename fails every time therefore ends within the budget plus one back-off of
+   * the first contended rename. The lock phase has no such retry: a lock still contended at the
+   * deadline is `busy`.
+   */
   deadlineMs?: number;
   now?: () => number;
   randomId?: () => string;
@@ -395,6 +405,7 @@ export class AtomicJsonWriter {
         }
       }
 
+      let contendedRenames = 0;
       while (true) {
         try {
           this.fs.renameSync(tempPath, target);
@@ -418,7 +429,8 @@ export class AtomicJsonWriter {
               elapsedMs: this.now() - startedAt,
             };
           }
-          if (this.now() >= deadline) {
+          // The first contended rename is always retried once, past the deadline if need be.
+          if (contendedRenames++ > 0 && this.now() >= deadline) {
             return {
               status: 'busy',
               target,
@@ -429,7 +441,7 @@ export class AtomicJsonWriter {
             };
           }
           attempts++;
-          this.pause(attempts, deadline);
+          this.pause(attempts, deadline, contendedRenames === 1);
         }
       }
     } finally {
@@ -578,6 +590,7 @@ export class AtomicJsonWriter {
         };
       }
 
+      let contendedRenames = 0;
       while (true) {
         if (options.canCommit && !options.canCommit()) {
           // Asked once per attempt, so a write whose caller gave up while it waited out a
@@ -612,7 +625,8 @@ export class AtomicJsonWriter {
               elapsedMs: this.now() - startedAt,
             };
           }
-          if (this.now() >= deadline) {
+          // The first contended rename is always retried once, past the deadline if need be.
+          if (contendedRenames++ > 0 && this.now() >= deadline) {
             return {
               status: 'busy',
               target,
@@ -623,7 +637,7 @@ export class AtomicJsonWriter {
             };
           }
           attempts++;
-          await this.pauseAsync(attempts, deadline);
+          await this.pauseAsync(attempts, deadline, contendedRenames === 1);
         }
       }
     } finally {
@@ -632,14 +646,23 @@ export class AtomicJsonWriter {
     }
   }
 
-  private pause(attempt: number, deadline: number): void {
+  /**
+   * How long to back off before `attempt`: the ladder step, cut short by the time left to the
+   * deadline. `guaranteed` is the one retry past the deadline, which keeps its whole step: a retry
+   * with no back-off would hit the same contention again.
+   */
+  private backoffMs(attempt: number, deadline: number, guaranteed: boolean): number {
     const requested = BACKOFF_MS[Math.min(attempt - 1, BACKOFF_MS.length - 1)] ?? 80;
-    this.sleep(Math.max(0, Math.min(requested, deadline - this.now())));
+    const remaining = deadline - this.now();
+    return Math.max(0, Math.min(requested, guaranteed && remaining <= 0 ? requested : remaining));
   }
 
-  private async pauseAsync(attempt: number, deadline: number): Promise<void> {
-    const requested = BACKOFF_MS[Math.min(attempt - 1, BACKOFF_MS.length - 1)] ?? 80;
-    await this.sleepAsync(Math.max(0, Math.min(requested, deadline - this.now())));
+  private pause(attempt: number, deadline: number, guaranteed = false): void {
+    this.sleep(this.backoffMs(attempt, deadline, guaranteed));
+  }
+
+  private async pauseAsync(attempt: number, deadline: number, guaranteed = false): Promise<void> {
+    await this.sleepAsync(this.backoffMs(attempt, deadline, guaranteed));
   }
 
   private async reclaimStaleLockAsync(lockPath: string, target: string): Promise<boolean> {
