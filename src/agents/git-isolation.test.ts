@@ -1205,13 +1205,6 @@ describe('a signing configuration that cannot be read whole (#348)', () => {
     await expectTruncatedReadRefused({ paddingBytes: 256 * 1024, signingBuffer: 64 * 1024 });
   }, 30_000);
 
-  // TEMPORARY, reverted before merge: ten more runs of the case above, for the #453 Windows proof.
-  for (let repeat = 1; repeat <= 10; repeat++) {
-    it(`#453 Windows proof, repeat ${repeat} of 10`, async () => {
-      await expectTruncatedReadRefused({ paddingBytes: 256 * 1024, signingBuffer: 64 * 1024 });
-    }, 30_000);
-  }
-
   // Skipped on win32 for #453. This is the same refusal at production size — the public
   // `applyVerifiedCandidate`, the production buffer, padding past it — and the only check that the
   // public function hands that buffer to the signing read, which the variant above, with a buffer
