@@ -1167,6 +1167,35 @@ async function expectTruncatedReadRefused(options: {
 }
 
 describe('a signing configuration that cannot be read whole (#348)', () => {
+  // The refusal at its lowest level, which is cheap enough for every platform: one read shaped like
+  // the signing read, through the production runner at the buffer it ships with, against a
+  // `.git/config` padded just past that buffer. It is one git process where the apply at this size
+  // starts 23 and does not fit a Windows runner's budget (#453). What it shows is that the runner
+  // rejects an overrun instead of resolving on what had arrived, though the codes it is told to
+  // allow include the 1 that means "no match". That `applyVerifiedCandidate` hands this buffer to
+  // its signing read is for the full-size variant below to show.
+  it('rejects a signing-style read that overruns the production buffer, on every platform', async () => {
+    const root = repository();
+    // The padding as the full-size variant writes it, a megabyte past the buffer, with the signing
+    // keys after it, where a truncated answer would never have seen them.
+    const padding = 'x'.repeat(DEFAULT_MAX_BUFFER_BYTES + 1024 * 1024);
+    appendFileSync(
+      join(root, '.git', 'config'),
+      `[gpg]\n\tpad = ${padding}\n\tprogram = oversized-gpg\n[commit]\n\tgpgsign = true\n`,
+    );
+
+    // The arguments and the pattern `readSigningConfig` asks with (`git-signing.ts`), and the exit
+    // codes it allows. The 30 s is its own budget too, and it is under this test's, so a git that
+    // hangs is stopped by the runner instead of being left running when the test gives up.
+    const signingKeys = '^(commit\\.gpgsign|gpg\\..*|user\\.signingkey)$';
+    await expect(
+      gitForTest(root, ['config', '--show-scope', '-z', '--get-regexp', signingKeys], {
+        allowExitCodes: [1, 129],
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow('ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+  }, 60_000);
+
   it('refuses to apply, and starts no cherry-pick, when the read is truncated', async () => {
     // 64 KiB is the buffer the signing read gets here and 256 KiB the padding in front of the
     // keys, so every git process the apply starts parses a config a few hundred KiB long rather
