@@ -13,7 +13,8 @@ Settings are loaded in priority order (later wins):
 
 In a session started in your home directory with `BOOK_HOME` unset, the workspace's
 `.book/settings.json` is the user file itself: it is read once, as the user layer, and nothing in
-it is held back as a repository declaration.
+it is held back as a repository declaration. Skill roots and instruction files are compared by
+real path, so a home reached through a symlink still counts its own files once, as the user's.
 
 One family is not "later wins". `sandbox.*` is a boundary between a command and your machine, so
 a **workspace layer may only tighten it** — see [The sandbox](#the-sandbox).
@@ -535,9 +536,9 @@ An IPv6 address in one of these IPv4-embedding ranges is judged by the IPv4 addr
 IPv4-mapped `::ffff:0:0/96`, SIIT's IPv4-translated `::ffff:0:0:0/96`, IPv4-compatible `::/96`,
 NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, and Teredo `2001::/32`, where either the server or the
 client address being private blocks it. An ISATAP address (interface identifier `0:5efe` or
-`200:5efe` followed by an IPv4 address, RFC 5214) is refused when that IPv4 address is, whatever
-its prefix, except under Teredo's `2001::/32`, where that part of the address is the Teredo
-client. In the local-use NAT64 prefix `64:ff9b:1::/48`, an address laid out like the /96 (bits
+`200:5efe` followed by an IPv4 address, RFC 5214) is refused when that IPv4 address would be
+refused, whatever its prefix, except under Teredo's `2001::/32`, where that part of the address is
+the Teredo client. In the local-use NAT64 prefix `64:ff9b:1::/48`, an address laid out like the /96 (bits
 48-95 zero) is judged by its last 32 bits, and any other shape is blocked, because where its IPv4
 bits sit depends on a prefix length only the local network knows.
 
