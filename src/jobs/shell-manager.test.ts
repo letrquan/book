@@ -691,11 +691,86 @@ describe('ShellJobManager persistent start budget', () => {
       }),
     ).rejects.toThrow(`did not start within ${DEFAULT_RUNNER_START_BUDGET_MS}ms`);
 
+    await expectRunnerKilledAndJobForgotten(manager, store, specs);
+  }, 30_000);
+
+  /** What a start that gave up must leave behind: no runner, no job, no spec file. */
+  async function expectRunnerKilledAndJobForgotten(
+    manager: ShellJobManager,
+    store: BackgroundShellStore,
+    specs: string,
+  ): Promise<void> {
     const runner = spawnedProcesses.find((entry) => entry.args.at(-1)?.startsWith(specs));
     expect(runner?.pid).toBeDefined();
     await waitFor(() => !isProcessAlive(runner!.pid!), 'the runner to be killed', 10_000);
     expect(store.shells.size).toBe(0);
     expect(manager.list()).toEqual([]);
     expect(existsSync(specs) ? readdirSync(specs) : []).toEqual([]);
+  }
+
+  /**
+   * A start that `cancel` interrupts inside the poll loop, with no real time in play: the clock
+   * never moves, so only the cancellation can end the start.
+   */
+  async function startCancelledBy(
+    cancel: (manager: ShellJobManager, controller: AbortController) => void,
+  ) {
+    directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
+    const persistentRoot = join(directory, 'jobs');
+    const command = idleCommand();
+    const controller = new AbortController();
+    let readings = 0;
+    const store: BackgroundShellStore = { nextId: 1, shells: new Map() };
+    const clock = {
+      // Reading 1 opens the budget, reading 2 is the first test of the loop.
+      monotonicNowMs: () => {
+        if (readings++ === 1) cancel(manager, controller);
+        return 0;
+      },
+      wallNowMs: () => Date.now(),
+    };
+    const manager = new ShellJobManager(store, { persistentRoot, clock });
+    managers.push(manager);
+    manager.configureWorkspace(directory);
+    const specs = persistentJobPaths(directory, persistentRoot).specs;
+    spawnedProcesses.length = 0;
+
+    const outcome = await manager
+      .start({
+        command,
+        effectiveCommand: command,
+        workdir: directory,
+        env: process.env,
+        envOverrides: {},
+        sandboxed: false,
+        lifetime: 'persistent',
+        workspace: directory,
+        signal: controller.signal,
+      })
+      .then(
+        () => undefined,
+        (error: unknown) => (error instanceof Error ? error : new Error(String(error))),
+      );
+    return { manager, store, specs, outcome };
+  }
+
+  it('stops waiting for the runner when the start is aborted, and forgets the job', async () => {
+    const { manager, store, specs, outcome } = await startCancelledBy((_manager, controller) =>
+      controller.abort(),
+    );
+
+    expect(outcome?.message).toMatch(/cancelled/);
+    expect(outcome?.message).not.toMatch(/did not start within/);
+    await expectRunnerKilledAndJobForgotten(manager, store, specs);
+  }, 30_000);
+
+  it('stops waiting for the runner when the manager is disposed, and forgets the job', async () => {
+    const { manager, store, specs, outcome } = await startCancelledBy((disposing) =>
+      disposing.dispose(),
+    );
+
+    expect(outcome?.message).toMatch(/disposed/);
+    expect(outcome?.message).not.toMatch(/did not start within/);
+    await expectRunnerKilledAndJobForgotten(manager, store, specs);
   }, 30_000);
 });

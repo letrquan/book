@@ -539,6 +539,7 @@ async function bashBackground(
       title: readString(args, 'title'),
       notify: readNotify(args),
       lifetime: readString(args, 'lifetime') === 'persistent' ? 'persistent' : 'session',
+      signal: ctx.signal,
       timeoutMs: requestedRuntime,
       workspace: ctx.workspaceRoot,
       envOverrides: persistentEnvironmentOverrides(ctx),
