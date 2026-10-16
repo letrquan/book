@@ -8,6 +8,7 @@ export interface DiscoveredModel {
 }
 
 import { systemClock, type Clock } from '../clock.js';
+import { isRedirectResponse, refuseRedirect, type ProviderRedirectError } from './reliability.js';
 
 export interface ModelDiscoveryOptions {
   type: ProviderProtocol;
@@ -84,6 +85,16 @@ function safeStatusError(status: number): ModelDiscoveryError {
   return new ModelDiscoveryError(`Model discovery request failed with HTTP ${status}.`, 'request');
 }
 
+/** One line for the wizard's and picker's error slot: discovery sends no prompt. */
+function redirectMessage({ status, target }: ProviderRedirectError): string {
+  const http = status === 0 ? '' : ` (HTTP ${status})`;
+  const what =
+    target === undefined
+      ? `answered${status === 0 ? '' : ` HTTP ${status}`} with no redirect target Book could read`
+      : `redirected to ${target}${http}`;
+  return `The model-list endpoint ${what}; Book does not follow provider redirects. Check the provider's base URL.`;
+}
+
 function retryDelay(attempt: number, retry: RetryConfig, retryAfter: string | null): number {
   const retryAfterSeconds = retryAfter === null ? NaN : Number(retryAfter);
   if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
@@ -134,7 +145,8 @@ async function fetchWithRetry(
 
     let response: Response | undefined;
     try {
-      response = await fetchImpl(url, { ...init, signal: controller.signal });
+      // `redirect` comes after the spread so no caller can turn following back on (#445).
+      response = await fetchImpl(url, { ...init, redirect: 'manual', signal: controller.signal });
     } catch (error) {
       if (options.signal?.aborted) {
         throw new ModelDiscoveryError('Model discovery was cancelled.', 'aborted');
@@ -143,6 +155,12 @@ async function fetchWithRetry(
     } finally {
       clearTimeout(timeout);
       options.signal?.removeEventListener('abort', abortFromCaller);
+    }
+
+    // Never retried: the key must not follow a redirect, and a second ask gets the same answer.
+    if (response && isRedirectResponse(response)) {
+      const refused = await refuseRedirect(response, url);
+      throw new ModelDiscoveryError(redirectMessage(refused), 'request');
     }
 
     if (response && !(RETRYABLE_STATUSES.has(response.status) || response.status >= 500)) {

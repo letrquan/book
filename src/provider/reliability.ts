@@ -31,6 +31,7 @@ export type ProviderErrorCode =
    */
   | 'rate_limit_wait'
   | 'model_unavailable'
+  | 'redirect'
   | 'unknown';
 
 export function classifyHttpStatus(status: number): {
@@ -442,6 +443,7 @@ export function classifyApiError(
 }
 
 export function classifyProviderError(error: unknown): ProviderErrorCode {
+  if (error instanceof ProviderRedirectError) return 'redirect';
   if (error instanceof DOMException && error.name === 'TimeoutError') return 'timeout';
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
   if (message.includes('timed out') || message.includes('timeout')) return 'timeout';
@@ -750,6 +752,77 @@ export async function readErrorBody(response: Response, signal?: AbortSignal): P
   return text + decoder.decode();
 }
 
+/**
+ * A provider endpoint answered with an HTTP redirect (#445). Book refuses every one: a followed
+ * redirect can carry the API key (`x-api-key`) and the whole conversation to a host the user
+ * never configured. Never retried.
+ */
+export class ProviderRedirectError extends Error {
+  constructor(
+    readonly status: number,
+    /** Scheme, host and path of the redirect target; never userinfo, query or fragment. */
+    readonly target: string | undefined,
+  ) {
+    // An `opaqueredirect` response reports status 0, which is not an HTTP status to quote.
+    const answered = status === 0 ? 'answered with a redirect' : `answered HTTP ${status}`;
+    super(
+      target === undefined
+        ? `Provider endpoint ${answered}${status === 0 ? ' that has' : ' with'} no redirect target Book could read, and Book does not follow provider redirects. ` +
+            "Check the provider's base URL."
+        : `Provider endpoint ${answered}${status === 0 ? '' : ' with a redirect'} to ${target}, and Book does not follow provider redirects. ` +
+            "If that host is the endpoint you meant, set the provider's base URL to that address without the endpoint path Book adds " +
+            '(https://gw.example/v1/chat/completions becomes https://gw.example/v1).',
+    );
+    this.name = 'ProviderRedirectError';
+  }
+}
+
+/**
+ * The redirect target reduced to scheme, host (with port) and path, resolved against the request
+ * URL since `Location` may be relative. Userinfo, query string and fragment are dropped: they
+ * can carry secrets and this text reaches logs and the screen. Undefined when `Location` is
+ * missing or does not parse.
+ */
+export function sanitizeRedirectTarget(
+  location: string | null | undefined,
+  requestUrl: string,
+): string | undefined {
+  if (!location) return undefined;
+  try {
+    const target = new URL(location, requestUrl);
+    if (!target.host) return undefined;
+    return `${target.protocol}//${target.host}${target.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True for a response that is, or hides, an HTTP redirect. */
+export function isRedirectResponse(response: Response): boolean {
+  return response.type === 'opaqueredirect' || (response.status >= 300 && response.status <= 399);
+}
+
+/** Cancel a response body that will not be read, ignoring a body something else has locked. */
+async function cancelBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // A custom fetch implementation may expose an already-locked body.
+  }
+}
+
+/** Cancel a redirect's body and build the error for it. */
+export async function refuseRedirect(
+  response: Response,
+  requestUrl: string,
+): Promise<ProviderRedirectError> {
+  await cancelBody(response);
+  return new ProviderRedirectError(
+    response.status,
+    sanitizeRedirectTarget(response.headers.get('location'), requestUrl),
+  );
+}
+
 export async function fetchWithRetry(
   url: string,
   init: RequestInit,
@@ -772,7 +845,8 @@ export async function fetchWithRetry(
     const fetchSignal = requestSignal(signal, retry.requestTimeoutMs);
     let response: Response;
     try {
-      response = await fetch(url, { ...init, signal: fetchSignal });
+      // `redirect` comes after the spread so no caller can turn following back on (#445).
+      response = await fetch(url, { ...init, redirect: 'manual', signal: fetchSignal });
     } catch (error) {
       if (signal?.aborted) throw error;
       lastError = error instanceof Error ? error.message : String(error);
@@ -787,6 +861,9 @@ export async function fetchWithRetry(
       await sleep(delay, signal);
       continue;
     }
+
+    // Outside the catch above, so a redirect is never retried, watchdog or not.
+    if (isRedirectResponse(response)) throw await refuseRedirect(response, url);
 
     const classification = classifyHttpStatus(response.status);
     if (!classification.retryable) return response;
@@ -909,11 +986,7 @@ export async function fetchWithRetry(
         headers: response.headers,
       });
     }
-    try {
-      await response.body?.cancel();
-    } catch {
-      // A custom fetch implementation may expose an already-locked body.
-    }
+    await cancelBody(response);
   }
 
   throw new Error(lastError ?? 'request failed after retries');

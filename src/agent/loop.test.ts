@@ -8488,29 +8488,32 @@ describe('the last-resort compaction, review round 3 (#238, #244)', () => {
     expect(fetchCalls).toBe(1);
   });
 
-  it('does not compact without the model after a reducer failure the main request would share', async () => {
-    const calls = { count: 0 };
-    const compact = vi.fn(async (): Promise<CompactResult> => ({
-      status: 'failed',
-      reason: 'provider-error',
-      error: 'API Error: 401 invalid api key',
-      providerCode: 'auth',
-    }));
-    const errors: string[] = [];
+  it.each(['auth', 'redirect'])(
+    'does not compact without the model after a reducer failure the main request would share (%s)',
+    async (providerCode) => {
+      const calls = { count: 0 };
+      const compact = vi.fn(async (): Promise<CompactResult> => ({
+        status: 'failed',
+        reason: 'provider-error',
+        error: 'API Error: 401 invalid api key',
+        providerCode,
+      }));
+      const errors: string[] = [];
 
-    await runAgentLoop(
-      defaultConfig(smallWindow),
-      createRegistry(),
-      'continue',
-      resultHistory(60, 6_000),
-      noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
-      'auto',
-      { provider: countingProvider(calls), isNewSession: false },
-    );
+      await runAgentLoop(
+        defaultConfig(smallWindow),
+        createRegistry(),
+        'continue',
+        resultHistory(60, 6_000),
+        noopCallbacks({ onCompact: compact, onError: (error) => errors.push(error) }),
+        'auto',
+        { provider: countingProvider(calls), isNewSession: false },
+      );
 
-    expect(compact).toHaveBeenCalledOnce();
-    expect(errors[0]).toContain('Request is too large for');
-  });
+      expect(compact).toHaveBeenCalledOnce();
+      expect(errors[0]).toContain('Request is too large for');
+    },
+  );
 
   it('measures the model-free compaction against the history it compacts, not the clipped one', async () => {
     const calls = { count: 0 };

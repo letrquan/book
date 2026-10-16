@@ -75,6 +75,7 @@ export type TerminalRecovery = 'none' | 'reissue' | 'continue' | 'park';
  *   request, the same verdict delivered inside a 200 stream.
  * - `content_filter`, `error_envelope`: an answer that came back the same way
  *   after its one re-issue.
+ * - `redirect`: a provider endpoint answered with a redirect Book refuses (#445).
  *
  * `unknown`, every other 4xx, stays re-sendable on purpose. 9router's antigravity
  * route treats a 409 like a 429 with a strike counter: it passes the first two
@@ -89,6 +90,7 @@ export const NON_REISSUABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'invalid_request_error',
   'content_filter',
   'error_envelope',
+  'redirect',
 ]);
 
 export function terminalRecovery(outcome: AgentTerminalOutcome): TerminalRecovery {

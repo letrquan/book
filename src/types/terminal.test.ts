@@ -135,6 +135,7 @@ describe('terminalRecovery', () => {
       'not_found',
       'unprocessable',
       'invalid_request_error',
+      'redirect',
     ]) {
       expect(recoveryForCode(providerCode), providerCode).toBe('none');
     }
