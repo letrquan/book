@@ -909,9 +909,12 @@ async function run() {
         break;
       }
       case 'ready': {
-        // The "Ask me anything" placeholder renders BEFORE Ink's stdin handler
-        // is live — keystrokes sent in the first ~half second are swallowed.
-        // Wait for the placeholder, then settle.
+        // Ink's stdin handler is live with the first frame, but Book then stalls its
+        // event loop for a few hundred ms (the startup work that follows the first
+        // render). Keys written during the stall are not lost; they are read together,
+        // as one chunk. Text and Enter in one read become a paste, and two Ctrl+C
+        // bytes in one read used to count as no key (#504). Wait for the placeholder,
+        // then settle so the stall is over before the first key goes out.
         // A narrow composer shortens the placeholder to `Ask...`, so match the
         // prompt glyph in front of it too.
         const ok = await waitFor(

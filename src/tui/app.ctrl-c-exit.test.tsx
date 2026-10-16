@@ -334,6 +334,36 @@ describe('idle Ctrl+C exit confirmation', () => {
     expect(state.endCurrentSession).not.toHaveBeenCalled();
   });
 
+  // #504: a stalled event loop makes two presses land in one stdin read. Ink hands that chunk
+  // on whole (it splits only escape sequences and backspace bytes), so it read as no key at all.
+  it('two Ctrl+C bytes in one read exit like two presses, and never reach the draft', async () => {
+    const { view, state } = await startIdleApp();
+
+    press(view, '\x03\x03');
+
+    await waitUntil(() => expect(state.endCurrentSession).toHaveBeenCalledWith('exit'));
+    expect(state.endCurrentSession).toHaveBeenCalledTimes(1);
+    expect(view.lastFrame()).not.toContain('\x03');
+  });
+
+  it('a run of three Ctrl+C bytes in one read presses three times and exits once', async () => {
+    const { view, state } = await startIdleApp();
+
+    press(view, '\x03\x03\x03');
+
+    await waitUntil(() => expect(state.endCurrentSession).toHaveBeenCalledWith('exit'));
+    expect(state.endCurrentSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('one Ctrl+C byte alone only arms the exit window', async () => {
+    const { view, state } = await startIdleApp();
+
+    await armExit(view);
+
+    expect(state.endCurrentSession).not.toHaveBeenCalled();
+    expect(view.lastFrame()).not.toContain('\x03');
+  });
+
   it('a second press within the window exits', async () => {
     const { view, state } = await startIdleApp();
 

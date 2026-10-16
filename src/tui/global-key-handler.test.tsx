@@ -1,8 +1,9 @@
+import { EventEmitter } from 'node:events';
 import { Text, useInput } from 'ink';
 import { cleanup, render } from 'ink-testing-library';
 import { useState } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
-import { GlobalKeyHandler } from './global-key-handler.js';
+import { GlobalKeyHandler, splitCtrlCRuns } from './global-key-handler.js';
 
 afterEach(() => cleanup());
 
@@ -62,5 +63,64 @@ describe('GlobalKeyHandler', () => {
     view.stdin.write('a');
     await settle();
     expect(calls).toEqual(['child:a', 'parent:a']);
+  });
+});
+
+describe('GlobalKeyHandler — a run of Ctrl+C bytes in one read (#504)', () => {
+  it('reaches every subscriber as separate presses, never as one unnamed chunk', async () => {
+    const calls: string[] = [];
+    function Probe() {
+      useInput((input, key) =>
+        calls.push(`probe:${key.ctrl ? 'ctrl+' : ''}${JSON.stringify(input)}`),
+      );
+      return <Text>probe</Text>;
+    }
+    const view = render(
+      <>
+        <GlobalKeyHandler
+          onInput={(input, key) => calls.push(`global:${key.ctrl ? 'ctrl+' : ''}${input}`)}
+        />
+        <Probe />
+      </>,
+    );
+    await settle();
+
+    view.stdin.write('\x03\x03\x03');
+    await settle();
+
+    expect(calls).toEqual([
+      'global:ctrl+c',
+      'probe:ctrl+"c"',
+      'global:ctrl+c',
+      'probe:ctrl+"c"',
+      'global:ctrl+c',
+      'probe:ctrl+"c"',
+    ]);
+  });
+
+  it('leaves a lone Ctrl+C, text and a paste-like chunk alone', async () => {
+    const calls: string[] = [];
+    const view = render(
+      <GlobalKeyHandler onInput={(input) => calls.push(JSON.stringify(input))} />,
+    );
+    await settle();
+
+    view.stdin.write('\x03');
+    view.stdin.write('hello\r');
+    await settle();
+
+    expect(calls).toEqual(['"c"', '"hello\\r"']);
+  });
+
+  it('stops splitting once the handler unmounts', async () => {
+    const emitter = new EventEmitter();
+    const seen: unknown[] = [];
+    emitter.on('input', (chunk) => seen.push(chunk));
+    const restore = splitCtrlCRuns(emitter);
+    emitter.emit('input', '\x03\x03');
+    restore();
+    emitter.emit('input', '\x03\x03');
+
+    expect(seen).toEqual(['\x03', '\x03', '\x03\x03']);
   });
 });
