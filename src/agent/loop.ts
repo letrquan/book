@@ -2935,6 +2935,12 @@ export async function runAgentLoop(
                 );
               }
               const askRule = verdict.source === 'ask' ? verdict.matchedRule : undefined;
+              // The rule the operator is told to add. A bare tool name allows every call of the
+              // tool, so for Bash, which has no rule for a multi-line command or a compound one
+              // holding `*`, the remedy names no rule at all rather than `Bash`.
+              const remedyRule =
+                permissionRuleForToolCall(call, process.platform, scanShell) ??
+                (canonName === 'Bash' ? undefined : canonName);
               // What would actually let this call through if nobody could approve it. An
               // outside target comes first: no rule or mode makes the tool serve it.
               const remedy: UnattendedRemedy = persistentBackgroundShell
@@ -2944,20 +2950,14 @@ export async function runAgentLoop(
                   : compoundUnderPolicy
                     ? {
                         kind: 'compound_under_policy',
-                        rule: permissionRuleForToolCall(call, process.platform, scanShell),
+                        rule: remedyRule,
                         askRule,
                       }
                     : askRule
                       ? { kind: 'ask_rule', rule: askRule }
                       : forceSkillPermission
-                        ? {
-                            kind: 'allow_rule_only',
-                            rule: permissionRuleForToolCall(call) ?? canonName,
-                          }
-                        : {
-                            kind: 'rule_or_auto',
-                            rule: permissionRuleForToolCall(call) ?? canonName,
-                          };
+                        ? { kind: 'allow_rule_only', rule: remedyRule }
+                        : { kind: 'rule_or_auto', rule: remedyRule };
               const cause: PermissionDenialCause =
                 effectiveMode === 'dontAsk'
                   ? { kind: 'dont_ask', askRule }

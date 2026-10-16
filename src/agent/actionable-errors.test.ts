@@ -102,13 +102,83 @@ describe('actionable tool errors', () => {
         /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/,
       );
       expect(text).not.toContain('second line');
+      expect(text).not.toContain('owned');
     }
-    const long = unattendedRefusalNotice('Bash', {
-      kind: 'rule_or_auto',
-      rule: `Bash(${'x'.repeat(500)})`,
+  });
+});
+
+// A rule that `printableRule` would cut or clean is not the rule: a cut one has no closing paren,
+// and `parseRule` reads `Bash(cd /very/long…` as a bare `Bash` rule that allows everything.
+describe('a rule that cannot be printed whole is described, never quoted (#512)', () => {
+  const long = `Bash(cd ${'/very/long/path'.repeat(14)} && npm test)`;
+  const tabbed = 'Bash(cd x &&\tnpm test)';
+  const everyRemedy = (rule: string) =>
+    [
+      { kind: 'rule_or_auto', rule },
+      { kind: 'allow_rule_only', rule },
+      { kind: 'ask_rule', rule },
+      { kind: 'compound_under_policy', rule },
+      { kind: 'compound_under_policy', askRule: rule },
+    ] as const;
+
+  it.each([
+    ['a 200-character compound command', long],
+    ['a command containing a tab', tabbed],
+  ])('names no part of %s', (_label, rule) => {
+    expect(long.length).toBeGreaterThan(120);
+    for (const remedy of everyRemedy(rule)) {
+      const texts = [
+        permissionDeniedError('Bash', { kind: 'no_approver', remedy }),
+        unattendedRefusalNotice('Bash', remedy)!,
+      ];
+      for (const text of texts) {
+        expect(text, remedy.kind).not.toContain('…');
+        expect(text, remedy.kind).not.toContain('Bash(cd');
+        expect(text, remedy.kind).not.toContain('"Bash(');
+        expect(text, remedy.kind).not.toMatch(/\t/);
+      }
+    }
+  });
+
+  it('says the exact rule is too long to print, and still names the other ways through', () => {
+    const text = unattendedRefusalNotice('Bash', { kind: 'rule_or_auto', rule: long })!;
+    expect(text).toContain('too long');
+    expect(text).toContain('--permission-mode auto');
+    const compound = unattendedRefusalNotice('Bash', {
+      kind: 'compound_under_policy',
+      rule: long,
     })!;
-    expect(long).toContain('…');
-    expect(long.length).toBeLessThan(400);
+    expect(compound).toContain('too long');
+    expect(compound).toContain('as its own Bash call');
+    expect(compound).toContain('bypassPermissions');
+  });
+
+  it('still quotes a rule that prints whole', () => {
+    const text = unattendedRefusalNotice('Bash', { kind: 'rule_or_auto', rule: 'Bash(npm test)' })!;
+    expect(text).toContain('"Bash(npm test)"');
+  });
+});
+
+// `Bash` with no pattern is a rule that allows every command, so a remedy with no rule to name must
+// not name the bare tool.
+describe('a remedy with no rule to name never suggests a bare Bash rule (#512)', () => {
+  it.each(['rule_or_auto', 'allow_rule_only'] as const)('%s', (kind) => {
+    for (const text of [
+      permissionDeniedError('Bash', { kind: 'no_approver', remedy: { kind } }),
+      unattendedRefusalNotice('Bash', { kind })!,
+    ]) {
+      expect(text).not.toMatch(/"Bash"/);
+      expect(text).toContain('no single permissions.allow rule');
+      expect(text).toContain('as its own Bash call');
+    }
+  });
+
+  it('keeps the auto option only where auto applies', () => {
+    expect(unattendedRefusalNotice('Bash', { kind: 'rule_or_auto' })!).toContain(
+      '--permission-mode auto',
+    );
+    // Skill consent keeps its note that `auto` still asks.
+    expect(unattendedRefusalNotice('Bash', { kind: 'allow_rule_only' })!).toContain('still asks');
   });
 });
 
@@ -150,5 +220,21 @@ describe('the compound command remedy (#512)', () => {
     expect(error).toContain('permissions.ask rule Bash(curl *)');
     expect(error).not.toContain('"Bash(curl x && rm y)"');
     expect(error).not.toContain('--permission-mode auto');
+  });
+
+  it('does not promise that removing the ask rule is enough while other Bash rules exist', () => {
+    const remedy = {
+      kind: 'compound_under_policy',
+      askRule: 'Bash(curl *)',
+    } as const;
+    for (const text of [
+      permissionDeniedError('Bash', { kind: 'no_approver', remedy }),
+      unattendedRefusalNotice('Bash', remedy)!,
+    ]) {
+      expect(text).toContain('permissions.ask rule Bash(curl *)');
+      expect(text).toContain('not enough on its own while any other Bash deny or ask rule exists');
+      expect(text).toContain('works in every case');
+      expect(text).toContain('as its own Bash call');
+    }
   });
 });

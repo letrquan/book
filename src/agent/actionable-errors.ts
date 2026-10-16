@@ -19,12 +19,16 @@ export function formatActionableToolError(error: ActionableToolError): string {
 
 /** What would let a call through that nothing in the run could approve, if anything. */
 export type UnattendedRemedy =
-  /** A `permissions.allow` rule, or `--permission-mode auto`. */
-  | { kind: 'rule_or_auto'; rule: string }
+  /**
+   * A `permissions.allow` rule, or `--permission-mode auto`. `rule` is absent when no single rule
+   * covers the call (a multi-line Bash command): the bare tool name would allow every call, so it
+   * is never offered in its place.
+   */
+  | { kind: 'rule_or_auto'; rule?: string }
   /** A `permissions.ask` rule asks for it, and no allow rule outranks an ask rule. */
   | { kind: 'ask_rule'; rule: string }
-  /** Skill consent: an allow rule lets it through, but `auto` still asks. */
-  | { kind: 'allow_rule_only'; rule: string }
+  /** Skill consent: an allow rule lets it through, but `auto` still asks. `rule` as above. */
+  | { kind: 'allow_rule_only'; rule?: string }
   /** A persistent background shell asks in every mode but bypassPermissions, allow rules or not. */
   | { kind: 'bypass_only' }
   /** A Read, Glob or Grep the tool itself refuses: nothing lets it through. */
@@ -76,15 +80,44 @@ function printableRule(rule: string): string {
   return flat.length > RULE_TEXT_MAX ? `${flat.slice(0, RULE_TEXT_MAX - 1)}…` : flat;
 }
 
+/** What stands in for a rule that cannot be printed whole. */
+const UNPRINTABLE_RULE =
+  'its exact rule, which is too long or holds characters that cannot be printed here';
+
+/**
+ * A rule to quote, or `undefined` when printing it would alter it. A cut rule has no closing
+ * paren, and `parseRule` reads `Bash(cd /very/long…` as a bare `Bash` rule that allows every
+ * command, so a rule {@link printableRule} would change is described instead, never quoted.
+ */
+function quotableRule(rule: string): string | undefined {
+  return printableRule(rule) === rule ? rule : undefined;
+}
+
+/** "a permissions.allow rule such as "<rule>"", or what to do when no rule can be shown. */
+function allowRuleClause(rule: string | undefined): string {
+  if (rule === undefined) {
+    return 'no single permissions.allow rule covers this command, so have each command sent as its own Bash call';
+  }
+  const quotable = quotableRule(rule);
+  return quotable
+    ? `add a permissions.allow rule such as "${quotable}" to your settings`
+    : `add a permissions.allow rule for this command (${UNPRINTABLE_RULE}) to your settings`;
+}
+
+/** The ask rule that matched, quoted when it prints whole. */
+function askRuleRef(rule: string): string {
+  return `permissions.ask rule ${quotableRule(rule) ?? `that matches it (${UNPRINTABLE_RULE})`}`;
+}
+
 /** The operator's way through, as a clause that follows "To allow it, ". */
 function remedyClause(remedy: UnattendedRemedy): string | undefined {
   switch (remedy.kind) {
     case 'rule_or_auto':
-      return `add a permissions.allow rule such as "${printableRule(remedy.rule)}" to your settings, or run with --permission-mode auto`;
+      return `${allowRuleClause(remedy.rule)}, or run with --permission-mode auto`;
     case 'ask_rule':
-      return `narrow or remove the permissions.ask rule ${printableRule(remedy.rule)}, which asks for it and outranks any allow rule, or run with --permission-mode auto`;
+      return `narrow or remove the ${askRuleRef(remedy.rule)}, which asks for it and outranks any allow rule, or run with --permission-mode auto`;
     case 'allow_rule_only':
-      return `add a permissions.allow rule such as "${printableRule(remedy.rule)}" to your settings (--permission-mode auto still asks for it)`;
+      return `${allowRuleClause(remedy.rule)} (--permission-mode auto still asks for it)`;
     case 'bypass_only':
       return 'run with --permission-mode bypassPermissions: a persistent background shell asks in every other mode, whatever the allow rules say';
     case 'compound_under_policy': {
@@ -92,10 +125,15 @@ function remedyClause(remedy: UnattendedRemedy): string | undefined {
       const bypass =
         'run with --permission-mode bypassPermissions (every other mode asks for a compound command while a Bash deny or ask rule exists)';
       if (remedy.askRule) {
-        return `${send}, narrow or remove the permissions.ask rule ${printableRule(remedy.askRule)}, which asks for it and outranks any allow rule, or ${bypass}`;
+        // Sending each command alone is the one remedy that always works: the compound ask fires
+        // whatever the ask rule says while any other Bash deny or ask rule exists.
+        return `${send} (this works in every case), narrow or remove the ${askRuleRef(remedy.askRule)}, which asks for it and outranks any allow rule (removing it is not enough on its own while any other Bash deny or ask rule exists, since every compound command asks then), or ${bypass}`;
       }
       if (remedy.rule) {
-        return `${send}, add the exact rule "${printableRule(remedy.rule)}" to permissions.allow in your settings, or ${bypass}`;
+        const quotable = quotableRule(remedy.rule);
+        return quotable
+          ? `${send}, add the exact rule "${quotable}" to permissions.allow in your settings, or ${bypass}`
+          : `${send}, add the exact permissions.allow rule for this command (${UNPRINTABLE_RULE}) to your settings, or ${bypass}`;
       }
       return `${send} (no exact allow rule can admit this command), or ${bypass}`;
     }

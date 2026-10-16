@@ -1710,6 +1710,35 @@ describe('runAgentLoop compound Bash commands under a Bash deny or ask rule (#51
     expect(content).not.toContain('--permission-mode auto');
   });
 
+  it.each(['echo a\necho b', 'ls *.ts && echo x'])(
+    'never tells the operator to add a bare Bash rule for %j, which no single rule covers',
+    async (command) => {
+      const notices: string[] = [];
+      const { executed, result } = await run({
+        command,
+        mode: 'default',
+        onPermissionRequired: noApprover,
+        notices,
+      });
+      expect(executed).toEqual([]);
+      const texts = [result?.content ?? '', ...notices.filter((n) => n.includes('needs approval'))];
+      expect(texts).toHaveLength(2);
+      for (const text of texts) {
+        expect(text).not.toMatch(/"Bash"/);
+        expect(text).toContain('no single permissions.allow rule');
+      }
+    },
+  );
+
+  it('still names the exact rule when one covers the command', async () => {
+    const { result } = await run({
+      command: 'cd x && npm test',
+      mode: 'default',
+      onPermissionRequired: noApprover,
+    });
+    expect(result?.content).toContain('"Bash(cd x && npm test)"');
+  });
+
   describe('"Always allow"', () => {
     it('saves the exact rule, which then admits the same call without a prompt', async () => {
       const persisted: string[] = [];

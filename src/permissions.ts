@@ -489,12 +489,9 @@ export function permissionRuleLadder(
   // would offer rungs with a dangling quote, such as `Bash(git commit -m "fix(x): *)`.
   const raw = call.arguments.command;
   const command = typeof raw === 'string' ? raw.trim() : '';
-  if (
-    !command ||
-    SHELL_CHAINING.test(command) ||
-    ANY_QUOTE.test(command) ||
-    LINE_BREAK.test(command)
-  ) {
+  // A line break never gets here: `permissionRuleForToolCall` offers no rule for one. `!command`
+  // is a Bash call whose `command` is not a string, which the generic path gave a rule to.
+  if (!command || SHELL_CHAINING.test(command) || ANY_QUOTE.test(command)) {
     return [exact];
   }
 
@@ -1243,6 +1240,11 @@ export function evaluatePermissionDetail(
     }
   }
   if (tool === 'Bash') {
+    // Two passes over `allow` rather than one, because the order is exact rules, then the compound
+    // ask, then glob and bare rules: a single pass in list order would reach a glob or bare rule
+    // before a later exact rule and could not tell where the compound ask belongs. The second pass
+    // below tests the exact rules again, which cannot match any more and costs one comparison each.
+    //
     // An exact allow rule admits exactly the line the user wrote down, compound or not, once no
     // deny or ask rule matched it.
     for (const entry of parsed.allow) {

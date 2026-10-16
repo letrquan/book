@@ -227,7 +227,8 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   `git commit -m "fix(x): y"` and `git stash show 'stash@{0}'` (on Windows only under Git Bash) pass
   `Bash(git *)`; a backslash or caret before a quote and a typographic quote are refused because a
   shell may read them differently, and on Windows any single quote is refused unless the session
-  shell is Git Bash (use double quotes under PowerShell). A bare `Bash` rule admits any command. The
+  shell is Git Bash and the command has a space, a tab or a `"` (use double quotes under
+  PowerShell). A bare `Bash` rule admits any command. The
   rule constrains the command's text, not what the program does with its options (`Bash(git *)`
   still admits `git -c core.fsmonitor=… status`), and is not a sandbox: narrow the pattern when
   that matters.
@@ -366,8 +367,14 @@ contains a `*` (its rule would be a glob rule, which refuses compound commands).
 
 **Windows and `'`.** `'` is a quote in Git Bash and PowerShell but not in cmd.exe, so on Windows a
 single-quoted argument (`git stash show 'stash@{0}'`) is treated as an ordinary argument only when
-the session shell is Git Bash, read exactly as on Linux. Under PowerShell, cmd.exe or any other
-shell, any `'` makes the command compound; use double quotes there.
+the session shell is Git Bash (WSL's `bash.exe` in a Windows system directory does not count) _and_
+the command contains a space, a tab or a `"`. The reason is how Git Bash is started: Book passes the
+command as one argument, Node wraps an argument in `"…"` on the Windows command line only when it
+holds a space, a tab or a `"`, and the MSYS runtime rebuilds the arguments from that line itself,
+reading `'` as a quote and removing it in an unwrapped word. So `echo';id'` reaches bash as `echo;id`,
+two commands, while `git log 'x;y'` arrives intact. A command with a `'` and none of those
+characters, and every `'` under PowerShell, cmd.exe or any other shell, makes the command
+compound; use double quotes or add the space.
 
 Permission _modes_ decide whether you are prompted; they never relax a `deny` rule. A rule in
 `permissions.deny` blocks the matching call in every mode, including `auto` and
@@ -379,7 +386,7 @@ Modes differ only in what happens to calls that no `deny` rule matched:
 | `default`           | Checked against `allow`/`ask`, then prompted — except workspace reads, which run unless a rule covers them                    |
 | `acceptEdits`       | As `default`, and file mutations are approved without a prompt too                                                            |
 | `plan`              | Read-only tools only; mutations are refused until you approve a plan                                                          |
-| `auto`              | Run without a prompt, except a compound Bash command while a Bash `deny` or `ask` rule exists (see above)                     |
+| `auto`              | Run without a prompt, except any compound Bash command while a Bash `deny` or `ask` rule exists (see above)                   |
 | `dontAsk`           | Refused except for the tools below that never prompt — the mode never prompts, and a user `allow` rule does not exempt a call |
 | `bypassPermissions` | Run without a prompt                                                                                                          |
 
@@ -390,8 +397,8 @@ and `ToolSearch`, `EnterPlanMode` and the managed-agent lifecycle tools (every `
 `AgentApply`) never reach a prompt; `dontAsk` does not refuse any of them. A `permissions.deny` rule
 still blocks them in every mode. A `permissions.ask` rule that names one prompts in `default` and
 `acceptEdits`, refuses the call in `dontAsk`, and, as for every tool, is not consulted in `auto` or
-`bypassPermissions`. (A Bash `ask` rule is the exception in `auto`: it prompts for a compound
-command it matches.)
+`bypassPermissions`. (Bash is the exception in `auto`: while any Bash `deny` or `ask` rule exists,
+every compound Bash command prompts there, whether or not a rule matched it.)
 
 **Memory writes.** `Write`, `Edit`, `MultiEdit` and `ApplyPatch` may write `*.md` files in the
 project's memory directory without a prompt, in `default`, `acceptEdits`, `auto` and `dontAsk`. A
