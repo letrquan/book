@@ -268,6 +268,73 @@ describe('tool argument validation', () => {
     expect(result.status).toBe('success');
     expect(result.data).toEqual({ pattern: 'x' });
   });
+
+  describe('refuses a definition whose ignored argument is also a real one (#449)', () => {
+    const search = (overrides: Record<string, unknown>) => ({
+      name: 'Search',
+      description: 'Search',
+      parameters: {
+        type: 'object',
+        properties: { pattern: { type: 'string' }, i: { type: 'boolean' } },
+        required: ['pattern'],
+      },
+      execute: async () => toolSuccess('ok'),
+      ...overrides,
+    });
+
+    it('rejects an ignored argument that is a schema property', () => {
+      expect(() =>
+        createRegistry().register(search({ ignoredArguments: ['pattern'] })),
+      ).toThrowError(/Search.*pattern/s);
+    });
+
+    it('rejects an ignored argument that is an alias key', () => {
+      expect(() =>
+        createRegistry().register(
+          search({ ignoredArguments: ['-i'], argumentAliases: { '-i': 'i' } }),
+        ),
+      ).toThrowError(/Search.*-i/s);
+    });
+
+    it('rejects an ignored argument that is an alias target', () => {
+      expect(() =>
+        createRegistry().register(
+          search({ ignoredArguments: ['filter'], argumentAliases: { '-i': 'filter' } }),
+        ),
+      ).toThrowError(/Search.*filter/s);
+    });
+
+    it('rejects it through registerAll too', () => {
+      expect(() =>
+        createRegistry().registerAll([search({ ignoredArguments: ['i'] })]),
+      ).toThrowError(/Search.*"i"/s);
+    });
+
+    it('accepts an ignored argument that is none of those', () => {
+      expect(() =>
+        createRegistry().register(
+          search({ ignoredArguments: ['n', '-n'], argumentAliases: { '-i': 'i' } }),
+        ),
+      ).not.toThrow();
+    });
+
+    it('registers every default tool', () => {
+      expect(() => createDefaultRegistry()).not.toThrow();
+    });
+  });
+
+  it('shows hooks and permission rules Grep -i as i and no -n (#449)', () => {
+    const normalized = createDefaultRegistry().normalizeCall({
+      id: 'grep-flags',
+      name: 'Grep',
+      arguments: { pattern: 'x', '-i': true, '-n': true },
+    });
+
+    expect(normalized.arguments).toEqual({ pattern: 'x', i: true });
+    expect(normalized.arguments).not.toHaveProperty('-i');
+    expect(normalized.arguments).not.toHaveProperty('-n');
+    expect(normalized.arguments).not.toHaveProperty('n');
+  });
 });
 
 describe('cross-harness argument compatibility', () => {

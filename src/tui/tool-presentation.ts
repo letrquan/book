@@ -932,9 +932,8 @@ export interface ToolErrorDetailOptions {
   /**
    * The command's stdout, shown instead of a message that is only `Exit code: N`. Under any other
    * message a collapsed detail counts the rows its expanded output block draws for it, in the
-   * footer: `… +1 line of output`. Each line that is not empty is a row, a line of spaces included,
-   * and an empty one, the end of a final newline among them, is none. A stdout with no non-blank
-   * line is not named.
+   * footer: `… +1 line of output`. Each line is a row, an empty one included, except the empty
+   * line the newline real output ends in leaves. A stdout with no non-blank line is not named.
    */
   stdout?: string;
   /**
@@ -1087,8 +1086,8 @@ function commandOutputDetail(
   // Under a stderr message a collapsed row says nothing of the stdout unless its footer does, and
   // Ctrl+E skips a row that hides nothing. A row draws one footer and names the key once, so it
   // counts both: the stderr lines the tail cut, above the rows where that count always stood, and
-  // the rows Ctrl+E then draws for the stdout: the output block's lines that are not empty, so the
-  // newline real output ends in is not one. With no cut lines the footer is the stdout's alone,
+  // the rows Ctrl+E then draws for the stdout: a row for each of its lines, the empty ones too, but
+  // not for the newline real output ends in. With no cut lines the footer is the stdout's alone,
   // after the rows. There is no stdout to count when it is the rows (an exit-code-only message),
   // when an open row's output block draws it, or when it has no text.
   const stdoutLines =

@@ -957,6 +957,88 @@ function colourFrame(element: React.ReactElement): string {
   }
 }
 
+describe('ToolCallBlock output rows keep their empty lines (#494)', () => {
+  /** What each row of an expanded output block holds, past its rail, in order. */
+  const outputRows = (
+    content: string,
+    {
+      name = 'Bash',
+      args = { command: 'printf out' },
+      ...view
+    }: {
+      name?: string;
+      args?: Record<string, unknown>;
+      showAllToolOutput?: boolean;
+      transcriptMode?: 'compact' | 'detailed';
+    } = {},
+  ): string[] => {
+    const rendered = render(
+      withTheme(
+        <ToolCallBlock
+          name={name}
+          args={args}
+          result={successResult('call-1', content)}
+          isExpanded
+          reducedMotion
+          {...view}
+        />,
+      ),
+    );
+    return frame(rendered.lastFrame)
+      .split('\n')
+      .filter((line) => line.includes('│'))
+      .map((line) => line.slice(line.indexOf('│') + 1).trim());
+  };
+
+  it('draws the blank line between two paragraphs as an empty row', () => {
+    expect(outputRows('S1\n\nS2\n')).toEqual(['S1', '', 'S2']);
+  });
+
+  it('draws every empty line of printf "S1\\n\\nS2\\n\\n\\nS3\\n", in Ctrl+E and Ctrl+O alike', () => {
+    const output = 'S1\n\nS2\n\n\nS3\n';
+    const expected = ['S1', '', 'S2', '', '', 'S3'];
+    expect(outputRows(output, { showAllToolOutput: true })).toEqual(expected);
+    expect(outputRows(output, { transcriptMode: 'detailed' })).toEqual(expected);
+  });
+
+  it('adds no row for the newline that real output ends in', () => {
+    expect(outputRows('S1\nS2\n')).toEqual(['S1', 'S2']);
+    expect(outputRows('S1\nS2')).toEqual(['S1', 'S2']);
+    // An empty line before that newline is a row of its own.
+    expect(outputRows('S1\n\n')).toEqual(['S1', '']);
+  });
+
+  it('keeps the empty lines of a highlighted output too', () => {
+    // A Read of a source file is highlighted: its own branch draws the rows.
+    expect(
+      outputRows('a.ts\n\nconst x = 1;\n', { name: 'Read', args: { filePath: 'a.ts' } }),
+    ).toEqual(['a.ts', '', 'const x = 1;']);
+  });
+
+  it('draws as many rows as the footer of a cut output counts lines', () => {
+    const output = Array.from({ length: 10 }, (_, i) => `l${i}\n`).join('\n');
+    const rendered = render(
+      withTheme(
+        <ToolCallBlock
+          name="Bash"
+          args={{ command: 'seq 10' }}
+          result={successResult('call-1', output)}
+          isExpanded
+          reducedMotion
+        />,
+      ),
+    );
+    const text = frame(rendered.lastFrame);
+    // 10 lines and the 9 empty ones between them are 19 rows, and the newline after the last is
+    // none: a preview of 6 of them leaves 13 out.
+    const shown = text
+      .split('\n')
+      .filter((line) => line.includes('│') && !line.includes('…')).length;
+    expect(shown).toBe(6);
+    expect(text).toContain('… +13 lines');
+  });
+});
+
 describe('ToolCallBlock failures', () => {
   const MESSAGE =
     'Invalid arguments for TodoWrite: arguments.todos is required. Allowed arguments: todos.';
@@ -1508,9 +1590,10 @@ describe('ToolCallBlock failures', () => {
         return { named: Number(footer?.[1]), rows };
       };
 
-      it('takes no row for an empty line, which real output has in it and after it', () => {
-        // Ink gives an empty line no height: the block splits this into six lines and draws four.
-        expect(namedAndDrawn('A\n\nB\n   \nC\n')).toEqual({ named: 4, rows: 4 });
+      it('takes a row for an empty line in the text, and none for the newline after it', () => {
+        // The block splits this into six lines and draws five: the empty line after the final
+        // newline is the one that takes no row.
+        expect(namedAndDrawn('A\n\nB\n   \nC\n')).toEqual({ named: 5, rows: 5 });
       });
 
       it('reads one line for the one line a command prints, with its newline or without', () => {
@@ -1524,8 +1607,8 @@ describe('ToolCallBlock failures', () => {
         expect(namedAndDrawn('one\r\ntwo\r\n')).toEqual({ named: 2, rows: 2 });
       });
 
-      it('takes a line of spaces for a row, and the empty lines around the text for none', () => {
-        expect(namedAndDrawn('\n\nFAIL a\n \n\nexpected 1\n\n')).toEqual({ named: 3, rows: 3 });
+      it('counts the empty lines around the text, which the block draws as rows', () => {
+        expect(namedAndDrawn('\n\nFAIL a\n \n\nexpected 1\n\n')).toEqual({ named: 7, rows: 7 });
       });
     });
 

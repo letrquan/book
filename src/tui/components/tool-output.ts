@@ -20,11 +20,10 @@ export interface ToolOutputDisplay {
 }
 
 /**
- * The lines {@link prepareToolOutputDisplay} makes of `output`, which OutputBlock gives a row each
- * unless they are empty: none for an empty output, otherwise one for each piece between newlines,
- * so a final newline ends in an empty line of its own. Only a newline splits: the `\r` of a CRLF
- * stays at the end of its line. {@link countOutputLines} counts these lines without making them and
- * {@link countDrawnOutputLines} the ones that get a row: keep the three in step.
+ * The lines {@link prepareToolOutputDisplay} makes of `output`: none for an empty output, otherwise
+ * one for each piece between newlines, so a final newline ends in an empty line of its own. Only a
+ * newline splits: the `\r` of a CRLF stays at the end of its line. {@link countOutputLines} counts
+ * these lines without making them.
  */
 function splitOutputLines(output: string): string[] {
   return output.length === 0 ? [] : output.split('\n');
@@ -44,35 +43,34 @@ export function countOutputLines(output: string): number {
 }
 
 /**
- * How many rows OutputBlock draws for `output` once it shows every line: the lines
- * {@link splitOutputLines} makes of it that are not empty. Ink gives an empty line no height, so
- * the ones between two newlines and the one after a final newline take no row, while a line of
- * spaces takes one. A newline alone splits, as in the block: the `\r` of a CRLF stays on its line,
- * so `"X\r\n"` is one row and a line that is only a `\r` is a row too.
+ * How many rows OutputBlock draws for `output` once it shows every line: one for each line the
+ * output makes, an empty one included (the blank line between two paragraphs is a row), except the
+ * empty line after a final newline. That one is no line of the output but what its last newline
+ * leaves behind, so real output (`"X\n"`) is one row, as {@link prepareToolOutputDisplay} shows it.
+ * A newline alone splits, as in the block: the `\r` of a CRLF stays on its line, so `"X\r\n"` is
+ * one row.
  *
  * Found by scanning for newlines and making no line, so a large output costs one pass and no
  * allocation per line. A line of nothing but the escape sequences Ink strips (cursor movement,
  * erasing) draws no row either, but telling it from text takes the sequences parsed: it is counted.
  */
 export function countDrawnOutputLines(output: string): number {
-  let drawn = 0;
-  let start = 0;
-  for (let at = output.indexOf('\n'); at !== -1; at = output.indexOf('\n', start)) {
-    if (at > start) drawn++;
-    start = at + 1;
-  }
-  return output.length > start ? drawn + 1 : drawn;
+  return countOutputLines(output) - (output.endsWith('\n') ? 1 : 0);
 }
 
 /**
  * Prepare tool output for terminal display without mutating the underlying result.
- * Counts the original output, then returns a bounded, display-width-aware preview.
+ * Counts the original output, then returns a bounded, display-width-aware preview. `lines` are the
+ * rows to draw, each one a row even when empty.
  */
 export function prepareToolOutputDisplay(
   output: string,
   { maxLines, maxLineWidth, hint, strategy = 'head' }: ToolOutputDisplayOptions,
 ): ToolOutputDisplay {
-  const rawLines = splitOutputLines(output);
+  const splitLines = splitOutputLines(output);
+  // The empty line a final newline leaves is no line of the output: nothing is drawn for it, so it
+  // is neither shown nor counted as hidden. `totalLines` still counts it, as `countOutputLines` does.
+  const rawLines = output.endsWith('\n') ? splitLines.slice(0, -1) : splitLines;
   const lineLimit = Math.max(0, Math.floor(maxLines));
   const widthLimit = Math.max(0, Math.floor(maxLineWidth));
   const visibleIndices = selectVisibleLineIndices(rawLines.length, lineLimit, strategy);
@@ -91,7 +89,7 @@ export function prepareToolOutputDisplay(
 
   return {
     lines,
-    totalLines: rawLines.length,
+    totalLines: splitLines.length,
     totalChars: output.length,
     hiddenLines,
     truncatedLines,

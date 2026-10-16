@@ -611,7 +611,9 @@ function OutputBlock({
       paddingRight={1}
     >
       {display.lines.map((line, index) => (
-        <Box key={index}>
+        // An empty line is a row too: Ink gives a box whose text is empty no height of its own,
+        // which dropped the blank lines between paragraphs, test sections and diff hunks.
+        <Box key={index} minHeight={1}>
           {highlighted ? (
             <Text>
               {highlighted[index]?.map((segment, segmentIndex) => (
