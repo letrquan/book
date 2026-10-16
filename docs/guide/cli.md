@@ -192,8 +192,9 @@ consumer can tell a host notice from a model reply without matching on its text.
 Four things behave differently in print mode, because there is nobody to ask.
 
 **Permission prompts.** Print mode cannot show one, so in `default` and `acceptEdits` a call that
-would prompt in the TUI is refused. Reading and searching inside the workspace does not prompt
-unless a rule says so, so those calls run. For anything else, the model is told that nothing in the
+would prompt in the TUI is refused, and so is a compound Bash command in `auto` while a Bash
+`deny` or `ask` rule exists (that mode asks for it too; only `bypassPermissions` runs it). Reading and
+searching inside the workspace does not prompt unless a rule says so, so those calls run. For anything else, the model is told that nothing in the
 run can approve the call, and the first refusal of each tool in the session prints a line like this
 on stderr (a `notice` event in `stream-json`):
 

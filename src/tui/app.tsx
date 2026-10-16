@@ -2902,6 +2902,7 @@ export function App({
                 terminalWidth={termWidth}
                 terminalRows={termHeight}
                 workspaceRoot={config.workspace}
+                shell={config.shell}
                 onLayoutChange={bumpFooterLayout}
               />
             ) : childPermission?.type === 'agent_permission' ? (

@@ -28,7 +28,15 @@ export type UnattendedRemedy =
   /** A persistent background shell asks in every mode but bypassPermissions, allow rules or not. */
   | { kind: 'bypass_only' }
   /** A Read, Glob or Grep the tool itself refuses: nothing lets it through. */
-  | { kind: 'outside_workspace' };
+  | { kind: 'outside_workspace' }
+  /**
+   * A compound Bash command while a Bash deny or ask rule exists: asked about in every mode but
+   * bypassPermissions, `auto` included (see `compoundUnderPolicy` in `permissions.ts`).
+   * `rule` is the exact rule that would admit the command, absent when none could (a multi-line
+   * command, or a compound one containing `*`); `askRule` is the ask rule that matched it, which
+   * outranks every allow rule, so an exact rule would not help.
+   */
+  | { kind: 'compound_under_policy'; rule?: string; askRule?: string };
 
 /** What refused a call that needed permission. */
 export type PermissionDenialCause =
@@ -79,6 +87,18 @@ function remedyClause(remedy: UnattendedRemedy): string | undefined {
       return `add a permissions.allow rule such as "${printableRule(remedy.rule)}" to your settings (--permission-mode auto still asks for it)`;
     case 'bypass_only':
       return 'run with --permission-mode bypassPermissions: a persistent background shell asks in every other mode, whatever the allow rules say';
+    case 'compound_under_policy': {
+      const send = 'have each command sent as its own Bash call';
+      const bypass =
+        'run with --permission-mode bypassPermissions (every other mode asks for a compound command while a Bash deny or ask rule exists)';
+      if (remedy.askRule) {
+        return `${send}, narrow or remove the permissions.ask rule ${printableRule(remedy.askRule)}, which asks for it and outranks any allow rule, or ${bypass}`;
+      }
+      if (remedy.rule) {
+        return `${send}, add the exact rule "${printableRule(remedy.rule)}" to permissions.allow in your settings, or ${bypass}`;
+      }
+      return `${send} (no exact allow rule can admit this command), or ${bypass}`;
+    }
     case 'outside_workspace':
       return undefined;
   }

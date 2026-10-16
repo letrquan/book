@@ -111,3 +111,44 @@ describe('actionable tool errors', () => {
     expect(long.length).toBeLessThan(400);
   });
 });
+
+describe('the compound command remedy (#512)', () => {
+  const remedy = { kind: 'compound_under_policy', rule: 'Bash(cd x && npm test)' } as const;
+
+  it('names the three real ways through, and never --permission-mode auto', () => {
+    const error = permissionDeniedError('Bash', { kind: 'no_approver', remedy });
+    expect(error).toContain('as its own Bash call');
+    expect(error).toContain('permissions.allow');
+    expect(error).toContain('"Bash(cd x && npm test)"');
+    expect(error).toContain('bypassPermissions');
+    expect(error).not.toContain('--permission-mode auto');
+    const notice = unattendedRefusalNotice('Bash', remedy)!;
+    expect(notice).toContain('"Bash(cd x && npm test)"');
+    expect(notice).toContain('bypassPermissions');
+    expect(notice).not.toContain('--permission-mode auto');
+  });
+
+  it('leaves out the allow rule when no exact rule could admit the command', () => {
+    const error = permissionDeniedError('Bash', {
+      kind: 'no_approver',
+      remedy: { kind: 'compound_under_policy' },
+    });
+    expect(error).toContain('as its own Bash call');
+    expect(error).toContain('bypassPermissions');
+    expect(error).not.toContain('permissions.allow');
+  });
+
+  it('says the ask rule outranks an allow rule when one matched the whole command', () => {
+    const error = permissionDeniedError('Bash', {
+      kind: 'no_approver',
+      remedy: {
+        kind: 'compound_under_policy',
+        rule: 'Bash(curl x && rm y)',
+        askRule: 'Bash(curl *)',
+      },
+    });
+    expect(error).toContain('permissions.ask rule Bash(curl *)');
+    expect(error).not.toContain('"Bash(curl x && rm y)"');
+    expect(error).not.toContain('--permission-mode auto');
+  });
+});

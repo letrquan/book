@@ -1,3 +1,5 @@
+import type { ResolvedShell } from '../types/runtime.js';
+
 /**
  * Shell characters that chain, redirect, substitute or group one command into another, and a
  * newline, which starts a second command.
@@ -21,9 +23,11 @@
  *
  * It stays conservative across sh/bash, PowerShell and cmd.exe: whatever any of them could read as
  * something other than a quote refuses the command (a backslash or caret before a quote, a
- * typographic quote, an unterminated quote). On Windows any single quote refuses the command: cmd.exe
- * has no single quote, but the Windows session shell is usually PowerShell or Git Bash, which both
- * read it as a real one, so the scanner cannot tell which characters are quoted.
+ * typographic quote, an unterminated quote). On Windows any single quote refuses the command unless
+ * the session shell is known to be Git Bash (see {@link ScanShell}): cmd.exe has no single quote, but
+ * the Windows session shell is usually PowerShell or Git Bash, which both read it as a real one, and
+ * only Git Bash reads it exactly as sh does, so for any other shell the scanner cannot tell which
+ * characters are quoted.
  *
  * The "Always allow" ladder (`permissionRuleLadder`) stays quote-blind on purpose and uses
  * {@link SHELL_CHAINING} raw: a tokenizer that knew quotes would offer rungs with a dangling quote.
@@ -40,6 +44,18 @@ const TYPOGRAPHIC_QUOTE = new RegExp(`[${TYPOGRAPHIC_QUOTE_RANGE}]`);
 
 /** Every character that can open or close a quote in some shell. */
 export const ANY_QUOTE = new RegExp(`['"${TYPOGRAPHIC_QUOTE_RANGE}]`);
+
+/**
+ * The part of the session shell the scanner reads: `ResolvedShell.kind` and `file`. Git Bash is
+ * `kind: 'bash'` with a `file`: `shellExecution` sends a `bash` kind without one to Node's
+ * `shell: true`, which is cmd.exe on Windows.
+ */
+export type ScanShell = Pick<ResolvedShell, 'kind' | 'file'>;
+
+/** Whether the session shell is Git Bash, the one Windows shell that quotes with `'` as sh does. */
+function isGitBash(shell: ScanShell | undefined): boolean {
+  return shell?.kind === 'bash' && Boolean(shell.file);
+}
 
 /**
  * Whether a command contains shell syntax a `Bash(<pattern>)` rule cannot vouch for, so it must be
@@ -60,20 +76,26 @@ export const ANY_QUOTE = new RegExp(`['"${TYPOGRAPHIC_QUOTE_RANGE}]`);
  *   quoted;
  * - a caret comes right before `'` or `"` outside quotes: `^` escapes the quote in cmd.exe;
  * - a typographic quote appears anywhere;
- * - on `win32`, an ASCII `'` appears anywhere (PowerShell and Git Bash both read it as a quote).
+ * - on `win32`, an ASCII `'` appears anywhere, unless `shell` is Git Bash, where `'` is a POSIX
+ *   single quote exactly as on Linux. Every other case on win32 (cmd, pwsh, powershell, sh, a `bash`
+ *   without a file, no shell known) keeps refusing it. Off win32 `shell` is not read.
+ *
+ * Every caller passes the same (platform, shell) pair, so the permission gate, the capability gate
+ * and the refusal text agree about which commands are compound.
  */
 export function hasCompoundShellSyntax(
   command: string,
   platform: NodeJS.Platform = process.platform,
+  shell?: ScanShell,
 ): boolean {
   const text = command.trim();
-  const windows = platform === 'win32';
+  const refusesSingleQuote = platform === 'win32' && !isGitBash(shell);
   let state: 'outside' | 'single' | 'double' = 'outside';
 
   for (let i = 0; i < text.length; i += 1) {
     const char = text[i];
     if (LINE_BREAK.test(char) || TYPOGRAPHIC_QUOTE.test(char)) return true;
-    if (windows && char === "'") return true;
+    if (refusesSingleQuote && char === "'") return true;
 
     const next = text[i + 1];
     const quoteFollows = next === '"' || next === "'";

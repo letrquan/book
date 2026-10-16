@@ -662,7 +662,11 @@ export function createRegistry() {
     normalizedCall: ToolCall,
     context: ToolContext,
   ): ToolResult => {
-    const compound = isCompoundShellCommand(normalizedCall);
+    const compound = isCompoundShellCommand(
+      normalizedCall,
+      process.platform,
+      context.shell ?? context.agentConfig?.shell,
+    );
     return noteRepeatedFailure(
       context,
       normalizedCall,

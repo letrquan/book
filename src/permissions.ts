@@ -11,6 +11,7 @@ import {
   LINE_BREAK,
   SHELL_CHAINING,
   hasCompoundShellSyntax,
+  type ScanShell,
 } from './tools/shell-chaining.js';
 import { strictRmOfMarkdownUnder } from './tools/strict-rm.js';
 import {
@@ -54,6 +55,15 @@ export interface PermissionVerdict {
    * directory to serve or to add, and the refusal carries the matcher's own reason.
    */
   unreadablePattern?: string;
+  /**
+   * Set on an `ask` for a Bash command that {@link hasCompoundShellSyntax} calls compound, while
+   * the settings hold a deny or ask rule about Bash (see {@link hasBashAdjudicationPolicy}). A
+   * deny or ask glob reads one line and cannot see what a `&&`, a `;` or a second line runs, so
+   * such a command is never run without the permission prompt: the loop asks for it in `auto` too
+   * (only `bypassPermissions` skips it), and `dontAsk` refuses it. Set on both asks that can
+   * happen: the ask rule that matches the compound command as a whole, and the compound ask.
+   */
+  compoundUnderPolicy?: true;
 }
 
 /** Whether a read target is a pattern the matcher cannot read, with the reason it gave. */
@@ -143,6 +153,11 @@ export interface PermissionEvaluationOptions {
   workspace?: WorkspaceScope;
   /** The platform a Bash command is read for; `process.platform` unless a test injects one. */
   platform?: NodeJS.Platform;
+  /**
+   * The session shell a Bash command is read for (`toolContext.shell ?? config.shell`). On win32
+   * only Git Bash reads `'` as a quote; see {@link hasCompoundShellSyntax}.
+   */
+  shell?: ScanShell;
 }
 
 /** Read-only file tools whose targets inside the workspace need no prompt (#264). */
@@ -291,12 +306,37 @@ function ruleMatches(rule: ParsedRule, toolName: string, primaryArg: string): bo
 }
 
 /**
- * Whether an `allow` rule admits a Bash call (#500). A bare `Bash` rule admits every call. A rule
- * with a pattern admits it only when the whole command, trimmed, matches the pattern and is not
- * compound: a glob cannot say "and nothing else", and the primary argument is only the first line,
- * so `Bash(git status)` must not admit `git status` followed by a second line, nor `Bash(git *)`
- * `git status && rm -rf ~`. Otherwise the rule does not match and the call falls through to the
- * prompt. `deny` and `ask` do not use this: they read the first line and the trimmed command, see
+ * Whether a Bash allow rule is an exact rule: it names a pattern and the pattern has no `*`. Any
+ * other pattern is a glob rule, and a bare `Bash` (no pattern) admits every call.
+ */
+function isExactPattern(rule: ParsedRule): boolean {
+  return rule.pattern !== null && !rule.pattern.includes('*');
+}
+
+/**
+ * Whether a rule text is an exact Bash rule (`Bash(cd x && npm test)`): the only kind of session
+ * approve-all rule that may skip the prompt for a compound command under a Bash policy.
+ */
+export function isExactBashRule(rule: string): boolean {
+  const parsed = parseRule(rule);
+  return toolNameMatchesRule(parsed.toolName, 'Bash') && isExactPattern(parsed);
+}
+
+/**
+ * Whether an `allow` rule admits a Bash call (#500, then #512). The Bash tool runs
+ * `command.trim()`, and a rule is read against that:
+ *
+ * - an exact rule (a pattern without `*`) admits the call only when the trimmed command is
+ *   byte-for-byte the pattern, compared as plain strings and never through `globToRegex` (which
+ *   leaves `?` unescaped). It does so whether or not the command is compound: the user wrote that
+ *   very line down;
+ * - a glob rule (a pattern with `*`) admits it only when the whole trimmed command matches and is
+ *   not compound: a glob cannot say "and nothing else", and the primary argument is only the first
+ *   line, so `Bash(git *)` must not admit `git status && rm -rf ~`;
+ * - a bare `Bash` rule admits every call.
+ *
+ * Otherwise the rule does not match and the call falls through to the prompt. `deny` and `ask` do
+ * not use this: they read the first line and the trimmed command, see
  * {@link bashRestrictiveCandidates}.
  *
  * `reading` is the command's trimmed text and compound verdict, computed once per call by
@@ -306,12 +346,14 @@ function bashAllowRuleMatches(
   rule: ParsedRule,
   command: unknown,
   platform: NodeJS.Platform,
+  shell: ScanShell | undefined,
   reading?: BashCommandReading,
 ): boolean {
   if (!toolNameMatchesRule(rule.toolName, 'Bash')) return false;
   if (rule.pattern === null) return true;
   if (typeof command !== 'string') return false;
-  const { trimmed, compound } = reading ?? readBashCommand(command, platform);
+  const { trimmed, compound } = reading ?? readBashCommand(command, platform, shell);
+  if (isExactPattern(rule)) return trimmed === rule.pattern;
   if (compound) return false;
   return ruleMatchesCandidate(rule, 'Bash', trimmed, false);
 }
@@ -323,8 +365,12 @@ interface BashCommandReading {
   compound: boolean;
 }
 
-function readBashCommand(command: string, platform: NodeJS.Platform): BashCommandReading {
-  return { trimmed: command.trim(), compound: hasCompoundShellSyntax(command, platform) };
+function readBashCommand(
+  command: string,
+  platform: NodeJS.Platform,
+  shell: ScanShell | undefined,
+): BashCommandReading {
+  return { trimmed: command.trim(), compound: hasCompoundShellSyntax(command, platform, shell) };
 }
 
 /**
@@ -342,7 +388,7 @@ function bashRestrictiveCandidates(command: unknown, firstLine: string): string[
 
 /**
  * The rule that remembers exactly this call, or `undefined` when the call has no
- * primary argument to scope one to.
+ * primary argument to scope one to, or, for Bash, when the exact rule could never admit it.
  *
  * A bare tool name means "every call of this tool", so a call whose primary argument
  * is empty must not produce one: `{command: ""}` and `{command: "\nrm -rf x"}` both
@@ -350,8 +396,26 @@ function bashRestrictiveCandidates(command: unknown, firstLine: string): string[
  * them would have written a `Bash` rule allowing every shell command from then on.
  * The call is still allowed; nothing is remembered.
  */
-export function permissionRuleForToolCall(call: ToolCall): string | undefined {
+export function permissionRuleForToolCall(
+  call: ToolCall,
+  platform: NodeJS.Platform = process.platform,
+  shell?: ScanShell,
+): string | undefined {
   const toolName = canonicalToolName(call.name);
+  if (toolName === 'Bash' && typeof call.arguments.command === 'string') {
+    // The exact rule is built from the trimmed command and admits only it (#512). Two commands
+    // have a rule that could never admit them, and an "Always allow" on them remembers nothing:
+    // one that is multi-line after trimming (a rule holds one line, and the line it would hold
+    // is not what runs), and a compound one that contains a `*` (its rule is a glob rule, and a
+    // glob rule refuses a compound command). The call itself still runs once.
+    // A command that opens with a blank line is not scoped to a line either, as before: its
+    // primary argument is empty, and a rule built from it would be a bare `Bash`.
+    const command = call.arguments.command.trim();
+    if (!command || LINE_BREAK.test(command)) return undefined;
+    if (!getPrimaryArg(call.arguments).trim()) return undefined;
+    if (command.includes('*') && hasCompoundShellSyntax(command, platform, shell)) return undefined;
+    return `Bash(${command})`;
+  }
   const primaryArg = getPrimaryArg(call.arguments);
   if (toolName === 'WebSearch') return toolName;
   if (toolName === 'WebFetch' && primaryArg) {
@@ -407,11 +471,17 @@ const RULE_LADDER_MAX = 3;
  *
  * Only Bash gets a ladder. Paths are already reusable as written, and WebFetch
  * globs its own origin in {@link permissionRuleForToolCall}. The list is empty
- * when the call has no primary argument to scope a rule to, and a caller reads
- * that as "remember nothing".
+ * when the call has no primary argument to scope a rule to, and for a Bash command whose exact
+ * rule could never admit it (see {@link permissionRuleForToolCall}); a caller reads that as
+ * "remember nothing". For a one-line compound command the ladder is its exact rule alone, which
+ * admits that same call.
  */
-export function permissionRuleLadder(call: ToolCall): string[] {
-  const exact = permissionRuleForToolCall(call);
+export function permissionRuleLadder(
+  call: ToolCall,
+  platform: NodeJS.Platform = process.platform,
+  shell?: ScanShell,
+): string[] {
+  const exact = permissionRuleForToolCall(call, platform, shell);
   if (!exact) return [];
   if (canonicalToolName(call.name) !== 'Bash') return [exact];
 
@@ -441,11 +511,12 @@ export function permissionRuleMatchesCall(
   rule: string,
   call: ToolCall,
   platform: NodeJS.Platform = process.platform,
+  shell?: ScanShell,
 ): boolean {
   const toolName = canonicalToolName(call.name);
   // This feeds the session approve-all rules, which act as an allow.
   if (toolName === 'Bash') {
-    return bashAllowRuleMatches(parseRule(rule), call.arguments.command, platform);
+    return bashAllowRuleMatches(parseRule(rule), call.arguments.command, platform, shell);
   }
   const primaryArg = getPrimaryArg(call.arguments);
   if (toolName === 'WebFetch' && primaryArg) {
@@ -499,23 +570,46 @@ export function primaryArgForRule(_toolName: string, args: Record<string, unknow
 }
 
 /**
- * Has the user asked to be consulted about anything at all?
+ * Has the user written any deny or ask rule at all, for any tool?
  *
- * A shell command line is not a primary argument the way a file path is: one
- * line can read a file, write a file, reach the network, and chain three more
- * commands behind `&&`. A `deny` or `ask` glob therefore only ever matches the
- * shapes the user thought to write down — `deny: ["Bash(rm *)"]` does not match
- * `true && rm -rf .` — and it is the *default ask* underneath that catches
- * everything the glob missed, including the same action performed through a
- * different tool (`cat .env` against a `Read` deny, `curl` against a `WebFetch`
- * deny).
+ * This is what keeps `sandbox.autoAllowBashIfSandboxed` from removing the default ask
+ * ({@link sandboxAutoAllows}): a shell command line is not a primary argument the way a file path
+ * is, and one line can read a file, write a file, reach the network and chain three more commands
+ * behind `&&`. A deny or ask glob only matches the shapes the user thought to write down, and the
+ * default ask underneath is what catches the rest, including the same action performed through a
+ * different tool (`cat .env` against a `Read` deny, `curl` against a `WebFetch` deny). So any
+ * hand-written deny/ask rule counts as the user saying "adjudicate my shell commands", and the
+ * sandbox allowance steps aside.
  *
- * So the presence of any hand-written deny/ask rule is treated as the user
- * saying "adjudicate my shell commands", and the default ask stays. Removing it
- * would turn every such rule from a floor into a list of exact strings to avoid.
+ * That is all this is for. It is NOT what makes a compound command ask in `auto`: that is the
+ * narrower {@link hasBashAdjudicationPolicy}, which only a rule about Bash triggers.
  */
 export function hasAdjudicationPolicy(settings: ResolvedSettings): boolean {
   return settings.permissions.deny.length > 0 || settings.permissions.ask.length > 0;
+}
+
+/**
+ * Is there a deny or ask rule whose tool is Bash, under the comparison the matcher uses
+ * ({@link toolNameMatchesRule})? A rule on another tool (`Read(.env)`) does not count.
+ *
+ * Such a rule is a glob over one line (the first line, or the whole command as one string), so it
+ * cannot see what a compound command runs: `deny: ["Bash(rm *)"]` does not match
+ * `echo ok && rm -rf ~`, `echo ok; rm -rf ~` or `echo ok\nrm -rf ~`. Book does not split shell
+ * commands to look inside them. Instead, while this policy exists, a Bash command that
+ * {@link hasCompoundShellSyntax} calls compound is never run without the permission prompt: the
+ * verdict is `ask` with {@link PermissionVerdict.compoundUnderPolicy}, which the agent loop turns
+ * into a prompt in `auto` as well (`bypassPermissions` still bypasses, `dontAsk` refuses). Only a
+ * deny or ask rule matching the command, or an exact allow rule naming the very command, outranks
+ * it; a bare `Bash` or a glob allow rule does not.
+ */
+export function hasBashAdjudicationPolicy(settings: ResolvedSettings): boolean {
+  return hasBashRestriction(parseRuleLists(settings));
+}
+
+function hasBashRestriction(lists: ParsedRuleLists): boolean {
+  return [...lists.deny, ...lists.ask].some(({ parsed }) =>
+    toolNameMatchesRule(parsed.toolName, 'Bash'),
+  );
 }
 
 /**
@@ -985,7 +1079,9 @@ function removesOnlyMemory(
 
 /**
  * Evaluate permission rules against a tool call. Rules are evaluated in
- * CC's order: deny → ask → allow. First match wins.
+ * CC's order: deny → ask → allow. First match wins. For Bash the order is deny → ask → exact
+ * allow rules → (a compound command under a Bash deny or ask rule: ask) → glob and bare allow
+ * rules; see {@link bashAllowRuleMatches} and {@link hasBashAdjudicationPolicy}.
  *
  * Returns 'allow', 'deny', or 'ask' (the default when no rule matches), or `refuse` for a
  * Read, Glob or Grep target no tool may serve, which no rule and no mode can make servable.
@@ -1116,6 +1212,19 @@ export function evaluatePermissionDetail(
     readTarget !== undefined && isUnreadablePattern(readTarget) ? readTarget.reason : undefined;
   const outside = readTarget === 'outside' ? { outsideWorkspace: true as const } : {};
 
+  // What the Bash tool runs, and whether it is compound, read once for the rules below.
+  const platform = options.platform ?? process.platform;
+  const bashReading =
+    tool === 'Bash' && typeof args.command === 'string'
+      ? readBashCommand(args.command, platform, options.shell)
+      : undefined;
+  // A compound command under a Bash deny or ask rule is never run unprompted: those rules read one
+  // line and cannot see what a `&&`, a `;` or a second line runs (see `hasBashAdjudicationPolicy`).
+  const compoundUnderPolicy =
+    bashReading?.compound === true && hasBashRestriction(parsed)
+      ? { compoundUnderPolicy: true as const }
+      : {};
+
   // Deny rules first, then ask, then allow — every one outranking what follows.
   for (const entry of parsed.deny) {
     if (matchesRule(entry.parsed, true)) {
@@ -1124,18 +1233,36 @@ export function evaluatePermissionDetail(
   }
   for (const entry of parsed.ask) {
     if (matchesRule(entry.parsed, true)) {
-      return { decision: 'ask', matchedRule: entry.text, source: 'ask', ...outside };
+      return {
+        decision: 'ask',
+        matchedRule: entry.text,
+        source: 'ask',
+        ...outside,
+        ...compoundUnderPolicy,
+      };
     }
   }
-  const platform = options.platform ?? process.platform;
-  const bashReading =
-    tool === 'Bash' && typeof args.command === 'string'
-      ? readBashCommand(args.command, platform)
-      : undefined;
+  if (tool === 'Bash') {
+    // An exact allow rule admits exactly the line the user wrote down, compound or not, once no
+    // deny or ask rule matched it.
+    for (const entry of parsed.allow) {
+      if (
+        isExactPattern(entry.parsed) &&
+        bashAllowRuleMatches(entry.parsed, args.command, platform, options.shell, bashReading)
+      ) {
+        return { decision: 'allow', matchedRule: entry.text, source: 'allow' };
+      }
+    }
+    // Nothing the user wrote down vouches for this compound command, and the Bash deny/ask rules
+    // could not read it: ask, in every mode that can.
+    if (compoundUnderPolicy.compoundUnderPolicy) {
+      return { decision: 'ask', source: 'default', ...compoundUnderPolicy };
+    }
+  }
   for (const entry of parsed.allow) {
     const matched =
       tool === 'Bash'
-        ? bashAllowRuleMatches(entry.parsed, args.command, platform, bashReading)
+        ? bashAllowRuleMatches(entry.parsed, args.command, platform, options.shell, bashReading)
         : matchesRule(entry.parsed, false);
     if (matched) {
       return { decision: 'allow', matchedRule: entry.text, source: 'allow' };

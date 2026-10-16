@@ -13,6 +13,7 @@ import {
   parseCapabilityRules,
   type CapabilityRule,
 } from '../tools/capability-rules.js';
+import type { ScanShell } from '../tools/shell-chaining.js';
 
 export { isToolCallAllowed, parseCapabilityRule, parseCapabilityRules, type CapabilityRule };
 
@@ -42,7 +43,12 @@ const READONLY_DENIED_TOOLS = new Set([
   'GitCommit',
 ]);
 
-function denied(call: ToolCall, profile?: string, isolation?: AgentIsolation): ToolResult {
+function denied(
+  call: ToolCall,
+  profile?: string,
+  isolation?: AgentIsolation,
+  shell?: ScanShell,
+): ToolResult {
   const canonical = canonicalToolName(call.name);
   if (isolation === 'workspace-readonly') {
     return toolFailure(
@@ -50,7 +56,7 @@ function denied(call: ToolCall, profile?: string, isolation?: AgentIsolation): T
       { toolCallId: call.id, code: 'capability_denied', status: 'blocked' },
     );
   }
-  const compound = isCompoundShellCommand(call)
+  const compound = isCompoundShellCommand(call, process.platform, shell)
     ? ` ${COMPOUND_COMMAND_REFUSAL} ${COMPOUND_COMMAND_REMEDIATION}`
     : '';
   return toolFailure(
@@ -97,11 +103,13 @@ export function createCapabilityRegistry(
           name: canonical,
           arguments: args,
         };
+        // The session shell, read as the permission gate reads it (#512).
+        const shell = context.shell ?? context.agentConfig?.shell;
         if (
           canonical !== 'ToolSearch' &&
-          !isToolCallAllowed(rules, call, CHILD_WILDCARD_EXCLUSIONS)
+          !isToolCallAllowed(rules, call, CHILD_WILDCARD_EXCLUSIONS, process.platform, shell)
         )
-          return denied(call, options.profile, options.isolation);
+          return denied(call, options.profile, options.isolation, shell);
         return definition.execute(args, context);
       },
     };

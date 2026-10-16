@@ -135,3 +135,50 @@ describe('hasCompoundShellSyntax', () => {
     expect(linux("git stash show 'stash@{0}'")).toBe(false);
   });
 });
+
+describe('hasCompoundShellSyntax on win32 reads the session shell (#512, decision 3)', () => {
+  const gitBash = { kind: 'bash', file: 'C:/Program Files/Git/bin/bash.exe' } as const;
+
+  it.each(["git log 'x'", "git stash show 'stash@{0}'", "git commit -m 'a; b | c'"])(
+    'admits %j under Git Bash',
+    (command) => {
+      expect(hasCompoundShellSyntax(command, 'win32', gitBash)).toBe(false);
+    },
+  );
+
+  it('still refuses what hides behind a single-quoted double quote under Git Bash', () => {
+    expect(hasCompoundShellSyntax("git log '\"' ; rm x ; '\"'", 'win32', gitBash)).toBe(true);
+  });
+
+  it('keeps every stricter choice under Git Bash', () => {
+    for (const command of [
+      "git log 'a\nb'",
+      "git log \\'x",
+      "git log 'x",
+      'git log \u2018x\u2019',
+      "git log ^'x'",
+      'git log "$(x)"',
+    ]) {
+      expect(hasCompoundShellSyntax(command, 'win32', gitBash), command).toBe(true);
+    }
+    expect(hasCompoundShellSyntax("  git log 'x'  ", 'win32', gitBash)).toBe(false);
+  });
+
+  it.each([
+    ['pwsh', { kind: 'pwsh', file: 'C:/pwsh.exe' } as const],
+    ['powershell', { kind: 'powershell', file: 'C:/powershell.exe' } as const],
+    ['cmd', { kind: 'cmd' } as const],
+    ['bash without a file', { kind: 'bash' } as const],
+    ['sh with a file', { kind: 'sh', file: 'C:/sh.exe' } as const],
+    ['no shell', undefined],
+  ])('refuses any single quote under %s', (_label, shell) => {
+    expect(hasCompoundShellSyntax("git log 'x'", 'win32', shell)).toBe(true);
+  });
+
+  it('changes nothing off win32, whatever the shell', () => {
+    for (const shell of [undefined, { kind: 'cmd' } as const, gitBash]) {
+      expect(hasCompoundShellSyntax("git log 'x'", 'linux', shell)).toBe(false);
+      expect(hasCompoundShellSyntax("git log 'x' ; rm y", 'linux', shell)).toBe(true);
+    }
+  });
+});

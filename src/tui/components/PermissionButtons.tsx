@@ -16,6 +16,7 @@ import {
   type MutationPreviewFile,
 } from '../../tools/mutation-preview.js';
 import { permissionRuleForToolCall, permissionRuleLadder } from '../../permissions.js';
+import type { ScanShell } from '../../tools/shell-chaining.js';
 import type { PermissionDecision, PermissionResult, ToolCall } from '../../types/tools.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
@@ -60,6 +61,11 @@ interface PermissionButtonsProps {
    * card can only name the path.
    */
   workspaceRoot?: string;
+  /**
+   * The session shell, which decides whether a Bash command is compound and so whether "Always
+   * allow" has a rule to offer; the loop reads it the same way (`toolContext.shell`).
+   */
+  shell?: ScanShell;
   /**
    * Called when the card's height may have changed: when it opens, when the
    * diff preview arrives, when `D` opens or closes a cut payload, and when it
@@ -218,6 +224,7 @@ export function PermissionButtons({
   terminalWidth = 80,
   terminalRows = 24,
   workspaceRoot,
+  shell,
   onLayoutChange,
 }: PermissionButtonsProps) {
   const theme = useTheme();
@@ -237,7 +244,10 @@ export function PermissionButtons({
   // the exact rule matches that byte sequence and nothing else, so offering
   // only that made the button a no-op for the case it exists to serve; the user
   // steps the scope with `A` and always sees the pattern before Enter writes it.
-  const ladder = useMemo(() => permissionRuleLadder(toolCall), [toolCall]);
+  const ladder = useMemo(
+    () => permissionRuleLadder(toolCall, process.platform, shell),
+    [toolCall, shell],
+  );
   const ladderRef = useRef(ladder);
   ladderRef.current = ladder;
   const [scopeIndex, setScopeIndex, currentScope] = useKeyState(0);

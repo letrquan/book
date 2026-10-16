@@ -53,6 +53,7 @@ import {
   permissionResultOf,
   permissionRuleForToolCall,
   permissionRuleMatchesCall,
+  isExactBashRule,
   permissionRuleOf,
   WORKSPACE_READ_JUDGING_MODES,
   WORKSPACE_READ_REFUSAL_MODES,
@@ -2761,7 +2762,13 @@ export async function runAgentLoop(
         // whether the user is *asked*; they do not decide whether a rule the user
         // already wrote applies.
         const judgeReads = WORKSPACE_READ_JUDGING_MODES.has(effectiveMode);
+        // The session shell, read the way the Bash tool reads it (`sessionShell` in
+        // `tools/shell.ts`): the same (platform, shell) pair goes to every gate below, so what
+        // the permission check and the capability check call compound agree (#512).
+        const scanShell = toolContext.shell ?? config.shell;
         const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings, {
+          platform: process.platform,
+          shell: scanShell,
           workspace: {
             root: toolContext.workspaceRoot,
             realRoot: workspaceRealRoot,
@@ -2839,9 +2846,15 @@ export async function runAgentLoop(
           }
         }
 
+        // A compound Bash command under a Bash deny or ask rule asks in every mode but
+        // `bypassPermissions`, `auto` included, exactly as a persistent background shell does. It
+        // is OR-ed into the same condition, not into `persistentBackgroundShell` itself: that one
+        // also turns off the approve-all check below, and an exact session rule must still admit
+        // its exact command.
+        const compoundUnderPolicy = verdict.compoundUnderPolicy === true;
         const toolPermissionRequired = requiresToolPermission(
           effectiveMode,
-          persistentBackgroundShell,
+          persistentBackgroundShell || compoundUnderPolicy,
         );
         const userRuleAsked =
           toolPermissionRequired && verdict.decision === 'ask' && verdict.source === 'ask';
@@ -2867,7 +2880,13 @@ export async function runAgentLoop(
         if (
           (forceSkillPermission || toolPermissionRequired) &&
           (persistentBackgroundShell ||
-            !approveAllRules.some((rule) => permissionRuleMatchesCall(rule, call))) &&
+            !approveAllRules.some(
+              (rule) =>
+                // A bare `Bash` or a glob session rule never vouches for a flagged command; only
+                // the exact rule for that very command does (a glob rule refuses it anyway).
+                (!compoundUnderPolicy || isExactBashRule(rule)) &&
+                permissionRuleMatchesCall(rule, call, process.platform, scanShell),
+            )) &&
           (!autoSafeTool || userRuleAsked || guardedReadInPlan) &&
           (effectiveMode !== 'plan' || planReadOnly)
         ) {
@@ -2922,17 +2941,23 @@ export async function runAgentLoop(
                 ? { kind: 'bypass_only' }
                 : verdict.outsideWorkspace
                   ? { kind: 'outside_workspace' }
-                  : askRule
-                    ? { kind: 'ask_rule', rule: askRule }
-                    : forceSkillPermission
-                      ? {
-                          kind: 'allow_rule_only',
-                          rule: permissionRuleForToolCall(call) ?? canonName,
-                        }
-                      : {
-                          kind: 'rule_or_auto',
-                          rule: permissionRuleForToolCall(call) ?? canonName,
-                        };
+                  : compoundUnderPolicy
+                    ? {
+                        kind: 'compound_under_policy',
+                        rule: permissionRuleForToolCall(call, process.platform, scanShell),
+                        askRule,
+                      }
+                    : askRule
+                      ? { kind: 'ask_rule', rule: askRule }
+                      : forceSkillPermission
+                        ? {
+                            kind: 'allow_rule_only',
+                            rule: permissionRuleForToolCall(call) ?? canonName,
+                          }
+                        : {
+                            kind: 'rule_or_auto',
+                            rule: permissionRuleForToolCall(call) ?? canonName,
+                          };
               const cause: PermissionDenialCause =
                 effectiveMode === 'dontAsk'
                   ? { kind: 'dont_ask', askRule }
@@ -2955,7 +2980,8 @@ export async function runAgentLoop(
               // No rule, no write: a call with no primary argument has nothing to scope
               // one to, and a bare `Bash` rule allows every shell command afterwards. The
               // answer still stands for this one call.
-              const rule = chosenRule ?? permissionRuleForToolCall(call);
+              const rule =
+                chosenRule ?? permissionRuleForToolCall(call, process.platform, scanShell);
               if (!rule) {
                 log.debug('permission always with no rule to save', { tool: canonName });
               } else {

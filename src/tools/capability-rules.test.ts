@@ -353,3 +353,29 @@ describe('capability rules, Windows spellings', () => {
     expect(under('rm D:\\Users\\u\\memory\\a.md')).toBeNull();
   });
 });
+
+describe('Bash(git *) capability rule and the session shell on win32 (#512, decision 3)', () => {
+  const rules = parseCapabilityRules(['Bash(git *)']);
+  const command = "git log 'x'";
+  const allowed = (shell?: { kind: 'bash' | 'pwsh' | 'powershell' | 'cmd'; file?: string }) =>
+    isToolCallAllowed(rules, call('Bash', { command }), new Set(), 'win32', shell);
+  const compound = (shell?: { kind: 'bash' | 'pwsh' | 'powershell' | 'cmd'; file?: string }) =>
+    isCompoundShellCommand(call('Bash', { command }), 'win32', shell);
+
+  it('admits a single-quoted argument under Git Bash, and says it is not compound', () => {
+    const gitBash = { kind: 'bash', file: 'C:/Program Files/Git/bin/bash.exe' } as const;
+    expect(allowed(gitBash)).toBe(true);
+    expect(compound(gitBash)).toBe(false);
+  });
+
+  it.each([
+    ['PowerShell 7', { kind: 'pwsh', file: 'C:/pwsh.exe' } as const],
+    ['Windows PowerShell', { kind: 'powershell', file: 'C:/powershell.exe' } as const],
+    ['cmd.exe', { kind: 'cmd' } as const],
+    ['bash without a file', { kind: 'bash' } as const],
+    ['no shell', undefined],
+  ])('refuses it under %s, and the refusal text agrees', (_label, shell) => {
+    expect(allowed(shell)).toBe(false);
+    expect(compound(shell)).toBe(true);
+  });
+});
