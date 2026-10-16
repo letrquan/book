@@ -1241,6 +1241,53 @@ describe('AgentSession', () => {
     }
   });
 
+  it('numbers the resumed runtime’s background shells after the ones the session already named (#449)', async () => {
+    // Ids are `shell_<n>` from a counter every new runtime restarts at 1, so a resumed session's
+    // transcript ("Background shell `T` (shell_1) exited.") and its next shell collided.
+    const fixture = createSessionFixture('book-agent-session-resume-shell-ids-');
+    try {
+      const currentSessionId = fixture.store.create({ cwd: fixture.root });
+      const selectedSessionId = fixture.store.create({ cwd: fixture.root, name: 'shells' });
+      const config = { ...defaultConfig(), workspace: fixture.root };
+      fixture.store.append(selectedSessionId, {
+        type: 'user',
+        eventId: 'user-1',
+        timestamp: 1,
+        data: {
+          id: 'user-1',
+          content: 'Background shell `build` (shell_1) exited. Then shell_2 and `lint` (shell_3).',
+          kind: 'conversation',
+        },
+      });
+
+      const session = new AgentSession();
+      try {
+        await session.startLifecycle(config, currentSessionId, 'startup');
+        const result = await session.resumeSession({
+          config,
+          currentSessionId,
+          store: fixture.store,
+          selector: 'shells',
+        });
+        expect(result.status).toBe('transitioned');
+
+        const started = await session.getRuntime().shellManager.start({
+          command: 'echo hi',
+          effectiveCommand: 'echo hi',
+          workdir: fixture.root,
+          env: process.env,
+          sandboxed: false,
+        });
+
+        expect(started.id).toBe('shell_4');
+      } finally {
+        session.dispose();
+      }
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('marks a session agent-driven when an agent-driven TUI resumes it with /resume', async () => {
     const fixture = createSessionFixture('book-agent-session-resume-driver-');
     try {

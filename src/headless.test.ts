@@ -331,6 +331,61 @@ describe('runHeadless — text output', () => {
     expect(result.runs?.[0]?.context.runId).not.toBe('prior-request');
   });
 
+  it('numbers a resumed session’s next background shell after the ones it already named (#449)', async () => {
+    const workspace = makeWorkspace();
+    const message = (id: string, role: 'user' | 'assistant', content: string) => ({
+      id,
+      role,
+      content,
+      includeInContext: true,
+      timestamp: 1,
+    });
+    // The transcript keeps the id the compacted context history no longer has.
+    const history = [
+      message('u1', 'user', 'Background shell `build` (shell_1) exited.'),
+      message('a1', 'assistant', 'Started shell_2 for the lint run.'),
+    ];
+    const transcript = [
+      ...history,
+      message('u2', 'user', 'Background shell `lint` (shell_3) exited.'),
+    ];
+    let requests = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requests += 1;
+        return requests === 1
+          ? sse([
+              toolDelta('call-1', 'Bash', {
+                command: 'echo hi',
+                run_in_background: true,
+              }),
+            ])
+          : sse([textDelta('DONE')]);
+      }),
+    );
+    const writes: string[] = [];
+
+    await runHeadless(freshConfig({ workspace }), createDefaultRegistry(), {
+      prompt: 'start another shell',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history,
+      transcript,
+      mode: 'bypassPermissions',
+      maxTurns: 3,
+      stdout: { write: (value) => (writes.push(value), true) },
+    });
+
+    const result = writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { type: string; tool_result?: { content?: string } })
+      .find((event) => event.type === 'tool_result');
+    expect(result?.tool_result?.content).toContain('Started background shell shell_4');
+  });
+
   it('waits for background completions and routes them through a parent continuation turn', async () => {
     const workspace = makeWorkspace();
     const hookScript = join(workspace, 'block-agent-notifications.cjs');

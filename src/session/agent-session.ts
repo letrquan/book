@@ -63,6 +63,7 @@ import {
 } from './agent-events.js';
 import { recordResumeDriver, selectSession, type SessionBootstrap } from './resolve.js';
 import { isSpendlessUsage } from './run-accounting.js';
+import { seedShellIds } from '../jobs/shell-ids.js';
 import { SessionRuntime, type SessionRuntimeOptions } from './runtime.js';
 import { createRunAmbientSnapshot } from './run-ambient.js';
 import { deriveSessionName } from './name.js';
@@ -922,7 +923,9 @@ export class AgentSession {
     };
     // The resumed conversation starts on a runtime of its own, not the outgoing one's.
     this.reset('session-resume');
-    this.replaceRuntime({}, 'session-resume');
+    const resumed = this.replaceRuntime({}, 'session-resume');
+    // Compaction can drop an id from the context history that the transcript row keeps.
+    seedShellIds(resumed.backgroundShells, loaded.transcript, loaded.contextHistory);
     request.onTransition?.(bootstrap);
     await this.startLifecycle(request.config, selected.id, 'resume');
     return { status: 'transitioned', bootstrap };

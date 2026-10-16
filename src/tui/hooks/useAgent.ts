@@ -94,6 +94,7 @@ import {
 } from '../../session/agent-session.js';
 import { normalizePersistedTodos } from '../../tools/todo.js';
 import { SessionRuntime } from '../../session/runtime.js';
+import { seedShellIds } from '../../jobs/shell-ids.js';
 import { createInteractiveAgentSession } from '../../session/interactive-session.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
 import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
@@ -303,6 +304,11 @@ function createSeededRuntime(
     tasks: runtime.tasks.length,
   });
   runtime.activeGoal = restoreGoal(session.goal);
+  seedShellIds(
+    runtime.backgroundShells,
+    initialTranscript,
+    session.contextHistory ?? session.history,
+  );
   return runtime;
 }
 
@@ -661,6 +667,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         tasks: nextRuntime.tasks.length,
       });
       nextRuntime.activeGoal = opts.goal ? restoreGoal(opts.goal) : carriedGoal;
+      seedShellIds(nextRuntime.backgroundShells, transcript, contextHistory);
       syncGoal();
       // The session the conversation is now in did not write this plan; the
       // first turn that reports a change to it is the one that earns the step.
