@@ -1061,7 +1061,7 @@ console.log('alive-still'); setInterval(() => {}, 1000);
     expect(result.structuredError?.message).toMatch(/exceeds the 30000ms limit/);
   });
 
-  async function waitsOutAPersistentJob(): Promise<void> {
+  it('waits out a persistent job until it exits', async () => {
     const c = ctxWith({ workspaceRoot: dir });
     // Pinned under the temp dir rather than <BOOK_HOME>/jobs: this test starts a detached runner
     // and writes its record files.
@@ -1100,14 +1100,7 @@ console.log('alive-still'); setInterval(() => {}, 1000);
     // The wait above returned on the terminal record, which the runner publishes *before* it
     // exits, so the job's runner can still be alive here holding this temp dir open.
     await waitOutPersistentJob(store, shellId!);
-  }
-
-  it('waits out a persistent job until it exits', waitsOutAPersistentJob, 60_000);
-
-  // TEMPORARY, reverted before merge: ten more runs of the case above, for the #495 Windows proof.
-  for (let repeat = 1; repeat <= 10; repeat++) {
-    it(`#495 Windows proof, repeat ${repeat} of 10`, waitsOutAPersistentJob, 60_000);
-  }
+  }, 60_000);
 });
 
 /**
