@@ -273,11 +273,20 @@ describe('AtomicJsonWriter', () => {
 
   it('returns attempts === 2 when rename hits one contention error then succeeds', () => {
     const { target } = fixture();
+    // The clock is injected: on the real one, the fsyncs before the first rename could spend the
+    // 500ms deadline on a loaded machine and the writer returned busy instead of retrying (#450).
+    const requestedSleeps: number[] = [];
+    let now = 0;
     let renameCalls = 0;
     const writer = new AtomicJsonWriter({
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 10,
       hostname: 'test-host',
+      now: () => now,
+      sleep: (milliseconds) => {
+        requestedSleeps.push(milliseconds);
+        now += milliseconds;
+      },
       fs: {
         renameSync: (source, destination) => {
           renameCalls++;
@@ -291,6 +300,7 @@ describe('AtomicJsonWriter', () => {
     expect(result.status).toBe('ok');
     expect(result.attempts).toBe(2);
     expect(renameCalls).toBe(2);
+    expect(requestedSleeps).toEqual([10]);
   });
 
   it('requests back-off ladder [10, 20] across two rename contentions after a clean lock', () => {
@@ -357,11 +367,18 @@ describe('AtomicJsonWriter', () => {
 
   it('returns attempts === 2 when writeAsync rename hits one contention error then succeeds', async () => {
     const { target } = fixture();
+    const requestedSleeps: number[] = [];
+    let now = 0;
     let renameCalls = 0;
     const writer = new AtomicJsonWriter({
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 10,
       hostname: 'test-host',
+      now: () => now,
+      sleepAsync: async (milliseconds) => {
+        requestedSleeps.push(milliseconds);
+        now += milliseconds;
+      },
       fsAsync: {
         rename: async (source, destination) => {
           renameCalls++;
@@ -375,6 +392,7 @@ describe('AtomicJsonWriter', () => {
     expect(result.status).toBe('ok');
     expect(result.attempts).toBe(2);
     expect(renameCalls).toBe(2);
+    expect(requestedSleeps).toEqual([10]);
   });
 
   it('reports attempts === 1 after reclaiming a stale lock for write and writeAsync', async () => {
@@ -415,12 +433,19 @@ describe('AtomicJsonWriter', () => {
 
   it('returns status cancelled and attempts === 2 when canCommit returns false on the second rename attempt', async () => {
     const { target } = fixture();
+    const requestedSleeps: number[] = [];
+    let now = 0;
     let renameCalls = 0;
     let canCommitCalls = 0;
     const writer = new AtomicJsonWriter({
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 10,
       hostname: 'test-host',
+      now: () => now,
+      sleepAsync: async (milliseconds) => {
+        requestedSleeps.push(milliseconds);
+        now += milliseconds;
+      },
       fsAsync: {
         rename: async (source, destination) => {
           renameCalls++;
@@ -444,5 +469,6 @@ describe('AtomicJsonWriter', () => {
     expect(result.status).toBe('cancelled');
     expect(result.attempts).toBe(2);
     expect(renameCalls).toBe(1);
+    expect(requestedSleeps).toEqual([10]);
   });
 });
