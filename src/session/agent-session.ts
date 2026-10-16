@@ -300,7 +300,8 @@ export type AgentSessionPrepareSendResult =
       status: 'prepared';
       contextMessage: string;
       rewindTarget: RewindTarget;
-      sessionName: string;
+      /** `undefined` while the session has no name: a notification turn never gives it one. */
+      sessionName: string | undefined;
     }
   | { status: 'cancelled' };
 
@@ -980,7 +981,7 @@ export class AgentSession {
 
   async recordUserMessage(
     request: AgentSessionRecordUserRequest,
-  ): Promise<{ contextMessage: string; sessionName: string }> {
+  ): Promise<{ contextMessage: string; sessionName: string | undefined }> {
     // One pass over what the user typed: a `!cmd` line runs, an `@path` mention
     // is inlined, and neither is found in the other's output. A mentioned file's
     // lines must never run as commands, and a command's output must never be read
@@ -1032,7 +1033,7 @@ export class AgentSession {
     // A completion notification is host-generated text, not something the user said: it
     // never names a session, or renames one, whether or not the caller passed a name (#446).
     if (request.userMessage.kind === 'agent-notification') {
-      return { contextMessage, sessionName: request.sessionName ?? '' };
+      return { contextMessage, sessionName: request.sessionName };
     }
     const sessionName =
       request.sessionName?.trim() ||
