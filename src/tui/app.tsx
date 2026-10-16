@@ -276,6 +276,8 @@ interface AppProps {
     store?: SessionStoreInterface;
     timelineStore?: SessionStoreInterface;
     snapshotStore?: RewindSnapshotStoreInterface;
+    /** Collects the sessions `/new` and `/clear` create, for the exit cleanup in `cli/run.ts`. */
+    createdSessions?: Set<string>;
   };
   redrawViewport?: () => void;
   /**
