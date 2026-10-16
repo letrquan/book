@@ -14,6 +14,8 @@ import { findRelaxedMatch } from './fuzzy-match.js';
 import { checkMemoryWrite, noticeMemoryWrite, withMemoryWarnings } from '../memory-write-guard.js';
 import {
   isBookLocalSettingsUnderRoots,
+  memoryReadDisplayPath,
+  messagePathFor,
   mutationDisplayPath,
   pathOutsideWorkspaceResult,
   resolveMutationPath,
@@ -28,6 +30,7 @@ import {
 } from './file-provenance.js';
 import {
   readLineMetadata,
+  readResultMetadata,
   READ_EMPTY_FILE_NOTICE,
   TOOL_RESULT_MAX_BYTES,
   toolFailure,
@@ -1276,6 +1279,7 @@ async function outlineFile(
   filePath: string,
   lines: readonly string[],
   lineCount: number,
+  memoryTarget: string | undefined,
 ): Promise<ToolResult> {
   if (args.offset !== undefined || args.limit !== undefined) {
     return toolFailure(
@@ -1309,13 +1313,33 @@ async function outlineFile(
   const output = [header(shown.length), ...shown.map((entry) => `${entry.line}: ${entry.text}`)];
   if (entries.length > shown.length) output.push(note(shown.length, entries[shown.length].line));
   const observation = await observeFile(ctx, filePath, 'outline');
-  return toolSuccess(output.join('\n'), { artifacts: { fileObservations: [observation] } });
+  const text = output.join('\n');
+  return toolSuccess(text, {
+    artifacts: { fileObservations: [observation] },
+    // An outline carries no presentation, and the row reads its metadata back out of the text. A
+    // memory file's row needs a target of its own, so it carries the same metadata explicitly, and
+    // the outline as its details so the row still expands the way a workspace outline does.
+    ...(memoryTarget
+      ? {
+          presentation: {
+            kind: 'file' as const,
+            summary: `Read ${memoryTarget}`,
+            target: memoryTarget,
+            metadata: readResultMetadata(args, text),
+            details: text,
+          },
+        }
+      : {}),
+  });
 }
 
 async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveReadablePath(ctx, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath } = resolved;
+  // The row names a memory file `memory/<name>.md`, like the mutation rows; any other file keeps the
+  // path the model wrote. What the model reads back is unchanged.
+  const memoryTarget = memoryReadDisplayPath(ctx, resolved);
   // Floored as well as validated, and clamped: the schema rejects a fraction
   // and anything below 1, but a caller that reaches the tool directly must
   // never be handed `0: undefined` or `offset: -2.5` as the next page (#310).
@@ -1338,7 +1362,8 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   // A trailing newline ends the last line rather than starting another, and an
   // empty file has none; offset 1 still reads either.
   const lineCount = content.length === 0 ? 0 : lines.length - (content.endsWith('\n') ? 1 : 0);
-  if (args.outline === true) return outlineFile(args, ctx, filePath, lines, lineCount);
+  if (args.outline === true)
+    return outlineFile(args, ctx, filePath, lines, lineCount, memoryTarget);
   const maxOffset = Math.max(1, lineCount);
   if (offset > maxOffset) {
     return toolFailure(
@@ -1355,7 +1380,8 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
       artifacts: { fileObservations: [observation] },
       presentation: {
         kind: 'file',
-        summary: `Read ${args.filePath}`,
+        summary: `Read ${memoryTarget ?? args.filePath}`,
+        ...(memoryTarget ? { target: memoryTarget } : {}),
         metadata: readLineMetadata(1, 0),
       },
     });
@@ -1411,7 +1437,8 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
     // back out of the text rather than counted from it.
     presentation: {
       kind: 'file',
-      summary: `Read ${args.filePath}`,
+      summary: `Read ${memoryTarget ?? args.filePath}`,
+      ...(memoryTarget ? { target: memoryTarget } : {}),
       metadata: readLineMetadata(offset, last - offset + 1),
     },
   });
@@ -1420,9 +1447,10 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
 async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveMutationPath(ctx, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
-  const { filePath, canonicalPath, relativePath } = resolved;
+  const { filePath, canonicalPath } = resolved;
+  const shownPath = messagePathFor(resolved);
   return withMutationLocks([canonicalPath], async () => {
-    const stale = await requireFreshObservation(ctx, filePath, relativePath);
+    const stale = await requireFreshObservation(ctx, filePath, shownPath);
     if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
     let before;
     try {
@@ -1433,11 +1461,11 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
       );
     }
     if (before.binary)
-      return toolFailure(`Binary file is unsupported: ${relativePath}`, {
+      return toolFailure(`Binary file is unsupported: ${shownPath}`, {
         code: 'binary_file_unsupported',
       });
     if (before.exists) {
-      const unobserved = requireObservationForMutation(ctx, filePath, relativePath, 'overwrite');
+      const unobserved = requireObservationForMutation(ctx, filePath, shownPath, 'overwrite');
       if (unobserved) return unobserved;
     }
     const inputContent = args.content as string;
@@ -1500,7 +1528,7 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
     return {
       ...result,
       maskedPlaceholder: withMemoryWarnings(
-        `Created ${relativePath} (${stats.addedLines} lines, ${Buffer.byteLength(newContent, 'utf8')} bytes).`,
+        `Created ${shownPath} (${stats.addedLines} lines, ${Buffer.byteLength(newContent, 'utf8')} bytes).`,
         memoryWarnings,
       ),
     };
@@ -1510,9 +1538,10 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
 async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveMutationPath(ctx, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
-  const { filePath, canonicalPath, relativePath } = resolved;
+  const { filePath, canonicalPath } = resolved;
+  const shownPath = messagePathFor(resolved);
   return withMutationLocks([canonicalPath], async () => {
-    const stale = await requireFreshObservation(ctx, filePath, relativePath);
+    const stale = await requireFreshObservation(ctx, filePath, shownPath);
     if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
     let snapshot;
     try {
@@ -1525,14 +1554,14 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
       );
     }
     if (snapshot.binary)
-      return toolFailure(`Binary file is unsupported: ${relativePath}`, {
+      return toolFailure(`Binary file is unsupported: ${shownPath}`, {
         code: 'binary_file_unsupported',
       });
     if (snapshot.mixedLineEndings)
-      return toolFailure(`Mixed line endings are unsupported for Edit: ${relativePath}`, {
+      return toolFailure(`Mixed line endings are unsupported for Edit: ${shownPath}`, {
         code: 'text_conflict',
       });
-    const unobserved = requireObservationForMutation(ctx, filePath, relativePath, 'edit');
+    const unobserved = requireObservationForMutation(ctx, filePath, shownPath, 'edit');
     if (unobserved) return unobserved;
     const content = snapshot.text;
     const oldStr = (args.oldString as string).replace(/\r\n/g, '\n');
@@ -1596,7 +1625,8 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
 async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveMutationPath(ctx, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
-  const { filePath, canonicalPath, relativePath } = resolved;
+  const { filePath, canonicalPath } = resolved;
+  const shownPath = messagePathFor(resolved);
   const edits =
     (args.edits as Array<{
       oldString: string;
@@ -1608,19 +1638,19 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
   }
 
   return withMutationLocks([canonicalPath], async () => {
-    const stale = await requireFreshObservation(ctx, filePath, relativePath);
+    const stale = await requireFreshObservation(ctx, filePath, shownPath);
     if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
     const snapshot = await readTextSnapshot(filePath).catch(() => null);
     if (!snapshot) return toolFailure(`File not found: ${args.filePath}`);
     if (snapshot.binary)
-      return toolFailure(`Binary file is unsupported: ${relativePath}`, {
+      return toolFailure(`Binary file is unsupported: ${shownPath}`, {
         code: 'binary_file_unsupported',
       });
     if (snapshot.mixedLineEndings)
-      return toolFailure(`Mixed line endings are unsupported for MultiEdit: ${relativePath}`, {
+      return toolFailure(`Mixed line endings are unsupported for MultiEdit: ${shownPath}`, {
         code: 'text_conflict',
       });
-    const unobserved = requireObservationForMutation(ctx, filePath, relativePath, 'edits');
+    const unobserved = requireObservationForMutation(ctx, filePath, shownPath, 'edits');
     if (unobserved) return unobserved;
     const original = snapshot.text;
     let content = original;

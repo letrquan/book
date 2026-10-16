@@ -496,3 +496,190 @@ describe('memory writes through the file tools', () => {
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('one\n');
   });
 });
+
+describe('how a memory file is named', () => {
+  const read = fileTools.find((t) => t.name === 'Read')!;
+  const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const readContext = (overrides: Partial<ToolContext> = {}): ToolContext =>
+    context('full', { readOnlyRoots: [memory], memorySearchRoot: memory, ...overrides });
+
+  describe('in a Read row', () => {
+    it('names a memory file memory/<name>.md for a page, an empty file and an outline', async () => {
+      const ctx = readContext();
+      const path = join(memory, 'build-cmd.md');
+      writeFileSync(path, '# Build\nrun it\n');
+
+      const page = await read.execute({ filePath: path }, ctx);
+      expect(page.status).toBe('success');
+      expect(page.presentation).toMatchObject({
+        kind: 'file',
+        summary: 'Read memory/build-cmd.md',
+        target: 'memory/build-cmd.md',
+        metadata: ['2 lines'],
+      });
+      // The model still reads the file, not a row label.
+      expect(page.content).toBe('1: # Build\n2: run it');
+
+      const empty = join(memory, 'empty.md');
+      writeFileSync(empty, '');
+      const emptied = await read.execute({ filePath: empty }, ctx);
+      expect(emptied.presentation).toMatchObject({
+        summary: 'Read memory/empty.md',
+        target: 'memory/empty.md',
+        metadata: ['empty'],
+      });
+
+      const outlined = await read.execute({ filePath: path, outline: true }, ctx);
+      expect(outlined.status).toBe('success');
+      expect(outlined.presentation).toMatchObject({
+        summary: 'Read memory/build-cmd.md',
+        target: 'memory/build-cmd.md',
+        metadata: ['outline', '1 entry'],
+      });
+      expect(outlined.content).toContain(`Outline of ${path}:`);
+      // The row still expands to the outline, as a workspace outline's row does.
+      expect(outlined.presentation?.details).toBe(outlined.content);
+    });
+
+    it('names a memory file below the workspace the same way', async () => {
+      const ctx = readContext({ workspaceRoot: memory });
+      const path = join(memory, 'held.md');
+      writeFileSync(path, 'one\n');
+      const result = await read.execute({ filePath: path }, ctx);
+      expect(result.presentation).toMatchObject({
+        summary: 'Read memory/held.md',
+        target: 'memory/held.md',
+      });
+    });
+
+    it('leaves a workspace file as it was: no target, the path the model wrote', async () => {
+      const ctx = readContext();
+      const path = join(workspace, 'plain.md');
+      writeFileSync(path, 'one\n');
+      writeFileSync(join(workspace, 'empty.md'), '');
+      for (const filePath of [path, join(workspace, 'empty.md'), 'plain.md']) {
+        const result = await read.execute({ filePath }, ctx);
+        expect(result.presentation?.summary).toBe(`Read ${filePath}`);
+        expect(result.presentation?.target).toBeUndefined();
+      }
+      const outlined = await read.execute({ filePath: path, outline: true }, ctx);
+      expect(outlined.presentation?.target).toBeUndefined();
+    });
+  });
+
+  describe('in text the model reads', () => {
+    it('names an unread memory file by its absolute path when Edit and Write refuse it', async () => {
+      const ctx = context();
+      const path = join(memory, 'other.md');
+      writeFileSync(path, topic('project'));
+
+      const edited = await edit.execute(
+        { filePath: path, oldString: 'Body.', newString: 'Changed.' },
+        ctx,
+      );
+      expect(edited.structuredError?.code).toBe('file_not_observed');
+      expect(edited.structuredError?.message).toContain(`SKIPPED: ${path} has not been read`);
+      expect(edited.structuredError?.message).not.toContain('../');
+
+      const multi = await multiEdit.execute(
+        { filePath: path, edits: [{ oldString: 'Body.', newString: 'Changed.' }] },
+        ctx,
+      );
+      expect(multi.structuredError?.message).toContain(`SKIPPED: ${path} has not been read`);
+
+      const written = await write.execute({ filePath: path, content: topic('project') }, ctx);
+      expect(written.structuredError?.code).toBe('file_not_observed');
+      expect(written.structuredError?.message).toContain(`SKIPPED: ${path} has not been read`);
+      expect(written.structuredError?.message).not.toContain('../');
+      expect(readFileSync(path, 'utf8')).toBe(topic('project'));
+    });
+
+    it('still names an unread workspace file by its workspace-relative path', async () => {
+      const ctx = context();
+      writeFileSync(join(workspace, 'plain.md'), 'one\n');
+      const edited = await edit.execute(
+        { filePath: join(workspace, 'plain.md'), oldString: 'one', newString: 'two' },
+        ctx,
+      );
+      expect(edited.structuredError?.code).toBe('file_not_observed');
+      expect(edited.structuredError?.message).toContain('SKIPPED: plain.md has not been read');
+      const written = await write.execute(
+        { filePath: join(workspace, 'plain.md'), content: 'two\n' },
+        ctx,
+      );
+      expect(written.structuredError?.message).toContain('SKIPPED: plain.md has not been read');
+    });
+
+    it('names a memory file by its absolute path when it changed since it was read', async () => {
+      const ctx = context();
+      const path = join(memory, 'other.md');
+      writeFileSync(path, topic('project'));
+      await observeFile(ctx, path, 'read');
+      writeFileSync(path, `${topic('project')}Moved on.\n`);
+
+      const edited = await edit.execute(
+        { filePath: path, oldString: 'Body.', newString: 'Changed.' },
+        ctx,
+      );
+      expect(edited.structuredError?.code).toBe('stale_file_observation');
+      expect(edited.structuredError?.message).toContain(`SKIPPED: ${path} changed or disappeared`);
+      expect(edited.structuredError?.message).not.toContain('../');
+
+      const patched = await applyPatch.execute(
+        {
+          patch: `*** Begin Patch\n*** Update File: ${path}\n@@\n-Body.\n+Changed.\n*** End Patch`,
+        },
+        ctx,
+      );
+      expect(patched.structuredError?.code).toBe('stale_file_observation');
+      expect(patched.structuredError?.message).toContain(`SKIPPED: ${path} changed or disappeared`);
+    });
+
+    it('names a created memory file by its absolute path', async () => {
+      const ctx = context();
+      const path = join(memory, 'new.md');
+      const created = await write.execute({ filePath: path, content: topic('project') }, ctx);
+      expect(created.status).toBe('success');
+      expect(created.maskedPlaceholder).toMatch(
+        new RegExp(`^Created ${escape(path)} \\(\\d+ lines`),
+      );
+      expect(created.maskedPlaceholder).not.toContain('../');
+
+      const added = join(memory, 'patched.md');
+      const patched = await applyPatch.execute(
+        {
+          patch: `*** Begin Patch\n*** Add File: ${added}\n+---\n+name: p\n+description: d\n+---\n+Body\n*** End Patch`,
+        },
+        ctx,
+      );
+      expect(patched.status).toBe('success');
+      expect(patched.maskedPlaceholder).toMatch(
+        new RegExp(`^Created ${escape(added)} \\(\\d+ lines`),
+      );
+      expect(patched.maskedPlaceholder).not.toContain('../');
+      // The row still says memory/<name>.md.
+      expect(patched.artifacts?.fileMutation?.filePath).toBe('memory/patched.md');
+    });
+
+    it('names a memory file by its absolute path in an ApplyPatch diff and its add refusal', async () => {
+      const ctx = context();
+      const path = join(memory, 'diffed.md');
+      writeFileSync(path, topic('project'));
+      await observeFile(ctx, path, 'read');
+      const updated = await applyPatch.execute(
+        {
+          patch: `*** Begin Patch\n*** Update File: ${path}\n@@\n-Body.\n+Changed.\n*** End Patch`,
+        },
+        ctx,
+      );
+      expect(updated.status).toBe('success');
+      expect(updated.content).toContain(`--- ${path}\n+++ ${path}\n`);
+
+      const exists = await applyPatch.execute(
+        { patch: `*** Begin Patch\n*** Add File: ${path}\n+x\n*** End Patch` },
+        ctx,
+      );
+      expect(exists.structuredError?.message).toContain(`File already exists: ${path}`);
+    });
+  });
+});
