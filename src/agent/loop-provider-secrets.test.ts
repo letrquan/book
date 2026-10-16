@@ -12,6 +12,7 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { Provider } from '../provider/index.js';
 import type { Message } from '../types/messages.js';
 import type { ToolResult } from '../types/tools.js';
+import type { AgentConfig, ResolvedShell } from '../types/runtime.js';
 
 /**
  * #411: a provider key a command prints must not reach the model, the persisted session or the
@@ -20,6 +21,21 @@ import type { ToolResult } from '../types/tools.js';
  */
 
 const KEY = 'sk-live-0123456789abcdef';
+
+/**
+ * The shell these tests run commands under, pinned rather than resolved, as `tools/shell.test.ts`
+ * does. Left to the ladder, Windows picks PowerShell, where `"node.exe" "script"` is a string
+ * expression and not a call, so the script would never run. The redaction under test is the same
+ * under every shell; what a command is written in is not what is being tested.
+ */
+const TEST_SHELL: ResolvedShell =
+  process.platform === 'win32'
+    ? { kind: 'cmd', label: 'cmd.exe', source: 'fallback' }
+    : { kind: 'sh', label: '/bin/sh', source: 'detected' };
+
+function testConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  return defaultConfig({ workspace, maxTurns: 3, shell: TEST_SHELL, ...overrides });
+}
 
 let workspace: string;
 let toolOutputRoot: string;
@@ -62,10 +78,7 @@ interface Observed {
 }
 
 /** A script whose body is `body`, run through the real Bash tool under the real loop. */
-async function runBash(
-  body: string,
-  config = defaultConfig({ workspace, maxTurns: 3 }),
-): Promise<Observed> {
+async function runBash(body: string, config = testConfig()): Promise<Observed> {
   const script = join(workspace, 'emit.cjs');
   writeFileSync(script, body);
   const command = `"${process.execPath}" "${script}"`;
@@ -132,7 +145,7 @@ function expectClean(observed: Observed, key: string): void {
 
 describe('runAgentLoop — provider keys are redacted from tool output (#411)', () => {
   it('redacts a key configured as a literal provider apiKey, including in the spill file', async () => {
-    const config = defaultConfig({ workspace, maxTurns: 3 });
+    const config = testConfig();
     config.settings.provider.work = {
       type: 'openai',
       baseURL: 'http://x/v1',
@@ -156,7 +169,7 @@ describe('runAgentLoop — provider keys are redacted from tool output (#411)', 
 
   it('redacts the BOOK_API_KEY value a Bash child inherits', async () => {
     process.env.BOOK_API_KEY = KEY;
-    const config = defaultConfig({ workspace, maxTurns: 3 });
+    const config = testConfig();
     const body = [
       `const key = process.env.BOOK_API_KEY ?? '';`,
       `console.log('k=' + key);`,
@@ -174,7 +187,7 @@ describe('runAgentLoop — provider keys are redacted from tool output (#411)', 
   });
 
   it('redacts a key from a failing command: message, head/tail preview and spill file', async () => {
-    const config = defaultConfig({ workspace, maxTurns: 3 });
+    const config = testConfig();
     config.settings.provider.work = {
       type: 'openai',
       baseURL: 'http://x/v1',
@@ -207,7 +220,7 @@ describe('runAgentLoop — provider keys are redacted from tool output (#411)', 
 
   it('leaves a configured key shorter than 8 characters alone', async () => {
     const short = 'sevenk7';
-    const config = defaultConfig({ workspace, maxTurns: 3, apiKey: short });
+    const config = testConfig({ apiKey: short });
     config.settings.provider.work = {
       type: 'openai',
       baseURL: 'http://x/v1',

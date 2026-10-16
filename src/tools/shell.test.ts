@@ -1353,3 +1353,24 @@ describe('the output tail of a command and provider secrets', () => {
 function fakeResult(content: string): ToolResult {
   return { version: 2, toolCallId: 'c', status: 'success', content };
 }
+
+// #411: `data` is persisted with the session, and the shell record's `output` is the job's whole
+// in-memory buffer (up to 5 MB). Nothing reads it from a BashOutput result, so it is not carried.
+describe('BashOutput result data', () => {
+  it('omits the shell buffer from data.shell, and keeps what readers use', async () => {
+    const c = ctx();
+    const command = nodeCommand(
+      'data-shape.cjs',
+      `console.log('buffered-line');\nsetTimeout(() => process.exit(3), 50);\n`,
+    );
+    const start = await bash.execute({ command, run_in_background: true }, c);
+    const shellId = shellIdFrom(start);
+    const terminal = await waitForOutput(c, shellId, /exit=3/);
+
+    const data = terminal.data as { shell: Record<string, unknown>; output: string };
+    expect(data.shell).not.toHaveProperty('output');
+    expect(data.shell).toMatchObject({ id: shellId, status: 'failed', exitCode: 3 });
+    expect(typeof data.output).toBe('string');
+    expect(JSON.stringify(terminal.data)).not.toContain('"output":"buffered-line');
+  });
+});

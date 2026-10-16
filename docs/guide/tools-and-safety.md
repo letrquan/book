@@ -653,11 +653,18 @@ ordinary words, and erasing them would mangle code and break `Edit` matches. Mat
 value: no pattern is guessed from the key.
 
 A window onto output never cuts a key in half, because neither half would match. A `BashOutput`
-chunk stops before a key the limit would split, or runs past it when the key opens the chunk; while
-the job is still running it also holds back a trailing partial key until the rest is written. A tail
+chunk stops before a key the limit would split, or runs past it when the key opens the chunk. A tail
 (the completion message of a background shell, the 64 KB tail of a command moved to the background)
 and the 5 MB background buffer start at a key they would otherwise cut into, so the whole key is
 there to be replaced.
+
+A key can also be half written when a running job is read. When a provider key is configured and
+the job is still running, a `BashOutput` read therefore stops after the last line break, and the unterminated last line waits until it ends
+or the job does; a line with no break at all is returned in pieces of at most 1024 characters, so a
+prompt is not held forever. This rule looks only at line breaks and length, never at the key's
+value: a rule that held back text resembling the start of a key would let a command guess the key
+character by character from which reads come back empty. A finished job returns everything. A
+`BashOutput` result also leaves the job's whole buffer out of the record it stores in the session.
 
 This only redacts. The environment a command gets is unchanged: `Bash` children still inherit
 `BOOK_HOME` and `BOOK_API_KEY`, so a nested `book` run keeps working.

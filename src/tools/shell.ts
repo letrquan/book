@@ -675,8 +675,17 @@ async function bashOutput(args: Record<string, unknown>, ctx: ToolContext): Prom
       result.shell.effectiveCommand,
       result.shell.gitDirReadOnly,
     ),
-    result,
+    // `data` is persisted with the session. The record's `output` is the job's whole buffer, which
+    // nothing reads from here (the rows use `status` and `exitCode`) and which would copy up to
+    // 5 MB into the session on every poll, held-back text included.
+    { ...result, shell: withoutBuffer(result.shell) },
   );
+}
+
+function withoutBuffer(shell: BackgroundShellRecord): Omit<BackgroundShellRecord, 'output'> {
+  const rest: Partial<BackgroundShellRecord> = { ...shell };
+  delete rest.output;
+  return rest as Omit<BackgroundShellRecord, 'output'>;
 }
 
 async function killShell(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {

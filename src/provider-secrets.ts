@@ -7,8 +7,10 @@
  * once, as it is finalized, with the helpers here. Matching is by exact value only: no heuristics,
  * and no pattern is built from a key.
  *
- * Deliberately stateless (no cache): the loop recomputes the set per call, so a `/model` switch or
- * an edited key file takes effect on the next result.
+ * Deliberately stateless (no cache): `collectProviderSecrets` reads the config and the environment
+ * afresh each time it is called. The agent loop calls it once per `runAgentLoop` and shares the
+ * result through `ToolContext.providerSecrets`, so every result of a run is redacted with the same
+ * set, and a `/model` switch or an edited key file takes effect on the next run.
  */
 import { isWithheldWorkspaceProvider, resolveSecret } from './config.js';
 import type { AgentConfig } from './types/runtime.js';
@@ -45,6 +47,9 @@ export const PLACEHOLDER_PROVIDER_KEYS: readonly string[] = [
  * A provider the workspace declared and the user has not approved is skipped: its `apiKey` is
  * repository-controlled, and honouring it would let a repository erase a chosen word from every
  * tool output, or make Book read a `file:` path the repository picked.
+ *
+ * The `isWithheldWorkspaceProvider` check below is defense in depth: the settings loader already
+ * leaves a withheld provider out of `settings.provider`, so this loop never normally meets one.
  */
 export function collectProviderSecrets(config: AgentConfig): string[] {
   const candidates: Array<string | undefined> = [config.apiKey, process.env.BOOK_API_KEY];
@@ -160,25 +165,6 @@ export function secretSafeStart(text: string, start: number, secrets: readonly s
     if (earliest === safe) return safe;
     safe = earliest;
   }
-}
-
-/**
- * How many characters at the end of `text` are a proper prefix of a secret: the part of a key a
- * still-running command may have written before the rest. Zero when the text ends with a whole key
- * or with nothing that starts one.
- */
-export function trailingSecretPrefix(text: string, secrets: readonly string[]): number {
-  let longest = 0;
-  for (const secret of secrets) {
-    const most = Math.min(secret.length - 1, text.length);
-    for (let length = most; length > longest; length--) {
-      if (text.endsWith(secret.slice(0, length))) {
-        longest = length;
-        break;
-      }
-    }
-  }
-  return longest;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

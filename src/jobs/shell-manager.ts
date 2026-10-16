@@ -27,10 +27,15 @@ import {
   type PersistentShellState,
 } from './persistent-store.js';
 import { isProcessAlive, terminateProcessTree, waitForProcessClose } from './process-tree.js';
-import { secretSafeCut, secretSafeStart, trailingSecretPrefix } from '../provider-secrets.js';
+import { secretSafeCut, secretSafeStart } from '../provider-secrets.js';
 
 const MAX_BACKGROUND_BUFFER = 1024 * 1024 * 5;
 const MAX_OUTPUT_RESULT = 32_000;
+/**
+ * While a job runs, how much of a line with no line break a read returns at once (see
+ * `takeUnread`). A fixed number, so it reveals nothing about any secret.
+ */
+const UNTERMINATED_READ_CAP = 1024;
 const MAX_RETAINED_TERMINAL_SHELLS = 20;
 const TERMINAL_SHELL_TTL_MS = 15 * 60_000;
 const PERSISTENT_HEARTBEAT_STALE_MS = 10_000;
@@ -449,10 +454,16 @@ export class ShellJobManager {
   }
 
   /**
-   * Cut the next chunk out of `unread` and advance the cursor past it. The chunk never ends inside a
-   * secret, and while the job is still running it also stops before a trailing partial secret: that
-   * prefix is the first half of a key still being written, and the rest of it arrives on a later
-   * read. Once the job has finished, everything is returned.
+   * Cut the next chunk out of `unread` and advance the cursor past it.
+   *
+   * With secrets configured, a running job's read stops after the last line break, so a key being
+   * written is not returned in halves: the unterminated trailing line waits until it ends or the
+   * job does. The rule looks at line breaks and length only, never at the secrets' values: a
+   * rule that held back "text that starts a key" would let a command probe the key by printing
+   * candidates and seeing which BashOutput comes back empty. A line with no break at all is
+   * returned in {@link UNTERMINATED_READ_CAP}-character pieces so a prompt or a long line is not
+   * held forever. The chunk never ends inside a whole key (`secretSafeCut`), and a finished job
+   * returns everything.
    */
   private takeUnread(
     shell: BackgroundShellRecord,
@@ -460,21 +471,29 @@ export class ShellJobManager {
     limit: number,
     secrets: readonly string[],
   ): ShellOutputResult {
-    if (!unread) {
-      return { shell: cloneRecord(shell), output: '(no new output)', remaining: 0 };
+    const none = { shell: cloneRecord(shell), output: '(no new output)', remaining: 0 };
+    if (!unread) return none;
+    // `reachable` is what this read can ever deliver now; `ceiling` is how far this one may go.
+    let reachable = unread.length;
+    let ceiling = unread.length;
+    if (secrets.length > 0 && !isTerminalShellStatus(shell.status)) {
+      const lineEnd = Math.max(unread.lastIndexOf('\n'), unread.lastIndexOf('\r'));
+      if (lineEnd >= 0) {
+        reachable = lineEnd + 1;
+        ceiling = reachable;
+      } else if (unread.length > UNTERMINATED_READ_CAP) {
+        ceiling = UNTERMINATED_READ_CAP;
+      } else {
+        return none;
+      }
     }
-    const held = isTerminalShellStatus(shell.status) ? 0 : trailingSecretPrefix(unread, secrets);
-    const available = unread.length - held;
-    if (available <= 0) {
-      return { shell: cloneRecord(shell), output: '(no new output)', remaining: 0 };
-    }
-    const output = unread.slice(0, secretSafeCut(unread, Math.min(limit, available), secrets));
+    const output = unread.slice(0, secretSafeCut(unread, Math.min(limit, ceiling), secrets));
     shell.readOffset += output.length;
     return {
       shell: cloneRecord(shell),
       output,
       // What is held back is not available yet, so it is not reported as remaining.
-      remaining: Math.max(0, available - output.length),
+      remaining: Math.max(0, reachable - output.length),
     };
   }
 

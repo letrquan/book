@@ -645,6 +645,11 @@ describe('ShellJobManager.readOutput with secrets', () => {
       () => (manager.readTail(started.id) ?? '').endsWith('b'.repeat(30)),
       'job output',
     );
+    // A finished job returns everything; a running one holds its unterminated last line back.
+    await waitFor(
+      () => !['running', 'starting'].includes(manager.get(started.id)?.status ?? ''),
+      'job exit',
+    );
 
     // 40 falls 10 characters into the key: the read stops where the key starts.
     const first = manager.readOutput(started.id, 40, [KEY]);
@@ -683,6 +688,11 @@ describe('ShellJobManager.readOutput with secrets', () => {
       () => (manager.readTail(started.id) ?? '').endsWith('b'.repeat(30)),
       'job output',
     );
+    // A finished job returns everything; a running one holds its unterminated last line back.
+    await waitFor(
+      () => !['running', 'starting'].includes(manager.get(started.id)?.status ?? ''),
+      'job exit',
+    );
     // Rewind the cursor each time so every limit is tried against the same output.
     const full = 'a'.repeat(30) + KEY + 'b'.repeat(30);
     for (let limit = 1; limit <= full.length; limit++) {
@@ -703,7 +713,7 @@ describe('ShellJobManager.readOutput with secrets', () => {
     const script = join(directory, 'emit.cjs');
     writeFileSync(
       script,
-      `process.stdout.write('a'.repeat(30) + ${JSON.stringify(KEY)} + 'b'.repeat(30));\nsetInterval(() => {}, 1000);\n`,
+      `process.stdout.write('a'.repeat(30) + ${JSON.stringify(KEY)} + 'b'.repeat(30) + '\\n');\nsetInterval(() => {}, 1000);\n`,
     );
     const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
     const manager = new ShellJobManager(
@@ -723,17 +733,17 @@ describe('ShellJobManager.readOutput with secrets', () => {
       workspace: directory,
     });
     await waitFor(
-      () => (manager.readTail(started.id) ?? '').endsWith('b'.repeat(30)),
+      () => (manager.readTail(started.id) ?? '').endsWith('b'.repeat(30) + '\n'),
       'persistent shell output',
       30_000,
     );
 
     const first = manager.readOutput(started.id, 40, [KEY]);
     expect(first?.output).toBe('a'.repeat(30));
-    expect(first?.remaining).toBe(KEY.length + 30);
+    expect(first?.remaining).toBe(KEY.length + 31);
     const second = manager.readOutput(started.id, 5, [KEY]);
     expect(second?.output).toBe(KEY);
-    expect(second?.remaining).toBe(30);
+    expect(second?.remaining).toBe(31);
   }, 60_000);
 });
 
@@ -859,11 +869,16 @@ describe('ShellJobManager and keys split at the edge of a window', () => {
       ].join('\n');
     }
 
+    /** A job that prints `text` and keeps running. */
+    const idleSource = (text: string) =>
+      `process.stdout.write(${JSON.stringify(text)});\nsetInterval(() => {}, 1000);\n`;
+
     async function exerciseTwoReads(manager: ShellJobManager, persistent: boolean): Promise<void> {
       const go = join(directory, 'go');
+      // Half the key is written with no line break after it.
       const started = await startNode(
         manager,
-        twoStageSource(go, `head-${HALF}`, `${KEY.slice(12)}-tail\n`),
+        twoStageSource(go, `head-\n${HALF}`, `${KEY.slice(12)}-tail\n`),
         { persistent },
       );
       await waitFor(
@@ -873,9 +888,11 @@ describe('ShellJobManager and keys split at the edge of a window', () => {
       );
 
       const first = manager.readOutput(started.id, undefined, [KEY]);
-      expect(first?.output).toBe('head-');
+      expect(first?.output).toBe('head-\n');
       expect(first?.output).not.toContain(HALF);
       expect(first?.remaining).toBe(0);
+      // Nothing more until the line is terminated: the half key is not returned.
+      expect(manager.readOutput(started.id, undefined, [KEY])?.output).toBe('(no new output)');
 
       writeFileSync(go, '');
       await waitFor(() => !isRunning(manager, started.id), 'job exit', 30_000);
@@ -885,14 +902,14 @@ describe('ShellJobManager and keys split at the edge of a window', () => {
       expect(manager.readOutput(started.id, undefined, [KEY])?.output).toBe('(no new output)');
     }
 
-    it('holds back a trailing partial key until the rest is written (in memory)', async () => {
+    it('holds back an unterminated line until it ends (in memory)', async () => {
       directory = mkdtempSync(join(tmpdir(), 'book-secret-running-'));
       const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
       managers.push(manager);
       await exerciseTwoReads(manager, false);
     });
 
-    it('holds back a trailing partial key until the rest is written (persistent)', async () => {
+    it('holds back an unterminated line until it ends (persistent)', async () => {
       directory = mkdtempSync(join(tmpdir(), 'book-secret-running-persistent-'));
       const manager = new ShellJobManager(
         { nextId: 1, shells: new Map() },
@@ -903,22 +920,70 @@ describe('ShellJobManager and keys split at the edge of a window', () => {
       await exerciseTwoReads(manager, true);
     }, 90_000);
 
-    it('reports no new output while all that is unread is a partial key', async () => {
+    it('stops a read after the last line break, whatever the trailing text is', async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-secret-lines-'));
+      const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+      managers.push(manager);
+      const started = await startNode(manager, idleSource('one\ntwo\r\nthree'));
+      await waitFor(() => (manager.readTail(started.id) ?? '').endsWith('three'), 'output');
+
+      const read = manager.readOutput(started.id, undefined, [KEY]);
+      expect(read?.output).toBe('one\ntwo\r\n');
+      expect(read?.remaining).toBe(0);
+      expect(manager.readOutput(started.id, undefined, [KEY])?.output).toBe('(no new output)');
+    });
+
+    it('decides the same for a trailing fragment that matches a key prefix and one that does not', async () => {
+      // A read must not tell a caller whether the key starts with what it printed.
+      const observe = async (fragment: string) => {
+        directory = mkdtempSync(join(tmpdir(), 'book-secret-oracle-'));
+        const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+        managers.push(manager);
+        const started = await startNode(manager, idleSource(`line\n${fragment}`));
+        await waitFor(() => (manager.readTail(started.id) ?? '').endsWith(fragment), 'output');
+        const withLine = manager.readOutput(started.id, undefined, [KEY]);
+        const fragmentOnly = manager.readOutput(started.id, undefined, [KEY]);
+        return { withLine, fragmentOnly };
+      };
+
+      const matching = await observe(KEY.slice(0, 5));
+      const other = await observe('zzzzz');
+
+      expect(matching.withLine?.output).toBe('line\n');
+      expect(other.withLine?.output).toBe(matching.withLine?.output);
+      expect(other.withLine?.remaining).toBe(matching.withLine?.remaining);
+      expect(matching.fragmentOnly?.output).toBe('(no new output)');
+      expect(other.fragmentOnly?.output).toBe(matching.fragmentOnly?.output);
+      expect(other.fragmentOnly?.remaining).toBe(matching.fragmentOnly?.remaining);
+    });
+
+    it('reports no new output while all that is unread is an unterminated line', async () => {
       directory = mkdtempSync(join(tmpdir(), 'book-secret-running-only-'));
       const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
       managers.push(manager);
-      const started = await startNode(
-        manager,
-        `process.stdout.write(${JSON.stringify(HALF)});\nsetInterval(() => {}, 1000);\n`,
-      );
+      const started = await startNode(manager, idleSource(HALF));
       await waitFor(() => (manager.readTail(started.id) ?? '') === HALF, 'half a key');
 
       const read = manager.readOutput(started.id, undefined, [KEY]);
       expect(read?.output).toBe('(no new output)');
       expect(read?.remaining).toBe(0);
       expect(manager.get(started.id)?.readOffset).toBe(0);
-      // Without secrets nothing is held back.
+      // With no secrets there is nothing to protect, so nothing is held back.
       expect(manager.readOutput(started.id)?.output).toBe(HALF);
+    });
+
+    it('still returns an over-long line with no line break, up to the cap', async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-secret-longline-'));
+      const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+      managers.push(manager);
+      const started = await startNode(manager, idleSource('a'.repeat(3000)));
+      await waitFor(() => (manager.readTail(started.id, 4000) ?? '').length === 3000, 'output');
+
+      const first = manager.readOutput(started.id, undefined, [KEY]);
+      expect(first?.output).toBe('a'.repeat(1024));
+      expect(first?.remaining).toBe(3000 - 1024);
+      const second = manager.readOutput(started.id, undefined, [KEY]);
+      expect(second?.output).toBe('a'.repeat(1024));
     });
 
     it('returns a finished job’s trailing text in full', async () => {

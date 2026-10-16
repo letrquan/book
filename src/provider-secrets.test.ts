@@ -11,7 +11,6 @@ import {
   redactToolResultSecrets,
   secretSafeCut,
   secretSafeStart,
-  trailingSecretPrefix,
 } from './provider-secrets.js';
 import { defaultConfig } from './test/fixtures.js';
 import type { ToolResult } from './types/tools.js';
@@ -311,21 +310,6 @@ describe('secretSafeStart', () => {
     const cut = secretSafeStart(text, start + 6, [KEY]);
     const kept = text.slice(cut);
     expect(redactSecrets(kept, [KEY])).toBe(`${PROVIDER_KEY_MARKER}${'b'.repeat(10)}`);
-  });
-});
-
-describe('trailingSecretPrefix', () => {
-  it('is the length of the longest proper secret prefix at the end of the text', () => {
-    expect(trailingSecretPrefix(`out ${KEY.slice(0, 9)}`, [KEY])).toBe(9);
-    expect(trailingSecretPrefix(`out ${KEY.slice(0, 1)}`, [KEY])).toBe(1);
-    expect(trailingSecretPrefix(KEY.slice(0, 5), [KEY])).toBe(5);
-  });
-
-  it('is 0 for a whole key, an unrelated tail, or no secrets', () => {
-    expect(trailingSecretPrefix(`out ${KEY}`, [KEY])).toBe(0);
-    expect(trailingSecretPrefix('out zzz', [KEY])).toBe(0);
-    expect(trailingSecretPrefix(`out ${KEY.slice(0, 9)}`, [])).toBe(0);
-    expect(trailingSecretPrefix('', [KEY])).toBe(0);
   });
 });
 
