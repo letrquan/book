@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import stripAnsi from 'strip-ansi';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
+import { MemoryRootContext, memoryRootDisplay } from '../memory-root.js';
 import { displayWidth } from './word-wrap.js';
 import { PermissionButtons, toolRiskLevel, wrapPayload } from './PermissionButtons.js';
 
@@ -547,6 +548,40 @@ describe('PermissionButtons payload', () => {
     );
     const frame = await frameContaining(view, 'Cannot preview');
     expect(frame).toContain('oldString not found');
+  });
+
+  it('previews a write to a memory file instead of refusing it as outside the workspace', async () => {
+    const root = makeWorkspace({});
+    const memory = makeWorkspace({});
+    const target = join(memory, 'fresh.md');
+    const toolCall = {
+      id: 'write-memory',
+      name: 'Write',
+      arguments: { filePath: target, content: 'remember this\n' },
+    };
+    const sheet = (memoryRoot?: ReturnType<typeof memoryRootDisplay>) =>
+      render(
+        withTheme(
+          <MemoryRootContext.Provider value={memoryRoot}>
+            <PermissionButtons
+              toolCall={toolCall}
+              onResolve={vi.fn()}
+              terminalWidth={100}
+              workspaceRoot={root}
+            />
+          </MemoryRootContext.Provider>,
+        ),
+      );
+
+    const view = sheet(memoryRootDisplay({ roots: [memory], workspaceRoot: root }));
+    const frame = await frameContaining(view, '+ remember this');
+    expect(frame).not.toContain('Cannot preview');
+    expect(frame).toContain('memory/fresh.md');
+
+    // Without the memory directory the same call is still outside the workspace.
+    const bare = sheet(undefined);
+    const refused = await frameContaining(bare, 'Cannot preview');
+    expect(refused).toContain('Path outside workspace');
   });
 
   it('still answers the prompt while the preview is pending or absent', () => {

@@ -25,6 +25,7 @@ import {
   type FileMutationDisplaySummary,
 } from './file-mutation-display.js';
 import { networkPolicyRefusal } from '../tools/web-policy.js';
+import { memoryDisplayPath, type MemoryRootDisplay } from './memory-root.js';
 
 export type TranscriptMode = 'compact' | 'detailed';
 export type TranscriptShortcutAction = 'enter-detailed' | 'exit-detailed' | 'expand-output';
@@ -60,6 +61,12 @@ export interface ToolPresentationOptions {
    * `{}`, so this is the only text there is to show for the row.
    */
   unparsedArguments?: { raw: string; error: string };
+  /**
+   * Where Book's memory directory is. A file tool's path argument inside it reads
+   * `memory/<file>` in the row at every status, not only once a result names it so.
+   * A target the result supplies still wins.
+   */
+  memoryRoot?: MemoryRootDisplay;
 }
 
 export function getTranscriptShortcutAction(
@@ -214,6 +221,22 @@ function stringArg(args: Record<string, unknown>, ...names: string[]): string | 
   return undefined;
 }
 
+const MEMORY_MAPPED_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+
+/**
+ * `memory/<file>` for a file tool whose path argument lies in the memory directory: the row's
+ * fallback while there is no result, or none that names the file. `undefined` for any other target.
+ */
+function memoryFileTarget(
+  canonicalName: string,
+  args: Record<string, unknown>,
+  memoryRoot: MemoryRootDisplay | undefined,
+): string | undefined {
+  if (!memoryRoot || !MEMORY_MAPPED_TOOLS.has(canonicalName)) return undefined;
+  const path = stringArg(args, 'filePath', 'file_path', 'notebook_path', 'path');
+  return path ? memoryDisplayPath(memoryRoot, path) : undefined;
+}
+
 function countOutputLines(output: string | undefined): number {
   if (!output) return 0;
   return output.split('\n').length;
@@ -311,9 +334,11 @@ function fileMutationPresentation(
   args: Record<string, unknown>,
   result: ToolResult | undefined,
   status: ToolPresentationStatus,
+  memoryRoot: MemoryRootDisplay | undefined,
 ): Pick<ToolPresentation, 'title' | 'target' | 'metadata' | 'previewType' | 'filePath'> {
   const filePath =
     result?.artifacts?.fileMutation?.filePath ??
+    memoryFileTarget(canonicalName, args, memoryRoot) ??
     stringArg(args, 'filePath', 'file_path', 'notebook_path', 'path') ??
     getPrimaryArg(args);
   const action =
@@ -434,7 +459,14 @@ export function deriveToolPresentation(
 
   if (result?.version === 2 && result.presentation) {
     const structured = result.presentation;
-    target = structured.target ?? target;
+    // `enrichToolResultPresentation` fills in the call's own path argument as the target of a row
+    // whose tool named none (a failed Edit, a Read that failed), so a target equal to that echo
+    // is the fallback, not a target the result chose.
+    const echoesArgs = structured.target === undefined || structured.target === target;
+    target =
+      (echoesArgs ? memoryFileTarget(canonicalName, args, options.memoryRoot) : undefined) ??
+      structured.target ??
+      target;
     metadata = [...(structured.metadata ?? [])];
     if (todoColumns) ({ target, metadata } = todoColumns);
     previewType =
@@ -480,14 +512,23 @@ export function deriveToolPresentation(
   }
 
   if (isFileMutatingTool(canonicalName)) {
-    const mutation = fileMutationPresentation(canonicalName, args, result, status);
+    const mutation = fileMutationPresentation(
+      canonicalName,
+      args,
+      result,
+      status,
+      options.memoryRoot,
+    );
     title = mutation.title;
     target = mutation.target;
     metadata = mutation.metadata;
     previewType = mutation.previewType;
     filePath = mutation.filePath;
   } else if (canonicalName === 'Read') {
-    target = stringArg(args, 'filePath', 'file_path', 'path') ?? target;
+    target =
+      memoryFileTarget(canonicalName, args, options.memoryRoot) ??
+      stringArg(args, 'filePath', 'file_path', 'path') ??
+      target;
     metadata = readMetadata(args, result);
   } else if (canonicalName === 'Glob') {
     target = stringArg(args, 'pattern') ?? target;

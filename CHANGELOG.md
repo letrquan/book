@@ -92,6 +92,14 @@ All notable changes to this project are documented in this file.
   `memory/<file>` like the `Write`/`Edit` rows, instead of the long absolute path, and a message
   about a memory file (`file_not_observed`, a stale read, `Created …`, an `ApplyPatch` diff header)
   names its absolute path instead of `../home/.book/…`. A workspace file keeps its relative path.
+  A row that is still running, waiting on a permission prompt, or failed (`file_not_observed`) also
+  reads `memory/<file>`: the TUI now knows the memory directory, so a `Read`, `Write`, `Edit`,
+  `MultiEdit` or `NotebookEdit` row no longer falls back to the long absolute path before a result
+  names the file.
+  The permission sheet for a `Write`, `Edit`, `MultiEdit` or `ApplyPatch` of a memory file now
+  previews the change, naming the file `memory/<file>`, instead of
+  `Cannot preview: Path outside workspace`. The preview resolves the path with the file tools' own write rules, so it still
+  refuses what they refuse (a non-`.md` file, a dot-entry, a link or a `..` escape).
 - **A short quiet-run summary row shows all its metadata** (#469). `Read a.js` with
   `1 file · 1 search · 1 listing` was cut at the 20-column meta column; the summary row's metadata
   now takes the columns its target leaves free, and a long target keeps its priority.

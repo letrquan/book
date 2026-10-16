@@ -3,6 +3,7 @@ import { useUiClock } from '../ui-clock.js';
 import type { ManagedAgentTrace, ManagedAgentToolUse } from '../managed-agent-transcript.js';
 import { formatDuration, deriveToolPresentation } from '../tool-presentation.js';
 import { useTheme } from '../theme.js';
+import { useMemoryRoot } from '../memory-root.js';
 import { CONTENT_COLUMN, GUTTER_WIDTH, indentedGrid, transcriptGrid } from '../layout.js';
 import { truncateDisplay } from './word-wrap.js';
 import { Spinner } from './Spinner.js';
@@ -58,6 +59,7 @@ export function ManagedAgentActivityBlock({
   terminalWidth?: number;
 }) {
   const theme = useTheme();
+  const memoryRoot = useMemoryRoot();
   const terminal = TERMINAL_STATUSES.has(trace.status);
   const now = useCurrentTime(!terminal);
   const elapsed = durationFor(trace, now);
@@ -93,7 +95,7 @@ export function ManagedAgentActivityBlock({
             tool.call.name,
             tool.call.arguments,
             tool.result,
-            { unparsedArguments: tool.call.unparsedArguments },
+            { unparsedArguments: tool.call.unparsedArguments, memoryRoot },
           );
           return (
             <Text key={tool.id}>
@@ -140,7 +142,7 @@ export function ManagedAgentActivityBlock({
           tool.call.name,
           tool.call.arguments,
           tool.result,
-          { unparsedArguments: tool.call.unparsedArguments },
+          { unparsedArguments: tool.call.unparsedArguments, memoryRoot },
         );
         const running = tool.status === 'running';
         const connector = index === visible.length - 1 ? '└' : '├';

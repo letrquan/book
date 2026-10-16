@@ -31,6 +31,7 @@ import {
 import { displayWidth } from './components/word-wrap.js';
 import { enrichToolResultPresentation, toolFailure, toolSuccess } from '../tools/result.js';
 import { fileTools } from '../tools/file.js';
+import { memoryDisplayPath, memoryRootDisplay } from './memory-root.js';
 
 type ResultOverrides = Partial<ToolResult> & {
   success?: boolean;
@@ -987,6 +988,134 @@ describe('Read row of a memory file', () => {
     const plain = deriveToolPresentation('Read', plainArgs, await read.execute(plainArgs, ctx));
     expect(plain.target).toBe(plainPath);
     expect(plain.metadata).toContain('1 line');
+  });
+});
+
+describe('memory file targets without a result path', () => {
+  const MEMORY = '/home/u/.book/projects/p/memory';
+  const memoryRoot = memoryRootDisplay({
+    roots: [MEMORY],
+    workspaceRoot: '/work/app',
+    platform: 'linux',
+  });
+  const notes = `${MEMORY}/notes.md`;
+  const target = (
+    name: string,
+    args: Record<string, unknown>,
+    res?: ToolResult,
+    isPending = false,
+  ) => deriveToolPresentation(name, args, res, { memoryRoot, isPending }).target;
+
+  it('names a pending Edit, Write, MultiEdit, NotebookEdit and Read `memory/<file>`', () => {
+    expect(target('Edit', { filePath: notes }, undefined, true)).toBe('memory/notes.md');
+    expect(target('Write', { filePath: notes, content: 'x' }, undefined, true)).toBe(
+      'memory/notes.md',
+    );
+    expect(target('MultiEdit', { file_path: notes }, undefined, true)).toBe('memory/notes.md');
+    expect(target('NotebookEdit', { notebook_path: `${MEMORY}/a/b.ipynb` })).toBe(
+      'memory/a/b.ipynb',
+    );
+    expect(target('Read', { filePath: notes }, undefined, true)).toBe('memory/notes.md');
+    // Running and waiting on a permission prompt are the same row.
+    expect(target('Read', { filePath: notes })).toBe('memory/notes.md');
+  });
+
+  it('names a failed Edit, which carries no fileMutation, `memory/<file>`', () => {
+    const failed = toolFailure(`${notes} has not been read in this session.`, {
+      code: 'file_not_observed',
+    });
+    const row = deriveToolPresentation('Edit', { filePath: notes }, failed, { memoryRoot });
+    expect(row.target).toBe('memory/notes.md');
+    expect(row.filePath).toBe('memory/notes.md');
+    expect(row.summary).toContain('Edit(memory/notes.md)');
+    // The model-facing error body still names the absolute path.
+    expect(failed.structuredError?.message).toContain(MEMORY);
+    expect(
+      target(
+        'Write',
+        { filePath: notes },
+        enrichToolResultPresentation(failed, 'Write', { filePath: notes }),
+      ),
+    ).toBe('memory/notes.md');
+  });
+
+  it('lets a target the result supplies win', () => {
+    const done = result({
+      fileMutation: { kind: 'update', filePath: 'memory/other.md', addedLines: 1, removedLines: 0 },
+    });
+    expect(target('Edit', { filePath: notes }, done)).toBe('memory/other.md');
+  });
+
+  it('leaves every other target alone', () => {
+    expect(target('Edit', { filePath: '/home/u/.book/projects/p/other/notes.md' })).toBe(
+      '/home/u/.book/projects/p/other/notes.md',
+    );
+    expect(target('Edit', { filePath: `${MEMORY}/../x.md` })).toBe(`${MEMORY}/../x.md`);
+    expect(target('Edit', { filePath: `${MEMORY}-old/notes.md` })).toBe(`${MEMORY}-old/notes.md`);
+    expect(target('Read', { filePath: MEMORY })).toBe(MEMORY);
+    expect(target('Read', { filePath: '/work/app/src/a.ts' })).toBe('/work/app/src/a.ts');
+    expect(target('Read', { filePath: 'src/a.ts' })).toBe('src/a.ts');
+    expect(target('Grep', { pattern: notes })).toBe(notes);
+    expect(target('Bash', { command: `cat ${notes}` })).toBe(`cat ${notes}`);
+    expect(target('Glob', { pattern: `${MEMORY}/*.md` })).toBe(`${MEMORY}/*.md`);
+  });
+
+  it('changes nothing without a memory root', () => {
+    expect(deriveToolPresentation('Edit', { filePath: notes }).target).toBe(notes);
+    expect(deriveToolPresentation('Read', { filePath: notes }).target).toBe(notes);
+  });
+
+  it('resolves a relative path against the workspace, and only when there is one', () => {
+    const inside = memoryRootDisplay({
+      roots: [MEMORY],
+      workspaceRoot: MEMORY,
+      platform: 'linux',
+    });
+    expect(memoryDisplayPath(inside, 'sub/a.md')).toBe('memory/sub/a.md');
+    expect(memoryDisplayPath(inside, '../x.md')).toBeUndefined();
+    const bare = memoryRootDisplay({ roots: [MEMORY], platform: 'linux' });
+    expect(memoryDisplayPath(bare, 'notes.md')).toBeUndefined();
+    expect(memoryDisplayPath(bare, notes)).toBe('memory/notes.md');
+  });
+
+  it('maps either spelling of a root whose links differ, and a backslash is no separator on POSIX', () => {
+    const linked = memoryRootDisplay({
+      roots: ['/link/memory', '/real/memory'],
+      platform: 'linux',
+    });
+    expect(memoryDisplayPath(linked, '/link/memory/a.md')).toBe('memory/a.md');
+    expect(memoryDisplayPath(linked, '/real/memory/a.md')).toBe('memory/a.md');
+    expect(memoryDisplayPath(linked, '/real/memory\\a.md')).toBeUndefined();
+    expect(memoryDisplayPath(linked, '/real/memory/.')).toBeUndefined();
+  });
+
+  it('maps Windows spellings on a win32 platform, whatever the host', () => {
+    const win = memoryRootDisplay({
+      roots: ['C:\\Users\\u\\.book\\projects\\p\\memory'],
+      platform: 'win32',
+    });
+    const spellings = [
+      'C:\\Users\\u\\.book\\projects\\p\\memory\\a.md',
+      'c:/users/u/.book/projects/p/memory/a.md',
+      'C:/Users/u/.book/projects/p/memory\\a.md',
+      'C:\\USERS\\U\\.BOOK\\projects\\p\\memory\\a.md',
+    ];
+    for (const spelling of spellings) {
+      expect(memoryDisplayPath(win, spelling)).toMatch(/^memory\/a\.md$/i);
+    }
+    expect(memoryDisplayPath(win, 'c:/users/u/.book/projects/p/memory/sub\\b.md')).toBe(
+      'memory/sub/b.md',
+    );
+    expect(memoryDisplayPath(win, 'C:\\Users\\u\\.book\\projects\\p\\memory')).toBeUndefined();
+    expect(
+      memoryDisplayPath(win, 'C:\\Users\\u\\.book\\projects\\p\\memory\\..\\x.md'),
+    ).toBeUndefined();
+    expect(
+      memoryDisplayPath(win, 'D:\\Users\\u\\.book\\projects\\p\\memory\\a.md'),
+    ).toBeUndefined();
+    expect(
+      memoryDisplayPath(win, 'C:\\Users\\u\\.book\\projects\\p\\memory2\\a.md'),
+    ).toBeUndefined();
   });
 });
 
