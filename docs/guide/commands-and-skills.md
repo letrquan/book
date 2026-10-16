@@ -44,12 +44,16 @@ that substitutes no shell has nothing to approve.
 
 **`allowed-tools` narrows what a command, skill, or agent role may run.** A rule such as
 `Bash(git *)` admits a Bash call only if the whole command matches the pattern, and only if the
-command is a single command: one containing any of ``; & | < > ` $ ( ) { }`` or a newline is
-refused, even when the character sits inside quotes (`git commit -m "a; b"` is refused too). Book
-does not parse shell, so it fails closed; split a compound command into separate Bash calls, each
-matching the rule, or rewrite the command without those characters (a commit message without
-parentheses, say). Whitespace around the command, such as a trailing newline, is ignored. A bare
-`Bash` rule (no pattern) admits any command.
+command is a single command: one that chains, pipes, redirects or substitutes outside quotes
+(``; & | < > ` $ ( ) { }``) is refused. Quotes are read, so `git commit -m "fix(x): y"` and
+`git stash show 'stash@{0}'` are admitted (on Linux and macOS). `$` or a backtick inside double quotes, a line break
+anywhere, an unterminated quote, and quote characters a shell could read differently (a backslash
+or caret before a quote, a typographic quote) are still refused, and on Windows any single quote is
+refused (PowerShell and Git Bash read it as a quote), so use double quotes there. Book scans quotes but does not parse shell, so it fails closed;
+split a compound command into separate Bash calls, each matching the rule, or quote the argument
+that holds such characters (a commit message in double quotes, say). Whitespace around the
+command, such as a trailing newline, is ignored. A bare `Bash` rule (no pattern) admits any
+command.
 
 A `Bash(<pattern>)` rule constrains the command's text, not what the program does with its
 options, and it is not a sandbox. `Bash(git *)` still admits `git -c alias.x='!…' x` or

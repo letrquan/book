@@ -220,9 +220,14 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   active but whose arguments this run's allowed-tools rules do not cover is refused as
   `arguments_not_allowed` just before the prompt instead — the tool needs no activation, so "call
   ToolSearch" would name one that already has it and cannot lift the rule. Under a
-  `Bash(<pattern>)` rule a command containing ``; & | < > ` $ ( ) { }`` or a newline is refused
-  the same way, even inside quotes, and the refusal says to send each command as its own Bash
-  call; the whole command must also match the pattern. A bare `Bash` rule admits any command. The
+  `Bash(<pattern>)` rule a command that chains, pipes, redirects or substitutes outside quotes
+  (``; & | < > ` $ ( ) { }``), uses `$` or a backtick inside double quotes, or has a line break or
+  an unterminated quote is refused the same way, and the refusal says to send each command as its
+  own Bash call; the whole command must also match the pattern. Quotes are read, so
+  `git commit -m "fix(x): y"` and `git stash show 'stash@{0}'` (not on Windows) pass `Bash(git *)`; a backslash or
+  caret before a quote and a typographic quote are refused because a shell may read them
+  differently, and on Windows any single quote is refused (PowerShell and Git Bash read it as a
+  quote, so use double quotes there). A bare `Bash` rule admits any command. The
   rule constrains the command's text, not what the program does with its options (`Bash(git *)`
   still admits `git -c core.fsmonitor=… status`), and is not a sandbox: narrow the pattern when
   that matters.
@@ -319,6 +324,27 @@ active instead of being refused.
 
 `permissions.allow`, `permissions.ask`, and `permissions.deny` are matched against every tool call.
 `deny` beats `ask`, and `ask` beats `allow`.
+
+**Bash `allow` rules read the whole command; `deny` and `ask` read only its first line.** A
+`Bash(<pattern>)` allow rule admits a call only when the whole command, trimmed, matches the
+pattern and is a single command. `Bash(*)` is a pattern rule like any other, so it too no longer
+admits a compound or multi-line command; such a call falls through to the prompt. A command that chains, pipes, redirects or substitutes outside
+quotes (``; & | < > ` $ ( ) { }``), uses `$` or a backtick inside double quotes, or has a line break
+or an unterminated quote does not match, so it falls through to the prompt: `Bash(git status)`
+does not admit `git status` followed by a second line, and `Bash(git *)` does not admit
+`git status && rm -rf ~`. Quoted arguments are fine (`git commit -m "fix(x): y"`), and whitespace
+around the command is ignored. On Windows a single-quoted argument is refused under a Bash rule,
+because PowerShell and Git Bash read `'` as a quote and cmd.exe does not; use double quotes there.
+A bare `Bash` allow rule (no pattern) still admits every Bash command.
+
+`deny` and `ask` rules read only the first line of the command (and the first line of the trimmed
+command, so leading whitespace does not slide past them). A command chained after `&&`, `;` or
+`|`, or placed on a later line, is **not** checked against them: `Bash(rm *)` in `deny` does not
+stop `echo hi && rm x` or `echo hi` followed by a line `rm x`. A Bash `deny` rule is therefore not
+a guard against chaining in `auto` or `bypassPermissions`, which do not prompt for what no rule
+matched; this is tracked in #512. The same reading applies to the session's "approve all" rules.
+"Always allow" offers only the exact rule, with no widened `*` rungs, for a command that is
+multi-line, chains or redirects, or contains a quote character.
 
 Permission _modes_ decide whether you are prompted; they never relax a `deny` rule. A rule in
 `permissions.deny` blocks the matching call in every mode, including `auto` and
