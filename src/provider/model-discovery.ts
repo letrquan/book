@@ -5,6 +5,12 @@ export type ProviderProtocol = 'openai' | 'anthropic';
 export interface DiscoveredModel {
   id: string;
   label?: string;
+  /**
+   * The model's exact input limit, from Anthropic's `max_input_tokens`. Present only for a valid
+   * figure from an Anthropic endpoint: a persisted value counts as declared, and an
+   * OpenAI-compatible router's figure is not authoritative.
+   */
+  contextWindow?: number;
 }
 
 import { systemClock, type Clock } from '../clock.js';
@@ -216,7 +222,17 @@ function parseModels(payload: unknown, type: ProviderProtocol): DiscoveredModel[
         ? record.display_name
         : (record.name ?? record.display_name ?? record.label);
     const label = typeof rawLabel === 'string' && rawLabel.trim() ? rawLabel.trim() : undefined;
-    models.push({ id, label });
+    const model: DiscoveredModel = { id, label };
+    const limit = record.max_input_tokens;
+    if (
+      type === 'anthropic' &&
+      typeof limit === 'number' &&
+      Number.isSafeInteger(limit) &&
+      limit > 0
+    ) {
+      model.contextWindow = limit;
+    }
+    models.push(model);
   }
   return models;
 }

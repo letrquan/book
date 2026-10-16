@@ -164,6 +164,9 @@ export function providerConfigFromDraft(
           : (model.label ?? previous?.label),
       manual: draft.manual ? true : undefined,
     };
+    // A window already on the entry wins: it may be the user's own, and a refresh must not undo it.
+    const contextWindow = previous?.contextWindow ?? model.contextWindow;
+    if (contextWindow !== undefined) models[model.id].contextWindow = contextWindow;
     if (!models[model.id].label) delete models[model.id].label;
     // Discovery now vouches for this id, so it no longer needs the manual
     // marker to survive the next refresh.

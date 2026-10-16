@@ -216,6 +216,10 @@ learned, and `/context` and the status line mark which source the current window
 (`declared`, `learned`, `family`, or `default`). To discard one, delete its entry from
 `model-windows.json`, or delete the file to forget them all — it is rebuilt on demand.
 
+Adding or refreshing models through `/model` against an Anthropic endpoint records each model's
+reported `max_input_tokens` as its `contextWindow`, and that counts as declared. A value already
+set on the model is kept, and a model with no reported limit falls back to the family table.
+
 ### Prompt caching on OpenAI-compatible providers
 
 On the Anthropic Messages API, Book places its own cache breakpoints: the last tool, the cached

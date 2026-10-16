@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { resolveModelProviderConfig } from '../config.js';
+import { buildContextReport } from '../context-report.js';
+import { resolveContextWindow } from '../models.js';
+import { discoverModels } from '../provider/model-discovery.js';
+import { loadSettingsFile, mergeSettings } from '../settings-loader.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
+import { defaultConfig } from '../test/fixtures.js';
 import {
   advisorPickerWarnings,
   buildModelOptions,
@@ -164,6 +173,55 @@ describe('BYOK validation and provider merge', () => {
     expect(refreshed.models).toEqual({ 'hidden-model': { manual: true }, 'model-b': {} });
   });
 
+  it('persists a discovered contextWindow and omits the key when there is none', () => {
+    const provider = providerConfigFromDraft({
+      providerId: 'anthropic',
+      type: 'anthropic',
+      baseURL: 'https://api.anthropic.com',
+      apiKey: 'key',
+      models: [{ id: 'claude-sonnet-5-5', contextWindow: 1_000_000 }, { id: 'no-limit' }],
+      activeModelId: 'claude-sonnet-5-5',
+    });
+    expect(provider.models['claude-sonnet-5-5']).toEqual({ contextWindow: 1_000_000 });
+    expect(Object.hasOwn(provider.models['no-limit'], 'contextWindow')).toBe(false);
+  });
+
+  it('keeps a hand-set contextWindow over a discovered one on refresh and on re-add', () => {
+    const draft = {
+      providerId: 'anthropic',
+      type: 'anthropic' as const,
+      baseURL: 'https://api.anthropic.com',
+      apiKey: 'key',
+      models: [{ id: 'claude-sonnet-5-5', contextWindow: 1_000_000 }],
+      activeModelId: 'claude-sonnet-5-5',
+    };
+    const existing = {
+      type: 'anthropic' as const,
+      models: { 'claude-sonnet-5-5': { contextWindow: 400_000 } },
+    };
+    expect(providerConfigFromDraft(draft, existing, true).models).toEqual(existing.models);
+    expect(providerConfigFromDraft(draft, existing).models).toEqual(existing.models);
+  });
+
+  it('fills a discovered contextWindow only where the existing entry has none', () => {
+    const provider = providerConfigFromDraft(
+      {
+        providerId: 'anthropic',
+        type: 'anthropic',
+        baseURL: 'https://api.anthropic.com',
+        apiKey: 'key',
+        models: [{ id: 'claude-sonnet-5-5', contextWindow: 1_000_000 }],
+        activeModelId: 'claude-sonnet-5-5',
+      },
+      { type: 'anthropic', models: { 'claude-sonnet-5-5': { label: 'Mine' } } },
+      true,
+    );
+    expect(provider.models['claude-sonnet-5-5']).toEqual({
+      label: 'Mine',
+      contextWindow: 1_000_000,
+    });
+  });
+
   it('retires the legacy lowercase base URL key when writing a new one', () => {
     const provider = providerConfigFromDraft(
       {
@@ -259,5 +317,78 @@ describe('providerConfigForSave', () => {
     const saved = providerConfigForSave({ ...fromPicker, replaceModels: true }, undefined);
 
     expect(saved).toMatchObject({ type: 'anthropic', baseURL: 'https://workspace.example/v1' });
+  });
+});
+
+// #416: discovery -> persisted settings -> loader -> the window /context shows.
+describe('discovered Anthropic context windows reach the resolver', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'book-discovery-window-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+
+  it('resolves the reported window as declared, and falls back to the family table without one', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: [
+              { id: 'claude-sonnet-5-5', max_input_tokens: 1_000_000, max_tokens: 128_000 },
+              { id: 'claude-sonnet-4-5-20250929', max_input_tokens: 200_000, max_tokens: 64_000 },
+              { id: 'claude-haiku-4-5-20251001' },
+            ],
+          }),
+          { status: 200 },
+        ),
+    );
+    const models = await discoverModels({
+      type: 'anthropic',
+      baseUrl: 'https://api.anthropic.com',
+      apiKey: 'key',
+      retry: { ...defaultConfig().retry, maxAttempts: 0, requestTimeoutMs: 100 },
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    const provider = providerConfigFromDraft({
+      providerId: 'anth',
+      type: 'anthropic',
+      baseURL: 'https://api.anthropic.com',
+      apiKey: 'key',
+      models,
+      activeModelId: 'claude-sonnet-5-5',
+    });
+
+    const file = join(dir, 'settings.json');
+    writeFileSync(file, JSON.stringify({ provider: { anth: provider } }));
+    const loaded = loadSettingsFile(file);
+    expect(loaded).not.toBeNull();
+    const config = defaultConfig({ settings: mergeSettings(DEFAULT_SETTINGS, loaded!) });
+
+    const resolve = (id: string) => {
+      const resolved = resolveModelProviderConfig(config, `anth/${id}`);
+      return { resolved, resolution: resolveContextWindow(resolved) };
+    };
+
+    const sonnet = resolve('claude-sonnet-5-5');
+    expect(sonnet.resolution).toEqual({ window: 1_000_000, source: 'declared' });
+    // The output limit must not reach request sizing or the compaction reserve.
+    expect(sonnet.resolved.modelInfo?.maxOutputTokens).toBeUndefined();
+    expect(resolve('claude-sonnet-4-5-20250929').resolution).toEqual({
+      window: 200_000,
+      source: 'declared',
+    });
+    expect(resolve('claude-haiku-4-5-20251001').resolution.source).toBe('family');
+
+    const report = buildContextReport([], {
+      model: 'claude-sonnet-5-5',
+      maxTokens: sonnet.resolution.window,
+      windowSource: sonnet.resolution.source,
+      commandCount: 0,
+      hasClaudeMdLoader: false,
+    });
+    expect(report).toContain('Model context budget: 1,000,000 tokens (claude-sonnet-5-5)');
+    expect(report).not.toContain('assumed default');
   });
 });
