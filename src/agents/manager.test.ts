@@ -2421,12 +2421,27 @@ describe('children re-driven after a restart', () => {
     vi.unstubAllGlobals();
     if (previousBookHome === undefined) delete process.env.BOOK_HOME;
     else process.env.BOOK_HOME = previousBookHome;
-    rmSync(root, { recursive: true, force: true });
+    // The second half of keeping the first manager's late write out of the removal (the helper
+    // waits for it, see `restartAndCollect`): a removal that still meets a file in flight
+    // (ENOTEMPTY, EBUSY) tries again instead of failing the test.
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
+
+  /**
+   * A restart is two managers in one process, and both reach the provider through the one global
+   * `fetch`: a stub cannot tell whose request it is serving, except by where it was sent. Each
+   * manager is therefore configured with an endpoint of its own, and the stub routes on it (#413).
+   */
+  const FIRST_PROCESS_URL = 'http://first-process.invalid/v1';
+  const RESTARTED_PROCESS_URL = 'http://restarted-process.invalid/v1';
+
+  /** The controller of every stream `held` has handed out. Closing one ends that request. */
+  const heldStreams: ReadableStreamDefaultController[] = [];
 
   function held(signal?: AbortSignal | null): Response {
     const stream = new ReadableStream({
       start(controller) {
+        heldStreams.push(controller);
         signal?.addEventListener('abort', () => {
           try {
             controller.close();
@@ -2455,16 +2470,49 @@ describe('children re-driven after a restart', () => {
     return new Response(stream, { status: 200 });
   }
 
-  /** Spawns a child, kills the process while it runs, restarts, and collects completions. */
+  /**
+   * Resolves once `manager` has no run in flight, and fails if one is still there after
+   * `timeoutMs`, so a run that never winds down fails its test instead of hanging it. A run is in
+   * flight until its promise settles, which is after its last write.
+   */
+  async function whenIdle(manager: AgentManager, timeoutMs = 5_000): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`the manager still had a run in flight after ${timeoutMs} ms`));
+      }, timeoutMs);
+    });
+    try {
+      await Promise.race([manager.waitForIdle(), timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Spawns a child, kills the process while it runs, restarts, and collects completions.
+   * `requests` is what the restarted manager sent to the provider, and nothing else (#413).
+   *
+   * `endFirstRequestsAfterRestart` forces the worst case of #413 and is off by default: right after
+   * the restart began, every request the first manager still holds ends, the way a stall, an abort
+   * or a dropped connection ends it, and the helper waits until the first manager has made another
+   * request (the loop re-issues the dropped turn through the global `fetch`) before the restarted
+   * manager first reads the store. That rests on the loop's policy for a dropped stream, which has
+   * nothing to do with restart handling, so only the test about #413 asks for it; every other test
+   * restarts plainly, with the first manager left quiet. `firstManagerRequestsAfterClose` is how
+   * many requests the first manager then made, and 0 when the schedule was not asked for.
+   */
   async function restartAndCollect(
     parentToolCallId: string | undefined,
     spawnWith?: (manager: AgentManager) => Promise<{ id: string }>,
+    options: { endFirstRequestsAfterRestart?: boolean } = {},
   ) {
     root = mkdtempSync(join(tmpdir(), 'resume-child-'));
     process.env.BOOK_HOME = join(root, 'book-home');
-    const config = defaultConfig({ workspace: root });
+    const config = defaultConfig({ workspace: root, baseUrl: FIRST_PROCESS_URL });
     config.settings.agents.persist = true;
     config.settings.agents.resumeInterrupted = true;
+    heldStreams.length = 0;
 
     vi.stubGlobal(
       'fetch',
@@ -2493,9 +2541,35 @@ describe('children re-driven after a restart', () => {
     process.off('exit', internals.exitHandler);
     internals.store?.dispose?.();
 
-    const resumedFetch = vi.fn(async () => answered('resumed answer'));
-    vi.stubGlobal('fetch', resumedFetch);
-    const second = new AgentManager(config, [], {
+    // The first manager's run is still alive here: `exitHandler()` records it as interrupted but
+    // does not abort it, because in production the process is exiting. Aborting it now with
+    // `dispose()` is no way out, because the aborted run winds down through
+    // `persist(record, 'result')`, which writes even after the store is disposed, and so replaces
+    // the `interrupted` / `process_exit` record the restart re-drives with `stopped` /
+    // `caller_cancelled`.
+    //
+    // So the first manager keeps its stub (the helper's, or the one `spawnWith` installed), and the
+    // restarted manager gets an endpoint of its own. The stub the test counts is reached only
+    // through that endpoint, so a request the first manager makes late, whenever its held request
+    // ends, cannot be mistaken for one the restarted manager made.
+    const firstFetch = globalThis.fetch;
+    const resumedFetch = vi.fn(async (_url: unknown, _init?: RequestInit) =>
+      answered('resumed answer'),
+    );
+    const strays: string[] = [];
+    let firstManagerRequests = 0;
+    vi.stubGlobal('fetch', (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const endpoint =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (endpoint.startsWith(RESTARTED_PROCESS_URL)) return resumedFetch(input, init);
+      if (endpoint.startsWith(FIRST_PROCESS_URL)) {
+        firstManagerRequests++;
+        return firstFetch(input, init);
+      }
+      strays.push(endpoint);
+      return Promise.reject(new Error(`request to an endpoint neither manager owns: ${endpoint}`));
+    });
+    const second = new AgentManager({ ...config, baseUrl: RESTARTED_PROCESS_URL }, [], {
       storeRoot: root,
       findGitRoot: async () => undefined,
     });
@@ -2503,12 +2577,37 @@ describe('children re-driven after a restart', () => {
     second.subscribe((event) => {
       if (event.type === 'agent_completion') completions.push(event.type);
     });
+    let firstManagerRequestsAfterClose = 0;
     try {
+      if (options.endFirstRequestsAfterRestart) {
+        // The worst case, forced instead of left to the machine's load. Only a request made after
+        // this snapshot is the first manager's reaction to the close: one that arrived before it
+        // must not satisfy the wait.
+        const before = firstManagerRequests;
+        for (const controller of heldStreams.splice(0)) {
+          try {
+            controller.close();
+          } catch {
+            /* already closed */
+          }
+        }
+        await vi.waitFor(
+          () => {
+            if (firstManagerRequests === before) {
+              throw new Error('the first manager made no request after its held request ended');
+            }
+          },
+          { timeout: 5_000 },
+        );
+        firstManagerRequestsAfterClose = firstManagerRequests - before;
+      }
+      // A manager reads the store when it is first used, so the restarted one reads it only now.
       await second.list();
       await new Promise((resolve) => setTimeout(resolve, 300));
       await second.waitForIdle();
       await new Promise((resolve) => setTimeout(resolve, 100));
       const record = await second.get(spawned.id);
+      expect(strays, 'requests to an endpoint neither manager owns').toEqual([]);
       // The last user message of each request after the restart: the task each re-run ran.
       const tasks = (resumedFetch.mock.calls as unknown as Array<[unknown, RequestInit?]>).map(
         ([, init]) => {
@@ -2524,6 +2623,7 @@ describe('children re-driven after a restart', () => {
         completions,
         record,
         requests: resumedFetch.mock.calls.length,
+        firstManagerRequestsAfterClose,
         tasks,
       };
     } finally {
@@ -2533,6 +2633,12 @@ describe('children re-driven after a restart', () => {
       } catch {
         /* already disposed */
       }
+      // `first.dispose()` aborts the first manager's run, which was still alive (see above), and
+      // that run winds down afterwards, on its own: `persist(record, 'result')` writes its record
+      // even though the store is disposed. Returning before it has could leave that write to land
+      // while `afterEach` removes the directory, which can fail the removal (ENOTEMPTY) or recreate
+      // the directory behind it. The manager is idle once its run has settled, after that write.
+      await whenIdle(first);
     }
   }
 
@@ -2638,6 +2744,27 @@ describe('children re-driven after a restart', () => {
     // The first follow-up reached the agent while the review still waited on it, so it is run 2
     // inside the claim through 2; the announcement is the run past that claim.
     expect(record).toMatchObject({ runSequence: 3, spawnerClaim: { throughRunSequence: 2 } });
+  });
+
+  // The worst case of #413, forced instead of left to the machine's load: the first manager's held
+  // request ends right after the restart began, and its run reacts by sending the turn again
+  // through the global `fetch`. That request is the first manager's and must not be counted as a
+  // re-run. This test depends on the loop re-issuing a dropped turn (one retry on
+  // `transport_interrupted`, a stream cut before it said anything), which is what makes the old
+  // miscount reproducible: the helper then counted that re-issue and the /review tests failed with
+  // `expected 1 to be +0`. The other tests restart plainly and do not depend on it.
+  it("counts only the restarted manager's requests when the first manager's held request ends after the restart (#413)", async () => {
+    const { record, requests, firstManagerRequestsAfterClose } = await restartAndCollect(
+      undefined,
+      (manager) =>
+        reviewRunnerFor(manager, { parentSessionId: 'parent-1' }).spawn('explorer', 'survey'),
+      { endFirstRequestsAfterRestart: true },
+    );
+    expect(requests).toBe(0);
+    expect(record).toMatchObject({ status: 'interrupted', resumable: false });
+    // The schedule did happen: the first manager sent a request after its held one ended. Without
+    // one, the 0 above would hold for any router.
+    expect(firstManagerRequestsAfterClose).toBeGreaterThanOrEqual(1);
   });
 });
 

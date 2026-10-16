@@ -129,6 +129,10 @@ All notable changes to this project are documented in this file.
   seconds with a 64 KiB buffer, and a single read through the production runner shows that its own
   buffer refuses an overrun too. One full-size variant, skipped on Windows, shows the apply wires
   that buffer in. Cleanup also retries the removal. Book itself behaves exactly as before.
+- **A restart test no longer counts the first manager's requests as the restarted one's** (#413).
+  `children re-driven after a restart` flaked with `expected 1 to be +0` under the full integration
+  tier: its helper counted a request the first manager's child made late as a re-run. The helper
+  now counts only the restarted manager's requests. Test-only.
 - **A memory file is named by what reads it best.** The `Read` row of a memory file now shows
   `memory/<file>` like the `Write`/`Edit` rows, instead of the long absolute path, and a message
   about a memory file (`file_not_observed`, a stale read, `Created …`, an `ApplyPatch` diff header)
