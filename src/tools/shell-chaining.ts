@@ -75,8 +75,9 @@ export type ScanShell = Pick<ResolvedShell, 'kind' | 'file'>;
  * - on `win32`, an ASCII `'` appears anywhere, unless `shell` is Git Bash: there `'` reads as on
  *   Linux, because the Bash tool delivers the command to Git Bash out of band, byte for byte, so
  *   the MSYS runtime never rebuilds it (see `shellExecution`). WSL's `bash.exe`, cmd, pwsh,
- *   powershell, sh, a `bash` without a file, and no known shell still refuse `'`. Off win32
- *   `shell` is not read.
+ *   powershell, sh, a `bash` without a file, and no known shell still refuse `'`. An MSYS POSIX
+ *   sh is delivered out of band too, but still refuses `'` by owner decision (#532), so this asks
+ *   `isGitBash`, never `receivesCommandOutOfBand`. Off win32 `shell` is not read.
  *
  * Every caller passes the same (platform, shell) pair, so the permission gate, the capability gate
  * and the refusal text agree about which commands are compound.

@@ -224,6 +224,26 @@ describe('hasCompoundShellSyntax under Git Bash reads single quotes as on Linux 
   });
 });
 
+// #532: an MSYS POSIX sh gets Git Bash's out-of-band delivery, but by owner decision the scanner
+// still refuses `'` under it: only Git Bash relaxes the quote rule.
+describe('hasCompoundShellSyntax still refuses a single quote under an MSYS sh (#532)', () => {
+  const msysSh = {
+    kind: 'sh',
+    file: 'C:\\Program Files\\Git\\usr\\bin\\sh.exe',
+    label: '/bin/sh',
+    source: 'setting',
+    msys: true,
+  } as const;
+
+  it.each(["echo'1;echo'2", "echo';id'", "git log 'x'", "echo 'a;b'"])('refuses %j', (command) => {
+    expect(hasCompoundShellSyntax(command, 'win32', msysSh)).toBe(true);
+  });
+
+  it('reads it as on Linux off win32', () => {
+    expect(hasCompoundShellSyntax("git log 'x'", 'linux', msysSh)).toBe(false);
+  });
+});
+
 // `kindFromExecutable` calls any executable with "bash" in its name `bash`, WSL's launcher
 // included; that is not the MSYS runtime and rebuilds argv its own way.
 describe('hasCompoundShellSyntax: the WSL launcher is not Git Bash (#512)', () => {

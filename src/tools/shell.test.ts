@@ -8,7 +8,7 @@ import { persistentEnvironmentOverrides, shellTools, streamTail } from './shell.
 import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
 import { hasCompoundShellSyntax } from './shell-chaining.js';
-import { windowsGitBash } from '../test/real-shells.js';
+import { windowsGitBash, windowsMsysSh } from '../test/real-shells.js';
 import { PROVIDER_KEY_MARKER, redactToolResultSecrets } from '../provider-secrets.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
 import { SessionRuntime } from '../session/runtime.js';
@@ -1535,5 +1535,104 @@ describe.skipIf(!windowsGitBash)('Git Bash commands on Windows (#512, #523)', ()
     const result = await viaTool(command);
     expect(result.code).toBe(0);
     expect(result.stdout).toBe(values.map((value) => `${value}\n`).join(''));
+  });
+});
+
+// #532: Git's `usr\bin\sh.exe` runs on the same MSYS runtime as Git Bash, so it gets the same
+// out-of-band delivery. The shell is resolved from its path the way a `shell` setting is, so the
+// `msys-2.0.dll` detection runs for real. sh words its errors its own way (`sh: x: command not found`
+// or `sh: 1: x: not found`), so they are matched loosely.
+describe.skipIf(!windowsMsysSh)('MSYS sh commands on Windows (#532)', () => {
+  function shContext(): ToolContext {
+    const c: ToolContext = { workspaceRoot: dir, env: {}, shell: windowsMsysSh };
+    contexts.push(c);
+    return c;
+  }
+
+  async function viaTool(command: string): Promise<ShellRun> {
+    const result = await bash.execute({ command }, shContext());
+    if (result.status === 'success') {
+      return {
+        stdout: result.content === '(no output)' ? '' : result.content,
+        stderr: '',
+        code: 0,
+      };
+    }
+    const message = result.structuredError?.message ?? '';
+    const exitCode = result.structuredError?.details?.exitCode;
+    return {
+      stdout: result.content,
+      stderr: /^Exit code: \d+$/.test(message) ? '' : message,
+      code: typeof exitCode === 'number' ? exitCode : null,
+    };
+  }
+
+  /** The sh spawned directly with the command in argv, as before #532. */
+  function direct(command: string): Promise<ShellRun> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(windowsMsysSh!.file!, ['-c', command], {
+        cwd: dir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString('utf8')));
+      child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
+      child.on('error', reject);
+      child.on('close', (code) => resolve({ stdout, stderr, code }));
+    });
+  }
+
+  const notFound = (text: string): number => text.match(/not found/g)?.length ?? 0;
+
+  it('resolves the sh with the MSYS flag', () => {
+    expect(windowsMsysSh!.msys).toBe(true);
+  });
+
+  it("delivers `'` quoting a space-free word intact: one command, not two", async () => {
+    // The scanner still refuses `'` under sh (owner decision); the tool is called directly here.
+    expect(hasCompoundShellSyntax("echo'1;echo'2", 'win32', windowsMsysSh)).toBe(true);
+    const result = await viaTool("echo'1;echo'2");
+    expect(notFound(result.stderr), result.stderr).toBe(1);
+    expect(result.stderr).toContain('echo1;echo2');
+  });
+
+  it('leaves globbing to sh, which still globs the command word', async () => {
+    writeFileSync(join(dir, 'echo;x'), '');
+    const result = await viaTool('echo?x');
+    expect(notFound(result.stderr), result.stderr).toBe(1);
+    expect(result.stderr).toContain('echo;x');
+    expect(result.stdout).toBe('');
+  });
+
+  it('does not read a leading @word as a response file', async () => {
+    writeFileSync(join(dir, 'f'), 'echo INJECTED\n');
+    const result = await viaTool('@f');
+    expect(notFound(result.stderr), result.stderr).toBe(1);
+    expect(result.stderr).toContain('@f');
+    expect(`${result.stdout}${result.stderr}`).not.toContain('INJECTED');
+  });
+
+  it('hides BOOK_BASH_COMMAND from the command and its children', async () => {
+    const result = await viaTool(
+      `printf '%s\\n' "[\${BOOK_BASH_COMMAND+LEAK}]" "$(env | grep -c '^BOOK_BASH_COMMAND=')"`,
+    );
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('[]\n0\n');
+  });
+
+  it('keeps the exit status of a direct sh -c', async () => {
+    const command = 'echo "x"; exit 7';
+    const [tool, plain] = await Promise.all([viaTool(command), direct(command)]);
+    expect(tool.stdout).toBe(plain.stdout);
+    expect(tool.code).toBe(plain.code);
+    expect(tool.code).toBe(7);
+  });
+
+  it('exits as a direct sh -c does on a syntax error', async () => {
+    const command = 'echo "a" )';
+    const [tool, plain] = await Promise.all([viaTool(command), direct(command)]);
+    expect(tool.code).toBe(plain.code);
+    expect(tool.code).not.toBe(0);
   });
 });

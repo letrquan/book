@@ -407,6 +407,13 @@ WSL's `bash.exe` (in a Windows system directory or the `Microsoft\WindowsApps` a
 PowerShell, cmd.exe and any other shell still treat every `'` as making the command compound; use
 double quotes under those shells.
 
+A POSIX `sh` on the same MSYS runtime gets the same `BOOK_BASH_COMMAND` delivery: `shell` set to
+Git's or MSYS2's `sh.exe`, `dash.exe`, `zsh.exe` (or `ash`, `ksh`, `mksh`). Book detects the
+runtime when it resolves the shell, by `msys-2.0.dll` beside the executable, or in `..\usr\bin` for
+Git's `bin\sh.exe` launcher. Other `sh.exe` builds (busybox-w32, Cygwin) and non-POSIX shells such
+as `fish.exe` keep the command on the command line. Under every `sh`, an MSYS one included, `'`
+still makes a command compound.
+
 Permission _modes_ decide whether you are prompted; they never relax a `deny` rule. A rule in
 `permissions.deny` blocks the matching call in every mode, including `auto` and
 `bypassPermissions`, and it is evaluated before the prompt, so a denied call never reaches one.
