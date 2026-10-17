@@ -5,6 +5,7 @@ import { useTheme } from '../theme.js';
 import { useDensity } from '../density.js';
 import { useTranscriptLayoutChange } from '../transcript-layout.js';
 import { displayWidth, wordWrap } from './word-wrap.js';
+import { expandTabs } from './tool-output.js';
 import { highlightCode, type StyledLine } from './syntax-highlight.js';
 import {
   layoutCodeBlock,
@@ -619,8 +620,12 @@ function renderBlockToken(
     case 'code': {
       const t = token as Tokens.Code;
       const lines = t.text.split('\n');
-      const displayLines =
-        lines.length > 0 && lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines;
+      // Tabs go once, here, ahead of both the layout and the highlighter (and the streaming path,
+      // which has no highlighter): `displayWidth` counts a tab as no cells while the terminal moves
+      // to the next 8-column stop, so a raw tab makes the row wider on screen than it was cut to.
+      const displayLines = (
+        lines.length > 0 && lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines
+      ).map(expandTabs);
       const layout = layoutCodeBlock(displayLines, terminalWidth, {
         lang: t.lang,
         preferLineNumbers: displayLines.length > 5,
