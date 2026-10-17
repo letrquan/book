@@ -1773,6 +1773,83 @@ describe('AgentManager lifecycle', () => {
             fixture.session.dispose();
           }
         });
+
+        describe('a hand-off that throws', () => {
+          const handOffFailed = expect.objectContaining({
+            namespace: 'agent-manager',
+            event: 'late application hand-off failed',
+          });
+          // The fallback is the disposed store's own late write; with the receiver's lease live it
+          // stands down, and says so.
+          const fallbackRan = {
+            namespace: 'agent-store',
+            event: 'late application skipped',
+            metadata: { reason: 'live_instance' },
+          };
+
+          it("still returns the pick's result, and falls back, when the receiver cannot read the record", async () => {
+            const fixture = await sessionMidApply(sameProcess);
+            try {
+              await fixture.switchSession();
+              // Every way the receiver could read the record fails, as a disk error would.
+              const failRead = () => {
+                throw Object.assign(new Error('read failed'), { code: 'EIO' });
+              };
+              vi.spyOn(AgentStore.prototype, 'loadAgent').mockImplementation(failRead);
+              vi.spyOn(AgentStore.prototype, 'listAgents').mockImplementation(failRead);
+
+              fixture.releases[0]!('applied');
+
+              await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+              expect(debugEvents).toContainEqual({
+                namespace: 'agent-manager',
+                event: 'late application hand-off failed',
+                metadata: { code: 'EIO' },
+              });
+              expect(debugEvents).toContainEqual(fallbackRan);
+            } finally {
+              vi.restoreAllMocks();
+              fixture.session.dispose();
+            }
+          });
+
+          it("still returns the pick's result, and falls back, when a listener of the receiver throws", async () => {
+            const fixture = await sessionMidApply(sameProcess);
+            try {
+              const { next } = await fixture.switchSession();
+              next.subscribe((event) => {
+                if (event.type === 'agent_apply') throw new Error('listener failed');
+              });
+
+              fixture.releases[0]!('applied');
+
+              await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+              expect(debugEvents).toContainEqual(handOffFailed);
+              expect(debugEvents).toContainEqual(fallbackRan);
+            } finally {
+              fixture.session.dispose();
+            }
+          });
+        });
+
+        it('reads only the one record, not every summary in the store', async () => {
+          const fixture = await sessionMidApply(sameProcess);
+          const { patcher } = fixture;
+          try {
+            const { next } = await fixture.switchSession();
+            const listed = vi.spyOn(AgentStore.prototype, 'listAgents');
+
+            fixture.releases[0]!('applied');
+            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+            expect(listed).not.toHaveBeenCalled();
+            listed.mockRestore();
+            expect((await next.get(patcher.id))?.applicationStatus).toBe('applied');
+          } finally {
+            vi.restoreAllMocks();
+            fixture.session.dispose();
+          }
+        });
       });
     });
   });
