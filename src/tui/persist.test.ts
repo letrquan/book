@@ -740,6 +740,40 @@ describe('persistProviderSave (#514)', () => {
     expect(freshWindow()).toEqual({ window: 150_000, source: 'declared' });
   });
 
+  // Discovery writes `reportedContextWindow` and overwrites it on every refresh, so a copy left in
+  // the local layer would outrank the figure the refresh just reported.
+  it('clears a stale reportedContextWindow from every local model, keeping the other fields', () => {
+    writeLocal({
+      provider: {
+        anthro: {
+          baseURL: 'https://stale.example',
+          models: {
+            [claude]: { ...override, reportedContextWindow: 111_111 },
+            'vendor/model.v2': { label: 'Other', manual: true, reportedContextWindow: 222_222 },
+          },
+        },
+      },
+    });
+
+    expect(persistProviderSave(dir, 'anthro', savedProvider())).toEqual({ ok: true });
+
+    expect(localProvider()).toEqual({
+      models: { [claude]: override, 'vendor/model.v2': { label: 'Other', manual: true } },
+    });
+    expect(freshWindow()).toEqual({ window: 150_000, source: 'declared' });
+  });
+
+  it('lets the refreshed figure win once a local entry held only a stale reported window', () => {
+    writeLocal({
+      provider: { anthro: { models: { [claude]: { reportedContextWindow: 111_111 } } } },
+    });
+
+    expect(persistProviderSave(dir, 'anthro', savedProvider(), selection)).toEqual({ ok: true });
+
+    expect(readSettingsLocal(dir)).toEqual({});
+    expect(freshWindow()).toEqual({ window: 345_678, source: 'reported' });
+  });
+
   it('prunes a local entry that held only connection keys', () => {
     writeLocal({ provider: { anthro: { type: 'openai', baseURL: 'https://stale.example' } } });
 

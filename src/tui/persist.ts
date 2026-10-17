@@ -29,7 +29,9 @@ import {
   type SkillActivation,
   type SkillExecution,
 } from '../settings.js';
+import { PROVIDER_CONNECTION_KEYS } from '../provider-approvals.js';
 import { resolveSettings } from '../settings-loader.js';
+import { deleteNestedValue } from '../cli/utils.js';
 import { blockedWorkspaceSettingWrite } from '../settings-scope.js';
 import type { AgentConfig } from '../types/runtime.js';
 
@@ -307,19 +309,14 @@ export function clearLocalSettings(
 }
 
 /**
- * The keys of a provider entry a `/model` save supersedes: where requests go, the key they carry
- * and the wire type. These are `providerConfigSchema`'s connection fields, the same four the
- * workspace-provider gate refuses a workspace layer for a user-defined id. Everything else in a
- * workspace-local entry (the per-model `contextWindow`, `maxOutputTokens`, `vision`,
- * `editFormat`, `effort`) is the user's own and outranks what discovery reports (#514).
- */
-const PROVIDER_CONNECTION_KEYS = ['baseURL', 'baseUrl', 'apiKey', 'type'] as const;
-
-/**
  * Save a provider from `/model` to the user-global file, and clear what that save supersedes from
- * the workspace-local layer, which would otherwise shadow it: the entry's connection keys, and
- * the local `model` when the save activates (`selection` is the `provider/model` it selects).
- * Per-model overrides in the local entry stay, for a refresh and an activating save alike.
+ * the workspace-local layer, which would otherwise shadow it: the entry's connection keys
+ * (`PROVIDER_CONNECTION_KEYS`, the ones the workspace gate refuses too), each listed model's
+ * `reportedContextWindow` (discovery writes it and every refresh overwrites it, so a stale copy
+ * here would outrank the figure just reported), and the local `model` when the save activates
+ * (`selection` is the `provider/model` it selects). The user's own per-model fields in the local
+ * entry (`contextWindow`, `maxOutputTokens`, `vision`, `editFormat`, `effort`, `label`, `manual`)
+ * stay, for a refresh and an activating save alike (#514).
  */
 export function persistProviderSave(
   workspace: string,
@@ -332,11 +329,47 @@ export function persistProviderSave(
     ...(selection !== undefined ? { model: selection } : {}),
   });
   if (!result.ok) return result;
-  clearLocalSettings(workspace, [
-    ...PROVIDER_CONNECTION_KEYS.map((key) => `provider.${providerId}.${key}`),
-    ...(selection !== undefined ? ['model'] : []),
-  ]);
+  clearSupersededLocalProviderKeys(workspace, providerId, selection !== undefined);
   return { ok: true };
+}
+
+/**
+ * The deletions of {@link persistProviderSave}, on key paths rather than dotted strings: a model
+ * id such as `vendor/model.v2` has a dot in it. Never throws; a no-op when the local file is absent.
+ */
+function clearSupersededLocalProviderKeys(
+  workspace: string,
+  providerId: string,
+  activated: boolean,
+): void {
+  const path = localSettingsPath(workspace);
+  if (!existsSync(path)) return;
+  new SettingsRepository(path).update((candidate) => {
+    const registry = candidate.provider;
+    const entry =
+      typeof registry === 'object' && registry !== null && !Array.isArray(registry)
+        ? (registry as Record<string, unknown>)[providerId]
+        : undefined;
+    const models =
+      typeof entry === 'object' && entry !== null && !Array.isArray(entry)
+        ? (entry as Record<string, unknown>).models
+        : undefined;
+    for (const key of PROVIDER_CONNECTION_KEYS) {
+      deleteNestedValue(candidate, ['provider', providerId, key]);
+    }
+    if (typeof models === 'object' && models !== null && !Array.isArray(models)) {
+      for (const modelId of Object.keys(models)) {
+        deleteNestedValue(candidate, [
+          'provider',
+          providerId,
+          'models',
+          modelId,
+          'reportedContextWindow',
+        ]);
+      }
+    }
+    if (activated) deleteNestedValue(candidate, ['model']);
+  });
 }
 
 /**

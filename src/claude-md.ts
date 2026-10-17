@@ -11,9 +11,17 @@ export interface ProjectInstructionSource {
   body: string;
 }
 
+function isFile(path: string): boolean {
+  try {
+    return existsSync(path) && statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function readSource(path: string, layer: ProjectInstructionLayer): ProjectInstructionSource | null {
   try {
-    if (!existsSync(path) || !statSync(path).isFile()) return null;
+    if (!isFile(path)) return null;
     const body = readFileSync(path, 'utf-8').trim();
     return body ? { path, layer, body } : null;
   } catch {
@@ -52,7 +60,9 @@ export function discoverProjectInstructions(
   const systemHome = homeDir ?? homedir();
   const bookHome = homeDir ? join(homeDir, '.book') : resolveBookHome();
   const localPath = join(workspaceRoot, 'CLAUDE.local.md');
-  const localKey = readSource(localPath, 'local') ? realPathOf(localPath) : undefined;
+  // Only whether the file exists matters here (an empty one is the same file as any link to it,
+  // and every copy of it is skipped alike), so it is not read: `add` reads it once, below.
+  const localKey = isFile(localPath) ? realPathOf(localPath) : undefined;
   const loaded = new Set<string>();
   const add = (path: string, layer: ProjectInstructionLayer) => {
     const source = readSource(path, layer);

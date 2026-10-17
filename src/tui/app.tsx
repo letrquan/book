@@ -772,12 +772,13 @@ export function App({
     ) => {
       setSendInFlight(true);
       try {
+        const attached = attachments && attachments.length > 0 ? attachments : undefined;
         // A prompt-body command names a fresh session after the line the user typed (#524).
         if (sessionNameSource !== undefined) {
-          return await send(value, commandContext, undefined, sessionNameSource);
+          return await send(value, commandContext, attached, sessionNameSource);
         }
-        if (attachments && attachments.length > 0) {
-          return await send(value, commandContext, attachments);
+        if (attached) {
+          return await send(value, commandContext, attached);
         }
         return commandContext === undefined ? await send(value) : await send(value, commandContext);
       } finally {

@@ -44,9 +44,11 @@ export const LEGACY_BASE_URL_ID = '.bookrc.json';
 
 /**
  * The keys of a provider entry that choose where a request goes, which key it carries or how that
- * key is sent. Everything but `models`, which sends nothing anywhere.
+ * key is sent. Everything but `models`, which sends nothing anywhere. The workspace gate drops
+ * them from a workspace layer, and a `/model` save clears them from the local layer: one list, so
+ * the two cannot drift.
  */
-const OVERRIDE_KEYS = ['baseURL', 'baseUrl', 'apiKey', 'type'] as const;
+export const PROVIDER_CONNECTION_KEYS = ['baseURL', 'baseUrl', 'apiKey', 'type'] as const;
 
 /** `__proto__` parses as an ordinary own key but assigning it would reach the prototype setter. */
 function usableId(id: string): boolean {
@@ -135,7 +137,7 @@ export function droppedProviderOverrides(
   for (const layer of workspaceLayers) {
     for (const [providerId, entry] of Object.entries(layer.providers ?? {})) {
       if (!trustedIds.has(providerId) || !isPlainObject(entry)) continue;
-      const keys = OVERRIDE_KEYS.filter((key) => entry[key] !== undefined);
+      const keys = PROVIDER_CONNECTION_KEYS.filter((key) => entry[key] !== undefined);
       if (keys.length > 0) dropped.push({ path: layer.path, providerId, keys });
     }
   }
@@ -155,7 +157,7 @@ export function withoutWorkspaceProviderOverrides(
   for (const [id, entry] of Object.entries(providers)) {
     if (!trustedIds.has(id) || !usableId(id) || !isPlainObject(entry)) continue;
     const rest: ProviderDeclaration = { ...entry };
-    for (const key of OVERRIDE_KEYS) delete rest[key];
+    for (const key of PROVIDER_CONNECTION_KEYS) delete rest[key];
     kept[id] = rest;
   }
   return kept;

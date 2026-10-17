@@ -263,4 +263,29 @@ describe('useAgent session naming', () => {
     expect(timeline.load(freshId).meta.name).toBe('Please plan this');
     expect(timeline.load(sessionId).meta.name).toBe('Please plan this');
   });
+
+  it('carries a truncated planning name verbatim, and records it', async () => {
+    const { root, config, timeline, sessionId } = fixture();
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+    handoffState.plansToFire = ['Refactor the parser and add tests.'];
+
+    // Long enough that the planning session's own name is clipped to end in `...`.
+    await latest!.send(
+      'Refactor the provider discovery so that a refresh keeps every override the user set',
+    );
+    await waitFor(() => loopCalls.length >= 2 && latest!.sessionId !== sessionId);
+    await waitFor(() => latest!.sessionName !== undefined);
+
+    const planningName = timeline.load(sessionId).meta.name!;
+    expect(planningName.endsWith('...')).toBe(true);
+    const freshId = latest!.sessionId;
+    expect(latest!.sessionName).toBe(planningName);
+    // Recorded in the new session's meta: it survives a reload and an index rebuild.
+    expect(timeline.load(freshId).meta.name).toBe(planningName);
+    expect(new SessionStore(join(root, 'sessions')).load(freshId).meta.name).toBe(planningName);
+    rmSync(join(root, 'sessions', 'session-index.json'), { force: true });
+    const rebuilt = new SessionStore(join(root, 'sessions'));
+    expect(rebuilt.list().find((meta) => meta.id === freshId)?.name).toBe(planningName);
+  });
 });

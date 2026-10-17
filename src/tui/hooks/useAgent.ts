@@ -266,6 +266,8 @@ interface SendMessageOptions {
   derived?: boolean;
   /** What a session that has no name yet is named after, instead of the display text. */
   sessionNameSource?: string;
+  /** A name used as given, not derived, and still recorded (a plan handoff's inherited name). */
+  sessionNameExact?: string;
   kind?: Message['kind'];
   agentNotifications?: Message['agentNotifications'];
   attachments?: Message['attachments'];
@@ -1106,6 +1108,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           messageOptions?.kind === 'agent-notification' ? messageOptions?.parentRunId : undefined,
         sessionName: sessionNameRef.current,
         sessionNameSource: messageOptions?.sessionNameSource,
+        sessionNameExact: messageOptions?.sessionNameExact,
         snapshotStore: session.snapshotStore,
         timelineStore,
         registryStore: timelineStore,
@@ -1543,7 +1546,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // goes with it; a new session would otherwise start without one, silently.
         const goal = agentSession.getGoal();
         // The user typed nothing for the handoff, so the fresh session takes the planning
-        // session's name, through the same naming path as any other first turn (#524).
+        // session's name verbatim (deriving it again would clip a `...` ending), recorded
+        // through the same naming path as any other first turn (#524).
         const planningName = sessionNameRef.current;
         await startNewConversation();
         if (goal) {
@@ -1555,7 +1559,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         await sendMessage(HANDOFF_DISPLAY_MESSAGE, undefined, {
           contextMessage: buildHandoffPrompt(plan),
           kind: 'conversation',
-          sessionNameSource: planningName,
+          sessionNameExact: planningName,
         });
       } catch (err) {
         log.warn('plan handoff failed', {
@@ -2139,7 +2143,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       );
       if (!result.ok) return result;
       // The live entry keeps what the workspace layers add to the user's, as a launch would.
-      const liveProvider = liveProviderAfterSave(config, providerId, savedProvider);
+      const liveProvider = liveProviderAfterSave(
+        {
+          workspace: config.workspace,
+          settingsContext: {
+            noSettings: config.settingsContext?.noSettings,
+            overridePath: config.settingsContext?.overridePath,
+          },
+        },
+        providerId,
+        savedProvider,
+      );
 
       setLiveConfig((current) => {
         const withProvider: AgentConfig = {
@@ -2170,7 +2184,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setOwnedProviders(nextOwnedProviders);
       return { ok: true };
     },
-    [config.workspace],
+    [config.settingsContext?.noSettings, config.settingsContext?.overridePath, config.workspace],
   );
 
   const removeProvider = useCallback(
