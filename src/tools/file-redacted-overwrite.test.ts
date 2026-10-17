@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileTools } from './file.js';
 import { PROVIDER_KEY_MARKER } from '../provider-secrets.js';
-import type { ToolContext, ToolResult } from '../types/tools.js';
+import { expectWriteRefused } from '../test/redacted-secret.js';
+import type { ToolContext } from '../types/tools.js';
 
 /**
  * #411: the model only ever sees the marker where a provider key is. Reading such a file and
@@ -43,14 +44,6 @@ function put(name: string, content: string): string {
   return path;
 }
 const observe = (name: string) => read.execute({ filePath: name }, ctx);
-
-function expectWriteRefused(result: ToolResult): void {
-  expect(result.status).not.toBe('success');
-  expect(result.structuredError?.code).toBe('redacted_secret_write');
-  expect(result.structuredError?.message).toContain(PROVIDER_KEY_MARKER);
-  expect(result.structuredError?.message).toMatch(/real provider key/);
-  expect(JSON.stringify(result)).not.toContain(KEY);
-}
 
 describe('Write onto a file that holds a provider key', () => {
   it('refuses to write the marker over the key, and leaves the file unchanged', async () => {
@@ -91,7 +84,7 @@ describe('Write onto a file that holds a provider key', () => {
       ctx,
     );
 
-    expectWriteRefused(result);
+    expectWriteRefused(result, KEY);
     expect(readFileSync(path, 'utf-8')).toBe('nothing secret\n');
   });
 
@@ -101,7 +94,7 @@ describe('Write onto a file that holds a provider key', () => {
       ctx,
     );
 
-    expectWriteRefused(result);
+    expectWriteRefused(result, KEY);
     expect(result.structuredError?.message).toContain('new.md');
     expect(existsSync(join(dir, 'new.md'))).toBe(false);
   });
@@ -204,7 +197,7 @@ describe('Edit and MultiEdit on a file that holds a provider key', () => {
       ctx,
     );
 
-    expectWriteRefused(result);
+    expectWriteRefused(result, KEY);
     expect(readFileSync(path, 'utf-8')).toBe('one\n');
   });
 
@@ -257,7 +250,7 @@ describe('adding the marker to a file that holds no key (#535)', () => {
       ctx,
     );
 
-    expectWriteRefused(result);
+    expectWriteRefused(result, KEY);
     expect(existsSync(join(dir, 'tmp.json'))).toBe(false);
     expect(readFileSync(keyPath, 'utf-8')).toBe(original);
   });
@@ -271,7 +264,7 @@ describe('adding the marker to a file that holds no key (#535)', () => {
       ctx,
     );
 
-    expectWriteRefused(result);
+    expectWriteRefused(result, KEY);
     expect(readFileSync(path, 'utf-8')).toBe(`${half}X\n`);
   });
 
@@ -285,7 +278,7 @@ describe('adding the marker to a file that holds no key (#535)', () => {
       ctx,
     );
 
-    expectWriteRefused(result);
+    expectWriteRefused(result, KEY);
     expect(readFileSync(path, 'utf-8')).toBe(original);
   });
 
@@ -339,7 +332,7 @@ describe('adding the marker to a file that holds no key (#535)', () => {
       ctx,
     );
 
-    expectWriteRefused(result);
+    expectWriteRefused(result, KEY);
     expect(readFileSync(path, 'utf-8')).toBe('one\ntwo\n');
   });
 
@@ -358,7 +351,7 @@ describe('adding the marker to a file that holds no key (#535)', () => {
       ctx,
     );
 
-    expectWriteRefused(result);
+    expectWriteRefused(result, KEY);
     expect(readFileSync(path, 'utf-8')).toBe('aX\n');
   });
 

@@ -210,9 +210,14 @@ const MSYS_POSIX_SHELL_NAMES = new Set(['sh', 'dash', 'ash', 'ksh', 'mksh', 'zsh
 /**
  * Whether `file` is a POSIX shell running on the MSYS runtime (#532): `msys-2.0.dll` beside it, or
  * in `..\usr\bin` for Git for Windows' `<root>\bin\sh.exe`, a launcher stub with no DLL of its own
- * that hands its raw command line to `<root>\usr\bin\sh.exe`. Cygwin ships `cygwin1.dll` and
- * busybox-w32 is a native program, so neither matches and both keep argv. A WSL launcher
- * directory never matches (see {@link WSL_LAUNCHER_DIRECTORY}).
+ * that hands its raw command line to `<root>\usr\bin\sh.exe`. A WSL launcher directory never
+ * matches (see {@link WSL_LAUNCHER_DIRECTORY}).
+ *
+ * busybox-w32 is a native program whose argv libuv's quoting round-trips, so it rightly keeps argv.
+ * A Cygwin `sh.exe` (`cygwin1.dll` beside it) also keeps argv, but only because #532 is scoped to
+ * the MSYS runtime: Cygwin's own `build_argv` (`winsup/cygwin/dcrt0.cc`, which MSYS forked)
+ * probably rebuilds argv the same way (globbing, quote stripping, `@file`), so it is a known gap,
+ * not a safe case.
  */
 function isMsysPosixShell(file: string, probe: Probe): boolean {
   const name = win32
@@ -401,10 +406,12 @@ export const GIT_BASH_EVAL_SCRIPT = `eval "unset ${GIT_BASH_COMMAND_VARIABLE};\$
  * environment variable reaches it byte for byte.
  *
  * WSL's `bash.exe` keeps the plain argv: Windows variables do not reach WSL
- * without WSLENV. So do other `sh` builds (busybox-w32, a native program whose
- * argv libuv round-trips; Cygwin) and non-POSIX shells. Every other shell and
- * platform is unchanged. Spawn the result with {@link spawnCommandExecution},
- * which applies its `env`.
+ * without WSLENV. So do busybox-w32's `sh` (a native program whose argv libuv
+ * round-trips) and non-POSIX shells. A Cygwin `sh.exe` keeps argv too, but
+ * that is a known gap, not a safe case: #532 is scoped to the MSYS runtime, and
+ * Cygwin's `build_argv`, which MSYS forked, probably rewrites argv the same way
+ * (see `isMsysPosixShell`). Every other shell and platform is unchanged. Spawn
+ * the result with {@link spawnCommandExecution}, which applies its `env`.
  */
 export function shellExecution(
   resolved: ResolvedShell,

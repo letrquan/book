@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PROVIDER_KEY_MARKER } from '../provider-secrets.js';
+import { expectWriteRefused } from '../test/redacted-secret.js';
 import type { ToolContext, ToolResult } from '../types/tools.js';
 import { fileTools } from './file.js';
 import { notebookTools } from './notebook.js';
@@ -158,14 +159,6 @@ describe('NotebookEdit on a notebook that holds a provider key', () => {
 });
 
 describe('NotebookEdit on a notebook without a provider key', () => {
-  function expectWriteRefused(result: ToolResult): void {
-    expect(result.status).not.toBe('success');
-    expect(result.structuredError?.code).toBe('redacted_secret_write');
-    expect(result.structuredError?.message).toContain(PROVIDER_KEY_MARKER);
-    expect(result.structuredError?.message).toMatch(/real provider key/);
-    expect(JSON.stringify(result)).not.toContain(KEY);
-  }
-
   it('refuses a replace or an insert that adds the marker, leaving the file unchanged (#535)', async () => {
     const { path, raw } = writeNotebook('x = 1');
     await read.execute({ filePath: 'nb.ipynb' }, ctx);
@@ -174,7 +167,7 @@ describe('NotebookEdit on a notebook without a provider key', () => {
       { notebook_path: 'nb.ipynb', cell_id: 'plain', new_source: `# ${PROVIDER_KEY_MARKER}` },
       ctx,
     );
-    expectWriteRefused(replaced);
+    expectWriteRefused(replaced, KEY);
 
     const inserted = await edit.execute(
       {
@@ -184,7 +177,7 @@ describe('NotebookEdit on a notebook without a provider key', () => {
       },
       ctx,
     );
-    expectWriteRefused(inserted);
+    expectWriteRefused(inserted, KEY);
     expect(readFileSync(path, 'utf-8')).toBe(raw);
   });
 

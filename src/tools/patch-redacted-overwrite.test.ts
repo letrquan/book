@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PROVIDER_KEY_MARKER } from '../provider-secrets.js';
+import { expectWriteRefused } from '../test/redacted-secret.js';
 import type { ToolContext, ToolResult } from '../types/tools.js';
 import { fileTools } from './file.js';
 import { patchTools } from './patch.js';
@@ -48,14 +49,6 @@ function expectRefused(result: ToolResult): void {
   expect(result.structuredError?.message).toContain(PROVIDER_KEY_MARKER);
   expect(result.structuredError?.message).toMatch(/provider key/);
   expect(result.structuredError?.remediation).toMatch(/Edit/);
-  expect(JSON.stringify(result)).not.toContain(KEY);
-}
-
-function expectWriteRefused(result: ToolResult): void {
-  expect(result.status).not.toBe('success');
-  expect(result.structuredError?.code).toBe('redacted_secret_write');
-  expect(result.structuredError?.message).toContain(PROVIDER_KEY_MARKER);
-  expect(result.structuredError?.message).toMatch(/real provider key/);
   expect(JSON.stringify(result)).not.toContain(KEY);
 }
 
@@ -259,7 +252,7 @@ describe('ApplyPatch update of a file that holds a provider key', () => {
       context,
     );
 
-    expectWriteRefused(result);
+    expectWriteRefused(result, KEY);
     expect(await readFile(file, 'utf8')).toBe('one\n');
   });
 
@@ -295,7 +288,7 @@ describe('ApplyPatch adding the marker to a file that holds no key (#535)', () =
       context,
     );
 
-    expectWriteRefused(result);
+    expectWriteRefused(result, KEY);
     expect(result.structuredError?.message).toContain('tmp.json');
     expect(existsSync(join(root, 'tmp.json'))).toBe(false);
   });
@@ -322,7 +315,7 @@ describe('ApplyPatch adding the marker to a file that holds no key (#535)', () =
       context,
     );
 
-    expectWriteRefused(result);
+    expectWriteRefused(result, KEY);
     expect(await readFile(join(root, 'notes.txt'), 'utf8')).toBe('one\ntwo\n');
     expect(existsSync(join(root, 'fresh.txt'))).toBe(false);
     expect(existsSync(join(root, 'tmp.json'))).toBe(false);
@@ -346,7 +339,7 @@ describe('ApplyPatch adding the marker to a file that holds no key (#535)', () =
       },
       context,
     );
-    expectWriteRefused(duplicated);
+    expectWriteRefused(duplicated, KEY);
     expect(await readFile(file, 'utf8')).toBe(`one ${PROVIDER_KEY_MARKER}\ntwo\n`);
 
     const moved = await execute(

@@ -228,9 +228,12 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
     if (refused) return refused;
   }
   // Serialized before the edit as well as after, so both counts see the marker spelled the same
-  // way whatever escapes the file on disk uses (#535).
+  // way whatever escapes the file on disk uses (#535). Only a configured provider key needs the
+  // count, so the extra serialization is skipped without one.
   const jsonStyle = detectJsonStyle(original);
-  const serializedBefore = serializeNotebook(notebook, jsonStyle);
+  const serializedBefore = ctx.providerSecrets?.length
+    ? serializeNotebook(notebook, jsonStyle)
+    : undefined;
 
   if (mode === 'replace') {
     const target = findTargetIndex(notebook.cells, cellId as string);
@@ -267,8 +270,10 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   }
 
   const updated = serializeNotebook(notebook, jsonStyle);
-  const added = redactedSecretAddition(ctx, shownPath, serializedBefore, updated);
-  if (added) return added;
+  if (serializedBefore !== undefined) {
+    const added = redactedSecretAddition(ctx, shownPath, serializedBefore, updated);
+    if (added) return added;
+  }
   const { diff, stats } = await renderDiffWithStatsAsync(original, updated, 3, ctx.signal);
   throwIfAborted(ctx.signal);
   try {

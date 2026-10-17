@@ -27,15 +27,25 @@ export const windowsGitBash: ResolvedShell | undefined = (() => {
 })();
 
 /**
- * Git for Windows' `<root>\usr\bin\sh.exe`, derived from {@link windowsGitBash}'s
- * `<root>\bin\bash.exe` and resolved as a `shell` path setting is, so the MSYS detection runs for
- * real (#532); undefined off Windows or when that sh is absent.
+ * The sh at `segments` under the Git for Windows root (derived from {@link windowsGitBash}'s
+ * `<root>\bin\bash.exe`), resolved as a `shell` path setting is, so the MSYS detection runs for real
+ * (#532); undefined off Windows or when that file is absent.
  */
-export const windowsMsysSh: ResolvedShell | undefined = (() => {
+function gitForWindowsSh(...segments: string[]): ResolvedShell | undefined {
   if (!windowsGitBash?.file) return undefined;
   const root = win32.dirname(win32.dirname(windowsGitBash.file));
-  const sh = win32.join(root, 'usr', 'bin', 'sh.exe');
+  const sh = win32.join(root, ...segments);
   if (!existsSync(sh)) return undefined;
   const resolved = resolveShell({ platform: 'win32', env: {}, requested: sh });
   return resolved.kind === 'sh' && resolved.file === sh ? resolved : undefined;
-})();
+}
+
+/** Git for Windows' `<root>\usr\bin\sh.exe`, which has `msys-2.0.dll` beside it. */
+export const windowsMsysSh: ResolvedShell | undefined = gitForWindowsSh('usr', 'bin', 'sh.exe');
+
+/**
+ * Git for Windows' `<root>\bin\sh.exe`, a launcher stub with no MSYS DLL of its own that runs
+ * `<root>\usr\bin\sh.exe` with its environment and raw command line, so it is detected through
+ * `..\usr\bin\msys-2.0.dll`.
+ */
+export const windowsGitBinSh: ResolvedShell | undefined = gitForWindowsSh('bin', 'sh.exe');
