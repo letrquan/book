@@ -529,6 +529,11 @@ export function AgentMessageInner({
     transcriptMode !== 'detailed' &&
     !awaitsApproval &&
     (isWorkStep(message) || (continuesTurn && !handsBack(message)));
+  // The prose is the caption of the call under it: a step's narration, and the sentence of a
+  // call that waits for your approval, which keeps full ink because it is what you are judging.
+  // Both sit against the call with no mark of their own, so answering the prompt recolours the
+  // sentence and moves nothing.
+  const captionsCall = workStep || (awaitsApproval && transcriptMode !== 'detailed');
   // A step's narration speaks in the secondary voice: every run of its prose
   // takes `subtle`, so the answer is the only full-ink text in a turn. Its
   // code blocks follow, keyword and string hues included — a snippet the step
@@ -676,7 +681,7 @@ export function AgentMessageInner({
                     .slice(0, i)
                     .some((candidate) => candidate.kind === 'think');
                   const marked =
-                    !screenReader && !workStep && !isStreaming && i === firstProseIndex;
+                    !screenReader && !captionsCall && !isStreaming && i === firstProseIndex;
                   return (
                     <React.Fragment key={`md-${i}`}>
                       {thoughtsShown && hasEarlierThinking && !workStep ? (
@@ -723,7 +728,7 @@ export function AgentMessageInner({
         // against it; an answer that the call follows keeps its blank row.
         const marginTop =
           index === 0
-            ? workStep
+            ? captionsCall
               ? 0
               : showsContent || (thoughtsShown && reasoningContent)
                 ? toolBlockGap

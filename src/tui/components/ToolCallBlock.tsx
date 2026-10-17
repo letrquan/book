@@ -508,8 +508,10 @@ function OutputBlock({
   );
   // The markdown sniff regex scans the whole output string; memoize it so an
   // expanded multi-MB result pays that once per output, not once per render.
+  // A command's output is never Markdown, whatever it looks like: a test runner's `# pass 12`
+  // is not a heading.
   const renderAsMarkdown = useMemo(
-    () => !language && looksLikeMarkdown(output, toolName),
+    () => !language && !isCommandTool(toolName) && looksLikeMarkdown(output, toolName),
     [language, output, toolName],
   );
 
