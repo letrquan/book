@@ -152,6 +152,8 @@ export interface AgentSessionPrepareSendRequest {
   userMessage: Message;
   sessionName?: string;
   sessionNameSource?: string;
+  /** See {@link AgentSessionRecordUserRequest.sessionNameExact}. */
+  sessionNameExact?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
   signal?: AbortSignal;
@@ -172,6 +174,12 @@ export interface AgentSessionRecordUserRequest {
    * turn passes its condition, so the session is not named after its "Goal set: …" line (#431).
    */
   sessionNameSource?: string;
+  /**
+   * A name for a session that has none yet, used as given instead of derived from a prompt, and
+   * recorded like a derived one. A plan handoff passes the planning session's name here: deriving
+   * it again would clip a name that already ends in `...` (#524).
+   */
+  sessionNameExact?: string;
   timelineStore?: SessionTimelineStore;
   expandShellInput?: boolean;
   runtime?: SessionRuntime;
@@ -198,6 +206,8 @@ export interface AgentSessionSendRequest {
   sessionName?: string;
   /** See {@link AgentSessionRecordUserRequest.sessionNameSource}. */
   sessionNameSource?: string;
+  /** See {@link AgentSessionRecordUserRequest.sessionNameExact}. */
+  sessionNameExact?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
   registryStore?: SessionStoreInterface;
@@ -464,6 +474,7 @@ export class AgentSession {
           userMessage,
           sessionName: request.sessionName,
           sessionNameSource: request.sessionNameSource,
+          sessionNameExact: request.sessionNameExact,
           snapshotStore: request.snapshotStore,
           timelineStore: request.timelineStore,
           signal: control.signal,
@@ -1048,6 +1059,7 @@ export class AgentSession {
     }
     const sessionName =
       request.sessionName?.trim() ||
+      request.sessionNameExact?.trim() ||
       deriveSessionName(request.sessionNameSource ?? request.displayMessage);
     if (!request.sessionName?.trim()) {
       request.timelineStore?.patchMeta?.(request.sessionId, { name: sessionName });

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runHeadless } from './headless.js';
 import { UnsupportedPrintCommandError } from './commands/print-dispatch.js';
 import { createDefaultRegistry } from './tools/registry.js';
+import { SessionStore } from './session/store.js';
 import { defaultConfig } from './test/fixtures.js';
 import { projectCommandFingerprint } from './command-approvals.js';
 import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
@@ -280,5 +281,85 @@ describe('runHeadless — commands this host cannot perform', () => {
 
     // The first prompt ran; the third never did.
     expect(provider.requests.length).toBe(1);
+  });
+});
+
+// #524: a prompt-body command names the session after what was typed, not after the body.
+describe('runHeadless — session name for a prompt-body command', () => {
+  function sessions(): { store: SessionStore; dir: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'book-headless-sessions-'));
+    tempDirs.push(dir);
+    return { store: new SessionStore(dir), dir };
+  }
+  const nameOf = (store: SessionStore, id: string | undefined) => store.load(id!).meta.name;
+
+  it('names the session "Init" for /init, not the prompt body', async () => {
+    stubProvider();
+    const { store } = sessions();
+
+    const result = await run(makeConfig(), '/init', { sessionStore: store });
+
+    expect(nameOf(store, result.sessionId)).toBe('Init');
+    // The turn itself is still the body: only the name changes.
+    expect(result.messages.find((message) => message.role === 'user')?.content).toContain(
+      'CLAUDE.md',
+    );
+  });
+
+  it('names the session "Deploy staging" for a custom command with arguments', async () => {
+    stubProvider();
+    const { store } = sessions();
+    const config = makeConfig();
+    writeCommand(config.workspace, 'deploy', 'Roll out to the $1 environment and report.');
+
+    const result = await run(config, '/deploy staging', { sessionStore: store });
+
+    expect(nameOf(store, result.sessionId)).toBe('Deploy staging');
+  });
+
+  it('keeps that name after the index is rebuilt from the JSONL', async () => {
+    stubProvider();
+    const { store, dir } = sessions();
+    const config = makeConfig();
+    writeCommand(config.workspace, 'deploy', 'Roll out to the $1 environment and report.');
+    const result = await run(config, '/deploy staging', { sessionStore: store });
+
+    rmSync(join(dir, 'session-index.json'), { force: true });
+    const reopened = new SessionStore(dir);
+
+    expect(reopened.list().map((meta) => meta.name)).toEqual(['Deploy staging']);
+    expect(nameOf(reopened, result.sessionId)).toBe('Deploy staging');
+  });
+
+  it('keeps the existing name when a command runs mid-session', async () => {
+    stubProvider();
+    const { store } = sessions();
+    const config = makeConfig();
+    writeCommand(config.workspace, 'deploy', 'Roll out to the $1 environment and report.');
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      inputFormat: 'stream-json',
+      outputFormat: 'text',
+      history: [],
+      mode: 'default',
+      maxTurns: 1,
+      stdin: Readable.from([
+        `${JSON.stringify({ type: 'user', content: 'review the parser' })}\n`,
+        `${JSON.stringify({ type: 'user', content: '/deploy staging' })}\n`,
+      ]),
+      stdout: collectWrites().stdout,
+      sessionStore: store,
+    });
+
+    expect(nameOf(store, result.sessionId)).toBe('Review the parser');
+  });
+
+  it('still names the session after an ordinary prompt', async () => {
+    stubProvider();
+    const { store } = sessions();
+
+    const result = await run(makeConfig(), 'fix the flaky login test', { sessionStore: store });
+
+    expect(nameOf(store, result.sessionId)).toBe('Fix the flaky login test');
   });
 });

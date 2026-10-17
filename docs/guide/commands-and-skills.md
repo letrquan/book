@@ -167,6 +167,12 @@ forwarded to the model verbatim, so an ordinary prompt like `book -p "/etc/hosts
 unaffected. A `.book/commands/*.md` command whose shell substitution has not been approved is
 refused the same way and for the same reason: this host cannot ask for the decision.
 
+A command that runs as a prompt (`/init`, any `.book/commands/*.md`, in the TUI and in print mode)
+names a new session after the line you typed, such as `Init` or `Deploy staging`, not after the
+prompt it generated. The line is taken before argument and shell substitution. A session that
+already has a name keeps it. The fresh session a plan handoff starts takes the planning session's
+name.
+
 A command the host performed itself produces no model turn. Under `text` its output is written to
 stdout; under `stream-json` it is announced as
 `{"type":"command_result","command":…,"output":…,"data":…}`; and for `json`, `stream-json`, and the

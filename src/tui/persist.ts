@@ -29,7 +29,11 @@ import {
   type SkillActivation,
   type SkillExecution,
 } from '../settings.js';
+import { PROVIDER_CONNECTION_KEYS } from '../provider-approvals.js';
+import { resolveSettings } from '../settings-loader.js';
+import { deleteNestedValue } from '../cli/utils.js';
 import { blockedWorkspaceSettingWrite } from '../settings-scope.js';
+import type { AgentConfig } from '../types/runtime.js';
 
 const LOCAL_DIR = '.book';
 const LOCAL_FILE = 'settings.local.json';
@@ -302,6 +306,91 @@ export function clearLocalSettings(
   return result.ok
     ? { ok: true }
     : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+}
+
+/**
+ * Save a provider from `/model` to the user-global file, and clear what that save supersedes from
+ * the workspace-local layer, which would otherwise shadow it: the entry's connection keys
+ * (`PROVIDER_CONNECTION_KEYS`, the ones the workspace gate refuses too), each listed model's
+ * `reportedContextWindow` (discovery writes it and every refresh overwrites it, so a stale copy
+ * here would outrank the figure just reported), and the local `model` when the save activates
+ * (`selection` is the `provider/model` it selects). The user's own per-model fields in the local
+ * entry (`contextWindow`, `maxOutputTokens`, `vision`, `editFormat`, `effort`, `label`, `manual`)
+ * stay, for a refresh and an activating save alike (#514).
+ */
+export function persistProviderSave(
+  workspace: string,
+  providerId: string,
+  provider: ProviderConfig,
+  selection?: string,
+): { ok: boolean; error?: string } {
+  const result = persistSettingsGlobal({
+    [`provider.${providerId}`]: provider,
+    ...(selection !== undefined ? { model: selection } : {}),
+  });
+  if (!result.ok) return result;
+  clearSupersededLocalProviderKeys(workspace, providerId, selection !== undefined);
+  return { ok: true };
+}
+
+/**
+ * The deletions of {@link persistProviderSave}, on key paths rather than dotted strings: a model
+ * id such as `vendor/model.v2` has a dot in it. Never throws; a no-op when the local file is absent.
+ */
+function clearSupersededLocalProviderKeys(
+  workspace: string,
+  providerId: string,
+  activated: boolean,
+): void {
+  const path = localSettingsPath(workspace);
+  if (!existsSync(path)) return;
+  new SettingsRepository(path).update((candidate) => {
+    const registry = candidate.provider;
+    const entry =
+      typeof registry === 'object' && registry !== null && !Array.isArray(registry)
+        ? (registry as Record<string, unknown>)[providerId]
+        : undefined;
+    const models =
+      typeof entry === 'object' && entry !== null && !Array.isArray(entry)
+        ? (entry as Record<string, unknown>).models
+        : undefined;
+    for (const key of PROVIDER_CONNECTION_KEYS) {
+      deleteNestedValue(candidate, ['provider', providerId, key]);
+    }
+    if (typeof models === 'object' && models !== null && !Array.isArray(models)) {
+      for (const modelId of Object.keys(models)) {
+        deleteNestedValue(candidate, [
+          'provider',
+          providerId,
+          'models',
+          modelId,
+          'reportedContextWindow',
+        ]);
+      }
+    }
+    if (activated) deleteNestedValue(candidate, ['model']);
+  });
+}
+
+/**
+ * The provider entry the live config holds after a save. The user-global entry alone would drop
+ * what the workspace layers add to it (a local per-model override, a repository's models), so a
+ * session would resolve a different window than the next launch does. Re-resolved from the layers
+ * on disk the way a launch does; the saved entry itself when they cannot be read or the session
+ * runs without settings layers.
+ */
+export function liveProviderAfterSave(
+  config: Pick<AgentConfig, 'workspace' | 'settingsContext'>,
+  providerId: string,
+  saved: ProviderConfig,
+): ProviderConfig {
+  if (config.settingsContext?.noSettings) return saved;
+  try {
+    const resolved = resolveSettings(config.workspace, config.settingsContext?.overridePath);
+    return Object.hasOwn(resolved.provider, providerId) ? resolved.provider[providerId] : saved;
+  } catch {
+    return saved;
+  }
 }
 
 /** Remove one provider from the settings file at `path` and any default targeting it. */

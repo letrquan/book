@@ -764,11 +764,21 @@ export function App({
     [replaceEditingQueuedInput],
   );
   const dispatchAgentSend = useCallback(
-    async (value: string, commandContext?: CommandContext, attachments?: ImageAttachment[]) => {
+    async (
+      value: string,
+      commandContext?: CommandContext,
+      attachments?: ImageAttachment[],
+      sessionNameSource?: string,
+    ) => {
       setSendInFlight(true);
       try {
-        if (attachments && attachments.length > 0) {
-          return await send(value, commandContext, attachments);
+        const attached = attachments && attachments.length > 0 ? attachments : undefined;
+        // A prompt-body command names a fresh session after the line the user typed (#524).
+        if (sessionNameSource !== undefined) {
+          return await send(value, commandContext, attached, sessionNameSource);
+        }
+        if (attached) {
+          return await send(value, commandContext, attached);
         }
         return commandContext === undefined ? await send(value) : await send(value, commandContext);
       } finally {
@@ -2163,7 +2173,7 @@ export function App({
           return;
         }
         if (effect?.type === 'send-prompt') {
-          void dispatchAgentSend(effect.prompt, effect.context);
+          void dispatchAgentSend(effect.prompt, effect.context, undefined, value);
           return;
         }
         if (effect?.type === 'local-message') {
@@ -2453,7 +2463,13 @@ export function App({
           if (controller.signal.aborted) return;
           // Pass command context for allowed-tools and model enforcement.
           // Shared with print/headless so both hosts enforce it identically.
-          void dispatchAgentSend(resolved, commandEnforcementContext(cmd, resolved));
+          // The typed line, before argument or shell substitution, names a fresh session.
+          void dispatchAgentSend(
+            resolved,
+            commandEnforcementContext(cmd, resolved),
+            undefined,
+            value,
+          );
         } else {
           // Unknown command — send as-is (the model might handle it).
           void dispatchAgentSend(value);

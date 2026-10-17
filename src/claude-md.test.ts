@@ -146,26 +146,88 @@ describe('discoverProjectInstructions', () => {
     ]);
   });
 
-  // #449, decided: a CLAUDE.md linked to CLAUDE.local.md loads that file once, at the project
-  // position of the link, so it precedes `.claude/CLAUDE.md` and no `local` entry follows it.
-  it.skipIf(process.platform === 'win32')(
-    'loads a CLAUDE.md linked to CLAUDE.local.md once, at the link, as project',
-    () => {
+  // #524, decided (it replaces the #449/#508 ruling that the link's project position won):
+  // CLAUDE.local.md always loads at the local position, after every project file, whatever links
+  // to it. Otherwise a committed `CLAUDE.md -> CLAUDE.local.md` would let the repository's own
+  // `.claude/CLAUDE.md` load after the user's file and override it.
+  describe.skipIf(process.platform === 'win32')('a project file linked to CLAUDE.local.md', () => {
+    const load = () =>
+      discoverProjectInstructions(workspace, home)
+        .filter((s) => s.path.startsWith(dir))
+        .map((s) => [s.path, s.body, s.layer]);
+
+    it('loads CLAUDE.local.md once, last, as local, when CLAUDE.md links to it', () => {
       write(join(workspace, 'CLAUDE.local.md'), 'local rules');
       symlinkSync('CLAUDE.local.md', join(workspace, 'CLAUDE.md'));
       write(join(workspace, '.claude', 'CLAUDE.md'), 'dot-claude');
 
-      const sources = discoverProjectInstructions(workspace, home).filter((s) =>
-        s.path.startsWith(dir),
-      );
-
-      expect(sources.map((s) => [s.path, s.body, s.layer])).toEqual([
-        [join(workspace, 'CLAUDE.md'), 'local rules', 'project'],
+      expect(load()).toEqual([
         [join(workspace, '.claude', 'CLAUDE.md'), 'dot-claude', 'project'],
+        [join(workspace, 'CLAUDE.local.md'), 'local rules', 'local'],
       ]);
-      expect(sources.some((s) => s.layer === 'local')).toBe(false);
-    },
-  );
+    });
+
+    it('loads it once, last, as local, when .claude/CLAUDE.md links to it', () => {
+      write(join(workspace, 'CLAUDE.local.md'), 'local rules');
+      write(join(workspace, 'CLAUDE.md'), 'top-level');
+      mkdirSync(join(workspace, '.claude'), { recursive: true });
+      symlinkSync('../CLAUDE.local.md', join(workspace, '.claude', 'CLAUDE.md'));
+
+      expect(load()).toEqual([
+        [join(workspace, 'CLAUDE.md'), 'top-level', 'project'],
+        [join(workspace, 'CLAUDE.local.md'), 'local rules', 'local'],
+      ]);
+    });
+
+    it('loads it once, last, as local, when AGENTS.md links to it', () => {
+      write(join(workspace, 'CLAUDE.local.md'), 'local rules');
+      symlinkSync('CLAUDE.local.md', join(workspace, 'AGENTS.md'));
+      write(join(workspace, 'CLAUDE.md'), 'top-level');
+
+      expect(load()).toEqual([
+        [join(workspace, 'CLAUDE.md'), 'top-level', 'project'],
+        [join(workspace, 'CLAUDE.local.md'), 'local rules', 'local'],
+      ]);
+    });
+
+    it('applies to an ancestor directory file linked to the workspace CLAUDE.local.md', () => {
+      write(join(workspace, 'CLAUDE.local.md'), 'local rules');
+      symlinkSync(join(workspace, 'CLAUDE.local.md'), join(dir, 'repo', 'CLAUDE.md'));
+      write(join(workspace, 'CLAUDE.md'), 'top-level');
+
+      expect(load()).toEqual([
+        [join(workspace, 'CLAUDE.md'), 'top-level', 'project'],
+        [join(workspace, 'CLAUDE.local.md'), 'local rules', 'local'],
+      ]);
+    });
+
+    // Deliberate: the rule keys on the real path, which cannot tell which name is the link. With
+    // `CLAUDE.local.md -> CLAUDE.md` the committed file is the same file as the local one, so it
+    // loads once at the local position (after `.claude/CLAUDE.md`), under the local name.
+    it('moves a committed CLAUDE.md that CLAUDE.local.md links to, to the local position', () => {
+      write(join(workspace, 'CLAUDE.md'), 'committed rules');
+      symlinkSync('CLAUDE.md', join(workspace, 'CLAUDE.local.md'));
+      write(join(workspace, '.claude', 'CLAUDE.md'), 'dot-claude');
+
+      expect(load()).toEqual([
+        [join(workspace, '.claude', 'CLAUDE.md'), 'dot-claude', 'project'],
+        [join(workspace, 'CLAUDE.local.md'), 'committed rules', 'local'],
+      ]);
+    });
+
+    // First load wins stays for the user layer: it loads before the project walk.
+    it('leaves a user file linked to CLAUDE.local.md at the user position', () => {
+      write(join(workspace, 'CLAUDE.local.md'), 'local rules');
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      symlinkSync(join(workspace, 'CLAUDE.local.md'), join(home, '.claude', 'CLAUDE.md'));
+      write(join(workspace, 'CLAUDE.md'), 'top-level');
+
+      expect(load()).toEqual([
+        [join(home, '.claude', 'CLAUDE.md'), 'local rules', 'user'],
+        [join(workspace, 'CLAUDE.md'), 'top-level', 'project'],
+      ]);
+    });
+  });
 
   // The real path has to be case-canonical for this: Windows names one drive `C:` and `c:`.
   it.skipIf(process.platform !== 'win32')(
