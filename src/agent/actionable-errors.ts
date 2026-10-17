@@ -117,7 +117,7 @@ function remedyClause(remedy: UnattendedRemedy): string | undefined {
     case 'rule_or_auto':
       return `${allowRuleClause(remedy.rule)}, or run with --permission-mode auto`;
     case 'ask_rule':
-      return `narrow or remove the ${askRuleRef(remedy.rule)}, which asks for it and outranks any allow rule, or run with --permission-mode auto`;
+      return `narrow or remove the ${askRuleRef(remedy.rule)}, which asks for it in every mode but bypassPermissions and outranks any allow rule, or run with --permission-mode bypassPermissions`;
     case 'allow_rule_only':
       return `${allowRuleClause(remedy.rule)} (--permission-mode auto still asks for it)`;
     case 'bypass_only':

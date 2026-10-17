@@ -183,8 +183,9 @@ const PATH_RULE_TOOLS: ReadonlySet<string> = new Set([
  * cannot serve is refused instead of prompted for (#264, then #305 item 3).
  *
  * `plan` joined the set when it started judging reads the way `default` does: a plan is written
- * by reading, and an outside target cannot be read in a plan either. `auto` and
- * `bypassPermissions` ask about nothing, so there is nothing there to refuse early.
+ * by reading, and an outside target cannot be read in a plan either. `auto` asks only about a
+ * read an `ask` rule names, which outranks a refusal anyway (#527), and `bypassPermissions` asks
+ * about nothing, so there is nothing there to refuse early.
  */
 export const WORKSPACE_READ_JUDGING_MODES: ReadonlySet<string> = new Set([
   'default',
@@ -202,7 +203,7 @@ export const WORKSPACE_READ_JUDGING_MODES: ReadonlySet<string> = new Set([
  * rule or mode can grant for a path outside every root. Refusing it as the target it is gives the
  * same `path_outside_workspace` message, and the same remedy, the other modes give (#305 item 3).
  *
- * `auto` and `bypassPermissions` ask about nothing and reach every call, so there is nothing to
+ * `auto` and `bypassPermissions` reach every call no `ask` rule names, so there is nothing to
  * refuse early: the file tools answer for themselves, as they always did.
  */
 export const WORKSPACE_READ_REFUSAL_MODES: ReadonlySet<string> = new Set([

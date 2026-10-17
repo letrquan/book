@@ -392,24 +392,26 @@ Permission _modes_ decide whether you are prompted; they never relax a `deny` ru
 `bypassPermissions`, and it is evaluated before the prompt, so a denied call never reaches one.
 Modes differ only in what happens to calls that no `deny` rule matched:
 
-| Mode                | Unmatched calls                                                                                                               |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `default`           | Checked against `allow`/`ask`, then prompted — except workspace reads, which run unless a rule covers them                    |
-| `acceptEdits`       | As `default`, and file mutations are approved without a prompt too                                                            |
-| `plan`              | Read-only tools only; mutations are refused until you approve a plan                                                          |
-| `auto`              | Run without a prompt, except any compound Bash command while a Bash `deny` or `ask` rule exists (see above)                   |
-| `dontAsk`           | Refused except for the tools below that never prompt — the mode never prompts, and a user `allow` rule does not exempt a call |
-| `bypassPermissions` | Run without a prompt                                                                                                          |
+| Mode                | Unmatched calls                                                                                                                              |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `default`           | Checked against `allow`/`ask`, then prompted — except workspace reads, which run unless a rule covers them                                   |
+| `acceptEdits`       | As `default`, and file mutations are approved without a prompt too                                                                           |
+| `plan`              | Read-only tools only; mutations are refused until you approve a plan                                                                         |
+| `auto`              | Run without a prompt, except a call an `ask` rule covers, and any compound Bash command while a Bash `deny` or `ask` rule exists (see above) |
+| `dontAsk`           | Refused except for the tools below that never prompt — the mode never prompts, and a user `allow` rule does not exempt a call                |
+| `bypassPermissions` | Run without a prompt                                                                                                                         |
 
 Some tools never prompt. `TodoWrite` (the agent's checklist) and `Advisor` (offered
 only once you choose a model with `/advisor`; it sends the conversation to that model) are always
 allowed,
 and `ToolSearch`, `EnterPlanMode` and the managed-agent lifecycle tools (every `Agent*` tool except
 `AgentApply`) never reach a prompt; `dontAsk` does not refuse any of them. A `permissions.deny` rule
-still blocks them in every mode. A `permissions.ask` rule that names one prompts in `default` and
-`acceptEdits`, refuses the call in `dontAsk`, and, as for every tool, is not consulted in `auto` or
-`bypassPermissions`. (Bash is the exception in `auto`: while any Bash `deny` or `ask` rule exists,
-every compound Bash command prompts there, whether or not a rule matched it.)
+still blocks them in every mode. A `permissions.ask` rule that names one prompts in `default`,
+`acceptEdits` and `auto`, refuses the call in `dontAsk`, and, as for every tool, is not consulted in
+`bypassPermissions`. An `ask` rule prompts in `auto` for every tool: `auto` skips the prompt only for
+a call no `ask` rule covers, and a run that cannot show a prompt (print mode, the SDK) refuses such
+a call. (Bash also prompts in `auto` for every compound command while any Bash `deny` or `ask` rule
+exists, whether or not a rule matched it.)
 
 **Memory writes.** `Write`, `Edit`, `MultiEdit` and `ApplyPatch` may write `*.md` files in the
 project's memory directory without a prompt, in `default`, `acceptEdits`, `auto` and `dontAsk`. A
@@ -543,7 +545,7 @@ through:
 | The call                                         | What lets it through                                                                                                                                                                                 |
 | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Most calls                                       | A `permissions.allow` rule for it, or `--permission-mode auto`                                                                                                                                       |
-| One an `ask` rule covers                         | Narrowing or removing that rule (it outranks allow), or `auto`                                                                                                                                       |
+| One an `ask` rule covers                         | Narrowing or removing that rule (it outranks allow), or `bypassPermissions`; `auto` still asks                                                                                                       |
 | A skill that asks for consent                    | A `permissions.allow` rule; `auto` still asks                                                                                                                                                        |
 | A compound Bash command under a Bash deny or ask | Sending each command as its own call, the exact rule `Bash(<whole command>)` in `permissions.allow`, or `bypassPermissions` (if an ask rule matches it, narrow that rule instead); `auto` still asks |
 | A persistent background shell                    | Only `--permission-mode bypassPermissions`                                                                                                                                                           |

@@ -2847,17 +2847,19 @@ export async function runAgentLoop(
         }
 
         // A compound Bash command under a Bash deny or ask rule asks in every mode but
-        // `bypassPermissions`, `auto` included, exactly as a persistent background shell does. It
-        // is OR-ed into the same condition, not into `persistentBackgroundShell` itself: that one
-        // also turns off the approve-all check below, and an exact session rule must still admit
-        // its exact command.
+        // `bypassPermissions`, `auto` included, exactly as a persistent background shell does; so
+        // does any call, of any tool, that an `ask` rule the user wrote matched (#527). Both are
+        // OR-ed into the same condition, not into `persistentBackgroundShell` itself: that one
+        // also turns off the approve-all check below, and a session rule must still admit what it
+        // covers. Where nothing can answer the prompt the call is refused, and the remedy names
+        // the ask rule.
         const compoundUnderPolicy = verdict.compoundUnderPolicy === true;
+        const askRuleMatched = verdict.decision === 'ask' && verdict.source === 'ask';
         const toolPermissionRequired = requiresToolPermission(
           effectiveMode,
-          persistentBackgroundShell || compoundUnderPolicy,
+          persistentBackgroundShell || compoundUnderPolicy || askRuleMatched,
         );
-        const userRuleAsked =
-          toolPermissionRequired && verdict.decision === 'ask' && verdict.source === 'ask';
+        const userRuleAsked = toolPermissionRequired && askRuleMatched;
         // A guarded read is not auto-safe in plan mode (decision C, PR #334 finding 5). The
         // verdict is `ask` for exactly the targets that keep asking in `default` — a local
         // settings file, a home the serving root holds, a search under a Read deny/ask rule — and

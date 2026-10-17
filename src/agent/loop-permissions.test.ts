@@ -1859,6 +1859,132 @@ describe('runAgentLoop compound Bash commands under a Bash deny or ask rule (#51
   });
 });
 
+// A plain call that matched an `ask` rule ran unprompted in `auto`: only a compound Bash command
+// under a Bash deny or ask rule asked there.
+describe('runAgentLoop an ask rule prompts in auto too (#527)', () => {
+  const PUSH = 'git push origin main';
+  const okResult = {
+    version: 2 as const,
+    toolCallId: '',
+    status: 'success' as const,
+    content: 'stub ran',
+  };
+
+  async function run(options: {
+    mode: 'auto' | 'bypassPermissions';
+    ask?: string[];
+    call: ScriptedCall;
+    onPermissionRequired?: AgentLoopCallbacks['onPermissionRequired'];
+  }) {
+    const executed: string[] = [];
+    const registry = createDefaultRegistry();
+    registry.register({
+      ...registry.getTool('Bash')!,
+      execute: async (args) => {
+        executed.push(String(args.command));
+        return okResult;
+      },
+    });
+    const config = defaultConfig({ workspace, maxTurns: 2 });
+    config.settings.permissions.ask = options.ask ?? [];
+    const prompt = vi.fn(options.onPermissionRequired ?? (async () => 'deny' as const));
+    const notices: string[] = [];
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      config,
+      registry,
+      'run it',
+      [],
+      noopCallbacks({
+        onPermissionRequired: prompt,
+        onToolResult: (r) => results.push(r),
+        onNotice: (notice) => notices.push(notice),
+      }),
+      options.mode,
+      { provider: toolsThenText([options.call]), isNewSession: false },
+    );
+    return { executed, prompt, notices, result: byId(results, options.call.id) };
+  }
+  const push = { id: 'b1', name: 'Bash', arguments: { command: PUSH } };
+
+  it('prompts for a plain Bash call an ask rule covers, and runs it once allowed', async () => {
+    const { executed, prompt } = await run({
+      mode: 'auto',
+      ask: ['Bash(git push *)'],
+      call: push,
+      onPermissionRequired: async () => 'allow',
+    });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(executed).toEqual([PUSH]);
+  });
+
+  it('does not run it when the prompt is denied', async () => {
+    const { executed, prompt, result } = await run({
+      mode: 'auto',
+      ask: ['Bash(git push *)'],
+      call: push,
+    });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(executed).toEqual([]);
+    expect(result?.status).toBe('blocked');
+  });
+
+  it('refuses it with the ask-rule remedy, and no auto advice, when nobody can ask', async () => {
+    const { executed, notices, result } = await run({
+      mode: 'auto',
+      ask: ['Bash(git push *)'],
+      call: push,
+      onPermissionRequired: noApprover,
+    });
+    expect(executed).toEqual([]);
+    expect(result?.status).toBe('blocked');
+    const refusals = notices.filter((notice) => notice.includes('needs approval'));
+    expect(refusals).toHaveLength(1);
+    for (const text of [result?.content ?? '', refusals[0]]) {
+      expect(text).toContain('narrow or remove the permissions.ask rule Bash(git push *)');
+      expect(text).not.toContain('add a permissions.allow rule');
+      expect(text).not.toContain('--permission-mode auto');
+    }
+  });
+
+  it('runs it unprompted in bypassPermissions', async () => {
+    const { executed, prompt } = await run({
+      mode: 'bypassPermissions',
+      ask: ['Bash(git push *)'],
+      call: push,
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(executed).toEqual([PUSH]);
+  });
+
+  it('prompts for a non-Bash call an ask rule covers', async () => {
+    const { prompt, result } = await run({
+      mode: 'auto',
+      ask: ['Write(secrets/**)'],
+      call: {
+        id: 'w1',
+        name: 'Write',
+        arguments: { filePath: 'secrets/key.txt', content: 'k\n' },
+      },
+    });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(result?.status).toBe('blocked');
+    expect(existsSync(join(workspace, 'secrets', 'key.txt'))).toBe(false);
+  });
+
+  it('still runs a plain call unprompted in auto when no ask rule covers it', async () => {
+    for (const ask of [[], ['Bash(git push *)']]) {
+      const { executed, prompt } = await run({
+        mode: 'auto',
+        ask,
+        call: { id: 'b1', name: 'Bash', arguments: { command: 'git status' } },
+      });
+      expect(prompt, JSON.stringify(ask)).not.toHaveBeenCalled();
+      expect(executed, JSON.stringify(ask)).toEqual(['git status']);
+    }
+  });
+});
+
 describe('runAgentLoop "Always allow" on a Bash command holding * (#521)', () => {
   const COMMAND = 'rm -rf build/*';
   const okResult = {

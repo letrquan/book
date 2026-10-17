@@ -35,8 +35,10 @@ describe('actionable tool errors', () => {
       remedy: { kind: 'ask_rule', rule: 'Read(secrets/**)' },
     });
     expect(error).toContain('permissions.ask rule Read(secrets/**)');
-    expect(error).toContain('--permission-mode auto');
     expect(error).not.toContain('add a permissions.allow rule');
+    // An ask rule prompts in `auto` too (#527), so `auto` is no way through.
+    expect(error).not.toContain('--permission-mode auto');
+    expect(error).toContain('--permission-mode bypassPermissions');
   });
 
   it('offers only what works for skill consent and a persistent background shell', () => {
