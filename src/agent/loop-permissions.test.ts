@@ -14,6 +14,7 @@ import { join, relative } from 'node:path';
 import { runAgentLoop } from './loop.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { isolateBookHome } from '../test/isolated-book-home.js';
 import { SessionRuntime } from '../session/runtime.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
@@ -71,7 +72,6 @@ function toolsThenText(calls: ScriptedCall[]): Provider {
 }
 
 let dirs: string[] = [];
-let previousBookHome: string | undefined;
 let workspace: string;
 let outside: string;
 
@@ -81,10 +81,10 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
+// The loop reads and writes user-global state under BOOK_HOME; keep it off the real one.
+isolateBookHome('book-loop-perm-home-');
+
 beforeEach(() => {
-  // The loop reads and writes user-global state under BOOK_HOME; keep it off the real one.
-  previousBookHome = process.env.BOOK_HOME;
-  process.env.BOOK_HOME = tempDir('book-loop-perm-home-');
   workspace = tempDir('book-loop-reads-');
   outside = tempDir('book-loop-reads-out-');
   writeFileSync(join(workspace, 'notes.txt'), 'hello from notes\n');
@@ -92,8 +92,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   dirs = [];
 });

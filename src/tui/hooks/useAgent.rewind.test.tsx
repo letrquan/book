@@ -8,6 +8,7 @@ import type {
   TurnCheckpointRecordData,
 } from '../../types/sessions.js';
 import { defaultConfig } from '../../test/fixtures.js';
+import { isolateBookHome } from '../../test/isolated-book-home.js';
 import { SessionStore } from '../../session/store.js';
 
 const callOrder = vi.hoisted(() => [] as string[]);
@@ -119,10 +120,6 @@ function Harness({
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'book-use-agent-rewind-'));
   roots.push(root);
-  // User preferences now persist to the user-global layer, which resolves
-  // through BOOK_HOME. Without pinning it here the test would write the
-  // developer's real ~/.book/settings.json.
-  process.env.BOOK_HOME = join(root, 'home');
   const workspace = join(root, 'workspace');
   const timeline = new SessionStore(join(root, 'sessions'));
   const sessionId = timeline.create({ cwd: workspace });
@@ -238,12 +235,13 @@ function localMessages() {
   return latest!.messages.filter((message) => (message as { kind?: string }).kind === 'local');
 }
 
-const originalBookHome = process.env.BOOK_HOME;
+// User preferences now persist to the user-global layer, which resolves
+// through BOOK_HOME. Without pinning it here the test would write the
+// developer's real ~/.book/settings.json.
+isolateBookHome('book-use-agent-rewind-home-');
 
 afterEach(() => {
   cleanup();
-  if (originalBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = originalBookHome;
   latest = undefined;
   callOrder.length = 0;
   agentLoopState.nextError = null;

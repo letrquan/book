@@ -4,6 +4,7 @@ import { join } from 'path';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultConfig } from '../../test/fixtures.js';
+import { isolateBookHome } from '../../test/isolated-book-home.js';
 import { SessionStore } from '../../session/store.js';
 
 /**
@@ -160,7 +161,10 @@ import { useAgent } from './useAgent.js';
 
 const roots: string[] = [];
 let latest: ReturnType<typeof useAgent> | undefined;
-const originalBookHome = process.env.BOOK_HOME;
+
+// User preferences persist to the user-global layer, which resolves through
+// BOOK_HOME; pin it so the test never writes the developer's own settings.
+isolateBookHome('book-use-agent-compact-boundary-home-');
 
 function Harness({
   config,
@@ -176,9 +180,6 @@ function Harness({
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'book-use-agent-compact-boundary-'));
   roots.push(root);
-  // User preferences persist to the user-global layer, which resolves through
-  // BOOK_HOME; pin it so the test never writes the developer's own settings.
-  process.env.BOOK_HOME = join(root, 'home');
   const workspace = join(root, 'workspace');
   const timeline = new SessionStore(join(root, 'sessions'));
   const sessionId = timeline.create({ cwd: workspace });
@@ -224,8 +225,6 @@ async function run(steps: Step[]): Promise<void> {
 
 afterEach(() => {
   cleanup();
-  if (originalBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = originalBookHome;
   latest = undefined;
   loopState.steps = [];
   vi.restoreAllMocks();

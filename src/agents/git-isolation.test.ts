@@ -19,6 +19,7 @@ import type { AgentApplyResult, AgentRecord } from './types.js';
 import type { RunResult } from './git-signing.js';
 import type { ReviewFinding } from '../review/types.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { isolateBookHome } from '../test/isolated-book-home.js';
 import { evidenceTools } from '../tools/agent-tools.js';
 import { applyReviewFixes } from '../review/fix.js';
 import { fixRunnerFor } from '../review/runner.js';
@@ -121,8 +122,7 @@ function agentRecord(id: string, worktree: { path: string; branch: string }): Ag
 
 // `resolveBookHome()` reads BOOK_HOME when it is called, not when this module loads, so a
 // file-level override redirects every default worktree root away from the real `~/.book`.
-const savedBookHome = process.env.BOOK_HOME;
-let bookHome: string;
+isolateBookHome('book-home-');
 
 // Every test in this file runs git, and git reads `~/.gitconfig` and the system config for all of
 // it unless it is told otherwise. A developer or CI machine may have `commit.gpgSign` set, may
@@ -203,9 +203,6 @@ function restoreGitEnv(saved: Map<string, string | undefined>): void {
 }
 
 beforeEach(() => {
-  bookHome = mkdtempSync(join(tmpdir(), 'book-home-'));
-  roots.push(bookHome);
-  process.env.BOOK_HOME = bookHome;
   const gitConfig = mkdtempSync(join(tmpdir(), 'book-gitconfig-'));
   roots.push(gitConfig);
   globalConfig = join(gitConfig, 'global.gitconfig');
@@ -220,8 +217,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (savedBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = savedBookHome;
   if (savedGitConfigGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
   else process.env.GIT_CONFIG_GLOBAL = savedGitConfigGlobal;
   if (savedGitConfigSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM;

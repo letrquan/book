@@ -5,25 +5,20 @@ import { join } from 'path';
 import { runConfigCommand } from './config-cmd.js';
 import { setExitFn } from './exit.js';
 import type { SettingsScope } from '../settings-scope.js';
+import { isolateBookHome } from '../test/isolated-book-home.js';
 
 let workspace: string;
-let bookHome: string;
-let previousBookHome: string | undefined;
+
+// The user layer resolves through BOOK_HOME, so a test that writes it has to
+// own one; without this the suite would write the developer's real settings.
+const bookHome = isolateBookHome('book-config-home-');
 
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'book-config-cmd-'));
-  // The user layer resolves through BOOK_HOME, so a test that writes it has to
-  // own one; without this the suite would write the developer's real settings.
-  bookHome = mkdtempSync(join(tmpdir(), 'book-config-home-'));
-  previousBookHome = process.env.BOOK_HOME;
-  process.env.BOOK_HOME = bookHome;
 });
 
 afterEach(() => {
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
   rmSync(workspace, { recursive: true, force: true });
-  rmSync(bookHome, { recursive: true, force: true });
 });
 
 interface RunResult {
@@ -78,7 +73,7 @@ async function set(key: string, value: string, scope?: SettingsScope): Promise<R
 
 const localSettings = () => join(workspace, '.book', 'settings.local.json');
 const projectSettings = () => join(workspace, '.book', 'settings.json');
-const userSettings = () => join(bookHome, 'settings.json');
+const userSettings = () => join(bookHome(), 'settings.json');
 const readJson = (path: string) =>
   JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
 

@@ -15,6 +15,7 @@ import { runHeadless } from './headless.js';
 import { UnsupportedPrintCommandError } from './commands/print-dispatch.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
+import { isolateBookHome } from './test/isolated-book-home.js';
 import { SessionStore } from './session/store.js';
 import { aggregateToolUse, readToolUseRecords } from './tool-telemetry.js';
 import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
@@ -22,8 +23,7 @@ import type { ScriptedProvider } from './test/scripted-provider.js';
 import type { AgentConfig } from './types/runtime.js';
 
 let workspace: string;
-let home: string;
-const previousBookHome = process.env.BOOK_HOME;
+const home = isolateBookHome('book-headless-review-home-');
 
 function git(root: string, ...args: string[]): string {
   return execFileSync('git', args, {
@@ -35,8 +35,6 @@ function git(root: string, ...args: string[]): string {
 
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'book-headless-review-'));
-  home = mkdtempSync(join(tmpdir(), 'book-headless-review-home-'));
-  process.env.BOOK_HOME = home;
   git(workspace, 'init', '-q');
   git(workspace, 'config', 'user.email', 'book-tests@example.invalid');
   git(workspace, 'config', 'user.name', 'Book Tests');
@@ -48,9 +46,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  for (const dir of [workspace, home]) rmSync(dir, { recursive: true, force: true });
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
+  rmSync(workspace, { recursive: true, force: true });
 });
 
 function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
@@ -259,7 +255,7 @@ describe('runHeadless — /review', () => {
         return sseResponse([JSON.stringify({ choices: [{ delta: { content: answer } }] })]);
       });
       vi.stubGlobal('fetch', provider.fetch);
-      const store = new SessionStore(join(home, 'sessions'));
+      const store = new SessionStore(join(home(), 'sessions'));
       const config = makeConfig();
       config.settings.observability.toolTelemetry = true;
 

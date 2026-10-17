@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,6 +35,7 @@ import { createAgentRunContext } from '../types/runs.js';
 import { MemoryModelWindowStore } from '../model-window-store.js';
 import type { LoadedMemoryContext } from '../memory-store.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
+import { isolateBookHome } from '../test/isolated-book-home.js';
 
 function writeLoopSkill(
   workspace: string,
@@ -100,26 +101,7 @@ function compactedForRetry(): Extract<CompactResult, { status: 'compacted' }> {
 
 const config = defaultConfig();
 
-let tempHome: string | undefined;
-let previousBookHome: string | undefined;
-
-beforeEach(() => {
-  previousBookHome = process.env.BOOK_HOME;
-  tempHome = mkdtempSync(join(tmpdir(), 'book-loop-home-'));
-  process.env.BOOK_HOME = tempHome;
-});
-
-afterEach(() => {
-  if (previousBookHome === undefined) {
-    delete process.env.BOOK_HOME;
-  } else {
-    process.env.BOOK_HOME = previousBookHome;
-  }
-  if (tempHome) {
-    rmSync(tempHome, { recursive: true, force: true });
-    tempHome = undefined;
-  }
-});
+isolateBookHome('book-loop-home-');
 
 describe('persistent background shell permissions', () => {
   it('requires explicit permission in auto mode but preserves bypass mode', () => {

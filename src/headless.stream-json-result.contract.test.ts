@@ -14,19 +14,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runHeadless } from './headless.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
+import { isolateBookHome } from './test/isolated-book-home.js';
 import { createScriptedProvider, sseResponse } from './test/scripted-provider.js';
 import type { StreamJsonEvent } from './stream-json.js';
 import type { AgentTerminalOutcome } from './types/terminal.js';
 
 let workspace: string;
-let tempHome: string;
-let previousBookHome: string | undefined;
+
+isolateBookHome('book-sj-result-home-');
 
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'book-sj-result-workspace-'));
-  tempHome = mkdtempSync(join(tmpdir(), 'book-sj-result-home-'));
-  previousBookHome = process.env.BOOK_HOME;
-  process.env.BOOK_HOME = tempHome;
   const provider = createScriptedProvider(
     sseResponse([
       JSON.stringify({ choices: [{ delta: { content: 'objective complete' } }] }),
@@ -43,9 +41,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
-  for (const dir of [workspace, tempHome]) rmSync(dir, { recursive: true, force: true });
+  rmSync(workspace, { recursive: true, force: true });
 });
 
 async function runStreamJson(overrides: Record<string, unknown> = {}): Promise<StreamJsonEvent[]> {

@@ -12,6 +12,7 @@ import { homedir, tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { shellArgument } from '../trust-command.js';
 import { runDoctorCommand } from './doctor.js';
+import { isolateBookHome } from '../test/isolated-book-home.js';
 import { updateWorkspaceTrust } from '../workspace-trust.js';
 import {
   persistWorkspaceProviderChoice,
@@ -33,8 +34,8 @@ vi.mock('../sandbox.js', async (importOriginal) => {
 });
 
 let workspace: string;
-let bookHome: string;
-const previousEnv: Record<string, string | undefined> = {};
+const bookHome = isolateBookHome('book-doctor-home-');
+let previousApiKey: string | undefined;
 
 function writeSettings(
   sandbox: Record<string, unknown>,
@@ -56,8 +57,8 @@ function writeSettings(
  */
 function writeUserSettings(settings: Record<string, unknown>): void {
   // BOOK_HOME is the settings root itself, so the user layer is `$BOOK_HOME/settings.json`.
-  mkdirSync(bookHome, { recursive: true });
-  writeFileSync(join(bookHome, 'settings.json'), JSON.stringify(settings));
+  mkdirSync(bookHome(), { recursive: true });
+  writeFileSync(join(bookHome(), 'settings.json'), JSON.stringify(settings));
 }
 
 async function doctorOutput(
@@ -80,25 +81,17 @@ async function doctorOutput(
 
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'book-doctor-ws-'));
-  bookHome = mkdtempSync(join(tmpdir(), 'book-doctor-home-'));
   // Doctor is the command a user reaches for when nothing works, so no test here
   // may hand it a credential: clearing the key means every case below also proves
   // the report survives an unconfigured environment.
-  for (const key of ['BOOK_HOME', 'BOOK_API_KEY']) {
-    previousEnv[key] = process.env[key];
-    delete process.env[key];
-  }
-  process.env.BOOK_HOME = bookHome;
+  previousApiKey = process.env.BOOK_API_KEY;
   delete process.env.BOOK_API_KEY;
 });
 
 afterEach(() => {
-  for (const [key, value] of Object.entries(previousEnv)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
+  if (previousApiKey === undefined) delete process.env.BOOK_API_KEY;
+  else process.env.BOOK_API_KEY = previousApiKey;
   rmSync(workspace, { recursive: true, force: true });
-  rmSync(bookHome, { recursive: true, force: true });
 });
 
 describe('runDoctorCommand sandbox policy', () => {
@@ -224,9 +217,9 @@ describe('runDoctorCommand sandbox policy', () => {
    * policy that is not the one in force.
    */
   it('reports how many commands the trusted layer excludes from the sandbox', async () => {
-    mkdirSync(bookHome, { recursive: true });
+    mkdirSync(bookHome(), { recursive: true });
     writeFileSync(
-      join(bookHome, 'settings.json'),
+      join(bookHome(), 'settings.json'),
       JSON.stringify({ sandbox: { enabled: true, excludedCommands: ['docker *', 'kubectl *'] } }),
     );
 
@@ -461,7 +454,7 @@ describe('runDoctorCommand at the home directory', () => {
   });
 
   it('lists the Project file plainly when BOOK_HOME is elsewhere', async () => {
-    vi.stubEnv('BOOK_HOME', bookHome);
+    vi.stubEnv('BOOK_HOME', bookHome());
 
     const output = await doctorOutput(home);
 
@@ -478,7 +471,7 @@ describe('runDoctorCommand model resolution', () => {
     // they never chose, for a vendor that has never heard of the model.
     // The provider is the user's own: one a workspace file declares is withheld (#418).
     writeFileSync(
-      join(bookHome, 'settings.json'),
+      join(bookHome(), 'settings.json'),
       JSON.stringify({
         provider: {
           '9router': { baseURL: 'https://9router.example/v1', apiKey: 'k', models: {} },
@@ -501,7 +494,7 @@ describe('runDoctorCommand model resolution', () => {
   it('says nothing when the prefix resolves', async () => {
     // The provider is the user's own: one a workspace file declares is withheld (#418).
     writeFileSync(
-      join(bookHome, 'settings.json'),
+      join(bookHome(), 'settings.json'),
       JSON.stringify({
         provider: {
           '9router': { baseURL: 'https://9router.example/v1', apiKey: 'k', models: {} },
@@ -580,7 +573,7 @@ describe('runDoctorCommand project-declared hooks', () => {
         trust.hookEntries[hookFingerprint('PreToolUse', { command: 'lint-staged.sh', env: {} })] =
           'approved';
       },
-      join(bookHome, 'trust.json'),
+      join(bookHome(), 'trust.json'),
     );
 
     const output = await doctorOutput();
@@ -637,7 +630,7 @@ describe('runDoctorCommand project-declared hooks', () => {
 describe('runDoctorCommand memory health', () => {
   it('reports memory health line, counts, index lines, and last write', async () => {
     const { getProjectMemoryDir } = await import('../memory-store.js');
-    const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome });
+    const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome() });
     mkdirSync(memoryDir, { recursive: true });
     // Marked as already in the current layout, so the legacy file below is listed, not migrated.
     writeFileSync(join(memoryDir, '.format'), '2\n');
@@ -674,7 +667,7 @@ describe('runDoctorCommand memory health', () => {
 
   it('migrates a legacy store on the way and names its backup once', async () => {
     const { getProjectMemoryDir } = await import('../memory-store.js');
-    const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome });
+    const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome() });
     mkdirSync(memoryDir, { recursive: true });
     writeFileSync(
       join(memoryDir, '2026-01-01-project-rule-aaaaaaaa.md'),
@@ -696,7 +689,7 @@ describe('runDoctorCommand memory health', () => {
 
   it('says nothing about a backup when the store was never migrated', async () => {
     const { getProjectMemoryDir } = await import('../memory-store.js');
-    const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome });
+    const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome() });
     mkdirSync(memoryDir, { recursive: true });
 
     expect(await doctorOutput()).not.toContain('Migrated to the new memory format');
@@ -704,7 +697,7 @@ describe('runDoctorCommand memory health', () => {
 
   it('says when MEMORY.md is over a limit and only part of it loads', async () => {
     const { getProjectMemoryDir } = await import('../memory-store.js');
-    const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome });
+    const memoryDir = getProjectMemoryDir(workspace, { bookRoot: bookHome() });
     mkdirSync(memoryDir, { recursive: true });
     writeFileSync(
       join(memoryDir, 'MEMORY.md'),
@@ -771,7 +764,7 @@ describe('runDoctorCommand reports additional directories', () => {
       (trust) => {
         trust.projectDirectories[realpathSync.native(shared)] = 'approved';
       },
-      join(bookHome, 'trust.json'),
+      join(bookHome(), 'trust.json'),
     );
 
     const report = await doctorOutput();
@@ -788,7 +781,7 @@ describe('runDoctorCommand reports additional directories', () => {
       (trust) => {
         trust.projectDirectories[realpathSync.native(shared)] = 'rejected';
       },
-      join(bookHome, 'trust.json'),
+      join(bookHome(), 'trust.json'),
     );
 
     // A refusal is not in effect, nothing awaits a decision, and there is no command to print.
@@ -819,7 +812,7 @@ describe('runDoctorCommand workspace-declared providers', () => {
       id,
       workspaceProviderFingerprint({ type: 'openai', ...declaration }),
       choice,
-      join(bookHome, 'trust.json'),
+      join(bookHome(), 'trust.json'),
     );
   function writeProject(settings: Record<string, unknown>, root = workspace): void {
     mkdirSync(join(root, '.book'), { recursive: true });
@@ -941,7 +934,7 @@ describe('runDoctorCommand workspace-declared providers', () => {
       '.bookrc.json',
       legacyBaseUrlFingerprint('https://l.example'),
       'approved',
-      join(bookHome, 'trust.json'),
+      join(bookHome(), 'trust.json'),
     );
 
     const output = await doctorOutput();

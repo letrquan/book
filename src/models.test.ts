@@ -1,6 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CONTEXT_WINDOW,
@@ -14,6 +12,7 @@ import {
   stripProvider,
 } from './models.js';
 import { defaultModelWindowStorePath, MemoryModelWindowStore } from './model-window-store.js';
+import { enterIsolatedHome, leaveIsolatedHome } from './test/isolated-book-home.js';
 
 describe('editFormatFor', () => {
   it('prefers the patch format for GPT/Codex-family models', () => {
@@ -393,11 +392,9 @@ describe('resolveContextWindow', () => {
   });
 
   it('does not construct a store implicitly or read from disk when store is omitted', () => {
-    const tempHome = mkdtempSync(join(tmpdir(), 'book-models-no-implicit-'));
-    const previousBookHome = process.env.BOOK_HOME;
+    const isolatedHome = enterIsolatedHome('book-models-no-implicit-');
     try {
-      process.env.BOOK_HOME = tempHome;
-      const filePath = defaultModelWindowStorePath(tempHome);
+      const filePath = defaultModelWindowStorePath(isolatedHome.home);
       writeFileSync(
         filePath,
         JSON.stringify({
@@ -419,9 +416,7 @@ describe('resolveContextWindow', () => {
       const familyResult = resolveContextWindow({ model: 'openai/gpt-4o' });
       expect(familyResult).toEqual({ window: 128_000, source: 'family' });
     } finally {
-      if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-      else process.env.BOOK_HOME = previousBookHome;
-      rmSync(tempHome, { recursive: true, force: true });
+      leaveIsolatedHome(isolatedHome);
     }
   });
 });
