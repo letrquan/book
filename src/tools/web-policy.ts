@@ -63,11 +63,22 @@ const MAX_NAMED_DESTINATIONS = 3;
 
 type RefusalResult = Pick<ToolResult, 'status' | 'structuredError'> | undefined;
 
+/**
+ * The single destination a refusal's `details.destination` names (`host (address)`), or
+ * `undefined` when it names none. A search refusal's per-provider `details.attempts` are not read
+ * here: they are a list, not the destination of this one refusal.
+ */
+export function refusalDestination(result: RefusalResult): string | undefined {
+  const destination = result?.structuredError?.details?.destination;
+  return typeof destination === 'string' ? destination : undefined;
+}
+
 /** The destinations a network-policy refusal names in its details, in order. */
 function refusedDestinations(result: RefusalResult): string[] {
+  const single = refusalDestination(result);
+  if (single !== undefined) return [single];
   const details = result?.structuredError?.details;
   if (!details) return [];
-  if (typeof details.destination === 'string') return [details.destination];
   if (!Array.isArray(details.attempts)) return [];
   return details.attempts.flatMap((attempt: unknown) => {
     const destination = (attempt as { destination?: unknown } | null)?.destination;

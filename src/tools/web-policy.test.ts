@@ -7,6 +7,7 @@ import {
   isBlockedIpAddress,
   networkPolicyRefusal,
   networkPolicyRemedies,
+  refusalDestination,
   safeNetworkLookup,
   validateWebUrl,
   webUrlPolicyFromEnv,
@@ -436,6 +437,40 @@ describe('web URL policy', () => {
 
       expect(connectionBlockedDestination(refused)).toBe('::ffff:0:a00:1');
     });
+  });
+});
+
+describe('refusalDestination', () => {
+  const withDetails = (details?: Record<string, unknown>) => ({
+    status: 'blocked' as const,
+    structuredError: {
+      code: 'private_network_forbidden',
+      message: 'refused',
+      retryable: false,
+      details,
+    },
+  });
+
+  it('returns the destination a refusal names', () => {
+    expect(refusalDestination(withDetails({ destination: 'example.com (10.0.0.9)' }))).toBe(
+      'example.com (10.0.0.9)',
+    );
+  });
+
+  it('is undefined when the destination is missing, not a string, or there are no details', () => {
+    expect(refusalDestination(withDetails({}))).toBeUndefined();
+    expect(refusalDestination(withDetails({ destination: 42 }))).toBeUndefined();
+    expect(refusalDestination(withDetails({ destination: ['a'] }))).toBeUndefined();
+    expect(refusalDestination(withDetails({ destination: null }))).toBeUndefined();
+    expect(refusalDestination(withDetails())).toBeUndefined();
+    expect(refusalDestination({ status: 'blocked' })).toBeUndefined();
+    expect(refusalDestination(undefined)).toBeUndefined();
+  });
+
+  it('does not read a search refusal’s attempts', () => {
+    expect(
+      refusalDestination(withDetails({ attempts: [{ destination: 'example.com (10.0.0.9)' }] })),
+    ).toBeUndefined();
   });
 });
 

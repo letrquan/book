@@ -292,6 +292,53 @@ describe('WebFetch', () => {
     expect(result.structuredError?.details?.destination).toBe('example.com (10.0.0.9)');
   });
 
+  it('names the model’s own URL when a same-origin redirect target is refused at pre-flight', async () => {
+    const resolver = vi
+      .fn(async (): Promise<string[]> => [])
+      .mockResolvedValueOnce(['93.184.216.34'])
+      .mockResolvedValueOnce(['93.184.216.34'])
+      .mockResolvedValue(['10.0.0.9']);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: '/hop' } }))
+      .mockResolvedValueOnce(
+        new Response(null, { status: 302, headers: { location: '/final?token=abc' } }),
+      );
+    const { fetchTool } = toolsFor(fetchImpl, resolver);
+
+    const result = await fetchTool.execute({ url: 'https://example.com/start' }, context());
+
+    expect(result.status).toBe('blocked');
+    expect(result.structuredError?.code).toBe('private_network_forbidden');
+    expect(result.structuredError?.retryable).toBe(false);
+    expect(result.structuredError?.details?.destination).toBe('example.com (10.0.0.9)');
+    const message = result.structuredError?.message ?? '';
+    expect(message).toContain('https://example.com/start');
+    expect(message).toContain('same-origin redirect');
+    // Neither an intermediate hop nor the refused target is named.
+    expect(message).not.toContain('/hop');
+    expect(message).not.toContain('/final');
+    expect(message).not.toContain('token=abc');
+  });
+
+  it('never echoes credentials from a same-origin redirect target', async () => {
+    // `URL.origin` ignores userinfo, so this target is same-origin with the request.
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: 'https://user:s3cr3t-token@example.com/next' },
+        }),
+    );
+    const { fetchTool } = toolsFor(fetchImpl);
+
+    const result = await fetchTool.execute({ url: 'https://example.com/start' }, context());
+
+    expect(result.structuredError?.code).toBe('url_credentials_forbidden');
+    expect(JSON.stringify(result)).not.toContain('s3cr3t-token');
+    expect(JSON.stringify(result)).not.toContain('user:');
+  });
+
   it('follows bounded same-origin redirects and reports the final URL', async () => {
     const fetchImpl = vi
       .fn()

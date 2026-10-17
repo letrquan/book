@@ -11,6 +11,7 @@ import {
   WebPolicyError,
   connectionBlockedDestination,
   connectionBlockedReason,
+  refusalDestination,
   refusalWithoutLookup,
   resolveHostname,
   safeNetworkLookup,
@@ -517,7 +518,23 @@ async function fetchWithPolicy(
         refusalWithoutLookup(target, policy)?.code,
       );
     }
-    const next = await validateWebUrl(target.toString(), policy, deps.resolveHostname);
+    let next: URL;
+    try {
+      next = await validateWebUrl(target.toString(), policy, deps.resolveHostname);
+    } catch (error) {
+      // The target is on the model's own host, so a private answer here is the same host the
+      // model asked for, reached through a redirect. Say so in terms of the URL the model gave:
+      // never `current` (an intermediate hop) or the raw target, which can carry userinfo that
+      // `URL.origin` ignores. The code and destination are the refusal's own, unchanged.
+      if (error instanceof WebPolicyError && error.code === 'private_network_forbidden') {
+        throw new WebPolicyError(
+          `Web fetch of ${requested.toString()} was blocked after a same-origin redirect. ${error.message}`,
+          error.code,
+          error.destination,
+        );
+      }
+      throw error;
+    }
     redirects.push(next.toString());
     current = next;
   }
@@ -1102,8 +1119,7 @@ async function builtinWebSearch(
     if (result.status === 'success' || result.status === 'cancelled') return result;
 
     const cooldownMs = providerCooldownMs(result);
-    const refusedDestination = result.structuredError?.details?.destination;
-    const refused = typeof refusedDestination === 'string' ? refusedDestination : undefined;
+    const refused = refusalDestination(result);
     if (cooldownMs !== undefined) {
       cooldowns.set(provider.id, {
         until: now().getTime() + cooldownMs,
