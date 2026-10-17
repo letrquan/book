@@ -11,6 +11,7 @@ import {
   collectWithheldProjectNotices,
   collectWithheldProviderNotices,
 } from '../project-approval-notices.js';
+import { collectSkippedInstructionNotices } from '../claude-md.js';
 import { isExiting, setExitCode } from './exit.js';
 import { installPrintInterrupt, printExitCode, type PrintInterrupt } from './print-interrupt.js';
 import { parseNumericFlag } from './utils.js';
@@ -232,8 +233,11 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       options.print === undefined && config.workspaceProviderGate
         ? collectWithheldProviderNotices(config.workspaceProviderGate, config.workspace)
         : [];
+    // Project instruction files that link out of their directory are not loaded (#539). Not tied
+    // to `--no-settings`: they are read whatever the settings layers are.
+    const instructionNotices = collectSkippedInstructionNotices(config.workspace);
     if (options.scrollback) {
-      for (const notice of providerNotices) console.warn(notice);
+      for (const notice of [...providerNotices, ...instructionNotices]) console.warn(notice);
     }
     const interactiveMaxTurns = parseNumericFlag(options.maxTurns, '--max-turns', {
       integer: true,
@@ -269,12 +273,15 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       // Repository-declared allow rules and hooks are withheld until the user
       // decides on them; a non-interactive host cannot ask, so it reports and
       // continues.
-      for (const notice of collectWithheldProjectNotices({
-        workspace: config.workspace,
-        settings: config.settings,
-        settingsEnabled: options.settings !== false,
-        providerGate: config.workspaceProviderGate,
-      })) {
+      for (const notice of [
+        ...collectWithheldProjectNotices({
+          workspace: config.workspace,
+          settings: config.settings,
+          settingsEnabled: options.settings !== false,
+          providerGate: config.workspaceProviderGate,
+        }),
+        ...instructionNotices,
+      ]) {
         console.warn(notice);
       }
       const declaredMcpServers = resolveMcpServerList(config.workspace);
@@ -477,7 +484,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
             snapshotStore,
             createdSessions,
           },
-          startupNotices: providerNotices,
+          startupNotices: [...providerNotices, ...instructionNotices],
         }),
         {
           exitOnCtrlC: false,

@@ -10,6 +10,7 @@ import { createDefaultRegistry } from './tools/registry.js';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
 import { mcpServersToRecord, partitionMcpServersByApproval } from './mcp-approvals.js';
 import { resolveMcpServerList } from './mcp-config.js';
+import { collectSkippedInstructionNotices } from './claude-md.js';
 import { collectWithheldProjectNotices } from './project-approval-notices.js';
 import { AgentManager } from './agents/manager.js';
 import { SessionStore } from './session/store.js';
@@ -140,12 +141,16 @@ export async function* query(
       // SDK runs cannot prompt, so unapproved servers are skipped with a warning.
       // Repository-declared allow rules and hooks are withheld until the user
       // decides on them; an SDK run cannot ask, so it reports and continues.
-      for (const notice of collectWithheldProjectNotices({
-        workspace: config.workspace,
-        settings: config.settings,
-        settingsEnabled: !options.noSettings,
-        providerGate: config.workspaceProviderGate,
-      })) {
+      for (const notice of [
+        ...collectWithheldProjectNotices({
+          workspace: config.workspace,
+          settings: config.settings,
+          settingsEnabled: !options.noSettings,
+          providerGate: config.workspaceProviderGate,
+        }),
+        // Instruction files that link out of their directory are not loaded (#539).
+        ...collectSkippedInstructionNotices(config.workspace),
+      ]) {
         console.warn(notice);
       }
       const declaredMcpServers = resolveMcpServerList(config.workspace);
