@@ -72,6 +72,22 @@ describe('SessionStore', () => {
     expect(new SessionStore(dir).load(id).meta.driver).toBe('agent');
   });
 
+  // #524: AgentSession appends the user record (whose content is a command's body) and then
+  // patches the name the user's typed line gave. Every route back to the name must end at the patch,
+  // not at a name re-derived from the body.
+  it('keeps a patched name over the first user record through a reload and a rebuilt index', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    const body = 'You are initializing this project. Create or refine CLAUDE.md.';
+    s.append(id, { type: 'user', timestamp: 1, data: { content: body } });
+    s.patchMeta(id, { name: 'Init' });
+
+    expect(s.findById(id)?.name).toBe('Init');
+    expect(new SessionStore(dir).load(id).meta.name).toBe('Init');
+    rmSync(join(dir, 'session-index.json'), { force: true });
+    expect(new SessionStore(dir).list().map((meta) => meta.name)).toEqual(['Init']);
+  });
+
   it('creates a session with a uuid id', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj', name: 'my-feature' });

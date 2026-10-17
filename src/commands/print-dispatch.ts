@@ -84,7 +84,10 @@ export type PrintCommandDispatch =
       prompt: string;
       /** Frontmatter enforcement (allowed-tools / model), as the TUI passes it. */
       commandContext?: CommandContext;
-      /** What an unnamed session is named after instead of `prompt` (a `/goal` condition). */
+      /**
+       * What an unnamed session is named after instead of `prompt`: the line the user typed for a
+       * prompt-body command (`/init`, `/deploy staging`), the condition for `/goal` (#524).
+       */
       sessionNameSource?: string;
       /** Non-fatal shell-substitution failures, exactly as the TUI collects them. */
       shellErrors?: string[];
@@ -445,7 +448,12 @@ export async function resolvePrintCommand(
         commands,
       );
     }
-    return dispatch.kind === 'handled' ? { ...dispatch, command: parsed.name } : dispatch;
+    if (dispatch.kind === 'handled') return { ...dispatch, command: parsed.name };
+    // A command that turns into a prompt names a fresh session after what was typed, not after
+    // the body it generated; `/goal` already chose its own source (the condition).
+    return dispatch.kind === 'prompt'
+      ? { ...dispatch, sessionNameSource: dispatch.sessionNameSource ?? input.trim() }
+      : dispatch;
   }
 
   const custom = commands.find((command) => command.name === parsed.name);
@@ -471,6 +479,7 @@ export async function resolvePrintCommand(
     kind: 'prompt',
     prompt: body,
     commandContext: commandEnforcementContext(custom, body),
+    sessionNameSource: input.trim(),
     shellErrors,
   };
 }

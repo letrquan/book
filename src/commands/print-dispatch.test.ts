@@ -23,6 +23,7 @@ import { discoverCommands } from './loader.js';
 import { projectCommandFingerprint, type ProjectCommandStore } from '../command-approvals.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { getProjectMemoryDir } from '../memory-store.js';
+import { deriveSessionName } from '../session/name.js';
 
 let tempDirs: string[] = [];
 const previousBookHome = process.env.BOOK_HOME;
@@ -146,6 +147,8 @@ describe('resolvePrintCommand — prompt-body commands', () => {
       kind: 'prompt',
       prompt: `Triage parser at high in ${workspace} using test-model (parser high)`,
       commandContext: undefined,
+      // Named after what was typed, not the substituted body (#524).
+      sessionNameSource: '/triage parser high',
       shellErrors: [],
     });
   });
@@ -472,6 +475,53 @@ describe('PrintEffectRegistry', () => {
     }));
     expect(first.has('review')).toBe(true);
     expect(new PrintEffectRegistry().has('review')).toBe(false);
+  });
+});
+
+// #524: a prompt-body command names the session after what the user typed, not the body it made.
+describe('resolvePrintCommand — session name source', () => {
+  const promptDispatch = (dispatch: PrintCommandDispatch) => {
+    if (dispatch.kind !== 'prompt') throw new Error('expected a prompt dispatch');
+    return dispatch;
+  };
+
+  it('is the typed line for a built-in prompt command, so /init names the session "Init"', async () => {
+    const dispatch = promptDispatch(await resolvePrintCommand('/init', env(tempWorkspace())));
+
+    expect(dispatch.sessionNameSource).toBe('/init');
+    expect(deriveSessionName(dispatch.sessionNameSource!)).toBe('Init');
+    expect(deriveSessionName(dispatch.prompt)).not.toBe('Init');
+  });
+
+  it('is the raw line, arguments unsubstituted, for a custom command', async () => {
+    const workspace = tempWorkspace();
+    writeCommand(workspace, 'deploy', 'Roll out to the $1 environment and report.');
+
+    const dispatch = promptDispatch(
+      await resolvePrintCommand('/deploy staging', env(workspace, approving(workspace, 'deploy'))),
+    );
+
+    expect(dispatch.prompt).toBe('Roll out to the staging environment and report.');
+    expect(dispatch.sessionNameSource).toBe('/deploy staging');
+    expect(deriveSessionName(dispatch.sessionNameSource!)).toBe('Deploy staging');
+  });
+
+  it('takes the line as typed, not as shell-substituted', async () => {
+    const workspace = tempWorkspace();
+    writeCommand(workspace, 'note', 'Note: $ARGUMENTS');
+
+    const dispatch = promptDispatch(
+      await resolvePrintCommand('/note $HOME is set', env(workspace)),
+    );
+
+    expect(dispatch.sessionNameSource).toBe('/note $HOME is set');
+  });
+
+  it('leaves a passthrough alone: an ordinary prompt names the session after itself', async () => {
+    expect(await resolvePrintCommand('fix the build', env(tempWorkspace()))).toEqual({
+      kind: 'passthrough',
+      prompt: 'fix the build',
+    });
   });
 });
 

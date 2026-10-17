@@ -1517,8 +1517,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       userMessage: string,
       commandContext?: CommandContext,
       attachments?: Message['attachments'],
+      sessionNameSource?: string,
     ) => {
-      return sendMessage(userMessage, commandContext, { attachments });
+      return sendMessage(userMessage, commandContext, { attachments, sessionNameSource });
     },
     [sendMessage],
   );
@@ -1541,6 +1542,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // The fresh conversation implements the plan the goal was guiding, so the goal
         // goes with it; a new session would otherwise start without one, silently.
         const goal = agentSession.getGoal();
+        // The user typed nothing for the handoff, so the fresh session takes the planning
+        // session's name, through the same naming path as any other first turn (#524).
+        const planningName = sessionNameRef.current;
         await startNewConversation();
         if (goal) {
           agentSession.adoptGoal(goal, { sessionId: sessionIdRef.current, timelineStore });
@@ -1551,6 +1555,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         await sendMessage(HANDOFF_DISPLAY_MESSAGE, undefined, {
           contextMessage: buildHandoffPrompt(plan),
           kind: 'conversation',
+          sessionNameSource: planningName,
         });
       } catch (err) {
         log.warn('plan handoff failed', {
