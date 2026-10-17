@@ -119,6 +119,17 @@ interface RunningApply {
   startedBy: AgentApplyStarter;
 }
 
+/** How an apply that outlived its manager ended, as that manager hands it on (#540). */
+interface LateApplication {
+  agentId: string;
+  evidenceId: string;
+  /** The commit of the candidate that was applied. */
+  headCommit: string;
+  result: AgentApplyResult;
+  /** The disposed manager's store instance, which may still be named as the record's owner. */
+  fromInstanceId?: string;
+}
+
 interface SubscribeOptions {
   snapshot?: boolean;
 }
@@ -241,6 +252,8 @@ export class AgentManager {
   private hookEventSink?: (event: string, payload: Record<string, unknown>) => void;
   private exitHandler?: () => void;
   private disposed = false;
+  /** The session's current manager, asked when an apply lands after dispose (#540). */
+  private lateApplicationReceiver?: () => AgentManager | undefined;
   private persistenceState: 'healthy' | 'degraded_busy' | 'degraded_unavailable' = 'healthy';
 
   constructor(
@@ -1103,6 +1116,12 @@ export class AgentManager {
 
   async get(agentId: string): Promise<AgentRecord | undefined> {
     await this.ensureInitialized();
+    const record = this.refreshAgent(agentId);
+    return record ? this.recordForReturn(record) : undefined;
+  }
+
+  /** Take the store's copy of a record when it is newer or another live owner's, and hydrate it. */
+  private refreshAgent(agentId: string): AgentRecord | undefined {
     for (const refreshed of this.store?.listAgents() ?? []) {
       if (refreshed.id !== agentId) continue;
       const current = this.agents.get(agentId);
@@ -1115,8 +1134,7 @@ export class AgentManager {
         this.hydratedAgentIds.delete(agentId);
       }
     }
-    const record = this.hydrateAgent(agentId);
-    return record ? this.recordForReturn(record) : undefined;
+    return this.hydrateAgent(agentId);
   }
 
   async dismiss(agentId: string): Promise<void> {
@@ -1501,8 +1519,25 @@ export class AgentManager {
     apply.settled = attempt;
     const result = await attempt;
     if (this.disposed) {
-      // The store was disposed, so this is the one write that still has to land: a pick that
-      // finished after `dispose()` is on the operator's branch, and nothing else records that. No
+      // A pick that finished after `dispose()` is on the operator's branch, and nothing else
+      // records that. The session's current manager, if it has one, owns the record now and
+      // records it as its own (#540).
+      const late: LateApplication = {
+        agentId,
+        evidenceId: evidence.id,
+        headCommit: evidence.patchCandidate!.headCommit,
+        result,
+        fromInstanceId: this.store?.instanceId,
+      };
+      let receiver = this.lateApplicationReceiver?.();
+      while (receiver && receiver !== this && !receiver.disposed) {
+        if ((await receiver.receiveLateApplication(late)) !== 'unavailable') return result;
+        // It could not open its store; a session that switched again meanwhile has a newer one.
+        const newer = this.lateApplicationReceiver?.();
+        if (newer === receiver) break;
+        receiver = newer;
+      }
+      // No manager to hand it to, so this is the one write that still has to land. No
       // event or telemetry, since the subscribers are gone. Only the status is written, and only
       // if nobody wrote the record after this manager last had it (#518): the session's next
       // manager may own it now. The record this manager last had is the one in `agents` now, not
@@ -1532,6 +1567,63 @@ export class AgentManager {
     });
     this.telemetry('apply', record, { status: result.status });
     return result;
+  }
+
+  /**
+   * Name the manager an apply that outlives this one hands its outcome to: the session's current
+   * manager, asked when the pick lands rather than now, since a session can switch again in the
+   * meantime and creates its manager lazily. Called where a session's runtime is replaced.
+   */
+  handOffLateApplications(current: () => AgentManager | undefined): void {
+    this.lateApplicationReceiver = current;
+  }
+
+  /**
+   * Record the outcome of an apply that a disposed manager of this session started (#540).
+   *
+   * Only `applicationStatus` changes, on the record as this manager has it now, so its own later
+   * saves keep it. The record is left alone when it is gone, when its candidate is no longer the
+   * one applied (a re-run replaced it: `applied` would be false of the new one), or when another
+   * live owner holds it (#518). The disposed manager that hands it over is no such owner, though
+   * in one process its pid reads as alive. Not `assertMutable`, for that reason.
+   *
+   * `unavailable` when this manager was disposed before it could open its store, or could not.
+   */
+  private async receiveLateApplication(
+    late: LateApplication,
+  ): Promise<'recorded' | 'skipped' | 'unavailable'> {
+    try {
+      await this.ensureInitialized();
+    } catch {
+      return 'unavailable';
+    }
+    const store = this.store;
+    if (this.disposed || !store) return 'unavailable';
+    const record = this.refreshAgent(late.agentId);
+    const skip =
+      record === undefined
+        ? 'missing'
+        : record.patchCandidate?.headCommit !== late.headCommit
+          ? 'superseded'
+          : store.isOwnedByLiveForeignOtherThan(late.agentId, late.fromInstanceId)
+            ? 'live_owner'
+            : undefined;
+    if (!record || skip) {
+      log.event('late application skipped', { reason: skip });
+      return 'skipped';
+    }
+    record.applicationStatus = late.result.status;
+    this.persist(record);
+    this.emit({
+      type: 'agent_apply',
+      agentId: late.agentId,
+      evidenceId: late.evidenceId,
+      status: late.result.status,
+      commit: late.result.commit,
+      error: late.result.error,
+    });
+    this.telemetry('apply', record, { status: late.result.status });
+    return 'recorded';
   }
 
   private pump(): void {

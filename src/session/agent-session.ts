@@ -628,6 +628,11 @@ export class AgentSession {
    */
   replaceRuntime(options: SessionRuntimeOptions = {}, via = 'session_transition'): SessionRuntime {
     const outgoing = this.runtime;
+    // An apply can outlive the outgoing manager: `dispose()` stops only its reads, and the pick
+    // lands later. Its outcome goes to whichever manager the session has when it does (#540), which
+    // owns the record by then and tells the agent panel. A marker in the store instead would need a
+    // new file kind, a merge on every load and save, and a trigger to surface it.
+    outgoing.agentManager?.handOffLateApplications(() => this.runtime.agentManager);
     outgoing.dispose(via);
     this.releaseRunUsage(outgoing);
     this.runtime = new SessionRuntime(options);
