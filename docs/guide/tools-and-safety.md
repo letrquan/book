@@ -227,8 +227,8 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   `git commit -m "fix(x): y"` and `git stash show 'stash@{0}'` (on Windows only under Git Bash) pass
   `Bash(git *)`; a backslash or caret before a quote and a typographic quote are refused because a
   shell may read them differently, and on Windows any single quote is refused unless the session
-  shell is Git Bash and the command has a space, a tab or a `"` (use double quotes under
-  PowerShell). A bare `Bash` rule admits any command. The
+  shell is Git Bash, where `'` works exactly as on Linux (use double quotes under PowerShell). A
+  bare `Bash` rule admits any command. The
   rule constrains the command's text, not what the program does with its options (`Bash(git *)`
   still admits `git -c core.fsmonitor=… status`), and is not a sandbox: narrow the pattern when
   that matters.
@@ -365,16 +365,13 @@ remembers nothing and offers no rule (the prompt says "this call only — no rul
 call still runs once): a command that is multi-line after trimming, and a compound command that
 contains a `*` (its rule would be a glob rule, which refuses compound commands).
 
-**Windows and `'`.** `'` is a quote in Git Bash and PowerShell but not in cmd.exe, so on Windows a
-single-quoted argument (`git stash show 'stash@{0}'`) is treated as an ordinary argument only when
-the session shell is Git Bash (WSL's `bash.exe` in a Windows system directory does not count) _and_
-the command contains a space, a tab or a `"`. The reason is how Git Bash is started: Book passes the
-command as one argument, Node wraps an argument in `"…"` on the Windows command line only when it
-holds a space, a tab or a `"`, and the MSYS runtime rebuilds the arguments from that line itself,
-reading `'` as a quote and removing it in an unwrapped word. So `echo';id'` reaches bash as `echo;id`,
-two commands, while `git log 'x;y'` arrives intact. A command with a `'` and none of those
-characters, and every `'` under PowerShell, cmd.exe or any other shell, makes the command
-compound; use double quotes or add the space.
+**Windows and `'`.** `'` is a quote in Git Bash and PowerShell but not in cmd.exe. Under Git Bash
+`'` works exactly as on Linux: `git stash show 'stash@{0}'` and `echo';id'` are each one command.
+That holds because the Bash tool hands Git Bash the command in the `BOOK_BASH_COMMAND` environment
+variable, unset before the command runs, rather than on the Windows command line, so the MSYS
+runtime cannot glob it, expand an `@file` in it or strip its quotes. WSL's `bash.exe` (in a Windows
+system directory), PowerShell, cmd.exe and any other shell still treat every `'` as making the
+command compound; use double quotes there.
 
 Permission _modes_ decide whether you are prompted; they never relax a `deny` rule. A rule in
 `permissions.deny` blocks the matching call in every mode, including `auto` and

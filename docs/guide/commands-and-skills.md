@@ -49,7 +49,7 @@ command is a single command: one that chains, pipes, redirects or substitutes ou
 `git stash show 'stash@{0}'` are admitted (on Linux and macOS, and on Windows under Git Bash, see the tools guide). `$` or a backtick inside double quotes, a line break
 anywhere, an unterminated quote, and quote characters a shell could read differently (a backslash
 or caret before a quote, a typographic quote) are still refused, and on Windows any single quote is
-refused unless the session shell is Git Bash and the command has a space, a tab or a `"` (PowerShell reads it as a quote, cmd.exe does not), so use double quotes there. Book scans quotes but does not parse shell, so it fails closed;
+refused unless the session shell is Git Bash, which reads it exactly as on Linux (PowerShell reads it as a quote, cmd.exe does not), so use double quotes there. Book scans quotes but does not parse shell, so it fails closed;
 split a compound command into separate Bash calls, each matching the rule, or quote the argument
 that holds such characters (a commit message in double quotes, say). Whitespace around the
 command, such as a trailing newline, is ignored. A bare `Bash` rule (no pattern) admits any

@@ -7,6 +7,7 @@ import { removeWhenReleased } from '../test/remove-when-released.js';
 import { persistentEnvironmentOverrides, shellTools, streamTail } from './shell.js';
 import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
+import { hasCompoundShellSyntax } from './shell-chaining.js';
 import { resolveShell } from '../shell-selection.js';
 import { PROVIDER_KEY_MARKER, redactToolResultSecrets } from '../provider-secrets.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
@@ -1468,9 +1469,11 @@ describe.skipIf(!windowsGitBash)('Git Bash commands on Windows (#512, #523)', ()
     expect(result.stdout.trim()).toBe('x;echo y');
   });
 
-  it('delivers a space-free quoted command intact, so its quotes stay quotes', async () => {
+  it('delivers a space-free quoted command intact, so the scanner reads it as on Linux', async () => {
     // Passed in argv, MSYS stripped the quotes and bash ran `echo;echo${IFS}y`: an empty line, then
-    // `y`. Delivered intact, bash looks for one command named `echo;echo${IFS}y`.
+    // `y`. Delivered intact, bash looks for one command named `echo;echo${IFS}y`, which is what the
+    // scanner reads: one command.
+    expect(hasCompoundShellSyntax("echo';echo${IFS}y'", 'win32', windowsGitBash)).toBe(false);
     const result = await viaTool("echo';echo${IFS}y'");
     expect(notFound(result.stderr)).toBe(1);
     expect(result.stderr).toContain('echo;echo${IFS}y: command not found');
