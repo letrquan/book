@@ -1,10 +1,126 @@
 import { describe, expect, it, vi } from 'vitest';
+import { toolOutputContentWidth, toolOutputDisplay } from '../tool-presentation.js';
 import {
   countOutputLines,
+  expandTabs,
   formatToolOutputFooter,
   prepareToolOutputDisplay,
+  type ToolOutputDisplay,
 } from './tool-output.js';
 import { displayWidth } from './word-wrap.js';
+
+describe('expandTabs', () => {
+  it('moves to the next 8-column stop', () => {
+    expect(expandTabs('a\tb')).toBe(`a${' '.repeat(7)}b`);
+  });
+
+  it('takes a whole stop for a tab already at a stop', () => {
+    expect(expandTabs('12345678\tx')).toBe(`12345678${' '.repeat(8)}x`);
+    expect(expandTabs('\tx')).toBe(`${' '.repeat(8)}x`);
+    expect(expandTabs('a\t\tb')).toBe(`a${' '.repeat(15)}b`);
+  });
+
+  it('counts display columns: a wide character takes two, an ANSI escape none', () => {
+    expect(expandTabs('中\tx')).toBe(`中${' '.repeat(6)}x`);
+    expect(expandTabs('\u001b[31mab\u001b[39m\tc')).toBe(`\u001b[31mab\u001b[39m${' '.repeat(6)}c`);
+  });
+
+  it('returns a line without a tab unchanged', () => {
+    const line = 'no tabs here';
+    expect(expandTabs(line)).toBe(line);
+  });
+});
+
+/** A tab-separated table a Bash call printed (#537): 86 columns once its tabs reach their stops. */
+const TAB_TABLE_ROWS = [
+  ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta', 'iota', 'kappa', 'lambda'],
+  ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11'],
+];
+const TAB_TABLE = TAB_TABLE_ROWS.map((cells) => `${cells.join('\t')}\n`).join('');
+/** The same table as a terminal shows it: every cell but the last padded to its 8-column stop. */
+const TAB_TABLE_EXPANDED = TAB_TABLE_ROWS.map(
+  (cells) => `${cells.map((cell, i) => (i < cells.length - 1 ? cell.padEnd(8) : cell)).join('')}\n`,
+).join('');
+
+describe('tool output with tabs (#537)', () => {
+  it.each([true, false])(
+    'lays a tab table out as its pre-expanded twin, inside the content width (showAll %s)',
+    (showAllToolOutput) => {
+      const input = { success: true, showAllToolOutput, terminalWidth: 73 };
+      const display = toolOutputDisplay(TAB_TABLE, input);
+      const width = toolOutputContentWidth(73);
+      expect(display.lines).toHaveLength(2);
+      for (const line of display.lines) {
+        expect(line).not.toContain('\t');
+        expect(displayWidth(line)).toBeLessThanOrEqual(width);
+      }
+      expect(display.lines).toEqual(toolOutputDisplay(TAB_TABLE_EXPANDED, input).lines);
+      // The rows are cut where the view cuts any long row, and say so.
+      expect(display.lines[0]!.endsWith('…')).toBe(true);
+      expect(display.truncatedLines).toBe(2);
+    },
+  );
+
+  it.each([true, false])(
+    'gives the whole display of the pre-expanded twin, hidden rows and footer too (showAll %s)',
+    (showAllToolOutput) => {
+      // Ten rows: more than a collapsed preview shows, so its head-tail split hides some.
+      const input = { success: true, showAllToolOutput, terminalWidth: 73 };
+      const pick = ({ totalChars: _totalChars, ...rest }: ToolOutputDisplay) => rest;
+      const display = toolOutputDisplay(TAB_TABLE.repeat(5), input);
+      // Everything but `totalChars`, which counts the output as the tool returned it.
+      expect(pick(display)).toEqual(pick(toolOutputDisplay(TAB_TABLE_EXPANDED.repeat(5), input)));
+      expect(display.totalChars).toBe(TAB_TABLE.length * 5);
+      expect(display.hiddenLines).toBe(showAllToolOutput ? 0 : 4);
+      expect(display.truncatedLines).toBe(showAllToolOutput ? 10 : 6);
+    },
+  );
+
+  it('counts no tab line as shortened when its expanded width fits', () => {
+    const display = prepareToolOutputDisplay('a\tb\nname\tvalue\n', {
+      maxLines: 10,
+      maxLineWidth: 40,
+    });
+    expect(display.lines).toEqual([`a${' '.repeat(7)}b`, `name${' '.repeat(4)}value`]);
+    expect(display.truncatedLines).toBe(0);
+    expect(display.truncated).toBe(false);
+    expect(display.footer).toBeUndefined();
+    const collapsed = toolOutputDisplay('a\tb\n', {
+      success: true,
+      showAllToolOutput: false,
+      terminalWidth: 73,
+    });
+    expect(collapsed.truncatedLines).toBe(0);
+    expect(collapsed.footer).toBeUndefined();
+  });
+
+  it('keeps every cell, on its 8-column stop, where nothing cuts the rows', () => {
+    const display = prepareToolOutputDisplay(TAB_TABLE, {
+      maxLines: 10,
+      maxLineWidth: Number.MAX_SAFE_INTEGER,
+    });
+    expect(display.lines).toEqual(TAB_TABLE_EXPANDED.trimEnd().split('\n'));
+    for (const [row, cells] of TAB_TABLE_ROWS.entries()) {
+      let from = 0;
+      for (const [column, cell] of cells.entries()) {
+        const at = display.lines[row]!.indexOf(cell, from);
+        expect(at, `${cell} in row ${row}`).toBe(column * 8);
+        from = at + cell.length;
+      }
+    }
+    expect(display.lines[0]).toContain('lambda');
+    expect(display.lines[1]).toContain('11');
+    expect(display.truncated).toBe(false);
+  });
+
+  it('indents a make recipe to the first stop and keeps its line count', () => {
+    const output = 'all:\n\tgcc -o foo foo.c\n\tstrip foo\n';
+    const display = prepareToolOutputDisplay(output, { maxLines: 10, maxLineWidth: 120 });
+    expect(display.lines).toEqual(['all:', '        gcc -o foo foo.c', '        strip foo']);
+    expect(display.totalLines).toBe(3);
+    expect(countOutputLines(output)).toBe(3);
+  });
+});
 
 describe('prepareToolOutputDisplay', () => {
   it('returns a collapsed preview with summary metadata', () => {

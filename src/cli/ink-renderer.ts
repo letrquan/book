@@ -79,6 +79,33 @@ export function hasInkTrailingNewlineFix(from?: string | URL): boolean {
   }
 }
 
+/** Runs `update` and commits the React work it scheduled before returning. */
+export type InkFlushSync = (update: () => void) => void;
+
+/**
+ * The `flushSync` of Ink's own reconciler (#538), or undefined when Ink's private `reconciler.js`
+ * cannot be read. Ink renders with `LegacyRoot`, but React 19's reconciler no longer commits a
+ * legacy root's update synchronously outside a batch: a `setState` from a stdout `resize` listener
+ * waits for a microtask, after Ink's own `resized()` has drawn the tree from before the resize. A
+ * listener that sets the new size inside this flush has it committed before `resized()` draws.
+ * Ink exports no flushSync, so this reads the reconciler instance Ink renders with.
+ */
+export async function loadInkFlushSync(from?: string | URL): Promise<InkFlushSync | undefined> {
+  try {
+    const module = (await import(pathToFileURL(join(inkBuildDir(from), 'reconciler.js')).href)) as {
+      default?: { flushSyncFromReconciler?: unknown };
+    };
+    const reconciler = module.default;
+    const flush = reconciler?.flushSyncFromReconciler;
+    if (typeof flush !== 'function') return undefined;
+    return (update) => {
+      flush.call(reconciler, update);
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Replaces Ink's private `logUpdate.create` with `wrap(original)`, so every renderer Ink creates
  * afterwards goes through the wrapper. Returns false, leaving Ink's renderer in place, when Ink's

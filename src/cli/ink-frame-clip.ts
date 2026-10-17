@@ -9,6 +9,7 @@ import {
   type InkOutputFrame,
   type SliceAnsi,
 } from './ink-output-cache.js';
+import { parseEnvBoolean } from '../env-boolean.js';
 import { inkBuildDir } from './ink-renderer.js';
 
 /**
@@ -16,14 +17,19 @@ import { inkBuildDir } from './ink-renderer.js';
  *
  * Ink's private `Output.get` builds each row from a grid `this.width` cells wide, but a write that
  * runs past the last cell grows the row instead of being cut, so a frame row can come out wider
- * than the terminal. That happens on every narrowing resize: Ink's `resized()` lays the root out
- * at the new `stdout.columns` and draws at once, while Book's components still hold the old width
- * in React state for the 50 ms the resize debounce takes, and the input bar's rules and footer are
- * Boxes with that width set explicitly. The terminal autowraps each over-wide row onto a second
- * physical row, so log-update's idea of how tall its frame is falls short by one row per wrap, and
- * its next incremental frame moves the cursor up into the middle of the old one. The rows it thinks
+ * than the terminal. The terminal autowraps each over-wide row onto a second physical row, so
+ * log-update's idea of how tall its frame is falls short by one row per wrap, and its next
+ * incremental frame moves the cursor up into the middle of the old one. The rows it thinks
  * unchanged — blank rows, rules, the input bar — are skipped, and the stale wrapped rows stay: two
  * working indicators, extra rules, a rule fragment, a second input bar.
+ *
+ * Every narrowing resize used to do that for 50 ms: Ink's `resized()` lays the root out at the new
+ * `stdout.columns` and draws at once, while Book's components held the old width in React state
+ * until a debounce ran, and the input bar's rules and footer are Boxes with that width set
+ * explicitly. Since #538 the TUI commits the new size from a `resize` listener that runs before
+ * `resized()`, so no frame laid out at the old width should reach Ink any more; the clip stays as a
+ * safety net for any row that still would. `BOOK_INK_FRAME_CLIP=off` turns it off, so a run can show
+ * that no row comes out wider than the terminal without it.
  *
  * Cutting the rows at `Output.get` covers both renderer modes and every way Ink writes a frame
  * (incremental, standard, and the clear-terminal branch), because all of them write what `get`
@@ -199,15 +205,18 @@ function isClippableOutput(Output: unknown): Output is InkOutputConstructor {
  * Wraps Ink's `Output.prototype.get` so no frame row is wider than the terminal, once per process,
  * and returns whether the clip is installed after this call. Install it after
  * `installInkOutputCache`, so it wraps the row-cached `get` rather than being wrapped by it. Returns
- * false, leaving Ink alone, when Ink's private `Output` or the `slice-ansi` and `string-width`
- * copies beside it cannot be read.
+ * false, leaving Ink alone, when `BOOK_INK_FRAME_CLIP` reads as false — `0`, `false`, `off` or
+ * `no`, in any case and with spaces around it — and when Ink's private `Output` or the `slice-ansi`
+ * and `string-width` copies beside it cannot be read. A clip already in place stays, whatever this
+ * call's environment says.
  */
-export async function installInkFrameClip(): Promise<boolean> {
+export async function installInkFrameClip(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
   try {
     const outputPath = join(inkBuildDir(), 'output.js');
     const outputModule = await import(pathToFileURL(outputPath).href);
     const Output: unknown = outputModule.default;
     if (isFrameClippedGet(Output)) return true;
+    if (parseEnvBoolean(env.BOOK_INK_FRAME_CLIP) === false) return false;
     const require = createRequire(outputPath);
     const [sliceAnsiModule, stringWidthModule] = await Promise.all([
       import(pathToFileURL(require.resolve('slice-ansi')).href),
