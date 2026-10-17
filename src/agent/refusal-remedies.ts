@@ -93,6 +93,47 @@ export function refusalKind(
   }
 }
 
+/** What a streak keeps of a network-policy refusal: all `networkPolicyRemedies` reads. */
+export type BlockedStreakRefusal = Pick<ToolResult, 'status' | 'structuredError'>;
+
+/**
+ * What refused the calls of a streak of all-refused turns, kept for the terminal message: the
+ * local kinds as a set, the network-policy refusals as a list so each remedy can name what it
+ * refused.
+ */
+export interface BlockedStreak {
+  causes: Set<LocalRefusalKind>;
+  networkRefusals: BlockedStreakRefusal[];
+}
+
+/**
+ * Record one all-refused turn's refusals into the streak. A no-op unless the brake that reads the
+ * streak is `armed`, so a run that can never stop on it (the TUI, or a limit of 0) does not hold
+ * every refused result's output for its whole streak. Only the status and structured error of a
+ * network refusal are kept.
+ */
+export function recordBlockedStreakRefusals(
+  armed: boolean,
+  streak: BlockedStreak,
+  results: readonly (ToolResult | undefined)[],
+  countsAsRefusal: (result: ToolResult | undefined) => boolean,
+): void {
+  if (!armed) return;
+  for (const result of results) {
+    if (!result || !countsAsRefusal(result)) continue;
+    if (networkPolicyRefusal(result)) {
+      streak.networkRefusals.push({
+        status: result.status,
+        structuredError: result.structuredError,
+      });
+    } else {
+      // `refusalKind` answers a network kind exactly when `networkPolicyRefusal` does, and that
+      // case was just handled, so what is left is always one of the local kinds.
+      streak.causes.add(refusalKind(result) as LocalRefusalKind);
+    }
+  }
+}
+
 /** What lifts each kind of refusal, worded to follow "Nothing can proceed: ". Listed in this order. */
 export const REFUSAL_REMEDIES: Readonly<Record<LocalRefusalKind, string>> = {
   permission:
