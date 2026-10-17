@@ -13,7 +13,7 @@ import { markdownContentStart } from '../frontmatter.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { findRelaxedMatch } from './fuzzy-match.js';
 import { checkMemoryWrite, noticeMemoryWrite, withMemoryWarnings } from '../memory-write-guard.js';
-import { PROVIDER_KEY_MARKER } from '../provider-secrets.js';
+import { redactedSecretOverwrite } from './redacted-secret-guard.js';
 import {
   isBookLocalSettingsUnderRoots,
   memoryReadDisplayPath,
@@ -1444,34 +1444,6 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
       metadata: readLineMetadata(offset, last - offset + 1),
     },
   });
-}
-
-/**
- * Refuse a mutation that would put the redaction marker into a file that holds a provider key.
- *
- * The model only ever sees `[redacted: provider key]` where the key is (#411), so reading such a
- * file and writing it back replaces the real credential with the marker. Fires only when the file
- * on disk holds one of the session's secrets *and* the new text carries the marker: writing the
- * marker to a file with no key (Book's own docs and tests) is fine.
- */
-function redactedSecretOverwrite(
-  ctx: ToolContext,
-  shownPath: string,
-  existing: string,
-  incoming: readonly string[],
-): ToolResult | undefined {
-  const secrets = ctx.providerSecrets;
-  if (!secrets?.length) return undefined;
-  if (!incoming.some((text) => text.includes(PROVIDER_KEY_MARKER))) return undefined;
-  if (!secrets.some((secret) => existing.includes(secret))) return undefined;
-  return toolFailure(
-    `${shownPath} holds a provider key, which Book shows as ${PROVIDER_KEY_MARKER}. Writing that marker back would replace the real key.`,
-    {
-      code: 'redacted_secret_overwrite',
-      remediation:
-        'Use Edit on only the lines that need to change, without the line that shows the marker, or ask the user to make the change.',
-    },
-  );
 }
 
 async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
