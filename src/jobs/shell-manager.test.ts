@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GIT_BASH_EVAL_SCRIPT, shellExecution } from '../shell-selection.js';
-import { posixBash, windowsGitBash } from '../test/real-shells.js';
+import { posixBash, windowsGitBash, windowsMsysSh } from '../test/real-shells.js';
 import { removeWhenReleased } from '../test/remove-when-released.js';
 import type { BackgroundShellStore } from '../types/runtime.js';
 import { persistentJobPaths } from './persistent-store.js';
@@ -735,6 +735,44 @@ describe.skipIf(!windowsGitBash)(
         workspace: directory,
       });
       await expectIntact(manager, started.id);
+    }, 60_000);
+  },
+);
+
+// #532: Git's `usr\bin\sh.exe` is on the MSYS runtime too, so a background job gets the same
+// delivery. sh may word a missing command as `not found` rather than `command not found`.
+describe.skipIf(!windowsMsysSh)(
+  'ShellJobManager runs MSYS sh commands intact on Windows (#532)',
+  () => {
+    it('in a session background job', async () => {
+      const command = "echo'1;echo'2;env>env.txt";
+      const exec = shellExecution(windowsMsysSh!, command, 'win32')!;
+      expect(exec.env).toEqual({ BOOK_BASH_COMMAND: command });
+      directory = mkdtempSync(join(tmpdir(), 'book-session-msys-sh-'));
+      const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+      managers.push(manager);
+      const started = await manager.start({
+        command,
+        effectiveCommand: command,
+        exec,
+        workdir: directory,
+        env: process.env,
+        sandboxed: false,
+      });
+      await waitFor(
+        () =>
+          !['starting', 'running', 'stopping'].includes(
+            manager.get(started.id)?.status ?? 'starting',
+          ),
+        'MSYS sh job exit',
+        30_000,
+      );
+      const output = manager.readTail(started.id) ?? '';
+      expect(output.match(/not found/g)?.length ?? 0, output).toBe(1);
+      expect(output).toContain('echo1;echo2');
+      const environment = readFileSync(join(directory, 'env.txt'), 'utf8');
+      expect(environment).toMatch(/^PATH=/m);
+      expect(environment).not.toMatch(/^BOOK_BASH_COMMAND=/m);
     }, 60_000);
   },
 );

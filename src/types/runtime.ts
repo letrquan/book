@@ -19,9 +19,9 @@ export type PermissionMode =
  * `ResolvedShell`).
  *
  * `env` holds variables the spawn must add to the child's environment, merged
- * last over everything else. Git Bash on Windows receives its command there
- * rather than in `args` (see `shellExecution`), so every site that spawns an
- * `exec` must apply it to that spawn alone.
+ * last over everything else. Git Bash and an MSYS POSIX sh on Windows receive
+ * their command there rather than in `args` (see `shellExecution`), so every
+ * site that spawns an `exec` must apply it to that spawn alone.
  */
 export interface CommandExecution {
   file: string;
@@ -52,6 +52,14 @@ export interface ResolvedShell {
   source: ShellSource;
   /** Set when a requested shell could not be honoured and the automatic ladder was used instead. */
   warning?: string;
+  /**
+   * Set on Windows for a `kind: 'sh'` executable that runs on the MSYS runtime (Git's or MSYS2's
+   * `sh.exe`, `dash.exe`, `zsh.exe` and other POSIX shells), detected at resolution by
+   * `msys-2.0.dll` beside it or in `..\usr\bin`. Such a shell rebuilds argv as Git Bash does, so it
+   * gets the same out-of-band command delivery (`receivesCommandOutOfBand`, #532). Never set off
+   * Windows, for a non-POSIX shell, or for `bash` (Git Bash is recognised by `isGitBash`).
+   */
+  msys?: true;
 }
 
 /**

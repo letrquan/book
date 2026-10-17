@@ -13,8 +13,9 @@ export function holdsProviderKey(ctx: ToolContext, text: string): boolean {
  *
  * The model only ever sees `[redacted: provider key]` where the key is (#411), so reading such a
  * file and writing it back replaces the real credential with the marker. Fires only when the file
- * on disk holds one of the session's secrets *and* the new text carries the marker: writing the
- * marker to a file with no key (Book's own docs and tests) is fine.
+ * on disk holds one of the session's secrets *and* the new text carries the marker. A file with no
+ * key is covered by `redactedSecretAddition` instead, which refuses adding the marker anywhere
+ * while a key is configured (#535); this more specific refusal runs first where both apply.
  */
 export function redactedSecretOverwrite(
   ctx: ToolContext,
@@ -30,6 +31,41 @@ export function redactedSecretOverwrite(
       code: 'redacted_secret_overwrite',
       remediation:
         'Use Edit on only the lines that need to change, without the line that shows the marker, or ask the user to make the change.',
+    },
+  );
+}
+
+/** How many times the redaction marker occurs in `text`. */
+function markerCount(text: string): number {
+  return text.split(PROVIDER_KEY_MARKER).length - 1;
+}
+
+/**
+ * Refuse a write that adds an occurrence of the redaction marker to any file, while a provider key
+ * is configured (#535).
+ *
+ * A marker written to a file with no key can be moved or copied over the key file afterwards by a
+ * command that never names it (`mv tmp.json key.json`), so the file the marker first lands in is
+ * where it has to be stopped. `before` and `after` are the whole file before and after the write
+ * (`''` for a file that does not exist yet), never fragments: an edit can complete a marker across
+ * its boundary without its replacement text holding the whole marker. A write that keeps or removes
+ * occurrences the file already has (Book's own docs and tests quote the marker) is allowed; one that
+ * adds a quote is refused, Book's own repository included, while a key is configured.
+ */
+export function redactedSecretAddition(
+  ctx: ToolContext,
+  shownPath: string,
+  before: string,
+  after: string,
+): ToolResult | undefined {
+  if (!ctx.providerSecrets?.length) return undefined;
+  if (markerCount(after) <= markerCount(before)) return undefined;
+  return toolFailure(
+    `Writing ${shownPath} would add ${PROVIDER_KEY_MARKER}, which stands for a real provider key that the model cannot see. Book does not write the marker to any file while a provider key is configured.`,
+    {
+      code: 'redacted_secret_write',
+      remediation:
+        'Write a placeholder of your own instead, for example <your-api-key>, or ask the user to write that text.',
     },
   );
 }

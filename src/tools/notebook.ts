@@ -10,7 +10,11 @@ import {
   requireFreshObservation,
   requireObservationForMutation,
 } from './file-provenance.js';
-import { redactedSecretDeletion, redactedSecretOverwrite } from './redacted-secret-guard.js';
+import {
+  redactedSecretAddition,
+  redactedSecretDeletion,
+  redactedSecretOverwrite,
+} from './redacted-secret-guard.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 type CellType = 'code' | 'markdown';
@@ -223,6 +227,13 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
     const refused = redactedSecretOverwrite(ctx, shownPath, decoded, [args.new_source]);
     if (refused) return refused;
   }
+  // Serialized before the edit as well as after, so both counts see the marker spelled the same
+  // way whatever escapes the file on disk uses (#535). Only a configured provider key needs the
+  // count, so the extra serialization is skipped without one.
+  const jsonStyle = detectJsonStyle(original);
+  const serializedBefore = ctx.providerSecrets?.length
+    ? serializeNotebook(notebook, jsonStyle)
+    : undefined;
 
   if (mode === 'replace') {
     const target = findTargetIndex(notebook.cells, cellId as string);
@@ -258,7 +269,11 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
     );
   }
 
-  const updated = serializeNotebook(notebook, detectJsonStyle(original));
+  const updated = serializeNotebook(notebook, jsonStyle);
+  if (serializedBefore !== undefined) {
+    const added = redactedSecretAddition(ctx, shownPath, serializedBefore, updated);
+    if (added) return added;
+  }
   const { diff, stats } = await renderDiffWithStatsAsync(original, updated, 3, ctx.signal);
   throwIfAborted(ctx.signal);
   try {

@@ -407,6 +407,16 @@ WSL's `bash.exe` (in a Windows system directory or the `Microsoft\WindowsApps` a
 PowerShell, cmd.exe and any other shell still treat every `'` as making the command compound; use
 double quotes under those shells.
 
+A POSIX `sh` on the same MSYS runtime gets the same `BOOK_BASH_COMMAND` delivery: `shell` set to
+Git's or MSYS2's `sh.exe`, `dash.exe`, `zsh.exe` (or `ash`, `ksh`, `mksh`). Book detects the
+runtime when it resolves the shell, by `msys-2.0.dll` beside the executable, or in `..\usr\bin` for
+Git's `bin\sh.exe` launcher. busybox-w32's `sh.exe`, a native program whose command line round-trips
+intact, and non-POSIX shells such as `fish.exe` keep the command on the command line. So does a
+Cygwin `sh.exe` (`cygwin1.dll` beside it), but only because this change covers the MSYS runtime:
+Cygwin's runtime, which MSYS is a fork of, probably rebuilds the command line the same way
+(globbing, stripping quotes, expanding `@file`), so it is a known gap rather than a safe choice.
+Under every `sh`, an MSYS one included, `'` still makes a command compound.
+
 Permission _modes_ decide whether you are prompted; they never relax a `deny` rule. A rule in
 `permissions.deny` blocks the matching call in every mode, including `auto` and
 `bypassPermissions`, and it is evaluated before the prompt, so a denied call never reaches one.
@@ -792,8 +802,7 @@ the whole file back with `Write` would replace the real credential with the mark
 and `MultiEdit` therefore refuse, with the error code `redacted_secret_overwrite` and the file left
 unchanged, when the file on disk holds a configured provider key **and** the new content (or an
 `Edit`'s `new_string`) contains the marker. The remedy is an `Edit` on only the lines that need to
-change, leaving out the line that shows the marker, or asking you to make the change. Writing the
-marker into a file that holds no key is still allowed, so Book's own docs and tests are unaffected.
+change, leaving out the line that shows the marker, or asking you to make the change.
 
 `ApplyPatch` and `NotebookEdit` close the same gap with the same error code. `ApplyPatch` refuses
 the whole patch, writing nothing, when an operation **deletes** a file that holds a key (Book can
@@ -807,6 +816,22 @@ provider key is configured. The error code is `redacted_secret_command`, and it 
 foreground and in the background alike: the marker stands for a key the model cannot see, so a
 command has no business writing or using it. To search for the marker text itself, leave out the
 brackets.
+
+A marker written to some other file could still be moved over the key file afterwards by a command
+that never names it (`mv tmp.json key.json`). So while a provider key is configured, no write may
+**add** the marker to any file: `Write` (to a new or an existing file), `Edit`, `MultiEdit`,
+`ApplyPatch` (`Add File` and `Update File`) and `NotebookEdit` refuse, with the error code
+`redacted_secret_write` and nothing written, when the file's new content holds more occurrences of
+the marker than its old content (none, for a new file). Whole files are compared, so an edit that
+keeps or removes a quote the file already has still works. The remedy is a placeholder of the
+model's own, such as `<your-api-key>`, or asking you to write the text. This includes a repository
+that documents the marker, Book's own among them: while a key is configured the model cannot add new
+quotes of it. With no key configured nothing is refused. Gaps this does not close: an MCP tool that
+writes files, and a `Bash` command that assembles the marker from pieces. The rule counts
+occurrences per file, so a write that keeps a file's count the same is not refused, for example
+rewriting a file that already quotes the marker into a key-shaped file. And the guard protects
+against the model writing the marker back by mistake, not against a deliberate delete: `rm`, or an
+`mv` of another file over a key file, still loses the key.
 
 ## Shell command timeouts
 

@@ -5,6 +5,7 @@ import {
   describeShell,
   GIT_BASH_EVAL_SCRIPT,
   isGitBash,
+  receivesCommandOutOfBand,
   resolveShell,
   shellExecution,
   shellPromptLine,
@@ -100,6 +101,85 @@ describe('resolveShell on Windows', () => {
   });
 });
 
+// #532: a POSIX sh on the MSYS runtime rebuilds argv exactly as Git Bash does, so resolution marks
+// it for the same out-of-band delivery. The signal is the runtime's DLL beside the executable, or
+// under `..\usr\bin` for Git's `bin\sh.exe` launcher stub.
+describe('resolveShell marks an MSYS POSIX sh on Windows (#532)', () => {
+  const GIT_USR_BIN = win32.join(GIT_ROOT, 'usr', 'bin');
+  const MSYS2_USR_BIN = 'C:\\msys64\\usr\\bin';
+  const requestedAlone = (file: string, ...present: string[]): ResolvedShell =>
+    windows([file, ...present], {}, file);
+
+  it("flags Git's usr\\bin\\sh.exe beside msys-2.0.dll", () => {
+    const sh = win32.join(GIT_USR_BIN, 'sh.exe');
+    expect(requestedAlone(sh, win32.join(GIT_USR_BIN, 'msys-2.0.dll'))).toMatchObject({
+      kind: 'sh',
+      file: sh,
+      source: 'setting',
+      msys: true,
+    });
+  });
+
+  it("flags Git's bin\\sh.exe launcher through ..\\usr\\bin\\msys-2.0.dll", () => {
+    const sh = win32.join(GIT_ROOT, 'bin', 'sh.exe');
+    expect(requestedAlone(sh, win32.join(GIT_USR_BIN, 'msys-2.0.dll'))).toMatchObject({
+      kind: 'sh',
+      file: sh,
+      msys: true,
+    });
+  });
+
+  it.each(['dash.exe', 'zsh.exe', 'ash.exe', 'ksh.exe', 'mksh.exe', 'SH.EXE', 'sh'])(
+    'flags MSYS2 %s beside msys-2.0.dll',
+    (name) => {
+      const file = win32.join(MSYS2_USR_BIN, name);
+      expect(requestedAlone(file, win32.join(MSYS2_USR_BIN, 'msys-2.0.dll'))).toMatchObject({
+        kind: 'sh',
+        msys: true,
+      });
+    },
+  );
+
+  it.each<[string, string, string[]]>([
+    ['busybox-w32 with no DLL', 'C:\\tools\\sh.exe', []],
+    ['Cygwin beside cygwin1.dll', 'C:\\cygwin64\\bin\\sh.exe', ['C:\\cygwin64\\bin\\cygwin1.dll']],
+    [
+      'a non-POSIX fish beside msys-2.0.dll',
+      `${MSYS2_USR_BIN}\\fish.exe`,
+      [`${MSYS2_USR_BIN}\\msys-2.0.dll`],
+    ],
+    ['nu beside msys-2.0.dll', `${MSYS2_USR_BIN}\\nu.exe`, [`${MSYS2_USR_BIN}\\msys-2.0.dll`]],
+    [
+      'a WSL launcher directory',
+      'C:\\Windows\\System32\\sh.exe',
+      ['C:\\Windows\\System32\\msys-2.0.dll'],
+    ],
+  ])('leaves %s unflagged, on argv', (_label, file, present) => {
+    const shell = requestedAlone(file, ...present);
+    expect(shell).toMatchObject({ kind: 'sh', file });
+    expect(shell).not.toHaveProperty('msys');
+    expect(shellExecution(shell, 'echo hi', 'win32')).toEqual({ file, args: ['-c', 'echo hi'] });
+  });
+
+  it('flags no bash: Git Bash is recognised by isGitBash, not the flag', () => {
+    const bash = win32.join(GIT_USR_BIN, 'bash.exe');
+    const shell = requestedAlone(bash, win32.join(GIT_USR_BIN, 'msys-2.0.dll'));
+    expect(shell).toMatchObject({ kind: 'bash', file: bash });
+    expect(shell).not.toHaveProperty('msys');
+  });
+
+  it.each(['linux', 'darwin'] as const)('never flags a sh on %s', (platform) => {
+    const shell = resolveShell({
+      platform,
+      env: {},
+      requested: '/usr/bin/sh',
+      existsSync: () => true,
+    });
+    expect(shell).toMatchObject({ kind: 'sh', file: '/usr/bin/sh' });
+    expect(shell).not.toHaveProperty('msys');
+  });
+});
+
 describe('resolveShell off Windows', () => {
   it('keeps the platform default with no executable, so spawn still uses shell: true', () => {
     const shell = resolveShell({ platform: 'linux', env: {}, existsSync: () => false });
@@ -181,6 +261,37 @@ describe('shellExecution', () => {
       file: 'C:\\tools\\sh.exe',
       args: ['-c', 'echo hi'],
     });
+  });
+
+  // #532: an MSYS POSIX sh rebuilds argv like Git Bash, so it gets the same delivery on Windows.
+  it('hands an MSYS sh on Windows the command in BOOK_BASH_COMMAND and the fixed script', () => {
+    const file = 'C:\\Program Files\\Git\\usr\\bin\\sh.exe';
+    const sh: ResolvedShell = { kind: 'sh', file, label: '/bin/sh', source: 'setting', msys: true };
+    const command = 'ls?echo_INJECTED';
+    expect(shellExecution(sh, command, 'win32')).toEqual({
+      file,
+      args: ['-c', GIT_BASH_EVAL_SCRIPT],
+      env: { BOOK_BASH_COMMAND: command },
+    });
+    for (const platform of ['linux', 'darwin'] as const) {
+      expect(shellExecution(sh, command, platform)).toEqual({ file, args: ['-c', command] });
+    }
+  });
+
+  it('delivers out of band to Git Bash and a flagged sh only', () => {
+    expect(receivesCommandOutOfBand({ kind: 'bash', file: GIT_BASH })).toBe(true);
+    expect(
+      receivesCommandOutOfBand({ kind: 'sh', file: 'C:\\msys64\\usr\\bin\\sh.exe', msys: true }),
+    ).toBe(true);
+    expect(receivesCommandOutOfBand({ kind: 'sh', file: 'C:\\tools\\sh.exe' })).toBe(false);
+    expect(receivesCommandOutOfBand({ kind: 'sh', msys: true })).toBe(false);
+    expect(
+      receivesCommandOutOfBand({ kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe' }),
+    ).toBe(false);
+    expect(receivesCommandOutOfBand({ kind: 'pwsh', file: PWSH })).toBe(false);
+    expect(receivesCommandOutOfBand(undefined)).toBe(false);
+    // The quote scanner keeps asking isGitBash, so a flagged sh still refuses `'` (#532).
+    expect(isGitBash({ kind: 'sh', file: 'C:\\msys64\\usr\\bin\\sh.exe' })).toBe(false);
   });
 
   it('leaves a bash without a file to Node on Windows', () => {

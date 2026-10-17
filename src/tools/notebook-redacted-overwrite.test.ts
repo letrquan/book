@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PROVIDER_KEY_MARKER } from '../provider-secrets.js';
+import { expectWriteRefused } from '../test/redacted-secret.js';
 import type { ToolContext, ToolResult } from '../types/tools.js';
 import { fileTools } from './file.js';
 import { notebookTools } from './notebook.js';
@@ -158,15 +159,15 @@ describe('NotebookEdit on a notebook that holds a provider key', () => {
 });
 
 describe('NotebookEdit on a notebook without a provider key', () => {
-  it('still replaces, inserts and deletes, marker included', async () => {
-    const { path } = writeNotebook('x = 1');
+  it('refuses a replace or an insert that adds the marker, leaving the file unchanged (#535)', async () => {
+    const { path, raw } = writeNotebook('x = 1');
     await read.execute({ filePath: 'nb.ipynb' }, ctx);
 
     const replaced = await edit.execute(
       { notebook_path: 'nb.ipynb', cell_id: 'plain', new_source: `# ${PROVIDER_KEY_MARKER}` },
       ctx,
     );
-    expect(replaced.status).toBe('success');
+    expectWriteRefused(replaced, KEY);
 
     const inserted = await edit.execute(
       {
@@ -176,14 +177,44 @@ describe('NotebookEdit on a notebook without a provider key', () => {
       },
       ctx,
     );
-    expect(inserted.status).toBe('success');
+    expectWriteRefused(inserted, KEY);
+    expect(readFileSync(path, 'utf-8')).toBe(raw);
+  });
+
+  it('still replaces a cell that keeps the one marker it quotes, and deletes it', async () => {
+    const { path } = writeNotebook(`# ${PROVIDER_KEY_MARKER}`);
+    await read.execute({ filePath: 'nb.ipynb' }, ctx);
+
+    const replaced = await edit.execute(
+      { notebook_path: 'nb.ipynb', cell_id: 'keycell', new_source: `## ${PROVIDER_KEY_MARKER}` },
+      ctx,
+    );
+    expect(replaced.status).toBe('success');
 
     const deleted = await edit.execute(
       { notebook_path: 'nb.ipynb', cell_id: 'keycell', edit_mode: 'delete', new_source: '' },
       ctx,
     );
     expect(deleted.status).toBe('success');
-    expect(readFileSync(path, 'utf-8')).not.toContain('x = 1');
+    expect(readFileSync(path, 'utf-8')).not.toContain(PROVIDER_KEY_MARKER);
+  });
+
+  it('replaces and inserts the marker when no provider secrets are configured', async () => {
+    ctx.providerSecrets = undefined;
+    const { path } = writeNotebook('x = 1');
+    await read.execute({ filePath: 'nb.ipynb' }, ctx);
+
+    const replaced = await edit.execute(
+      { notebook_path: 'nb.ipynb', cell_id: 'plain', new_source: `# ${PROVIDER_KEY_MARKER}` },
+      ctx,
+    );
+    expect(replaced.status).toBe('success');
+    const inserted = await edit.execute(
+      { notebook_path: 'nb.ipynb', edit_mode: 'insert', new_source: `# ${PROVIDER_KEY_MARKER}` },
+      ctx,
+    );
+    expect(inserted.status).toBe('success');
+    expect(readFileSync(path, 'utf-8').split(PROVIDER_KEY_MARKER)).toHaveLength(3);
   });
 
   it('is not guarded when no provider secrets are configured', async () => {
