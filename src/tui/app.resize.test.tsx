@@ -15,7 +15,9 @@ import { displayWidth } from './components/word-wrap.js';
  * full repaint) must paint that new layout, never the one from before the size change.
  *
  * These drive the real Ink renderer on a fake TTY stdout, the very emitter Ink registers `resized`
- * on: ink-testing-library's stdout is not a TTY, so Ink would never listen for its resizes.
+ * on: ink-testing-library's stdout is not a TTY, so Ink would never listen for its resizes. Once
+ * the app is up, `setTimeout` and `clearTimeout` are faked, so the redraw debounce runs only when a
+ * test advances it; `setImmediate`, which Ink's repaint yields to, stays real.
  */
 
 vi.mock('../agent/loop.js', () => ({
@@ -42,8 +44,8 @@ vi.mock('../agents/manager.js', () => ({
 
 import { App } from './app.js';
 
-/** The redraw debounce in `app.tsx`, with room for a slow runner. */
-const PAST_REDRAW_DEBOUNCE_MS = 150;
+/** The redraw debounce in `app.tsx`, and one millisecond past it. */
+const PAST_REDRAW_DEBOUNCE_MS = 51;
 
 // Real Ink renders on timers, outside act(), as the TUI does.
 const actEnvironment = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
@@ -69,8 +71,12 @@ class FakeStdout extends EventEmitter {
   ) {
     super();
   }
-  write = (data: string | Uint8Array): boolean => {
+  write = (data: string | Uint8Array, ...rest: unknown[]): boolean => {
     this.frames.push(String(data));
+    // Ink's repaint waits for a write's callback before it reports the frame flushed.
+    const done = rest.find((argument) => typeof argument === 'function') as
+      (() => void) | undefined;
+    done?.();
     return true;
   };
 }
@@ -111,14 +117,29 @@ function isFrame(write: string): boolean {
   return write.includes('─');
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** One turn of the event loop, through `setImmediate`, which the fake timers leave real. */
+function tick(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Turns the event loop until `condition` holds, failing after `deadlineMs` of wall time. */
+async function until(condition: () => boolean, what: string, deadlineMs = 10_000): Promise<void> {
+  const deadline = Date.now() + deadlineMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await tick();
+  }
+}
+
+function useFakeTimeouts(): void {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 }
 
 const roots: string[] = [];
 const apps: Instance[] = [];
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const app of apps.splice(0)) {
     app.unmount();
     app.cleanup();
@@ -126,15 +147,21 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+type Wipe = () => void | Promise<void>;
+
 interface Launched {
   stdout: FakeStdout;
   /** The rule width each forced redraw found in the last frame the tree had committed. */
   redrawRuleWidths: number[];
   /** Sets the new size and emits `resize`; returns the index of the first write after it. */
   resize: (columns: number, rows: number) => number;
+  /** Renders the app again with a new `redrawViewport`, which re-subscribes its resize effect. */
+  rerender: (wipe?: Wipe) => void;
+  /** Resolves once the last forced redraw has repainted and released the terminal. */
+  redrawSettled: () => Promise<void>;
 }
 
-async function launch(columns: number, rows: number): Promise<Launched> {
+async function launch(columns: number, rows: number, wipe?: Wipe): Promise<Launched> {
   const root = mkdtempSync(join(tmpdir(), 'book-resize-'));
   roots.push(root);
   const workspace = join(root, 'workspace');
@@ -147,14 +174,19 @@ async function launch(columns: number, rows: number): Promise<Launched> {
   config.accessibility = { screenReader: false, reducedMotion: true };
   const stdout = new FakeStdout(columns, rows);
   const redrawRuleWidths: number[] = [];
-  const wipe = () => {
-    const last = stdout.frames.filter(isFrame).at(-1) ?? '';
-    redrawRuleWidths.push(ruleWidth(last));
-  };
-  const app = render(
+  let writesAtLastWipe = 0;
+  // Each call makes a new function, so a rerender hands App a new `redrawViewport`.
+  const recording =
+    (inner?: Wipe): Wipe =>
+    () => {
+      redrawRuleWidths.push(ruleWidth(stdout.frames.filter(isFrame).at(-1) ?? ''));
+      writesAtLastWipe = stdout.frames.length;
+      return inner?.();
+    };
+  const element = (redraw: Wipe) => (
     <App
       config={config}
-      redrawViewport={wipe}
+      redrawViewport={redraw}
       flushSync={flushSync}
       session={{
         sessionId,
@@ -170,21 +202,26 @@ async function launch(columns: number, rows: number): Promise<Launched> {
         store,
         timelineStore: store,
       }}
-    />,
-    {
-      stdout: stdout as unknown as NodeJS.WriteStream,
-      stdin: new FakeStdin() as unknown as NodeJS.ReadStream,
-      stderr: new FakeStdout(columns, rows) as unknown as NodeJS.WriteStream,
-      // Every frame is written whole and unthrottled, so the first one after a resize is readable.
-      debug: true,
-      interactive: true,
-      exitOnCtrlC: false,
-      patchConsole: false,
-    },
+    />
   );
+  const app = render(element(recording(wipe)), {
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    stdin: new FakeStdin() as unknown as NodeJS.ReadStream,
+    stderr: new FakeStdout(columns, rows) as unknown as NodeJS.WriteStream,
+    // Every frame is written whole and unthrottled, so the first one after a resize is readable.
+    debug: true,
+    interactive: true,
+    exitOnCtrlC: false,
+    patchConsole: false,
+  });
   apps.push(app);
-  for (let waited = 0; !stdout.frames.some(isFrame) && waited < 3000; waited += 20) await wait(20);
-  await wait(100);
+  // Up: the composer is drawn, and App's listener has joined Ink's own on `resize`.
+  await until(
+    () =>
+      stdout.frames.some((frame) => isFrame(frame) && frame.includes('Ask me anything')) &&
+      stdout.listenerCount('resize') >= 2,
+    'the first frame and the resize listeners',
+  );
   return {
     stdout,
     redrawRuleWidths,
@@ -194,6 +231,12 @@ async function launch(columns: number, rows: number): Promise<Launched> {
       stdout.rows = nextRows;
       stdout.emit('resize');
       return at;
+    },
+    rerender: (nextWipe) => app.rerender(element(recording(nextWipe))),
+    redrawSettled: async () => {
+      // The repaint writes a frame after the wipe; the in-flight flag clears a turn later.
+      await until(() => stdout.frames.length > writesAtLastWipe, 'the repaint after the wipe');
+      for (let turn = 0; turn < 3; turn++) await tick();
     },
   };
 }
@@ -205,6 +248,10 @@ function firstFrameFrom(stdout: FakeStdout, at: number): string {
   return frame!;
 }
 
+function marginOf(stdout: FakeStdout, columns: number): number {
+  return columns - ruleWidth(stdout.frames.filter(isFrame).at(-1)!);
+}
+
 describe('App on a terminal resize (#538)', () => {
   it('confirms the fake stdout is the emitter Ink draws a resized frame from', async () => {
     const { stdout, resize } = await launch(152, 39);
@@ -214,11 +261,11 @@ describe('App on a terminal resize (#538)', () => {
   });
 
   it('lays out the first frame after each resize at the new width, then redraws it once', async () => {
-    const { stdout, redrawRuleWidths, resize } = await launch(152, 39);
-    const initial = stdout.frames.filter(isFrame).at(-1)!;
+    const { stdout, redrawRuleWidths, resize, redrawSettled } = await launch(152, 39);
     // The rule's margin inside the terminal, so each size's rule width follows from it.
-    const margin = 152 - ruleWidth(initial);
-    expect(widestRow(initial)).toBeLessThanOrEqual(152);
+    const margin = marginOf(stdout, 152);
+    expect(widestRow(stdout.frames.filter(isFrame).at(-1)!)).toBeLessThanOrEqual(152);
+    useFakeTimeouts();
 
     const steps: [number, number][] = [
       [73, 39],
@@ -234,30 +281,93 @@ describe('App on a terminal resize (#538)', () => {
       expect(widestRow(first), context).toBeLessThanOrEqual(columns);
 
       const redrawsBefore = redrawRuleWidths.length;
-      await wait(PAST_REDRAW_DEBOUNCE_MS);
+      await vi.advanceTimersByTimeAsync(PAST_REDRAW_DEBOUNCE_MS);
       // One forced redraw, and the tree it repainted had already committed the new width.
       expect(redrawRuleWidths.slice(redrawsBefore), `${columns}x${rows}`).toEqual([
         columns - margin,
       ]);
+      await redrawSettled();
     }
   });
 
   it('redraws once at the final size after a burst of resizes', async () => {
     const { stdout, redrawRuleWidths, resize } = await launch(152, 39);
-    const margin = 152 - ruleWidth(stdout.frames.filter(isFrame).at(-1)!);
+    const margin = marginOf(stdout, 152);
+    useFakeTimeouts();
     for (const columns of [120, 100, 90, 73]) {
       const at = resize(columns, 39);
       expect(ruleWidth(firstFrameFrom(stdout, at)), `${columns} columns`).toBe(columns - margin);
-      await wait(10);
+      // Inside the debounce: each resize restarts it.
+      await vi.advanceTimersByTimeAsync(10);
     }
-    await wait(PAST_REDRAW_DEBOUNCE_MS);
+    expect(redrawRuleWidths).toEqual([]);
+    await vi.advanceTimersByTimeAsync(PAST_REDRAW_DEBOUNCE_MS);
     expect(redrawRuleWidths).toEqual([73 - margin]);
   });
 
   it('does not redraw for a resize event that leaves the size unchanged', async () => {
     const { redrawRuleWidths, resize } = await launch(100, 30);
+    useFakeTimeouts();
     resize(100, 30);
-    await wait(PAST_REDRAW_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(PAST_REDRAW_DEBOUNCE_MS);
     expect(redrawRuleWidths).toEqual([]);
+  });
+
+  it('keeps a redraw owed across a re-subscription of the resize effect', async () => {
+    const { stdout, redrawRuleWidths, resize, rerender, redrawSettled } = await launch(152, 39);
+    const margin = marginOf(stdout, 152);
+    useFakeTimeouts();
+    resize(73, 39);
+    // A new redrawViewport inside the debounce: the effect's cleanup clears the pending timer.
+    const ran: string[] = [];
+    rerender(() => {
+      ran.push('new');
+    });
+    await vi.advanceTimersByTimeAsync(PAST_REDRAW_DEBOUNCE_MS);
+    expect(ran).toEqual(['new']);
+    expect(redrawRuleWidths).toEqual([73 - margin]);
+    await redrawSettled();
+    // Paid: a later event that leaves the size alone owes nothing.
+    resize(73, 39);
+    await vi.advanceTimersByTimeAsync(PAST_REDRAW_DEBOUNCE_MS);
+    expect(redrawRuleWidths).toEqual([73 - margin]);
+  });
+
+  it('queues one trailing redraw for every call made while a redraw is in flight', async () => {
+    // Ink pauses input while a redraw holds the terminal, so a Ctrl+L cannot land mid-redraw; the
+    // resize debounce can, and it calls the same redrawViewport.
+    const order: string[] = [];
+    let release = () => {};
+    let wipes = 0;
+    const wipe = () => {
+      wipes++;
+      order.push(`wipe ${wipes}`);
+      if (wipes > 1) return;
+      return new Promise<void>((resolve) => {
+        release = () => {
+          order.push('wipe 1 done');
+          resolve();
+        };
+      });
+    };
+    const { stdout, redrawRuleWidths, resize, redrawSettled } = await launch(152, 39, wipe);
+    const margin = marginOf(stdout, 152);
+    useFakeTimeouts();
+    resize(73, 39);
+    await vi.advanceTimersByTimeAsync(PAST_REDRAW_DEBOUNCE_MS);
+    expect(order).toEqual(['wipe 1']);
+    // Two more debounced redraws come due while the first still holds the terminal.
+    resize(80, 39);
+    await vi.advanceTimersByTimeAsync(PAST_REDRAW_DEBOUNCE_MS);
+    resize(90, 39);
+    await vi.advanceTimersByTimeAsync(PAST_REDRAW_DEBOUNCE_MS);
+    expect(order).toEqual(['wipe 1']);
+
+    release();
+    await until(() => order.length === 3, 'the trailing wipe');
+    await redrawSettled();
+    // Exactly one more wipe, after the first finished, of the layout committed by then.
+    expect(order).toEqual(['wipe 1', 'wipe 1 done', 'wipe 2']);
+    expect(redrawRuleWidths).toEqual([73 - margin, 90 - margin]);
   });
 });

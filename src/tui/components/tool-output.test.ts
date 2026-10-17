@@ -5,6 +5,7 @@ import {
   expandTabs,
   formatToolOutputFooter,
   prepareToolOutputDisplay,
+  type ToolOutputDisplay,
 } from './tool-output.js';
 import { displayWidth } from './word-wrap.js';
 
@@ -22,10 +23,6 @@ describe('expandTabs', () => {
   it('counts display columns: a wide character takes two, an ANSI escape none', () => {
     expect(expandTabs('中\tx')).toBe(`中${' '.repeat(6)}x`);
     expect(expandTabs('\u001b[31mab\u001b[39m\tc')).toBe(`\u001b[31mab\u001b[39m${' '.repeat(6)}c`);
-  });
-
-  it('honours another tab width', () => {
-    expect(expandTabs('ab\tc', 4)).toBe('ab  c');
   });
 
   it('returns a line without a tab unchanged', () => {
@@ -63,6 +60,39 @@ describe('tool output with tabs (#537)', () => {
       expect(display.truncatedLines).toBe(2);
     },
   );
+
+  it.each([true, false])(
+    'gives the whole display of the pre-expanded twin, hidden rows and footer too (showAll %s)',
+    (showAllToolOutput) => {
+      // Ten rows: more than a collapsed preview shows, so its head-tail split hides some.
+      const input = { success: true, showAllToolOutput, terminalWidth: 73 };
+      const pick = ({ totalChars: _totalChars, ...rest }: ToolOutputDisplay) => rest;
+      const display = toolOutputDisplay(TAB_TABLE.repeat(5), input);
+      // Everything but `totalChars`, which counts the output as the tool returned it.
+      expect(pick(display)).toEqual(pick(toolOutputDisplay(TAB_TABLE_EXPANDED.repeat(5), input)));
+      expect(display.totalChars).toBe(TAB_TABLE.length * 5);
+      expect(display.hiddenLines).toBe(showAllToolOutput ? 0 : 4);
+      expect(display.truncatedLines).toBe(showAllToolOutput ? 10 : 6);
+    },
+  );
+
+  it('counts no tab line as shortened when its expanded width fits', () => {
+    const display = prepareToolOutputDisplay('a\tb\nname\tvalue\n', {
+      maxLines: 10,
+      maxLineWidth: 40,
+    });
+    expect(display.lines).toEqual([`a${' '.repeat(7)}b`, `name${' '.repeat(4)}value`]);
+    expect(display.truncatedLines).toBe(0);
+    expect(display.truncated).toBe(false);
+    expect(display.footer).toBeUndefined();
+    const collapsed = toolOutputDisplay('a\tb\n', {
+      success: true,
+      showAllToolOutput: false,
+      terminalWidth: 73,
+    });
+    expect(collapsed.truncatedLines).toBe(0);
+    expect(collapsed.footer).toBeUndefined();
+  });
 
   it('keeps every cell, on its 8-column stop, where nothing cuts the rows', () => {
     const display = prepareToolOutputDisplay(TAB_TABLE, {

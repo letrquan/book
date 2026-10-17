@@ -64,6 +64,7 @@ import type { ImageAttachment } from '../types/messages.js';
 import type { CommandContext } from '../types/commands.js';
 import type { RewindSnapshotStoreInterface, SessionStoreInterface } from '../types/sessions.js';
 import type { SessionBootstrap } from '../session/resolve.js';
+import type { InkFlushSync } from '../cli/ink-renderer.js';
 import { displaySessionName } from '../session/name.js';
 import { DensityContext, resolveTuiDensity } from './density.js';
 import {
@@ -285,7 +286,7 @@ interface AppProps {
    * `loadInkFlushSync` in `cli/ink-renderer.ts`. A resize sets the new size inside it, so the
    * frame Ink's own `resized()` draws in the same tick is laid out at the new width (#538).
    */
-  flushSync?: (update: () => void) => void;
+  flushSync?: InkFlushSync;
   /**
    * Warnings about this launch (a repository's withheld provider, for one), shown once as local
    * rows. They are not saved to the session and not sent to the model.
@@ -699,25 +700,46 @@ export function App({
   const turnCount = useMemo(() => countWrittenTurns(messages), [messages]);
   const { exit: exitApp, suspendTerminal } = useApp();
   const redrawInFlightRef = useRef(false);
+  // A redraw asked for while one was in flight: it runs once that one has finished.
+  const redrawQueuedRef = useRef(false);
   /**
    * Wipes the screen and has Ink paint the whole frame again. Ink skips a frame identical to the
    * last one it wrote, so wiping alone left the screen blank after Ctrl+L, and left rows blank that
    * a resized frame shared with the old one. suspendTerminal() erases Ink's frame, runs the wipe,
-   * then forgets the old frame and repaints.
+   * then forgets the old frame and repaints. A call while a redraw is in flight queues one more,
+   * however many such calls there are, so the last layout asked for is the one painted.
    */
   const redrawViewport = useCallback(() => {
-    if (!wipeViewport || redrawInFlightRef.current) return;
-    redrawInFlightRef.current = true;
-    void suspendTerminal(wipeViewport)
-      .catch((error: unknown) =>
-        uiLog.event('redraw:failed', {
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      )
-      .finally(() => {
-        redrawInFlightRef.current = false;
-      });
+    const wipe = wipeViewport;
+    if (!wipe) return;
+    if (redrawInFlightRef.current) {
+      redrawQueuedRef.current = true;
+      return;
+    }
+    const run = () => {
+      redrawInFlightRef.current = true;
+      void suspendTerminal(wipe)
+        .catch((error: unknown) =>
+          uiLog.event('redraw:failed', {
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        )
+        .finally(() => {
+          redrawInFlightRef.current = false;
+          if (!redrawQueuedRef.current) return;
+          redrawQueuedRef.current = false;
+          run();
+        });
+    };
+    run();
   }, [wipeViewport, suspendTerminal]);
+  // A redraw queued behind one in flight when the app unmounts must not wipe the screen after it.
+  useEffect(
+    () => () => {
+      redrawQueuedRef.current = false;
+    },
+    [],
+  );
   // Set once an exit starts. SessionEnd can take seconds, and a press meanwhile must neither
   // arm the window again nor start a second exit, which would cancel and log a second time
   // and show the hint over an exit already under way.
@@ -1114,20 +1136,18 @@ export function App({
 
     // The wipe and full repaint after a resize, debounced so a drag wipes the screen once. It runs
     // well after the new size committed, so it repaints the new layout; one due while an earlier
-    // repaint is still in flight waits for it rather than being dropped.
+    // repaint is still in flight is queued by redrawViewport rather than dropped.
     const scheduleRedraw = () => {
       if (redrawTimerRef.current) clearTimeout(redrawTimerRef.current);
       redrawTimerRef.current = setTimeout(() => {
         redrawTimerRef.current = null;
         if (!redrawOwedRef.current) return;
-        if (redrawInFlightRef.current) {
-          scheduleRedraw();
-          return;
-        }
         redrawOwedRef.current = false;
         redrawViewport();
       }, 50);
     };
+    // A redraw owed when the previous subscription's cleanup cleared its timer is still owed.
+    if (redrawOwedRef.current) scheduleRedraw();
 
     // Every resize applies the new size at once, committed before Ink's own `resized()` listener
     // lays out and draws, so the frame Ink draws in the same tick is the new layout (#538).
@@ -2600,9 +2620,10 @@ export function App({
       if (key.ctrl && input === 'c') {
         return true;
       }
+      // Ctrl+L likewise: the top-level handler redraws, and it reaches its Ctrl+L branch whenever
+      // the composer takes keys. Redrawing here too asked for two redraws per press, and a redraw
+      // asked for while one is in flight is queued, not dropped.
       if (key.ctrl && input === 'l') {
-        uiLog.event('input:Ctrl+L', { action: 'redraw' });
-        redrawViewport?.();
         return true;
       }
       // Reached with Ctrl+U / Ctrl+D only when the composer had nothing to edit:
@@ -2641,7 +2662,6 @@ export function App({
       return false; // not consumed — let text input handle it
     },
     [
-      redrawViewport,
       requestTranscriptHalfPage,
       showEffortPicker,
       showPermissionModePicker,

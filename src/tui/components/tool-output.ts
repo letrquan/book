@@ -1,3 +1,4 @@
+import { expandTabs as expandToTabStops } from '../../cli/ink-frame-clip.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 export interface ToolOutputDisplayOptions {
@@ -31,29 +32,19 @@ function outputLinesEnd(output: string): number {
 }
 
 /**
- * `line` with each tab replaced by spaces up to the next multiple of `tabWidth` display columns,
- * counted from the start of the line: a wide character takes two columns, an ANSI escape none.
+ * `line` with each tab replaced by spaces up to the next 8-column tab stop, counted in display
+ * columns from the start of the line: a wide character takes two columns, an ANSI escape none.
  * A line without a tab comes back as it is.
  *
  * `string-width`, and so Ink's layout, measures a tab as no cells while the terminal moves to the
  * next tab stop, so a row holding one is wider on screen than the width it was cut to (#537). The
- * stops are every eighth column, a terminal's own, not the fixed four spaces a user message's tab
- * gets: they keep the columns of `make`, `ls`, TSV and `column` output aligned the way the
- * command's own terminal shows them, and they match the stops `cli/ink-frame-clip.ts` expands to.
+ * algorithm and its stops are the frame clip's own (`expandTabs` in `cli/ink-frame-clip.ts`), here
+ * measured with {@link displayWidth}, so the two cannot drift. Eight-column stops, not the fixed
+ * four spaces a user message's tab gets, keep the columns of `make`, `ls`, TSV and `column` output
+ * aligned the way the command's own terminal shows them.
  */
-export function expandTabs(line: string, tabWidth = 8): string {
-  if (line.indexOf('\t') === -1) return line;
-  const stop = Math.max(1, Math.floor(tabWidth));
-  const pieces = line.split('\t');
-  let expanded = pieces[0]!;
-  let column = displayWidth(expanded);
-  for (let index = 1; index < pieces.length; index++) {
-    const pad = stop - (column % stop);
-    const piece = pieces[index]!;
-    expanded += ' '.repeat(pad) + piece;
-    column += pad + displayWidth(piece);
-  }
-  return expanded;
+export function expandTabs(line: string): string {
+  return line.indexOf('\t') === -1 ? line : expandToTabStops(line, displayWidth);
 }
 
 /**
@@ -62,17 +53,11 @@ export function expandTabs(line: string, tabWidth = 8): string {
  * two paragraphs is a row), and so does a line of whitespace, which is not empty. Only a newline
  * splits: the `\r` of a CRLF stays at the end of its line. A header's line count, the block's rows,
  * its `… +N lines` footers and the hint that counts a command's hidden stdout all read it, so they
- * cannot disagree: {@link countOutputLines} counts these lines without making them. Each line has
- * its tabs expanded ({@link expandTabs}), so it is measured and cut at the width it takes on screen.
+ * cannot disagree: {@link countOutputLines} counts these lines without making them.
  */
 function splitOutputLines(output: string): string[] {
   const end = outputLinesEnd(output);
-  return end === 0
-    ? []
-    : output
-        .slice(0, end)
-        .split('\n')
-        .map((line) => expandTabs(line));
+  return end === 0 ? [] : output.slice(0, end).split('\n');
 }
 
 /**
@@ -92,7 +77,9 @@ export function countOutputLines(output: string): number {
 /**
  * Prepare tool output for terminal display without mutating the underlying result.
  * Counts the original output, then returns a bounded, display-width-aware preview. `lines` are the
- * rows to draw, each one a row even when empty.
+ * rows to draw, each one a row even when empty. A row is measured and cut with its tabs expanded to
+ * the terminal's stops ({@link expandTabs}), the width it takes on screen; only the visible lines
+ * are expanded, so a long output pays for the rows it shows.
  */
 export function prepareToolOutputDisplay(
   output: string,
@@ -104,7 +91,9 @@ export function prepareToolOutputDisplay(
   const visibleIndices = selectVisibleLineIndices(rawLines.length, lineLimit, strategy);
   const visibleRawLines = visibleIndices.map((index) => rawLines[index] ?? '');
   let truncatedLines = 0;
-  const lines = visibleRawLines.map((line) => {
+  const lines = visibleRawLines.map((rawLine) => {
+    // Shortened means cut from the row as the screen shows it, so compare with the expanded line.
+    const line = expandTabs(rawLine);
     const next = truncateDisplay(line, widthLimit);
     if (displayWidth(next) < displayWidth(line) || next !== line) truncatedLines++;
     return next;
