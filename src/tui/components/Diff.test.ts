@@ -4,6 +4,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import {
   DiffBlock,
+  EDIT_CONTEXT_ROWS,
   EDIT_PREVIEW_ROWS,
   NEW_FILE_PREVIEW_ROWS,
   diffPreviewOmittedRows,
@@ -225,14 +226,14 @@ describe('DiffBlock', () => {
     const rendered = frame(view.lastFrame);
     const contentRows = rendered.split('\n').filter((row) => /\+ line \d+/.test(row));
 
-    expect(NEW_FILE_PREVIEW_ROWS).toBe(10);
-    expect(contentRows).toHaveLength(10);
+    expect(NEW_FILE_PREVIEW_ROWS).toBe(5);
+    expect(contentRows).toHaveLength(5);
     expect(rendered).toContain('+ line 1');
-    expect(rendered).toContain('+ line 10');
-    expect(rendered).not.toContain('+ line 11');
+    expect(rendered).toContain('+ line 5');
+    expect(rendered).not.toContain('+ line 6');
     expect(rendered).not.toContain('@@');
     expect(rendered).not.toContain('omitted');
-    expect(rendered).toContain('… +140 lines (Ctrl+E)');
+    expect(rendered).toContain('… +145 lines (Ctrl+E)');
   });
 
   it('shows a whole new file in head mode when it is not collapsed', () => {
@@ -306,8 +307,8 @@ describe('DiffBlock', () => {
     );
     const rendered = frame(view.lastFrame);
 
-    expect(rendered).toContain('+ line 10');
-    expect(rendered).toContain('… +199990 lines (Ctrl+E)');
+    expect(rendered).toContain('+ line 5');
+    expect(rendered).toContain('… +199995 lines (Ctrl+E)');
   });
 
   it('caps an edit diff longer than 80 rows with a line-count footer', () => {
@@ -360,6 +361,18 @@ describe('DiffBlock', () => {
     expect(rendered).toContain('… +1 line');
     expect(rendered).not.toContain('… +1 line (');
     expect(rendered).not.toContain('lines');
+  });
+
+  it('numbers each row once: a removed line by its old number, any other by its new one', () => {
+    const output = '@@ -98 +103 @@\n ctx\n-old\n+new';
+    const rows = frame(
+      render(withTheme(React.createElement(DiffBlock, { output }))).lastFrame,
+    ).split('\n');
+
+    expect(rows.find((row) => row.includes('ctx'))?.trim()).toMatch(/^103\s+ctx$/);
+    expect(rows.find((row) => row.includes('old'))?.trim()).toMatch(/^99 - old$/);
+    expect(rows.find((row) => row.includes('new'))?.trim()).toMatch(/^104 \+ new$/);
+    expect(rows.join('\n')).not.toContain('│');
   });
 
   it('renders word-level markers on one content row', () => {
@@ -416,7 +429,7 @@ describe('DiffBlock', () => {
     }
   });
 
-  it('renders tabs and Unicode within the width budget while keeping both gutters', () => {
+  it('renders tabs and Unicode within the width budget while keeping each line number', () => {
     const width = 24;
     const output = '@@ -98 +103 @@\n-\told🙂value\n+\tnew界value';
     const view = render(
@@ -464,9 +477,9 @@ describe('DiffBlock', () => {
   }, 30_000);
 });
 
-const isFooter = (row: string): boolean => /^\s*│ … (\+|\d)/.test(row);
+const isFooter = (row: string): boolean => /^\s*… (\+|\d)/.test(row);
 
-/** The non-empty rows of a rendered frame; the omission footer is the row starting `│ …`. */
+/** The non-empty rows of a rendered frame; the omission footer is the row starting `…`. */
 function diffRows(rendered: string): { body: string[]; footer: string[] } {
   const rows = rendered.split('\n').filter((row) => row.trim().length > 0);
   return {
@@ -497,11 +510,62 @@ function longLineDiff(pairs: number): string {
 }
 
 describe('edit diff preview', () => {
-  it('exports the compact edit budget beside the new-file one', () => {
-    expect(EDIT_PREVIEW_ROWS).toBe(20);
+  it('exports the compact edit budget and context beside the new-file one', () => {
+    expect(EDIT_PREVIEW_ROWS).toBe(12);
+    expect(EDIT_CONTEXT_ROWS).toBe(1);
   });
 
-  it('previews the first 20 rows of a one-hunk rename, with no header and a footer', () => {
+  it('keeps one line of context around a compact edit, and no gap row or footer for the rest', () => {
+    const output = [
+      '@@ -1 +1 @@',
+      ...Array.from({ length: 6 }, (_, index) => ` before ${index + 1}`),
+      '-  enabled: false,',
+      '+  enabled: true,',
+      ...Array.from({ length: 3 }, (_, index) => ` after ${index + 1}`),
+    ].join('\n');
+    const options = {
+      preview: 'changes' as const,
+      maxRows: EDIT_PREVIEW_ROWS,
+      contextRows: EDIT_CONTEXT_ROWS,
+    };
+    const rendered = frame(
+      render(withTheme(React.createElement(DiffBlock, { output, collapsed: true, ...options })))
+        .lastFrame,
+    );
+    const { body, footer } = diffRows(rendered);
+
+    // The file around the change is left out on purpose: it is not reported as hidden.
+    expect(body).toHaveLength(4);
+    expect(body[0]).toContain('before 6');
+    expect(body[1]).toContain('-   enabled: false,');
+    expect(body[2]).toContain('+   enabled: true,');
+    expect(body[3]).toContain('after 1');
+    expect(rendered).not.toContain('omitted');
+    expect(footer).toHaveLength(0);
+    // Ctrl+E still has the rest of the file's lines to show.
+    expect(diffPreviewOmittedRows(output, { terminalWidth: 80, ...options })).toBe(7);
+  });
+
+  it('reports the changes a compact edit had no room for', () => {
+    const output = renameDiff();
+    const options = {
+      preview: 'changes' as const,
+      maxRows: EDIT_PREVIEW_ROWS,
+      contextRows: EDIT_CONTEXT_ROWS,
+    };
+    const { body, footer } = diffRows(
+      frame(
+        render(withTheme(React.createElement(DiffBlock, { output, collapsed: true, ...options })))
+          .lastFrame,
+      ),
+    );
+
+    expect(body.length).toBeLessThanOrEqual(EDIT_PREVIEW_ROWS);
+    expect(footer).toHaveLength(1);
+    expect(footer[0]).toMatch(/… \d+ lines hidden \(Ctrl\+E\)/);
+  });
+
+  it('previews the first 20 rows of a one-hunk rename in head-wrap mode, with a footer', () => {
     const output = renameDiff();
     const view = render(
       withTheme(
@@ -509,7 +573,7 @@ describe('edit diff preview', () => {
           output,
           collapsed: true,
           preview: 'head-wrap',
-          maxRows: EDIT_PREVIEW_ROWS,
+          maxRows: 20,
         }),
       ),
     );
@@ -598,7 +662,7 @@ describe('edit diff preview', () => {
           output,
           collapsed: true,
           preview: 'head-wrap',
-          maxRows: EDIT_PREVIEW_ROWS,
+          maxRows: 20,
           terminalWidth: 60,
         }),
       ),
@@ -841,7 +905,7 @@ describe('edit diff preview', () => {
               output,
               collapsed: true,
               preview: 'head-wrap',
-              maxRows: EDIT_PREVIEW_ROWS,
+              maxRows: 20,
             }),
           ),
         ).lastFrame,
@@ -908,29 +972,29 @@ describe('edit diff preview', () => {
         preview: 'head',
         maxRows: NEW_FILE_PREVIEW_ROWS,
       }),
-    ).toBe(140);
+    ).toBe(145);
   });
 });
 
 describe('mutationDiffPreview', () => {
-  it('previews a single new file as its first 10 lines in every mode', () => {
+  it('previews a single new file as its first 5 lines in every mode', () => {
     for (const transcriptMode of ['compact', 'detailed'] as const) {
       for (const screenReader of [false, true]) {
         expect(
           mutationDiffPreview({ createsSingleNewFile: true, transcriptMode, screenReader }),
-        ).toEqual({ preview: 'head', maxRows: 10 });
+        ).toEqual({ preview: 'head', maxRows: 5 });
       }
     }
   });
 
-  it('previews an edit as its first 20 rows in the compact transcript', () => {
+  it('previews an edit as its changes and one line of context in the compact transcript', () => {
     expect(
       mutationDiffPreview({
         createsSingleNewFile: false,
         transcriptMode: 'compact',
         screenReader: false,
       }),
-    ).toEqual({ preview: 'head-wrap', maxRows: 20 });
+    ).toEqual({ preview: 'changes', maxRows: 12, contextRows: 1 });
   });
 
   it('keeps the change-focused 80-row preview for the detailed transcript and screen readers', () => {

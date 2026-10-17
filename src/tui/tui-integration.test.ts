@@ -218,8 +218,8 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
       // A slash command is proven read by the command menu's highlighted row
       // (`› /help`): it only appears once the menu has filtered to it, which is
       // the state Enter resolves against. Other text shows after the composer's
-      // pilcrow (`¶ `).
-      const echo = text.startsWith('/') ? '› ' + text : '¶ ' + text;
+      // prompt mark (`> `).
+      const echo = text.startsWith('/') ? '› ' + text : '> ' + text;
       const echoed = () => stripAnsi(output.slice(echoStart)).includes(echo);
       const start = Date.now();
       while (!echoed()) {
@@ -276,7 +276,7 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
     await session.waitFor('Ask me anything', 10_000);
     const deadline = Date.now() + 10_000;
     const probeShown = async () =>
-      (await session.readScreen()).some((line) => line.startsWith('¶ q'));
+      (await session.readScreen()).some((line) => line.startsWith('> q'));
     let shown = false;
     while (!shown && Date.now() < deadline) {
       pty.write('q');
@@ -290,7 +290,7 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
     // Read the replayed screen: the byte stream still holds the placeholder
     // from before the probe, so a search of it would return at once.
     const cleared = async () =>
-      (await session.readScreen()).some((line) => line.startsWith('¶ Ask me anything'));
+      (await session.readScreen()).some((line) => line.startsWith('> Ask me anything'));
     while (!(await cleared())) {
       if (Date.now() > deadline) throw new Error('The composer never cleared its probe key.');
       await sleep(50);
@@ -478,7 +478,7 @@ describe('TUI slash commands', () => {
       screen = await live.readScreen();
     }
     expect(screen.join('\n')).not.toContain('§ Commands');
-    expect(screen.some((line) => line.startsWith('¶ '))).toBe(true);
+    expect(screen.some((line) => line.startsWith('> '))).toBe(true);
   }, 20_000);
 
   it('/clear clears the conversation', async () => {
@@ -708,7 +708,7 @@ describe('TUI keyboard input', () => {
         const row = hits[0]!.index;
         return (
           /^─+$/.test(rows[row - 1] ?? '') &&
-          hits[0]!.line.startsWith('¶ ') &&
+          hits[0]!.line.startsWith('> ') &&
           /^─+$/.test(rows[row + 1] ?? '')
         );
       };
@@ -722,10 +722,10 @@ describe('TUI keyboard input', () => {
       const inputRows = sentinelRows(screen);
       expect(inputRows).toHaveLength(1);
 
-      // The composer: a hairline, the pilcrow and the draft, a hairline.
+      // The composer: a hairline, the prompt mark and the draft, a hairline.
       const inputRow = inputRows[0]!.index;
       expect(screen[inputRow - 1]).toMatch(/^─+$/);
-      expect(screen[inputRow]).toMatch(/^¶ /);
+      expect(screen[inputRow]).toMatch(/^> /);
       expect(screen[inputRow + 1]).toMatch(/^─+$/);
     },
     20_000,

@@ -220,7 +220,9 @@ describe('SubagentDetail', () => {
           timestamp: 1,
           toolCalls: [{ id: 'child-tool', name: 'Bash', arguments: { command: 'npm test' } }],
           toolResults: [
-            toolSuccess('CHILD_TOOL_OUTPUT', {
+            // A closed command row previews its first line, so the line an override must
+            // reveal is a later one.
+            toolSuccess('running checks\nok 1\nok 2\nCHILD_TOOL_OUTPUT', {
               toolCallId: 'child-tool',
             }),
           ],

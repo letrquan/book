@@ -138,24 +138,25 @@ describe('selectExpandTargetId', () => {
     expect(target({ messages: workloadMessages(rows) })).toBe('read-1');
   });
 
-  it('counts a successful command only once its output is drawn and cut', () => {
-    const output = Array.from({ length: 30 }, (_, i) => `row ${i}`).join('\n');
-    const messages = [
+  it('counts a successful command whose closed preview leaves lines out', () => {
+    const command = (id: string, lines: number) =>
       assistantMsg(
         '',
-        [{ id: 'bash-ok', name: 'Bash', arguments: { command: 'seq 30' } }],
-        [{ version: 2, toolCallId: 'bash-ok', status: 'success', content: output }],
-      ),
-    ];
-    expect(target({ messages })).toBe('bash-ok'); // the latest: nothing is drawn
+        [{ id, name: 'Bash', arguments: { command: 'seq' } }],
+        [
+          {
+            version: 2,
+            toolCallId: id,
+            status: 'success',
+            content: Array.from({ length: lines }, (_, i) => `row ${i}`).join('\n'),
+          },
+        ],
+      );
     const older = workloadMessages();
-    expect(target({ messages: [...older, ...messages] })).toBe('edit-long');
-    expect(
-      target({
-        messages: [...older, ...messages],
-        expansionOverrides: new Map([['bash-ok', true]]),
-      }),
-    ).toBe('bash-ok');
+    // A closed command row previews its first line and counts the rest: Ctrl+E has them to show.
+    expect(target({ messages: [...older, command('bash-ok', 30)] })).toBe('bash-ok');
+    // Two lines are the whole preview: nothing is cut, so the target is an older row.
+    expect(target({ messages: [...older, command('bash-short', 2)] })).toBe('edit-long');
   });
 
   it('walks messages from the newest and looks no further than the first match', () => {
@@ -443,12 +444,12 @@ describe('a failed command whose stdout its row leaves out', () => {
       };
     };
 
-    it('hides nothing in a read of a failed shell while collapsed: the read succeeded', () => {
+    it('reads a failed shell like any command while collapsed: the read succeeded', () => {
       // The shell's one buffer holds both streams and no stderr is set under the row, so this is a
-      // success row like any other: it draws no body collapsed, and no footer to name a key on.
+      // success row like any other: collapsed, it previews its first line and counts the rest.
       const read = shellRead();
-      expect(hides(read)).toBe(false);
-      expect(target({ messages: [...workloadMessages(), turn(read)] })).toBe('edit-long');
+      expect(hides(read)).toBe(true);
+      expect(target({ messages: [...workloadMessages(), turn(read)] })).toBe('shell-read');
       // Expanded, its output is drawn and cut like any command's.
       expect(hides(read, { isExpanded: true })).toBe(true);
     });

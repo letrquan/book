@@ -3,7 +3,7 @@ import { Box } from 'ink';
 import { afterEach, describe, expect, it } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
-import { AgentMessage, MutationGroupRow } from './AgentMessage.js';
+import { AgentMessage } from './AgentMessage.js';
 import { QuietToolRun } from './QuietToolRun.js';
 import { transcriptGrid } from '../layout.js';
 import type { Message } from '../../types/messages.js';
@@ -41,13 +41,21 @@ function assistant(content: string, toolCalls?: Message['toolCalls']): Message {
 
 // Screen-reader mode is deliberately excluded: it never collapses a thought, so
 // reasoning is on screen either way and the distinction under test disappears.
-function frameOf(message: Message, props: { isStreaming?: boolean; showThinking?: boolean } = {}) {
+function frameOf(
+  message: Message,
+  props: {
+    isStreaming?: boolean;
+    showThinking?: boolean;
+    transcriptMode?: 'compact' | 'detailed';
+  } = {},
+) {
   const { lastFrame } = render(
     <ThemeContext.Provider value={DEFAULT_THEME}>
       <AgentMessage
         message={message}
         isStreaming={props.isStreaming ?? false}
         showThinking={props.showThinking}
+        transcriptMode={props.transcriptMode}
         reducedMotion
         terminalWidth={80}
       />
@@ -66,11 +74,14 @@ describe('AgentMessage unclosed reasoning tags', () => {
   });
 
   it('files it as reasoning while the turn is still streaming', () => {
-    // Mid-stream the text is on screen, but inside the thinking rail rather than
-    // as answer prose — the provider may still close the tag.
-    const frame = frameOf(assistant(UNCLOSED_ANSWER), { isStreaming: true });
-
-    expect(frame).toContain('Thinking');
+    // Mid-stream it is reasoning, not answer prose — the provider may still close
+    // the tag — so the compact transcript draws none of it, and the detailed one
+    // draws it inside the thinking rail.
+    const streaming = frameOf(assistant(UNCLOSED_ANSWER), { isStreaming: true });
+    expect(streaming).not.toContain('RECOVERED-REPORT');
+    expect(
+      frameOf(assistant(UNCLOSED_ANSWER), { isStreaming: true, transcriptMode: 'detailed' }),
+    ).toContain('Thinking');
     expect(frameOf(assistant(UNCLOSED_ANSWER))).not.toContain('Thinking');
   });
 
@@ -119,23 +130,26 @@ describe('AgentMessage empty reasoning blocks', () => {
     expect(frame).not.toContain('<think>');
   });
 
-  it('still collapses a block that has a body', () => {
-    const frame = frameOf(assistant('<think>weighing</think>The answer.'));
+  it('leaves a block that has a body to the detailed transcript', () => {
+    const message = assistant('<think>weighing</think>The answer.');
+    const compact = frameOf(message);
 
-    expect(frame).toContain('thought · 1 line');
-    expect(frame).not.toContain('weighing');
+    expect(compact).toContain('The answer.');
+    expect(compact).not.toContain('thought');
+    expect(compact).not.toContain('weighing');
+    expect(frameOf(message, { transcriptMode: 'detailed' })).toContain('Thought - 1 line');
   });
 });
 
 /**
- * A thought before a tool call is hidden in compact mode (#470).
+ * The compact transcript draws no thought (#470).
  *
- * The rule is "this step calls a tool", not "this row is quiet": a Bash or Edit
- * step reasons just as much as a Read does, and its row says what came of it. An
- * answer has no call, so its thought stays. Ctrl+O and screen readers keep every
- * thought, and so does the one still streaming before its call lands.
+ * It began with the thought before a tool call, whose row says what came of it.
+ * It now covers every thought: an answer's, one behind a call that waits for
+ * your approval, and one still streaming, which used to show and then fold once
+ * its call landed. Ctrl+O and screen readers keep every thought.
  */
-describe('AgentMessage thoughts before a tool call (#470)', () => {
+describe('AgentMessage thoughts in the compact transcript (#470)', () => {
   const bashCall = { id: 'bash-1', name: 'Bash', arguments: { command: 'seq 1 3' } };
   const bashResult = {
     version: 2,
@@ -221,7 +235,7 @@ describe('AgentMessage thoughts before a tool call (#470)', () => {
   });
 
   it.each(['think', 'native'] as const)(
-    'keeps the thought row of a final answer with no tool call (%s)',
+    'hides the thought of a final answer too, and Ctrl+O shows it (%s)',
     (how) => {
       const answer: Message = {
         ...assistant(
@@ -231,8 +245,10 @@ describe('AgentMessage thoughts before a tool call (#470)', () => {
       };
       const frame = view(answer);
 
-      expect(frame).toContain('▸ thought · 2 lines');
+      expect(frame).not.toContain('thought');
+      expect(frame).not.toContain('weigh it');
       expect(frame).toContain('The answer is 3.');
+      expect(view(answer, { transcriptMode: 'detailed' })).toContain('Thought - 2 lines');
     },
   );
 
@@ -262,7 +278,7 @@ describe('AgentMessage thoughts before a tool call (#470)', () => {
   });
 
   it.each(['think', 'native'] as const)(
-    'keeps the thought of an answer that ends with a task-list update (%s)',
+    'hides the thought of an answer that ends with a task-list update (%s)',
     (how) => {
       const todo = { id: 'todo-1', name: 'TodoWrite', arguments: { todos: [] } };
       const answer: Message = {
@@ -274,12 +290,12 @@ describe('AgentMessage thoughts before a tool call (#470)', () => {
       };
       const frame = view(answer);
 
-      expect(frame).toContain('▸ thought · 2 lines');
+      expect(frame).not.toContain('thought');
       expect(frame).toContain('All done.');
     },
   );
 
-  it('keeps the thought of a turn that asks a question', () => {
+  it('hides the thought of a turn that asks a question', () => {
     const asking: Message = {
       ...assistant('<think>weigh it\nthen go</think>', [
         { id: 'ask-1', name: 'AskUserQuestion', arguments: { questions: [] } },
@@ -287,44 +303,41 @@ describe('AgentMessage thoughts before a tool call (#470)', () => {
       toolResults: [],
     };
 
-    expect(view(asking)).toContain('▸ thought · 2 lines');
+    expect(view(asking)).not.toContain('thought');
+    expect(view(asking, { transcriptMode: 'detailed' })).toContain('Thought - 2 lines');
   });
 
   it.each(['think', 'native'] as const)(
-    'shows the thought while the prompt for its call is open, and hides it once the call runs (%s)',
+    'draws no thought while the prompt for its call is open, nor once the call runs (%s)',
     (how) => {
       const running: Message = { ...toolStep(how), toolResults: [] };
       const waiting = view(running, { pendingPermission: { toolCall: bashCall } });
 
-      expect(waiting).toContain('▸ thought · 2 lines');
+      expect(waiting).not.toContain('thought');
+      expect(waiting).not.toContain('weigh it');
       expect(waiting).toContain('seq 1 3');
-      // The same step with no prompt open: the call was approved and runs.
-      const approved = view(running);
-      expect(approved).not.toContain('thought');
-      // A prompt for another call does not bring it back.
-      const other = view(running, {
-        pendingPermission: { toolCall: { id: 'bash-2', name: 'Bash', arguments: {} } },
-      });
-      expect(other).not.toContain('thought');
+      expect(view(running)).not.toContain('thought');
     },
   );
 
-  it('keeps a thought that is still streaming while no tool call has landed', () => {
+  it('draws no thought that is still streaming, and the detailed transcript does', () => {
+    // A streamed thought used to show and then fold once its call landed: text
+    // that appeared and went. The working line says the model is thinking.
     const thinking = assistant('<think>weigh it\nthen go</think>');
-    const frame = view(thinking, { isStreaming: true });
 
-    expect(frame).toContain('Thinking');
-    expect(frame).toContain('then go');
+    expect(view(thinking, { isStreaming: true })).not.toContain('then go');
+    const detailed = view(thinking, { isStreaming: true, transcriptMode: 'detailed' });
+    expect(detailed).toContain('Thinking');
+    expect(detailed).toContain('then go');
   });
 
-  it('shows the native reasoning of a streaming message with no call yet', () => {
-    const frame = view(
-      { ...assistant(''), reasoningContent: 'weigh it\nthen go' },
-      { isStreaming: true },
-    );
+  it('draws no native reasoning of a streaming message either', () => {
+    const message = { ...assistant(''), reasoningContent: 'weigh it\nthen go' };
 
-    expect(frame).toContain('Thinking');
-    expect(frame).toContain('weigh it');
+    expect(view(message, { isStreaming: true })).not.toContain('weigh it');
+    const detailed = view(message, { isStreaming: true, transcriptMode: 'detailed' });
+    expect(detailed).toContain('Thinking');
+    expect(detailed).toContain('weigh it');
   });
 
   it('hides a streaming thought once the call lands, and the row shows the activity', () => {
@@ -470,14 +483,15 @@ describe('AgentMessage work steps', () => {
     const answer = lines.findIndex((line) => line.includes('All done.'));
     const tool = lines.findIndex((line, index) => index > answer && line.trim().length > 0);
 
-    expect(frame).toContain(`${ink(DEFAULT_THEME.text)}All done.`);
+    // The answer opens on its mark, set in the answer's own ink.
+    expect(frame).toContain(`${ink(DEFAULT_THEME.text)}● All done.`);
     expect(lines.slice(answer + 1, tool)).toEqual(['']);
   });
 
   it('keeps a question in full ink, because the turn ends with the question', () => {
     const frame = answerFrame({ toolName: 'AskUserQuestion', content: 'Which option?' });
 
-    expect(frame).toContain(`${ink(DEFAULT_THEME.text)}Which option?`);
+    expect(frame).toContain(`${ink(DEFAULT_THEME.text)}● Which option?`);
     expect(frame).not.toContain(`${ink(DEFAULT_THEME.subtle)}Which option?`);
   });
 
@@ -518,7 +532,7 @@ describe('AgentMessage work steps', () => {
       ],
     });
 
-    expect(before).toContain(`${ink(DEFAULT_THEME.text)}${NARRATION}`);
+    expect(before).toContain(`${ink(DEFAULT_THEME.text)}● ${NARRATION}`);
     expect(after).toContain(`${ink(DEFAULT_THEME.subtle)}${NARRATION}`);
     expect(after).not.toContain(`${ink(DEFAULT_THEME.text)}${NARRATION}`);
   });
@@ -532,16 +546,21 @@ describe('AgentMessage work steps', () => {
       ],
     });
 
-    expect(after).toContain(`${ink(DEFAULT_THEME.text)}Which option?`);
+    expect(after).toContain(`${ink(DEFAULT_THEME.text)}● Which option?`);
     expect(after).not.toContain(`${ink(DEFAULT_THEME.subtle)}Which option?`);
   });
 
   it('keeps the blank row between a thought and the answer it leads to', () => {
-    const frame = answerFrame({ content: 'The answer.', reasoningContent: 'think' });
+    const frame = frameFor(
+      { ...assistant('The answer.'), reasoningContent: 'weighing it' },
+      undefined,
+      'detailed',
+    );
     const lines = stripAnsi(frame).split('\n');
-    const thought = lines.findIndex((line) => line.includes('thought'));
+    const thought = lines.findIndex((line) => line.includes('weighing it'));
     const answer = lines.findIndex((line) => line.includes('The answer.'));
 
+    expect(thought).toBeGreaterThanOrEqual(0);
     expect(lines.slice(thought + 1, answer)).toEqual(['']);
   });
 
@@ -551,23 +570,39 @@ describe('AgentMessage work steps', () => {
     expect(stripAnsi(stepFrame(true))).toContain('Answer:');
   });
 
-  it('greys the check on a finished tool row, so success is the default', () => {
+  it('marks a finished call with the item mark in the success colour, and no check', () => {
     const frame = stepFrame();
 
-    expect(stripAnsi(frame)).toContain('✓');
-    expect(frame).toContain(`${ink(DEFAULT_THEME.inactive)}✓`);
-    expect(frame).not.toContain(`${ink(DEFAULT_THEME.success)}✓`);
+    expect(stripAnsi(frame)).toContain('● Bash(npm test)');
+    expect(frame).toContain(`${ink(DEFAULT_THEME.success)}●`);
+    expect(stripAnsi(frame)).not.toContain('✓');
   });
 
-  it('draws the collapsed thought row at reading weight, not the terminal faint attribute', () => {
-    // SGR 2 on an already-muted grey put this row near 2.5:1 — below any
-    // threshold a long read survives.
-    const thought = answerFrame({ content: 'The answer.', reasoningContent: 'check config' })
-      .split('\n')
-      .find((line) => stripAnsi(line).includes('thought'))!;
+  it('opens a settled answer on the item mark, and gives a step its caption without one', () => {
+    const answer = stripAnsi(answerFrame({ content: 'The answer.' }));
+    expect(answer.split('\n')[0]).toBe('● The answer.');
+    // The narration's row has no mark: the call under it is the step's item.
+    const step = stripAnsi(stepFrame()).split('\n');
+    expect(step[0]).toBe(`  ${NARRATION}`);
+    expect(step[1]).toBe('● Bash(npm test)');
+  });
 
-    expect(thought).toContain(ink(DEFAULT_THEME.inactive));
-    expect(thought).not.toContain('\u001b[2m');
+  it('draws no mark on prose still streaming, which may yet turn out to be narration', () => {
+    const { lastFrame } = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <AgentMessage
+          message={assistant('Half a sentence')}
+          isStreaming
+          hideStreamingSpinner
+          showThinking
+          reducedMotion
+          terminalWidth={80}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    expect(stripAnsi(lastFrame())).toContain('Half a sentence');
+    expect(stripAnsi(lastFrame())).not.toContain('●');
   });
 
   it('draws the expanded thought header at reading weight too', () => {
@@ -588,7 +623,8 @@ describe('AgentMessage work steps', () => {
     const lines = stripAnsi(frame).split('\n');
     const narration = lines.findIndex((line) => line.includes(NARRATION));
 
-    expect(frame).toContain(`${ink(DEFAULT_THEME.text)}${NARRATION}`);
+    // Every item is its own there: the sentence opens on its mark in full ink.
+    expect(frame).toContain(`${ink(DEFAULT_THEME.text)}● ${NARRATION}`);
     expect(frame).not.toContain(`${ink(DEFAULT_THEME.subtle)}${NARRATION}`);
     expect(lines[narration + 1]).toBe('');
   });
@@ -608,18 +644,18 @@ describe('AgentMessage work steps', () => {
     expect(frame).not.toContain(ink(DEFAULT_THEME.mdCodeKeyword));
   });
 
-  it('greys the check on a local event row, since success is the default there too', () => {
-    const frame = frameFor({
-      ...assistant('local-1'),
-      kind: 'local',
-      content: '✓ Background shell 1 exited',
-    });
+  it('sets a local event on a grey item mark, and a failed one on a red mark', () => {
+    const event = (content: string) =>
+      frameFor({ ...assistant('local-1'), kind: 'local', content });
+    const exited = event('✓ Background shell 1 exited');
 
-    expect(frame).toContain(`${ink(DEFAULT_THEME.inactive)}✓`);
-    expect(frame).not.toContain(`${ink(DEFAULT_THEME.success)}✓`);
+    expect(stripAnsi(exited)).toContain('● Background shell 1 exited');
+    expect(stripAnsi(exited)).not.toContain('✓');
+    expect(exited).toContain(`${ink(DEFAULT_THEME.inactive)}●`);
+    expect(event('✕ Could not save')).toContain(`${ink(DEFAULT_THEME.error)}●`);
   });
 
-  it('renders quiet tool summary as exactly one line ending in … at narrow width with long target', () => {
+  it('renders a quiet run heading as exactly one line ending in … at narrow width with a long name', () => {
     const width = 24;
     const grid = transcriptGrid(width);
     const view = render(
@@ -628,9 +664,13 @@ describe('AgentMessage work steps', () => {
           <QuietToolRun
             summary={{
               title: 'Read',
-              target: 'src/components/very/deeply/nested/path/to/component/File.tsx',
-              metadata: ['42 lines'],
+              target: 'a-very-deeply-nested-component-file-name.tsx',
+              metadata: ['1 file'],
               running: false,
+              files: ['a-very-deeply-nested-component-file-name.tsx'],
+              patterns: [],
+              listed: [],
+              others: [],
             }}
             grid={grid}
             reducedMotion
@@ -642,10 +682,11 @@ describe('AgentMessage work steps', () => {
     const rendered = stripAnsi(view.lastFrame());
     const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
     expect(lines).toHaveLength(1);
+    expect(lines[0]!).toMatch(/^● Read\(/);
     expect(lines[0]!.trimEnd()).toMatch(/…$/);
   });
 
-  it('lets a quiet summary show all its metadata in the free columns of a short target', () => {
+  it('writes a quiet run as the calls it stands for, and names the files it read', () => {
     const width = 100;
     const grid = transcriptGrid(width);
     const view = render(
@@ -654,9 +695,13 @@ describe('AgentMessage work steps', () => {
           <QuietToolRun
             summary={{
               title: 'Read',
-              target: 'a.js',
-              metadata: ['1 file', '1 search', '1 listing', '2 lookups'],
+              target: 'a.js, b.js',
+              metadata: ['2 files', '1 search'],
               running: false,
+              files: ['a.js', 'b.js'],
+              patterns: ['TODO'],
+              listed: [],
+              others: [],
             }}
             grid={grid}
             reducedMotion
@@ -667,32 +712,8 @@ describe('AgentMessage work steps', () => {
 
     const lines = stripAnsi(view.lastFrame())
       .split('\n')
-      .filter((line) => line.trim().length > 0);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]!.trimEnd()).toMatch(/1 file · 1 search · 1 listing · 2 lookups$/);
-  });
-
-  it('renders mutation group summary as exactly one line ending in … at narrow width with long target', () => {
-    const width = 20;
-    const grid = transcriptGrid(width);
-    const view = render(
-      <ThemeContext.Provider value={DEFAULT_THEME}>
-        <Box width={width}>
-          <MutationGroupRow
-            createdOnly={false}
-            fileCount={999999999}
-            addedLines={500}
-            removedLines={200}
-            grid={grid}
-            screenReader={false}
-          />
-        </Box>
-      </ThemeContext.Provider>,
-    );
-
-    const rendered = stripAnsi(view.lastFrame());
-    const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]!.trimEnd()).toMatch(/…$/);
+      .filter((line) => line.trim().length > 0)
+      .map((line) => line.trimEnd());
+    expect(lines).toEqual(['● Search(TODO), Read(2 files)', '  ⎿  a.js, b.js']);
   });
 });

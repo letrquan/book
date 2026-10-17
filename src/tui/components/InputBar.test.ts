@@ -101,9 +101,9 @@ describe('InputBar editor box', () => {
 
     expect(lines).toHaveLength(3);
     expect(lines[0]).toMatch(/^─+$/);
-    // `¶` sits in the two-column gutter, so typed text starts on the content
+    // `>` sits in the two-column gutter, so typed text starts on the content
     // column like every transcript row above it.
-    expect(lines[1]).toMatch(/^¶ \S/);
+    expect(lines[1]).toMatch(/^> \S/);
     expect(lines[2]).toMatch(/^─+$/);
     expect(lines[0]).toBe(lines[2]);
     expectFrameWithinWidth(view.lastFrame(), width);
@@ -122,7 +122,7 @@ describe('InputBar editor box', () => {
 
     const lines = stripAnsi(view.lastFrame()).split('\n');
     expect(lines[0]).toBe('─'.repeat(28));
-    expect(lines[1]).toMatch(/^¶ /);
+    expect(lines[1]).toMatch(/^> /);
     expect(lines[2]).toBe('─'.repeat(28));
     expectFrameWithinWidth(view.lastFrame(), 28);
   });
@@ -143,7 +143,7 @@ describe('InputBar editor box', () => {
     await tick(100);
     const frame = stripAnsi(view.lastFrame());
     expect(frame).not.toContain('/clear');
-    expect(frame).toMatch(/^¶ \//m);
+    expect(frame).toMatch(/^> \//m);
   });
 
   it('keeps the command menu and editor as separate ruled sections after shrinking', async () => {
@@ -178,7 +178,7 @@ describe('composer readline keys', () => {
   const prompt = (view: ReturnType<typeof render>) =>
     stripAnsi(view.lastFrame())
       .split('\n')
-      .find((line) => line.includes('\u00b6'))!;
+      .find((line) => line.startsWith(`${PROMPT_MARK} `))!;
 
   async function typed(text: string) {
     const view = render(inputBar(() => {}));
@@ -718,7 +718,7 @@ describe('InputBar skill mention menu', () => {
     await tick(20);
     // The trailing space is proven by the submission below: an open composer
     // row has no right wall to pin it against.
-    expect(stripAnsi(view.lastFrame())).toMatch(/^¶ \$wayfinder/m);
+    expect(stripAnsi(view.lastFrame())).toMatch(/^> \$wayfinder/m);
 
     view.stdin.write('fix it');
     await tick(20);

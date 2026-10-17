@@ -117,7 +117,7 @@ describe('ModelPicker', () => {
     // A fixed wait here is a race with the next frame, not a wait for it: on a
     // loaded runner the keystroke can still be in flight when the sleep ends.
     await vi.waitFor(() => {
-      expect(view.lastFrame()).toContain('¶ gateway');
+      expect(view.lastFrame()).toContain('> gateway');
       expect(view.lastFrame()).toContain('Custom  gateway  BYOK');
       expect(view.lastFrame()).not.toContain('Built In');
     });
@@ -225,7 +225,7 @@ describe('ModelPicker', () => {
 
     expect(onSaveProvider).not.toHaveBeenCalled();
     expect(view.lastFrame()).toContain('§ Models');
-    expect(view.lastFrame()).not.toContain('¶ hidden-a');
+    expect(view.lastFrame()).not.toContain('> hidden-a');
   });
 
   it('refuses manual entry on a built-in model row', async () => {
@@ -335,7 +335,7 @@ describe('ModelPicker', () => {
     expect(frame).toContain('.book/settings.local.json');
     expect(frame).toContain('Removes credentials and all saved models.');
     expect(frame).toContain('Active provider: switches to next configured default.');
-    expect(frame).not.toContain('¶');
+    expect(frame).not.toMatch(/^> /m);
   });
 
   it.each(['\x1b', 'n'])('cancels confirmation with %j without removing', async (key) => {
@@ -390,7 +390,7 @@ describe('ModelPicker', () => {
     await write(view, '\x1bd');
 
     expect(onRemoveProvider).not.toHaveBeenCalled();
-    expect(view.lastFrame()).toContain('¶ type to filter');
+    expect(view.lastFrame()).toContain('> type to filter');
     expect(view.lastFrame()).not.toContain('Remove BYOK provider?');
   });
 
@@ -408,14 +408,14 @@ describe('ModelPicker', () => {
   it('restores the same filter and selected row after cancellation', async () => {
     const { view } = renderPicker();
     await write(view, 'gateway');
-    await vi.waitFor(() => expect(view.lastFrame()).toContain('¶ gateway'));
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('> gateway'));
     await write(view, '\x1bd');
     await vi.waitFor(() => expect(view.lastFrame()).toContain('Remove BYOK provider?'));
     await write(view, 'n');
     await vi.waitFor(() => expect(view.lastFrame()).toContain('› Custom  gateway'));
 
     const frame = view.lastFrame();
-    expect(frame).toContain('¶ gateway');
+    expect(frame).toContain('> gateway');
   });
 
   it('shows wide and compact removal shortcuts before selecting a provider row', () => {
@@ -576,7 +576,7 @@ describe('ModelPicker', () => {
       const { view, onPickOff } = renderOffPicker();
       await write(view, 'gateway');
       await vi.waitFor(() => {
-        expect(view.lastFrame()).toContain('¶ gateway');
+        expect(view.lastFrame()).toContain('> gateway');
         expect(view.lastFrame()).not.toContain('Built In');
       });
       expect(view.lastFrame()).toContain('Custom');
@@ -627,7 +627,7 @@ describe('ModelPicker', () => {
 
       expect(view.lastFrame()).not.toContain('Effort [');
       expect(view.lastFrame()).not.toContain('✕');
-      expect(view.lastFrame()).toContain('¶ type to filter');
+      expect(view.lastFrame()).toContain('> type to filter');
       expect(discover).not.toHaveBeenCalled();
       expect(onPick).not.toHaveBeenCalled();
       expect(onSaveProvider).not.toHaveBeenCalled();
@@ -685,7 +685,7 @@ describe('ModelPicker', () => {
 
       await write(view, '\x1bs');
       // Alt+S is not typed into the filter either.
-      expect(view.lastFrame()).toContain('¶ type to filter');
+      expect(view.lastFrame()).toContain('> type to filter');
 
       // Had Alt+S picked, the latch would have swallowed this Enter's `true`.
       await write(view, '\r');
