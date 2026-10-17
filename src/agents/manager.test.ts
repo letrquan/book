@@ -1,5 +1,5 @@
 import { permissionResultOf } from '../permissions.js';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -9,14 +9,14 @@ import type { Message } from '../types/messages.js';
 import type { ToolContext } from '../types/tools.js';
 import { defaultConfig, toolResult } from '../test/fixtures.js';
 import { AgentManager } from './manager.js';
-import { AgentStore } from './store.js';
+import { AgentStore, type AgentStoreOptions } from './store.js';
 import type { AtomicJsonWriter } from './atomic-json.js';
 import { repositoryHash } from './git-isolation.js';
 import type { AgentRecord, AgentRuntimeEvent, AgentSnapshot } from './types.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { createTerminalOutcome } from '../types/terminal.js';
 import { SessionRuntime } from '../session/runtime.js';
-import { evidenceTools } from '../tools/agent-tools.js';
+import { agentLifecycleTools, evidenceTools } from '../tools/agent-tools.js';
 import { applyReviewFixes } from '../review/fix.js';
 import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewFinding } from '../review/types.js';
@@ -76,7 +76,7 @@ it('lets a managed child publish evidence through its owning manager', async () 
   const manager = new AgentManager(config, evidenceTools, {
     findGitRoot: async () => undefined,
     createStore: (repoHash, requestedRoot, enabled) =>
-      new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
+      AgentStore.open(repoHash, requestedRoot, enabled, UNCONTENDED),
     runLoop: async (childConfig, registry, _prompt, history, _callbacks, mode, options) => {
       const publish = registry.getTool('EvidencePublish');
       expect(publish).toBeDefined();
@@ -122,8 +122,8 @@ describe('AgentManager lifecycle', () => {
     const runLoop = vi.fn();
     const removeSnapshot = vi.fn(async () => {});
     const writer = {
-      // The lease heartbeat is written off the caller's thread; the double stands in for the whole
-      // writer, so this is the half of it that path uses.
+      // Opening the store and the lease heartbeat write off the caller's thread; the double stands
+      // in for the whole writer, so this is the half of it those paths use.
       writeAsync: vi.fn(async (target: string) => ({
         status: 'ok' as const,
         target,
@@ -149,7 +149,7 @@ describe('AgentManager lifecycle', () => {
       removeSnapshot,
       runLoop,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, { writer }),
+        AgentStore.open(repoHash, requestedRoot, enabled, { writer }),
     });
 
     await expect(manager.spawn({ agent: 'patcher', prompt: 'inspect' })).rejects.toMatchObject({
@@ -169,7 +169,7 @@ describe('AgentManager lifecycle', () => {
     const storeRoot = tempRoot();
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
-    const owner = new AgentStore(repositoryHash(root), storeRoot, true, UNCONTENDED);
+    const owner = await AgentStore.open(repositoryHash(root), storeRoot, true, UNCONTENDED);
     owner.saveAgent(
       {
         id: 'foreign-agent',
@@ -190,7 +190,7 @@ describe('AgentManager lifecycle', () => {
     const manager = new AgentManager(config, [], {
       storeRoot,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
+        AgentStore.open(repoHash, requestedRoot, enabled, UNCONTENDED),
       findGitRoot: async () => undefined,
     });
 
@@ -208,7 +208,7 @@ describe('AgentManager lifecycle', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
     let now = 1;
-    const owner = new AgentStore(repositoryHash(root), storeRoot, true, {
+    const owner = await AgentStore.open(repositoryHash(root), storeRoot, true, {
       ...UNCONTENDED,
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 111,
@@ -234,7 +234,7 @@ describe('AgentManager lifecycle', () => {
       storeRoot,
       findGitRoot: async () => undefined,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, {
+        AgentStore.open(repoHash, requestedRoot, enabled, {
           instanceId: '22222222-2222-4222-8222-222222222222',
           pid: 222,
           hostname: 'test-host',
@@ -272,8 +272,8 @@ describe('AgentManager lifecycle', () => {
     config.settings.agents.persist = true;
     let recordWrites = 0;
     const writer = {
-      // The lease heartbeat is written off the caller's thread; the double stands in for the whole
-      // writer, so this is the half of it that path uses.
+      // Opening the store and the lease heartbeat write off the caller's thread; the double stands
+      // in for the whole writer, so this is the half of it those paths use.
       writeAsync: vi.fn(async (target: string) => ({
         status: 'ok' as const,
         target,
@@ -297,7 +297,7 @@ describe('AgentManager lifecycle', () => {
       storeRoot,
       findGitRoot: async () => undefined,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, { writer }),
+        AgentStore.open(repoHash, requestedRoot, enabled, { writer }),
       runLoop: async (_config, _registry, _prompt, history) => [
         ...history,
         {
@@ -318,6 +318,98 @@ describe('AgentManager lifecycle', () => {
       result: 'Completed in memory',
     });
     expect(completed.durabilityWarning).toContain('waiting for durable storage');
+    manager.dispose();
+  });
+
+  it('disposes a store whose open was still pending when the manager was disposed (#516)', async () => {
+    const root = tempRoot();
+    const storeRoot = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    const instances = join(storeRoot, repositoryHash(root), 'instances');
+    // The heartbeat clock, held by the test: a store that outlives its manager is one whose
+    // heartbeat is still armed here.
+    let nextTimer = 1;
+    const armed = new Set<number>();
+    const timers = {
+      setTimeout: (() => {
+        const id = nextTimer++;
+        armed.add(id);
+        return { id, unref: () => {} } as unknown as NodeJS.Timeout;
+      }) as unknown as typeof setTimeout,
+      clearTimeout: ((timer: NodeJS.Timeout) => {
+        armed.delete((timer as unknown as { id: number }).id);
+      }) as unknown as typeof clearTimeout,
+    };
+    let opened: AgentStore | undefined;
+    let markOpened = (): void => {};
+    const storeOpened = new Promise<void>((resolve) => {
+      markOpened = resolve;
+    });
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const manager = new AgentManager(config, [], {
+      storeRoot,
+      findGitRoot: async () => undefined,
+      createStore: async (repoHash, requestedRoot, enabled) => {
+        const store = await AgentStore.open(repoHash, requestedRoot, enabled, {
+          ...UNCONTENDED,
+          ...timers,
+        });
+        opened = store;
+        markOpened();
+        // Still pending from the manager's side when it is disposed.
+        await held;
+        return store;
+      },
+    });
+
+    const listing = manager.list();
+    await storeOpened;
+    // The premise: the store holds its lease and its heartbeat while the manager waits for it.
+    expect(readdirSync(instances)).toHaveLength(1);
+    expect(armed.size).toBe(1);
+
+    manager.dispose();
+    release();
+    await expect(listing).resolves.toEqual([]);
+
+    expect(opened).toBeDefined();
+    expect(readdirSync(instances)).toEqual([]);
+    expect(armed.size).toBe(0);
+  });
+
+  it('initializes without persistence when the store directories cannot be created (#516)', async () => {
+    const root = tempRoot();
+    // A file where the store root should be, so the store cannot create its directories.
+    const storeRoot = join(tempRoot(), 'not-a-directory');
+    writeFileSync(storeRoot, '');
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    const manager = new AgentManager(config, [], {
+      storeRoot,
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history) => [
+        ...history,
+        {
+          id: 'result',
+          role: 'assistant',
+          content: 'Completed without persistence',
+          includeInContext: true,
+          timestamp: 1,
+        },
+      ],
+    });
+
+    const spawned = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    await expect(manager.wait(spawned.id, 1_000)).resolves.toMatchObject({
+      status: 'completed',
+      result: 'Completed without persistence',
+    });
+    expect(await manager.list()).toEqual([expect.objectContaining({ id: spawned.id })]);
+    expect(existsSync(join(storeRoot, repositoryHash(root)))).toBe(false);
     manager.dispose();
   });
 
@@ -820,6 +912,8 @@ describe('AgentManager lifecycle', () => {
         /** How long after its signal aborts the apply takes to end, as a pick's rollback does. */
         settleAfterAbortMs?: number;
         onSettled?: () => void;
+        /** Options for the manager's store; without them it opens the store the default way. */
+        storeOptions?: AgentStoreOptions;
       } = {},
     ) {
       const root = tempRoot();
@@ -830,7 +924,11 @@ describe('AgentManager lifecycle', () => {
       const mutationSignals: Array<AbortSignal | undefined> = [];
       const releases: Array<(status: 'applied' | 'failed') => void> = [];
       const events: AgentRuntimeEvent[] = [];
-      const manager = new AgentManager(config, [], {
+      const storeFactory = (storeOptions: AgentStoreOptions) => ({
+        createStore: (repoHash: string, requestedRoot: string | undefined, enabled: boolean) =>
+          AgentStore.open(repoHash, requestedRoot, enabled, { ...UNCONTENDED, ...storeOptions }),
+      });
+      const managerOptions: ConstructorParameters<typeof AgentManager>[2] = {
         storeRoot,
         worktreeRoot: tempRoot(),
         findGitRoot: async () => root,
@@ -874,7 +972,14 @@ describe('AgentManager lifecycle', () => {
             { id: `a-${prompt}`, role: 'assistant', content: 'done', timestamp: 2 },
           ] as Message[];
         },
+      };
+      const manager = new AgentManager(config, [], {
+        ...managerOptions,
+        ...(options.storeOptions ? storeFactory(options.storeOptions) : {}),
       });
+      /** Another manager on the same repository and store, as the session's next one would be. */
+      const nextManager = (storeOptions: AgentStoreOptions) =>
+        new AgentManager(config, [], { ...managerOptions, ...storeFactory(storeOptions) });
       const plan = await manager.createPlan({
         taskShape: 'patch and validate',
         issueQuality: 'clear',
@@ -906,6 +1011,8 @@ describe('AgentManager lifecycle', () => {
         events,
         root,
         storeRoot,
+        config,
+        nextManager,
       };
     }
 
@@ -1015,7 +1122,7 @@ describe('AgentManager lifecycle', () => {
       manager.dispose();
     });
 
-    it('an apply that ends applied after dispose is recorded in memory, but not emitted', async () => {
+    it('an apply that ends applied after dispose returns its result, but is not emitted', async () => {
       // An apply function that ignores the abort and ends on its own afterwards.
       const { manager, patcher, candidate, signals, releases, events } =
         await managerWithPendingApplies({ obeyAbort: false });
@@ -1025,9 +1132,9 @@ describe('AgentManager lifecycle', () => {
       manager.dispose();
       releases[0]!('applied');
 
+      // What records it is the store's write, below; the disposed manager has no reader left.
       await expect(applying).resolves.toMatchObject({ status: 'applied' });
       expect(events.filter((event) => event.type === 'agent_apply')).toEqual([]);
-      expect((await manager.get(patcher.id))?.applicationStatus).toBe('applied');
     });
 
     it('persists an apply that ends applied after dispose, without emitting it', async () => {
@@ -1041,7 +1148,7 @@ describe('AgentManager lifecycle', () => {
       await expect(applying).resolves.toMatchObject({ status: 'applied' });
 
       // What the next session reads: the pick is on the operator's branch, and the record says so.
-      const reader = new AgentStore(repositoryHash(root), storeRoot, true, UNCONTENDED);
+      const reader = await AgentStore.open(repositoryHash(root), storeRoot, true, UNCONTENDED);
       try {
         expect(reader.loadAgent(patcher.id)).toMatchObject({
           status: 'completed',
@@ -1073,6 +1180,309 @@ describe('AgentManager lifecycle', () => {
 
       await expect(manager.apply(patcher.id, candidate.id)).rejects.toThrow('disposed');
       expect(signals).toHaveLength(0);
+    });
+
+    describe('who started the apply (#527)', () => {
+      type Fixture = Awaited<ReturnType<typeof managerWithPendingApplies>>;
+
+      /** Run one of the model's lifecycle tools against the fixture's manager. */
+      function runTool(fixture: Fixture, name: 'AgentStop' | 'AgentApply', args: object) {
+        const runtime = new SessionRuntime();
+        runtime.agentManager = fixture.manager;
+        const tool = agentLifecycleTools.find((candidate) => candidate.name === name)!;
+        return tool.execute(args as Record<string, unknown>, {
+          workspaceRoot: fixture.root,
+          env: {},
+          agentConfig: fixture.config,
+          availableTools: [],
+          currentMode: 'default',
+          runtime,
+        });
+      }
+
+      it('AgentStop leaves a user-started apply running and says so', async () => {
+        const fixture = await managerWithPendingApplies();
+        const { manager, patcher, candidate, signals, mutationSignals, releases } = fixture;
+        try {
+          // `/agent apply` and `/review --fix` start it this way: with no `startedBy`.
+          const applying = manager.apply(patcher.id, candidate.id);
+          await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+          const result = await runTool(fixture, 'AgentStop', { agentId: patcher.id });
+
+          expect(result.status).toBe('success');
+          expect(result.content).toMatch(
+            /user-started apply .* is still running on this agent and was not stopped/,
+          );
+          expect(signals[0]!.aborted).toBe(false);
+          expect(mutationSignals[0]!.aborted).toBe(false);
+          releases[0]!('applied');
+          await expect(applying).resolves.toMatchObject({ status: 'applied' });
+        } finally {
+          manager.dispose();
+        }
+      });
+
+      it('AgentStop stops an apply the model started with AgentApply and says so', async () => {
+        const fixture = await managerWithPendingApplies();
+        const { manager, patcher, candidate, signals, mutationSignals } = fixture;
+        try {
+          const applying = runTool(fixture, 'AgentApply', {
+            agentId: patcher.id,
+            evidenceId: candidate.id,
+          });
+          await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+          const result = await runTool(fixture, 'AgentStop', { agentId: patcher.id });
+
+          expect(result.status).toBe('success');
+          expect(result.content).toMatch(/Stopped the AgentApply apply .* that was running/);
+          expect(result.content).not.toMatch(/user-started/);
+          expect(signals[0]!.aborted).toBe(true);
+          expect(mutationSignals[0]!.aborted).toBe(true);
+          expect((await applying).status).toBe('error');
+        } finally {
+          manager.dispose();
+        }
+      });
+
+      it('AgentStop names the evidence of two applies of it once', async () => {
+        const fixture = await managerWithPendingApplies();
+        const { manager, patcher, candidate, signals } = fixture;
+        try {
+          const applying = [0, 1].map(() =>
+            runTool(fixture, 'AgentApply', { agentId: patcher.id, evidenceId: candidate.id }),
+          );
+          await vi.waitFor(() => expect(signals).toHaveLength(2));
+
+          const result = await runTool(fixture, 'AgentStop', { agentId: patcher.id });
+
+          expect(result.status).toBe('success');
+          expect(result.content).toContain(
+            `Stopped the 2 AgentApply applies of this agent's result that were running ` +
+              `(both of evidence ${candidate.id}); they have ended.`,
+          );
+          expect(result.content).not.toContain(`${candidate.id}, ${candidate.id}`);
+          for (const pending of applying) expect((await pending).status).toBe('error');
+        } finally {
+          manager.dispose();
+        }
+      });
+
+      it('keepUserApplies stops only the model-started applies and reports both', async () => {
+        const { manager, patcher, candidate, signals, releases } =
+          await managerWithPendingApplies();
+        try {
+          const byUser = manager.apply(patcher.id, candidate.id);
+          await vi.waitFor(() => expect(signals).toHaveLength(1));
+          const byModel = manager
+            .apply(patcher.id, candidate.id, { startedBy: 'model' })
+            .catch((error: unknown) => error);
+          await vi.waitFor(() => expect(signals).toHaveLength(2));
+
+          const outcome = await manager.stop(patcher.id, 'requested', { keepUserApplies: true });
+
+          expect(outcome).toMatchObject({
+            agent: { id: patcher.id, status: 'completed' },
+            stoppedApplies: [candidate.id],
+            keptUserApplies: [candidate.id],
+          });
+          expect(signals.map((signal) => signal.aborted)).toEqual([false, true]);
+          expect(await byModel).toBeInstanceOf(Error);
+          releases[0]!('applied');
+          await expect(byUser).resolves.toMatchObject({ status: 'applied' });
+        } finally {
+          manager.dispose();
+        }
+      });
+
+      it('stop without keepUserApplies still stops user- and model-started applies alike', async () => {
+        const { manager, patcher, candidate, signals } = await managerWithPendingApplies();
+        try {
+          const byUser = manager.apply(patcher.id, candidate.id).catch((error: unknown) => error);
+          const byModel = manager
+            .apply(patcher.id, candidate.id, { startedBy: 'model' })
+            .catch((error: unknown) => error);
+          await vi.waitFor(() => expect(signals).toHaveLength(2));
+
+          await expect(manager.stop(patcher.id)).resolves.toMatchObject({ status: 'completed' });
+
+          expect(signals.map((signal) => signal.aborted)).toEqual([true, true]);
+          expect(await byUser).toBeInstanceOf(Error);
+          expect(await byModel).toBeInstanceOf(Error);
+        } finally {
+          manager.dispose();
+        }
+      });
+    });
+
+    describe('an apply that ends after dispose, on a store the next manager shares (#518)', () => {
+      // Each store takes the other's process for dead, so only a lease says an instance is live, as
+      // it is across two processes: in one test process the pid alone would answer for both.
+      const disposedStore: AgentStoreOptions = { pid: 111, processAlive: () => false };
+      const nextStore: AgentStoreOptions = { pid: 222, processAlive: () => false };
+
+      /** The agent's record file, read as it is on disk. */
+      function recordOnDisk(
+        fixture: { storeRoot: string; root: string },
+        agentId: string,
+        directory: 'records' | 'summaries' = 'records',
+      ): Record<string, unknown> {
+        const path = join(
+          fixture.storeRoot,
+          repositoryHash(fixture.root),
+          directory,
+          `${encodeURIComponent(agentId)}.json`,
+        );
+        return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+      }
+
+      /** A record without the fields the store stamps on every write of it. */
+      function withoutBookkeeping(record: Record<string, unknown>): Record<string, unknown> {
+        const rest = { ...record };
+        delete rest.updatedAt;
+        delete rest._store;
+        return rest;
+      }
+
+      /** A persisted manager with an apply running that ignores dispose and ends when released. */
+      async function midApply() {
+        const fixture = await managerWithPendingApplies({
+          obeyAbort: false,
+          persist: true,
+          storeOptions: disposedStore,
+        });
+        const applying = fixture.manager.apply(fixture.patcher.id, fixture.candidate.id);
+        await vi.waitFor(() => expect(fixture.signals).toHaveLength(1));
+        return { ...fixture, applying };
+      }
+
+      async function disposedMidApply() {
+        const fixture = await midApply();
+        fixture.manager.dispose();
+        return fixture;
+      }
+
+      it('does not overwrite what the next manager wrote to the record since', async () => {
+        const fixture = await disposedMidApply();
+        const next = fixture.nextManager(nextStore);
+        try {
+          const published = await next.publishEvidence(fixture.patcher.id, {
+            kind: 'finding',
+            summary: 'written by the next manager',
+          });
+          const written = recordOnDisk(fixture, fixture.patcher.id);
+          expect(written.producedEvidenceIds).toContain(published.id);
+
+          fixture.releases[0]!('applied');
+          await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+          expect(recordOnDisk(fixture, fixture.patcher.id)).toEqual(written);
+        } finally {
+          next.dispose();
+        }
+      });
+
+      it('skips the write while the next manager holds a live lease, even on an untouched record', async () => {
+        const fixture = await disposedMidApply();
+        const next = fixture.nextManager(nextStore);
+        try {
+          await next.get(fixture.patcher.id);
+          const before = recordOnDisk(fixture, fixture.patcher.id);
+
+          fixture.releases[0]!('applied');
+          await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+          expect(recordOnDisk(fixture, fixture.patcher.id)).toEqual(before);
+        } finally {
+          next.dispose();
+        }
+      });
+
+      it('skips the write when the record on disk is newer than the one the manager had', async () => {
+        const fixture = await disposedMidApply();
+        const next = fixture.nextManager(nextStore);
+        // A clock tick past the disposed manager's last write of the record.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        await next.send(fixture.patcher.id, 'one more change');
+        await next.wait(fixture.patcher.id, 1000);
+        // Gone, so no lease is left to skip on: only the record's age is.
+        next.dispose();
+        const before = recordOnDisk(fixture, fixture.patcher.id);
+
+        fixture.releases[0]!('applied');
+        await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+        expect(recordOnDisk(fixture, fixture.patcher.id)).toEqual(before);
+      });
+
+      it('sets only applicationStatus when no other instance is live', async () => {
+        const fixture = await disposedMidApply();
+        const before = recordOnDisk(fixture, fixture.patcher.id);
+        expect(before.applicationStatus).not.toBe('applied');
+
+        fixture.releases[0]!('applied');
+        await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+        const after = recordOnDisk(fixture, fixture.patcher.id);
+        expect(withoutBookkeeping(after)).toEqual({
+          ...withoutBookkeeping(before),
+          applicationStatus: 'applied',
+        });
+        expect(recordOnDisk(fixture, fixture.patcher.id, 'summaries')).toMatchObject({
+          applicationStatus: 'applied',
+          updatedAt: after.updatedAt,
+        });
+      });
+
+      it('is recorded against the copy a hydration swapped in, and saved, during the apply', async () => {
+        const fixture = await midApply();
+        const { manager, patcher } = fixture;
+        try {
+          // Another writer's newer copy of the record, gone again before the manager reads it.
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          const other = await AgentStore.open(
+            repositoryHash(fixture.root),
+            fixture.storeRoot,
+            true,
+            { ...UNCONTENDED, ...nextStore },
+          );
+          const copy = other.loadAgent(patcher.id)!;
+          copy.updatedAt = Date.now();
+          other.saveAgent(copy);
+          other.dispose();
+          // Reading it swaps that copy in for the object the apply started with, and this
+          // manager's next save, of a run sent to the agent, is of the copy.
+          await manager.get(patcher.id);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          await manager.send(patcher.id, 'one more change');
+          await manager.wait(patcher.id, 1000);
+        } finally {
+          manager.dispose();
+        }
+
+        fixture.releases[0]!('applied');
+        await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+        // The record on disk is the last one this manager saved, so the status is written.
+        expect(recordOnDisk(fixture, patcher.id)).toMatchObject({ applicationStatus: 'applied' });
+      });
+
+      it('lands once the next manager has been disposed without touching the record', async () => {
+        const fixture = await disposedMidApply();
+        const next = fixture.nextManager(nextStore);
+        await next.get(fixture.patcher.id);
+        next.dispose();
+        const before = recordOnDisk(fixture, fixture.patcher.id);
+
+        fixture.releases[0]!('applied');
+        await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+        expect(withoutBookkeeping(recordOnDisk(fixture, fixture.patcher.id))).toEqual({
+          ...withoutBookkeeping(before),
+          applicationStatus: 'applied',
+        });
+      });
     });
   });
 
@@ -2486,7 +2896,7 @@ describe('delivery belongs to a run, not to the record (#245 item 5)', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
     config.settings.agents.resumeInterrupted = false;
-    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
+    const store = await AgentStore.open(repositoryHash(root), bookHome, true, UNCONTENDED);
     store.saveAgent({
       id: 'explorer-1',
       name: 'explorer',
@@ -2548,7 +2958,7 @@ describe('delivery belongs to a run, not to the record (#245 item 5)', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
     configure?.(config);
-    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
+    const store = await AgentStore.open(repositoryHash(root), bookHome, true, UNCONTENDED);
     store.saveAgent({
       id: 'reviewer-1',
       name: 'reviewer',
@@ -2661,7 +3071,7 @@ describe('resuming an interrupted backlog', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
 
-    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
+    const store = await AgentStore.open(repositoryHash(root), bookHome, true, UNCONTENDED);
     store.saveAgent({
       id: 'patcher-1',
       name: 'patcher',
@@ -2705,7 +3115,7 @@ describe('resuming an interrupted backlog', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
 
-    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
+    const store = await AgentStore.open(repositoryHash(root), bookHome, true, UNCONTENDED);
     store.saveAgent({
       id: 'patcher-2',
       name: 'patcher',
@@ -3124,7 +3534,7 @@ describe('a disposed manager keeps the records it wrote (#490)', () => {
       storeRoot,
       findGitRoot: async () => undefined,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
+        AgentStore.open(repoHash, requestedRoot, enabled, UNCONTENDED),
       runLoop: async (_config, _registry, _prompt, history, callbacks, _mode, options) => {
         started();
         if (ending === 'returns normally once aborted') {
@@ -3275,7 +3685,7 @@ describe("a plan's shared snapshot (#357)", () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
     config.settings.agents.maxConcurrent = 3;
-    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
+    const store = await AgentStore.open(repositoryHash(root), bookHome, true, UNCONTENDED);
     store.savePlan({
       id: 'plan-1',
       taskShape: 'three independent questions',
@@ -3403,7 +3813,7 @@ describe('AgentManager.wait timers (#423)', () => {
     const manager = new AgentManager(config, [], {
       findGitRoot: async () => undefined,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
+        AgentStore.open(repoHash, requestedRoot, enabled, UNCONTENDED),
       runLoop: async () => {
         started();
         return new Promise<Message[]>(() => {});

@@ -176,7 +176,12 @@ describe('AgentWait against the registry backstop (#423)', () => {
 
 describe('AgentApply carries the turn signal to the manager (#491)', () => {
   it('hands the manager a signal that the turn aborting aborts', async () => {
-    const calls: { agentId: string; evidenceId?: string; signal?: AbortSignal }[] = [];
+    const calls: {
+      agentId: string;
+      evidenceId?: string;
+      signal?: AbortSignal;
+      startedBy?: string;
+    }[] = [];
     let finish!: () => void;
     const applying = new Promise<void>((resolve) => {
       finish = resolve;
@@ -186,8 +191,12 @@ describe('AgentApply carries the turn signal to the manager (#491)', () => {
       setPermissionMode: () => undefined,
       setEventSink: () => undefined,
       dispose: () => undefined,
-      apply: async (agentId: string, evidenceId?: string, options?: { signal?: AbortSignal }) => {
-        calls.push({ agentId, evidenceId, signal: options?.signal });
+      apply: async (
+        agentId: string,
+        evidenceId?: string,
+        options?: { signal?: AbortSignal; startedBy?: string },
+      ) => {
+        calls.push({ agentId, evidenceId, signal: options?.signal, startedBy: options?.startedBy });
         await applying;
         return { status: 'applied' as const, commit: 'head' };
       },
@@ -213,7 +222,8 @@ describe('AgentApply carries the turn signal to the manager (#491)', () => {
       );
 
       await vi.waitFor(() => expect(calls).toHaveLength(1));
-      expect(calls[0]).toMatchObject({ agentId: 'agent-1', evidenceId: 'e-1' });
+      // Started by the model, so the model's own AgentStop may stop it (#527).
+      expect(calls[0]).toMatchObject({ agentId: 'agent-1', evidenceId: 'e-1', startedBy: 'model' });
       // The registry derives the tool's signal from the turn's, so it is the abort that has to
       // arrive, not the identity.
       expect(calls[0]?.signal).toBeInstanceOf(AbortSignal);
@@ -281,6 +291,13 @@ describe('managed-agent synchronous delivery', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
     const writer = {
+      // Opening the store and the lease heartbeat write asynchronously, and succeed here.
+      writeAsync: async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      }),
       write: (target: string) =>
         target.includes(`${join('records', '')}`)
           ? {
@@ -296,7 +313,7 @@ describe('managed-agent synchronous delivery', () => {
       storeRoot: root,
       findGitRoot: async () => undefined,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, { writer }),
+        AgentStore.open(repoHash, requestedRoot, enabled, { writer }),
     });
     const runtime = new SessionRuntime();
     runtime.agentManager = manager;

@@ -413,7 +413,7 @@ async function main(): Promise<void> {
     if (retainedDebugBytes > 3 * 64 * 1024) throw new Error('debug log rotation exceeded its cap');
 
     const agentRoot = join(root, 'agents');
-    const writer = new AgentStore('repo', agentRoot);
+    const writer = await AgentStore.open('repo', agentRoot);
     for (let index = 0; index < 100 * scale; index++) {
       const now = Date.now();
       const record: AgentRecord = {
@@ -434,8 +434,8 @@ async function main(): Promise<void> {
     }
     await measure(
       'resources: lazy agent-store initialization',
-      () => {
-        const store = new AgentStore('repo', agentRoot);
+      async () => {
+        const store = await AgentStore.open('repo', agentRoot);
         if (store.listAgents().some((record) => record.transcript.length > 0)) {
           throw new Error('agent transcript eagerly materialized');
         }

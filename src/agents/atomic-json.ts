@@ -69,6 +69,11 @@ export type AtomicWriteResult =
 /** What one {@link AtomicJsonWriter.writeAsync} call is allowed to decide for itself. */
 export interface AtomicAsyncWriteOptions {
   /**
+   * A complete temp file an earlier write left behind, renamed over the target instead of writing a
+   * new one: the `preparedTemp` of {@link AtomicJsonWriter.write}.
+   */
+  preparedTemp?: string;
+  /**
    * Asked immediately before the rename, which is the only step of the write that changes the
    * target.
    *
@@ -251,6 +256,11 @@ function validLockOwner(owner: AtomicLockOwner | undefined): boolean {
   );
 }
 
+/** The document both write paths put in a temp file; throws when `value` cannot be serialized. */
+function serialize(value: unknown): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
 export class AtomicJsonWriter {
   private readonly fs: AtomicJsonFileSystem;
   private readonly asyncFs: AtomicJsonAsyncFileSystem;
@@ -310,14 +320,7 @@ export class AtomicJsonWriter {
         try {
           lockDescriptor = this.fs.openSync(lockPath, 'wx', 0o600);
           ownsLock = true;
-          const owner: AtomicLockOwner = {
-            schemaVersion: 1,
-            instanceId: this.instanceId,
-            pid: this.pid,
-            hostname: this.hostname,
-            createdAt: this.now(),
-          };
-          this.fs.writeFileSync(lockDescriptor, `${JSON.stringify(owner)}\n`, 'utf8');
+          this.fs.writeFileSync(lockDescriptor, this.lockOwnerDocument(), 'utf8');
           this.fs.fsyncSync(lockDescriptor);
           closeQuietly(this.fs, lockDescriptor);
           lockDescriptor = undefined;
@@ -358,8 +361,9 @@ export class AtomicJsonWriter {
       }
 
       if (!tempPath) {
+        let serialized: string;
         try {
-          JSON.stringify(value);
+          serialized = serialize(value);
         } catch (error) {
           return {
             status: 'unavailable',
@@ -371,14 +375,11 @@ export class AtomicJsonWriter {
           };
         }
 
-        tempPath = join(
-          dirname(target),
-          `${basename(target)}.${this.pid}.${this.instanceId}.${this.randomId()}.tmp`,
-        );
+        tempPath = this.tempPathFor(target);
         let tempDescriptor: number | undefined;
         try {
           tempDescriptor = this.fs.openSync(tempPath, 'wx', 0o600);
-          this.fs.writeFileSync(tempDescriptor, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+          this.fs.writeFileSync(tempDescriptor, serialized, 'utf8');
           try {
             this.fs.fsyncSync(tempDescriptor);
           } catch (error) {
@@ -472,7 +473,18 @@ export class AtomicJsonWriter {
    *
    * {@link AtomicAsyncWriteOptions.canCommit} is the one thing this path has that the synchronous
    * one does not, and it exists because this path is the one a caller can no longer wait for.
+   * Without it the write cannot be withdrawn, so the result is never `cancelled`.
    */
+  writeAsync(
+    target: string,
+    value: unknown,
+    options?: Omit<AtomicAsyncWriteOptions, 'canCommit'>,
+  ): Promise<Exclude<AtomicWriteResult, { status: 'cancelled' }>>;
+  writeAsync(
+    target: string,
+    value: unknown,
+    options: AtomicAsyncWriteOptions,
+  ): Promise<AtomicWriteResult>;
   async writeAsync(
     target: string,
     value: unknown,
@@ -485,6 +497,7 @@ export class AtomicJsonWriter {
     let reclaims = 0;
     let ownsLock = false;
     let lockHandle: FileHandle | undefined;
+    let tempPath = options.preparedTemp;
 
     const reportAttempts = () => attempts - reclaims;
 
@@ -494,14 +507,7 @@ export class AtomicJsonWriter {
         try {
           lockHandle = await this.asyncFs.open(lockPath, 'wx', 0o600);
           ownsLock = true;
-          const owner: AtomicLockOwner = {
-            schemaVersion: 1,
-            instanceId: this.instanceId,
-            pid: this.pid,
-            hostname: this.hostname,
-            createdAt: this.now(),
-          };
-          await lockHandle.writeFile(`${JSON.stringify(owner)}\n`, 'utf8');
+          await lockHandle.writeFile(this.lockOwnerDocument(), 'utf8');
           await lockHandle.sync();
           await closeQuietlyAsync(lockHandle);
           lockHandle = undefined;
@@ -541,60 +547,59 @@ export class AtomicJsonWriter {
         }
       }
 
-      let serialized: string;
-      try {
-        serialized = `${JSON.stringify(value, null, 2)}\n`;
-      } catch (error) {
-        return {
-          status: 'unavailable',
-          target,
-          operation: 'serialize',
-          message: safeMessage(error),
-          attempts: reportAttempts(),
-          elapsedMs: this.now() - startedAt,
-        };
-      }
-
-      const tempPath = join(
-        dirname(target),
-        `${basename(target)}.${this.pid}.${this.instanceId}.${this.randomId()}.tmp`,
-      );
-      let tempHandle: FileHandle | undefined;
-      try {
-        tempHandle = await this.asyncFs.open(tempPath, 'wx', 0o600);
-        await tempHandle.writeFile(serialized, 'utf8');
-        // Durability is the point of the temp file: the rename is atomic, but a rename that lands
-        // before the content is on disk leaves a lease file that reads as empty after a crash.
+      if (!tempPath) {
+        let serialized: string;
         try {
-          await tempHandle.sync();
+          serialized = serialize(value);
         } catch (error) {
+          return {
+            status: 'unavailable',
+            target,
+            operation: 'serialize',
+            message: safeMessage(error),
+            attempts: reportAttempts(),
+            elapsedMs: this.now() - startedAt,
+          };
+        }
+
+        tempPath = this.tempPathFor(target);
+        let tempHandle: FileHandle | undefined;
+        try {
+          tempHandle = await this.asyncFs.open(tempPath, 'wx', 0o600);
+          await tempHandle.writeFile(serialized, 'utf8');
+          // Durability is the point of the temp file: the rename is atomic, but a rename that lands
+          // before the content is on disk leaves a file that reads as empty after a crash.
+          try {
+            await tempHandle.sync();
+          } catch (error) {
+            await closeQuietlyAsync(tempHandle);
+            tempHandle = undefined;
+            await unlinkQuietlyAsync(this.asyncFs, tempPath);
+            return {
+              status: 'unavailable',
+              target,
+              operation: 'fsync',
+              errorCode: errorCode(error),
+              message: safeMessage(error),
+              attempts: reportAttempts(),
+              elapsedMs: this.now() - startedAt,
+            };
+          }
           await closeQuietlyAsync(tempHandle);
           tempHandle = undefined;
+        } catch (error) {
+          await closeQuietlyAsync(tempHandle);
           await unlinkQuietlyAsync(this.asyncFs, tempPath);
           return {
             status: 'unavailable',
             target,
-            operation: 'fsync',
+            operation: 'write',
             errorCode: errorCode(error),
             message: safeMessage(error),
             attempts: reportAttempts(),
             elapsedMs: this.now() - startedAt,
           };
         }
-        await closeQuietlyAsync(tempHandle);
-        tempHandle = undefined;
-      } catch (error) {
-        await closeQuietlyAsync(tempHandle);
-        await unlinkQuietlyAsync(this.asyncFs, tempPath);
-        return {
-          status: 'unavailable',
-          target,
-          operation: 'write',
-          errorCode: errorCode(error),
-          message: safeMessage(error),
-          attempts: reportAttempts(),
-          elapsedMs: this.now() - startedAt,
-        };
       }
 
       let contendedRenames = 0;
@@ -653,6 +658,35 @@ export class AtomicJsonWriter {
     }
   }
 
+  /** What both write paths record in a lock file they take: who holds it, and since when. */
+  private lockOwnerDocument(): string {
+    const owner: AtomicLockOwner = {
+      schemaVersion: 1,
+      instanceId: this.instanceId,
+      pid: this.pid,
+      hostname: this.hostname,
+      createdAt: this.now(),
+    };
+    return `${JSON.stringify(owner)}\n`;
+  }
+
+  /** A temp file name unique to this writer, which recovery parses back to its target and owner. */
+  private tempPathFor(target: string): string {
+    return join(
+      dirname(target),
+      `${basename(target)}.${this.pid}.${this.instanceId}.${this.randomId()}.tmp`,
+    );
+  }
+
+  /**
+   * Whether a contended lock may be taken from its holder, given what its file said: a lock with a
+   * valid owner only when that owner is gone, one without once it is older than the stale window.
+   */
+  private mayReclaim(owner: AtomicLockOwner | undefined, age: number): boolean {
+    if (validLockOwner(owner)) return !this.isLockOwnerAlive?.(owner!);
+    return age >= this.staleLockMs;
+  }
+
   /**
    * How long to back off before `attempt`: the ladder step, cut short by the time left to the
    * deadline. `guaranteed` is the one retry past the deadline, after the first contended rename.
@@ -685,9 +719,7 @@ export class AtomicJsonWriter {
     } catch {
       owner = undefined;
     }
-    const validOwner = validLockOwner(owner);
-    if (validOwner && this.isLockOwnerAlive?.(owner!)) return false;
-    if (!validOwner && age < this.staleLockMs) return false;
+    if (!this.mayReclaim(owner, age)) return false;
     try {
       await this.asyncFs.unlink(lockPath);
       this.onStaleLock?.(target);
@@ -706,9 +738,7 @@ export class AtomicJsonWriter {
     } catch {
       owner = undefined;
     }
-    const validOwner = validLockOwner(owner);
-    if (validOwner && this.isLockOwnerAlive?.(owner!)) return false;
-    if (!validOwner && age < this.staleLockMs) return false;
+    if (!this.mayReclaim(owner, age)) return false;
     try {
       this.fs.unlinkSync(lockPath);
       this.onStaleLock?.(target);

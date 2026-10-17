@@ -1936,8 +1936,8 @@ describe('stopping an agent while its result is being applied (#491)', () => {
     const noPickInProgress = () => !existsSync(join(root, '.git', 'CHERRY_PICK_HEAD'));
 
     /** The agent's record as the next session would read it from disk. */
-    const recordOnDisk = (agentId: string): AgentRecord | undefined => {
-      const reader = new AgentStore(repositoryHash(root), storeRoot, true, {
+    const recordOnDisk = async (agentId: string): Promise<AgentRecord | undefined> => {
+      const reader = await AgentStore.open(repositoryHash(root), storeRoot, true, {
         writerOptions: { sleep: () => {} },
       });
       try {
@@ -2088,7 +2088,7 @@ describe('stopping an agent while its result is being applied (#491)', () => {
         );
         expect(git(root, 'cat-file', 'commit', 'HEAD')).toContain('gpgsig');
         // The manager and its store were disposed before the pick ended, and the fact is on disk.
-        expect(recordOnDisk(patcher.id)).toMatchObject({
+        expect(await recordOnDisk(patcher.id)).toMatchObject({
           status: 'completed',
           applicationStatus: 'applied',
         });

@@ -55,9 +55,11 @@ import {
 import { projectToolResultForDisplay, redactToolCallForDisplay } from './activity.js';
 import { AgentStore, type AgentStoreWriteResult } from './store.js';
 import { permissionRuleForToolCall } from '../permissions.js';
+import { createDebugLogger } from '../debug-log.js';
 import { createRunAmbientSnapshot } from '../session/run-ambient.js';
 import type {
   AgentApplyResult,
+  AgentApplyStarter,
   AgentActivity,
   AgentCompletionNotification,
   AgentPermissionRequest,
@@ -72,6 +74,7 @@ import type {
   EvidenceReference,
   IssueQuality,
   AgentTopology,
+  AgentStopOutcome,
 } from './types.js';
 import { seedShellIds } from '../jobs/shell-ids.js';
 import { SessionRuntime } from '../session/runtime.js';
@@ -95,7 +98,11 @@ interface ManagerOptions {
   runtime?: SessionRuntime;
   permissionMode?: string;
   persistPermissionRule?: (rule: string) => void;
-  createStore?: (repoHash: string, root: string | undefined, enabled: boolean) => AgentStore;
+  createStore?: (
+    repoHash: string,
+    root: string | undefined,
+    enabled: boolean,
+  ) => AgentStore | Promise<AgentStore>;
 }
 
 /** An apply in flight: see `AgentManager.applies`. */
@@ -106,6 +113,10 @@ interface RunningApply {
   dispose: AbortController;
   /** Settles, either way, once the apply has ended and its cleanup has run. */
   settled: Promise<unknown>;
+  /** The patch candidate being applied. */
+  evidenceId: string;
+  /** Whether the model's `AgentStop` may stop it (#527): only if the model started it. */
+  startedBy: AgentApplyStarter;
 }
 
 interface SubscribeOptions {
@@ -119,6 +130,7 @@ interface PublishEvidenceInput {
   references?: EvidenceReference[];
 }
 
+const log = createDebugLogger('agent-manager');
 const TERMINAL_STATUSES = new Set<AgentStatus>(['completed', 'failed', 'stopped', 'interrupted']);
 const DURABILITY_WARNING =
   'The latest agent state is still waiting for durable storage; Book will retry in the background.';
@@ -420,16 +432,26 @@ export class AgentManager {
     if (this.initialized) return this.initialized;
     this.initialized = (async () => {
       this.repoRoot = await (this.options.findGitRoot ?? findGitRoot)(this.config.workspace);
+      // A manager disposed while it waited has nothing to initialize: opening a store now would
+      // take a lease and arm a heartbeat that nothing is left to release.
+      if (this.disposed) return;
       const hash = repositoryHash(this.repoRoot ?? this.config.workspace);
-      this.store = this.options.createStore
+      const store = await (this.options.createStore
         ? this.options.createStore(
             hash,
             this.options.storeRoot,
             this.config.settings.agents.persist,
           )
-        : new AgentStore(hash, this.options.storeRoot, this.config.settings.agents.persist, {
+        : AgentStore.open(hash, this.options.storeRoot, this.config.settings.agents.persist, {
             eventSink: (event) => this.handlePersistenceEvent(event),
-          });
+          }));
+      // Disposed while the store opened: `dispose()` had no store to release, so it is released
+      // here, before anything reads it — its lease file and heartbeat timer go with it (#516).
+      if (this.disposed) {
+        store.dispose();
+        return;
+      }
+      this.store = store;
       const cleanup = this.store.cleanupDetailed(this.config.settings.agents.retentionDays);
       for (const agent of cleanup.agents) {
         await (this.options.removeWorktree ?? removeAgentWorktree)(agent, this.repoRoot);
@@ -1231,21 +1253,55 @@ export class AgentManager {
     });
   }
 
-  async stop(agentId: string, reason = 'requested'): Promise<AgentRecord> {
+  /**
+   * Stop an agent's run, and every apply of its result that is running.
+   *
+   * `keepUserApplies` is the model's `AgentStop` (#527): it stops only the applies the model
+   * started with `AgentApply`, leaves running the ones the user started (`/agent apply`,
+   * `/review --fix`), and says which it did with each. Every other caller is the user's own stop,
+   * or a host's, and stops them all.
+   */
+  stop(agentId: string, reason?: string): Promise<AgentRecord>;
+  stop(
+    agentId: string,
+    reason: string | undefined,
+    options: { keepUserApplies: true },
+  ): Promise<AgentStopOutcome>;
+  async stop(
+    agentId: string,
+    reason = 'requested',
+    options: { keepUserApplies?: boolean } = {},
+  ): Promise<AgentRecord | AgentStopOutcome> {
+    const outcome = await this.stopAgent(agentId, reason, options.keepUserApplies === true);
+    return options.keepUserApplies ? outcome : outcome.agent;
+  }
+
+  private async stopAgent(
+    agentId: string,
+    reason: string,
+    keepUserApplies: boolean,
+  ): Promise<AgentStopOutcome> {
     await this.ensureInitialized();
     this.assertMutable(agentId);
     const record = this.agents.get(agentId);
     if (!record) throw new Error(`Agent ${agentId} was not found.`);
     // An apply outlives its agent's run, so it is stopped here, before a terminal record returns.
     // The record itself is left as it is: a completed patcher stays completed.
-    const stoppedApplies = [...(this.applies.get(agentId) ?? [])];
+    const running = [...(this.applies.get(agentId) ?? [])];
+    const kept = keepUserApplies ? running.filter((apply) => apply.startedBy === 'user') : [];
+    const stoppedApplies = running.filter((apply) => !kept.includes(apply));
     for (const apply of stoppedApplies) apply.stop.abort(reason);
     // The caller is told "stopped" only once the applies have ended: a pick that was cut short is
     // still being rolled back in the operator's repository until then, and a git command run in the
     // meantime would race it for `index.lock`. The rollback's own timeouts bound the wait, and an
     // apply that rejected (as a stopped one does) is not a reason for this to.
     await Promise.allSettled(stoppedApplies.map((apply) => apply.settled));
-    if (TERMINAL_STATUSES.has(record.status)) return this.recordForReturn(record);
+    const outcome = (agent: AgentRecord): AgentStopOutcome => ({
+      agent,
+      stoppedApplies: stoppedApplies.map((apply) => apply.evidenceId),
+      keptUserApplies: kept.map((apply) => apply.evidenceId),
+    });
+    if (TERMINAL_STATUSES.has(record.status)) return outcome(this.recordForReturn(record));
     record.stopReason = reason;
     record.status = 'stopped';
     record.runOutcome = createTerminalOutcome('cancelled', 'user_cancelled', {
@@ -1271,7 +1327,7 @@ export class AgentManager {
     if (queuedIndex >= 0) this.queue.splice(queuedIndex, 1);
     this.persist(record, 'result');
     this.notifyIdle();
-    return this.recordForReturn(record);
+    return outcome(this.recordForReturn(record));
   }
 
   async publishEvidence(agentId: string, input: PublishEvidenceInput): Promise<EvidenceItem> {
@@ -1377,7 +1433,7 @@ export class AgentManager {
   async apply(
     agentId: string,
     evidenceId?: string,
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; startedBy?: AgentApplyStarter },
   ): Promise<AgentApplyResult> {
     await this.ensureInitialized();
     if (this.disposed) throw new Error('The agent manager was disposed.');
@@ -1418,7 +1474,14 @@ export class AgentManager {
     const signal = AbortSignal.any([mutationSignal, dispose.signal]);
     const running = this.applies.get(agentId) ?? new Set<RunningApply>();
     this.applies.set(agentId, running);
-    const apply: RunningApply = { stop, dispose, settled: Promise.resolve() };
+    const apply: RunningApply = {
+      stop,
+      dispose,
+      settled: Promise.resolve(),
+      evidenceId: evidence.id,
+      // An apply is the user's unless the model's `AgentApply` says otherwise (#527).
+      startedBy: options?.startedBy ?? 'user',
+    };
     running.add(apply);
     const attempt = (async (): Promise<AgentApplyResult> => {
       try {
@@ -1440,10 +1503,21 @@ export class AgentManager {
     if (this.disposed) {
       // The store was disposed, so this is the one write that still has to land: a pick that
       // finished after `dispose()` is on the operator's branch, and nothing else records that. No
-      // event or telemetry, since the subscribers are gone.
-      record.applicationStatus = result.status;
-      record.updatedAt = Date.now();
-      this.store?.saveAgent(record, { afterDispose: true });
+      // event or telemetry, since the subscribers are gone. Only the status is written, and only
+      // if nobody wrote the record after this manager last had it (#518): the session's next
+      // manager may own it now. The record this manager last had is the one in `agents` now, not
+      // necessarily `record`: a hydration during the apply swaps in a new object, and this manager's
+      // later saves were of that one.
+      const seenUpdatedAt = (this.agents.get(agentId) ?? record).updatedAt;
+      const outcome = await this.store?.recordLateApplication(
+        agentId,
+        result.status,
+        seenUpdatedAt,
+      );
+      if (outcome === 'failed') {
+        // The store logged why; the pick is on the branch, and the record does not say so.
+        log.event('late application not recorded', { status: result.status });
+      }
       return result;
     }
     record.applicationStatus = result.status;

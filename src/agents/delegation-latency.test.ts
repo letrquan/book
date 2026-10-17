@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { open as openAsync } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -55,9 +56,23 @@ function removeTempRoots(): void {
  * ceiling below the floor of a machine that was doing nothing wrong. With
  * fsync stubbed the number left is the harness alone, which is what the
  * ceilings below are about.
+ *
+ * Both halves of the writer are stubbed: opening the store writes on the thread pool (#516), and
+ * its fsyncs are the disk's business as much as the synchronous ones are.
  */
 const UNCONTENDED = {
-  writerOptions: { sleep: () => {}, fs: { fsyncSync: () => {} } },
+  writerOptions: {
+    sleep: () => {},
+    fs: { fsyncSync: () => {} },
+    sleepAsync: async () => {},
+    fsAsync: {
+      open: async (path: string, flags: string, mode?: number) => {
+        const handle = await openAsync(path, flags, mode);
+        handle.sync = async () => {};
+        return handle;
+      },
+    },
+  },
 } as const;
 
 function tempRoot(): string {
@@ -138,7 +153,7 @@ async function measureRoundTrip(childRunMs: number): Promise<
   const manager = new AgentManager(config, [], {
     findGitRoot: async () => undefined,
     createStore: (repoHash, requestedRoot, enabled) =>
-      new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
+      AgentStore.open(repoHash, requestedRoot, enabled, UNCONTENDED),
     // Stands in for the sidekick's model turn. Fixed and known, so it subtracts
     // cleanly and what remains is attributable to the harness alone.
     runLoop: async (_childConfig, _registry, _prompt, history) => {
