@@ -88,6 +88,35 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Resizing the terminal during a turn no longer leaves a second working indicator, input bar and
+  footer on screen** (#525, #538, #537). On a narrowing resize Ink drew at once with the old layout,
+  and a row wider than the new width autowrapped and threw off its line count, so the next frame
+  left a second working indicator, extra rules, input bar and footer behind. Every Ink frame row is
+  now clipped to the terminal width, with tabs expanded. After a resize the new size is committed
+  before Ink draws, so the first frame and the forced redraw already use it. Tabs in tool output
+  are expanded to 8-column stops, so a tab-separated row is measured at its real width.
+  `BOOK_INK_FRAME_CLIP=off` turns the row clip off. Ctrl+L redraws once per press.
+- **The agent store opens off the event loop, and an apply that outlives its session's manager is
+  still recorded** (#516, #518, #527, #540). Opening the managed-agent store stalled the first
+  190 to 670 ms after the first frame, and text typed then and submitted with Enter became a paste.
+  The store now opens off the event loop, so there is no stall and that Enter submits. An apply
+  that finishes after `/clear`, `/resume` or `/rewind` is recorded by the session's current manager,
+  so the same apply is not offered again; when no manager is current, it still never overwrites a
+  newer record. `AgentStop` leaves an apply that you started running, and its result says so.
+- **A spent-limit or rate-limit message states the reset time once, and a WebFetch same-origin
+  redirect refusal names the URL the model asked for** (#513, #246). A provider message that gave
+  its own reset time had it repeated by Book's text, including when the wait was too long to retry;
+  it is now stated once, and a rate-limit reset adds Book's own advice. The refusal for a redirect
+  to a blocked path on the same origin named the redirect target; it now names the URL the model
+  asked for.
+- **A provider save keeps per-model overrides, `CLAUDE.local.md` always loads last, and `/init`,
+  commands and skills name the session after what was typed** (#514, #524). Saving a provider from
+  `/model` (Alt+R included) now keeps per-model overrides such as a hand-set `contextWindow` in
+  `.book/settings.local.json`; it clears only `baseURL` (and `baseUrl`), `apiKey`, `type` and a
+  stale `reportedContextWindow`. `CLAUDE.local.md` loads last and as local even when a project file
+  links to it. `/init`, a custom command or a skill names the session after what you typed (`Init`,
+  `Deploy staging`) rather than the text it generates, and the plan handoff keeps the planning
+  session's name.
 - **A router's one-line "[Error] The model failed to generate a response." is re-issued, not
   counted as an answer** (#404). A router sends that sentence as the whole reply when its upstream
   fails, and Book's check for an upstream error envelope, which leans on the token usage reported
@@ -147,8 +176,8 @@ All notable changes to this project are documented in this file.
   reported as a conflict; it now ends with an error that names the stop and what it left, whether
   the rollback ran and any unmerged paths, and `/review --fix` counts that pass as cancelled
   ("Stopped while applying …"), not as a failed fix. `AgentStop` waits for the apply it stopped,
-  rollback included, and a patcher that had completed stays `completed`. `AgentStop` on a completed
-  agent also stops an apply you started yourself, and its own result does not say so.
+  rollback included, and a patcher that had completed stays `completed`. `AgentStop` stops only an
+  apply the model started (`AgentApply`); an apply you started keeps running (#527).
 - **Print mode and the SDK keep a session's name across managed-agent completions, and `/review`
   agents are recorded under the host session** (#446, #448). A managed agent's completion notice
   (and a background shell's, in the TUI) is a host-written turn, yet it named a session that had no
@@ -175,15 +204,14 @@ All notable changes to this project are documented in this file.
   runs that quit at once did not exit. Every Ctrl+C is now split out of a chunk before any key
   handler sees it, one piece per tick, so two presses over a draft clear it and then arm the exit
   window, as two separate presses do. Text and Enter that arrive in one read are still a paste, on
-  purpose. Limit: the stall is still there (#516), and an Enter sent during it can still be merged
-  into a paste.
+  purpose. The stall itself is gone (#516).
 - **A `/goal` session name keeps a leading inline code span** (#449). The name came from the goal
   with one leading backtick stripped, so a goal that began with `npm test` as an inline code span
   lost the span's opening backtick and had its first letter capitalised. The span is kept. A
   leading code fence and its language tag are still dropped, a word after a fence counting as a tag
   only when a newline follows it, as are a trailing closing fence and a fence line in the middle of
-  the prompt. Limit: a prompt-body command (`/init`, a custom command, a skill) and the plan handoff
-  still name the session after the text they generate.
+  the prompt. A prompt-body command (`/init`, a custom command, a skill) is now named after what you
+  typed too, and the plan handoff keeps the planning session's name (#524).
 - **Grep accepts ripgrep inline flags such as `(?i)`, and tool output blocks draw empty lines**
   (#447, #494). Grep compiled the pattern with JavaScript's `RegExp` before choosing a backend, so
   `(?i)HELLO` failed with "Invalid group" although ripgrep takes it. The pattern now goes to
@@ -548,7 +576,7 @@ All notable changes to this project are documented in this file.
   is kept. That also loads `BOOK_HOME/AGENTS.md` once, as yours, when the workspace lies inside
   `BOOK_HOME`, and counts a home reached through a symlink once, with the workspace given by its
   real path. A `CLAUDE.md` linked to the `AGENTS.md` beside it loads once, and one linked to
-  `CLAUDE.local.md` loads that file once, at the link's own project position rather than as local.
+  `CLAUDE.local.md` loads that file once, last and as local (#524).
 - **The agent store no longer logs spurious write retry events for first-try writes** (#402).
   Atomic JSON writes incremented an attempt counter across both lock and rename steps, returning
   two attempts on clean writes and causing the agent store to log a retry event on every success.
@@ -750,8 +778,9 @@ All notable changes to this project are documented in this file.
   under 8 characters, the placeholder keys of keyless local endpoints (`lm-studio`, `not-needed`),
   and the key of a workspace provider you have not approved are not treated as secrets. `Write`,
   `Edit` and `MultiEdit` refuse (`redacted_secret_overwrite`) to write the marker over a file that
-  holds a real key, so reading a file and writing it back cannot destroy a credential. `BashOutput`
-  on a running job returns text up to the last line break, so a read cannot be used to guess a key
+  holds a real key, so reading a file and writing it back cannot destroy a credential (the entry on
+  the redaction marker below extends this to every file-write tool and to `Bash`). `BashOutput` on
+  a running job returns text up to the last line break, so a read cannot be used to guess a key
   one character at a time; an unfinished line waits for its end or for the job to exit, and a line
   with no break comes back in pieces of at most 1024 characters. Limits: only exact values match,
   so a key that was encoded or written in separate pieces is not caught; PostToolUse hooks and the
@@ -768,11 +797,10 @@ All notable changes to this project are documented in this file.
   closed past that: an unterminated quote, a line break anywhere (even quoted), a backslash before
   a quote, a `^` before a quote outside quotes, and a typographic quote (U+2018 to U+201E) are all
   refused, since some shell reads each of them differently. On Windows a single quote is refused,
-  because the session shell may be cmd.exe, where it is not a quote, except under Git Bash (not
-  WSL) in a command that contains a space, a tab or a `"`: the Git Bash runtime strips the quotes
-  from a command without one before bash sees it. This holds for an exact rule and for `Bash(*)`
-  too; a bare `Bash` still admits any command, and the strict `rm` rule is unchanged. The refusal
-  tells the model to send each command as its own Bash call.
+  because the session shell may be cmd.exe, where it is not a quote, except under Git Bash, where
+  the command arrives out of band and `'` reads as on Linux (#523). This holds for an exact rule
+  and for `Bash(*)` too; a bare `Bash` still admits any command, and the strict `rm` rule is
+  unchanged. The refusal tells the model to send each command as its own Bash call.
 - **Bash permission rules read the whole command, and a compound command asks when a Bash deny or
   ask rule exists** (#500, #512). A Bash allow rule matched only the first line, so
   `Bash(git status)` allowed `git status` followed by a second line and `Bash(git *)` allowed
@@ -782,14 +810,56 @@ All notable changes to this project are documented in this file.
   exact: it admits a command only when the trimmed command equals it as a plain string, a `?`
   literal, compound or not, so "Always allow" on `cd x && npm test` writes a rule that fires again.
   "Always allow" remembers nothing for a multi-line command or a compound one that contains a `*`,
-  since no rule could admit it. A bare `Bash` allow rule still admits everything until a Bash deny
-  or ask rule exists; then a compound command always asks, in `auto` too (`default` and
-  `accept-edits` ask as before, `dontAsk` refuses, and `bypassPermissions` bypasses). A rule on
-  another tool, such as `Read(.env)`, does not trigger that, and only an exact session approve-all
-  rule skips the prompt. In print mode, the SDK and a background agent the refusal says to send each
-  command as its own call, to add the exact rule, or to use `bypassPermissions`. A deny or ask rule
-  now also tests the trimmed command's first line and its whole text, so leading whitespace no
-  longer slides past `Bash(git push *)` into an allow rule. The Windows quote reading above applies.
+  since no rule could admit it (a later entry widens this to any wildcard). A bare `Bash` allow
+  rule still admits everything until a Bash deny or ask rule exists; then a compound command always
+  asks, in `auto` too (`default` and `accept-edits` ask as before, `dontAsk` refuses, and
+  `bypassPermissions` bypasses). A rule on another tool, such as `Read(.env)`, does not trigger
+  that, and only an exact session approve-all rule skips the prompt. In print mode, the SDK and a
+  background agent the refusal says to send each command as its own call, to add the exact rule, or
+  to use `bypassPermissions`. A deny or ask rule now also tests the trimmed command's first line and
+  its whole text, so leading whitespace no longer slides past `Bash(git push *)` into an allow rule.
+  The Windows quote reading above applies.
+- **A committed instruction file could put any readable file into the system prompt** (#539). A
+  repository's `CLAUDE.md` symlinked to a private key, `/proc/self/environ` or
+  `.book/settings.local.json` was read as an instruction file, so that file went to the provider in
+  the system prompt. A project instruction file (`CLAUDE.md`, `AGENTS.md`, `.claude/CLAUDE.md`, a
+  rules file or `CLAUDE.local.md`) now loads only when its real path stays inside the directory it
+  was found in, which is the workspace root or the ancestor directory the walk reached, and is a
+  Markdown file. A skipped file gets a one-line warning at start-up: in the TUI, on stderr in print
+  mode, in scrollback mode and in the SDK. Your own instruction files (the user-global ones) are not
+  checked.
+- **No tool can replace a real provider key with the redaction marker any more** (#519, #535). The
+  guard from #411 covered only `Write`, `Edit` and `MultiEdit` over a file that held a key, so a
+  model could still destroy a credential another way. `Bash` now refuses a command that contains
+  the provider-key redaction marker (`redacted_secret_command`), whether it runs in the foreground,
+  in the background or times out into the background. `ApplyPatch` refuses to delete a file that
+  holds a key, and `ApplyPatch` and `NotebookEdit` refuse to write the marker into a file or cell
+  that holds one (`redacted_secret_overwrite`). Beyond that, every file-write tool (`Write`, `Edit`,
+  `MultiEdit`, `ApplyPatch` Add and Update, `NotebookEdit`) refuses a write that adds the marker to
+  any file (`redacted_secret_write`), which closes the route of writing a new file and moving it
+  over the old one with `mv`. The marker is counted over the whole file before and after the write,
+  so an edit that keeps or removes a quote of it still works. All of this applies only while a
+  provider key is configured.
+- **Under Git Bash the Bash tool runs the command the permission check read** (#523, #527, #532). On
+  Windows the MSYS runtime rebuilt a program's argv from the Windows command line: it globbed the
+  words, expanded `@file` arguments and stripped the quotes from a command with no space, tab or
+  `"`, so bash could run a different command from the one the permission check had read. Under Git
+  Bash, or any POSIX shell on the MSYS runtime (`sh`, `dash`, `ash`, `ksh`, `mksh`, `zsh`, detected
+  by `msys-2.0.dll`), the command now travels in the `BOOK_BASH_COMMAND` variable and the shell
+  gets a fixed `-c 'eval …'` script. The variable is unset before the command runs; `$0`, `$#` and
+  the exit status are unchanged. WSL's `bash.exe`, busybox, Cygwin and fish keep argv delivery. A
+  single quote is therefore read exactly as on Linux under Git Bash, and is still refused under
+  `sh`, WSL, cmd and PowerShell.
+- **"Always allow" no longer saves a rule that a wildcard in the call would widen, and `ask` rules
+  hold in `auto`** (#521, #522, #527). "Always allow" saved no rule only for a compound Bash
+  command with a `*`; it now saves none for any call whose own text holds a wildcard: a Bash
+  command with `*`, or a path or WebFetch origin with `*` or `?`. A call with no rule to save shows
+  only Run once and Skip. In a rule pattern `?` now matches exactly one character; it had been read
+  as a regex quantifier, and an exact Bash allow rule still compares as plain text. An `ask` rule
+  now prompts in `auto` too and outranks a wider session approve-all rule, unless that rule is the
+  call's exact one; an unattended run refuses the call and names the ask-rule remedy.
+  `bypassPermissions` is unchanged. On Windows a deny or ask path rule now matches a target outside
+  every root, where backslashes had made it fail open.
 
 ## [0.3.0] - 2026-10-07
 
