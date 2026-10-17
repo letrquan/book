@@ -1603,9 +1603,106 @@ describe('spent usage limit (#400)', () => {
       429,
       `Too many requests. Limit resets at ${futureIso}.`,
     );
-    expect(rateLimitWithFutureReset).toContain(`It resets at ${futureIso}.`);
+    // The quoted message already states the reset (#513): it is not stated a second time.
+    expect(rateLimitWithFutureReset.split(futureIso)).toHaveLength(2);
+    expect(rateLimitWithFutureReset).toContain('Wait for the reset');
     expect(rateLimitWithFutureReset).not.toContain('Try again in a moment');
     expect(rateLimitWithFutureReset).not.toContain('temporary capacity');
+  });
+});
+
+describe('the reset time is stated once (#513)', () => {
+  const occurrences = (text: string, needle: string): number => text.split(needle).length - 1;
+
+  it('does not repeat a reset the quoted usage_limit message already states', () => {
+    const iso = '2026-10-20T03:40:20.972Z';
+    const body = JSON.stringify({
+      error: {
+        message: `You have reached your weekly usage limit for your plan. Your limit resets at ${iso}.`,
+      },
+    });
+    const text = formatApiError(429, body);
+    expect(occurrences(text, iso)).toBe(1);
+    expect(text).toContain('The usage limit for this plan is spent');
+    expect(text).toContain('Wait for the reset');
+    expect(text).not.toContain('; it resets at');
+  });
+
+  it('keeps Book’s clause when the usage_limit reset is only in metadata.raw', () => {
+    const iso = '2026-10-20T03:40:20.972Z';
+    const body = JSON.stringify({
+      error: {
+        message: 'Provider returned error',
+        code: 429,
+        metadata: {
+          raw: `You have reached your weekly usage limit for your plan. Your limit resets at ${iso}.`,
+        },
+      },
+    });
+    const text = formatApiError(429, body);
+    expect(text).toContain(`; it resets at ${iso}`);
+    expect(occurrences(text, iso)).toBe(1);
+    expect(text).toContain('Wait for the reset');
+  });
+
+  it('matches a reset written with an offset or lower-case letters as written', () => {
+    for (const iso of ['2026-10-20t03:40:20+07:00', '2026-10-20T03:40:20.5z']) {
+      const body = JSON.stringify({
+        error: {
+          message: `You have reached your weekly usage limit for your plan. Your limit resets at ${iso}.`,
+        },
+      });
+      const text = formatApiError(429, body);
+      expect(occurrences(text, iso)).toBe(1);
+      expect(text).not.toContain('; it resets at');
+    }
+  });
+
+  it('keeps Book’s clause when the quoted message is cut before the reset', () => {
+    const iso = '2026-10-20T03:40:20.972Z';
+    const padding = 'x'.repeat(2000);
+    const body = JSON.stringify({
+      error: {
+        message: `You have reached your weekly usage limit for your plan. ${padding} Your limit resets at ${iso}.`,
+      },
+    });
+    const text = formatApiError(429, body);
+    expect(text).toContain(`; it resets at ${iso}`);
+    expect(occurrences(text, iso)).toBe(1);
+  });
+
+  it('does not repeat a reset the quoted rate_limited message already states', () => {
+    const iso = new Date(Date.now() + 600_000).toISOString();
+    const body = JSON.stringify({ error: { message: `Too many requests. It resets at ${iso}.` } });
+    const text = formatApiError(429, body);
+    expect(occurrences(text, iso)).toBe(1);
+    expect(text).toBe(
+      `API Error: 429 Too many requests. It resets at ${iso}. Wait for the reset, then try again.`,
+    );
+  });
+
+  it('matches a rate_limited reset written with an offset as written', () => {
+    const iso = '2099-10-20t03:40:20+07:00';
+    const body = JSON.stringify({ error: { message: `Too many requests. It resets at ${iso}.` } });
+    const text = formatApiError(429, body);
+    expect(occurrences(text, iso)).toBe(1);
+    expect(text).toContain('Wait for the reset, then try again.');
+  });
+
+  it('keeps Book’s clause when the rate_limited reset is only in metadata.raw', () => {
+    const iso = new Date(Date.now() + 600_000).toISOString();
+    const body = JSON.stringify({
+      error: {
+        message: 'Provider returned error',
+        code: 429,
+        metadata: { raw: `Too many requests. It resets at ${iso}.` },
+      },
+    });
+    const text = formatApiError(429, body);
+    expect(text).toContain(`It resets at ${iso}.`);
+    expect(occurrences(text, iso)).toBe(1);
+    expect(text).toContain('Wait for the reset, then try again.');
+    expect(text).not.toContain('Try again in a moment');
   });
 });
 
@@ -2053,5 +2150,43 @@ describe('a stated wait beyond the retry budget (#409)', () => {
       resetIso: iso,
     });
     expect(reset).toContain(`resets at ${iso}`);
+  });
+
+  describe('states the reset once (#513)', () => {
+    const iso = '2026-10-20T03:40:20Z';
+    const far = { waitMs: 3 * 24 * 3600 * 1000, source: 'reset-time' as const, resetIso: iso };
+    const occurrences = (text: string): number => text.split(iso).length - 1;
+
+    it('drops the repeated timestamp but keeps the relative wait and the advice', () => {
+      const body = JSON.stringify({
+        error: { message: `Too many requests. It resets at ${iso}.` },
+      });
+      const text = formatStatedWaitError(429, body, far);
+      expect(occurrences(text)).toBe(1);
+      expect(text).toBe(
+        `API Error: 429 Too many requests. It resets at ${iso}. The limit resets in about 3 days, longer than this request will wait. Wait for the reset, or choose another model with --model or /model.`,
+      );
+    });
+
+    it('matches the reset as the provider wrote it', () => {
+      const written = '2026-10-20t03:40:20+07:00';
+      const body = `Too many requests. It resets at ${written}.`;
+      const text = formatStatedWaitError(429, body, { ...far, resetIso: written });
+      expect(text.split(written)).toHaveLength(2);
+      expect(text).toContain('The limit resets in about 3 days');
+    });
+
+    it('keeps the timestamp in Book’s sentence when the reset is only in metadata.raw', () => {
+      const body = JSON.stringify({
+        error: {
+          message: 'Provider returned error',
+          code: 429,
+          metadata: { raw: `Too many requests. It resets at ${iso}.` },
+        },
+      });
+      const text = formatStatedWaitError(429, body, far);
+      expect(text).toContain(`The limit resets at ${iso}, in about 3 days`);
+      expect(occurrences(text)).toBe(1);
+    });
   });
 });

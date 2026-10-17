@@ -24,6 +24,12 @@ export class WebPolicyError extends Error {
       | 'dns_resolution_failed',
     /** What the policy refused, for `private_network_forbidden`: see `refusedDestination`. */
     readonly destination?: string,
+    /**
+     * For `private_network_forbidden`: the policy's reason without the "Web fetch blocked" framing
+     * (`example.com resolves to private or special-use address 10.0.0.9`), for a caller that
+     * words the refusal its own way.
+     */
+    readonly reason?: string,
   ) {
     super(message);
     this.name = 'WebPolicyError';
@@ -63,11 +69,22 @@ const MAX_NAMED_DESTINATIONS = 3;
 
 type RefusalResult = Pick<ToolResult, 'status' | 'structuredError'> | undefined;
 
+/**
+ * The single destination a refusal's `details.destination` names (`host (address)`), or
+ * `undefined` when it names none. A search refusal's per-provider `details.attempts` are not read
+ * here: they are a list, not the destination of this one refusal.
+ */
+export function detailsDestination(result: RefusalResult): string | undefined {
+  const destination = result?.structuredError?.details?.destination;
+  return typeof destination === 'string' ? destination : undefined;
+}
+
 /** The destinations a network-policy refusal names in its details, in order. */
 function refusedDestinations(result: RefusalResult): string[] {
+  const single = detailsDestination(result);
+  if (single !== undefined) return [single];
   const details = result?.structuredError?.details;
   if (!details) return [];
-  if (typeof details.destination === 'string') return [details.destination];
   if (!Array.isArray(details.attempts)) return [];
   return details.attempts.flatMap((attempt: unknown) => {
     const destination = (attempt as { destination?: unknown } | null)?.destination;
@@ -525,6 +542,7 @@ export function refusalWithoutLookup(
       `Web fetch blocked for local or private hostname: ${hostname}`,
       'private_network_forbidden',
       refusedDestination(hostname),
+      `${hostname} is a local or private hostname`,
     );
   }
   if (isIP(hostname) && isBlockedIpAddress(hostname)) {
@@ -532,6 +550,7 @@ export function refusalWithoutLookup(
       `Web fetch blocked for private or special-use address: ${hostname}`,
       'private_network_forbidden',
       refusedDestination(hostname),
+      `${hostname} is a private or special-use address`,
     );
   }
   return undefined;
@@ -575,10 +594,12 @@ export async function validateWebUrl(
   }
   const blocked = addresses.find(isBlockedIpAddress);
   if (blocked) {
+    const reason = `${hostname} resolves to private or special-use address ${blocked}`;
     throw new WebPolicyError(
-      `Web fetch blocked because ${hostname} resolves to private or special-use address ${blocked}.`,
+      `Web fetch blocked because ${reason}.`,
       'private_network_forbidden',
       refusedDestination(hostname, blocked),
+      reason,
     );
   }
   return url;

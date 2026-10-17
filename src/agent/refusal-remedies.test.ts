@@ -7,7 +7,9 @@ import {
   invalidPatternRefusal,
   isRefusal,
   outsideWorkspaceRefusal,
+  recordBlockedStreakRefusals,
   refusalKind,
+  type BlockedStreak,
   type LocalRefusalKind,
 } from './refusal-remedies.js';
 import { toolFailure } from '../tools/result.js';
@@ -309,5 +311,79 @@ describe('the outside-workspace refusal', () => {
       const result = outsideWorkspaceRefusal(tool, { arguments: args });
       expect(result.content, tool).not.toMatch(anyControl);
     }
+  });
+});
+
+describe('recordBlockedStreakRefusals', () => {
+  const emptyStreak = (): BlockedStreak => ({ causes: new Set(), networkRefusals: [] });
+  const countsAll = (): boolean => true;
+  const network = (): ToolResult =>
+    toolFailure('refused', {
+      code: 'private_network_forbidden',
+      status: 'blocked',
+      details: { destination: 'internal.example (10.0.0.1)' },
+      content: 'x'.repeat(10_000),
+    });
+
+  it('puts local kinds in the set and network refusals in the list', () => {
+    const streak = emptyStreak();
+    recordBlockedStreakRefusals(
+      streak,
+      [blocked('hook_blocked'), network(), blocked('permission_denied')],
+      countsAll,
+    );
+
+    expect([...streak.causes].sort()).toEqual(['hook', 'permission']);
+    expect(streak.networkRefusals).toHaveLength(1);
+  });
+
+  it('never lets a network kind into the set of local causes', () => {
+    const streak = emptyStreak();
+    recordBlockedStreakRefusals(
+      streak,
+      [
+        network(),
+        blocked('search_all_providers_failed'),
+        blocked('cross_origin_redirect'),
+        blocked('private_network_forbidden'),
+      ],
+      countsAll,
+    );
+
+    expect(streak.causes.size).toBe(0);
+    expect(streak.networkRefusals).toHaveLength(4);
+  });
+
+  it('keeps only the status and structured error of a network refusal, not its output', () => {
+    const streak = emptyStreak();
+    const result = network();
+    recordBlockedStreakRefusals(streak, [result], countsAll);
+
+    const [kept] = streak.networkRefusals;
+    expect(Object.keys(kept).sort()).toEqual(['status', 'structuredError']);
+    expect(kept.status).toBe('blocked');
+    expect(kept.structuredError).toBe(result.structuredError);
+    expect(JSON.stringify(kept)).not.toContain('xxxxxxxx');
+  });
+
+  it('skips results that do not count as refusals and absent results', () => {
+    const streak = emptyStreak();
+    recordBlockedStreakRefusals(
+      streak,
+      [blocked('hook_blocked'), undefined, network()],
+      (result) => result !== undefined && refusalKind(result) === 'hook',
+    );
+
+    expect([...streak.causes]).toEqual(['hook']);
+    expect(streak.networkRefusals).toHaveLength(0);
+  });
+
+  it('accumulates across turns into the same streak', () => {
+    const streak = emptyStreak();
+    recordBlockedStreakRefusals(streak, [blocked('hook_blocked')], countsAll);
+    recordBlockedStreakRefusals(streak, [network(), blocked('tool_not_active')], countsAll);
+
+    expect([...streak.causes].sort()).toEqual(['hook', 'inactive']);
+    expect(streak.networkRefusals).toHaveLength(1);
   });
 });

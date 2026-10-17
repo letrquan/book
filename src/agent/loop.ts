@@ -84,10 +84,11 @@ import {
   REFUSAL_KIND_ORDER,
   REFUSAL_REMEDIES,
   isRefusal,
-  refusalKind,
+  recordBlockedStreakRefusals,
+  type BlockedStreakRefusal,
   type LocalRefusalKind,
 } from './refusal-remedies.js';
-import { networkPolicyRefusal, networkPolicyRemedies } from '../tools/web-policy.js';
+import { networkPolicyRemedies } from '../tools/web-policy.js';
 import {
   formatUserQuestionAnswers,
   validateUserQuestionResponse,
@@ -1105,7 +1106,16 @@ export async function runAgentLoop(
      */
     const blockedStreakCauses = new Set<LocalRefusalKind>();
     /** The network-policy refusals of the streak, so each remedy can name what was refused. */
-    const blockedStreakNetworkRefusals: ToolResult[] = [];
+    const blockedStreakNetworkRefusals: BlockedStreakRefusal[] = [];
+    /**
+     * Whether the all-tools-blocked brake can fire in this run: unattended hosts only, with a
+     * limit above 0. Both the streak's recording and the brake's check read it, so a run that can
+     * never stop on the brake does not keep what only the brake reads.
+     */
+    const blockedTurnLimit = options?.unattended
+      ? config.settings.continuation.blockedToolTurnLimit
+      : 0;
+    const brakeArmed = blockedTurnLimit > 0;
     /** The workspace root after following links, resolved once for the run. */
     const workspaceRealRoot = realWorkspaceRoot(config.workspace);
     /**
@@ -3484,14 +3494,16 @@ export async function runAgentLoop(
       }
       if (toolCalls.length > 0 && refusedThisTurn === toolCalls.length) {
         blockedTurnStreak++;
-        for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
-        for (const result of orderedToolResults) {
-          if (!countsAsRefusal(result)) continue;
-          if (networkPolicyRefusal(result)) {
-            if (result) blockedStreakNetworkRefusals.push(result);
-          } else {
-            blockedStreakCauses.add(refusalKind(result) as LocalRefusalKind);
-          }
+        // Everything the brake's message reads is kept only when the brake can fire. Recorded on
+        // plan-mode turns too: the streak counts through them, and the mode can change before
+        // the brake fires.
+        if (brakeArmed) {
+          for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
+          recordBlockedStreakRefusals(
+            { causes: blockedStreakCauses, networkRefusals: blockedStreakNetworkRefusals },
+            orderedToolResults,
+            countsAsRefusal,
+          );
         }
       } else {
         blockedTurnStreak = 0;
@@ -3624,14 +3636,7 @@ export async function runAgentLoop(
       // `failed / all_tools_blocked` because they declined three calls would be
       // absurd. Plan mode is excluded for the same reason — a model probing `Edit`
       // before it calls `ExitPlanMode` is blocked by design, not stuck.
-      const blockedTurnLimit = options?.unattended
-        ? config.settings.continuation.blockedToolTurnLimit
-        : 0;
-      if (
-        blockedTurnLimit > 0 &&
-        effectiveMode !== 'plan' &&
-        blockedTurnStreak >= blockedTurnLimit
-      ) {
+      if (brakeArmed && effectiveMode !== 'plan' && blockedTurnStreak >= blockedTurnLimit) {
         const refused = [...blockedTurnTools].sort().join(', ');
         log.warn('every tool call refused on consecutive turns; stopping', {
           turn,
