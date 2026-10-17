@@ -1461,6 +1461,15 @@ export function commandOutputPreview(output: string, width: number): CommandOutp
 const LABELLED_FAILURE = /^(?:error|skipped|failed|blocked)\b\s*:/i;
 
 /**
+ * A failure row's label and the rest of it: `Error:` and ` exit 1`. Only the label takes the
+ * failure's colour. Undefined for a row that opens on no label.
+ */
+export function splitFailureLabel(line: string): { label: string; rest: string } | undefined {
+  const match = LABELLED_FAILURE.exec(line);
+  return match ? { label: match[0], rest: line.slice(match[0].length) } : undefined;
+}
+
+/**
  * A failure's message as its result's first row reads it: `Error: File not found`, or
  * `Skipped: …` for a call that was refused. A message that already opens on such a label keeps
  * its own rather than reading `Error: SKIPPED: …`.

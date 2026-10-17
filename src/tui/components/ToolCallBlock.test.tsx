@@ -1260,8 +1260,9 @@ describe('ToolCallBlock failures', () => {
     expect(stripAnsi(raw)).toContain('arguments.todos is required');
   });
 
-  it('keeps a call that ran and failed in rose', () => {
-    // A test run that exits 1 is the transcript's only record of a red suite.
+  it('marks a call that ran and failed in rose, on its mark and its label only', () => {
+    // A test run that exits 1 is the transcript's only record of a red suite. The mark and the
+    // `Error:` label say so; the message keeps the result's grey.
     const raw = colourFrame(
       <ToolCallBlock
         name="Bash"
@@ -1274,7 +1275,9 @@ describe('ToolCallBlock failures', () => {
     );
 
     expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}●`);
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}Error: Exit code: 1`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}Error:`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)} Exit code: 1`);
+    expect(raw).not.toContain(`${rgb(DEFAULT_THEME.error)}Error: Exit code: 1`);
   });
 
   it('shows the exit code and the tail of a long failure, behind a count of what was cut', () => {
@@ -1321,7 +1324,10 @@ describe('ToolCallBlock failures', () => {
     ]);
     expect(rendered).not.toContain('assertion 1 failed');
     expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}… +36 lines (Ctrl+E)`);
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}error: assertion 40`);
+    // The output's tail is detail, in the result's grey; only the label takes the rose.
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}Error:`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)}error: assertion 40`);
+    expect(raw).not.toContain(`${rgb(DEFAULT_THEME.error)}error: assertion 40`);
   });
 
   it('shows every line of the failure once the row is shown in full, with no hint', () => {
@@ -1540,7 +1546,7 @@ describe('ToolCallBlock failures', () => {
     ]);
     expect(lines.slice(1).join('\n')).not.toContain('Exit code: 1');
     expect(rendered).not.toContain('7ms');
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}FAIL test/case_12`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)}FAIL test/case_12`);
   });
 
   describe('a failed command with stdout under its stderr', () => {
@@ -1595,7 +1601,7 @@ describe('ToolCallBlock failures', () => {
 
       expect(lines[0]).toBe('● Bash(npm test)');
       expect(lines.slice(1)).toEqual(['Error: exit 1', STDERR, '… +1 line of output (Ctrl+E)']);
-      expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}${STDERR}`);
+      expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)}${STDERR}`);
       expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}… +1 line of output (Ctrl+E)`);
       expect(stripAnsi(raw)).not.toContain(STDOUT);
     });
@@ -1773,7 +1779,7 @@ describe('ToolCallBlock failures', () => {
     expect(rendered).toContain('MCP tool x failed: connection refused');
   });
 
-  it('draws the sandbox note after the tail, in the error colour', () => {
+  it('draws the sandbox note after the tail, in the result grey', () => {
     const message = `fatal: Unable to create index.lock\nNote: run it outside the sandbox.`;
     const raw = colourFrame(
       <ToolCallBlock
@@ -1790,7 +1796,7 @@ describe('ToolCallBlock failures', () => {
       'fatal: Unable to create index.lock',
       'Note: run it outside the sandbox.',
     ]);
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}Note: run it outside`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)}Note: run it outside`);
   });
 });
 

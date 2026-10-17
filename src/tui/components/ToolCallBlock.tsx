@@ -21,6 +21,7 @@ import {
   mutationDiffPreviewInput,
   mutationResultSummary,
   showsErrorMessage,
+  splitFailureLabel,
   toolItemGrids,
   toolOutputContentWidth,
   toolOutputDisplay,
@@ -350,6 +351,29 @@ function ToolCallBlockInner({
     : presentation.status === 'skipped'
       ? theme.warning
       : theme.error;
+  // A failure takes its colour on its mark and its `Error:` label only. The message and the
+  // output's tail under it are set in the result's grey: a block of coloured text read as an
+  // alarm louder than anything else on screen. A refused call stays grey throughout.
+  const detailColor = presentation.rejected ? theme.inactive : theme.subtle;
+  // A row that opens on a failure's label colours the label; any other row is detail.
+  const labelledLine = (line: string, color: string, key?: React.Key) => {
+    // A bare `Error` or `Skipped` is all label.
+    if (color === errorColor && /^(?:error|skipped)$/i.test(line.trim())) {
+      return <ResultLine key={key} text={line} color={color} />;
+    }
+    const split = color === errorColor ? splitFailureLabel(line) : undefined;
+    return split ? (
+      <ResultLine
+        key={key}
+        label={split.label}
+        labelColor={color}
+        text={split.rest}
+        color={detailColor}
+      />
+    ) : (
+      <ResultLine key={key} text={line} color={color === errorColor ? detailColor : color} />
+    );
+  };
   // A command's result is its output, previewed below, not a count of its lines.
   const summary = mutationSummary
     ? mutationResultSummary(mutationSummary)
@@ -416,17 +440,21 @@ function ToolCallBlockInner({
       </Box>
       {hasResult ? (
         <ResultBox width={resultWidth}>
-          {statusLine ? <ResultLine text={statusLine.text} color={statusLine.color} /> : null}
+          {statusLine ? labelledLine(statusLine.text, statusLine.color) : null}
           {/* The message is hard-wrapped into one-line rows for the same reason the
               heading truncates: every row draws inside its own box. */}
           {errorDetail ? (
             <>
               {errorDetail.hintBelow ? null : errorHint}
-              {errorDetail.lines.map((line, index) => (
-                <ResultLine key={index} text={line} color={errorColor} />
-              ))}
+              {errorDetail.lines.map((line, index) =>
+                index === 0 ? (
+                  labelledLine(line, errorColor, index)
+                ) : (
+                  <ResultLine key={index} text={line} color={detailColor} />
+                ),
+              )}
               {errorDetail.note?.map((line, index) => (
-                <ResultLine key={`note-${index}`} text={line} color={errorColor} />
+                <ResultLine key={`note-${index}`} text={line} color={detailColor} />
               ))}
               {errorDetail.hintBelow ? errorHint : null}
             </>

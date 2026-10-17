@@ -72,11 +72,30 @@ export function ResultBox({
   );
 }
 
-/** One row of a result. It truncates, never wraps: every row draws inside its own box. */
-export function ResultLine({ text, color }: { text: string; color?: string }) {
+/**
+ * One row of a result. It truncates, never wraps: every row draws inside its own box. A `label`
+ * (`Error:`) leads it in a colour of its own; the rest of the row keeps the result's grey, so a
+ * failure is told by its mark and its label, not by a row of coloured text.
+ */
+export function ResultLine({
+  text,
+  color,
+  label,
+  labelColor,
+}: {
+  text: string;
+  color?: string;
+  label?: string;
+  labelColor?: string;
+}) {
   const theme = useTheme();
   return (
     <Box height={1}>
+      {label ? (
+        <Text wrap="truncate-end" color={labelColor ?? color ?? theme.subtle}>
+          {label}
+        </Text>
+      ) : null}
       <Text wrap="truncate-end" color={color ?? theme.subtle}>
         {text}
       </Text>
