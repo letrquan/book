@@ -163,8 +163,13 @@ function spawnEffective(
     detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   };
+  // `exec.env` goes last: it carries a Git Bash command on Windows (see `shellExecution`).
   return built.exec
-    ? spawn(built.exec.file, built.exec.args, { ...base, shell: false })
+    ? spawn(built.exec.file, built.exec.args, {
+        ...base,
+        env: { ...options.env, ...built.exec.env },
+        shell: false,
+      })
     : spawn(built.effectiveCommand, { ...base, shell: true });
 }
 

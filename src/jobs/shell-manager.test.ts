@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { GIT_BASH_EVAL_SCRIPT } from '../shell-selection.js';
 import { removeWhenReleased } from '../test/remove-when-released.js';
 import type { BackgroundShellStore } from '../types/runtime.js';
 import { persistentJobPaths } from './persistent-store.js';
@@ -605,6 +606,73 @@ setInterval(() => {}, 1000);\n`,
     managers.push(next);
     next.configureWorkspace(directory);
     expect(await next.stop(started.id)).toBe(true);
+  }, 60_000);
+});
+
+/** `bash` on PATH, for the out-of-band delivery tests below. */
+const posixBash = (() => {
+  if (process.platform === 'win32') return undefined;
+  for (const dir of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
+    const candidate = join(dir, 'bash');
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+})();
+
+// #523: Git Bash on Windows receives its command in `exec.env` rather than in argv, so every place
+// that spawns an `exec` must hand that env to the command. Real bash runs the same fixed script.
+describe.skipIf(!posixBash)('ShellJobManager and exec.env (#523)', () => {
+  const command = 'echo "delivered [${BOOK_BASH_COMMAND+LEAK}]"';
+  const exec = () => ({
+    file: posixBash!,
+    args: ['-c', GIT_BASH_EVAL_SCRIPT],
+    env: { BOOK_BASH_COMMAND: command },
+  });
+
+  it('hands exec.env to a session background command', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-session-exec-env-'));
+    const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+    managers.push(manager);
+    const started = await manager.start({
+      command,
+      effectiveCommand: command,
+      exec: exec(),
+      workdir: directory,
+      env: process.env,
+      sandboxed: false,
+    });
+    await waitFor(() => manager.get(started.id)?.status === 'exited', 'session job exit');
+    expect(manager.readTail(started.id)).toContain('delivered []');
+    expect(manager.get(started.id)?.exitCode).toBe(0);
+  });
+
+  it('hands exec.env to a persistent command through the spec and supervisor', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-persistent-exec-env-'));
+    const persistentRoot = join(directory, 'jobs');
+    const manager = new ShellJobManager(
+      { nextId: 1, shells: new Map() },
+      { persistentRoot, ...ciBudgets },
+    );
+    managers.push(manager);
+    manager.configureWorkspace(directory);
+    const started = await manager.start({
+      command,
+      effectiveCommand: command,
+      exec: exec(),
+      workdir: directory,
+      env: process.env,
+      envOverrides: {},
+      sandboxed: false,
+      lifetime: 'persistent',
+      workspace: directory,
+    });
+    await waitFor(
+      () => manager.get(started.id)?.status === 'exited',
+      'persistent job exit',
+      30_000,
+    );
+    expect(manager.readTail(started.id)).toContain('delivered []');
+    expect(manager.get(started.id)?.exitCode).toBe(0);
   }, 60_000);
 });
 

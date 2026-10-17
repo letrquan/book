@@ -292,15 +292,78 @@ export function decodePowerShellCommand(encoded: string): string {
 }
 
 /**
+ * Directories that hold WSL's `bash.exe` launcher, which `kindFromExecutable` also calls `bash`
+ * (any executable name containing "bash"). It is not the MSYS runtime and rebuilds argv its own
+ * way, so it is not Git Bash. Either slash, any case.
+ */
+const WINDOWS_SYSTEM_DIRECTORY = /[\\/]windows[\\/](?:system32|syswow64|sysnative)[\\/]/i;
+
+/**
+ * Whether `shell` is Git Bash: `kind: 'bash'` with a `file` (a `bash` without one goes to Node's
+ * `shell: true`, which is cmd.exe on Windows), and the file is not WSL's launcher in a Windows
+ * system directory. {@link shellExecution} and the permission quote scanner both ask this, so how a
+ * command is delivered and how its quotes are read can never disagree.
+ */
+export function isGitBash(shell: Pick<ResolvedShell, 'kind' | 'file'> | undefined): boolean {
+  return (
+    shell?.kind === 'bash' &&
+    Boolean(shell.file) &&
+    !WINDOWS_SYSTEM_DIRECTORY.test(shell.file ?? '')
+  );
+}
+
+/** The environment variable that carries a Git Bash command on Windows. */
+export const GIT_BASH_COMMAND_VARIABLE = 'BOOK_BASH_COMMAND';
+
+/**
+ * The fixed `-c` script that runs the command held in `BOOK_BASH_COMMAND`.
+ *
+ * - It contains a space, so libuv wraps it in `"…"` and the MSYS runtime leaves it literal.
+ * - Nothing follows it in argv and it uses no function or shell variable, so `$0`, `$#`, `$1` and
+ *   `return` behave exactly as under `bash -c <command>`, and so does the exit status.
+ * - The `unset` is parsed together with the command's first line and runs before any of it, so
+ *   neither the command nor its children see the variable; a syntax error there aborts the whole
+ *   eval, so nothing runs with it set.
+ * - `:?` makes a spawn that forgot the variable fail loudly rather than run `eval ""` and succeed.
+ *
+ * Error messages read `bash: eval: line N:` instead of `bash: -c: line N:`.
+ */
+export const GIT_BASH_EVAL_SCRIPT = `eval "unset ${GIT_BASH_COMMAND_VARIABLE};\${${GIT_BASH_COMMAND_VARIABLE}:?}"`;
+
+/**
  * The argv that runs `command` under `shell`, or undefined when the command
  * should go to Node's `shell: true` (cmd.exe and the POSIX default).
+ *
+ * Git Bash on Windows gets the command out of band, in `BOOK_BASH_COMMAND`
+ * with {@link GIT_BASH_EVAL_SCRIPT} as its `-c` script (#523). Passed in argv,
+ * the command could reach bash altered: libuv (`quote_cmd_arg`) leaves an
+ * argument with no space, tab or `"` unquoted on the Windows command line, and
+ * the MSYS runtime rebuilds argv from that line itself (`build_argv` in
+ * `winsup/cygwin/dcrt0.cc`). In an unquoted word it strips `'` and `"` quotes,
+ * globs `?*[{` and a leading `~` against the cwd, and replaces a leading
+ * `@word` with the contents of that file, so bash would run a different string
+ * from the one the permission scanner read. An environment variable reaches
+ * bash byte for byte.
+ *
+ * WSL's `bash.exe` keeps the plain argv: Windows variables do not reach WSL
+ * without WSLENV. Every other shell and platform is unchanged.
  */
 export function shellExecution(
   resolved: ResolvedShell,
   command: string,
+  platform: NodeJS.Platform = process.platform,
 ): CommandExecution | undefined {
   switch (resolved.kind) {
     case 'bash':
+      if (!resolved.file) return undefined;
+      if (platform === 'win32' && isGitBash(resolved)) {
+        return {
+          file: resolved.file,
+          args: ['-c', GIT_BASH_EVAL_SCRIPT],
+          env: { [GIT_BASH_COMMAND_VARIABLE]: command },
+        };
+      }
+      return { file: resolved.file, args: ['-c', command] };
     case 'sh':
       return resolved.file ? { file: resolved.file, args: ['-c', command] } : undefined;
     case 'pwsh':

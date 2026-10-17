@@ -67,9 +67,15 @@ const options: SpawnOptions = {
   windowsHide: true,
   env: commandEnv(),
 };
-// Sandboxed specs carry an argv; only unsandboxed ones go through a shell.
+// Sandboxed specs and a session shell spawned as argv carry an `exec`; the rest go through a shell.
+// `exec.env` goes last, on this spawn alone: it carries a Git Bash command on Windows (see
+// `shellExecution`) and belongs to neither the runner's environment nor this process's.
 const command = spec.exec
-  ? spawn(spec.exec.file, spec.exec.args, { ...options, shell: false })
+  ? spawn(spec.exec.file, spec.exec.args, {
+      ...options,
+      env: { ...options.env, ...spec.exec.env },
+      shell: false,
+    })
   : spawn(spec.effectiveCommand, { ...options, shell: true });
 
 /** Set once the runner is gone and this process has begun ending the command's tree. */

@@ -304,8 +304,13 @@ export class ShellJobManager {
       };
       // Sandboxed commands spawn bwrap directly; only the unsandboxed path may
       // hand a command string to the platform shell.
+      // `exec.env` goes last: it carries a Git Bash command on Windows (see `shellExecution`).
       proc = options.exec
-        ? spawn(options.exec.file, options.exec.args, { ...base, shell: false })
+        ? spawn(options.exec.file, options.exec.args, {
+            ...base,
+            env: { ...options.env, ...options.exec.env },
+            shell: false,
+          })
         : spawn(options.effectiveCommand, { ...base, shell: true });
     } catch (error) {
       throw error instanceof Error ? error : new Error(String(error));

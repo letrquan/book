@@ -1,3 +1,4 @@
+import { isGitBash } from '../shell-selection.js';
 import type { ResolvedShell } from '../types/runtime.js';
 
 /**
@@ -52,26 +53,6 @@ export const ANY_QUOTE = new RegExp(`['"${TYPOGRAPHIC_QUOTE_RANGE}]`);
  * `shell: true`, which is cmd.exe on Windows.
  */
 export type ScanShell = Pick<ResolvedShell, 'kind' | 'file'>;
-
-/**
- * Directories that hold WSL's `bash.exe` launcher, which `kindFromExecutable` also calls `bash`
- * (any executable name containing "bash"). It is not the MSYS runtime and rebuilds argv its own
- * way, so it is not Git Bash here. Either slash, any case.
- */
-const WINDOWS_SYSTEM_DIRECTORY = /[\\/]windows[\\/](?:system32|syswow64|sysnative)[\\/]/i;
-
-/**
- * Whether the session shell is Git Bash, the one Windows shell that quotes with `'` as sh does:
- * `kind: 'bash'` with a `file` (a `bash` without one is cmd.exe through `shell: true`), and the
- * file is not WSL's launcher in a Windows system directory.
- */
-function isGitBash(shell: ScanShell | undefined): boolean {
-  return (
-    shell?.kind === 'bash' &&
-    Boolean(shell.file) &&
-    !WINDOWS_SYSTEM_DIRECTORY.test(shell.file ?? '')
-  );
-}
 
 /**
  * Whether Git Bash's argument rebuilding leaves a command's single quotes alone. The Bash tool
