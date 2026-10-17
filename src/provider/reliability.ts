@@ -573,6 +573,16 @@ function detailSentence(
   };
 }
 
+/**
+ * The reset sentence for Book's advice (#513), or `''` when the quoted provider text
+ * (`said`) already states that reset. `reset.iso` is the provider's own text as written, so
+ * it is compared literally, never normalised. A `said` cut short, or a reset read from
+ * OpenRouter's `metadata.raw`, does not contain it and keeps Book's clause.
+ */
+function resetStatement(said: string, reset: AbsoluteReset, clause: string): string {
+  return said.includes(reset.iso) ? '' : clause;
+}
+
 export function formatApiError(
   status: number,
   body: string,
@@ -592,7 +602,7 @@ export function formatApiError(
       }
       const reset = parseAbsoluteReset(body);
       if (reset !== undefined && reset.epochMs > Date.now()) {
-        return `${base} ${said} It resets at ${reset.iso}.`;
+        return `${base} ${said}${resetStatement(said, reset, ` It resets at ${reset.iso}.`)}`;
       }
       return `${base} ${said} This may be a temporary capacity issue. Try again in a moment.`;
     }
@@ -612,7 +622,8 @@ export function formatApiError(
     }
     case 'usage_limit': {
       const reset = parseAbsoluteReset(body);
-      const resetClause = reset !== undefined ? `; it resets at ${reset.iso}` : '';
+      const resetClause =
+        reset !== undefined ? resetStatement(said, reset, `; it resets at ${reset.iso}`) : '';
       return `${base} ${said} The usage limit for this plan is spent${resetClause}. Wait for the reset, or choose another model with --model or /model.`;
     }
     case 'quota':

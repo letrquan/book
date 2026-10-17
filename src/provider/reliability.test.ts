@@ -1603,9 +1603,101 @@ describe('spent usage limit (#400)', () => {
       429,
       `Too many requests. Limit resets at ${futureIso}.`,
     );
-    expect(rateLimitWithFutureReset).toContain(`It resets at ${futureIso}.`);
+    // The quoted message already states the reset (#513): it is not stated a second time.
+    expect(rateLimitWithFutureReset).toContain(futureIso);
     expect(rateLimitWithFutureReset).not.toContain('Try again in a moment');
     expect(rateLimitWithFutureReset).not.toContain('temporary capacity');
+  });
+});
+
+describe('the reset time is stated once (#513)', () => {
+  const occurrences = (text: string, needle: string): number => text.split(needle).length - 1;
+
+  it('does not repeat a reset the quoted usage_limit message already states', () => {
+    const iso = '2026-10-20T03:40:20.972Z';
+    const body = JSON.stringify({
+      error: {
+        message: `You have reached your weekly usage limit for your plan. Your limit resets at ${iso}.`,
+      },
+    });
+    const text = formatApiError(429, body);
+    expect(occurrences(text, iso)).toBe(1);
+    expect(text).toContain('The usage limit for this plan is spent');
+    expect(text).toContain('Wait for the reset');
+    expect(text).not.toContain('; it resets at');
+  });
+
+  it('keeps Book’s clause when the usage_limit reset is only in metadata.raw', () => {
+    const iso = '2026-10-20T03:40:20.972Z';
+    const body = JSON.stringify({
+      error: {
+        message: 'Provider returned error',
+        code: 429,
+        metadata: {
+          raw: `You have reached your weekly usage limit for your plan. Your limit resets at ${iso}.`,
+        },
+      },
+    });
+    const text = formatApiError(429, body);
+    expect(text).toContain(`; it resets at ${iso}`);
+    expect(occurrences(text, iso)).toBe(1);
+    expect(text).toContain('Wait for the reset');
+  });
+
+  it('matches a reset written with an offset or lower-case letters as written', () => {
+    for (const iso of ['2026-10-20t03:40:20+07:00', '2026-10-20T03:40:20.5z']) {
+      const body = JSON.stringify({
+        error: {
+          message: `You have reached your weekly usage limit for your plan. Your limit resets at ${iso}.`,
+        },
+      });
+      const text = formatApiError(429, body);
+      expect(occurrences(text, iso)).toBe(1);
+      expect(text).not.toContain('; it resets at');
+    }
+  });
+
+  it('keeps Book’s clause when the quoted message is cut before the reset', () => {
+    const iso = '2026-10-20T03:40:20.972Z';
+    const padding = 'x'.repeat(2000);
+    const body = JSON.stringify({
+      error: {
+        message: `You have reached your weekly usage limit for your plan. ${padding} Your limit resets at ${iso}.`,
+      },
+    });
+    const text = formatApiError(429, body);
+    expect(text).toContain(`; it resets at ${iso}`);
+    expect(occurrences(text, iso)).toBe(1);
+  });
+
+  it('does not repeat a reset the quoted rate_limited message already states', () => {
+    const iso = new Date(Date.now() + 600_000).toISOString();
+    const body = JSON.stringify({ error: { message: `Too many requests. It resets at ${iso}.` } });
+    const text = formatApiError(429, body);
+    expect(occurrences(text, iso)).toBe(1);
+    expect(text).toBe(`API Error: 429 Too many requests. It resets at ${iso}.`);
+  });
+
+  it('matches a rate_limited reset written with an offset as written', () => {
+    const iso = '2099-10-20t03:40:20+07:00';
+    const body = JSON.stringify({ error: { message: `Too many requests. It resets at ${iso}.` } });
+    const text = formatApiError(429, body);
+    expect(occurrences(text, iso)).toBe(1);
+  });
+
+  it('keeps Book’s clause when the rate_limited reset is only in metadata.raw', () => {
+    const iso = new Date(Date.now() + 600_000).toISOString();
+    const body = JSON.stringify({
+      error: {
+        message: 'Provider returned error',
+        code: 429,
+        metadata: { raw: `Too many requests. It resets at ${iso}.` },
+      },
+    });
+    const text = formatApiError(429, body);
+    expect(text).toContain(`It resets at ${iso}.`);
+    expect(occurrences(text, iso)).toBe(1);
+    expect(text).not.toContain('Try again in a moment');
   });
 });
 
