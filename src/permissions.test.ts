@@ -2533,10 +2533,53 @@ describe('exact Bash allow rules (#512, decision 1)', () => {
     }
   });
 
-  it('still remembers a single-line command with a * that is not compound', () => {
-    expect(permissionRuleLadder(bashCall('ls *.ts'))[0]).toBe('Bash(ls *.ts)');
-    expect(permissionRuleMatchesCall('Bash(ls *.ts)', bashCall('ls *.ts'))).toBe(true);
-    expect(permissionRuleForToolCall(bashCall('echo "a && b *"'))).toBe('Bash(echo "a && b *")');
+  it('remembers nothing for a single-line command with a * either (#521)', () => {
+    for (const command of ['ls *.ts', 'echo "a && b *"']) {
+      expect(permissionRuleLadder(bashCall(command)), command).toEqual([]);
+      expect(permissionRuleForToolCall(bashCall(command)), command).toBeUndefined();
+    }
+  });
+});
+
+// The rule "Always allow" wrote for `rm -rf build/*` was a glob, shown as the exact command: its
+// `*` crosses spaces and `/`, so it went on to admit commands the user never saw.
+describe('"Always allow" on a Bash command holding * or ? (#521)', () => {
+  const bashCall = (command: string) => ({ id: 'c', name: 'Bash', arguments: { command } });
+
+  it('offers no rule at all for a command holding *', () => {
+    const call = bashCall('rm -rf build/*');
+    expect(permissionRuleLadder(call)).toEqual([]);
+    expect(permissionRuleForToolCall(call)).toBeUndefined();
+  });
+
+  it('offers nothing that admits a command the card never showed', () => {
+    // What the ladder used to offer, which is what this guards against.
+    expect(permissionRuleMatchesCall('Bash(rm -rf build/*)', bashCall('rm -rf build/ ~/'))).toBe(
+      true,
+    );
+    for (const later of ['rm -rf build/ ~/', 'rm -rf build/../../src']) {
+      for (const rule of permissionRuleLadder(bashCall('rm -rf build/*'))) {
+        expect(permissionRuleMatchesCall(rule, bashCall(later)), `${rule} vs ${later}`).toBe(false);
+      }
+    }
+  });
+
+  it('offers only the exact rule for a command holding ?, which a wider rung would read as a wildcard', () => {
+    expect(permissionRuleLadder(bashCall('cat foo?.txt bar'))).toEqual(['Bash(cat foo?.txt bar)']);
+    expect(permissionRuleMatchesCall('Bash(cat foo?.txt bar)', bashCall('cat foo?.txt bar'))).toBe(
+      true,
+    );
+    expect(permissionRuleMatchesCall('Bash(cat foo?.txt bar)', bashCall('cat fooX.txt bar'))).toBe(
+      false,
+    );
+  });
+
+  it('still offers an ordinary command its three rungs', () => {
+    expect(permissionRuleLadder(bashCall('npm run check'))).toEqual([
+      'Bash(npm run check)',
+      'Bash(npm run *)',
+      'Bash(npm *)',
+    ]);
   });
 });
 

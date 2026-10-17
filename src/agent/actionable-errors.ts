@@ -21,8 +21,8 @@ export function formatActionableToolError(error: ActionableToolError): string {
 export type UnattendedRemedy =
   /**
    * A `permissions.allow` rule, or `--permission-mode auto`. `rule` is absent when no single rule
-   * covers the call (a multi-line Bash command): the bare tool name would allow every call, so it
-   * is never offered in its place.
+   * covers exactly the call (a multi-line Bash command, or one holding `*`, #521): the bare tool
+   * name would allow every call, so it is never offered in its place.
    */
   | { kind: 'rule_or_auto'; rule?: string }
   /** A `permissions.ask` rule asks for it, and no allow rule outranks an ask rule. */
@@ -37,7 +37,7 @@ export type UnattendedRemedy =
    * A compound Bash command while a Bash deny or ask rule exists: asked about in every mode but
    * bypassPermissions, `auto` included (see `compoundUnderPolicy` in `permissions.ts`).
    * `rule` is the exact rule that would admit the command, absent when none could (a multi-line
-   * command, or a compound one containing `*`); `askRule` is the ask rule that matched it, which
+   * command, or one containing `*`); `askRule` is the ask rule that matched it, which
    * outranks every allow rule, so an exact rule would not help.
    */
   | { kind: 'compound_under_policy'; rule?: string; askRule?: string };
@@ -96,7 +96,9 @@ function quotableRule(rule: string): string | undefined {
 /** "a permissions.allow rule such as "<rule>"", or what to do when no rule can be shown. */
 function allowRuleClause(rule: string | undefined): string {
   if (rule === undefined) {
-    return 'no single permissions.allow rule covers this command, so have each command sent as its own Bash call';
+    // A multi-line command, or one holding `*` (#521): a rule holds one line, and its `*` is a
+    // wildcard that would admit other commands too.
+    return 'no single permissions.allow rule covers exactly this command (a rule holds one line, and a `*` in it is a wildcard that admits other commands too), so have each command sent as its own Bash call, on one line, naming its files instead of using `*`';
   }
   const quotable = quotableRule(rule);
   return quotable

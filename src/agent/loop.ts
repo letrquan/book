@@ -2936,11 +2936,10 @@ export async function runAgentLoop(
               }
               const askRule = verdict.source === 'ask' ? verdict.matchedRule : undefined;
               // The rule the operator is told to add. A bare tool name allows every call of the
-              // tool, so for Bash, which has no rule for a multi-line command or a compound one
-              // holding `*`, the remedy names no rule at all rather than `Bash`.
+              // tool, so for Bash, which has no rule for a multi-line command or one holding `*`
+              // (#521), the remedy names no rule at all rather than `Bash`.
               const remedyRule =
-                permissionRuleForToolCall(call, process.platform, scanShell) ??
-                (canonName === 'Bash' ? undefined : canonName);
+                permissionRuleForToolCall(call) ?? (canonName === 'Bash' ? undefined : canonName);
               // What would actually let this call through if nobody could approve it. An
               // outside target comes first: no rule or mode makes the tool serve it.
               const remedy: UnattendedRemedy = persistentBackgroundShell
@@ -2978,10 +2977,10 @@ export async function runAgentLoop(
             if (permission === 'always' && !persistentBackgroundShell) {
               log.debug('permission always', { tool: canonName });
               // No rule, no write: a call with no primary argument has nothing to scope
-              // one to, and a bare `Bash` rule allows every shell command afterwards. The
-              // answer still stands for this one call.
-              const rule =
-                chosenRule ?? permissionRuleForToolCall(call, process.platform, scanShell);
+              // one to, and a bare `Bash` rule allows every shell command afterwards; a Bash
+              // command holding `*` has no rule either (#521). The answer still stands for this
+              // one call.
+              const rule = chosenRule ?? permissionRuleForToolCall(call);
               if (!rule) {
                 log.debug('permission always with no rule to save', { tool: canonName });
               } else {

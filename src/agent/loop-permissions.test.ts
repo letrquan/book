@@ -1858,3 +1858,96 @@ describe('runAgentLoop compound Bash commands under a Bash deny or ask rule (#51
     });
   });
 });
+
+describe('runAgentLoop "Always allow" on a Bash command holding * (#521)', () => {
+  const COMMAND = 'rm -rf build/*';
+  const okResult = {
+    version: 2 as const,
+    toolCallId: '',
+    status: 'success' as const,
+    content: 'stub ran',
+  };
+
+  /** A registry whose Bash only records the command: nothing here may really run `rm -rf`. */
+  function recordingRegistry(executed: string[]) {
+    const registry = createDefaultRegistry();
+    registry.register({
+      ...registry.getTool('Bash')!,
+      execute: async (args) => {
+        executed.push(String(args.command));
+        return okResult;
+      },
+    });
+    return registry;
+  }
+
+  it('saves no rule, and the identical call later in the session prompts again', async () => {
+    const persisted: string[] = [];
+    const executed: string[] = [];
+    const prompt = vi.fn(async () => 'always' as const);
+    let turn = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        turn++;
+        if (turn <= 2) {
+          yield {
+            type: 'tool_call' as const,
+            toolCall: { id: `b${turn}`, name: 'Bash', arguments: { command: COMMAND } },
+          };
+        } else {
+          yield { type: 'text' as const, content: 'done' };
+        }
+        yield { type: 'done' as const };
+      },
+    };
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 3 }),
+      recordingRegistry(executed),
+      'clean it',
+      [],
+      noopCallbacks({
+        onPermissionRequired: prompt,
+        onPersistPermissionRule: (rule) => persisted.push(rule),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+    expect(persisted).toEqual([]);
+    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(executed).toEqual([COMMAND, COMMAND]);
+  });
+
+  it('names no rule in the unattended remedy, and never a bare Bash rule', async () => {
+    const executed: string[] = [];
+    const notices: string[] = [];
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      recordingRegistry(executed),
+      'clean it',
+      [],
+      noopCallbacks({
+        onPermissionRequired: noApprover,
+        onToolResult: (r) => results.push(r),
+        onNotice: (notice) => notices.push(notice),
+      }),
+      'default',
+      {
+        provider: toolsThenText([{ id: 'b1', name: 'Bash', arguments: { command: COMMAND } }]),
+        isNewSession: false,
+      },
+    );
+    expect(executed).toEqual([]);
+    const texts = [
+      byId(results, 'b1')?.content ?? '',
+      ...notices.filter((n) => n.includes('needs approval')),
+    ];
+    expect(texts).toHaveLength(2);
+    for (const text of texts) {
+      expect(text).not.toMatch(/"Bash/);
+      expect(text).toContain('no single permissions.allow rule');
+      expect(text).toContain('`*`');
+    }
+  });
+});

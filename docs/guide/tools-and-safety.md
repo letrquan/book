@@ -360,10 +360,12 @@ compound prompt, then glob and bare allow rules. A command that only _quotes_ th
 compound command under a Bash `deny` or `ask` rule only the exact rule counts.
 
 "Always allow" offers only the exact rule, with no widened `*` rungs, for a command that chains or
-redirects or contains a quote character. For a command whose exact rule could never admit it, it
-remembers nothing and offers no rule (the prompt says "this call only — no rule to save", and the
-call still runs once): a command that is multi-line after trimming, and a compound command that
-contains a `*` (its rule would be a glob rule, which refuses compound commands).
+redirects or contains a quote character or a `?` (a widened rung is a glob rule, where `?` is a
+wildcard; the exact rule compares as plain text, so its `?` stays a `?`). Two kinds of
+command have no rule at all, and the prompt offers only "Run once" and "Skip" for them: a command
+that is multi-line after trimming, and any command that contains a `*`, compound or not. A rule
+holding that `*` would be a glob rule, which looks like the exact command on the prompt but admits
+more: `Bash(rm -rf build/*)` would go on to admit `rm -rf build/ ~/` without asking.
 
 **Windows and `'`.** `'` is a quote in Git Bash and PowerShell but not in cmd.exe, so on Windows a
 single-quoted argument (`git stash show 'stash@{0}'`) is treated as an ordinary argument only when

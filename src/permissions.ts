@@ -388,7 +388,8 @@ function bashRestrictiveCandidates(command: unknown, firstLine: string): string[
 
 /**
  * The rule that remembers exactly this call, or `undefined` when the call has no
- * primary argument to scope one to, or, for Bash, when the exact rule could never admit it.
+ * primary argument to scope one to, or, for Bash, when the command has no rule that admits it
+ * and nothing else.
  *
  * A bare tool name means "every call of this tool", so a call whose primary argument
  * is empty must not produce one: `{command: ""}` and `{command: "\nrm -rf x"}` both
@@ -396,24 +397,23 @@ function bashRestrictiveCandidates(command: unknown, firstLine: string): string[
  * them would have written a `Bash` rule allowing every shell command from then on.
  * The call is still allowed; nothing is remembered.
  */
-export function permissionRuleForToolCall(
-  call: ToolCall,
-  platform: NodeJS.Platform = process.platform,
-  shell?: ScanShell,
-): string | undefined {
+export function permissionRuleForToolCall(call: ToolCall): string | undefined {
   const toolName = canonicalToolName(call.name);
   if (toolName === 'Bash' && typeof call.arguments.command === 'string') {
     // The exact rule is built from the trimmed command and admits only it (#512). Two commands
-    // have a rule that could never admit them, and an "Always allow" on them remembers nothing:
-    // one that is multi-line after trimming (a rule holds one line, and the line it would hold
-    // is not what runs), and a compound one that contains a `*` (its rule is a glob rule, and a
-    // glob rule refuses a compound command). The call itself still runs once.
+    // have no such rule, and an "Always allow" on them remembers nothing:
+    // - one that is multi-line after trimming (a rule holds one line, and the line it would hold
+    //   is not what runs);
+    // - one that contains a `*`, compound or not (#521). Its rule is a glob rule, whose `*`
+    //   crosses spaces and `/`: `Bash(rm -rf build/*)` reads as the exact command on the card
+    //   and goes on to admit `rm -rf build/ ~/`. (A compound one is refused by a glob rule too.)
+    // The call itself still runs once.
     // A command that opens with a blank line is not scoped to a line either, as before: its
     // primary argument is empty, and a rule built from it would be a bare `Bash`.
     const command = call.arguments.command.trim();
     if (!command || LINE_BREAK.test(command)) return undefined;
     if (!getPrimaryArg(call.arguments).trim()) return undefined;
-    if (command.includes('*') && hasCompoundShellSyntax(command, platform, shell)) return undefined;
+    if (command.includes('*')) return undefined;
     return `Bash(${command})`;
   }
   const primaryArg = getPrimaryArg(call.arguments);
@@ -471,17 +471,15 @@ const RULE_LADDER_MAX = 3;
  *
  * Only Bash gets a ladder. Paths are already reusable as written, and WebFetch
  * globs its own origin in {@link permissionRuleForToolCall}. The list is empty
- * when the call has no primary argument to scope a rule to, and for a Bash command whose exact
- * rule could never admit it (see {@link permissionRuleForToolCall}); a caller reads that as
- * "remember nothing". For a one-line compound command the ladder is its exact rule alone, which
- * admits that same call.
+ * when the call has no primary argument to scope a rule to, and for a Bash command that has no
+ * exact rule (a multi-line one, or one holding a `*`; see {@link permissionRuleForToolCall}), so
+ * the wider rungs go too; a caller reads that as "remember nothing". The ladder is the exact rule
+ * alone for a one-line compound command, a quoted one, and one holding a `?`: a wider rung is a
+ * glob rule, and in a glob rule `?` matches any one character, so it would admit more than the
+ * card shows. The exact rule has no `*` and compares as a plain string, so its `?` stays literal.
  */
-export function permissionRuleLadder(
-  call: ToolCall,
-  platform: NodeJS.Platform = process.platform,
-  shell?: ScanShell,
-): string[] {
-  const exact = permissionRuleForToolCall(call, platform, shell);
+export function permissionRuleLadder(call: ToolCall): string[] {
+  const exact = permissionRuleForToolCall(call);
   if (!exact) return [];
   if (canonicalToolName(call.name) !== 'Bash') return [exact];
 
@@ -491,7 +489,12 @@ export function permissionRuleLadder(
   const command = typeof raw === 'string' ? raw.trim() : '';
   // A line break never gets here: `permissionRuleForToolCall` offers no rule for one. `!command`
   // is a Bash call whose `command` is not a string, which the generic path gave a rule to.
-  if (!command || SHELL_CHAINING.test(command) || ANY_QUOTE.test(command)) {
+  if (
+    !command ||
+    SHELL_CHAINING.test(command) ||
+    ANY_QUOTE.test(command) ||
+    command.includes('?')
+  ) {
     return [exact];
   }
 
