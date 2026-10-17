@@ -17,6 +17,11 @@ import { runHeadless } from './headless.js';
 import { SessionStore } from './session/store.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
+import {
+  enterIsolatedHome,
+  isolateBookHome,
+  leaveIsolatedHome,
+} from './test/isolated-book-home.js';
 import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
 import { RunAccounting } from './session/run-accounting.js';
 import type { AgentConfig } from './types/runtime.js';
@@ -26,23 +31,18 @@ import type { Usage } from './types/messages.js';
 import type { HeadlessOptions } from './types/public-sdk.js';
 
 let workspace: string;
-let tempHome: string;
-let previousBookHome: string | undefined;
+
+// Nothing here may read the developer's own user-global settings.
+isolateBookHome('book-usage-home-');
 
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'book-usage-workspace-'));
-  tempHome = mkdtempSync(join(tmpdir(), 'book-usage-home-'));
-  previousBookHome = process.env.BOOK_HOME;
-  // Nothing here may read the developer's own user-global settings.
-  process.env.BOOK_HOME = tempHome;
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
-  for (const dir of [workspace, tempHome]) rmSync(dir, { recursive: true, force: true });
+  rmSync(workspace, { recursive: true, force: true });
 });
 
 function freshConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
@@ -439,9 +439,7 @@ describe('print-mode usage records for spend after the root run ends (#336)', ()
     // A review resolves its target from the host's git workspace, so this one
     // needs a repository of its own rather than the flat temp directory.
     const repo = mkdtempSync(join(tmpdir(), 'book-usage-review-'));
-    const home = mkdtempSync(join(tmpdir(), 'book-usage-review-home-'));
-    const previousHome = process.env.BOOK_HOME;
-    process.env.BOOK_HOME = home;
+    const isolatedHome = enterIsolatedHome('book-usage-review-home-');
     const git = (...args: string[]): string =>
       execFileSync('git', args, {
         cwd: repo,
@@ -494,9 +492,8 @@ describe('print-mode usage records for spend after the root run ends (#336)', ()
         totalTokens: 42 * requests,
       });
     } finally {
-      if (previousHome === undefined) delete process.env.BOOK_HOME;
-      else process.env.BOOK_HOME = previousHome;
-      for (const dir of [repo, home]) rmSync(dir, { recursive: true, force: true });
+      leaveIsolatedHome(isolatedHome);
+      rmSync(repo, { recursive: true, force: true });
     }
   }, 30000);
 
@@ -563,9 +560,7 @@ describe('print-mode usage records for spend after the root run ends (#336)', ()
 describe('print-mode usage records across a host-performed command', () => {
   it('carries the review spend forward, and loses and duplicates nothing', async () => {
     const repo = mkdtempSync(join(tmpdir(), 'book-usage-cmd-'));
-    const home = mkdtempSync(join(tmpdir(), 'book-usage-cmd-home-'));
-    const previousHome = process.env.BOOK_HOME;
-    process.env.BOOK_HOME = home;
+    const isolatedHome = enterIsolatedHome('book-usage-cmd-home-');
     const git = (...args: string[]): string =>
       execFileSync('git', args, {
         cwd: repo,
@@ -658,9 +653,8 @@ describe('print-mode usage records across a host-performed command', () => {
       expect(resumed).toBe(1);
       expect(persistedTotals(store, sessionId).promptTokens).toBe(100 + 10 + 30 + 200 + 50);
     } finally {
-      if (previousHome === undefined) delete process.env.BOOK_HOME;
-      else process.env.BOOK_HOME = previousHome;
-      for (const dir of [repo, home]) rmSync(dir, { recursive: true, force: true });
+      leaveIsolatedHome(isolatedHome);
+      rmSync(repo, { recursive: true, force: true });
     }
   }, 30000);
 });

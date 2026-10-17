@@ -7,12 +7,13 @@ import { runHeadless } from './headless.js';
 import { SessionStore } from './session/store.js';
 import { createDefaultRegistry, createRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
+import { isolateBookHome } from './test/isolated-book-home.js';
 import { toolSuccess } from './tools/result.js';
 import type { AgentConfig } from './types/runtime.js';
 import type { Message } from './types/messages.js';
 
 let tempDirs: string[] = [];
-const previousBookHome = process.env.BOOK_HOME;
+isolateBookHome('book-answer-home-');
 let stderrWrites: string[] = [];
 let stderrSpy: ReturnType<typeof vi.spyOn>;
 
@@ -32,8 +33,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs = [];
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
 });
 
 function tempDir(prefix: string): string {
@@ -43,7 +42,6 @@ function tempDir(prefix: string): string {
 }
 
 function makeConfig(): AgentConfig {
-  process.env.BOOK_HOME = tempDir('book-answer-home-');
   return defaultConfig({ baseUrl: 'http://localhost/v1', workspace: tempDir('book-answer-ws-') });
 }
 

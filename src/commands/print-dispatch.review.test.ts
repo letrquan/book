@@ -22,10 +22,12 @@ import type { AgentManager } from '../agents/manager.js';
 import type { ReviewJsonReport } from '../review/host.js';
 import { createAgentRunContext, type AgentRunContext } from '../types/runs.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { isolateBookHome } from '../test/isolated-book-home.js';
 
 let workspace: string;
-let home: string;
-const previousBookHome = process.env.BOOK_HOME;
+
+// Keep the developer's own ~/.book/commands out of discovery.
+isolateBookHome('book-print-review-home-');
 
 function git(root: string, ...args: string[]): string {
   return execFileSync('git', args, {
@@ -37,9 +39,6 @@ function git(root: string, ...args: string[]): string {
 
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'book-print-review-'));
-  // Keep the developer's own ~/.book/commands out of discovery.
-  home = mkdtempSync(join(tmpdir(), 'book-print-review-home-'));
-  process.env.BOOK_HOME = home;
   git(workspace, 'init', '-q');
   git(workspace, 'config', 'user.email', 'book-tests@example.invalid');
   git(workspace, 'config', 'user.name', 'Book Tests');
@@ -50,9 +49,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const dir of [workspace, home]) rmSync(dir, { recursive: true, force: true });
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
+  rmSync(workspace, { recursive: true, force: true });
 });
 
 interface SpawnRequest {

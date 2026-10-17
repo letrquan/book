@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { hostname, tmpdir } from 'os';
 import { join } from 'path';
-import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   AgentContextCache,
   buildMessages,
@@ -17,6 +17,7 @@ import type { SlashCommand } from '../types/commands.js';
 import type { Message } from '../types/messages.js';
 import type { ProviderMessage } from '../types/providers.js';
 import { userMsg, assistantMsg, toolCall, toolResult, defaultConfig } from '../test/fixtures.js';
+import { isolateBookHome } from '../test/isolated-book-home.js';
 
 const config = defaultConfig();
 
@@ -34,17 +35,7 @@ function systemPrefix(out: Awaited<ReturnType<typeof buildMessages>>): string {
 
 // Memory writes resolve under BOOK_HOME; pin it so this suite never touches the developer's
 // ~/.book (vitest-setup leaves it unpinned on purpose — suites that write there pin their own).
-let pinnedBookHome: string;
-const previousBookHome = process.env.BOOK_HOME;
-beforeEach(() => {
-  pinnedBookHome = mkdtempSync(join(tmpdir(), 'book-home-test-'));
-  process.env.BOOK_HOME = pinnedBookHome;
-});
-afterEach(() => {
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
-  rmSync(pinnedBookHome, { recursive: true, force: true });
-});
+isolateBookHome('book-home-test-');
 
 describe('buildMessages', () => {
   it('hydrates session-owned image attachments without exposing storage bytes as text', async () => {

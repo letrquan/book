@@ -5,6 +5,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { defaultConfig } from '../../test/fixtures.js';
+import { isolateBookHome } from '../../test/isolated-book-home.js';
 import { SessionStore } from '../../session/store.js';
 
 /**
@@ -61,21 +62,17 @@ let latest: ReturnType<typeof useAgent> | undefined;
  * developer's own settings before anything went red. A home of its own means
  * the next such gap costs a wrong assertion rather than someone's config.
  */
-let bookHome: string;
-let previousBookHome: string | undefined;
+const bookHome = isolateBookHome('book-use-agent-toggle-home-');
 let previousStartupAnimation: string | undefined;
 
 beforeEach(() => {
-  bookHome = mkdtempSync(join(tmpdir(), 'book-use-agent-toggle-home-'));
-  previousBookHome = process.env.BOOK_HOME;
-  process.env.BOOK_HOME = bookHome;
   previousStartupAnimation = process.env.BOOK_STARTUP_ANIMATION;
   delete process.env.BOOK_STARTUP_ANIMATION;
 });
 
 /** The user layer, of which `BOOK_HOME` is the root. */
 function writeUserSettings(contents: unknown): void {
-  writeFileSync(join(bookHome, 'settings.json'), JSON.stringify(contents), 'utf-8');
+  writeFileSync(join(bookHome(), 'settings.json'), JSON.stringify(contents), 'utf-8');
 }
 
 function Harness({
@@ -119,11 +116,8 @@ function valuesFor(key: string): unknown[] {
 }
 
 afterEach(() => {
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
   if (previousStartupAnimation === undefined) delete process.env.BOOK_STARTUP_ANIMATION;
   else process.env.BOOK_STARTUP_ANIMATION = previousStartupAnimation;
-  rmSync(bookHome, { recursive: true, force: true });
   cleanup();
   latest = undefined;
   persisted.calls.length = 0;

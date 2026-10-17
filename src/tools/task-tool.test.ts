@@ -5,6 +5,11 @@ import { join } from 'path';
 import { AgentManager } from '../agents/manager.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { defaultConfig } from '../test/fixtures.js';
+import {
+  enterIsolatedHome,
+  leaveIsolatedHome,
+  type IsolatedHome,
+} from '../test/isolated-book-home.js';
 import { loadConfig } from '../config.js';
 import { agentLifecycleTools } from './agent-tools.js';
 import type { ToolContext } from '../types/tools.js';
@@ -13,24 +18,16 @@ import { createRegistry } from './registry-core.js';
 
 describe('Task tool', () => {
   let root: string;
-  let bookHome: string;
-  let originalBookHome: string | undefined;
+  let isolatedHome: IsolatedHome;
 
   beforeEach(() => {
-    originalBookHome = process.env.BOOK_HOME;
-    bookHome = mkdtempSync(join(tmpdir(), 'book-home-'));
-    process.env.BOOK_HOME = bookHome;
+    isolatedHome = enterIsolatedHome('book-home-');
     root = mkdtempSync(join(tmpdir(), 'book-task-tool-'));
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    if (originalBookHome !== undefined) {
-      process.env.BOOK_HOME = originalBookHome;
-    } else {
-      delete process.env.BOOK_HOME;
-    }
-    rmSync(bookHome, { recursive: true, force: true });
+    leaveIsolatedHome(isolatedHome);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -271,20 +268,16 @@ describe('Task tool', () => {
 
 describe('Task child continued with AgentSend', () => {
   let root: string;
-  let bookHome: string;
-  const previousBookHome = process.env.BOOK_HOME;
+  let isolatedHome: IsolatedHome;
 
   beforeEach(() => {
-    bookHome = mkdtempSync(join(tmpdir(), 'task-send-home-'));
-    process.env.BOOK_HOME = bookHome;
+    isolatedHome = enterIsolatedHome('task-send-home-');
     root = mkdtempSync(join(tmpdir(), 'task-send-root-'));
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-    else process.env.BOOK_HOME = previousBookHome;
-    rmSync(bookHome, { recursive: true, force: true });
+    leaveIsolatedHome(isolatedHome);
     rmSync(root, { recursive: true, force: true });
   });
 

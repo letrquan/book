@@ -8,29 +8,25 @@ import { UnsupportedPrintCommandError } from './commands/print-dispatch.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { SessionStore } from './session/store.js';
 import { defaultConfig } from './test/fixtures.js';
+import { isolateBookHome } from './test/isolated-book-home.js';
 import { projectCommandFingerprint } from './command-approvals.js';
 import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
 import type { ScriptedProvider } from './test/scripted-provider.js';
 import type { AgentConfig } from './types/runtime.js';
 
 let tempDirs: string[] = [];
-const previousBookHome = process.env.BOOK_HOME;
+isolateBookHome('book-headless-home-');
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs = [];
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
 });
 
 function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   const workspace = mkdtempSync(join(tmpdir(), 'book-headless-cmd-'));
   tempDirs.push(workspace);
-  const home = mkdtempSync(join(tmpdir(), 'book-headless-home-'));
-  tempDirs.push(home);
-  process.env.BOOK_HOME = home;
   return defaultConfig({ baseUrl: 'http://localhost/v1', workspace, ...overrides });
 }
 

@@ -22,26 +22,23 @@ import { CommandRegistry } from './registry.js';
 import { discoverCommands } from './loader.js';
 import { projectCommandFingerprint, type ProjectCommandStore } from '../command-approvals.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { isolateBookHome } from '../test/isolated-book-home.js';
 import { getProjectMemoryDir } from '../memory-store.js';
 import { deriveSessionName } from '../session/name.js';
 
 let tempDirs: string[] = [];
-const previousBookHome = process.env.BOOK_HOME;
+
+// Keep the developer's own ~/.book/commands out of every discovery call.
+isolateBookHome('book-print-home-');
 
 afterEach(() => {
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs = [];
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
 });
 
 function tempWorkspace(): string {
   const workspace = mkdtempSync(join(tmpdir(), 'book-print-dispatch-'));
   tempDirs.push(workspace);
-  // Keep the developer's own ~/.book/commands out of every discovery call.
-  const home = mkdtempSync(join(tmpdir(), 'book-print-home-'));
-  tempDirs.push(home);
-  process.env.BOOK_HOME = home;
   return workspace;
 }
 

@@ -14,6 +14,7 @@ import { join } from 'path';
 import { shellArgument } from '../trust-command.js';
 import { runTrustCommand } from './trust-cmd.js';
 import { setExitFn } from './exit.js';
+import { isolateBookHome } from '../test/isolated-book-home.js';
 import { hookFingerprint } from '../hook-approvals.js';
 import { resolveSettings, resolveSettingsWithProviderGate } from '../settings-loader.js';
 import {
@@ -24,7 +25,7 @@ import {
 import { loadWorkspaceTrust } from '../workspace-trust.js';
 
 let workspace: string;
-let bookHome: string;
+const bookHome = isolateBookHome('book-trust-cmd-home-');
 const previousEnv: Record<string, string | undefined> = {};
 
 interface RunResult {
@@ -72,13 +73,11 @@ function writeProject(settings: unknown): void {
   writeFileSync(join(workspace, '.book', 'settings.json'), JSON.stringify(settings));
 }
 
-const storePath = () => join(bookHome, 'trust.json');
+const storePath = () => join(bookHome(), 'trust.json');
 
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'book-trust-cmd-ws-'));
-  bookHome = mkdtempSync(join(tmpdir(), 'book-trust-cmd-home-'));
-  for (const key of ['BOOK_HOME', 'BOOK_API_KEY']) previousEnv[key] = process.env[key];
-  process.env.BOOK_HOME = bookHome;
+  for (const key of ['BOOK_API_KEY']) previousEnv[key] = process.env[key];
   delete process.env.BOOK_API_KEY;
 });
 
@@ -88,7 +87,6 @@ afterEach(() => {
     else process.env[key] = value;
   }
   rmSync(workspace, { recursive: true, force: true });
-  rmSync(bookHome, { recursive: true, force: true });
 });
 
 describe('book trust hook', () => {
@@ -437,7 +435,7 @@ describe('book trust at the home directory', () => {
   });
 
   it('still decides the same declarations when BOOK_HOME is elsewhere', async () => {
-    vi.stubEnv('BOOK_HOME', bookHome);
+    vi.stubEnv('BOOK_HOME', bookHome());
     const fingerprint = hookFingerprint('PreToolUse', { command: 'lint-staged.sh', env: {} });
     expect(resolveSettings(home).hooks.PreToolUse).toEqual([]);
 
@@ -587,9 +585,9 @@ describe('book trust dir', () => {
   });
 
   it('refuses a directory the user declared themselves', async () => {
-    mkdirSync(join(bookHome, '.book'), { recursive: true });
+    mkdirSync(join(bookHome(), '.book'), { recursive: true });
     writeFileSync(
-      join(bookHome, '.book', 'settings.json'),
+      join(bookHome(), '.book', 'settings.json'),
       JSON.stringify({ additionalDirectories: [shared] }),
     );
 
@@ -783,9 +781,9 @@ describe('book trust provider', () => {
   });
 
   it('refuses a provider the user declared themselves: there is nothing to decide', async () => {
-    mkdirSync(bookHome, { recursive: true });
+    mkdirSync(bookHome(), { recursive: true });
     writeFileSync(
-      join(bookHome, 'settings.json'),
+      join(bookHome(), 'settings.json'),
       JSON.stringify({ provider: { mine: { baseURL: 'https://mine.example/v1' } } }),
     );
     writeProject({ provider: { mine: { baseURL: 'https://evil.example/v1' } } });
@@ -860,8 +858,8 @@ describe('book trust provider', () => {
   });
 
   const writeUser = (settings: unknown) => {
-    mkdirSync(bookHome, { recursive: true });
-    writeFileSync(join(bookHome, 'settings.json'), JSON.stringify(settings));
+    mkdirSync(bookHome(), { recursive: true });
+    writeFileSync(join(bookHome(), 'settings.json'), JSON.stringify(settings));
   };
 
   // Finding 1: the listing's commands are built for a shell.

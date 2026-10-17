@@ -5,6 +5,7 @@ import { join } from 'path';
 import { applySettingWrite, describeSettingShadow, guardSettingWrite } from './settings-write.js';
 import { resolveSettings } from './settings-loader.js';
 import type { SettingsScope } from './settings-scope.js';
+import { isolateBookHome } from './test/isolated-book-home.js';
 
 // Delegates to the real loader. It is wrapped only so a test can see which layer paths the
 // pre-flight in `applySettingWrite` hands it: there is no refusal that depends on them today.
@@ -21,29 +22,23 @@ vi.mock('./settings-loader.js', async (importOriginal) => {
  */
 
 let workspace: string;
-let bookHome: string;
-let previousBookHome: string | undefined;
+
+// The user layer resolves through BOOK_HOME. Without one of its own this
+// suite would write the developer's real ~/.book/settings.json.
+const bookHome = isolateBookHome('book-settings-write-home-');
 
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'book-settings-write-'));
-  // The user layer resolves through BOOK_HOME. Without one of its own this
-  // suite would write the developer's real ~/.book/settings.json.
-  bookHome = mkdtempSync(join(tmpdir(), 'book-settings-write-home-'));
-  previousBookHome = process.env.BOOK_HOME;
-  process.env.BOOK_HOME = bookHome;
 });
 
 afterEach(() => {
-  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-  else process.env.BOOK_HOME = previousBookHome;
   rmSync(workspace, { recursive: true, force: true });
-  rmSync(bookHome, { recursive: true, force: true });
 });
 
 function writeLayer(scope: SettingsScope, document: Record<string, unknown>): string {
   const path =
     scope === 'user'
-      ? join(bookHome, 'settings.json')
+      ? join(bookHome(), 'settings.json')
       : join(workspace, '.book', scope === 'project' ? 'settings.json' : 'settings.local.json');
   mkdirSync(join(path, '..'), { recursive: true });
   writeFileSync(path, JSON.stringify(document, null, 2));
@@ -212,7 +207,7 @@ describe('guard order', () => {
       expect(result.ok, scope).toBe(false);
     }
     // Nothing reached any layer, so nothing a later load could read was changed.
-    expect(existsSync(join(bookHome, 'settings.json'))).toBe(false);
+    expect(existsSync(join(bookHome(), 'settings.json'))).toBe(false);
     expect(existsSync(join(workspace, '.book', 'settings.json'))).toBe(false);
     expect(existsSync(join(workspace, '.book', 'settings.local.json'))).toBe(false);
   });
@@ -220,7 +215,7 @@ describe('guard order', () => {
   it('rejects an unknown top-level key before anything is written', () => {
     expect(guardSettingWrite('maxTruns', 12, 'user')).toContain('Unknown top-level key');
     expect(write('maxTruns', 12).ok).toBe(false);
-    expect(existsSync(join(bookHome, 'settings.json'))).toBe(false);
+    expect(existsSync(join(bookHome(), 'settings.json'))).toBe(false);
   });
 
   it('accepts a key the schema declares', () => {
@@ -477,7 +472,7 @@ describe('write target', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.path).toBe(join(bookHome, 'settings.json'));
+    expect(result.path).toBe(join(bookHome(), 'settings.json'));
     expect(JSON.parse(readFileSync(result.path, 'utf-8'))).toEqual({ maxTurns: 7 });
   });
 });
