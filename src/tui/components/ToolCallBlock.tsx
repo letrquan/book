@@ -342,9 +342,12 @@ function ToolCallBlockInner({
     : presentation.status === 'skipped'
       ? theme.warning
       : theme.error;
+  // A command's result is its output, previewed below, not a count of its lines.
   const summary = mutationSummary
     ? mutationResultSummary(mutationSummary)
-    : toolResultSummary(presentation);
+    : isCommandTool(presentation.canonicalName)
+      ? undefined
+      : toolResultSummary(presentation);
   // The result's opening row, when the state is not already told by the rows under it.
   const statusLine: { text: string; color: string } | undefined = isRunning
     ? { text: 'Running…', color: theme.inactive }

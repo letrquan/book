@@ -174,7 +174,7 @@ function withoutThoughts(content: string): string {
     .join('');
 }
 
-function estimateTimelineRows(
+export function estimateTimelineRows(
   entry: Message | CompactBoundary,
   terminalWidth: number,
   quietTools?: QuietToolContext,
