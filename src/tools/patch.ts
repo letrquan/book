@@ -16,7 +16,11 @@ import {
 } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
 import { PROVIDER_KEY_MARKER } from '../provider-secrets.js';
-import { redactedSecretDeletion, redactedSecretOverwrite } from './redacted-secret-guard.js';
+import {
+  redactedSecretAddition,
+  redactedSecretDeletion,
+  redactedSecretOverwrite,
+} from './redacted-secret-guard.js';
 import {
   readTextSnapshot,
   removeFileAtomically,
@@ -415,6 +419,9 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
               afterText = checked.content ?? afterText;
               memoryWarnings.push(...checked.warnings);
             }
+            // Staging writes nothing, so a refusal here leaves every file in the patch as it was.
+            const added = redactedSecretAddition(ctx, entry.messagePath, '', afterText);
+            if (added) return added;
             const { stats } = await renderDiffWithStatsAsync('', afterText, 3, ctx.signal);
             staged.push({
               operation: entry.operation,
@@ -481,6 +488,8 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
               afterText = checked.content ?? afterText;
               memoryWarnings.push(...checked.warnings);
             }
+            const added = redactedSecretAddition(ctx, entry.messagePath, before.text, afterText);
+            if (added) return added;
             const { stats } = await renderDiffWithStatsAsync(before.text, afterText, 3, ctx.signal);
             staged.push({
               operation: entry.operation,

@@ -792,8 +792,7 @@ the whole file back with `Write` would replace the real credential with the mark
 and `MultiEdit` therefore refuse, with the error code `redacted_secret_overwrite` and the file left
 unchanged, when the file on disk holds a configured provider key **and** the new content (or an
 `Edit`'s `new_string`) contains the marker. The remedy is an `Edit` on only the lines that need to
-change, leaving out the line that shows the marker, or asking you to make the change. Writing the
-marker into a file that holds no key is still allowed, so Book's own docs and tests are unaffected.
+change, leaving out the line that shows the marker, or asking you to make the change.
 
 `ApplyPatch` and `NotebookEdit` close the same gap with the same error code. `ApplyPatch` refuses
 the whole patch, writing nothing, when an operation **deletes** a file that holds a key (Book can
@@ -807,6 +806,18 @@ provider key is configured. The error code is `redacted_secret_command`, and it 
 foreground and in the background alike: the marker stands for a key the model cannot see, so a
 command has no business writing or using it. To search for the marker text itself, leave out the
 brackets.
+
+A marker written to some other file could still be moved over the key file afterwards by a command
+that never names it (`mv tmp.json key.json`). So while a provider key is configured, no write may
+**add** the marker to any file: `Write` (to a new or an existing file), `Edit`, `MultiEdit`,
+`ApplyPatch` (`Add File` and `Update File`) and `NotebookEdit` refuse, with the error code
+`redacted_secret_write` and nothing written, when the file's new content holds more occurrences of
+the marker than its old content (none, for a new file). Whole files are compared, so an edit that
+keeps or removes a quote the file already has still works. The remedy is a placeholder of the
+model's own, such as `<your-api-key>`, or asking you to write the text. This includes a repository
+that documents the marker, Book's own among them: while a key is configured the model cannot add new
+quotes of it. With no key configured nothing is refused. Gaps this does not close: an MCP tool that
+writes files, and a `Bash` command that assembles the marker from pieces.
 
 ## Shell command timeouts
 

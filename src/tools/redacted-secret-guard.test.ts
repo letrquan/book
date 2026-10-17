@@ -5,6 +5,7 @@ import {
   holdsProviderKey,
   redactedSecretCommand,
   redactedSecretDeletion,
+  redactedSecretAddition,
   redactedSecretOverwrite,
 } from './redacted-secret-guard.js';
 
@@ -41,6 +42,42 @@ describe('redactedSecretOverwrite', () => {
     expect(
       redactedSecretOverwrite(ctx([]), 'a', `K=${KEY}`, [PROVIDER_KEY_MARKER]),
     ).toBeUndefined();
+  });
+});
+
+describe('redactedSecretAddition', () => {
+  it('refuses new content that holds more markers than the old, naming the marker', () => {
+    const refused = redactedSecretAddition(
+      ctx([KEY]),
+      'tmp.json',
+      '',
+      `{"k": "${PROVIDER_KEY_MARKER}"}`,
+    );
+    expect(refused?.structuredError?.code).toBe('redacted_secret_write');
+    expect(refused?.structuredError?.message).toContain('tmp.json');
+    expect(refused?.structuredError?.message).toContain(PROVIDER_KEY_MARKER);
+    expect(refused?.structuredError?.message).toMatch(/real provider key/);
+    expect(refused?.structuredError?.remediation).toMatch(/placeholder/);
+    expect(refused?.structuredError?.remediation).toMatch(/ask the user/);
+    expect(JSON.stringify(refused)).not.toContain(KEY);
+
+    const once = `a ${PROVIDER_KEY_MARKER}\n`;
+    expect(redactedSecretAddition(ctx([KEY]), 'a', once, `${once}${once}`)).toBeDefined();
+  });
+
+  it('counts whole files, so a marker completed across a boundary is refused', () => {
+    const half = PROVIDER_KEY_MARKER.slice(0, -5);
+    const rest = PROVIDER_KEY_MARKER.slice(-5);
+    expect(redactedSecretAddition(ctx([KEY]), 'a', `${half}X`, `${half}${rest}`)).toBeDefined();
+  });
+
+  it('allows keeping or removing a marker, and anything with no key configured', () => {
+    const once = `a ${PROVIDER_KEY_MARKER}\n`;
+    expect(redactedSecretAddition(ctx([KEY]), 'a', once, `${once}b\n`)).toBeUndefined();
+    expect(redactedSecretAddition(ctx([KEY]), 'a', once, 'a\n')).toBeUndefined();
+    expect(redactedSecretAddition(ctx([KEY]), 'a', '', 'plain')).toBeUndefined();
+    expect(redactedSecretAddition(ctx(), 'a', '', PROVIDER_KEY_MARKER)).toBeUndefined();
+    expect(redactedSecretAddition(ctx([]), 'a', '', PROVIDER_KEY_MARKER)).toBeUndefined();
   });
 });
 

@@ -13,7 +13,7 @@ import { markdownContentStart } from '../frontmatter.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { findRelaxedMatch } from './fuzzy-match.js';
 import { checkMemoryWrite, noticeMemoryWrite, withMemoryWarnings } from '../memory-write-guard.js';
-import { redactedSecretOverwrite } from './redacted-secret-guard.js';
+import { redactedSecretAddition, redactedSecretOverwrite } from './redacted-secret-guard.js';
 import {
   isBookLocalSettingsUnderRoots,
   memoryReadDisplayPath,
@@ -1488,6 +1488,8 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
       newContent = checked.content ?? newContent;
       memoryWarnings = checked.warnings;
     }
+    const added = redactedSecretAddition(ctx, shownPath, before.text, newContent);
+    if (added) return added;
     const { diff, stats } = await renderDiffWithStatsAsync(before.text, newContent, 3, ctx.signal);
     try {
       await writeFileAtomically(
@@ -1593,6 +1595,8 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
       newContent = checked.content ?? newContent;
       memoryWarnings = checked.warnings;
     }
+    const added = redactedSecretAddition(ctx, shownPath, content, newContent);
+    if (added) return added;
     const toleranceNote = application.note ? `\n\nNote: ${application.note}` : '';
     const { diff, stats } = await renderDiffWithStatsAsync(content, newContent, 3, ctx.signal);
     try {
@@ -1695,6 +1699,8 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
       content = checked.content ?? content;
       memoryWarnings = checked.warnings;
     }
+    const added = redactedSecretAddition(ctx, shownPath, original, content);
+    if (added) return added;
     const toleranceNote = notes.length > 0 ? `\n\nNote: ${notes.join(' ')}` : '';
     const { diff, stats } = await renderDiffWithStatsAsync(original, content, 3, ctx.signal);
     try {
