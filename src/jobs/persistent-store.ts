@@ -25,9 +25,11 @@ export interface PersistentShellSpec {
   command: string;
   effectiveCommand: string;
   /**
-   * Present only for sandboxed commands. Specs written before this field
-   * existed simply lack it and fall back to the shell path, which is what they
-   * were already doing.
+   * Present for sandboxed commands and for a session shell spawned as argv,
+   * stored whole: its `env` (a Git Bash command on Windows) reaches only the
+   * supervisor's spawn of the command. Specs written before this field existed
+   * simply lack it and fall back to the shell path, which is what they were
+   * already doing.
    */
   exec?: CommandExecution;
   title: string;

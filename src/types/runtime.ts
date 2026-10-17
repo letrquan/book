@@ -17,10 +17,16 @@ export type PermissionMode =
  * command string goes to the platform shell as before. Unsandboxed commands
  * use the same form when the session shell is spawned as argv (see
  * `ResolvedShell`).
+ *
+ * `env` holds variables the spawn must add to the child's environment, merged
+ * last over everything else. Git Bash on Windows receives its command there
+ * rather than in `args` (see `shellExecution`), so every site that spawns an
+ * `exec` must apply it to that spawn alone.
  */
 export interface CommandExecution {
   file: string;
   args: string[];
+  env?: Record<string, string>;
 }
 
 /** The program that interprets a Bash tool command string. */

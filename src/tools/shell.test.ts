@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -8,7 +8,7 @@ import { persistentEnvironmentOverrides, shellTools, streamTail } from './shell.
 import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
 import { hasCompoundShellSyntax } from './shell-chaining.js';
-import { resolveShell } from '../shell-selection.js';
+import { windowsGitBash } from '../test/real-shells.js';
 import { PROVIDER_KEY_MARKER, redactToolResultSecrets } from '../provider-secrets.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
 import { SessionRuntime } from '../session/runtime.js';
@@ -1403,33 +1403,137 @@ describe('BashOutput result data', () => {
   });
 });
 
-// The scanner reads `'` as a quote under Git Bash only when libuv wraps the argument (#512), which
-// rests on how the MSYS runtime rebuilds argv. This spawns the real Git Bash exactly as the Bash
-// tool does (`shellExecution` argv, no `windowsVerbatimArguments`), so it fails if that stops
-// being true. It runs only on Windows with Git Bash installed.
-const windowsGitBash = (() => {
-  if (process.platform !== 'win32') return undefined;
-  const resolved = resolveShell({ platform: 'win32', requested: 'bash' });
-  return resolved.kind === 'bash' && resolved.file ? resolved : undefined;
-})();
+// Git Bash on Windows gets its command in `BOOK_BASH_COMMAND` (#523): passed in argv, libuv leaves
+// a word with no space, tab or `"` unwrapped and the MSYS runtime rebuilds argv itself, stripping
+// quotes, globbing and expanding `@file`. These run the real Git Bash through the Bash tool, so
+// they fail if a command stops reaching bash byte for byte. They run only on Windows with Git Bash
+// installed (`windowsGitBash`).
 
-describe.skipIf(!windowsGitBash)('Git Bash single quotes on Windows (#512)', () => {
-  it('passes a quoted argument with a space through intact', async () => {
+interface ShellRun {
+  stdout: string;
+  stderr: string;
+  code: number | null;
+}
+
+describe.skipIf(!windowsGitBash)('Git Bash commands on Windows (#512, #523)', () => {
+  function gitBashContext(): ToolContext {
     const c: ToolContext = { workspaceRoot: dir, env: {}, shell: windowsGitBash };
     contexts.push(c);
-    const result = await bash.execute({ command: "echo 'x;echo y'" }, c);
-    expect(result.content.trim()).toBe('x;echo y');
+    return c;
+  }
+
+  /** The Bash tool's result as stdout, stderr and exit code (a failure carries stdout as content). */
+  async function viaTool(command: string): Promise<ShellRun> {
+    const result = await bash.execute({ command }, gitBashContext());
+    if (result.status === 'success') {
+      return {
+        stdout: result.content === '(no output)' ? '' : result.content,
+        stderr: '',
+        code: 0,
+      };
+    }
+    const message = result.structuredError?.message ?? '';
+    const exitCode = result.structuredError?.details?.exitCode;
+    return {
+      stdout: result.content,
+      stderr: /^Exit code: \d+$/.test(message) ? '' : message,
+      code: typeof exitCode === 'number' ? exitCode : null,
+    };
+  }
+
+  /** Git Bash spawned directly with the command in argv, as before #523. */
+  function direct(command: string): Promise<ShellRun> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(windowsGitBash!.file!, ['-c', command], {
+        cwd: dir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString('utf8')));
+      child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
+      child.on('error', reject);
+      child.on('close', (code) => resolve({ stdout, stderr, code }));
+    });
+  }
+
+  const notFound = (text: string): number => text.match(/command not found/g)?.length ?? 0;
+
+  it('passes a quoted argument with a space through intact', async () => {
+    const result = await viaTool("echo 'x;echo y'");
+    expect(result.stdout.trim()).toBe('x;echo y');
   });
 
-  it('is why a space-free quoted command is refused by the scanner: MSYS strips the quotes', async () => {
-    const c: ToolContext = { workspaceRoot: dir, env: {}, shell: windowsGitBash };
-    contexts.push(c);
-    // No space, tab or `"`, so libuv leaves the argument unwrapped and MSYS strips the quotes.
-    expect(hasCompoundShellSyntax("echo';echo${IFS}y'", 'win32', windowsGitBash)).toBe(true);
-    const result = await bash.execute({ command: "echo';echo${IFS}y'" }, c);
-    // Stripped, bash runs `echo;echo${IFS}y`: `echo` prints an empty line, then `echo y` prints `y`.
-    // Had the quotes survived, bash would look for a command named `echo;echo${IFS}y` and print a
-    // "command not found" error instead.
-    expect(result.content.replace(/\s+/g, '')).toBe('y');
+  it('delivers a space-free quoted command intact, so the scanner reads it as on Linux', async () => {
+    // Passed in argv, MSYS stripped the quotes and bash ran `echo;echo${IFS}y`: an empty line, then
+    // `y`. Delivered intact, bash looks for one command named `echo;echo${IFS}y`, which is what the
+    // scanner reads: one command.
+    expect(hasCompoundShellSyntax("echo';echo${IFS}y'", 'win32', windowsGitBash)).toBe(false);
+    const result = await viaTool("echo';echo${IFS}y'");
+    expect(notFound(result.stderr)).toBe(1);
+    expect(result.stderr).toContain('echo;echo${IFS}y: command not found');
+    expect(result.stdout.split(/\r?\n/)).not.toContain('y');
+  });
+
+  it("keeps `'` quoting a space-free word: one command, not two", async () => {
+    const result = await viaTool("echo'1;echo'2");
+    // Stripped quotes would give two errors, `echo1` and `echo2`.
+    expect(notFound(result.stderr)).toBe(1);
+    expect(result.stderr).toContain('echo1;echo2: command not found');
+  });
+
+  it('leaves globbing to bash, which still globs the command word', async () => {
+    writeFileSync(join(dir, 'echo;x'), '');
+    const result = await viaTool('echo?x');
+    // MSYS globbing put `echo;x` into the script text, where `;` split it into `echo` and `x`.
+    expect(notFound(result.stderr)).toBe(1);
+    expect(result.stderr).toContain('echo;x: command not found');
+    expect(result.stdout).toBe('');
+  });
+
+  it('does not read a leading @word as a response file', async () => {
+    writeFileSync(join(dir, 'f'), 'echo INJECTED\n');
+    const result = await viaTool('@f');
+    expect(result.stderr).toContain('@f: command not found');
+    expect(`${result.stdout}${result.stderr}`).not.toContain('INJECTED');
+  });
+
+  it('hides BOOK_BASH_COMMAND from the command and its children', async () => {
+    const result = await viaTool(
+      `printf '%s\\n' "[\${BOOK_BASH_COMMAND+LEAK}]" "$(env | grep -c '^BOOK_BASH_COMMAND=')"`,
+    );
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('[]\n0\n');
+  });
+
+  it('keeps $0, $# and the exit status of a direct bash -c', async () => {
+    // A space and a `"`, so libuv wraps the direct argument and MSYS leaves it literal.
+    const command = 'echo "[$0][$#]"; exit 7';
+    const [tool, plain] = await Promise.all([viaTool(command), direct(command)]);
+    expect(tool.stdout).toBe(plain.stdout);
+    expect(tool.code).toBe(plain.code);
+    expect(tool.code).toBe(7);
+  });
+
+  it('exits as a direct bash -c does on a syntax error', async () => {
+    const command = 'echo "a" )';
+    const [tool, plain] = await Promise.all([viaTool(command), direct(command)]);
+    expect(tool.code).toBe(plain.code);
+    expect(tool.code).toBe(2);
+  });
+
+  it('runs a ~20,000-character command', async () => {
+    const literal = 'x'.repeat(20_000);
+    const result = await viaTool(`echo ${literal}`);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe(`${literal}\n`);
+  });
+
+  it('echoes non-ASCII text, backslashes and a path list back byte for byte', async () => {
+    const values = ['h\u00e9llo w\u00f6rld \u2713 \u65e5\u672c', 'a\\b\\\\c', 'C:\\a;D:\\b'];
+    const command = `printf '%s\\n' ${values.map((value) => `'${value}'`).join(' ')}`;
+    const result = await viaTool(command);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe(values.map((value) => `${value}\n`).join(''));
   });
 });

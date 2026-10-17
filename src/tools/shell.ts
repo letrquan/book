@@ -5,7 +5,7 @@ import type {
   CommandExecution,
   ResolvedShell,
 } from '../types/runtime.js';
-import { resolveShell, shellExecution } from '../shell-selection.js';
+import { resolveShell, shellExecution, spawnCommandExecution } from '../shell-selection.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { decideSandboxExecution, withGitConfigReadOnlyNotice } from '../sandbox.js';
 import { buildChildEnv } from '../child-env.js';
@@ -165,7 +165,7 @@ function spawnEffective(
     stdio: ['ignore', 'pipe', 'pipe'],
   };
   return built.exec
-    ? spawn(built.exec.file, built.exec.args, { ...base, shell: false })
+    ? spawnCommandExecution(built.exec, base)
     : spawn(built.effectiveCommand, { ...base, shell: true });
 }
 

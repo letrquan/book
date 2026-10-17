@@ -183,35 +183,44 @@ describe('hasCompoundShellSyntax on win32 reads the session shell (#512, decisio
   });
 });
 
-// Git Bash is spawned as `[file, '-c', command]`. libuv leaves a space-free argument unwrapped on
-// the Windows command line, and the MSYS runtime rebuilds argv from that line itself, reading `'`
-// in an unwrapped word as a quote and stripping it: `echo';id'` reaches bash as `echo;id`. A word
-// with a space, a tab or a `"` is wrapped in `"…"` by libuv, inside which `'` is literal.
-describe('hasCompoundShellSyntax under Git Bash: a space-free command is not wrapped (#512)', () => {
+// The Bash tool hands Git Bash on Windows its command in an environment variable (#523), so the
+// MSYS runtime never rebuilds it and `'` is a POSIX single quote exactly as on Linux (#527): a
+// space-free command is read like any other.
+describe('hasCompoundShellSyntax under Git Bash reads single quotes as on Linux (#527)', () => {
   const gitBash = { kind: 'bash', file: 'C:/Program Files/Git/bin/bash.exe' } as const;
 
-  it.each(["echo';id'", "echo'1;echo'2", "ls'x'", "echo'", "  echo';id'  ", "echo';echo${IFS}y'"])(
-    'refuses %j: MSYS would strip the quotes and run two commands',
-    (command) => {
-      expect(hasCompoundShellSyntax(command, 'win32', gitBash)).toBe(true);
-    },
-  );
-
-  it.each(["git log 'x'", "git stash show 'stash@{0}'", "echo\t'x;y'", 'echo "it\'s"'])(
-    'admits %j: libuv wraps the argument, so the quotes arrive intact',
-    (command) => {
-      expect(hasCompoundShellSyntax(command, 'win32', gitBash)).toBe(false);
-    },
-  );
-
-  it('reads the trimmed command: surrounding spaces do not wrap it', () => {
-    expect(hasCompoundShellSyntax("  echo';id'  ", 'win32', gitBash)).toBe(true);
-    expect(hasCompoundShellSyntax("\techo';id'\t", 'win32', gitBash)).toBe(true);
+  it.each([
+    "git commit -m 'fix(x): y'",
+    "echo';id'",
+    "echo'1;echo'2",
+    "echo 'a;b'",
+    "ls'x'",
+    "  echo';id'  ",
+    "\techo';id'\t",
+    "echo';echo${IFS}y'",
+    "echo\t'x;y'",
+    'echo "it\'s"',
+  ])('admits %j as one command, as on Linux', (command) => {
+    expect(hasCompoundShellSyntax(command, 'win32', gitBash)).toBe(false);
+    expect(hasCompoundShellSyntax(command, 'linux')).toBe(false);
   });
 
-  it('does not change anything off win32', () => {
-    expect(hasCompoundShellSyntax("echo'x'", 'linux', gitBash)).toBe(false);
-    expect(hasCompoundShellSyntax("echo';id'", 'linux', gitBash)).toBe(false);
+  it.each(["echo 'a';id", "echo 'a' | sh", "echo'a'&&id"])(
+    'refuses %j: what is outside the quotes still chains, as on Linux',
+    (command) => {
+      expect(hasCompoundShellSyntax(command, 'win32', gitBash)).toBe(true);
+      expect(hasCompoundShellSyntax(command, 'linux')).toBe(true);
+    },
+  );
+
+  it.each([
+    ['WSL bash.exe', { kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe' } as const],
+    ['pwsh', { kind: 'pwsh', file: 'C:/pwsh.exe' } as const],
+    ['cmd', { kind: 'cmd' } as const],
+  ])('still refuses any single quote under %s', (_label, shell) => {
+    for (const command of ["echo';id'", "echo 'a;b'", "git commit -m 'fix(x): y'"]) {
+      expect(hasCompoundShellSyntax(command, 'win32', shell), command).toBe(true);
+    }
   });
 });
 
@@ -224,15 +233,20 @@ describe('hasCompoundShellSyntax: the WSL launcher is not Git Bash (#512)', () =
     'C:\\WINDOWS\\SysWOW64\\bash.exe',
     'C:\\Windows\\Sysnative\\bash.exe',
     'C:/Windows/System32/bash',
+    // The app execution alias directory, where WSL also installs its launcher.
+    'C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe',
+    'c:/users/me/appdata/local/microsoft/windowsapps/bash.exe',
   ])('refuses a single quote under %s', (file) => {
     expect(hasCompoundShellSyntax("git log 'x'", 'win32', { kind: 'bash', file })).toBe(true);
+    expect(hasCompoundShellSyntax("echo';id'", 'win32', { kind: 'bash', file })).toBe(true);
   });
 
-  it('still reads a Git Bash outside a system directory as Git Bash', () => {
+  it('still reads a Git Bash outside a WSL launcher directory as Git Bash', () => {
     for (const file of [
       'C:\\Program Files\\Git\\bin\\bash.exe',
       'C:/Program Files/Git/usr/bin/bash.exe',
       'D:\\tools\\Windows Kits\\bash.exe',
+      'D:\\Microsoft\\Git\\bin\\bash.exe',
     ]) {
       expect(hasCompoundShellSyntax("git log 'x'", 'win32', { kind: 'bash', file }), file).toBe(
         false,
