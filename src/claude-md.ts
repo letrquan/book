@@ -51,6 +51,8 @@ export function discoverProjectInstructions(
   const workspaceRoot = resolve(workspace);
   const systemHome = homeDir ?? homedir();
   const bookHome = homeDir ? join(homeDir, '.book') : resolveBookHome();
+  const localPath = join(workspaceRoot, 'CLAUDE.local.md');
+  const localKey = readSource(localPath, 'local') ? realPathOf(localPath) : undefined;
   const loaded = new Set<string>();
   const add = (path: string, layer: ProjectInstructionLayer) => {
     const source = readSource(path, layer);
@@ -58,9 +60,13 @@ export function discoverProjectInstructions(
     // A file is loaded once, at its first scope. `$HOME` is an ancestor of almost every
     // workspace, so the walk below meets `~/.claude/CLAUDE.md` again, and a workspace inside
     // `BOOK_HOME` meets its `AGENTS.md`; both stay user instructions (#430). Real paths, so a
-    // linked home, or a CLAUDE.md linked to the AGENTS.md beside it, counts once too. A CLAUDE.md
-    // linked to CLAUDE.local.md loads that file at the link's own project position, not as local.
+    // linked home, or a CLAUDE.md linked to the AGENTS.md beside it, counts once too.
+    // The one exception to first-load-wins is CLAUDE.local.md (#524): a project-layer file that
+    // is the same file (a committed `CLAUDE.md -> CLAUDE.local.md`) is the copy dropped, so the
+    // file loads once, as local, after every project file, which the repository cannot then
+    // override with a later `.claude/CLAUDE.md`. User-layer files are not affected.
     const key = realPathOf(path);
+    if (layer === 'project' && key === localKey) return;
     if (loaded.has(key)) return;
     loaded.add(key);
     sources.push(source);
@@ -75,7 +81,7 @@ export function discoverProjectInstructions(
     add(join(dir, '.claude', 'CLAUDE.md'), 'project');
   }
 
-  add(join(workspaceRoot, 'CLAUDE.local.md'), 'local');
+  add(localPath, 'local');
 
   // ponytail: rules are standing guidance; add glob/frontmatter matching when path-specific activation matters.
   try {
