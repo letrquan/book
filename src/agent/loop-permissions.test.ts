@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { runAgentLoop } from './loop.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
@@ -2230,14 +2230,19 @@ describe('runAgentLoop session rules under an ask rule (review of #531)', () => 
 // In `auto` the read target was not judged, so an ask-ruled read of a file outside every root
 // carried no `outsideWorkspace` marker: an unattended run named the ask rule, which cannot help,
 // where `default` names the unreachable target (review of #531).
+//
+// The ask rule has to match the target first. A target no root serves used to be tested only as
+// written, so on Windows (`C:\...\.env`) `Read(**/.env)` never matched it: `default` still refused
+// the read early, and `auto` ran it unprompted.
 describe('runAgentLoop an ask-ruled read outside every root (review of #531)', () => {
   async function readOutside(
     mode: 'default' | 'auto',
     approver: AgentLoopCallbacks['onPermissionRequired'],
+    spelling: { filePath?: string; ask?: string } = {},
   ) {
     writeFileSync(join(outside, '.env'), 'SECRET=1\n');
     const config = defaultConfig({ workspace, maxTurns: 2 });
-    config.settings.permissions.ask = ['Read(**/.env)'];
+    config.settings.permissions.ask = [spelling.ask ?? 'Read(**/.env)'];
     const prompt = vi.fn(approver);
     const notices: string[] = [];
     const results: ToolResult[] = [];
@@ -2254,7 +2259,11 @@ describe('runAgentLoop an ask-ruled read outside every root (review of #531)', (
       mode,
       {
         provider: toolsThenText([
-          { id: 'r1', name: 'Read', arguments: { filePath: join(outside, '.env') } },
+          {
+            id: 'r1',
+            name: 'Read',
+            arguments: { filePath: spelling.filePath ?? join(outside, '.env') },
+          },
         ]),
         isNewSession: false,
       },
@@ -2277,8 +2286,26 @@ describe('runAgentLoop an ask-ruled read outside every root (review of #531)', (
     const answered = async () => 'allow' as const;
     const inDefault = await readOutside('default', answered);
     const inAuto = await readOutside('auto', answered);
-    expect(inAuto.prompt.mock.calls.length).toBe(inDefault.prompt.mock.calls.length);
+    // Asked once in each: equal counts alone would pass with the rule matching in neither.
+    expect(inDefault.prompt).toHaveBeenCalledTimes(1);
+    expect(inAuto.prompt).toHaveBeenCalledTimes(1);
     expect(inAuto.result?.status).toBe(inDefault.result?.status);
     expect(inAuto.result?.content).not.toContain('SECRET');
   });
+
+  // The same gap, reproducible on every platform: a relative spelling of the outside file was
+  // tested only as written, so a rule naming its absolute path never matched it.
+  for (const mode of ['default', 'auto'] as const) {
+    it(`matches an absolute ask rule against a relative spelling of the target in ${mode}`, async () => {
+      const target = join(outside, '.env');
+      const { prompt, result } = await readOutside(mode, noApprover, {
+        filePath: relative(workspace, target),
+        ask: `Read(${target.replace(/\\/g, '/')})`,
+      });
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(result?.status).toBe('blocked');
+      expect(result?.content).toContain('outside the workspace');
+      expect(result?.content).not.toContain('SECRET');
+    });
+  }
 });

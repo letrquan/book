@@ -908,7 +908,15 @@ function spellingsOfPath(
     }
   }
   const detail = paths.detail(raw, includeReadOnly);
-  if (!('path' in detail)) return [...new Set(spellings)].filter((s) => s !== '' && s !== raw);
+  if (!('path' in detail)) {
+    // A target no root serves still gets its forward-slash spellings for `deny` and `ask`: as
+    // written, and absolute against the workspace the tools resolve it in. Without them a Windows
+    // path (`C:\elsewhere\.env`) was tested only as written, which no glob holding a `/`
+    // (`Read(**/.env)`) can match, so an ask rule on it never asked in `auto` there (#527), and a
+    // relative spelling (`..\elsewhere\.env`) missed a rule written as an absolute path.
+    if (restrictive) spellings.push(toPosix(raw), toPosix(resolve(paths.scope.root, raw)));
+    return [...new Set(spellings)].filter((s) => s !== '' && s !== raw);
+  }
   const resolved = detail.path;
   const inWorkspace = resolveWorkspacePath(paths.scope.root, raw) !== null;
   if (inWorkspace) {
