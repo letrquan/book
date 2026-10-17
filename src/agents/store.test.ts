@@ -1,9 +1,12 @@
 import {
   existsSync,
+  fsyncSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'fs';
@@ -47,7 +50,7 @@ afterEach(() => {
 });
 
 describe('AgentStore recovery', () => {
-  it('quarantines corrupt version 3 record files and loads the remaining store', () => {
+  it('quarantines corrupt version 3 record files and loads the remaining store', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const directory = join(root, 'repo');
     const records = join(directory, 'records');
@@ -55,13 +58,13 @@ describe('AgentStore recovery', () => {
     writeFileSync(join(directory, 'state.json'), JSON.stringify({ version: 3 }));
     writeFileSync(join(records, 'broken.json'), '{not valid json');
 
-    const store = new AgentStore('repo', root);
+    const store = await AgentStore.open('repo', root);
 
     expect(store.listAgents()).toEqual([]);
     expect(readdirSync(records).some((name) => name.startsWith('broken.json.corrupt-'))).toBe(true);
   });
 
-  it('migrates monolithic records to version 3 per-record storage', () => {
+  it('migrates monolithic records to version 3 per-record storage', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const directory = join(root, 'repo');
     mkdirSync(directory, { recursive: true });
@@ -90,7 +93,7 @@ describe('AgentStore recovery', () => {
         ],
       }),
     );
-    const store = new AgentStore('repo', root);
+    const store = await AgentStore.open('repo', root);
     const [record] = store.listAgents();
     expect(record.profile).toBe('explorer');
     expect(record.displayName).toBe('Trace authentication flow');
@@ -109,9 +112,9 @@ describe('AgentStore recovery', () => {
     store.dispose();
   });
 
-  it('marks active persisted agents interrupted while preserving transcript and worktree references', () => {
+  it('marks active persisted agents interrupted while preserving transcript and worktree references', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
-    const store = new AgentStore('repo', root, true, {
+    const store = await AgentStore.open('repo', root, true, {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 12345,
       hostname: 'test-host',
@@ -145,7 +148,7 @@ describe('AgentStore recovery', () => {
     };
     store.saveAgent(record);
 
-    const restarted = new AgentStore('repo', root, true, {
+    const restarted = await AgentStore.open('repo', root, true, {
       instanceId: '22222222-2222-4222-8222-222222222222',
       pid: 23456,
       hostname: 'test-host',
@@ -167,9 +170,9 @@ describe('AgentStore recovery', () => {
     restarted.dispose();
   });
 
-  it('does not interrupt an active agent owned by a live Book instance', () => {
+  it('does not interrupt an active agent owned by a live Book instance', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
-    const first = new AgentStore('repo', root, true, {
+    const first = await AgentStore.open('repo', root, true, {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 12345,
       hostname: 'test-host',
@@ -181,7 +184,7 @@ describe('AgentStore recovery', () => {
     };
     first.saveAgent(active, { required: true });
 
-    const second = new AgentStore('repo', root, true, {
+    const second = await AgentStore.open('repo', root, true, {
       instanceId: '22222222-2222-4222-8222-222222222222',
       pid: 23456,
       hostname: 'test-host',
@@ -196,14 +199,14 @@ describe('AgentStore recovery', () => {
     second.dispose();
   });
 
-  it('coalesces deferred writes, emits one degraded event, and recovers after retry', () => {
+  it('coalesces deferred writes, emits one degraded event, and recovers after retry', async () => {
     vi.useFakeTimers();
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     let recordAttempts = 0;
     const persisted: AgentRecord[] = [];
     const writer = {
-      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
-      // writer, so this is the half of it the heartbeat uses.
+      // Opening the store and the lease heartbeat write asynchronously; the doubles below stand
+      // in for the whole writer, so this is the half of it those paths use.
       writeAsync: vi.fn(async (target: string) => ({
         status: 'ok' as const,
         target,
@@ -229,7 +232,7 @@ describe('AgentStore recovery', () => {
       }),
     } as unknown as AtomicJsonWriter;
     const events: Array<{ state: string }> = [];
-    const store = new AgentStore('repo', root, true, {
+    const store = await AgentStore.open('repo', root, true, {
       writer,
       eventSink: (event) => events.push(event),
     });
@@ -249,14 +252,14 @@ describe('AgentStore recovery', () => {
     store.dispose();
   });
 
-  it('cancels an older queued record write before a required save', () => {
+  it('cancels an older queued record write before a required save', async () => {
     vi.useFakeTimers();
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const staleTemp = join(root, 'repo', 'records', 'stale-record.tmp');
     const recordWrites: AgentRecord[] = [];
     const writer = {
-      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
-      // writer, so this is the half of it the heartbeat uses.
+      // Opening the store and the lease heartbeat write asynchronously; the doubles below stand
+      // in for the whole writer, so this is the half of it those paths use.
       writeAsync: vi.fn(async (target: string) => ({
         status: 'ok' as const,
         target,
@@ -282,7 +285,7 @@ describe('AgentStore recovery', () => {
         return { status: 'ok', target, attempts: 1, elapsedMs: 0 } as const;
       }),
     } as unknown as AtomicJsonWriter;
-    const store = new AgentStore('repo', root, true, { writer });
+    const store = await AgentStore.open('repo', root, true, { writer });
     const record = recordFixture('required-agent');
 
     store.saveAgent(record, { defer: true });
@@ -297,14 +300,14 @@ describe('AgentStore recovery', () => {
     store.dispose();
   });
 
-  it('re-serializes changed values when the logical revision is unchanged', () => {
+  it('re-serializes changed values when the logical revision is unchanged', async () => {
     vi.useFakeTimers();
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const staleTemp = join(root, 'repo', 'records', 'equal-revision.tmp');
     const recordWrites: Array<{ value: AgentRecord; preparedTemp?: string }> = [];
     const writer = {
-      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
-      // writer, so this is the half of it the heartbeat uses.
+      // Opening the store and the lease heartbeat write asynchronously; the doubles below stand
+      // in for the whole writer, so this is the half of it those paths use.
       writeAsync: vi.fn(async (target: string) => ({
         status: 'ok' as const,
         target,
@@ -330,7 +333,7 @@ describe('AgentStore recovery', () => {
         return { status: 'ok', target, attempts: 1, elapsedMs: 0 } as const;
       }),
     } as unknown as AtomicJsonWriter;
-    const store = new AgentStore('repo', root, true, { writer });
+    const store = await AgentStore.open('repo', root, true, { writer });
     const record = recordFixture('equal-revision-agent');
 
     store.saveAgent(record, { defer: true });
@@ -346,14 +349,14 @@ describe('AgentStore recovery', () => {
     store.dispose();
   });
 
-  it('cancels an older queued evidence write before a required save', () => {
+  it('cancels an older queued evidence write before a required save', async () => {
     vi.useFakeTimers();
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const staleTemp = join(root, 'repo', 'evidence', 'stale-evidence.tmp');
     const evidenceWrites: EvidenceItem[] = [];
     const writer = {
-      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
-      // writer, so this is the half of it the heartbeat uses.
+      // Opening the store and the lease heartbeat write asynchronously; the doubles below stand
+      // in for the whole writer, so this is the half of it those paths use.
       writeAsync: vi.fn(async (target: string) => ({
         status: 'ok' as const,
         target,
@@ -379,7 +382,7 @@ describe('AgentStore recovery', () => {
         return { status: 'ok', target, attempts: 1, elapsedMs: 0 } as const;
       }),
     } as unknown as AtomicJsonWriter;
-    const store = new AgentStore('repo', root, true, { writer });
+    const store = await AgentStore.open('repo', root, true, { writer });
     const evidence: EvidenceItem = {
       id: 'evidence-1',
       kind: 'finding',
@@ -403,16 +406,16 @@ describe('AgentStore recovery', () => {
     store.dispose();
   });
 
-  it('discovers foreign agents created after this store starts', () => {
+  it('discovers foreign agents created after this store starts', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
-    const second = new AgentStore('repo', root, true, {
+    const second = await AgentStore.open('repo', root, true, {
       instanceId: '22222222-2222-4222-8222-222222222222',
       pid: 222,
       hostname: 'test-host',
       now: () => 2,
       processAlive: () => true,
     });
-    const first = new AgentStore('repo', root, true, {
+    const first = await AgentStore.open('repo', root, true, {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 111,
       hostname: 'test-host',
@@ -429,9 +432,9 @@ describe('AgentStore recovery', () => {
     second.dispose();
   });
 
-  it('preserves expired terminal records owned by a live foreign process', () => {
+  it('preserves expired terminal records owned by a live foreign process', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
-    const first = new AgentStore('repo', root, true, {
+    const first = await AgentStore.open('repo', root, true, {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 111,
       hostname: 'test-host',
@@ -445,7 +448,7 @@ describe('AgentStore recovery', () => {
       },
       { required: true },
     );
-    const second = new AgentStore('repo', root, true, {
+    const second = await AgentStore.open('repo', root, true, {
       instanceId: '22222222-2222-4222-8222-222222222222',
       pid: 222,
       hostname: 'test-host',
@@ -462,7 +465,7 @@ describe('AgentStore recovery', () => {
     second.dispose();
   });
 
-  it('recovers the newer legacy temp file before loading records', () => {
+  it('recovers the newer legacy temp file before loading records', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const directory = join(root, 'repo');
     const records = join(directory, 'records');
@@ -478,7 +481,7 @@ describe('AgentStore recovery', () => {
     const newer = { ...old, status: 'completed' as const, updatedAt: 2, completionSequence: 1 };
     writeFileSync(join(records, 'recovered-agent.json.999.123456.tmp'), JSON.stringify(newer));
 
-    const store = new AgentStore('repo', root);
+    const store = await AgentStore.open('repo', root);
 
     expect(store.loadAgent('recovered-agent')).toMatchObject({
       status: 'completed',
@@ -488,7 +491,7 @@ describe('AgentStore recovery', () => {
     store.dispose();
   });
 
-  it('retains the selected recovery temp when promotion is still busy', () => {
+  it('retains the selected recovery temp when promotion is still busy', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const directory = join(root, 'repo');
     const records = join(directory, 'records');
@@ -505,36 +508,36 @@ describe('AgentStore recovery', () => {
     const tempPath = join(records, 'busy-recovery.json.999.123456.tmp');
     writeFileSync(tempPath, JSON.stringify(newer));
     const writer = {
-      // The lease heartbeat is written asynchronously; the doubles below stand in for the whole
-      // writer, so this is the half of it the heartbeat uses.
-      writeAsync: vi.fn(async (target: string) => ({
+      // Temp recovery runs while the store opens, which writes asynchronously.
+      writeAsync: vi.fn(
+        async (target: string, _value: unknown, options?: { preparedTemp?: string }) =>
+          target.includes(`${join('records', '')}`) && options?.preparedTemp
+            ? {
+                status: 'busy' as const,
+                target,
+                tempPath: options.preparedTemp,
+                operation: 'rename' as const,
+                attempts: 4,
+                elapsedMs: 500,
+              }
+            : { status: 'ok' as const, target, attempts: 1, elapsedMs: 0 },
+      ),
+      write: vi.fn((target: string) => ({
         status: 'ok' as const,
         target,
         attempts: 1,
         elapsedMs: 0,
       })),
-      write: vi.fn((target: string, _value: unknown, preparedTemp?: string) =>
-        target.includes(`${join('records', '')}`) && preparedTemp
-          ? {
-              status: 'busy' as const,
-              target,
-              tempPath: preparedTemp,
-              operation: 'rename' as const,
-              attempts: 4,
-              elapsedMs: 500,
-            }
-          : { status: 'ok' as const, target, attempts: 1, elapsedMs: 0 },
-      ),
     } as unknown as AtomicJsonWriter;
 
-    const store = new AgentStore('repo', root, true, { writer });
+    const store = await AgentStore.open('repo', root, true, { writer });
 
     expect(existsSync(tempPath)).toBe(true);
     expect(store.loadAgent('busy-recovery')).toMatchObject({ status: 'queued' });
     store.dispose();
   });
 
-  it('quarantines recovery temps whose embedded ID does not match the target', () => {
+  it('quarantines recovery temps whose embedded ID does not match the target', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const directory = join(root, 'repo');
     const records = join(directory, 'records');
@@ -550,7 +553,7 @@ describe('AgentStore recovery', () => {
       JSON.stringify(recordFixture('different')),
     );
 
-    const store = new AgentStore('repo', root);
+    const store = await AgentStore.open('repo', root);
 
     expect(store.loadAgent('expected')).toBeUndefined();
     expect(
@@ -601,8 +604,8 @@ describe('AgentStore recovery of host-owned agents', () => {
     };
   }
 
-  function restart(directory: string): AgentStore {
-    return new AgentStore('repo', directory, true, {
+  async function restart(directory: string): Promise<AgentStore> {
+    return await AgentStore.open('repo', directory, true, {
       instanceId: '33333333-3333-4333-8333-333333333333',
       pid: 34567,
       hostname: 'test-host',
@@ -611,12 +614,12 @@ describe('AgentStore recovery of host-owned agents', () => {
     });
   }
 
-  it('marks a process-death interruption resumable, with the status it held', () => {
+  it('marks a process-death interruption resumable, with the status it held', async () => {
     // The distinction a restart needs: "died mid-flight" versus "genuinely
     // stopped". Without it the whole pending backlog became terminal records
     // nothing ever re-drove.
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
-    const store = new AgentStore('repo', root, true, {
+    const store = await AgentStore.open('repo', root, true, {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 12345,
       hostname: 'test-host',
@@ -626,7 +629,7 @@ describe('AgentStore recovery of host-owned agents', () => {
     record.status = 'running';
     store.saveAgent(record);
 
-    const recovered = restart(root).recoverAbandonedAgents()[0]!;
+    const recovered = (await restart(root)).recoverAbandonedAgents()[0]!;
 
     expect(recovered).toMatchObject({
       status: 'interrupted',
@@ -636,9 +639,9 @@ describe('AgentStore recovery of host-owned agents', () => {
     });
   });
 
-  it('recovers a suppressed agent without leaving a completion to deliver', () => {
+  it('recovers a suppressed agent without leaving a completion to deliver', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
-    const store = new AgentStore('repo', root, true, {
+    const store = await AgentStore.open('repo', root, true, {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 12345,
       hostname: 'test-host',
@@ -646,7 +649,7 @@ describe('AgentStore recovery of host-owned agents', () => {
     });
     store.saveAgent(reviewerRecord('reviewer-1'));
 
-    const recovered = restart(root).recoverAbandonedAgents()[0]!;
+    const recovered = (await restart(root)).recoverAbandonedAgents()[0]!;
 
     expect(recovered.status).toBe('interrupted');
     // Equal sequences mean nothing is outstanding: the next `--continue` will
@@ -656,9 +659,9 @@ describe('AgentStore recovery of host-owned agents', () => {
     expect(recovered.completionDeliveredSequence).toBe(1);
   });
 
-  it('still leaves an ordinary agent’s completion outstanding', () => {
+  it('still leaves an ordinary agent’s completion outstanding', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
-    const store = new AgentStore('repo', root, true, {
+    const store = await AgentStore.open('repo', root, true, {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 12345,
       hostname: 'test-host',
@@ -667,15 +670,15 @@ describe('AgentStore recovery of host-owned agents', () => {
     const ordinary = { ...reviewerRecord('explorer-1'), spawnerClaim: undefined };
     store.saveAgent(ordinary);
 
-    const recovered = restart(root).recoverAbandonedAgents()[0]!;
+    const recovered = (await restart(root)).recoverAbandonedAgents()[0]!;
 
     expect(recovered.completionSequence).toBe(1);
     expect(recovered.completionDeliveredSequence ?? 0).toBe(0);
   });
 
-  it('leaves the completion of a run past the claim outstanding', () => {
+  it('leaves the completion of a run past the claim outstanding', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
-    const store = new AgentStore('repo', root, true, {
+    const store = await AgentStore.open('repo', root, true, {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 12345,
       hostname: 'test-host',
@@ -684,7 +687,7 @@ describe('AgentStore recovery of host-owned agents', () => {
     // A follow-up the parent sent after the review took its result: run 2, past the claim.
     store.saveAgent({ ...reviewerRecord('reviewer-2'), runSequence: 2 });
 
-    const recovered = restart(root).recoverAbandonedAgents()[0]!;
+    const recovered = (await restart(root)).recoverAbandonedAgents()[0]!;
 
     expect(recovered.completionSequence).toBe(1);
     expect(recovered.completionDeliveredSequence ?? 0).toBe(0);
@@ -710,10 +713,10 @@ describe('AgentStore recovery of host-owned agents', () => {
    * agent has to keep reading as the host's to it for as long as the claim covers the run the
    * record is on.
    */
-  it('writes the legacy flag pair while the claim covers the run, and drops it past the claim', () => {
+  it('writes the legacy flag pair while the claim covers the run, and drops it past the claim', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const recordPath = join(root, 'repo', 'records', 'reviewer-5.json');
-    const store = new AgentStore('repo', root, true, {
+    const store = await AgentStore.open('repo', root, true, {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 12345,
       hostname: 'test-host',
@@ -739,9 +742,9 @@ describe('AgentStore recovery of host-owned agents', () => {
     store.dispose();
   });
 
-  it('reads a legacy flag pair as a claim on the run the record was on', () => {
+  it('reads a legacy flag pair as a claim on the run the record was on', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
-    const store = new AgentStore('repo', root, true, {
+    const store = await AgentStore.open('repo', root, true, {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 12345,
       hostname: 'test-host',
@@ -750,7 +753,7 @@ describe('AgentStore recovery of host-owned agents', () => {
     store.saveAgent(legacyRecord('reviewer-3', 3));
     store.saveAgent(legacyRecord('reviewer-4', undefined));
 
-    const reopened = restart(root);
+    const reopened = await restart(root);
     const continued = reopened.loadAgent('reviewer-3')!;
     expect(continued.spawnerClaim).toEqual({
       throughRunSequence: 3,
@@ -905,12 +908,12 @@ describe('AgentStore lease heartbeat', () => {
     };
   }
 
-  function store(
+  async function store(
     directory: string,
     disk: ReturnType<typeof slowDisk>,
     clock: ReturnType<typeof heartbeatClock>,
-  ): AgentStore {
-    return new AgentStore('repo', directory, true, {
+  ): Promise<AgentStore> {
+    const opened = await AgentStore.open('repo', directory, true, {
       instanceId,
       writerOptions: { fsAsync: disk.fsAsync },
       // The interval production uses; with the clock above, the interval is not what decides when a
@@ -922,6 +925,10 @@ describe('AgentStore lease heartbeat', () => {
       hostname: 'test-host',
       now: () => 1_000,
     });
+    // Opening wrote through this disk too, the manifest and the first lease; those are not
+    // heartbeats, and `renamed` counts heartbeats.
+    disk.renamed.length = 0;
+    return opened;
   }
 
   /**
@@ -943,12 +950,13 @@ describe('AgentStore lease heartbeat', () => {
   it('skips a tick that arrives while a heartbeat write is still running', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const disk = slowDisk();
-    const held = disk.holdNextRename();
     const clock = heartbeatClock();
-    const agents = store(root, disk, clock);
+    const agents = await store(root, disk, clock);
+    // Armed after opening, whose writes go through the same disk, so it catches the first heartbeat.
+    const held = disk.holdNextRename();
 
-    // The store took its lease in its constructor and that one is synchronous, so this is the first
-    // heartbeat, and it is still in flight when the ticks below arrive.
+    // The store took its lease while it opened, so this is the first heartbeat, and it is still in
+    // flight when the ticks below arrive.
     clock.tick();
     await held.started;
     clock.tick(12);
@@ -969,12 +977,12 @@ describe('AgentStore lease heartbeat', () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const disk = slowDisk();
     const clock = heartbeatClock();
-    const agents = store(root, disk, clock);
+    const agents = await store(root, disk, clock);
 
-    // A heartbeat, not the constructor's lease: what is being checked here is the asynchronous
-    // protocol, and the file it produced is one that went through the lock, the temp file and the
-    // rename rather than through the synchronous writer. The wait covers the lock as well as the
-    // rename, because this double reports the rename and the writer releases the lock after it, so
+    // A heartbeat, not the lease opening took: what is being checked here is the heartbeat's write,
+    // and the file it produced is one that went through the lock, the temp file and the rename of
+    // the asynchronous protocol. The wait covers the lock as well as the rename, because this
+    // double reports the rename and the writer releases the lock after it, so
     // the directory has to be back to just the lease before the listing below means anything — and
     // one tick is all that is delivered, so no second heartbeat can take that lock again afterwards.
     clock.tick();
@@ -1002,9 +1010,9 @@ describe('AgentStore lease heartbeat', () => {
   it('disposes during a write without leaving the lease behind or throwing', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const disk = slowDisk();
-    const held = disk.holdNextRename();
     const clock = heartbeatClock();
-    const agents = store(root, disk, clock);
+    const agents = await store(root, disk, clock);
+    const held = disk.holdNextRename();
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => unhandled.push(reason);
     process.on('unhandledRejection', onUnhandled);
@@ -1012,7 +1020,7 @@ describe('AgentStore lease heartbeat', () => {
       clock.tick();
       await held.started;
       // Mid-heartbeat: the lock and the temp file are there and the rename has not happened, and
-      // the lease is there too from the constructor.
+      // the lease is there too from opening.
       expect(contents(root)).toHaveLength(3);
       expect(contents(root).some((name) => name.endsWith('.tmp'))).toBe(true);
       expect(existsSync(leasePath(root))).toBe(true);
@@ -1062,7 +1070,7 @@ describe('AgentStore lease heartbeat', () => {
       reached = resolve;
     });
     const clock = heartbeatClock();
-    const agents = new AgentStore('repo', root, true, {
+    const agents = await AgentStore.open('repo', root, true, {
       instanceId,
       writerOptions: {
         fsAsync: {
@@ -1084,9 +1092,10 @@ describe('AgentStore lease heartbeat', () => {
       hostname: 'test-host',
       now: () => 1_000,
     });
-    // The constructor's lease is written synchronously and never reaches this double, so the hold is
-    // armed afterwards and the single delivered tick catches the first heartbeat.
+    // Opening took the lease through this double before the hold was armed, so the single delivered
+    // tick catches the first heartbeat; its renames are not the one this test waits for.
     expect(existsSync(leasePath(root))).toBe(true);
+    renamed.length = 0;
     held = true;
     clock.tick();
     await atRename;
@@ -1111,12 +1120,13 @@ describe('AgentStore lease heartbeat', () => {
   });
 
   it('keeps agent records synchronous, because a caller is told when they are durable', async () => {
-    // The other half of the claim: only the heartbeat moved. `saveAgent` returning has always meant
-    // the record is on disk, and a caller reading the file straight after the call depends on it.
+    // The other half of the claim: only the heartbeat and opening moved. `saveAgent` returning has
+    // always meant the record is on disk, and a caller reading the file straight after the call
+    // depends on it.
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const disk = slowDisk();
     const clock = heartbeatClock();
-    const agents = store(root, disk, clock);
+    const agents = await store(root, disk, clock);
     clock.tick();
     await waitForHeartbeat(root, disk);
 
@@ -1135,7 +1145,7 @@ describe('AgentStore lease heartbeat', () => {
 });
 
 describe('AgentStore retry logging', () => {
-  it('emits no retry succeeded debug event on a first-try write', () => {
+  it('emits no retry succeeded debug event on a first-try write', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const writer = {
       writeAsync: vi.fn(async (target: string) => ({
@@ -1151,7 +1161,7 @@ describe('AgentStore retry logging', () => {
         elapsedMs: 0,
       })),
     } as unknown as AtomicJsonWriter;
-    const store = new AgentStore('repo', root, true, { writer });
+    const store = await AgentStore.open('repo', root, true, { writer });
     debugEvents.length = 0;
 
     store.saveAgent(recordFixture('first-try'));
@@ -1162,7 +1172,7 @@ describe('AgentStore retry logging', () => {
     store.dispose();
   });
 
-  it('emits exactly one retry succeeded debug event for a busy-then-ok write', () => {
+  it('emits exactly one retry succeeded debug event for a busy-then-ok write', async () => {
     vi.useFakeTimers();
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     let recordAttempts = 0;
@@ -1195,7 +1205,7 @@ describe('AgentStore retry logging', () => {
         };
       }),
     } as unknown as AtomicJsonWriter;
-    const store = new AgentStore('repo', root, true, { writer });
+    const store = await AgentStore.open('repo', root, true, { writer });
     debugEvents.length = 0;
 
     store.saveAgent(recordFixture('retry-agent'));
@@ -1215,9 +1225,9 @@ describe('AgentStore retry logging', () => {
 });
 
 describe('AgentStore after dispose (#490)', () => {
-  it('flushes a write deferred before dispose, and refuses a save after it', () => {
+  it('flushes a write deferred before dispose, and refuses a save after it', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
-    const store = new AgentStore('repo', root, true, {
+    const store = await AgentStore.open('repo', root, true, {
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 12345,
       hostname: 'test-host',
@@ -1242,5 +1252,154 @@ describe('AgentStore after dispose (#490)', () => {
 
     expect(readFileSync(file, 'utf8')).toBe(flushed);
     expect(store.listAgents().find((agent) => agent.id === 'late-agent')?.status).toBe('queued');
+  });
+});
+
+/**
+ * Opening a store is the first thing the TUI does after its first frame, and on a slow disk the
+ * synchronous version of it held the event loop for hundreds of milliseconds: keys typed in that
+ * window arrived as one read and were taken for a paste (#516). `open()` moves the startup I/O to
+ * the thread pool, without giving up the guarantee that a store is never handed out before its
+ * lease is on disk (#357).
+ */
+describe('AgentStore.open (#516)', () => {
+  const instanceId = '55555555-5555-4555-8555-555555555555';
+  const leasePath = (directory: string) =>
+    join(directory, 'repo', 'instances', `${instanceId}.json`);
+
+  /** A promise and the function that settles it, for holding one filesystem call open. */
+  function gate(): { promise: Promise<void>; release: () => void } {
+    let release = (): void => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  }
+
+  it('resolves only once the lease is on disk, with a store that persists and reloads', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const reached = gate();
+    const held = gate();
+    let settled = false;
+    const opening = AgentStore.open('repo', root, true, {
+      instanceId,
+      writerOptions: {
+        fsAsync: {
+          rename: async (from, to) => {
+            if (to === leasePath(root)) {
+              reached.release();
+              await held.promise;
+            }
+            await renameAsync(from, to);
+          },
+        },
+      },
+    }).then((store) => {
+      settled = true;
+      return store;
+    });
+
+    // The lease is the last step of opening, and it is held: the store is ready in every other
+    // respect, and it is still not handed out.
+    await reached.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(existsSync(leasePath(root))).toBe(false);
+
+    held.release();
+    const store = await opening;
+    // No await between the resolution and the read: the lease is there when the store is.
+    expect(existsSync(leasePath(root))).toBe(true);
+
+    store.saveAgent(recordFixture('round-trip'));
+    store.dispose();
+    const reopened = await AgentStore.open('repo', root);
+    expect(reopened.listAgents()).toEqual([expect.objectContaining({ id: 'round-trip' })]);
+    expect(reopened.loadAgent('round-trip')).toMatchObject({
+      id: 'round-trip',
+      status: 'queued',
+      prompt: 'inspect',
+    });
+    reopened.dispose();
+  });
+
+  it('does its startup writes on the thread pool, leaving the event loop free', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const records = join(root, 'repo', 'records');
+    mkdirSync(records, { recursive: true });
+    // A record with no summary yet, so loading it queues a summary write, and no manifest, so
+    // opening writes one: the two writes `load` makes, besides the lease.
+    writeFileSync(join(records, 'old.json'), JSON.stringify(recordFixture('old')));
+    const summaryPath = join(root, 'repo', 'summaries', 'old.json');
+    const statePath = join(root, 'repo', 'state.json');
+
+    const sync = {
+      openSync: vi.fn(openSync),
+      writeFileSync: vi.fn(writeFileSync),
+      fsyncSync: vi.fn(fsyncSync),
+      renameSync: vi.fn(renameSync),
+    };
+    const opened: string[] = [];
+    const reached = gate();
+    const held = gate();
+    let immediateRan = false;
+    setImmediate(() => {
+      immediateRan = true;
+    });
+
+    const opening = AgentStore.open('repo', root, true, {
+      instanceId,
+      writerOptions: {
+        fs: sync,
+        fsAsync: {
+          open: async (path, flags, mode) => {
+            opened.push(path);
+            if (path === `${leasePath(root)}.lock`) {
+              reached.release();
+              await held.promise;
+            }
+            return openAsync(path, flags, mode);
+          },
+        },
+      },
+    });
+
+    // The immediate was queued before opening began, and it has run by the time the lease is
+    // taken: opening yielded to the event loop rather than holding it.
+    await reached.promise;
+    expect(immediateRan).toBe(true);
+    held.release();
+    const store = await opening;
+
+    // Each write, lock and temp file alike, was opened through the asynchronous filesystem...
+    for (const target of [summaryPath, statePath, leasePath(root)]) {
+      expect(opened).toContain(`${target}.lock`);
+      expect(opened.some((path) => path.startsWith(`${target}.`) && path.endsWith('.tmp'))).toBe(
+        true,
+      );
+    }
+    // ...and nothing reached the synchronous one.
+    for (const spy of Object.values(sync)) expect(spy).not.toHaveBeenCalled();
+    expect(JSON.parse(readFileSync(summaryPath, 'utf8'))).toMatchObject({ id: 'old' });
+    expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual({ version: 3 });
+
+    // The spies are live: a save after opening is synchronous, as it always was.
+    store.saveAgent(recordFixture('after-open'));
+    expect(sync.fsyncSync).toHaveBeenCalled();
+    store.dispose();
+  });
+
+  it('resolves a disabled store when its directories cannot be created', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    // A file where the store root should be: every `mkdir` under it fails.
+    const blocked = join(root, 'not-a-directory');
+    writeFileSync(blocked, '');
+
+    const store = await AgentStore.open('repo', blocked, true, { instanceId });
+
+    expect(store.saveAgent(recordFixture('in-memory')).status).toBe('ok');
+    expect(store.listAgents()).toEqual([expect.objectContaining({ id: 'in-memory' })]);
+    expect(readdirSync(root)).toEqual(['not-a-directory']);
+    store.dispose();
   });
 });

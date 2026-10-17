@@ -95,7 +95,11 @@ interface ManagerOptions {
   runtime?: SessionRuntime;
   permissionMode?: string;
   persistPermissionRule?: (rule: string) => void;
-  createStore?: (repoHash: string, root: string | undefined, enabled: boolean) => AgentStore;
+  createStore?: (
+    repoHash: string,
+    root: string | undefined,
+    enabled: boolean,
+  ) => AgentStore | Promise<AgentStore>;
 }
 
 /** An apply in flight: see `AgentManager.applies`. */
@@ -420,16 +424,26 @@ export class AgentManager {
     if (this.initialized) return this.initialized;
     this.initialized = (async () => {
       this.repoRoot = await (this.options.findGitRoot ?? findGitRoot)(this.config.workspace);
+      // A manager disposed while it waited has nothing to initialize: opening a store now would
+      // take a lease and arm a heartbeat that nothing is left to release.
+      if (this.disposed) return;
       const hash = repositoryHash(this.repoRoot ?? this.config.workspace);
-      this.store = this.options.createStore
+      const store = await (this.options.createStore
         ? this.options.createStore(
             hash,
             this.options.storeRoot,
             this.config.settings.agents.persist,
           )
-        : new AgentStore(hash, this.options.storeRoot, this.config.settings.agents.persist, {
+        : AgentStore.open(hash, this.options.storeRoot, this.config.settings.agents.persist, {
             eventSink: (event) => this.handlePersistenceEvent(event),
-          });
+          }));
+      // Disposed while the store opened: `dispose()` had no store to release, so it is released
+      // here, before anything reads it — its lease file and heartbeat timer go with it (#516).
+      if (this.disposed) {
+        store.dispose();
+        return;
+      }
+      this.store = store;
       const cleanup = this.store.cleanupDetailed(this.config.settings.agents.retentionDays);
       for (const agent of cleanup.agents) {
         await (this.options.removeWorktree ?? removeAgentWorktree)(agent, this.repoRoot);

@@ -281,6 +281,13 @@ describe('managed-agent synchronous delivery', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
     const writer = {
+      // Opening the store and the lease heartbeat write asynchronously, and succeed here.
+      writeAsync: async (target: string) => ({
+        status: 'ok' as const,
+        target,
+        attempts: 1,
+        elapsedMs: 0,
+      }),
       write: (target: string) =>
         target.includes(`${join('records', '')}`)
           ? {
@@ -296,7 +303,7 @@ describe('managed-agent synchronous delivery', () => {
       storeRoot: root,
       findGitRoot: async () => undefined,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, { writer }),
+        AgentStore.open(repoHash, requestedRoot, enabled, { writer }),
     });
     const runtime = new SessionRuntime();
     runtime.agentManager = manager;

@@ -1,5 +1,5 @@
 import { permissionResultOf } from '../permissions.js';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -76,7 +76,7 @@ it('lets a managed child publish evidence through its owning manager', async () 
   const manager = new AgentManager(config, evidenceTools, {
     findGitRoot: async () => undefined,
     createStore: (repoHash, requestedRoot, enabled) =>
-      new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
+      AgentStore.open(repoHash, requestedRoot, enabled, UNCONTENDED),
     runLoop: async (childConfig, registry, _prompt, history, _callbacks, mode, options) => {
       const publish = registry.getTool('EvidencePublish');
       expect(publish).toBeDefined();
@@ -122,8 +122,8 @@ describe('AgentManager lifecycle', () => {
     const runLoop = vi.fn();
     const removeSnapshot = vi.fn(async () => {});
     const writer = {
-      // The lease heartbeat is written off the caller's thread; the double stands in for the whole
-      // writer, so this is the half of it that path uses.
+      // Opening the store and the lease heartbeat write off the caller's thread; the double stands
+      // in for the whole writer, so this is the half of it those paths use.
       writeAsync: vi.fn(async (target: string) => ({
         status: 'ok' as const,
         target,
@@ -149,7 +149,7 @@ describe('AgentManager lifecycle', () => {
       removeSnapshot,
       runLoop,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, { writer }),
+        AgentStore.open(repoHash, requestedRoot, enabled, { writer }),
     });
 
     await expect(manager.spawn({ agent: 'patcher', prompt: 'inspect' })).rejects.toMatchObject({
@@ -169,7 +169,7 @@ describe('AgentManager lifecycle', () => {
     const storeRoot = tempRoot();
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
-    const owner = new AgentStore(repositoryHash(root), storeRoot, true, UNCONTENDED);
+    const owner = await AgentStore.open(repositoryHash(root), storeRoot, true, UNCONTENDED);
     owner.saveAgent(
       {
         id: 'foreign-agent',
@@ -190,7 +190,7 @@ describe('AgentManager lifecycle', () => {
     const manager = new AgentManager(config, [], {
       storeRoot,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
+        AgentStore.open(repoHash, requestedRoot, enabled, UNCONTENDED),
       findGitRoot: async () => undefined,
     });
 
@@ -208,7 +208,7 @@ describe('AgentManager lifecycle', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
     let now = 1;
-    const owner = new AgentStore(repositoryHash(root), storeRoot, true, {
+    const owner = await AgentStore.open(repositoryHash(root), storeRoot, true, {
       ...UNCONTENDED,
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 111,
@@ -234,7 +234,7 @@ describe('AgentManager lifecycle', () => {
       storeRoot,
       findGitRoot: async () => undefined,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, {
+        AgentStore.open(repoHash, requestedRoot, enabled, {
           instanceId: '22222222-2222-4222-8222-222222222222',
           pid: 222,
           hostname: 'test-host',
@@ -272,8 +272,8 @@ describe('AgentManager lifecycle', () => {
     config.settings.agents.persist = true;
     let recordWrites = 0;
     const writer = {
-      // The lease heartbeat is written off the caller's thread; the double stands in for the whole
-      // writer, so this is the half of it that path uses.
+      // Opening the store and the lease heartbeat write off the caller's thread; the double stands
+      // in for the whole writer, so this is the half of it those paths use.
       writeAsync: vi.fn(async (target: string) => ({
         status: 'ok' as const,
         target,
@@ -297,7 +297,7 @@ describe('AgentManager lifecycle', () => {
       storeRoot,
       findGitRoot: async () => undefined,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, { writer }),
+        AgentStore.open(repoHash, requestedRoot, enabled, { writer }),
       runLoop: async (_config, _registry, _prompt, history) => [
         ...history,
         {
@@ -318,6 +318,98 @@ describe('AgentManager lifecycle', () => {
       result: 'Completed in memory',
     });
     expect(completed.durabilityWarning).toContain('waiting for durable storage');
+    manager.dispose();
+  });
+
+  it('disposes a store whose open was still pending when the manager was disposed (#516)', async () => {
+    const root = tempRoot();
+    const storeRoot = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    const instances = join(storeRoot, repositoryHash(root), 'instances');
+    // The heartbeat clock, held by the test: a store that outlives its manager is one whose
+    // heartbeat is still armed here.
+    let nextTimer = 1;
+    const armed = new Set<number>();
+    const timers = {
+      setTimeout: (() => {
+        const id = nextTimer++;
+        armed.add(id);
+        return { id, unref: () => {} } as unknown as NodeJS.Timeout;
+      }) as unknown as typeof setTimeout,
+      clearTimeout: ((timer: NodeJS.Timeout) => {
+        armed.delete((timer as unknown as { id: number }).id);
+      }) as unknown as typeof clearTimeout,
+    };
+    let opened: AgentStore | undefined;
+    let markOpened = (): void => {};
+    const storeOpened = new Promise<void>((resolve) => {
+      markOpened = resolve;
+    });
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const manager = new AgentManager(config, [], {
+      storeRoot,
+      findGitRoot: async () => undefined,
+      createStore: async (repoHash, requestedRoot, enabled) => {
+        const store = await AgentStore.open(repoHash, requestedRoot, enabled, {
+          ...UNCONTENDED,
+          ...timers,
+        });
+        opened = store;
+        markOpened();
+        // Still pending from the manager's side when it is disposed.
+        await held;
+        return store;
+      },
+    });
+
+    const listing = manager.list();
+    await storeOpened;
+    // The premise: the store holds its lease and its heartbeat while the manager waits for it.
+    expect(readdirSync(instances)).toHaveLength(1);
+    expect(armed.size).toBe(1);
+
+    manager.dispose();
+    release();
+    await expect(listing).resolves.toEqual([]);
+
+    expect(opened).toBeDefined();
+    expect(readdirSync(instances)).toEqual([]);
+    expect(armed.size).toBe(0);
+  });
+
+  it('initializes without persistence when the store directories cannot be created (#516)', async () => {
+    const root = tempRoot();
+    // A file where the store root should be, so the store cannot create its directories.
+    const storeRoot = join(tempRoot(), 'not-a-directory');
+    writeFileSync(storeRoot, '');
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    const manager = new AgentManager(config, [], {
+      storeRoot,
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history) => [
+        ...history,
+        {
+          id: 'result',
+          role: 'assistant',
+          content: 'Completed without persistence',
+          includeInContext: true,
+          timestamp: 1,
+        },
+      ],
+    });
+
+    const spawned = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    await expect(manager.wait(spawned.id, 1_000)).resolves.toMatchObject({
+      status: 'completed',
+      result: 'Completed without persistence',
+    });
+    expect(await manager.list()).toEqual([expect.objectContaining({ id: spawned.id })]);
+    expect(existsSync(join(storeRoot, repositoryHash(root)))).toBe(false);
     manager.dispose();
   });
 
@@ -1041,7 +1133,7 @@ describe('AgentManager lifecycle', () => {
       await expect(applying).resolves.toMatchObject({ status: 'applied' });
 
       // What the next session reads: the pick is on the operator's branch, and the record says so.
-      const reader = new AgentStore(repositoryHash(root), storeRoot, true, UNCONTENDED);
+      const reader = await AgentStore.open(repositoryHash(root), storeRoot, true, UNCONTENDED);
       try {
         expect(reader.loadAgent(patcher.id)).toMatchObject({
           status: 'completed',
@@ -2486,7 +2578,7 @@ describe('delivery belongs to a run, not to the record (#245 item 5)', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
     config.settings.agents.resumeInterrupted = false;
-    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
+    const store = await AgentStore.open(repositoryHash(root), bookHome, true, UNCONTENDED);
     store.saveAgent({
       id: 'explorer-1',
       name: 'explorer',
@@ -2548,7 +2640,7 @@ describe('delivery belongs to a run, not to the record (#245 item 5)', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
     configure?.(config);
-    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
+    const store = await AgentStore.open(repositoryHash(root), bookHome, true, UNCONTENDED);
     store.saveAgent({
       id: 'reviewer-1',
       name: 'reviewer',
@@ -2661,7 +2753,7 @@ describe('resuming an interrupted backlog', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
 
-    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
+    const store = await AgentStore.open(repositoryHash(root), bookHome, true, UNCONTENDED);
     store.saveAgent({
       id: 'patcher-1',
       name: 'patcher',
@@ -2705,7 +2797,7 @@ describe('resuming an interrupted backlog', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
 
-    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
+    const store = await AgentStore.open(repositoryHash(root), bookHome, true, UNCONTENDED);
     store.saveAgent({
       id: 'patcher-2',
       name: 'patcher',
@@ -3124,7 +3216,7 @@ describe('a disposed manager keeps the records it wrote (#490)', () => {
       storeRoot,
       findGitRoot: async () => undefined,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
+        AgentStore.open(repoHash, requestedRoot, enabled, UNCONTENDED),
       runLoop: async (_config, _registry, _prompt, history, callbacks, _mode, options) => {
         started();
         if (ending === 'returns normally once aborted') {
@@ -3275,7 +3367,7 @@ describe("a plan's shared snapshot (#357)", () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
     config.settings.agents.maxConcurrent = 3;
-    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
+    const store = await AgentStore.open(repositoryHash(root), bookHome, true, UNCONTENDED);
     store.savePlan({
       id: 'plan-1',
       taskShape: 'three independent questions',
@@ -3403,7 +3495,7 @@ describe('AgentManager.wait timers (#423)', () => {
     const manager = new AgentManager(config, [], {
       findGitRoot: async () => undefined,
       createStore: (repoHash, requestedRoot, enabled) =>
-        new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
+        AgentStore.open(repoHash, requestedRoot, enabled, UNCONTENDED),
       runLoop: async () => {
         started();
         return new Promise<Message[]>(() => {});

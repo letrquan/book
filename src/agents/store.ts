@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -11,6 +10,7 @@ import {
   writeFileSync,
   type Dirent,
 } from 'node:fs';
+import { access, mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import { hostname as readHostname } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { createDebugLogger } from '../debug-log.js';
@@ -152,6 +152,32 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
+/** What a writer that threw instead of returning a result is reported as. */
+function writeFailure(
+  target: string,
+  error: unknown,
+): Extract<AtomicWriteResult, { status: 'unavailable' }> {
+  return {
+    status: 'unavailable',
+    target,
+    operation: 'write',
+    errorCode: errorCode(error),
+    message: 'Agent state storage failed.',
+    attempts: 1,
+    elapsedMs: 0,
+  };
+}
+
+/** `existsSync`, on the thread pool. */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function withoutStoreMetadata(record: PersistedAgentRecord): AgentRecord {
   const publicRecord = { ...record };
   delete publicRecord._store;
@@ -237,6 +263,11 @@ export class AgentStore {
   private readonly writer: AtomicJsonWriter;
   private enabled: boolean;
   private disposed = false;
+  /**
+   * Set while {@link open} loads the store. The writes `load` finds it needs are queued rather than
+   * made, and `open` flushes them on the thread pool once loading is done.
+   */
+  private opening = false;
   private heartbeatTimer?: NodeJS.Timeout;
   /**
    * The heartbeat write in flight, if any. See {@link refreshLease}: a tick that arrives while one
@@ -253,11 +284,15 @@ export class AgentStore {
   private readonly snapshots = new Map<string, AgentSnapshot>();
   private readonly pendingWrites = new Map<string, PendingWrite>();
 
-  constructor(
+  /**
+   * A store that has not touched the disk yet, and is not usable until it has: {@link open} is the
+   * way to get one.
+   */
+  private constructor(
     repoHash: string,
-    root = join(resolveBookHome(), 'agents'),
-    enabled = true,
-    options: AgentStoreOptions = {},
+    root: string,
+    enabled: boolean,
+    options: AgentStoreOptions,
   ) {
     this.directory = join(root, repoHash);
     this.statePath = join(this.directory, 'state.json');
@@ -293,28 +328,65 @@ export class AgentStore {
         onStaleLock: (target) =>
           this.safeLog('stale lock reclaimed', { target: targetTypeFor(target) }),
       });
-    if (enabled) {
-      try {
-        this.ensureDirectories();
-      } catch {
-        this.enabled = false;
-      }
-    }
-    if (this.enabled) {
-      this.recoverTemps();
-      this.load();
-      this.takeLease();
-      this.scheduleHeartbeat();
-    }
   }
 
-  private ensureDirectories(): void {
-    mkdirSync(this.agentsDirectory, { recursive: true });
-    mkdirSync(this.agentSummariesDirectory, { recursive: true });
-    mkdirSync(this.plansDirectory, { recursive: true });
-    mkdirSync(this.evidenceDirectory, { recursive: true });
-    mkdirSync(this.snapshotsDirectory, { recursive: true });
-    mkdirSync(this.instancesDirectory, { recursive: true });
+  /**
+   * Open the store for `repoHash` under `root`: create its directories, recover the temp files a
+   * crashed write left behind, load what is persisted, make the writes loading found it needed, and
+   * take this instance's lease, then start the heartbeat.
+   *
+   * All of that is on the thread pool. It is the first thing the TUI does after its first frame, and
+   * done synchronously on a slow disk its `open`s and `fsync`s held the event loop for hundreds of
+   * milliseconds: keys typed in that window arrived in one read and were taken for a paste (#516).
+   *
+   * The promise resolves only once the lease is on disk, so no caller ever holds a store without one
+   * (#357). A store whose directories cannot be created is not an error: it resolves disabled, and
+   * runs in memory only.
+   */
+  static async open(
+    repoHash: string,
+    root = join(resolveBookHome(), 'agents'),
+    enabled = true,
+    options: AgentStoreOptions = {},
+  ): Promise<AgentStore> {
+    const store = new AgentStore(repoHash, root, enabled, options);
+    await store.initialize();
+    return store;
+  }
+
+  private async initialize(): Promise<void> {
+    if (!this.enabled) return;
+    try {
+      await this.ensureDirectories();
+    } catch {
+      this.enabled = false;
+      return;
+    }
+    this.opening = true;
+    try {
+      await this.recoverTemps();
+      await this.load();
+    } finally {
+      this.opening = false;
+    }
+    for (const target of Array.from(this.pendingWrites.keys())) {
+      await this.flushPendingAsync(target);
+    }
+    await this.takeLease();
+    this.scheduleHeartbeat();
+  }
+
+  private async ensureDirectories(): Promise<void> {
+    for (const directory of [
+      this.agentsDirectory,
+      this.agentSummariesDirectory,
+      this.plansDirectory,
+      this.evidenceDirectory,
+      this.snapshotsDirectory,
+      this.instancesDirectory,
+    ]) {
+      await mkdir(directory, { recursive: true });
+    }
   }
 
   private safeLog(event: string, metadata: Record<string, unknown>): void {
@@ -325,9 +397,22 @@ export class AgentStore {
     }
   }
 
+  private quarantinePath(path: string): string {
+    return `${path}.corrupt-${this.now()}`;
+  }
+
   private quarantine(path: string): void {
     try {
-      renameSync(path, `${path}.corrupt-${this.now()}`);
+      renameSync(path, this.quarantinePath(path));
+    } catch {
+      // Leave unreadable data in place if it cannot be quarantined.
+    }
+  }
+
+  /** {@link quarantine}, on the thread pool, for what {@link open} reads. */
+  private async quarantineAsync(path: string): Promise<void> {
+    try {
+      await rename(path, this.quarantinePath(path));
     } catch {
       // Leave unreadable data in place if it cannot be quarantined.
     }
@@ -342,6 +427,16 @@ export class AgentStore {
     }
   }
 
+  /** {@link readJson}, on the thread pool, for what {@link open} reads. */
+  private async readJsonAsync<T>(path: string, quarantine = true): Promise<T | undefined> {
+    try {
+      return JSON.parse(await readFile(path, 'utf8')) as T;
+    } catch {
+      if (quarantine) await this.quarantineAsync(path);
+      return undefined;
+    }
+  }
+
   private targetMatchesId(path: string, value: { id?: string }): boolean {
     const type = targetTypeFor(path);
     if (!['record', 'summary', 'plan', 'evidence', 'snapshot'].includes(type)) return true;
@@ -352,17 +447,17 @@ export class AgentStore {
     }
   }
 
-  private loadDirectory<T extends { id: string }>(
+  private async loadDirectory<T extends { id: string }>(
     directory: string,
     target: Map<string, T>,
     migrate?: (value: T) => T,
-  ): void {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+  ): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
       const path = join(directory, entry.name);
-      const value = this.readJson<T>(path);
+      const value = await this.readJsonAsync<T>(path);
       if (!value?.id || !this.targetMatchesId(path, value)) {
-        if (value) this.quarantine(path);
+        if (value) await this.quarantineAsync(path);
         continue;
       }
       const resolved = migrate ? migrate(value) : value;
@@ -370,19 +465,23 @@ export class AgentStore {
     }
   }
 
-  private load(): void {
+  /**
+   * Read what is persisted into memory. Runs only inside {@link open}, so the writes it finds it
+   * needs are queued, and `open` makes them once it is done.
+   */
+  private async load(): Promise<void> {
     let legacy: LegacyStoreState | undefined;
-    if (existsSync(this.statePath)) {
-      const parsed = this.readJson<LegacyStoreState>(this.statePath);
+    if (await pathExists(this.statePath)) {
+      const parsed = await this.readJsonAsync<LegacyStoreState>(this.statePath);
       if (parsed?.version !== 3) legacy = parsed;
     }
 
-    for (const entry of readdirSync(this.agentSummariesDirectory, { withFileTypes: true })) {
+    for (const entry of await readdir(this.agentSummariesDirectory, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
       const path = join(this.agentSummariesDirectory, entry.name);
-      const persisted = this.readJson<PersistedAgentRecord>(path);
+      const persisted = await this.readJsonAsync<PersistedAgentRecord>(path);
       if (!persisted?.id || !this.targetMatchesId(path, persisted)) {
-        if (persisted) this.quarantine(path);
+        if (persisted) await this.quarantineAsync(path);
         continue;
       }
       const migrated = this.migrateAgent(withoutStoreMetadata(persisted));
@@ -391,12 +490,12 @@ export class AgentStore {
       this.summaryAgentIds.add(migrated.id);
     }
 
-    for (const entry of readdirSync(this.agentsDirectory, { withFileTypes: true })) {
+    for (const entry of await readdir(this.agentsDirectory, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
       const path = join(this.agentsDirectory, entry.name);
-      const persisted = this.readJson<PersistedAgentRecord>(path);
+      const persisted = await this.readJsonAsync<PersistedAgentRecord>(path);
       if (!persisted?.id || !this.targetMatchesId(path, persisted)) {
-        if (persisted) this.quarantine(path);
+        if (persisted) await this.quarantineAsync(path);
         continue;
       }
       const detailed = this.migrateAgent(withoutStoreMetadata(persisted));
@@ -420,9 +519,9 @@ export class AgentStore {
         );
       }
     }
-    this.loadDirectory(this.plansDirectory, this.plans);
-    this.loadDirectory(this.evidenceDirectory, this.evidence);
-    this.loadDirectory(this.snapshotsDirectory, this.snapshots);
+    await this.loadDirectory(this.plansDirectory, this.plans);
+    await this.loadDirectory(this.evidenceDirectory, this.evidence);
+    await this.loadDirectory(this.snapshotsDirectory, this.snapshots);
 
     if (legacy) {
       for (const agent of legacy.agents ?? []) {
@@ -436,7 +535,7 @@ export class AgentStore {
       for (const snapshot of legacy.snapshots ?? [])
         if (!this.snapshots.has(snapshot.id)) this.snapshots.set(snapshot.id, snapshot);
       this.flushAll();
-    } else if (!existsSync(this.statePath)) {
+    } else if (!(await pathExists(this.statePath))) {
       this.queueWrite(this.statePath, MANIFEST, { targetType: 'manifest', immediate: true });
     }
   }
@@ -557,29 +656,53 @@ export class AgentStore {
       flushing: current?.flushing ?? false,
     };
     this.pendingWrites.set(target, pending);
+    // Opening flushes everything queued while it loads, on the thread pool; see `initialize`.
+    if (this.opening) return okResult(target);
     if (options.immediate) return this.flushPending(target);
     this.schedulePending(pending, options.delayMs ?? DEFERRED_SAVE_MS);
     return okResult(target);
   }
 
   private flushPending(target: string): AtomicWriteResult {
-    const pending = this.pendingWrites.get(target);
-    if (!pending || pending.flushing) return okResult(target);
-    pending.flushing = true;
+    const pending = this.beginFlush(target);
+    if (!pending) return okResult(target);
     let result: Exclude<AtomicWriteResult, { status: 'cancelled' }>;
     try {
       result = this.writer.write(target, pending.value, pending.tempPath);
     } catch (error) {
-      result = {
-        status: 'unavailable',
-        target,
-        operation: 'write',
-        errorCode: errorCode(error),
-        message: 'Agent state storage failed.',
-        attempts: 1,
-        elapsedMs: 0,
-      };
+      result = writeFailure(target, error);
     }
+    return this.finishFlush(pending, result);
+  }
+
+  /** {@link flushPending} on the thread pool: the writes {@link open} makes. */
+  private async flushPendingAsync(target: string): Promise<AtomicWriteResult> {
+    const pending = this.beginFlush(target);
+    if (!pending) return okResult(target);
+    let result: Exclude<AtomicWriteResult, { status: 'cancelled' }>;
+    try {
+      result = await this.writer.writeAsync(target, pending.value, {
+        preparedTemp: pending.tempPath,
+      });
+    } catch (error) {
+      result = writeFailure(target, error);
+    }
+    return this.finishFlush(pending, result);
+  }
+
+  private beginFlush(target: string): PendingWrite | undefined {
+    const pending = this.pendingWrites.get(target);
+    if (!pending || pending.flushing) return undefined;
+    pending.flushing = true;
+    return pending;
+  }
+
+  /** What both flushes do with the result: settle the pending write, or schedule its retry. */
+  private finishFlush(
+    pending: PendingWrite,
+    result: Exclude<AtomicWriteResult, { status: 'cancelled' }>,
+  ): AtomicWriteResult {
+    const target = pending.target;
     pending.flushing = false;
     if (result.status === 'ok') {
       this.pendingWrites.delete(target);
@@ -1070,19 +1193,20 @@ export class AgentStore {
   /**
    * Take the lease for this instance, before anything else reads it.
    *
-   * This first lease is written synchronously where the heartbeats below are not, because it is the
-   * one a caller depends on the moment the constructor returns: a store that has just been built is
-   * asked whether its own instance is alive, and answered from this file. Deferring it to the thread
-   * pool leaves a window in which a brand new store has no lease at all, which is what a manager
-   * reading a just-created store sees when its first agent looks abandoned (#357).
+   * {@link open} waits for this write before it resolves, and that order is the guarantee: a store
+   * that has just been opened is asked whether its own instance is alive, and answered from this
+   * file. A store handed out before its lease landed would have a window with no lease at all, which
+   * is what a manager reading a just-created store saw when its first agent looked abandoned (#357).
+   * The write itself is on the thread pool like the heartbeat's, because on a slow disk its lock,
+   * fsyncs and rename are what held the TUI's event loop after its first frame (#516): the caller
+   * waits for it, the event loop does not.
    *
    * A failure is not fatal here either, for the reason it is not fatal on the heartbeat: what is
    * written is this instance's own ownership record, and every other write carries the same metadata.
    */
-  private takeLease(): void {
-    if (!this.enabled || this.disposed) return;
+  private async takeLease(): Promise<void> {
     try {
-      const result = this.writer.write(this.leasePath, this.leaseDocument());
+      const result = await this.writer.writeAsync(this.leasePath, this.leaseDocument());
       if (result.status !== 'ok') this.safeLog('lease write failed', { status: result.status });
     } catch {
       // A store without a lease is one other instances have to treat as dead; the next heartbeat
@@ -1098,7 +1222,7 @@ export class AgentStore {
    * every one of them a disk round trip, all of it on whichever thread scheduled the timer — for the
    * TUI, the event loop the keystrokes and the model stream are on. On a busy disk that is hundreds
    * of milliseconds every five seconds, and it lands on the user rather than on the heartbeat
-   * (#357). {@link takeLease} is the exception, and says why.
+   * (#357). {@link takeLease} is on the thread pool too, but awaited: see there.
    *
    * Two properties come with moving it off the thread and are the reason this is not simply a
    * fire-and-forget:
@@ -1175,10 +1299,30 @@ export class AgentStore {
 
   private isInstanceAlive(instanceId: string, pid?: number, ownerHostname?: string): boolean {
     if (instanceId === this.instanceId) return true;
-    const lease = this.readJson<InstanceLease>(
-      join(this.instancesDirectory, `${instanceId}.json`),
+    const lease = this.readJson<InstanceLease>(this.instanceLeasePath(instanceId), false);
+    return this.aliveByLease(lease, pid, ownerHostname);
+  }
+
+  /** {@link isInstanceAlive}, reading the lease on the thread pool, for {@link open}. */
+  private async isInstanceAliveAsync(instanceId: string): Promise<boolean> {
+    if (instanceId === this.instanceId) return true;
+    const lease = await this.readJsonAsync<InstanceLease>(
+      this.instanceLeasePath(instanceId),
       false,
     );
+    return this.aliveByLease(lease);
+  }
+
+  private instanceLeasePath(instanceId: string): string {
+    return join(this.instancesDirectory, `${instanceId}.json`);
+  }
+
+  /** Whether an instance is alive, given its lease as read and the owner a record names. */
+  private aliveByLease(
+    lease: InstanceLease | undefined,
+    pid?: number,
+    ownerHostname?: string,
+  ): boolean {
     if (lease && this.now() - lease.heartbeatAt <= this.leaseFreshMs) return true;
     return ownerHostname === this.hostname && typeof pid === 'number'
       ? this.processAlive(pid)
@@ -1189,7 +1333,7 @@ export class AgentStore {
     return this.isInstanceAlive(owner.instanceId, owner.pid, owner.hostname);
   }
 
-  private parseTemp(path: string): TempCandidate | undefined {
+  private async parseTemp(path: string): Promise<TempCandidate | undefined> {
     const name = basename(path);
     const modern = /^(.*\.json)\.(\d+)\.([0-9a-f-]{36})\.([0-9a-f-]{36})\.tmp$/i.exec(name);
     const legacy = /^(.*\.json)\.(\d+)\.(\d+)\.tmp$/i.exec(name);
@@ -1203,14 +1347,14 @@ export class AgentStore {
       `${normalizedTarget}${process.platform === 'win32' ? '\\' : '/'}`.startsWith(root) ||
       normalizedTarget.startsWith(root);
     if (!inStore) return undefined;
-    const value = this.readJson<unknown>(path, false);
+    const value = await this.readJsonAsync<unknown>(path, false);
     if (
       value === undefined ||
       (typeof value === 'object' &&
         value !== null &&
         !this.targetMatchesId(target, value as { id?: string }))
     ) {
-      this.quarantine(path);
+      await this.quarantineAsync(path);
       return undefined;
     }
     return {
@@ -1218,12 +1362,13 @@ export class AgentStore {
       target,
       value,
       revision: logicalRevision(value, targetTypeFor(target)),
-      mtimeMs: statSync(path).mtimeMs,
+      mtimeMs: (await stat(path)).mtimeMs,
       ownerInstanceId: modern?.[3],
     };
   }
 
-  private recoverTemps(): void {
+  /** Promote or discard the temp files crashed writes left behind. Runs only inside {@link open}. */
+  private async recoverTemps(): Promise<void> {
     const directories = [
       this.directory,
       this.agentsDirectory,
@@ -1235,11 +1380,15 @@ export class AgentStore {
     ];
     const groups = new Map<string, TempCandidate[]>();
     for (const directory of directories) {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
         if (!entry.isFile() || !entry.name.endsWith('.tmp')) continue;
-        const candidate = this.parseTemp(join(directory, entry.name));
+        const candidate = await this.parseTemp(join(directory, entry.name));
         if (!candidate) continue;
-        if (candidate.ownerInstanceId && this.isInstanceAlive(candidate.ownerInstanceId)) continue;
+        if (
+          candidate.ownerInstanceId &&
+          (await this.isInstanceAliveAsync(candidate.ownerInstanceId))
+        )
+          continue;
         const values = groups.get(candidate.target) ?? [];
         values.push(candidate);
         groups.set(candidate.target, values);
@@ -1252,19 +1401,22 @@ export class AgentStore {
           compareRevision(right.revision, left.revision) || right.mtimeMs - left.mtimeMs,
       );
       const selected = candidates[0]!;
-      const targetValue = existsSync(target) ? this.readJson<unknown>(target, false) : undefined;
+      // A missing target reads as `undefined`, like an unreadable one.
+      const targetValue = await this.readJsonAsync<unknown>(target, false);
       const type = targetTypeFor(target);
       const shouldPromote =
         targetValue === undefined ||
         (type !== 'manifest' &&
           compareRevision(selected.revision, logicalRevision(targetValue, type)) > 0);
       if (shouldPromote) {
-        const result = this.writer.write(target, selected.value, selected.path);
+        const result = await this.writer.writeAsync(target, selected.value, {
+          preparedTemp: selected.path,
+        });
         if (result.status === 'ok') this.safeLog('orphan temp recovered', { target: type });
         if (result.status !== 'ok') {
           for (const candidate of candidates.slice(1)) {
             try {
-              unlinkSync(candidate.path);
+              await unlink(candidate.path);
             } catch {
               // Keep the newest valid temp; older candidates are best-effort cleanup.
             }
@@ -1273,10 +1425,14 @@ export class AgentStore {
         }
       }
       for (const candidate of candidates) {
-        if (shouldPromote && candidate.path === selected.path && !existsSync(candidate.path))
+        if (
+          shouldPromote &&
+          candidate.path === selected.path &&
+          !(await pathExists(candidate.path))
+        )
           continue;
         try {
-          unlinkSync(candidate.path);
+          await unlink(candidate.path);
         } catch {
           // A later startup can retry cleanup.
         }
