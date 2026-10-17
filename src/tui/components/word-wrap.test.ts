@@ -255,13 +255,17 @@ describe('status glyph widths agree with the renderer', () => {
       '§',
       '☆',
       '♠',
+      '●',
+      '⏺',
+      '⎿',
+      '⌘',
     ]) {
       expect(displayWidth(glyph), `${glyph} (U+${glyph.codePointAt(0)!.toString(16)})`).toBe(1);
     }
   });
 
   it('still measures emoji-presentation characters as two columns', () => {
-    for (const glyph of ['✅', '❌', '✨', '🙂', '🚀', '☔', '⚡', '⛔']) {
+    for (const glyph of ['✅', '❌', '✨', '🙂', '🚀', '☔', '⚡', '⛔', '⌚', '⏳', '⏰']) {
       expect(displayWidth(glyph), glyph).toBe(2);
     }
   });

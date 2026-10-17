@@ -353,17 +353,12 @@ const WIDE_RANGES: [number, number][] = [
   [0x2795, 0x2797], // Heavy plus, minus, division
   [0x27b0, 0x27b0], // Curly loop
   [0x27bf, 0x27bf], // Double curly loop
-  [0x2300, 0x23ff], // Misc Technical (many 2-wide symbols)
   [0x2b50, 0x2b55], // Star, circle
   [0x2b05, 0x2b07], // Direction arrows
   [0x2b1b, 0x2b1c], // Large squares
   [0x2934, 0x2935], // Curved arrows
   [0x25aa, 0x25ab], // Small squares
   [0x25fb, 0x25fe], // Medium squares
-  [0x231a, 0x231b], // Watch, hourglass
-  [0x2328, 0x2328], // Keyboard
-  [0x23e9, 0x23f3], // Double triangles, hourglass
-  [0x23f8, 0x23fa], // Power symbols
   [0x24c2, 0x24c2], // Circled M
   [0x25b6, 0x25b6], // Play
   [0x25c0, 0x25c0], // Reverse
@@ -391,13 +386,16 @@ const SORTED_ZERO_WIDTH_RANGES = mergeRanges(ZERO_WIDTH_RANGES);
 const SORTED_WIDE_RANGES = mergeRanges(WIDE_RANGES);
 
 /**
- * Misc Symbols (U+2600–U+26FF) is wide only where a character is emoji by
- * default (☔, ⚡, ⛔). The rest (☙, ☆, ♠, ☐) render one column wide in the
- * terminal and in Ink's own layout. Measuring the whole block as wide put this
- * width math a column out from the renderer, as the Dingbats block once did
- * for the check mark.
+ * Misc Technical (U+2300–U+23FF) and Misc Symbols (U+2600–U+26FF) are wide
+ * only where a character is emoji by default (⌚, ⏳, ☔, ⚡, ⛔). The rest
+ * (⎿, ⏺, ⌘, ☙, ☆, ♠, ☐) render one column wide in the terminal and in Ink's
+ * own layout. Measuring a whole block as wide put this width math a column out
+ * from the renderer, as the Dingbats block once did for the check mark.
  */
-const MISC_SYMBOLS: [number, number] = [0x2600, 0x26ff];
+const TEXT_DEFAULT_SYMBOL_BLOCKS: [number, number][] = [
+  [0x2300, 0x23ff],
+  [0x2600, 0x26ff],
+];
 const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
 const ASCII_PRINTABLE = /^[\x20-\x7e]*$/;
 
@@ -446,7 +444,7 @@ export function displayWidth(text: string): number {
     const cp = ch.codePointAt(0) ?? 0;
     if (inRanges(cp, SORTED_ZERO_WIDTH_RANGES)) {
       // width += 0
-    } else if (cp >= MISC_SYMBOLS[0] && cp <= MISC_SYMBOLS[1]) {
+    } else if (inRanges(cp, TEXT_DEFAULT_SYMBOL_BLOCKS)) {
       width += EMOJI_PRESENTATION.test(ch) ? 2 : 1;
     } else if (inRanges(cp, SORTED_WIDE_RANGES)) {
       width += 2;
