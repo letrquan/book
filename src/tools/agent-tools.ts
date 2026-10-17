@@ -1,6 +1,7 @@
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { AgentManagerError, getOrCreateAgentManager } from '../agents/manager.js';
 import type {
+  AgentStopOutcome,
   AgentTopology,
   AgentSummary,
   EvidenceKind,
@@ -268,16 +269,44 @@ async function agentWait(args: Record<string, unknown>, ctx: ToolContext): Promi
   }
 }
 
+/** What a model's stop did with the applies of the agent that were running, said in words. */
+function appliesNote(outcome: AgentStopOutcome): string | undefined {
+  const evidence = (ids: string[]) => `(evidence ${ids.join(', ')})`;
+  const notes: string[] = [];
+  const stopped = outcome.stoppedApplies;
+  if (stopped.length === 1) {
+    notes.push(
+      `Stopped the AgentApply apply of this agent's result that was running ${evidence(stopped)}; it has ended.`,
+    );
+  } else if (stopped.length > 1) {
+    notes.push(
+      `Stopped the ${stopped.length} AgentApply applies of this agent's result that were running ${evidence(stopped)}; they have ended.`,
+    );
+  }
+  const kept = outcome.keptUserApplies;
+  if (kept.length === 1) {
+    notes.push(
+      `A user-started apply of this agent's result ${evidence(kept)} is still running on this agent and was not stopped: only the user can stop it.`,
+    );
+  } else if (kept.length > 1) {
+    notes.push(
+      `${kept.length} user-started applies of this agent's result ${evidence(kept)} are still running on this agent and were not stopped: only the user can stop them.`,
+    );
+  }
+  return notes.length > 0 ? notes.join('\n') : undefined;
+}
+
 async function agentStop(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   try {
     requireRoot(ctx);
-    const summary = projectAgentSummary(
-      await manager(ctx).stop(
-        typeof args.agentId === 'string' ? args.agentId : '',
-        typeof args.reason === 'string' ? args.reason : 'requested',
-      ),
+    // The model's stop leaves running an apply the user started (#527).
+    const outcome = await manager(ctx).stop(
+      typeof args.agentId === 'string' ? args.agentId : '',
+      typeof args.reason === 'string' ? args.reason : 'requested',
+      { keepUserApplies: true },
     );
-    return ok(summary, agentStatusPresentation(summary, 'Stopped'));
+    const summary = projectAgentSummary(outcome.agent);
+    return ok(summary, agentStatusPresentation(summary, 'Stopped'), appliesNote(outcome));
   } catch (error) {
     return fail(error);
   }
@@ -291,7 +320,7 @@ async function agentApply(args: Record<string, unknown>, ctx: ToolContext): Prom
       await manager(ctx).apply(
         typeof args.agentId === 'string' ? args.agentId : '',
         typeof args.evidenceId === 'string' ? args.evidenceId : undefined,
-        { signal: ctx.signal },
+        { signal: ctx.signal, startedBy: 'model' },
       ),
     );
   } catch (error) {

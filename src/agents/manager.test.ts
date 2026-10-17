@@ -16,7 +16,7 @@ import type { AgentRecord, AgentRuntimeEvent, AgentSnapshot } from './types.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { createTerminalOutcome } from '../types/terminal.js';
 import { SessionRuntime } from '../session/runtime.js';
-import { evidenceTools } from '../tools/agent-tools.js';
+import { agentLifecycleTools, evidenceTools } from '../tools/agent-tools.js';
 import { applyReviewFixes } from '../review/fix.js';
 import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewFinding } from '../review/types.js';
@@ -1011,6 +1011,7 @@ describe('AgentManager lifecycle', () => {
         events,
         root,
         storeRoot,
+        config,
         nextManager,
       };
     }
@@ -1179,6 +1180,117 @@ describe('AgentManager lifecycle', () => {
 
       await expect(manager.apply(patcher.id, candidate.id)).rejects.toThrow('disposed');
       expect(signals).toHaveLength(0);
+    });
+
+    describe('who started the apply (#527)', () => {
+      type Fixture = Awaited<ReturnType<typeof managerWithPendingApplies>>;
+
+      /** Run one of the model's lifecycle tools against the fixture's manager. */
+      function runTool(fixture: Fixture, name: 'AgentStop' | 'AgentApply', args: object) {
+        const runtime = new SessionRuntime();
+        runtime.agentManager = fixture.manager;
+        const tool = agentLifecycleTools.find((candidate) => candidate.name === name)!;
+        return tool.execute(args as Record<string, unknown>, {
+          workspaceRoot: fixture.root,
+          env: {},
+          agentConfig: fixture.config,
+          availableTools: [],
+          currentMode: 'default',
+          runtime,
+        });
+      }
+
+      it('AgentStop leaves a user-started apply running and says so', async () => {
+        const fixture = await managerWithPendingApplies();
+        const { manager, patcher, candidate, signals, mutationSignals, releases } = fixture;
+        try {
+          // `/agent apply` and `/review --fix` start it this way: with no `startedBy`.
+          const applying = manager.apply(patcher.id, candidate.id);
+          await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+          const result = await runTool(fixture, 'AgentStop', { agentId: patcher.id });
+
+          expect(result.status).toBe('success');
+          expect(result.content).toMatch(
+            /user-started apply .* is still running on this agent and was not stopped/,
+          );
+          expect(signals[0]!.aborted).toBe(false);
+          expect(mutationSignals[0]!.aborted).toBe(false);
+          releases[0]!('applied');
+          await expect(applying).resolves.toMatchObject({ status: 'applied' });
+        } finally {
+          manager.dispose();
+        }
+      });
+
+      it('AgentStop stops an apply the model started with AgentApply and says so', async () => {
+        const fixture = await managerWithPendingApplies();
+        const { manager, patcher, candidate, signals, mutationSignals } = fixture;
+        try {
+          const applying = runTool(fixture, 'AgentApply', {
+            agentId: patcher.id,
+            evidenceId: candidate.id,
+          });
+          await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+          const result = await runTool(fixture, 'AgentStop', { agentId: patcher.id });
+
+          expect(result.status).toBe('success');
+          expect(result.content).toMatch(/Stopped the AgentApply apply .* that was running/);
+          expect(result.content).not.toMatch(/user-started/);
+          expect(signals[0]!.aborted).toBe(true);
+          expect(mutationSignals[0]!.aborted).toBe(true);
+          expect((await applying).status).toBe('error');
+        } finally {
+          manager.dispose();
+        }
+      });
+
+      it('keepUserApplies stops only the model-started applies and reports both', async () => {
+        const { manager, patcher, candidate, signals, releases } =
+          await managerWithPendingApplies();
+        try {
+          const byUser = manager.apply(patcher.id, candidate.id);
+          await vi.waitFor(() => expect(signals).toHaveLength(1));
+          const byModel = manager
+            .apply(patcher.id, candidate.id, { startedBy: 'model' })
+            .catch((error: unknown) => error);
+          await vi.waitFor(() => expect(signals).toHaveLength(2));
+
+          const outcome = await manager.stop(patcher.id, 'requested', { keepUserApplies: true });
+
+          expect(outcome).toMatchObject({
+            agent: { id: patcher.id, status: 'completed' },
+            stoppedApplies: [candidate.id],
+            keptUserApplies: [candidate.id],
+          });
+          expect(signals.map((signal) => signal.aborted)).toEqual([false, true]);
+          expect(await byModel).toBeInstanceOf(Error);
+          releases[0]!('applied');
+          await expect(byUser).resolves.toMatchObject({ status: 'applied' });
+        } finally {
+          manager.dispose();
+        }
+      });
+
+      it('stop without keepUserApplies still stops user- and model-started applies alike', async () => {
+        const { manager, patcher, candidate, signals } = await managerWithPendingApplies();
+        try {
+          const byUser = manager.apply(patcher.id, candidate.id).catch((error: unknown) => error);
+          const byModel = manager
+            .apply(patcher.id, candidate.id, { startedBy: 'model' })
+            .catch((error: unknown) => error);
+          await vi.waitFor(() => expect(signals).toHaveLength(2));
+
+          await expect(manager.stop(patcher.id)).resolves.toMatchObject({ status: 'completed' });
+
+          expect(signals.map((signal) => signal.aborted)).toEqual([true, true]);
+          expect(await byUser).toBeInstanceOf(Error);
+          expect(await byModel).toBeInstanceOf(Error);
+        } finally {
+          manager.dispose();
+        }
+      });
     });
 
     describe('an apply that ends after dispose, on a store the next manager shares (#518)', () => {

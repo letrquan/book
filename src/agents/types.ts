@@ -373,3 +373,18 @@ export interface AgentApplyResult {
   commit?: string;
   error?: string;
 }
+
+/**
+ * Who started an apply: the user (`/agent apply`, `/review --fix`) or the model (`AgentApply`).
+ * The model's `AgentStop` stops only the applies the model started (#527).
+ */
+export type AgentApplyStarter = 'user' | 'model';
+
+/** What a stop that kept the user's applies running did with the agent's applies. */
+export interface AgentStopOutcome {
+  agent: AgentRecord;
+  /** The evidence id of each model-started apply it stopped, which has ended. */
+  stoppedApplies: string[];
+  /** The evidence id of each user-started apply it left running. */
+  keptUserApplies: string[];
+}
