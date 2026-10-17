@@ -308,6 +308,10 @@ function ruleMatches(rule: ParsedRule, toolName: string, primaryArg: string): bo
 /**
  * Whether a Bash allow rule is an exact rule: it names a pattern and the pattern has no `*`. Any
  * other pattern is a glob rule, and a bare `Bash` (no pattern) admits every call.
+ *
+ * Only `*` makes an allow rule a glob, not `?`: `Bash(ls a?)` stays the exact rule for the command
+ * `ls a?`, which is what "Always allow" saves for it, so its `?` is literal (#522). In a glob rule,
+ * and in every `deny`, `ask` and path rule, `?` is a one-character wildcard (`globToRegex`).
  */
 function isExactPattern(rule: ParsedRule): boolean {
   return rule.pattern !== null && !rule.pattern.includes('*');
@@ -327,8 +331,8 @@ export function isExactBashRule(rule: string): boolean {
  * `command.trim()`, and a rule is read against that:
  *
  * - an exact rule (a pattern without `*`) admits the call only when the trimmed command is
- *   byte-for-byte the pattern, compared as plain strings and never through `globToRegex` (which
- *   leaves `?` unescaped). It does so whether or not the command is compound: the user wrote that
+ *   byte-for-byte the pattern, compared as plain strings and never through `globToRegex` (where
+ *   `?` is a wildcard). It does so whether or not the command is compound: the user wrote that
  *   very line down;
  * - a glob rule (a pattern with `*`) admits it only when the whole trimmed command matches and is
  *   not compound: a glob cannot say "and nothing else", and the primary argument is only the first

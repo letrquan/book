@@ -340,6 +340,43 @@ describe('evaluatePermission', () => {
     expect(evaluatePermission('Read', { filePath: './subdir/.env' }, s)).toBe('deny');
   });
 
+  // `?` reached `new RegExp` as a quantifier: `deny: ["Bash(rm /tmp/a?)"]` denied `rm /tmp/` and
+  // `rm /tmp/a` but not `rm /tmp/ab`.
+  describe('? in a rule pattern is one character, glob style (#522)', () => {
+    const bash = (command: string, s: ResolvedSettings) =>
+      evaluatePermission('Bash', { command }, s, { platform: 'linux' });
+
+    it.each(['deny', 'ask'] as const)('in a Bash %s rule', (list) => {
+      const s = settings({ [list]: ['Bash(rm /tmp/a?)'] });
+      expect(bash('rm /tmp/ab', s)).toBe(list);
+      // `ask` is also the default, so a non-match is told apart by the rule it names.
+      for (const command of ['rm /tmp/', 'rm /tmp/a', 'rm /tmp/abc']) {
+        const verdict = evaluatePermissionDetail('Bash', { command }, s, { platform: 'linux' });
+        expect(verdict.matchedRule, command).toBeUndefined();
+        expect(verdict.decision, command).not.toBe('deny');
+      }
+    });
+
+    it('in a Bash glob allow rule', () => {
+      const s = settings({ allow: ['Bash(ls a? *)'] });
+      expect(bash('ls ab x', s)).toBe('allow');
+      expect(bash('ls a x', s)).toBe('ask');
+    });
+
+    it('not in an exact Bash allow rule, which compares as plain text', () => {
+      const s = settings({ allow: ['Bash(ls a?)'] });
+      expect(bash('ls a?', s)).toBe('allow');
+      expect(bash('ls ab', s)).toBe('ask');
+    });
+
+    it.each(['deny', 'allow'] as const)('in a Read %s path rule', (list) => {
+      const s = settings({ [list]: ['Read(src/a?.ts)'] });
+      expect(evaluatePermission('Read', { filePath: 'src/ab.ts' }, s)).toBe(list);
+      expect(evaluatePermission('Read', { filePath: 'src/a.ts' }, s)).toBe('ask');
+      expect(evaluatePermission('Read', { filePath: 'src/abc.ts' }, s)).toBe('ask');
+    });
+  });
+
   it('path normalization: ./ prefix stripped so Read(./.env) matches .env', () => {
     const s = settings({ deny: ['Read(./.env)'] });
     expect(evaluatePermission('Read', { filePath: '.env' }, s)).toBe('deny');

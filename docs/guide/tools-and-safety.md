@@ -326,12 +326,21 @@ active instead of being refused.
 `permissions.allow`, `permissions.ask`, and `permissions.deny` are matched against every tool call.
 `deny` beats `ask`, and `ask` beats `allow`.
 
+A rule's pattern is a glob with two wildcards: `*` (or `**`, the same) matches any run of
+characters, spaces and `/` included, and `?` matches exactly one character, `/` included. Every
+other character matches itself. So `deny: ["Bash(rm /tmp/a?)"]` denies `rm /tmp/ab` but not
+`rm /tmp/a` or `rm /tmp/abc`, and `Read(src/a?.ts)` covers `src/ab.ts` but not `src/a.ts`. The same
+reading applies to every rule kind: `deny`, `ask` and `allow`, the path rules of `Read`, `Write`,
+`Edit` and the other file tools, `allowed-tools` capability rules, and `sandbox.excludedCommands`.
+The one exception is an exact Bash `allow` rule, below, which compares as plain text.
+
 **How `allow`, `deny` and `ask` read a Bash command.** The Bash tool runs `command.trim()`, and
 `allow` rules are read against that:
 
 - An **exact rule** is a `Bash(<pattern>)` whose pattern has no `*`. It admits a call only when the
   trimmed command is, character for character, the pattern, compared as plain text (so `?` and
-  `[` mean themselves): `Bash(cd x && npm test)` admits `cd x && npm test`, with or without
+  `[` mean themselves: `Bash(ls a?)` admits `ls a?` and not `ls ab`; a `?` alone does not make it
+  a glob rule): `Bash(cd x && npm test)` admits `cd x && npm test`, with or without
   surrounding whitespace, and nothing else, not even `cd x && npm test; rm y`. It does so whether or
   not the command is compound, because you wrote that exact line down. "Always allow" on a
   one-line compound command saves exactly this rule.
@@ -360,8 +369,8 @@ compound prompt, then glob and bare allow rules. A command that only _quotes_ th
 compound command under a Bash `deny` or `ask` rule only the exact rule counts.
 
 "Always allow" offers only the exact rule, with no widened `*` rungs, for a command that chains or
-redirects or contains a quote character or a `?` (a widened rung is a glob rule, where `?` is a
-wildcard; the exact rule compares as plain text, so its `?` stays a `?`). Two kinds of
+redirects or contains a quote character or a `?` (a widened rung is a glob rule, where `?` matches
+any one character; the exact rule compares as plain text, so its `?` stays a `?`). Two kinds of
 command have no rule at all, and the prompt offers only "Run once" and "Skip" for them: a command
 that is multi-line after trimming, and any command that contains a `*`, compound or not. A rule
 holding that `*` would be a glob rule, which looks like the exact command on the prompt but admits
