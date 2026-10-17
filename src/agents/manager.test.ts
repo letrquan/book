@@ -9,7 +9,7 @@ import type { Message } from '../types/messages.js';
 import type { ToolContext } from '../types/tools.js';
 import { defaultConfig, toolResult } from '../test/fixtures.js';
 import { AgentManager } from './manager.js';
-import { AgentStore } from './store.js';
+import { AgentStore, type AgentStoreOptions } from './store.js';
 import type { AtomicJsonWriter } from './atomic-json.js';
 import { repositoryHash } from './git-isolation.js';
 import type { AgentRecord, AgentRuntimeEvent, AgentSnapshot } from './types.js';
@@ -912,6 +912,8 @@ describe('AgentManager lifecycle', () => {
         /** How long after its signal aborts the apply takes to end, as a pick's rollback does. */
         settleAfterAbortMs?: number;
         onSettled?: () => void;
+        /** Options for the manager's store; without them it opens the store the default way. */
+        storeOptions?: AgentStoreOptions;
       } = {},
     ) {
       const root = tempRoot();
@@ -922,7 +924,11 @@ describe('AgentManager lifecycle', () => {
       const mutationSignals: Array<AbortSignal | undefined> = [];
       const releases: Array<(status: 'applied' | 'failed') => void> = [];
       const events: AgentRuntimeEvent[] = [];
-      const manager = new AgentManager(config, [], {
+      const storeFactory = (storeOptions: AgentStoreOptions) => ({
+        createStore: (repoHash: string, requestedRoot: string | undefined, enabled: boolean) =>
+          AgentStore.open(repoHash, requestedRoot, enabled, { ...UNCONTENDED, ...storeOptions }),
+      });
+      const managerOptions: ConstructorParameters<typeof AgentManager>[2] = {
         storeRoot,
         worktreeRoot: tempRoot(),
         findGitRoot: async () => root,
@@ -966,7 +972,14 @@ describe('AgentManager lifecycle', () => {
             { id: `a-${prompt}`, role: 'assistant', content: 'done', timestamp: 2 },
           ] as Message[];
         },
+      };
+      const manager = new AgentManager(config, [], {
+        ...managerOptions,
+        ...(options.storeOptions ? storeFactory(options.storeOptions) : {}),
       });
+      /** Another manager on the same repository and store, as the session's next one would be. */
+      const nextManager = (storeOptions: AgentStoreOptions) =>
+        new AgentManager(config, [], { ...managerOptions, ...storeFactory(storeOptions) });
       const plan = await manager.createPlan({
         taskShape: 'patch and validate',
         issueQuality: 'clear',
@@ -998,6 +1011,7 @@ describe('AgentManager lifecycle', () => {
         events,
         root,
         storeRoot,
+        nextManager,
       };
     }
 
@@ -1165,6 +1179,136 @@ describe('AgentManager lifecycle', () => {
 
       await expect(manager.apply(patcher.id, candidate.id)).rejects.toThrow('disposed');
       expect(signals).toHaveLength(0);
+    });
+
+    describe('an apply that ends after dispose, on a store the next manager shares (#518)', () => {
+      // Each store takes the other's process for dead, so only a lease says an instance is live, as
+      // it is across two processes: in one test process the pid alone would answer for both.
+      const disposedStore: AgentStoreOptions = { pid: 111, processAlive: () => false };
+      const nextStore: AgentStoreOptions = { pid: 222, processAlive: () => false };
+
+      /** The agent's record file, read as it is on disk. */
+      function recordOnDisk(
+        fixture: { storeRoot: string; root: string },
+        agentId: string,
+        directory: 'records' | 'summaries' = 'records',
+      ): Record<string, unknown> {
+        const path = join(
+          fixture.storeRoot,
+          repositoryHash(fixture.root),
+          directory,
+          `${encodeURIComponent(agentId)}.json`,
+        );
+        return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+      }
+
+      /** A record without the fields the store stamps on every write of it. */
+      function withoutBookkeeping(record: Record<string, unknown>): Record<string, unknown> {
+        const rest = { ...record };
+        delete rest.updatedAt;
+        delete rest._store;
+        return rest;
+      }
+
+      async function disposedMidApply() {
+        const fixture = await managerWithPendingApplies({
+          obeyAbort: false,
+          persist: true,
+          storeOptions: disposedStore,
+        });
+        const applying = fixture.manager.apply(fixture.patcher.id, fixture.candidate.id);
+        await vi.waitFor(() => expect(fixture.signals).toHaveLength(1));
+        fixture.manager.dispose();
+        return { ...fixture, applying };
+      }
+
+      it('does not overwrite what the next manager wrote to the record since', async () => {
+        const fixture = await disposedMidApply();
+        const next = fixture.nextManager(nextStore);
+        try {
+          const published = await next.publishEvidence(fixture.patcher.id, {
+            kind: 'finding',
+            summary: 'written by the next manager',
+          });
+          const written = recordOnDisk(fixture, fixture.patcher.id);
+          expect(written.producedEvidenceIds).toContain(published.id);
+
+          fixture.releases[0]!('applied');
+          await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+          expect(recordOnDisk(fixture, fixture.patcher.id)).toEqual(written);
+        } finally {
+          next.dispose();
+        }
+      });
+
+      it('skips the write while the next manager holds a live lease, even on an untouched record', async () => {
+        const fixture = await disposedMidApply();
+        const next = fixture.nextManager(nextStore);
+        try {
+          await next.get(fixture.patcher.id);
+          const before = recordOnDisk(fixture, fixture.patcher.id);
+
+          fixture.releases[0]!('applied');
+          await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+          expect(recordOnDisk(fixture, fixture.patcher.id)).toEqual(before);
+        } finally {
+          next.dispose();
+        }
+      });
+
+      it('skips the write when the record on disk is newer than the one the manager had', async () => {
+        const fixture = await disposedMidApply();
+        const next = fixture.nextManager(nextStore);
+        // A clock tick past the disposed manager's last write of the record.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        await next.send(fixture.patcher.id, 'one more change');
+        await next.wait(fixture.patcher.id, 1000);
+        // Gone, so no lease is left to skip on: only the record's age is.
+        next.dispose();
+        const before = recordOnDisk(fixture, fixture.patcher.id);
+
+        fixture.releases[0]!('applied');
+        await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+        expect(recordOnDisk(fixture, fixture.patcher.id)).toEqual(before);
+      });
+
+      it('sets only applicationStatus when no other instance is live', async () => {
+        const fixture = await disposedMidApply();
+        const before = recordOnDisk(fixture, fixture.patcher.id);
+        expect(before.applicationStatus).not.toBe('applied');
+
+        fixture.releases[0]!('applied');
+        await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+        const after = recordOnDisk(fixture, fixture.patcher.id);
+        expect(withoutBookkeeping(after)).toEqual({
+          ...withoutBookkeeping(before),
+          applicationStatus: 'applied',
+        });
+        expect(recordOnDisk(fixture, fixture.patcher.id, 'summaries')).toMatchObject({
+          applicationStatus: 'applied',
+          updatedAt: after.updatedAt,
+        });
+      });
+
+      it('lands once the next manager has been disposed without touching the record', async () => {
+        const fixture = await disposedMidApply();
+        const next = fixture.nextManager(nextStore);
+        await next.get(fixture.patcher.id);
+        next.dispose();
+        const before = recordOnDisk(fixture, fixture.patcher.id);
+
+        fixture.releases[0]!('applied');
+        await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+        expect(withoutBookkeeping(recordOnDisk(fixture, fixture.patcher.id))).toEqual({
+          ...withoutBookkeeping(before),
+          applicationStatus: 'applied',
+        });
+      });
     });
   });
 

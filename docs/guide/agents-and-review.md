@@ -76,7 +76,9 @@ any cherry-pick it cut short has been rolled back. A stop ends the apply with an
 stop and says how the rollback went (and which paths were left unmerged),
 not with a conflict, so it is never reported as a failed fix. Closing the session stops only the
 apply's reads: a cherry-pick that has already started is left to finish, and its outcome is still
-recorded. Progress is a
+recorded on the agent — only its application status, and not when another Book session is live on
+the same agent store by then (the session `/clear`, `/resume` or `/rewind` switched to) or has
+written the agent's record since, so that session's copy is never overwritten. Progress is a
 streaming-host feature: a print run has no silence to break, so its stdout stays exactly the report (the same target is on `data.target`).
 
 A plain `/review` runs one structured pass. `--deep` fans out four specialized reviewers

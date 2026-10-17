@@ -1454,10 +1454,13 @@ export class AgentManager {
     if (this.disposed) {
       // The store was disposed, so this is the one write that still has to land: a pick that
       // finished after `dispose()` is on the operator's branch, and nothing else records that. No
-      // event or telemetry, since the subscribers are gone.
+      // event or telemetry, since the subscribers are gone. Only the status is written, and only
+      // if nobody wrote the record after this manager last had it (#518): the session's next
+      // manager may own it now.
+      const seenUpdatedAt = record.updatedAt;
       record.applicationStatus = result.status;
       record.updatedAt = Date.now();
-      this.store?.saveAgent(record, { afterDispose: true });
+      await this.store?.recordLateApplication(agentId, result.status, seenUpdatedAt);
       return result;
     }
     record.applicationStatus = result.status;

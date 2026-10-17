@@ -852,20 +852,13 @@ export class AgentStore {
 
   saveAgent(
     agent: AgentRecord,
-    options: { defer?: boolean; required?: boolean; afterDispose?: boolean } = {},
+    options: { defer?: boolean; required?: boolean } = {},
   ): AtomicWriteResult {
     // A disposed store has flushed what it had pending and removed its lease: a record saved now
     // would be a write by an owner that is gone. Refused here, and only here, because `dispose()`
     // itself runs `flushPending`, which is not a save. The cache is left alone for the same reason.
-    //
-    // `afterDispose` is for the one fact that can only be known after the store is gone: an apply
-    // that was running when the manager was disposed and landed on the operator's branch anyway. It
-    // is written at once (nothing is left to flush a deferred write) and without a lease, which
-    // is what a completed agent's record can do without: the record is terminal, only its
-    // `applicationStatus` changes.
-    if (this.disposed && options.afterDispose) {
-      options = { ...options, defer: false };
-    } else if (this.disposed) {
+    // The one fact that can still need writing then is {@link recordLateApplication}'s.
+    if (this.disposed) {
       return { status: 'cancelled', target: this.agentPath(agent.id), attempts: 0, elapsedMs: 0 };
     }
     let persisted = structuredClone(agent);
@@ -920,6 +913,75 @@ export class AgentStore {
       immediate,
     });
     return result;
+  }
+
+  /**
+   * Record on disk how an apply that outlived its manager ended: the one fact that can only be
+   * known after this store was disposed. A pick that finished after `dispose()` is on the
+   * operator's branch, and nothing else records that.
+   *
+   * The session's next manager may have opened this store's directory by then and written the
+   * same record (#518), so this is a field-level update rather than a save of the disposed
+   * manager's copy: the record is re-read from disk and only its `applicationStatus` changes, with
+   * the owner and `updatedAt` stamped as every write stamps them. Written to disk only, since the
+   * disposed store's cache has no reader left.
+   *
+   * Nothing is written, and the record is left as it is, when another instance holds a live lease
+   * here (the record is its to write now), when the record on disk is newer than `seenUpdatedAt`,
+   * the `updatedAt` of the copy the disposed manager last had (someone wrote it since), or when
+   * the record is not on disk.
+   */
+  async recordLateApplication(
+    agentId: string,
+    status: AgentRecord['applicationStatus'],
+    seenUpdatedAt: number,
+  ): Promise<'recorded' | 'skipped' | 'failed'> {
+    if (!this.enabled) return 'skipped';
+    try {
+      if (await this.anotherInstanceIsLive()) {
+        this.safeLog('late application skipped', { reason: 'live_instance' });
+        return 'skipped';
+      }
+      const path = this.agentPath(agentId);
+      const persisted = await this.readJsonAsync<PersistedAgentRecord>(path, false);
+      if (!persisted?.id || !this.targetMatchesId(path, persisted)) {
+        this.safeLog('late application skipped', { reason: 'missing' });
+        return 'skipped';
+      }
+      if ((persisted.updatedAt ?? 0) > seenUpdatedAt) {
+        this.safeLog('late application skipped', { reason: 'newer_on_disk' });
+        return 'skipped';
+      }
+      const detailed: PersistedAgentRecord = {
+        ...persisted,
+        applicationStatus: status,
+        updatedAt: this.now(),
+        _store: this.ownerMetadata(),
+      };
+      const result = await this.writer.writeAsync(path, detailed);
+      if (result.status !== 'ok') return 'failed';
+      const summary = await this.writer.writeAsync(this.agentSummaryPath(agentId), {
+        ...detailed,
+        transcript: [],
+      });
+      return summary.status === 'ok' ? 'recorded' : 'failed';
+    } catch {
+      return 'failed';
+    }
+  }
+
+  /** Whether an instance other than this one holds a live lease in `instances/`. */
+  private async anotherInstanceIsLive(): Promise<boolean> {
+    for (const entry of await readdir(this.instancesDirectory, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const lease = await this.readJsonAsync<InstanceLease>(
+        join(this.instancesDirectory, entry.name),
+        false,
+      );
+      if (!lease?.instanceId || lease.instanceId === this.instanceId) continue;
+      if (this.aliveByLease(lease, lease.pid, lease.hostname)) return true;
+    }
+    return false;
   }
 
   removeAgent(agentId: string): void {
