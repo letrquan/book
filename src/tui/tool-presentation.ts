@@ -13,6 +13,7 @@ import { STATUS_INDICATORS } from './status-indicators.js';
 import { displayWidth, hardWrapLine, truncateDisplay, wordWrap } from './components/word-wrap.js';
 import {
   countOutputLines,
+  expandTabs,
   formatToolOutputFooter,
   prepareToolOutputDisplay,
 } from './components/tool-output.js';
@@ -1437,9 +1438,10 @@ export interface CommandOutputPreview {
 
 /**
  * The first lines of a command's output, at most {@link COMMAND_PREVIEW_ROWS} rows with the
- * `… +N lines` row counted among them. Control characters are neutralised, and a tab takes four
- * columns, so a line can never reach past `width`. Blank lines at either end are dropped; an
- * output with none left is reported as `(No output)` by the caller.
+ * `… +N lines` row counted among them. A tab moves to the next 8-column stop, as it does in the
+ * output block, and other control characters are neutralised, so a line can never reach past
+ * `width`. Blank lines at either end are dropped; an output with none left is reported as
+ * `(No output)` by the caller.
  */
 export function commandOutputPreview(output: string, width: number): CommandOutputPreview {
   const lines = output.replace(/\s+$/, '').split(/\r?\n/);
@@ -1449,7 +1451,7 @@ export function commandOutputPreview(output: string, width: number): CommandOutp
     lines.length <= COMMAND_PREVIEW_ROWS ? lines : lines.slice(0, COMMAND_PREVIEW_ROWS - 1);
   return {
     lines: shown.map((line) =>
-      truncateDisplay(foldShared(line.replace(/\t/g, '    ')).trimEnd(), Math.max(1, width)),
+      truncateDisplay(foldShared(expandTabs(line)).trimEnd(), Math.max(1, width)),
     ),
     hiddenLines: lines.length - shown.length,
   };
