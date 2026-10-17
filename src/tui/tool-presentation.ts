@@ -17,11 +17,12 @@ import {
   prepareToolOutputDisplay,
 } from './components/tool-output.js';
 import {
-  CONTENT_COLUMN,
   LABEL_COLUMN_WIDTH,
   MIN_TARGET_WIDTH,
   nestedGrid,
+  resultGrid,
   toolRowTargetOffset,
+  transcriptGrid,
   type TranscriptGrid,
 } from './layout.js';
 import {
@@ -1237,9 +1238,32 @@ export interface ToolOutputDisplayInput {
   expandHint?: string;
 }
 
-/** Columns of the output block's content: the rail's border plus its padding take the gutter. */
-export function toolOutputContentWidth(terminalWidth: number): number {
-  return Math.max(8, Math.floor(terminalWidth) - CONTENT_COLUMN - 2);
+/**
+ * Columns of the output block's content. The block hangs under a call's `⎿` with no rail of its
+ * own, so it takes the whole width the result is given.
+ */
+export function toolOutputContentWidth(blockWidth: number): number {
+  return Math.max(8, Math.floor(blockWidth));
+}
+
+/** Tools whose result is a command's output: the compact transcript previews its first lines. */
+export function isCommandTool(canonicalName: string): boolean {
+  return (
+    canonicalName === 'Bash' || canonicalName === 'BashOutput' || canonicalName.startsWith('Git')
+  );
+}
+
+/**
+ * The grids a call is drawn on at a terminal width: the item's own, and its result's past `⎿  `.
+ * ToolCallBlock and the Ctrl+E target both size a row from here, so the footer a row draws and
+ * the target's reading of it cannot disagree.
+ */
+export function toolItemGrids(terminalWidth: number): {
+  item: TranscriptGrid;
+  result: TranscriptGrid;
+} {
+  const item = transcriptGrid(terminalWidth);
+  return { item, result: resultGrid(item) };
 }
 
 /** The preview OutputBlock draws for a row's output; the Ctrl+E target reads the same one. */
@@ -1291,4 +1315,149 @@ export function estimateToolErrorDetailRows(result: ToolResult | undefined): num
   const stdoutRow =
     !stdoutIsRows && shown + noteRows > 0 && hasNonBlankOutputLine(result.content ?? '') ? 1 : 0;
   return Math.min(TOOL_ERROR_TAIL_LINES + 1, shown + stdoutRow) + noteRows;
+}
+
+/**
+ * A call's heading names it the way Claude Code does where Book's row title differs: a search is
+ * a `Search`, an edit an `Update`, a new file a `Write`. Everything else keeps its row title.
+ */
+const HEADING_NAMES: Record<string, string> = {
+  Grep: 'Search',
+  Glob: 'Search',
+  Edit: 'Update',
+  Create: 'Write',
+  'Apply patch': 'Update',
+  'Edit notebook': 'Update',
+};
+
+/** A call's heading, `Bash(npm test)`: its name, and the argument it acted on. */
+export interface ToolHeading {
+  name: string;
+  /** The argument, cut with `…` to the room the row leaves it; absent when there is none. */
+  target?: string;
+}
+
+/**
+ * Lay a call's heading out in `width` columns: `Name(target)`, the target cut so the closing
+ * parenthesis still lands on the row. A target with no room for a few characters of its own is
+ * dropped rather than shown as `(…)`.
+ */
+export function composeToolHeading(
+  presentation: Pick<ToolPresentation, 'title' | 'target'>,
+  width: number,
+): ToolHeading {
+  const name = HEADING_NAMES[presentation.title] ?? presentation.title;
+  const target = presentation.target ? foldControlCharacters(presentation.target) : undefined;
+  if (!target) return { name };
+  const room = width - displayWidth(name) - 2;
+  if (room < 4) return { name };
+  return { name, target: truncateDisplay(target, room) };
+}
+
+/** `13ms`, `9.0s`, `1m 4s`: how long a call took, which a finished row no longer says. */
+const TIMING_METADATA = /^(?:\d+(?:\.\d+)?m?s|\d+m \d+s)$/;
+const STATUS_METADATA = new Set(['failed', 'skipped', 'needs approval']);
+const ATTEMPT_METADATA = /^attempt \d+$/;
+
+/** A row's metadata less what its mark already says (status) and what it no longer shows (time). */
+function resultFacts(metadata: readonly string[]): string[] {
+  return metadata.filter(
+    (part) =>
+      !TIMING_METADATA.test(part) &&
+      !STATUS_METADATA.has(part) &&
+      !EXIT_METADATA.test(part) &&
+      !ATTEMPT_METADATA.test(part),
+  );
+}
+
+function capitalize(text: string): string {
+  return text ? text[0]!.toUpperCase() + text.slice(1) : text;
+}
+
+function lineCount(count: number): string {
+  return `${count} ${count === 1 ? 'line' : 'lines'}`;
+}
+
+/**
+ * What a finished call found, in words, for the `⎿` row under its heading: `Read 40 lines`,
+ * `Found 67 matches`, `2 of 7 done`. Undefined for a call that did not succeed (its mark and its
+ * error say so), and for one with nothing to report: a command shows its output instead.
+ */
+export function toolResultSummary(
+  presentation: Pick<ToolPresentation, 'canonicalName' | 'status' | 'metadata'>,
+): string | undefined {
+  if (presentation.status !== 'success') return undefined;
+  const facts = resultFacts(presentation.metadata);
+  if (presentation.canonicalName === 'Read') {
+    if (facts[0] === 'empty') return 'Empty file';
+    if (facts[0] === 'outline') return facts[1] ? `Outlined ${facts[1]}` : 'Outlined';
+    if (!facts[0]) return undefined;
+    return `Read ${facts[0]}${facts[1] ? ` (${facts[1]})` : ''}`;
+  }
+  if (presentation.canonicalName === 'Grep' || presentation.canonicalName === 'Glob') {
+    if (!facts[0]) return undefined;
+    if (/^0 /.test(facts[0])) return `No ${facts[0].slice(2)}`;
+    return `Found ${facts.join(', ')}`;
+  }
+  return facts.length > 0 ? capitalize(facts.join(', ')) : undefined;
+}
+
+/** A mutation's change in words: `Added 1 line, removed 1 line`, `Wrote 5 lines`. */
+export function mutationResultSummary(
+  mutation: Pick<FileMutationDisplaySummary, 'kind' | 'addedLines' | 'removedLines' | 'fileCount'>,
+): string {
+  const files = mutation.fileCount ?? 1;
+  if (files <= 1 && mutation.kind === 'create') return `Wrote ${lineCount(mutation.addedLines)}`;
+  if (files <= 1 && mutation.kind === 'delete') {
+    return `Deleted ${lineCount(mutation.removedLines)}`;
+  }
+  const changes: string[] = [];
+  if (mutation.addedLines > 0) changes.push(`added ${lineCount(mutation.addedLines)}`);
+  if (mutation.removedLines > 0) changes.push(`removed ${lineCount(mutation.removedLines)}`);
+  const change = changes.length > 0 ? changes.join(', ') : 'no changes';
+  return files > 1 ? `Changed ${files} files, ${change}` : capitalize(change);
+}
+
+/** Rows a successful command's output takes under its heading in the compact transcript. */
+export const COMMAND_PREVIEW_ROWS = 2;
+
+/** A successful command's output as the compact transcript previews it. */
+export interface CommandOutputPreview {
+  /** The output's first lines, one row each, cut at the row's measure. */
+  lines: string[];
+  /** Output lines past them: the `… +N lines` row reports these. */
+  hiddenLines: number;
+}
+
+/**
+ * The first lines of a command's output, at most {@link COMMAND_PREVIEW_ROWS} rows with the
+ * `… +N lines` row counted among them. Control characters are neutralised, and a tab takes four
+ * columns, so a line can never reach past `width`. Blank lines at either end are dropped; an
+ * output with none left is reported as `(No output)` by the caller.
+ */
+export function commandOutputPreview(output: string, width: number): CommandOutputPreview {
+  const lines = output.replace(/\s+$/, '').split(/\r?\n/);
+  while (lines.length > 0 && lines[0]!.trim() === '') lines.shift();
+  if (lines.length === 0) return { lines: [], hiddenLines: 0 };
+  const shown =
+    lines.length <= COMMAND_PREVIEW_ROWS ? lines : lines.slice(0, COMMAND_PREVIEW_ROWS - 1);
+  return {
+    lines: shown.map((line) =>
+      truncateDisplay(foldShared(line.replace(/\t/g, '    ')).trimEnd(), Math.max(1, width)),
+    ),
+    hiddenLines: lines.length - shown.length,
+  };
+}
+
+/** A message that already says what kind of stop it was: `Error: …`, `SKIPPED: …`. */
+const LABELLED_FAILURE = /^(?:error|skipped|failed|blocked)\b\s*:/i;
+
+/**
+ * A failure's message as its result's first row reads it: `Error: File not found`, or
+ * `Skipped: …` for a call that was refused. A message that already opens on such a label keeps
+ * its own rather than reading `Error: SKIPPED: …`.
+ */
+export function labelFailure(message: string, status: ToolPresentationStatus): string {
+  if (LABELLED_FAILURE.test(message.trimStart())) return message;
+  return `${status === 'skipped' ? 'Skipped' : 'Error'}: ${message}`;
 }

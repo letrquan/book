@@ -3,7 +3,7 @@ import React from 'react';
 import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
 import { displayWidth, hardWrapLine } from './word-wrap.js';
-import { PILCROW } from '../marks.js';
+import { PROMPT_MARK } from '../marks.js';
 import { mentionTokenRanges } from '../../input/input-expansion.js';
 import type { ImageAttachment } from '../../types/messages.js';
 
@@ -57,7 +57,7 @@ function parseMentionSegments(
  * Columns the prompt text wraps at.
  *
  * The row stops one column short of the terminal, spends the gutter on the
- * pilcrow, and keeps the time clear at the right edge when the turn has one.
+ * prompt mark, and keeps the time clear at the right edge when the turn has one.
  * The time is measured, not assumed: `19:13` is five columns, but the system
  * locale can make it `19 h 13`, and a fixed five pushed that onto a second row
  * of every turn. The transcript's row estimate uses the same measure, so a
@@ -182,15 +182,13 @@ export function userTurnRows(
 }
 
 /**
- * A user turn, set the way a rubricated manuscript opens a paragraph.
- *
- * A red pilcrow hangs in the gutter and the prompt is set upright in the
- * brightest ink on screen, a step above the agent's prose, so your words read as
- * a different voice without a band, a box or a rule through the screen. The
- * pilcrow is what a long transcript is scanned by: it is the only red mark at
- * the margin, and it is the same mark as the composer's, so what you typed
- * lands in the transcript under the glyph you typed it after. The time sits at
- * the right edge of the first row. @mentions stay accented.
+ * A user turn: the prompt mark in the gutter and the prompt in the brightest ink
+ * on screen, a step above the agent's prose, so your words read as a different
+ * voice without a band, a box or a rule through the screen. The mark is the
+ * composer's, so what you typed lands in the transcript under the glyph you typed
+ * it after, and it is the one accented mark at the margin a long transcript is
+ * scanned by. The time sits at the right edge of the first row. @mentions stay
+ * accented.
  */
 function UserMessageInner({
   content,
@@ -239,7 +237,7 @@ function UserMessageInner({
         const gap = Math.max(0, textWidth - displayWidth(rowText));
         return (
           <Box key={index} width={rowWidth}>
-            <Text color={theme.userAccent}>{index === 0 ? `${PILCROW} ` : '  '}</Text>
+            <Text color={theme.userAccent}>{index === 0 ? `${PROMPT_MARK} ` : '  '}</Text>
             {row.attachment !== undefined ? (
               <Text color={theme.userAccent}>{row.attachment}</Text>
             ) : (

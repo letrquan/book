@@ -8,7 +8,7 @@ import { AgentMessage } from './AgentMessage.js';
 import { ToolExpandTargetContext } from './ToolCallBlock.js';
 import { userTurnRows } from './UserMessage.js';
 import { DROP_CAP } from './WelcomeScreen.js';
-import { PILCROW } from '../marks.js';
+import { PROMPT_MARK } from '../marks.js';
 import type { FileMutationSummary, ToolCall, ToolResult } from '../../types/tools.js';
 import type { Message } from '../../types/messages.js';
 
@@ -625,7 +625,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).not.toContain('You');
     expect(output).not.toContain('Book');
     // The user turn opens with a pilcrow, with no role label.
-    expect(output).toContain(`${PILCROW} compact request`);
+    expect(output).toContain(`${PROMPT_MARK} compact request`);
     expect(output).not.toContain('── you ');
     expect(output).toContain('compact reply');
   });
@@ -673,7 +673,7 @@ describe('ChatPanel Ink rendering', () => {
     // the next turn needs no separate rule row — and it opens like a new
     // section rather than another paragraph of the reply above it.
     expect(nextQuestionLine - answerLine).toBe(3);
-    expect(lines[nextQuestionLine]).toContain(`${PILCROW} SECOND_QUESTION_MARKER`);
+    expect(lines[nextQuestionLine]).toContain(`${PROMPT_MARK} SECOND_QUESTION_MARKER`);
   });
 
   it('keeps wrapped content mounted exactly once when streaming completes', () => {
@@ -937,7 +937,7 @@ describe('ChatPanel Ink rendering', () => {
       const lines = frame(view.lastFrame).split('\n');
       const answer = lines.findIndex((line) => line.includes('The answer is 42.'));
       const turns = lines
-        .map((line, index) => (line.includes(PILCROW) ? index : -1))
+        .map((line, index) => (line.includes(PROMPT_MARK) ? index : -1))
         .filter((index) => index >= 0);
 
       expect(turns).toHaveLength(2);

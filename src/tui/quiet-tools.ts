@@ -463,6 +463,14 @@ export interface QuietRunSummary {
   target: string;
   metadata: string[];
   running: boolean;
+  /** The files the run read, by basename, in the order it first read them. */
+  files: string[];
+  /** What it searched for: patterns, queries, globs. */
+  patterns: string[];
+  /** The directories it listed; `.` for the current one. */
+  listed: string[];
+  /** Lookups that are none of those: a `git status`, a tool named by itself. */
+  others: string[];
 }
 
 function argString(args: Record<string, unknown>, ...keys: string[]): string | undefined {
@@ -550,5 +558,23 @@ export function summarizeQuietRun(
     target,
     metadata,
     running: invocations.some((invocation) => !invocation.result),
+    files,
+    patterns,
+    listed,
+    others: [...new Set(others)],
   };
+}
+
+/**
+ * A folded run's heading, written as the calls it stands for: `Search(memory), Read(4 files)`.
+ * A single file or listing is named; several are counted, and the result row names them.
+ */
+export function quietRunHeading(summary: QuietRunSummary): string {
+  const parts: string[] = [];
+  if (summary.patterns.length > 0) parts.push(`Search(${summary.patterns.join(', ')})`);
+  if (summary.files.length === 1) parts.push(`Read(${summary.files[0]})`);
+  else if (summary.files.length > 1) parts.push(`Read(${summary.files.length} files)`);
+  if (summary.listed.length > 0) parts.push(`List(${summary.listed.join(', ')})`);
+  if (summary.others.length > 0) parts.push(summary.others.join(', '));
+  return parts.join(', ') || summary.title;
 }

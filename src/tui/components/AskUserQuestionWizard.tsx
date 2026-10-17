@@ -7,7 +7,7 @@ import type { UserQuestion, UserQuestionRequest, UserQuestionResponse } from '..
 import { useTheme } from '../theme.js';
 import { truncateDisplay, wordWrap } from './word-wrap.js';
 import { ChoiceList, DecisionSheet, floatingFrameMetrics, type Choice } from './chrome.js';
-import { PILCROW } from '../marks.js';
+import { PROMPT_MARK } from '../marks.js';
 
 interface AskUserQuestionWizardProps {
   request: UserQuestionRequest;
@@ -390,7 +390,7 @@ export function AskUserQuestionWizard({
         <Box flexDirection="column" marginTop={1}>
           <Text color={theme.border}>{'─'.repeat(Math.max(8, contentWidth))}</Text>
           <Box>
-            <Text color={theme.brand}>{`${PILCROW} `}</Text>
+            <Text color={theme.brand}>{`${PROMPT_MARK} `}</Text>
             <TextInput
               value={otherValue}
               placeholder="Write your own answer"

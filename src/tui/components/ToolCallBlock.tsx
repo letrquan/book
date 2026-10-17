@@ -1,13 +1,5 @@
 import { Text, Box, type DOMElement } from 'ink';
-import React, {
-  createContext,
-  useContext,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-} from 'react';
-import { Spinner } from './Spinner.js';
+import React, { createContext, useContext, useLayoutEffect, useMemo, useRef } from 'react';
 import { useTheme } from '../theme.js';
 import { DiffBlock, mutationDiffPreview } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
@@ -18,29 +10,27 @@ import {
   isRenderableFileMutationDiff,
 } from '../file-mutation-display.js';
 import {
+  commandOutputPreview,
   composeResultErrorDetail,
-  composeToolRow,
+  composeToolHeading,
   deriveToolPresentation,
   EXPAND_KEY,
+  isCommandTool,
+  labelFailure,
   mutationDiffPreviewInput,
+  mutationResultSummary,
   showsErrorMessage,
+  toolItemGrids,
   toolOutputContentWidth,
   toolOutputDisplay,
-  type ToolPresentation,
+  toolResultSummary,
   type TranscriptMode,
 } from '../tool-presentation.js';
-import {
-  CONTENT_COLUMN,
-  GUTTER_WIDTH,
-  indentedGrid,
-  nestedGrid,
-  transcriptGrid,
-  withLabelColumn,
-} from '../layout.js';
-import { formatElapsedDuration } from './SubagentRow.js';
+import { CONTENT_COLUMN } from '../layout.js';
+import { formatToolOutputFooter } from './tool-output.js';
+import { ItemMark, ResultBox, ResultLine } from './transcript-item.js';
 import { foldControlCharacters, stripTerminalControls } from '../../control-characters.js';
 import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
-import { useUiClock } from '../ui-clock.js';
 import { useMemoryRoot } from '../memory-root.js';
 import type { ToolResult } from '../../types/tools.js';
 
@@ -62,7 +52,6 @@ interface ToolCallBlockProps {
   isExpanded: boolean;
   isPending?: boolean;
   nestedActivityCount?: number;
-  agentColor?: string;
   reducedMotion?: boolean;
   /** When true, renders flat, complete text without decorations. */
   screenReader?: boolean;
@@ -70,15 +59,8 @@ interface ToolCallBlockProps {
   showAllToolOutput?: boolean;
   /** Which transcript this row is drawn in; the detailed one previews diffs more widely. */
   transcriptMode?: TranscriptMode;
-  /** Render a file path as a child row under an aggregate mutation heading. */
-  summaryVariant?: 'default' | 'file-child';
   /** Available terminal width, including this block's outer indentation. */
   terminalWidth?: number;
-  /**
-   * Width of the label column, measured across the sibling rows of this turn.
-   * Omitted, the row uses the grid's default column.
-   */
-  labelWidth?: number;
 }
 
 /** Compatibility export used by existing consumers and tests. */
@@ -112,43 +94,6 @@ function toolLabel(name: string): string {
     InvokeSkill: 'Use skill',
   };
   return labels[name] ?? name;
-}
-
-function statusColor(
-  { status, rejected }: Pick<ToolPresentation, 'status' | 'rejected'>,
-  theme: ReturnType<typeof useTheme>,
-): string {
-  // A column of green checks beside one rose `×` made every row shout. Success
-  // is the default, so it is the exception — a failure or a pending row — that
-  // takes colour. A call refused before it ran is the model's slip, not an
-  // event in your workspace: its `×` is grey.
-  if (status === 'success') return theme.inactive;
-  if (status === 'failure') return rejected ? theme.inactive : theme.error;
-  if (status === 'skipped' || status === 'pending') return theme.warning;
-  return theme.brand;
-}
-
-function statusSymbol(status: ToolPresentation['status']): string {
-  if (status === 'success') return '✓';
-  if (status === 'failure') return '×';
-  if (status === 'skipped') return '–';
-  if (status === 'pending') return '?';
-  return '◌';
-}
-
-function useRunningElapsed(isRunning: boolean): number {
-  const startedAtRef = useRef(Date.now());
-  // The 1s clock keeps a running row to one re-render per second; the fast
-  // clock forced 10 renders + full Yoga layouts per second for every running
-  // tool. Second granularity in the label (formatElapsedDuration) matches.
-  const tick = useUiClock('slow', isRunning);
-
-  useEffect(() => {
-    startedAtRef.current = Date.now();
-  }, [isRunning]);
-
-  void tick;
-  return isRunning ? Date.now() - startedAtRef.current : 0;
 }
 
 function ScreenReaderTool({
@@ -284,14 +229,11 @@ function ToolCallBlockInner({
   isExpanded,
   isPending = false,
   nestedActivityCount = 0,
-  agentColor,
   reducedMotion = false,
   screenReader = false,
   showAllToolOutput = false,
   transcriptMode = 'compact',
-  summaryVariant = 'default',
   terminalWidth = 80,
-  labelWidth,
 }: ToolCallBlockProps) {
   const theme = useTheme();
   const registry = useToolRowInteractionRegistry();
@@ -304,15 +246,10 @@ function ToolCallBlockInner({
       ? EXPAND_KEY
       : '';
   const summaryRef = useRef<DOMElement>(null);
-  const grid = useMemo(() => {
-    const base = transcriptGrid(terminalWidth);
-    return labelWidth === undefined ? base : withLabelColumn(base, labelWidth);
-  }, [labelWidth, terminalWidth]);
-  // The row nests one gutter under the prose it belongs to, so its own grid is
-  // the indented one; `grid` stays the message-level measure the label column
-  // was negotiated against.
-  const rowGrid = useMemo(() => indentedGrid(grid), [grid]);
-  const blockWidth = rowGrid.content;
+  // The heading sits on the item's own grid, its mark in the gutter; the result's rows sit
+  // past `⎿  `, on the grid the result's width and its error detail are measured on.
+  const grids = useMemo(() => toolItemGrids(terminalWidth), [terminalWidth]);
+  const resultWidth = grids.result.content;
   const presentation = useMemo(
     () =>
       deriveToolPresentation(name, args, result, {
@@ -323,59 +260,41 @@ function ToolCallBlockInner({
       }),
     [args, isPending, memoryRoot, name, nestedActivityCount, result, unparsedArguments],
   );
+  const heading = useMemo(
+    () => composeToolHeading(presentation, grids.item.content),
+    [grids.item.content, presentation],
+  );
   const isRunning = presentation.status === 'running';
-  // Under reducedMotion the row must not tick at all: the spinner is frozen,
-  // so a changing elapsed label would be the only remaining animation.
-  const runningElapsedMs = useRunningElapsed(isRunning && !reducedMotion);
-  const elapsed =
-    isRunning && !reducedMotion
-      ? formatElapsedDuration(Math.floor(runningElapsedMs / 1000))
-      : undefined;
   const inlineError = showsErrorMessage(result) ? result?.structuredError?.message : undefined;
   const mutationSummary = useMemo(
     () => getFileMutationDisplaySummary(name, args, result),
     [args, name, result],
   );
   // One new file previews its first lines; any other diff is previewed as mutationDiffPreview
-  // says: the compact transcript's first rows in order, the detailed one's change-focused rows.
+  // says: the compact transcript's changed rows, the detailed one's wider ones.
   const diffPreview = mutationDiffPreview(
     mutationDiffPreviewInput(mutationSummary, { transcriptMode, screenReader }),
   );
-  const isFileChild = summaryVariant === 'file-child';
-  // A child row sits under an aggregate heading that already named the verb, so
-  // it drops the label column and renders on the nested grid.
-  const row = useMemo(() => {
-    if (isFileChild && mutationSummary) {
-      return composeToolRow(
-        {
-          title: '',
-          target: mutationSummary.filePath,
-          metadata: [`+${mutationSummary.addedLines}`, `-${mutationSummary.removedLines}`],
-        },
-        nestedGrid(rowGrid),
-      );
-    }
-    return composeToolRow(presentation, isFileChild ? nestedGrid(rowGrid) : rowGrid, {
-      elapsed,
-    });
-  }, [elapsed, rowGrid, isFileChild, mutationSummary, presentation]);
   // The output block under the row renders exactly when this holds. It draws a command's stdout in
   // full, so an expanded error detail must not draw the same lines again.
   const rendersOutputBlock = isExpanded && Boolean(result?.content) && !isDiffOutput(name, result);
   // The detail shows everything only while its row is itself expanded: the ids that ask for it are
   // never removed, so a row folded back (a click, or Ctrl+O out of detailed mode) must fold it too.
   const showFullError = showAllToolOutput && isExpanded;
-  // A failure's message goes under the row, on the grid the row was laid out on. The collapsed
-  // detail is always composed: its hint says whether the row has lines to reveal.
+  const exitCode = presentation.metadata.find((part) => /^exit -?\d+$/.test(part));
+  // A command's failure says its exit code on the result's first row, and its output's last
+  // lines follow. Any other failure is a sentence, which opens on what kind of stop it was.
+  const errorMessage =
+    inlineError?.trim() && !exitCode ? labelFailure(inlineError, presentation.status) : inlineError;
   const errorDetails = useMemo(() => {
-    if (!inlineError?.trim()) return undefined;
+    if (!errorMessage?.trim()) return undefined;
     const compose = (expanded: boolean) =>
       composeResultErrorDetail({
-        presentation,
-        message: inlineError,
+        presentation: { title: '', target: undefined },
+        message: errorMessage,
         result,
-        rowGrid,
-        isFileChild,
+        rowGrid: grids.result,
+        isFileChild: false,
         expanded,
         stdoutShownBelow: rendersOutputBlock,
         expandHint,
@@ -384,29 +303,19 @@ function ToolCallBlockInner({
       collapsed: compose(false),
       expanded: showFullError ? compose(true) : undefined,
     };
-  }, [
-    expandHint,
-    inlineError,
-    isFileChild,
-    presentation,
-    rendersOutputBlock,
-    result,
-    rowGrid,
-    showFullError,
-  ]);
+  }, [errorMessage, expandHint, grids.result, rendersOutputBlock, result, showFullError]);
   const errorDetail = showFullError ? errorDetails?.expanded : errorDetails?.collapsed;
+  // A successful command that is not open previews its first lines under the heading.
+  const commandPreview = useMemo(
+    () =>
+      !isExpanded && result?.status === 'success' && isCommandTool(presentation.canonicalName)
+        ? commandOutputPreview(result.content ?? '', resultWidth)
+        : undefined,
+    [isExpanded, presentation.canonicalName, result, resultWidth],
+  );
   // A failure whose collapsed detail hides lines can be expanded even when the row's own output
   // has nothing to reveal: stderr is not in `result.content`.
   const expandable = presentation.hasHiddenContent || Boolean(errorDetails?.collapsed?.hint);
-  // The footer counts what the rows cut and the stdout they leave out: above the rows while it
-  // counts lines they cut, below them when it is the stdout's alone.
-  const errorHint = errorDetail?.hint ? (
-    <Box height={1}>
-      <Text wrap="truncate-end" color={theme.inactive}>
-        {errorDetail.hint}
-      </Text>
-    </Box>
-  ) : null;
 
   useLayoutEffect(() => {
     if (!registry || !toolId) return;
@@ -420,104 +329,132 @@ function ToolCallBlockInner({
 
   if (screenReader) {
     return (
-      <Box flexDirection="column" marginLeft={CONTENT_COLUMN} width={blockWidth}>
+      <Box flexDirection="column" marginLeft={CONTENT_COLUMN} width={grids.item.content}>
         <ScreenReaderTool presentation={presentation} result={result} />
       </Box>
     );
   }
 
+  const failed = presentation.status === 'failure' || presentation.status === 'skipped';
+  // A call refused before it ran is the model's slip, not an event in your workspace: grey.
+  const errorColor = presentation.rejected
+    ? theme.inactive
+    : presentation.status === 'skipped'
+      ? theme.warning
+      : theme.error;
+  const summary = mutationSummary
+    ? mutationResultSummary(mutationSummary)
+    : toolResultSummary(presentation);
+  // The result's opening row, when the state is not already told by the rows under it.
+  const statusLine: { text: string; color: string } | undefined = isRunning
+    ? { text: 'Running…', color: theme.inactive }
+    : presentation.status === 'pending'
+      ? { text: 'Waiting for your approval', color: theme.warning }
+      : failed && (exitCode || !errorDetail)
+        ? {
+            text: exitCode
+              ? `Error: ${exitCode}`
+              : presentation.status === 'skipped'
+                ? 'Skipped'
+                : 'Error',
+            color: errorColor,
+          }
+        : summary && !failed
+          ? { text: summary, color: theme.subtle }
+          : undefined;
+  const errorHint = errorDetail?.hint ? (
+    <ResultLine text={errorDetail.hint} color={theme.inactive} />
+  ) : null;
+  const previewRows = commandPreview
+    ? commandPreview.lines.length > 0
+      ? commandPreview.lines
+      : ['(No output)']
+    : [];
+  const drawsDiff = isExpanded && result !== undefined && isDiffOutput(name, result);
+  const hasResult =
+    statusLine !== undefined ||
+    errorDetail !== undefined ||
+    previewRows.length > 0 ||
+    drawsDiff ||
+    rendersOutputBlock;
+
   return (
-    <Box
-      flexDirection="column"
-      marginLeft={isFileChild ? CONTENT_COLUMN + GUTTER_WIDTH : CONTENT_COLUMN}
-    >
-      {/* The row is one line by contract; it must truncate, never wrap, because a wrapped line is drawn outside the box and the render cull relies on rows drawing inside their own box. */}
+    <Box flexDirection="column">
+      {/* The heading is one line by contract; it must truncate, never wrap, because a wrapped line is drawn outside the box and the render cull relies on rows drawing inside their own box. */}
       <Box ref={summaryRef} height={1}>
-        {/* The gutter carries status; content always begins on the next column. */}
-        {isFileChild ? (
-          <Text wrap="truncate-end" color={theme.toolRail}>
-            └{' '}
-          </Text>
-        ) : isRunning ? (
+        <ItemMark
+          state={presentation.rejected ? 'quiet' : presentation.status}
+          reducedMotion={reducedMotion}
+        />
+        <Text wrap="truncate-end" bold color={theme.text}>
+          {heading.name}
+        </Text>
+        {heading.target ? (
           <>
-            {/* Spinner emits its own trailing space, so the gutter stays two
-                columns wide and the verb does not shift when the tool ends. */}
-            <Spinner
-              active
-              style="dots"
-              color={agentColor ?? theme.assistantAccent}
-              reducedMotion={reducedMotion}
+            <Text color={theme.inactive}>(</Text>
+            <TargetText
+              target={heading.target}
+              failed={false}
+              path={Boolean(presentation.filePath)}
+              wrap="truncate-end"
             />
+            <Text color={theme.inactive}>)</Text>
           </>
-        ) : (
-          <Text wrap="truncate-end" color={statusColor(presentation, theme)}>
-            {presentation.mark ?? statusSymbol(presentation.status)}{' '}
-          </Text>
-        )}
-        {/* Recessive, but never faint: SGR 2 on an already-muted grey left the
-            verb nearly invisible on a dark background. */}
-        {row.label ? (
-          <Text wrap="truncate-end" color={theme.inactive}>
-            {row.label}{' '}
-          </Text>
         ) : null}
-        <TargetText
-          target={row.target}
-          failed={presentation.status === 'failure' && !presentation.rejected}
-          path={Boolean(presentation.filePath) || isFileChild}
-          wrap="truncate-end"
-        />
-        <Text wrap="truncate-end">{row.gap}</Text>
-        <MetaText meta={row.meta} wrap="truncate-end" />
       </Box>
-      {/* The message is hard-wrapped into one-line rows for the same reason the
-          summary row truncates: every row draws inside its own box. */}
-      {errorDetail ? (
-        <Box flexDirection="column" marginLeft={errorDetail.column}>
-          {errorDetail.hintBelow ? null : errorHint}
-          {errorDetail.lines.map((line, index) => (
-            <Box key={index} height={1}>
-              <Text
-                wrap="truncate-end"
-                color={presentation.rejected ? theme.inactive : theme.error}
-              >
-                {line}
-              </Text>
-            </Box>
+      {hasResult ? (
+        <ResultBox width={resultWidth}>
+          {statusLine ? <ResultLine text={statusLine.text} color={statusLine.color} /> : null}
+          {/* The message is hard-wrapped into one-line rows for the same reason the
+              heading truncates: every row draws inside its own box. */}
+          {errorDetail ? (
+            <>
+              {errorDetail.hintBelow ? null : errorHint}
+              {errorDetail.lines.map((line, index) => (
+                <ResultLine key={index} text={line} color={errorColor} />
+              ))}
+              {errorDetail.note?.map((line, index) => (
+                <ResultLine key={`note-${index}`} text={line} color={errorColor} />
+              ))}
+              {errorDetail.hintBelow ? errorHint : null}
+            </>
+          ) : null}
+          {previewRows.map((line, index) => (
+            <ResultLine key={`preview-${index}`} text={line} color={theme.subtle} />
           ))}
-          {errorDetail.note?.map((line, index) => (
-            <Box key={`note-${index}`} height={1}>
-              <Text
-                wrap="truncate-end"
-                color={presentation.rejected ? theme.inactive : theme.error}
-              >
-                {line}
-              </Text>
-            </Box>
-          ))}
-          {errorDetail.hintBelow ? errorHint : null}
-        </Box>
-      ) : null}
-      {isExpanded && result && isDiffOutput(name, result) ? (
-        <DiffBlock
-          output={result.content}
-          filePath={presentation.filePath}
-          collapsed={!showAllToolOutput}
-          preview={diffPreview.preview}
-          maxRows={diffPreview.maxRows}
-          expandHint={expandHint}
-          terminalWidth={blockWidth}
-        />
-      ) : isExpanded && result?.content ? (
-        <OutputBlock
-          output={result.content}
-          success={result.status === 'success'}
-          theme={theme}
-          showAllToolOutput={showAllToolOutput}
-          toolName={presentation.canonicalName}
-          terminalWidth={blockWidth}
-          expandHint={expandHint}
-        />
+          {commandPreview && commandPreview.hiddenLines > 0 ? (
+            <ResultLine
+              text={formatToolOutputFooter({
+                hiddenLines: commandPreview.hiddenLines,
+                truncatedLines: 0,
+                hint: expandHint || undefined,
+              })}
+              color={theme.inactive}
+            />
+          ) : null}
+          {drawsDiff ? (
+            <DiffBlock
+              output={result.content}
+              filePath={presentation.filePath}
+              collapsed={!showAllToolOutput}
+              preview={diffPreview.preview}
+              maxRows={diffPreview.maxRows}
+              contextRows={diffPreview.contextRows}
+              expandHint={expandHint}
+              terminalWidth={resultWidth}
+            />
+          ) : rendersOutputBlock && result ? (
+            <OutputBlock
+              output={result.content}
+              success={result.status === 'success'}
+              theme={theme}
+              showAllToolOutput={showAllToolOutput}
+              toolName={presentation.canonicalName}
+              terminalWidth={resultWidth}
+              expandHint={expandHint}
+            />
+          ) : null}
+        </ResultBox>
       ) : null}
     </Box>
   );
@@ -575,18 +512,7 @@ function OutputBlock({
 
   if (renderAsMarkdown) {
     return (
-      <Box
-        marginLeft={CONTENT_COLUMN}
-        flexDirection="column"
-        borderStyle="single"
-        borderLeft
-        borderTop={false}
-        borderRight={false}
-        borderBottom={false}
-        borderLeftColor={theme.toolRail}
-        paddingLeft={1}
-        paddingRight={1}
-      >
+      <Box flexDirection="column" width={contentWidth}>
         <MarkdownBlock content={display.lines.join('\n')} terminalWidth={contentWidth} />
         {display.footer ? (
           <Text color={theme.subtle} dimColor>
@@ -598,18 +524,7 @@ function OutputBlock({
   }
 
   return (
-    <Box
-      marginLeft={CONTENT_COLUMN}
-      flexDirection="column"
-      borderStyle="single"
-      borderLeft
-      borderTop={false}
-      borderRight={false}
-      borderBottom={false}
-      borderLeftColor={theme.toolRail}
-      paddingLeft={1}
-      paddingRight={1}
-    >
+    <Box flexDirection="column" width={contentWidth}>
       {display.lines.map((line, index) => (
         // An empty line is a row too: Ink gives a box whose text is empty no height of its own,
         // which dropped the blank lines between paragraphs, test sections and diff hunks.

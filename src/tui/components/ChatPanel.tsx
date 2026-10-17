@@ -13,11 +13,10 @@ import type {
 import { AgentMessage, managedAgentTracesEqualForMessage } from './AgentMessage.js';
 import { UserMessage, userTurnRows } from './UserMessage.js';
 import {
-  createProseMemo,
   createQuietCollapser,
   createShellPartsMemo,
   groupQuietInvocations,
-  hidesThoughtsInCompact,
+  summarizeQuietRun,
   type QuietToolContext,
 } from '../quiet-tools.js';
 import { WelcomeScreen, type RecentChapter } from './WelcomeScreen.js';
@@ -27,9 +26,24 @@ import { foldControlCharacters } from '../../control-characters.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount, useDebugRender } from '../debug.js';
 import { useDensity, type TuiDensity } from '../density.js';
-import { mergeAssistantMessages, messagesFollowedByWork } from './transcript-messages.js';
+import {
+  isWorkStep,
+  mergeAssistantMessages,
+  messagesFollowedByWork,
+} from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
-import { estimateToolErrorDetailRows, type TranscriptMode } from '../tool-presentation.js';
+import {
+  commandOutputPreview,
+  deriveToolPresentation,
+  estimateToolErrorDetailRows,
+  isCommandTool,
+  mutationDiffPreviewInput,
+  toolItemGrids,
+  toolResultSummary,
+  type TranscriptMode,
+} from '../tool-presentation.js';
+import { diffPreviewRows, mutationDiffPreview } from './Diff.js';
+import { getFileMutationDisplaySummary } from '../file-mutation-display.js';
 import type { ToolResult } from '../../types/tools.js';
 import { splitReasoningParts } from '../../reasoning-tags.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
@@ -78,42 +92,77 @@ function estimateWrappedRows(content: string, contentWidth: number): number {
   );
 }
 
-/** A tool call's row, and under it a failure's detail: a failed command draws up to seven. */
-function estimateToolCallRows(result: ToolResult | undefined): number {
-  return Math.max(2, estimateToolErrorDetailRows(result)) + (result ? 1 : 0);
-}
-
-function estimateToolRows(message: Message, quietTools: QuietToolContext | undefined): number {
-  const calls = message.toolCalls ?? [];
-  if (!quietTools) {
-    return calls.reduce(
-      (rows, call) =>
-        rows +
-        estimateToolCallRows(message.toolResults?.find((result) => result.toolCallId === call.id)),
-      0,
+/**
+ * Rows one call's item draws, as ToolCallBlock lays it out: the heading, then the rows hung
+ * under `⎿`. Running and waiting calls say so on one row; a failure states its exit code and its
+ * output's tail; a mutation its change in words and its diff preview; a command its first lines;
+ * anything else its result in words, when it has one. An open row's full output is measured
+ * once drawn: the estimate is for history that has not been.
+ */
+function estimateToolCallRows(
+  call: { name: string; arguments: Record<string, unknown> },
+  result: ToolResult | undefined,
+  terminalWidth: number,
+  transcriptMode: TranscriptMode,
+): number {
+  if (!result) return 2;
+  const presentation = deriveToolPresentation(call.name, call.arguments, result);
+  const resultWidth = toolItemGrids(terminalWidth).result.content;
+  if (presentation.status !== 'success') {
+    const exit = presentation.metadata.some((part) => /^exit -?\d+$/.test(part));
+    return 1 + (exit ? 1 : 0) + Math.max(1, estimateToolErrorDetailRows(result));
+  }
+  const mutation = getFileMutationDisplaySummary(call.name, call.arguments, result);
+  if (mutation) {
+    const preview = mutationDiffPreview(
+      mutationDiffPreviewInput(mutation, { transcriptMode, screenReader: false }),
+    );
+    return (
+      2 +
+      diffPreviewRows(result.content, { ...preview, terminalWidth: resultWidth, collapsed: true })
     );
   }
+  if (isCommandTool(presentation.canonicalName)) {
+    const preview = commandOutputPreview(result.content ?? '', resultWidth);
+    return 1 + Math.max(1, preview.lines.length) + (preview.hiddenLines > 0 ? 1 : 0);
+  }
+  return 1 + (toolResultSummary(presentation) ? 1 : 0);
+}
+
+function estimateToolRows(
+  message: Message,
+  quietTools: QuietToolContext | undefined,
+  terminalWidth: number,
+  density: TuiDensity,
+): number {
+  const calls = message.toolCalls ?? [];
+  const transcriptMode: TranscriptMode = quietTools ? 'compact' : 'detailed';
   const invocations = calls.map((call) => ({
     call,
     result: message.toolResults?.find((result) => result.toolCallId === call.id),
   }));
-  // A folded run of quiet calls draws one summary row.
-  return groupQuietInvocations(invocations, message, quietTools).reduce(
-    (rows, row) =>
-      rows + (row.kind === 'quiet' ? 1 : estimateToolCallRows(invocations[row.index]!.result)),
-    0,
-  );
-}
-
-/**
- * Whether the compact transcript hides this message's thought: it is a step of
- * work, and no permission prompt waits on one of its calls. `quietTools` is only
- * set in the compact transcript.
- */
-function thoughtIsHidden(message: Message, quietTools: QuietToolContext | undefined): boolean {
-  if (!quietTools || !hidesThoughtsInCompact(message)) return false;
-  const pending = quietTools.pendingToolId;
-  return !(pending && message.toolCalls?.some((call) => call.id === pending));
+  // A folded run of quiet calls draws one item: its heading, and the files it read when it
+  // read several.
+  const items = quietTools
+    ? groupQuietInvocations(invocations, message, quietTools).map((row) =>
+        row.kind === 'quiet'
+          ? 1 +
+            (summarizeQuietRun(row.indices.map((index) => invocations[index]!)).files.length > 1
+              ? 1
+              : 0)
+          : estimateToolCallRows(
+              invocations[row.index]!.call,
+              invocations[row.index]!.result,
+              terminalWidth,
+              transcriptMode,
+            ),
+      )
+    : invocations.map(({ call, result }) =>
+        estimateToolCallRows(call, result, terminalWidth, transcriptMode),
+      );
+  // A blank row stands between items (tight density drops it).
+  const gaps = density === 'tight' ? 0 : Math.max(0, items.length - 1);
+  return items.reduce((rows, itemRows) => rows + itemRows, 0) + gaps;
 }
 
 /** The content without its `<think>` parts: what is left is drawn as prose. */
@@ -137,24 +186,27 @@ function estimateTimelineRows(
     return (density === 'tight' ? 1 : 2) + (entry.warning ? 1 : 0);
   }
 
-  // A user turn is its prompt and the two blank rows above it (tight density
-  // drops them): the margin belongs to the turn, so an unmeasured one is
-  // estimated with it. The transcript's first turn has no margin — measuring
-  // corrects that one row pair.
+  // A user turn is its prompt and the blank row above it (tight density drops
+  // it): the margin belongs to the turn, so an unmeasured one is estimated with
+  // it. The transcript's first turn has no margin — measuring corrects that row.
   if (entry.role === 'user') {
     return (
       userTurnRows(entry.content, terminalWidth, entry.timestamp, entry.attachments?.length ?? 0) +
-      (density === 'tight' ? 0 : 2)
+      (density === 'tight' ? 0 : 1)
     );
   }
-  // A thought the compact transcript hides draws no rows, whatever its length.
-  const content = thoughtIsHidden(entry, quietTools)
-    ? withoutThoughts(entry.content)
-    : entry.content;
-  const textRows = estimateWrappedRows(content, transcriptGrid(terminalWidth).content);
+  // The compact transcript draws no thought, whatever its length.
+  const content = quietTools ? withoutThoughts(entry.content) : entry.content;
+  const prose = content.trim().length > 0;
+  const textRows = prose ? estimateWrappedRows(content, transcriptGrid(terminalWidth).content) : 0;
   const attachmentRows = entry.attachments?.length ? 1 : 0;
-  const toolRows = estimateToolRows(entry, quietTools);
-  return Math.max(1, textRows + attachmentRows + toolRows);
+  const toolRows = estimateToolRows(entry, quietTools, terminalWidth, density);
+  // An answer stands a blank row above its first call; a step's narration sits against it.
+  const proseGap =
+    prose && toolRows > 0 && density !== 'tight' && !(quietTools && isWorkStep(entry)) ? 1 : 0;
+  // The blank row an entry opens with, after a prompt or an earlier call: nearly every one.
+  const leadingGap = density === 'tight' ? 0 : 1;
+  return Math.max(1, leadingGap + textRows + attachmentRows + proseGap + toolRows);
 }
 
 function messageOwnsTool(message: Message, toolId: string | null | undefined): boolean {
@@ -326,8 +378,6 @@ export function ChatPanelInner({
   // a step folded into it makes the entry a step anyway, so the head's id is
   // the one to look up.
   const oldestVisibleId = visibleTimeline.find((entry): entry is Message => 'role' in entry)?.id;
-  // Whether a message speaks: asked on every render of a row, so each message is parsed once.
-  const proseMemo = useMemo(() => createProseMemo(), []);
   const followedByWork = useMemo(
     () => messagesFollowedByWork(messages, oldestVisibleId),
     [messages, oldestVisibleId],
@@ -444,9 +494,9 @@ export function ChatPanelInner({
           const previous = visibleTimeline[index - 1];
           if (message.role === 'user') {
             row = (
-              // Two blank rows, like the space before a new section: one left
-              // your turn reading as another paragraph of the reply above it.
-              <Box flexDirection="column" marginTop={index > 0 && density !== 'tight' ? 2 : 0}>
+              // One blank row, the same as between any two items: the prompt mark
+              // and its colour are what set your turn apart from the reply above.
+              <Box flexDirection="column" marginTop={index > 0 && density !== 'tight' ? 1 : 0}>
                 {screenReader ? (
                   <ScreenReaderRoleLabel role="user" timestamp={message.timestamp} />
                 ) : null}
@@ -480,22 +530,13 @@ export function ChatPanelInner({
                 : undefined;
             const next = visibleTimeline[index + 1];
             const nextEntryIsUser = Boolean(next && 'role' in next && next.role === 'user');
-            // A step that opens on its tool rows, its thought hidden and no prose
-            // above them, sits against the rows before it, the same as a step
-            // with no thought (which the merge folds into the entry before it). A
-            // turn that hands the conversation back, or whose call awaits your
-            // approval, is not a step and keeps its blank row.
-            const opensOnToolRows =
-              quietTools !== undefined &&
-              !rowPendingPermission &&
-              hidesThoughtsInCompact(message) &&
-              !proseMemo(message);
+            // Every item of a turn stands a blank row from the one before it, so an
+            // entry that follows a call opens with one, whatever it opens on.
             const followsToolCall = Boolean(
               previous &&
               'role' in previous &&
               previous.role === 'assistant' &&
-              previous.toolCalls?.length &&
-              !opensOnToolRows,
+              previous.toolCalls?.length,
             );
             row = (
               <Box

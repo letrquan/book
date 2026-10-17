@@ -13,13 +13,13 @@
  * sit flush at column 0 so their one column of padding lands their text on the
  * same content column.
  *
- * Tool rows are the one deliberate step off that column. They carry their own
- * gutter one level in ({@link indentedGrid}) so the work a turn did reads as
- * nested under the prose that ordered it, instead of hanging a column of status
- * glyphs to the left of every sentence.
+ * A turn is a column of items on that one gutter: the agent's prose and each call
+ * it makes open on the same mark (`● `), and a call's result hangs under its name
+ * on a connector ({@link RESULT_INDENT}), so what a call did reads as belonging to
+ * the call, not as a row of its own.
  */
 
-/** Status glyph plus its trailing space: `"✓ "`, `"│ "`, `"  "`. */
+/** Status glyph plus its trailing space: `"● "`, `"│ "`, `"  "`. */
 export const GUTTER_WIDTH = 2;
 
 /**
@@ -77,6 +77,38 @@ export function sheetRowTextWidth(sheetWidth: number, minimum = 1): number {
 
 /** The markerless row's gutter: the marker columns, left blank. */
 export const SHEET_GUTTER_INDENT = ' '.repeat(GUTTER_WIDTH);
+
+/**
+ * Columns a call's result spends before its text: the connector and two spaces, `⎿  `.
+ * The connector sits on {@link CONTENT_COLUMN}, under the call's name, so a result's
+ * rows begin {@link RESULT_COLUMN} columns in.
+ */
+export const RESULT_INDENT = 3;
+
+/** Column a call's result rows begin on, measured from the item's own left edge. */
+export const RESULT_COLUMN = GUTTER_WIDTH + RESULT_INDENT;
+
+/** Columns a result's rows may take: the item's content measure, past `⎿  `. */
+export function resultContentWidth(grid: Pick<TranscriptGrid, 'content'>): number {
+  return Math.max(8, grid.content - RESULT_INDENT);
+}
+
+/**
+ * The grid a call's result rows are set on: past `⎿  `, with no label column. A failure's
+ * message wraps to its `row`, so the message's right edge lands on the prose's.
+ */
+export function resultGrid(grid: TranscriptGrid): TranscriptGrid {
+  const content = resultContentWidth(grid);
+  const meta = Math.max(0, Math.min(20, Math.floor(content * 0.3)));
+  return {
+    ...grid,
+    content,
+    row: Math.max(8, grid.row - RESULT_INDENT),
+    label: 0,
+    target: Math.max(MIN_TARGET_WIDTH, content - meta - 1),
+    meta,
+  };
+}
 
 /** Columns between two side-by-side columns of a sheet, such as /help's. */
 export const SHEET_COLUMN_GAP = 4;

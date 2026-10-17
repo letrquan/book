@@ -1,20 +1,14 @@
 import { Text, Box } from 'ink';
 import React, { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
-import { MetaText, TargetText, ToolCallBlock } from './ToolCallBlock.js';
+import { ToolCallBlock } from './ToolCallBlock.js';
+import { ItemMark, type ItemState } from './transcript-item.js';
 import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock, useThrottledValue } from './MarkdownBlock.js';
 import { CommandPanel } from './CommandPanel.js';
 import { ThemeContext, useTheme } from '../theme.js';
 import { useDensityMetrics } from '../density.js';
-import {
-  CONTENT_COLUMN,
-  GUTTER_WIDTH,
-  indentedGrid,
-  transcriptGrid,
-  withLabelColumn,
-} from '../layout.js';
-import { composeToolRow, toolLabelColumnWidth, toolRowLabel } from '../tool-presentation.js';
+import { CONTENT_COLUMN, GUTTER_WIDTH, transcriptGrid } from '../layout.js';
 import type { Message } from '../../types/messages.js';
 import type { RetryPhase } from '../../types/runtime.js';
 import type { PendingPermissionRequest } from '../../session/agent-interactions.js';
@@ -26,10 +20,6 @@ import {
   type NestedToolChildren,
 } from '../tool-traces.js';
 import {
-  getFileMutationDisplaySummary,
-  type FileMutationDisplaySummary,
-} from '../file-mutation-display.js';
-import {
   shouldDefaultExpandTool,
   shouldExpandTool,
   type TranscriptMode,
@@ -39,7 +29,6 @@ import { ManagedAgentActivityBlock } from './ManagedAgentActivityBlock.js';
 import { QuietToolRun } from './QuietToolRun.js';
 import {
   groupQuietInvocations,
-  hidesThoughtsInCompact,
   summarizeQuietRun,
   type QuietRunSummary,
   type QuietToolContext,
@@ -354,65 +343,6 @@ function ThinkBlock({
 }
 
 /**
- * Heading for a run of consecutive file mutations, laid out like a tool row so
- * its verb, target and churn land on the same columns as everything else.
- */
-export function MutationGroupRow({
-  createdOnly,
-  fileCount,
-  addedLines,
-  removedLines,
-  grid,
-  screenReader,
-}: {
-  createdOnly: boolean;
-  fileCount: number;
-  addedLines: number;
-  removedLines: number;
-  grid: ReturnType<typeof transcriptGrid>;
-  screenReader: boolean;
-}) {
-  const theme = useTheme();
-  const row = composeToolRow(
-    {
-      title: createdOnly ? 'Create' : 'Edit',
-      target: `${fileCount} ${fileCount === 1 ? 'file' : 'files'}`,
-      metadata: [`+${addedLines}`, `-${removedLines}`],
-    },
-    grid,
-  );
-  if (screenReader) {
-    return (
-      <Box>
-        <Text>
-          {createdOnly ? 'Created' : 'Edited'} {fileCount} {fileCount === 1 ? 'file' : 'files'} (+
-          {addedLines} -{removedLines})
-        </Text>
-      </Box>
-    );
-  }
-  return (
-    <Box height={1} marginLeft={CONTENT_COLUMN}>
-      {/* The row is one line by contract; it must truncate, never wrap, because a wrapped line is drawn outside the box and the render cull relies on rows drawing inside their own box. */}
-      {/* The same mark as every other finished tool row: a mutation group is
-          work that completed, not a list item. Grey, because success is the
-          default and the exception is what takes colour. */}
-      <Text wrap="truncate-end" color={theme.inactive}>
-        {'✓ '}
-      </Text>
-      {row.label ? (
-        <Text wrap="truncate-end" color={theme.inactive}>
-          {row.label}{' '}
-        </Text>
-      ) : null}
-      <TargetText target={row.target} failed={false} wrap="truncate-end" />
-      <Text wrap="truncate-end">{row.gap}</Text>
-      <MetaText meta={row.meta} wrap="truncate-end" />
-    </Box>
-  );
-}
-
-/**
  * Marks where reasoning ends and the answer begins.
  *
  * Visually this is a blank row: a finished thought already collapses to a
@@ -541,13 +471,7 @@ export function AgentMessageInner({
     () =>
       toolCalls.map((call) => {
         const result = message.toolResults?.find((candidate) => candidate.toolCallId === call.id);
-        return {
-          id: call.id,
-          name: call.name,
-          call,
-          result,
-          mutation: getFileMutationDisplaySummary(call.name, call.arguments, result),
-        };
+        return { id: call.id, name: call.name, call, result };
       }),
     [message.toolResults, toolCalls],
   );
@@ -572,40 +496,22 @@ export function AgentMessageInner({
   const awaitsApproval = Boolean(
     pendingPermission && toolCalls.some((call) => call.id === pendingPermission.toolCall.id),
   );
-  // The compact transcript does not draw a thought that leads to a tool call,
-  // whether the row is quiet or not; detailed mode and screen readers keep it. A
-  // thought still streaming has no call yet, so it renders as it always has and
-  // goes once the call lands. While the prompt for that call is open it stays.
-  const foldsThoughts =
-    !screenReader &&
-    transcriptMode === 'compact' &&
-    !awaitsApproval &&
-    hidesThoughtsInCompact(message);
-  const thoughtsShown = showThinking && !foldsThoughts;
+  // The compact transcript draws no thought at all, streaming or finished: the
+  // working line says the model is thinking, and Ctrl+O's detailed transcript
+  // shows what it thought. A thought drawn while it streamed and folded once its
+  // call landed was text that appeared and then went, and a `▸ thought` row left
+  // behind on every step was chrome for something nobody was reading.
+  const thoughtsShown = showThinking && (screenReader || transcriptMode === 'detailed');
   // Whether the content box draws anything. An empty `<think></think>` draws
   // nothing, so it must not buy the tool block below it a blank row either.
   const showsContent = contentParts.some((part) =>
     part.kind === 'markdown' ? part.text.trim().length > 0 : thoughtsShown,
   );
-  // Size the label column to this turn's own rows. A turn of `Bash` / `Read`
-  // rows padded to fit a hypothetical `Git status` puts seven dead columns
-  // between every verb and its target. Only rows actually drawn count: a call
-  // folded into a summary contributes the summary's label, once.
-  const labelWidth = useMemo(
-    () =>
-      toolLabelColumnWidth(
-        topLevelInvocations.flatMap((invocation, index) => {
-          const quiet = quietRows?.get(index);
-          if (quiet) return quiet.head ? [quiet.summary.title] : [];
-          return [toolRowLabel(invocation.name, invocation.result)];
-        }),
-      ),
-    [quietRows, topLevelInvocations],
-  );
-  // The heading sits on the same indented grid as the tool rows it heads.
-  const mutationGrid = useMemo(
-    () => indentedGrid(withLabelColumn(grid, labelWidth)),
-    [grid, labelWidth],
+  // Rows that are not prose (a thought, a retry line) sit on the content column.
+  const contentMargin = screenReader ? 0 : CONTENT_COLUMN;
+  // The paragraph the answer's mark opens: the first that says anything.
+  const firstProseIndex = contentParts.findIndex(
+    (part) => part.kind === 'markdown' && part.text.trim().length > 0,
   );
   const selectedAutomaticToolId = automaticToolCallId ?? expandedToolCallId;
 
@@ -650,32 +556,21 @@ export function AgentMessageInner({
   );
 
   // A local note that opens with a status mark (`✕ Could not save…`, `✓
-  // Background shell … exited`) is an event, so it is set like a tool row: the
-  // mark in its colour, then the text in ink. As plain prose it read as a stray
-  // line of white text. A failure and a warning (`⚠ Ignoring a workspace-declared
-  // provider…`) take colour: a check is the default state of the row, the same
-  // as on a tool row.
+  // Background shell … exited`) is an event, so it is set like a call: the
+  // item mark in the state's colour, then the text in ink. As plain prose it read
+  // as a stray line of white text. A failure and a warning (`⚠ Ignoring a
+  // workspace-declared provider…`) take colour; a finished event is grey, since
+  // nothing went wrong.
   const localEvent =
     message.kind === 'local' && !message.localCommand && !screenReader
       ? /^([✕✓⚠])\s+([\s\S]+)$/.exec(displayContent)
       : null;
   if (localEvent) {
+    const eventState: ItemState =
+      localEvent[1] === '✕' ? 'failure' : localEvent[1] === '⚠' ? 'pending' : 'quiet';
     return (
-      <Box
-        marginLeft={CONTENT_COLUMN}
-        width={Math.max(8, (terminalWidth ?? 80) - CONTENT_COLUMN - 1)}
-      >
-        <Text
-          color={
-            localEvent[1] === '✕'
-              ? theme.error
-              : localEvent[1] === '⚠'
-                ? theme.warning
-                : theme.inactive
-          }
-        >
-          {localEvent[1]}{' '}
-        </Text>
+      <Box width={Math.max(8, (terminalWidth ?? 80) - 1)}>
+        <ItemMark state={eventState} reducedMotion={reducedMotion} />
         <Box flexGrow={1} flexShrink={1}>
           <Text color={theme.text} wrap="wrap">
             {localEvent[2]}
@@ -730,25 +625,31 @@ export function AgentMessageInner({
         </Box>
       ) : null}
 
-      {/* Activity and content use separate rows so markdown keeps its full budget. */}
+      {/* Activity and content use separate rows so markdown keeps its full budget. The
+          answer opens on the item mark, on its first paragraph's first row, once it has
+          settled as the turn's answer: a step's narration is the caption of the call under
+          it and takes no mark of its own, and prose still streaming may yet turn out to be
+          one. Everything else here (a thought, a retry line) sits on the content column. */}
       {displayContent ? (
-        <Box marginLeft={screenReader ? 0 : CONTENT_COLUMN} flexDirection="column">
+        <Box flexDirection="column">
           {thoughtsShown && reasoningContent && !embeddedThinking && !workStep ? (
             <AnswerDivider screenReader={screenReader} />
           ) : null}
           {isStreaming && !hideStreamingSpinner && !isRetrying ? (
-            <Box>
+            <Box marginLeft={contentMargin}>
               <Spinner active reducedMotion={reducedMotion} />
             </Box>
           ) : null}
           {isRetrying && !hideStreamingSpinner && spinnerLabel ? (
-            <Box>
+            <Box marginLeft={contentMargin}>
               <Text color={theme.error}>Retrying: </Text>
               <Text color={theme.error}>{spinnerLabel}</Text>
             </Box>
           ) : null}
           {renderAsUnifiedDiff ? (
-            <DiffBlock output={displayContent} terminalWidth={contentWidth} />
+            <Box marginLeft={contentMargin}>
+              <DiffBlock output={displayContent} terminalWidth={contentWidth} />
+            </Box>
           ) : (
             <ThemeContext.Provider value={workStep ? stepTheme : theme}>
               <Box flexDirection="column">
@@ -759,31 +660,51 @@ export function AgentMessageInner({
                       .slice(i + 1)
                       .some((candidate) => candidate.kind === 'markdown' && candidate.text.trim());
                     return (
-                      <ThinkBlock
-                        key={`think-${i}`}
-                        text={part.text}
-                        terminalWidth={mdWidth}
-                        reducedMotion={reducedMotion}
-                        active={isStreaming && !answerHasStarted}
-                        expanded={transcriptMode === 'detailed'}
-                        screenReader={screenReader}
-                      />
+                      <Box key={`think-${i}`} marginLeft={contentMargin} flexDirection="column">
+                        <ThinkBlock
+                          text={part.text}
+                          terminalWidth={mdWidth}
+                          reducedMotion={reducedMotion}
+                          active={isStreaming && !answerHasStarted}
+                          expanded={transcriptMode === 'detailed'}
+                          screenReader={screenReader}
+                        />
+                      </Box>
                     );
                   }
                   const hasEarlierThinking = contentParts
                     .slice(0, i)
                     .some((candidate) => candidate.kind === 'think');
+                  const marked =
+                    !screenReader && !workStep && !isStreaming && i === firstProseIndex;
                   return (
                     <React.Fragment key={`md-${i}`}>
                       {thoughtsShown && hasEarlierThinking && !workStep ? (
                         <AnswerDivider screenReader={screenReader} />
                       ) : null}
-                      <MarkdownBlock
-                        content={part.text}
-                        terminalWidth={mdWidth}
-                        isStreaming={isStreaming}
-                        trimTrailingMargin={trimTrailingSpacing && i === contentParts.length - 1}
-                      />
+                      <Box>
+                        {screenReader ? null : (
+                          <Box width={GUTTER_WIDTH} flexShrink={0}>
+                            {marked ? (
+                              <ItemMark state="prose" reducedMotion={reducedMotion} />
+                            ) : null}
+                          </Box>
+                        )}
+                        <Box flexDirection="column" width={mdWidth}>
+                          {/* Prose a call follows is complete: the provider streams it
+                              before the call. Drawn through the streaming throttle it
+                              caught up after the call's heading appeared and pushed it
+                              down a row. */}
+                          <MarkdownBlock
+                            content={part.text}
+                            terminalWidth={mdWidth}
+                            isStreaming={isStreaming && toolCalls.length === 0}
+                            trimTrailingMargin={
+                              trimTrailingSpacing && i === contentParts.length - 1
+                            }
+                          />
+                        </Box>
+                      </Box>
                     </React.Fragment>
                   );
                 })}
@@ -793,13 +714,13 @@ export function AgentMessageInner({
         </Box>
       ) : null}
 
-      {/* Every invocation gets its own row, except that a run of quiet calls folds
+      {/* Every invocation is an item of its own, except that a run of quiet calls folds
           into one summary in the compact transcript. Task subagent tools stay
           display-only and nest below it. */}
       {topLevelInvocations.map((invocation, index) => {
-        // The detailed transcript expands every call, so each row carries a block
-        // of output; a blank row between blocks keeps one call's output from
-        // running into the next call's header.
+        // A blank row stands between items, so each call reads as one unit: its heading
+        // and the result hung under it. A step's narration is the call's caption and sits
+        // against it; an answer that the call follows keeps its blank row.
         const marginTop =
           index === 0
             ? workStep
@@ -807,39 +728,9 @@ export function AgentMessageInner({
               : showsContent || (thoughtsShown && reasoningContent)
                 ? toolBlockGap
                 : 0
-            : transcriptMode === 'detailed' && !screenReader
-              ? 1
-              : toolRowGap;
+            : toolBlockGap;
         const tc = invocation.call;
         const result = invocation.result;
-        const mutation = invocation.mutation;
-        const previousMutation = topLevelInvocations[index - 1]?.mutation;
-        let mutationGroup:
-          | {
-              summaries: FileMutationDisplaySummary[];
-              fileCount: number;
-              addedLines: number;
-              removedLines: number;
-              createdOnly: boolean;
-            }
-          | undefined;
-        if (mutation && !previousMutation) {
-          const summaries: FileMutationDisplaySummary[] = [];
-          for (let groupIndex = index; groupIndex < topLevelInvocations.length; groupIndex++) {
-            const summary = topLevelInvocations[groupIndex].mutation;
-            if (!summary) break;
-            summaries.push(summary);
-          }
-          mutationGroup = {
-            summaries,
-            fileCount: summaries.some((summary) => (summary.fileCount ?? 1) > 1)
-              ? summaries.reduce((total, summary) => total + (summary.fileCount ?? 1), 0)
-              : new Set(summaries.map((summary) => summary.filePath)).size,
-            addedLines: summaries.reduce((total, summary) => total + summary.addedLines, 0),
-            removedLines: summaries.reduce((total, summary) => total + summary.removedLines, 0),
-            createdOnly: summaries.every((summary) => summary.kind === 'create'),
-          };
-        }
         const isPending = pendingPermission?.toolCall.id === tc.id;
         const managedAgentTrace = managedAgentTraces?.get(tc.id);
         const quiet = quietRows?.get(index);
@@ -849,7 +740,7 @@ export function AgentMessageInner({
             <Box key={tc.id || `tool-${index}`} flexDirection="column" marginTop={marginTop}>
               <QuietToolRun
                 summary={quiet.summary}
-                grid={mutationGrid}
+                grid={grid}
                 reducedMotion={reducedMotion}
                 screenReader={screenReader}
               />
@@ -857,21 +748,7 @@ export function AgentMessageInner({
           );
         }
         return (
-          <Box
-            key={tc.id || `tool-${index}`}
-            flexDirection="column"
-            marginTop={mutation && previousMutation ? 0 : marginTop}
-          >
-            {mutationGroup ? (
-              <MutationGroupRow
-                createdOnly={mutationGroup.createdOnly}
-                fileCount={mutationGroup.fileCount}
-                addedLines={mutationGroup.addedLines}
-                removedLines={mutationGroup.removedLines}
-                grid={mutationGrid}
-                screenReader={screenReader}
-              />
-            ) : null}
+          <Box key={tc.id || `tool-${index}`} flexDirection="column" marginTop={marginTop}>
             {managedAgentTrace ? (
               <ManagedAgentActivityBlock
                 trace={managedAgentTrace}
@@ -900,9 +777,7 @@ export function AgentMessageInner({
                 screenReader={screenReader}
                 transcriptMode={transcriptMode}
                 showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(tc.id)}
-                summaryVariant={mutation ? 'file-child' : 'default'}
                 terminalWidth={terminalWidth}
-                labelWidth={labelWidth}
               />
             )}
             {!managedAgentTrace && childrenByParent.has(tc.id) ? (

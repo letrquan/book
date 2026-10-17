@@ -6,7 +6,7 @@ import {
   getFileMutationDisplaySummary,
   isRenderableFileMutationDiff,
 } from './file-mutation-display.js';
-import { indentedGrid, transcriptGrid } from './layout.js';
+import { canonicalToolName } from '../tools/aliases.js';
 import type { MemoryRootDisplay } from './memory-root.js';
 import {
   countNestedToolInvocations,
@@ -15,12 +15,16 @@ import {
   type NestedToolChildren,
 } from './tool-traces.js';
 import {
+  commandOutputPreview,
   composeResultErrorDetail,
   deriveToolPresentation,
+  isCommandTool,
+  labelFailure,
   mutationDiffPreviewInput,
   shouldDefaultExpandTool,
   shouldExpandTool,
   showsErrorMessage,
+  toolItemGrids,
   toolOutputDisplay,
   type TranscriptMode,
 } from './tool-presentation.js';
@@ -60,11 +64,9 @@ export function toolRowHidesContent(input: ToolRowPreviewInput): boolean {
   const screenReader = input.screenReader ?? false;
   if (screenReader || !result) return false;
 
-  const rowGrid = indentedGrid(transcriptGrid(input.terminalWidth ?? 80));
-  const blockWidth = rowGrid.content;
+  const resultGrid = toolItemGrids(input.terminalWidth ?? 80).result;
+  const blockWidth = resultGrid.content;
   const mutationSummary = getFileMutationDisplaySummary(name, args, result);
-  // AgentMessage draws a mutation's row as a child under its group heading.
-  const isFileChild = mutationSummary !== undefined;
   const isDiff = isRenderableFileMutationDiff(name, result);
 
   // The failure's message goes under the row whether or not the row is expanded. It shows its
@@ -79,26 +81,39 @@ export function toolRowHidesContent(input: ToolRowPreviewInput): boolean {
       unparsedArguments: input.unparsedArguments,
       memoryRoot: input.memoryRoot,
     });
+    // The row opens a sentence of a failure on what kind of stop it was, and a command's on its
+    // exit code, as ToolCallBlock draws it.
+    const exitCode = presentation.metadata.some((part) => /^exit -?\d+$/.test(part));
     const detail = composeResultErrorDetail({
-      presentation,
-      message: inlineError,
+      presentation: { title: '', target: undefined },
+      message: exitCode ? inlineError : labelFailure(inlineError, presentation.status),
       result,
-      rowGrid,
-      isFileChild,
+      rowGrid: resultGrid,
+      isFileChild: false,
       expanded: false,
       stdoutShownBelow: isExpanded && Boolean(result.content) && !isDiff,
     });
     if (detail?.hint) return true;
   }
 
+  // A closed command row previews its output's first lines, and says how many it left out.
+  if (!isExpanded && result.status === 'success' && isCommandTool(canonicalToolName(name))) {
+    return commandOutputPreview(result.content ?? '', blockWidth).hiddenLines > 0;
+  }
+
   if (!isExpanded || showAllToolOutput) return false;
 
   if (isDiff) {
-    const { preview, maxRows } = mutationDiffPreview(
+    const { preview, maxRows, contextRows } = mutationDiffPreview(
       mutationDiffPreviewInput(mutationSummary, { transcriptMode, screenReader }),
     );
     return (
-      diffPreviewOmittedRows(result.content, { terminalWidth: blockWidth, preview, maxRows }) > 0
+      diffPreviewOmittedRows(result.content, {
+        terminalWidth: blockWidth,
+        preview,
+        maxRows,
+        contextRows,
+      }) > 0
     );
   }
   if (!result.content) return false;

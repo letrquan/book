@@ -25,6 +25,12 @@ interface DiffProps {
   maxRows?: number;
   /** Which rows the collapsed preview keeps; `changes` by default. */
   preview?: DiffPreviewKind;
+  /**
+   * Context lines a collapsed `changes` preview keeps on each side of a change, however much
+   * room the budget leaves. Omitted, the preview spends spare budget on up to
+   * {@link COLLAPSED_CONTEXT_ROWS} of them, and shows a short diff whole.
+   */
+  contextRows?: number;
   /** Key hint shown in the omission footer while collapsed; empty for none. */
   expandHint?: string;
   terminalWidth?: number;
@@ -32,9 +38,11 @@ interface DiffProps {
 
 const COLLAPSED_ROWS = 80;
 /** Content lines the transcript previews of a newly created file. */
-export const NEW_FILE_PREVIEW_ROWS = 10;
+export const NEW_FILE_PREVIEW_ROWS = 5;
 /** Rendered rows the compact transcript previews of a diff of an existing file. */
-export const EDIT_PREVIEW_ROWS = 20;
+export const EDIT_PREVIEW_ROWS = 12;
+/** Context lines the compact transcript keeps around each change of an edit. */
+export const EDIT_CONTEXT_ROWS = 1;
 const COLLAPSED_CONTEXT_ROWS = 2;
 const MAX_WORD_TOKENS = 200;
 const MAX_WORD_LINE_LENGTH = 2000;
@@ -470,9 +478,11 @@ function selectChangeRows(
   rows: readonly ParsedDiffLine[],
   budget: number,
   cost: RowCost,
+  contextRows?: number,
 ): Selection {
-  // Every row costs at least one terminal row, so more rows than budget cannot fit whole.
-  if (rows.length <= budget) {
+  // Every row costs at least one terminal row, so more rows than budget cannot fit whole. A
+  // preview held to a fixed context never shows the rest, however short the diff.
+  if (contextRows === undefined && rows.length <= budget) {
     let total = 0;
     for (let index = 0; index < rows.length; index++) total += cost(index);
     if (total <= budget) return { indices: rows.map((_, index) => index), rowLimits: new Map() };
@@ -548,7 +558,7 @@ function selectChangeRows(
   // Context is useful, but changed rows and hunk boundaries always win the budget.
   const contextCandidates = new Map<number, number>();
   for (const changedIndex of changedIndices) {
-    for (let distance = 1; distance <= COLLAPSED_CONTEXT_ROWS; distance++) {
+    for (let distance = 1; distance <= (contextRows ?? COLLAPSED_CONTEXT_ROWS); distance++) {
       for (const candidate of [changedIndex - distance, changedIndex + distance]) {
         if (candidate < 0 || candidate >= rows.length || priority.has(candidate)) continue;
         if (rows[candidate].kind !== 'ctx') continue;
@@ -588,26 +598,34 @@ interface SelectedDiffRow {
 }
 
 interface DiffGeometry {
-  oldWidth: number;
-  newWidth: number;
-  /** Columns left for a row's text after the margin, rail, gutters and marker. */
+  /** Columns of the one line-number column. */
+  numberWidth: number;
+  /** Columns left for a row's text after the line number and the marker. */
   contentWidth: number;
 }
 
+/**
+ * One line-number column: a removed line shows the number it had, every other line the number
+ * it has now. Two columns of numbers side by side, old and new, spent six columns telling a
+ * reader what the `+` and `-` already did.
+ */
 function diffGeometry(rows: readonly ParsedDiffLine[], terminalWidth: number): DiffGeometry {
   // A loop, not a spread: a diff of hundreds of thousands of rows overflows the call stack.
-  let maxOld = 1;
-  let maxNew = 1;
+  let maxLine = 1;
   for (const row of rows) {
-    if (row.oldLineNumber !== undefined && row.oldLineNumber > maxOld) maxOld = row.oldLineNumber;
-    if (row.newLineNumber !== undefined && row.newLineNumber > maxNew) maxNew = row.newLineNumber;
+    const line = shownLineNumber(row);
+    if (line !== undefined && line > maxLine) maxLine = line;
   }
   const narrow = terminalWidth < 36;
-  const oldWidth = Math.max(1, Math.min(String(maxOld).length, narrow ? 3 : 6));
-  const newWidth = Math.max(1, Math.min(String(maxNew).length, narrow ? 3 : 6));
-  // marginLeft(2) + `│` + gutters + marker remain visible before wrapped content.
-  const fixedWidth = 2 + 1 + oldWidth + 1 + newWidth + 1 + 2;
-  return { oldWidth, newWidth, contentWidth: Math.max(1, Math.floor(terminalWidth) - fixedWidth) };
+  const numberWidth = Math.max(1, Math.min(String(maxLine).length, narrow ? 3 : 6));
+  // The number, a space, the marker and a space remain visible before wrapped content.
+  const fixedWidth = numberWidth + 1 + 2;
+  return { numberWidth, contentWidth: Math.max(1, Math.floor(terminalWidth) - fixedWidth) };
+}
+
+/** The line number a row shows: a removed line's old one, any other line's new one. */
+function shownLineNumber(row: ParsedDiffLine): number | undefined {
+  return row.kind === 'del' ? row.oldLineNumber : (row.newLineNumber ?? row.oldLineNumber);
 }
 
 /** A row's text as the renderer draws it: wrapped, or cut to one row when `truncate`. */
@@ -648,6 +666,12 @@ interface DiffLayout {
   rows: SelectedDiffRow[];
   /** Content lines (add/del/ctx) the preview leaves out; the footer's N. */
   omittedLines: number;
+  /**
+   * Whether the preview draws its omission footer and the gap row before its first kept row. A
+   * preview held to a fixed context leaves the file around the change out on purpose, so it
+   * reports only changed lines it had no room for; any other preview reports every omission.
+   */
+  showsOmissions: boolean;
 }
 
 function layoutDiff(
@@ -656,6 +680,7 @@ function layoutDiff(
   collapsed: boolean,
   limit: number,
   preview: DiffPreviewKind,
+  contextRows?: number,
 ): DiffLayout {
   const budget = Math.max(1, Math.floor(limit));
   // Each line of a new file's preview is cut to one terminal row instead of wrapping.
@@ -680,7 +705,7 @@ function layoutDiff(
       ? selectHeadIndices(rows, budget)
       : preview === 'head-wrap'
         ? selectHeadRows(rows, budget, cost, fileStarts(rows).length <= 1)
-        : selectChangeRows(rows, budget, cost);
+        : selectChangeRows(rows, budget, cost, contextRows);
   const { indices, rowLimits } = selection;
   const selected = new Set(indices);
   // Hunk headers and metadata are signposts, not content: only lines count.
@@ -704,7 +729,18 @@ function layoutDiff(
         : limitRowText(wrappedText(sourceIndex), rowLimit, contentWidth);
     return { row, sourceIndex, text, gapLines };
   });
-  return { rows: selectedRows, omittedLines };
+  const changesCut = rows.some(
+    (row, index) => (row.kind === 'add' || row.kind === 'del') && !selected.has(index),
+  );
+  if (collapsed && contextRows !== undefined && selectedRows[0]) {
+    // The lines above the first change are the file's, not a gap in the change.
+    selectedRows[0] = { ...selectedRows[0], gapLines: 0 };
+  }
+  return {
+    rows: selectedRows,
+    omittedLines,
+    showsOmissions: !(collapsed && contextRows !== undefined) || changesCut,
+  };
 }
 
 /**
@@ -759,6 +795,8 @@ export interface DiffPreviewOptions {
   terminalWidth: number;
   preview: DiffPreviewKind;
   maxRows: number;
+  /** The same `contextRows` DiffBlock receives. */
+  contextRows?: number;
 }
 
 /**
@@ -768,7 +806,35 @@ export interface DiffPreviewOptions {
 export function diffPreviewOmittedRows(output: string, options: DiffPreviewOptions): number {
   const rows = prepareDiffRows(parseDiffLines(output));
   const { contentWidth } = diffGeometry(rows, options.terminalWidth);
-  return layoutDiff(rows, contentWidth, true, options.maxRows, options.preview).omittedLines;
+  return layoutDiff(rows, contentWidth, true, options.maxRows, options.preview, options.contextRows)
+    .omittedLines;
+}
+
+/**
+ * Terminal rows a DiffBlock draws for `output` with these options: its kept rows as wrapped,
+ * the gap rows between them and the omission footer. The transcript's row estimate reads it, so
+ * a diff is sized before it mounts the way it will render.
+ */
+export function diffPreviewRows(
+  output: string,
+  options: DiffPreviewOptions & { collapsed: boolean },
+): number {
+  const rows = prepareDiffRows(parseDiffLines(output));
+  const { contentWidth } = diffGeometry(rows, options.terminalWidth);
+  const layout = layoutDiff(
+    rows,
+    contentWidth,
+    options.collapsed,
+    options.maxRows,
+    options.preview,
+    options.contextRows,
+  );
+  return (
+    layout.rows.reduce(
+      (total, row) => total + row.text.content.length + (row.gapLines > 0 ? 1 : 0),
+      0,
+    ) + (layout.omittedLines > 0 && layout.showsOmissions ? 1 : 0)
+  );
 }
 
 /** The preview policy ToolCallBlock uses for a mutation diff. */
@@ -776,12 +842,14 @@ export function mutationDiffPreview(input: {
   createsSingleNewFile: boolean;
   transcriptMode: TranscriptMode;
   screenReader: boolean;
-}): { preview: DiffPreviewKind; maxRows: number } {
+}): { preview: DiffPreviewKind; maxRows: number; contextRows?: number } {
   if (input.createsSingleNewFile) return { preview: 'head', maxRows: NEW_FILE_PREVIEW_ROWS };
   if (input.transcriptMode === 'detailed' || input.screenReader) {
     return { preview: 'changes', maxRows: COLLAPSED_ROWS };
   }
-  return { preview: 'head-wrap', maxRows: EDIT_PREVIEW_ROWS };
+  // The compact transcript shows what changed and one line either side of it; the rest of the
+  // file around the change is a Ctrl+E away.
+  return { preview: 'changes', maxRows: EDIT_PREVIEW_ROWS, contextRows: EDIT_CONTEXT_ROWS };
 }
 
 function lineNumber(value: number | undefined, width: number): string {
@@ -805,18 +873,19 @@ export function DiffBlock({
   collapsed = false,
   maxRows = COLLAPSED_ROWS,
   preview = 'changes',
+  contextRows,
   expandHint = 'Ctrl+E',
   terminalWidth = 80,
 }: DiffProps) {
   const theme = useTheme();
   const parsed = useMemo(() => prepareDiffRows(parseDiffLines(output)), [output]);
-  const { oldWidth, newWidth, contentWidth } = useMemo(
+  const { numberWidth, contentWidth } = useMemo(
     () => diffGeometry(parsed, terminalWidth),
     [parsed, terminalWidth],
   );
   const selected = useMemo(
-    () => layoutDiff(parsed, contentWidth, collapsed, maxRows, preview),
-    [collapsed, contentWidth, maxRows, parsed, preview],
+    () => layoutDiff(parsed, contentWidth, collapsed, maxRows, preview, contextRows),
+    [collapsed, contentWidth, contextRows, maxRows, parsed, preview],
   );
   const language = inferDiffLanguage(filePath);
   const omittedNoun = selected.omittedLines === 1 ? 'line' : 'lines';
@@ -826,6 +895,7 @@ export function DiffBlock({
     preview === 'changes'
       ? `${selected.omittedLines} ${omittedNoun} hidden`
       : `+${selected.omittedLines} ${omittedNoun}`;
+  const signpostWidth = Math.max(4, Math.floor(terminalWidth));
 
   return (
     <Box flexDirection="column">
@@ -839,12 +909,11 @@ export function DiffBlock({
         return (
           <Fragment key={`${sourceIndex}-${row.text}`}>
             {gapLines > 0 ? (
-              <Box marginLeft={2}>
-                <Text color={theme.subtle} dimColor>
-                  │{' '}
+              <Box>
+                <Text color={theme.inactive}>
                   {truncateDisplay(
-                    `⋮ ${gapLines} ${gapLines === 1 ? 'line' : 'lines'} omitted`,
-                    Math.max(4, terminalWidth - 4),
+                    `${' '.repeat(Math.max(0, numberWidth - 1))}⋮ ${gapLines} ${gapLines === 1 ? 'line' : 'lines'} omitted`,
+                    signpostWidth,
                   )}
                 </Text>
               </Box>
@@ -864,11 +933,12 @@ export function DiffBlock({
               const continuation = visualIndex > 0;
 
               return (
-                <Box key={visualIndex} marginLeft={2}>
-                  <Text color={theme.toolRail}>│</Text>
-                  <Text color={theme.subtle} dimColor>
-                    {lineNumber(continuation ? undefined : row.oldLineNumber, oldWidth)}{' '}
-                    {lineNumber(continuation ? undefined : row.newLineNumber, newWidth)}{' '}
+                <Box key={visualIndex}>
+                  <Text color={theme.inactive}>
+                    {lineNumber(
+                      continuation || row.kind === 'hunk' ? undefined : shownLineNumber(row),
+                      numberWidth,
+                    )}{' '}
                   </Text>
                   <Text
                     color={
@@ -923,13 +993,12 @@ export function DiffBlock({
         );
       })}
       {/* The footer is not a budgeted row: it is drawn after the `maxRows` the layout spent. */}
-      {selected.omittedLines > 0 ? (
-        <Box marginLeft={2}>
-          <Text color={theme.subtle} dimColor>
-            │{' '}
+      {selected.omittedLines > 0 && selected.showsOmissions ? (
+        <Box>
+          <Text color={theme.inactive}>
             {truncateDisplay(
               `… ${omittedLabel}${collapsed && expandHint ? ` (${expandHint})` : ''}`,
-              Math.max(4, terminalWidth - 4),
+              signpostWidth,
             )}
           </Text>
         </Box>

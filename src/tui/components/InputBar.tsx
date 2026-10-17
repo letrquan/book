@@ -11,7 +11,7 @@ import type { SlashCommand } from '../../types/commands.js';
 import type { Skill } from '../../skills.js';
 import { isShortcutsToggleKey } from '../tool-presentation.js';
 import { CONTENT_COLUMN, frameGrid } from '../layout.js';
-import { PILCROW } from '../marks.js';
+import { PROMPT_MARK } from '../marks.js';
 import {
   findActiveFileMention,
   getFileMentionCandidates,
@@ -1017,7 +1017,7 @@ export function InputBar({
         marginX={frame.marginX}
       >
         {/* The pilcrow that will open this turn in the transcript. */}
-        <Text color={promptColor}>{screenReader ? '> ' : `${PILCROW} `}</Text>
+        <Text color={promptColor}>{screenReader ? '> ' : `${PROMPT_MARK} `}</Text>
         <Box width={inputWidth} flexShrink={1}>
           <InputBox
             value={value}

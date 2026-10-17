@@ -9,7 +9,7 @@ import { APPLE_THEME, DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { InputBar, draftRows } from './InputBar.js';
 import { MODE_COLOR_TOKENS } from '../mode-style.js';
 import { displayWidth } from './word-wrap.js';
-import { PILCROW } from '../marks.js';
+import { PROMPT_MARK } from '../marks.js';
 import type { ImageAttachment } from '../../types/messages.js';
 import type { Skill } from '../../skills.js';
 import { getCommandsForQuery } from '../../commands/filter.js';
@@ -374,7 +374,7 @@ describe('InputBar mode border colors', () => {
     const row = stripAnsi(view.lastFrame())
       .split('\n')
       .find((line) => !/^─+$/.test(line));
-    expect(row?.startsWith(`${PILCROW} `)).toBe(true);
+    expect(row?.startsWith(`${PROMPT_MARK} `)).toBe(true);
   });
 });
 
