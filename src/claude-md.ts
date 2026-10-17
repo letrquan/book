@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'path';
+import { basename, dirname, join, parse, relative, resolve } from 'path';
 import { resolveBookHome } from './book-home.js';
 import { renderUntrustedText } from './hook-approvals.js';
+import { isOutside } from './tools/path-utils.js';
 
 export type ProjectInstructionLayer = 'user' | 'project' | 'local' | 'rule';
 
@@ -20,7 +21,10 @@ function isFile(path: string): boolean {
   }
 }
 
-/** A project file whose real path left the directory it was found in, so it was not loaded. */
+/**
+ * A project file that was not loaded: its real path left the directory it was found in
+ * (`outside`), or is not a Markdown file (`not-markdown`).
+ */
 export interface SkippedInstruction {
   /** Where the file was found. */
   path: string;
@@ -28,6 +32,7 @@ export interface SkippedInstruction {
   target: string;
   /** The real path of the directory it had to stay inside. */
   root: string;
+  reason: 'outside' | 'not-markdown';
 }
 
 export interface ProjectInstructionInspection {
@@ -49,26 +54,32 @@ function readSource(
   }
 }
 
+/**
+ * The native real path, else the JS one (`realpathSync.native` throws on some Windows volumes
+ * where the JS version works), else `undefined`.
+ */
 function tryRealPath(path: string): string | undefined {
   try {
     return realpathSync.native(path);
+  } catch {
+    // Fall through to the JS implementation.
+  }
+  try {
+    return realpathSync(path);
   } catch {
     return undefined;
   }
 }
 
-/** Compares real paths by `relative`, never a prefix: `/x/repo2` is not inside `/x/repo`. */
-function isInside(rootReal: string, fileReal: string): boolean {
-  const rel = relative(rootReal, fileReal);
-  return !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`);
-}
-
-function realPathOf(path: string): string {
-  try {
-    return realpathSync.native(path);
-  } catch {
-    return resolve(path);
-  }
+/**
+ * Why a project file must not load: its real path leaves `rootReal`, or it is not Markdown. The
+ * second check is what stops a link to a secret inside the workspace (`CLAUDE.md -> .env`,
+ * `-> .book/settings.local.json`); a regular `CLAUDE.md` or `AGENTS.md` always passes it.
+ */
+function refusalFor(rootReal: string, fileReal: string): SkippedInstruction['reason'] | undefined {
+  if (isOutside(rootReal, fileReal)) return 'outside';
+  if (!basename(fileReal).toLowerCase().endsWith('.md')) return 'not-markdown';
+  return undefined;
 }
 
 function ancestorsFromRoot(workspace: string): string[] {
@@ -104,12 +115,23 @@ export function inspectProjectInstructions(
   const bookHome = homeDir ? join(homeDir, '.book') : resolveBookHome();
   const localPath = join(workspaceRoot, 'CLAUDE.local.md');
   // Only whether the file exists matters here (an empty one is the same file as any link to it,
-  // and every copy of it is skipped alike), so it is not read: `add` reads it once, below.
-  const localKey = isFile(localPath) ? realPathOf(localPath) : undefined;
+  // and every copy of it is skipped alike), so it is not read: `add` reads it once, below. A
+  // CLAUDE.local.md that `add` is going to skip must not claim its target, or a force-added
+  // `CLAUDE.local.md -> ../CLAUDE.md` would drop the ancestor's own file as well.
+  const localReal = tryRealPath(localPath);
+  const localRootReal = tryRealPath(workspaceRoot);
+  const localKey =
+    localReal !== undefined &&
+    localRootReal !== undefined &&
+    isFile(localReal) &&
+    refusalFor(localRootReal, localReal) === undefined
+      ? localReal
+      : undefined;
   const loaded = new Set<string>();
   // `root` is the directory the file was found in, which it must stay inside (not for `user`).
   const add = (path: string, layer: ProjectInstructionLayer, root?: string) => {
-    const key = tryRealPath(path);
+    // The user layer is never checked, so where no real path can be had it is read by name.
+    const key = tryRealPath(path) ?? (layer === 'user' ? resolve(path) : undefined);
     if (key === undefined || !isFile(key)) return;
     // A file is loaded once, at its first scope. `$HOME` is an ancestor of almost every
     // workspace, so the walk below meets `~/.claude/CLAUDE.md` again, and a workspace inside
@@ -121,11 +143,16 @@ export function inspectProjectInstructions(
     // override with a later `.claude/CLAUDE.md`. User-layer files are not affected.
     if (layer === 'project' && key === localKey) return;
     if (loaded.has(key)) return;
-    if (layer !== 'user') {
+    if (layer === 'user') {
+      // Loaded even when empty or unreadable, so the ancestor walk meeting `~/.claude/CLAUDE.md`
+      // again as a project file does not warn about the user's own file.
+      loaded.add(key);
+    } else {
       const rootReal = root === undefined ? undefined : tryRealPath(root);
       if (rootReal === undefined) return;
-      if (!isInside(rootReal, key)) {
-        skipped.push({ path, target: key, root: rootReal });
+      const reason = refusalFor(rootReal, key);
+      if (reason) {
+        skipped.push({ path, target: key, root: rootReal, reason });
         return;
       }
     }
@@ -172,19 +199,22 @@ export function discoverProjectInstructions(
 
 /**
  * One start-up warning per project file that was not loaded because it links out of its
- * directory. The link is shown relative to the workspace when it is inside it.
+ * directory or to a file that is not Markdown. The link is shown relative to the workspace when
+ * it is inside it.
  */
 export function collectSkippedInstructionNotices(workspace: string, homeDir?: string): string[] {
   const workspaceRoot = resolve(workspace);
   return inspectProjectInstructions(workspace, homeDir).skipped.map((entry) => {
-    const shown = isInside(workspaceRoot, entry.path)
+    const shown = !isOutside(workspaceRoot, entry.path)
       ? relative(workspaceRoot, entry.path)
       : entry.path;
     // The target and the names along the way are repository-authored: no control characters.
-    return (
+    const head =
       `⚠  Skipped project instructions ${renderUntrustedText(shown, 400)}: it links to ` +
-      `${renderUntrustedText(entry.target, 400)}, outside ${renderUntrustedText(entry.root, 400)}.`
-    );
+      renderUntrustedText(entry.target, 400);
+    return entry.reason === 'not-markdown'
+      ? `${head}, which is not a Markdown (.md) file.`
+      : `${head}, outside ${renderUntrustedText(entry.root, 400)}.`;
   });
 }
 

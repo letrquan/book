@@ -283,6 +283,7 @@ describe.skipIf(process.platform === 'win32')(
           path: join(repo, 'CLAUDE.md'),
           target: real(join(dir, 'outside', 'secret.txt')),
           root: real(repo),
+          reason: 'outside',
         },
       ]);
     });
@@ -408,6 +409,7 @@ describe.skipIf(process.platform === 'win32')(
           path: join(dir, 'top', 'CLAUDE.md'),
           target: real(join(dir, 'elsewhere', 'x.md')),
           root: real(join(dir, 'top')),
+          reason: 'outside',
         },
       ]);
 
@@ -452,6 +454,114 @@ describe.skipIf(process.platform === 'win32')(
 
       expect(sources).toEqual([]);
       expect(skipped).toHaveLength(1);
+    });
+
+    describe('a link to a file that is not Markdown', () => {
+      it('skips CLAUDE.md linked to the local settings file, and never renders its key', () => {
+        write(join(workspace, '.book', 'settings.local.json'), '{"apiKey":"sk-SECRET-KEY"}');
+        symlinkSync(join('.book', 'settings.local.json'), join(workspace, 'CLAUDE.md'));
+
+        const { sources, skipped } = inspect(workspace);
+
+        expect(sources).toEqual([]);
+        expect(skipped).toEqual([
+          {
+            path: join(workspace, 'CLAUDE.md'),
+            target: real(join(workspace, '.book', 'settings.local.json')),
+            root: real(workspace),
+            reason: 'not-markdown',
+          },
+        ]);
+        expect(
+          renderProjectInstructions(discoverProjectInstructions(workspace, home)),
+        ).not.toContain('sk-SECRET-KEY');
+      });
+
+      it.each([
+        ['.env', 'TOKEN=abc'],
+        [join('.git', 'config'), '[remote "origin"]\n\turl = https://tok@example.com/x.git'],
+      ])('skips CLAUDE.md linked to %s', (target, body) => {
+        write(join(workspace, target), body);
+        symlinkSync(target, join(workspace, 'CLAUDE.md'));
+
+        const { sources, skipped } = inspect(workspace);
+
+        expect(sources).toEqual([]);
+        expect(skipped.map((s) => s.reason)).toEqual(['not-markdown']);
+      });
+
+      it('skips a rules file linked to the local settings file', () => {
+        write(join(workspace, '.book', 'settings.local.json'), '{"apiKey":"sk-SECRET-KEY"}');
+        mkdirSync(join(workspace, '.claude', 'rules'), { recursive: true });
+        symlinkSync(
+          join('..', '..', '.book', 'settings.local.json'),
+          join(workspace, '.claude', 'rules', 'x.md'),
+        );
+
+        const { sources, skipped } = inspect(workspace);
+
+        expect(sources).toEqual([]);
+        expect(skipped.map((s) => [s.path, s.reason])).toEqual([
+          [join(workspace, '.claude', 'rules', 'x.md'), 'not-markdown'],
+        ]);
+      });
+
+      it('loads CLAUDE.md linked to a Markdown file whatever the case of its extension', () => {
+        write(join(workspace, 'docs', 'GUIDE.MD'), 'guide rules');
+        symlinkSync(join('docs', 'GUIDE.MD'), join(workspace, 'CLAUDE.md'));
+
+        const { sources, skipped } = inspect(workspace);
+
+        expect(sources.map((s) => s.body)).toEqual(['guide rules']);
+        expect(skipped).toEqual([]);
+      });
+
+      it('words the notice for a target that is not Markdown', () => {
+        write(join(workspace, '.env'), 'TOKEN=abc');
+        symlinkSync('.env', join(workspace, 'CLAUDE.md'));
+
+        const notices = collectSkippedInstructionNotices(workspace, home).filter((n) =>
+          n.includes(dir),
+        );
+
+        expect(notices).toEqual([
+          `⚠  Skipped project instructions CLAUDE.md: it links to ${real(
+            join(workspace, '.env'),
+          )}, which is not a Markdown (.md) file.`,
+        ]);
+      });
+    });
+
+    it('keeps an ancestor CLAUDE.md that a skipped CLAUDE.local.md links to', () => {
+      const repo = join(dir, 'top', 'repo');
+      mkdirSync(repo, { recursive: true });
+      write(join(dir, 'top', 'CLAUDE.md'), 'top rules');
+      symlinkSync(join('..', 'CLAUDE.md'), join(repo, 'CLAUDE.local.md'));
+
+      const { sources, skipped } = inspect(repo);
+
+      expect(sources.map((s) => [s.path, s.body, s.layer])).toEqual([
+        [join(dir, 'top', 'CLAUDE.md'), 'top rules', 'project'],
+      ]);
+      // The link points at a file that is already loaded, so it is met again without a check or a
+      // warning, like a monorepo `pkg/CLAUDE.md -> ../CLAUDE.md`; nothing outside is read.
+      expect(skipped).toEqual([]);
+    });
+
+    it('does not warn about an empty user file linked outside home, met again by the walk', () => {
+      const nested = join(home, 'code', 'app');
+      mkdirSync(nested, { recursive: true });
+      write(join(dir, 'elsewhere', 'empty.md'), '');
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      symlinkSync(join(dir, 'elsewhere', 'empty.md'), join(home, '.claude', 'CLAUDE.md'));
+
+      const { sources, skipped } = inspect(nested);
+
+      expect(sources).toEqual([]);
+      expect(skipped).toEqual([]);
+      expect(collectSkippedInstructionNotices(nested, home).filter((n) => n.includes(dir))).toEqual(
+        [],
+      );
     });
 
     it('ignores a dangling link without a source, a skip entry or an error', () => {
