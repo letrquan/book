@@ -840,6 +840,8 @@ export function diffPreviewRows(
 /** The preview policy ToolCallBlock uses for a mutation diff. */
 export function mutationDiffPreview(input: {
   createsSingleNewFile: boolean;
+  /** One call changed several files: its diff names each one on rows of its own. */
+  spansFiles?: boolean;
   transcriptMode: TranscriptMode;
   screenReader: boolean;
 }): { preview: DiffPreviewKind; maxRows: number; contextRows?: number } {
@@ -847,6 +849,10 @@ export function mutationDiffPreview(input: {
   if (input.transcriptMode === 'detailed' || input.screenReader) {
     return { preview: 'changes', maxRows: COLLAPSED_ROWS };
   }
+  // A change-focused cut of a diff that spans files keeps changed lines from the first file and
+  // the last and drops the rows that say which file they are in. Shown in order from the top,
+  // every row drawn sits under its file's name.
+  if (input.spansFiles) return { preview: 'head-wrap', maxRows: EDIT_PREVIEW_ROWS };
   // The compact transcript shows what changed and one line either side of it; the rest of the
   // file around the change is a Ctrl+E away.
   return { preview: 'changes', maxRows: EDIT_PREVIEW_ROWS, contextRows: EDIT_CONTEXT_ROWS };

@@ -15,6 +15,7 @@ import {
   composeToolHeading,
   deriveToolPresentation,
   EXPAND_KEY,
+  hasNonBlankOutputLine,
   isCommandTool,
   labelFailure,
   mutationDiffPreviewInput,
@@ -260,16 +261,23 @@ function ToolCallBlockInner({
       }),
     [args, isPending, memoryRoot, name, nestedActivityCount, result, unparsedArguments],
   );
-  const heading = useMemo(
-    () => composeToolHeading(presentation, grids.item.content),
-    [grids.item.content, presentation],
-  );
-  const isRunning = presentation.status === 'running';
-  const inlineError = showsErrorMessage(result) ? result?.structuredError?.message : undefined;
   const mutationSummary = useMemo(
     () => getFileMutationDisplaySummary(name, args, result),
     [args, name, result],
   );
+  // A call that changed several files names how many when it names no target of its own.
+  const headingTarget =
+    presentation.target ??
+    (mutationSummary && (mutationSummary.fileCount ?? 1) > 1
+      ? mutationSummary.filePath
+      : undefined);
+  const heading = useMemo(
+    () =>
+      composeToolHeading({ title: presentation.title, target: headingTarget }, grids.item.content),
+    [grids.item.content, headingTarget, presentation.title],
+  );
+  const isRunning = presentation.status === 'running';
+  const inlineError = showsErrorMessage(result) ? result?.structuredError?.message : undefined;
   // One new file previews its first lines; any other diff is previewed as mutationDiffPreview
   // says: the compact transcript's changed rows, the detailed one's wider ones.
   const diffPreview = mutationDiffPreview(
@@ -379,7 +387,8 @@ function ToolCallBlockInner({
     errorDetail !== undefined ||
     previewRows.length > 0 ||
     drawsDiff ||
-    rendersOutputBlock;
+    // An output of nothing but newlines draws no rows, so it hangs no `⎿` of its own.
+    (rendersOutputBlock && hasNonBlankOutputLine(result?.content ?? ''));
 
   return (
     <Box flexDirection="column">

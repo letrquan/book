@@ -249,7 +249,7 @@ describe('ChatPanel Ink rendering', () => {
     const output = frame(view.lastFrame);
     expect(output).toContain('before compact');
     expect(output).toContain('after compact');
-    expect(output).toContain('✓ Compact conversation');
+    expect(output).toContain('● Compact conversation');
     expect(output).not.toContain('context messages');
     expect(output).not.toContain('recent');
     expect(output).not.toContain('tokens');
@@ -295,15 +295,15 @@ describe('ChatPanel Ink rendering', () => {
     const boundary = lines.findIndex((line) => line.includes('Compact conversation'));
     const toolRow = lines.findIndex((line) => line.includes('npm test'));
     expect(boundary).toBeGreaterThan(toolRow);
-    // The mark sits in the column every tool row's status mark does, not at column 0.
-    expect(lines[boundary]!.indexOf('✓')).toBe(lines[toolRow]!.indexOf('✓'));
-    expect(lines[boundary]!.indexOf('✓')).toBeGreaterThan(0);
+    // The mark sits in the gutter every item's mark does, its title on the content column.
+    expect(lines[boundary]!.indexOf('●')).toBe(lines[toolRow]!.indexOf('●'));
+    expect(lines[boundary]!.indexOf('Compact conversation')).toBe(lines[toolRow]!.indexOf('Bash'));
     expect(lines[boundary - 1]!.trim()).toBe('');
     expect(lines[boundary + 1]!.trim()).toBe('');
     expect(lines[boundary + 2]).toContain('answer after the compaction');
   });
 
-  it('greys the check on a compact boundary, which is a transcript event', () => {
+  it('greys the mark on a compact boundary, which is a transcript event', () => {
     // Ink styles through chalk, which emits nothing off a TTY; force truecolor
     // so the mark's ink is visible in the frame.
     const level = chalk.level;
@@ -337,8 +337,8 @@ describe('ChatPanel Ink rendering', () => {
     } finally {
       chalk.level = level;
     }
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}✓`);
-    expect(raw).not.toContain(`${rgb(DEFAULT_THEME.success)}✓`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}●`);
+    expect(raw).not.toContain(`${rgb(DEFAULT_THEME.success)}●`);
   });
 
   it('sets a compact boundary flush left for a screen reader, like the assistant rows', () => {
@@ -370,7 +370,9 @@ describe('ChatPanel Ink rendering', () => {
     const row = frame(view.lastFrame)
       .split('\n')
       .find((line) => line.includes('Compact conversation'));
-    expect(row?.indexOf('✓')).toBe(0);
+    // Spoken, it is a line of text: no mark, and nothing before it.
+    expect(row?.indexOf('Compact conversation')).toBe(0);
+    expect(row).not.toContain('●');
   });
 
   describe('a compact boundary with a warning', () => {
@@ -410,14 +412,13 @@ describe('ChatPanel Ink rendering', () => {
 
     it('names reduced fidelity in the title and shows the warning on one detail line', () => {
       const lines = renderBoundary({ degraded: true, warning: REDUCED });
-      const title = lines.findIndex((line) => line.includes('✓ Compact conversation'));
-      expect(lines[title]).toContain('✓ Compact conversation · reduced fidelity');
+      const title = lines.findIndex((line) => line.includes('● Compact conversation'));
+      expect(lines[title]).toContain('● Compact conversation · reduced fidelity');
       const detail = lines[title + 1]!;
       expect(detail).toContain('Compaction used reduced-fidelity coverage (summary-truncated).');
-      expect(detail).toContain('│');
-      // Under the tool-row mark, with the text under the title's.
-      expect(detail.indexOf('│')).toBe(lines[title]!.indexOf('✓'));
-      expect(detail.indexOf('Compaction')).toBe(lines[title]!.indexOf('Compact conversation'));
+      // Hung under the title on the result connector, like a call's result.
+      expect(detail.indexOf('⎿')).toBe(lines[title]!.indexOf('Compact conversation'));
+      expect(detail.indexOf('Compaction')).toBe(detail.indexOf('⎿') + 3);
       expect(lines.join('\n')).not.toContain('SessionHistorySearch');
       expect(lines.join('\n')).not.toContain('Exact history');
       expect(lines[title + 2]!.trim()).toBe('');
@@ -426,15 +427,15 @@ describe('ChatPanel Ink rendering', () => {
     it('says "with a warning" when the compaction was not degraded', () => {
       const lines = renderBoundary({ warning: 'One event addressed the summarizer.' });
       const output = lines.join('\n');
-      expect(output).toContain('✓ Compact conversation · with a warning');
+      expect(output).toContain('● Compact conversation · with a warning');
       expect(output).toContain('One event addressed the summarizer.');
     });
 
     it('draws a boundary without a warning exactly as before', () => {
       const lines = renderBoundary({});
       const title = lines.findIndex((line) => line.includes('Compact conversation'));
-      expect(lines[title]!.trim()).toBe('✓ Compact conversation');
-      expect(lines.join('\n')).not.toContain('│');
+      expect(lines[title]!.trim()).toBe('● Compact conversation');
+      expect(lines.join('\n')).not.toContain('⎿');
       expect(lines[title + 1]!.trim()).toBe('');
     });
 
@@ -454,10 +455,11 @@ describe('ChatPanel Ink rendering', () => {
     it('keeps the full warning, flush left, for a screen reader', () => {
       const lines = renderBoundary({ degraded: true, warning: REDUCED }, { screenReader: true });
       const output = lines.join('\n');
-      expect(output).toContain('✓ Compact conversation · reduced fidelity');
+      expect(output).toContain('Compact conversation · reduced fidelity');
       expect(output).toContain('Compaction used reduced-fidelity coverage (summary-truncated).');
       expect(output).not.toContain('SessionHistorySearch');
-      expect(output).not.toContain('│');
+      expect(output).not.toContain('⎿');
+      expect(output).not.toContain('●');
     });
   });
 

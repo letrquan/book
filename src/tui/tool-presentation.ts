@@ -849,10 +849,16 @@ export const EXPAND_KEY = 'Ctrl+E';
 export function mutationDiffPreviewInput(
   mutationSummary: Pick<FileMutationDisplaySummary, 'kind' | 'fileCount'> | undefined,
   view: { transcriptMode: TranscriptMode; screenReader: boolean },
-): { createsSingleNewFile: boolean; transcriptMode: TranscriptMode; screenReader: boolean } {
+): {
+  createsSingleNewFile: boolean;
+  spansFiles: boolean;
+  transcriptMode: TranscriptMode;
+  screenReader: boolean;
+} {
   return {
     createsSingleNewFile:
       mutationSummary?.kind === 'create' && (mutationSummary.fileCount ?? 1) <= 1,
+    spansFiles: (mutationSummary?.fileCount ?? 1) > 1,
     transcriptMode: view.transcriptMode,
     screenReader: view.screenReader,
   };

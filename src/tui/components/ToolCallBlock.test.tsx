@@ -595,14 +595,16 @@ describe('ToolCallBlock', () => {
       const rendered = frame(view.lastFrame);
 
       // Each file has one hunk, so neither draws a hunk header. The 30 changed lines overflow the
-      // 12-row budget, so it keeps the first and the last of them. The rows it keeps of each file
-      // must still say which file they are from: its `---` / `+++` rows, as the head preview kept.
+      // 12-row budget. A change-focused cut would keep lines of a.js and of b.js and drop the rows
+      // that say which file each is in, so a diff that spans files previews from the top, in
+      // order: every row it draws sits under its file's name. The heading counts the files.
+      expect(rendered).toContain('● Update(2 files)');
+      expect(rendered).toContain('Changed 2 files, added 30 lines');
       expect(rendered).not.toContain('@@');
-      expect(rendered).toContain('+ a.js line 1');
-      expect(rendered).toContain('+ b.js line 15');
-      expect(rendered).toContain('… 19 lines hidden (Ctrl+E)');
-      expect(rendered).toContain('+++ a.js');
-      expect(rendered).toContain('+++ b.js');
+      expect(rendered.indexOf('+++ a.js')).toBeGreaterThan(-1);
+      expect(rendered.indexOf('+++ a.js')).toBeLessThan(rendered.indexOf('+ a.js line 1'));
+      expect(rendered).not.toContain('b.js line');
+      expect(rendered).toContain('… +20 lines (Ctrl+E)');
     });
 
     it('drops the file metadata rows of a single-file ApplyPatch preview', () => {

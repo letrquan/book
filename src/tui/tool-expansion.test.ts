@@ -542,6 +542,17 @@ describe('mutationDiffPreviewInput', () => {
         { kind: 'update' },
         { transcriptMode: 'detailed', screenReader: true },
       ),
-    ).toEqual({ createsSingleNewFile: false, transcriptMode: 'detailed', screenReader: true });
+    ).toEqual({
+      createsSingleNewFile: false,
+      spansFiles: false,
+      transcriptMode: 'detailed',
+      screenReader: true,
+    });
+  });
+
+  it('says when one call changed several files', () => {
+    expect(mutationDiffPreviewInput({ kind: 'update', fileCount: 3 }, view).spansFiles).toBe(true);
+    expect(mutationDiffPreviewInput({ kind: 'update', fileCount: 1 }, view).spansFiles).toBe(false);
+    expect(mutationDiffPreviewInput(undefined, view).spansFiles).toBe(false);
   });
 });

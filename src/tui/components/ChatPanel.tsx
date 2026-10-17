@@ -1,7 +1,8 @@
 import { Box, Text } from 'ink';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '../theme.js';
-import { CONTENT_COLUMN, GUTTER_WIDTH, indentedGrid, transcriptGrid } from '../layout.js';
+import { GUTTER_WIDTH, resultContentWidth, transcriptGrid } from '../layout.js';
+import { ItemMark, ResultBox, ResultLine } from './transcript-item.js';
 import type { CompactBoundary } from '../../types/sessions.js';
 import type { Message } from '../../types/messages.js';
 import type { PermissionResult, PlanApprovalResult } from '../../types/tools.js';
@@ -788,7 +789,7 @@ function CompactBoundaryRow({
   screenReader: boolean;
 }) {
   const theme = useTheme();
-  const text = indentedGrid(transcriptGrid(terminalWidth)).content;
+  const grid = transcriptGrid(terminalWidth);
   const title = boundary.degraded
     ? 'Compact conversation · reduced fidelity'
     : boundary.warning
@@ -798,35 +799,29 @@ function CompactBoundaryRow({
   const detail = boundary.warning
     ? foldControlCharacters(userFacingCompactWarning(boundary.warning)).trim()
     : '';
+  if (screenReader) {
+    return (
+      <Box flexDirection="column" marginTop={spaced ? 1 : 0} width={grid.content}>
+        <Text color={theme.text}>{title}</Text>
+        {detail ? <Text>{detail}</Text> : null}
+      </Box>
+    );
+  }
+  // A compaction is an event in the transcript, set like a call that changed nothing in your
+  // workspace: the grey mark, and the warning hung under it.
   return (
-    <Box
-      flexDirection="column"
-      marginTop={spaced ? 1 : 0}
-      marginLeft={screenReader ? 0 : CONTENT_COLUMN}
-      width={GUTTER_WIDTH + text}
-    >
+    <Box flexDirection="column" marginTop={spaced ? 1 : 0} width={GUTTER_WIDTH + grid.content}>
       <Box>
-        <Text color={theme.inactive}>✓ </Text>
-        <Text color={theme.text}>{truncateDisplay(title, text)}</Text>
+        <ItemMark state="quiet" />
+        <Text color={theme.text}>{truncateDisplay(title, grid.content)}</Text>
       </Box>
       {detail ? (
-        screenReader ? (
-          <Text>{detail}</Text>
-        ) : (
-          <Box
-            borderStyle="single"
-            borderLeft
-            borderTop={false}
-            borderRight={false}
-            borderBottom={false}
-            borderLeftColor={theme.toolRail}
-            paddingLeft={1}
-          >
-            <Text color={theme.subtle} dimColor>
-              {truncateDisplay(detail, text)}
-            </Text>
-          </Box>
-        )
+        <ResultBox width={resultContentWidth(grid)}>
+          <ResultLine
+            text={truncateDisplay(detail, resultContentWidth(grid))}
+            color={theme.subtle}
+          />
+        </ResultBox>
       ) : null}
     </Box>
   );
