@@ -109,8 +109,8 @@ const FOOTER_RIGHT = 'accept edits on';
  * The bottom chrome the way Book lays it out during a turn, sized from React state that follows the
  * terminal 50 ms after a resize: a working indicator over an input bar between two rules, and a
  * footer, with the rules, the input bar and the footer Boxes of an explicit width. The redraw runs
- * before the new size is set, as `applyTerminalSize` in `src/tui/app.tsx` does. `onSized` hears
- * each size the chrome has committed.
+ * before the new size is set, as `applyTerminalSize` in `src/tui/app.tsx` did before #538: the
+ * worst case the clip has to survive. `onSized` hears each size the chrome has committed.
  */
 function Chrome({ onSized }: { onSized: (columns: number) => void }): ReactNode {
   const { stdout } = useStdout();
@@ -584,6 +584,20 @@ describe('frame-clipped Ink output', () => {
     expect(installed).not.toBe(originalGet);
     expect(await installInkFrameClip()).toBe(true);
     expect(Output.prototype.get).toBe(installed);
+    expect(Output.prototype.get.call(make(3, 1, [[0, 0, 'abcdef']])).output).toBe('abc');
+  });
+
+  it('stays off for every spelling of off in BOOK_INK_FRAME_CLIP', async () => {
+    for (const value of ['false', 'OFF', 'no', ' off ', '0']) {
+      expect(await installInkFrameClip({ BOOK_INK_FRAME_CLIP: value }), value).toBe(false);
+      // Not merely false: Ink's own get is still the one Ink shipped, so rows pass uncut.
+      expect(Output.prototype.get).toBe(originalGet);
+      expect(Output.prototype.get.call(make(3, 1, [[0, 0, 'abcdef']])).output).toBe('abcdef');
+    }
+    expect(await installInkFrameClip({ BOOK_INK_FRAME_CLIP: 'on' })).toBe(true);
+    expect(Output.prototype.get).not.toBe(originalGet);
+    // An installed clip stays in place, whatever a later call's environment says.
+    expect(await installInkFrameClip({ BOOK_INK_FRAME_CLIP: 'off' })).toBe(true);
     expect(Output.prototype.get.call(make(3, 1, [[0, 0, 'abcdef']])).output).toBe('abc');
   });
 

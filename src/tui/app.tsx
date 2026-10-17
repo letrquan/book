@@ -281,6 +281,12 @@ interface AppProps {
   };
   redrawViewport?: () => void;
   /**
+   * Runs an update and commits it before returning: Ink's reconciler flush, from
+   * `loadInkFlushSync` in `cli/ink-renderer.ts`. A resize sets the new size inside it, so the
+   * frame Ink's own `resized()` draws in the same tick is laid out at the new width (#538).
+   */
+  flushSync?: (update: () => void) => void;
+  /**
    * Warnings about this launch (a repository's withheld provider, for one), shown once as local
    * rows. They are not saved to the session and not sent to the model.
    */
@@ -334,6 +340,7 @@ export function App({
   permissionMode,
   session,
   redrawViewport: wipeViewport,
+  flushSync,
   interactiveAssets,
   mcp,
   startupNotices,
@@ -1080,17 +1087,24 @@ export function App({
   );
   const [terminalSize, setTerminalSize] = useState(readTerminalSize);
   const lastAppliedSizeRef = useRef(terminalSize);
-  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const redrawTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Set when a resize changed the size, cleared when the forced redraw runs. Kept apart from the
+  // size check: the size is applied at once, so by the time the redraw is due it always matches.
+  const redrawOwedRef = useRef(false);
 
+  /** Applies a new size to React state; returns whether it differed from the last one applied. */
   const applyTerminalSize = useCallback(
-    (nextSize: { columns: number; rows: number }, redraw: boolean) => {
+    (nextSize: { columns: number; rows: number }, commitNow: boolean): boolean => {
       const previousSize = lastAppliedSizeRef.current;
-      if (nextSize.columns === previousSize.columns && nextSize.rows === previousSize.rows) return;
-      if (redraw) redrawViewport?.();
+      if (nextSize.columns === previousSize.columns && nextSize.rows === previousSize.rows) {
+        return false;
+      }
       lastAppliedSizeRef.current = nextSize;
-      setTerminalSize(nextSize);
+      if (commitNow && flushSync) flushSync(() => setTerminalSize(nextSize));
+      else setTerminalSize(nextSize);
+      return true;
     },
-    [redrawViewport],
+    [flushSync],
   );
 
   useEffect(() => {
@@ -1098,20 +1112,38 @@ export function App({
     // registration without destructively clearing the first frame.
     applyTerminalSize(readTerminalSize(), false);
 
-    const updateSize = () => {
-      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
-      resizeTimerRef.current = setTimeout(() => {
-        resizeTimerRef.current = null;
-        applyTerminalSize(readTerminalSize(), true);
+    // The wipe and full repaint after a resize, debounced so a drag wipes the screen once. It runs
+    // well after the new size committed, so it repaints the new layout; one due while an earlier
+    // repaint is still in flight waits for it rather than being dropped.
+    const scheduleRedraw = () => {
+      if (redrawTimerRef.current) clearTimeout(redrawTimerRef.current);
+      redrawTimerRef.current = setTimeout(() => {
+        redrawTimerRef.current = null;
+        if (!redrawOwedRef.current) return;
+        if (redrawInFlightRef.current) {
+          scheduleRedraw();
+          return;
+        }
+        redrawOwedRef.current = false;
+        redrawViewport();
       }, 50);
     };
 
-    stdout?.on?.('resize', updateSize);
-    return () => {
-      stdout?.off?.('resize', updateSize);
-      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    // Every resize applies the new size at once, committed before Ink's own `resized()` listener
+    // lays out and draws, so the frame Ink draws in the same tick is the new layout (#538).
+    const onResize = () => {
+      if (applyTerminalSize(readTerminalSize(), true)) redrawOwedRef.current = true;
+      if (redrawOwedRef.current) scheduleRedraw();
     };
-  }, [applyTerminalSize, readTerminalSize, stdout]);
+
+    // Ink registered `resized()` when it rendered, before this effect, so ours goes in front.
+    if (typeof stdout?.prependListener === 'function') stdout.prependListener('resize', onResize);
+    else stdout?.on?.('resize', onResize);
+    return () => {
+      stdout?.off?.('resize', onResize);
+      if (redrawTimerRef.current) clearTimeout(redrawTimerRef.current);
+    };
+  }, [applyTerminalSize, readTerminalSize, redrawViewport, stdout]);
 
   const termWidth = terminalSize.columns;
   const termHeight = terminalSize.rows;

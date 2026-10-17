@@ -38,7 +38,7 @@ import {
 } from '../debug-log.js';
 import { installInkScrollRenderer } from './ink-scroll-renderer.js';
 import { installFrameCapture } from './frame-buffer.js';
-import { hasInkTrailingNewlineFix } from './ink-renderer.js';
+import { hasInkTrailingNewlineFix, loadInkFlushSync } from './ink-renderer.js';
 import { installInkFrameThrottle } from './ink-frame-throttle.js';
 import { installInkOutputCache } from './ink-output-cache.js';
 import { installInkRenderCull } from './ink-render-cull.js';
@@ -463,12 +463,15 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       // Ink's walk draws every mounted transcript row, even the ones the viewport cannot see.
       await installInkRenderCull();
       await installInkFrameClip();
+      // Lets a resize commit the new size before Ink's own `resized()` draws (#538).
+      const flushSync = await loadInkFlushSync();
       app = render(
         createElement(App, {
           config,
           permissionMode: mode,
           interactiveAssets,
           redrawViewport,
+          flushSync,
           mcp: mcpHost,
           session: {
             ...bootstrap,

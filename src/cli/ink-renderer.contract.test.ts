@@ -3,8 +3,8 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
-import { Box, Text, render } from 'ink';
-import { createElement, type ReactNode } from 'react';
+import { Box, Text, render, useStdout } from 'ink';
+import { createElement, useEffect, useState, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { installInkFrameClip } from './ink-frame-clip.js';
 import { installInkFrameThrottle } from './ink-frame-throttle.js';
@@ -28,6 +28,7 @@ import {
   hasInkTrailingNewlineFix,
   inkBuildDir,
   installedInkVersion,
+  loadInkFlushSync,
 } from './ink-renderer.js';
 
 describe('Ink renderer contract', () => {
@@ -64,6 +65,57 @@ describe('Ink renderer contract', () => {
         await installInkFrameThrottle(stdout),
         "Ink's private instance changed shape; update installInkFrameThrottle before VERIFIED_INK_VERSION.",
       ).toBe(true);
+    } finally {
+      app.unmount();
+      app.cleanup();
+    }
+  });
+
+  it("commits a resize listener's update before Ink's resized() draws", async () => {
+    const flushSync = await loadInkFlushSync();
+    expect(
+      flushSync,
+      "Ink's private reconciler changed; update loadInkFlushSync before VERIFIED_INK_VERSION.",
+    ).toBeTypeOf('function');
+    const frames: string[] = [];
+    const stdout = Object.assign(new EventEmitter(), {
+      columns: 80,
+      rows: 10,
+      isTTY: true,
+      write: (data: string) => frames.push(data) > 0,
+    }) as unknown as NodeJS.WriteStream;
+    const stdin = Object.assign(new PassThrough(), {
+      isTTY: false,
+    }) as unknown as NodeJS.ReadStream;
+    // The order the TUI relies on: its listener runs first and commits inside the flush, so the
+    // frame Ink's own `resized()` draws in the same tick already holds the new width.
+    function Width(): ReactNode {
+      const { stdout: out } = useStdout();
+      const [columns, setColumns] = useState(out.columns);
+      useEffect(() => {
+        const onResize = () => flushSync!(() => setColumns(out.columns));
+        out.prependListener('resize', onResize);
+        return () => {
+          out.off('resize', onResize);
+        };
+      }, [out]);
+      return createElement(Text, null, `width=${columns}`);
+    }
+    const app = render(createElement(Width), {
+      stdout,
+      stdin,
+      patchConsole: false,
+      interactive: true,
+      debug: true,
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const before = frames.length;
+      stdout.columns = 73;
+      stdout.emit('resize');
+      const drawn = frames.slice(before).filter((frame) => frame.includes('width='));
+      expect(drawn.length).toBeGreaterThan(0);
+      expect(drawn.every((frame) => frame.includes('width=73'))).toBe(true);
     } finally {
       app.unmount();
       app.cleanup();
