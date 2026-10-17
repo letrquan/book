@@ -11,7 +11,7 @@ import {
   WebPolicyError,
   connectionBlockedDestination,
   connectionBlockedReason,
-  refusalDestination,
+  detailsDestination,
   refusalWithoutLookup,
   resolveHostname,
   safeNetworkLookup,
@@ -523,14 +523,16 @@ async function fetchWithPolicy(
       next = await validateWebUrl(target.toString(), policy, deps.resolveHostname);
     } catch (error) {
       // The target is on the model's own host, so a private answer here is the same host the
-      // model asked for, reached through a redirect. Say so in terms of the URL the model gave:
-      // never `current` (an intermediate hop) or the raw target, which can carry userinfo that
-      // `URL.origin` ignores. The code and destination are the refusal's own, unchanged.
-      if (error instanceof WebPolicyError && error.code === 'private_network_forbidden') {
+      // model asked for, reached through a redirect. Say so in one sentence: the URL the model
+      // gave, the refused target by its path alone, and the policy's reason. Never `current` (an
+      // intermediate hop) or the target's full URL, whose userinfo `URL.origin` ignores. The code
+      // and destination are the refusal's own, unchanged.
+      if (error instanceof WebPolicyError && error.reason !== undefined) {
         throw new WebPolicyError(
-          `Web fetch of ${requested.toString()} was blocked after a same-origin redirect. ${error.message}`,
+          `Web fetch of ${requested.toString()} was redirected on the same origin to ${target.pathname}, which is blocked: ${error.reason}.`,
           error.code,
           error.destination,
+          error.reason,
         );
       }
       throw error;
@@ -1119,7 +1121,7 @@ async function builtinWebSearch(
     if (result.status === 'success' || result.status === 'cancelled') return result;
 
     const cooldownMs = providerCooldownMs(result);
-    const refused = refusalDestination(result);
+    const refused = detailsDestination(result);
     if (cooldownMs !== undefined) {
       cooldowns.set(provider.id, {
         until: now().getTime() + cooldownMs,

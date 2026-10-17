@@ -107,18 +107,15 @@ export interface BlockedStreak {
 }
 
 /**
- * Record one all-refused turn's refusals into the streak. A no-op unless the brake that reads the
- * streak is `armed`, so a run that can never stop on it (the TUI, or a limit of 0) does not hold
- * every refused result's output for its whole streak. Only the status and structured error of a
- * network refusal are kept.
+ * Record one all-refused turn's refusals into the streak. Only the status and structured error of
+ * a network refusal are kept, not its output. The caller decides whether the streak is kept at
+ * all: a run whose brake can never fire has no use for it.
  */
 export function recordBlockedStreakRefusals(
-  armed: boolean,
   streak: BlockedStreak,
   results: readonly (ToolResult | undefined)[],
   countsAsRefusal: (result: ToolResult | undefined) => boolean,
 ): void {
-  if (!armed) return;
   for (const result of results) {
     if (!result || !countsAsRefusal(result)) continue;
     if (networkPolicyRefusal(result)) {

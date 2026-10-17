@@ -7,7 +7,7 @@ import {
   isBlockedIpAddress,
   networkPolicyRefusal,
   networkPolicyRemedies,
-  refusalDestination,
+  detailsDestination,
   safeNetworkLookup,
   validateWebUrl,
   webUrlPolicyFromEnv,
@@ -440,7 +440,7 @@ describe('web URL policy', () => {
   });
 });
 
-describe('refusalDestination', () => {
+describe('detailsDestination', () => {
   const withDetails = (details?: Record<string, unknown>) => ({
     status: 'blocked' as const,
     structuredError: {
@@ -452,24 +452,24 @@ describe('refusalDestination', () => {
   });
 
   it('returns the destination a refusal names', () => {
-    expect(refusalDestination(withDetails({ destination: 'example.com (10.0.0.9)' }))).toBe(
+    expect(detailsDestination(withDetails({ destination: 'example.com (10.0.0.9)' }))).toBe(
       'example.com (10.0.0.9)',
     );
   });
 
   it('is undefined when the destination is missing, not a string, or there are no details', () => {
-    expect(refusalDestination(withDetails({}))).toBeUndefined();
-    expect(refusalDestination(withDetails({ destination: 42 }))).toBeUndefined();
-    expect(refusalDestination(withDetails({ destination: ['a'] }))).toBeUndefined();
-    expect(refusalDestination(withDetails({ destination: null }))).toBeUndefined();
-    expect(refusalDestination(withDetails())).toBeUndefined();
-    expect(refusalDestination({ status: 'blocked' })).toBeUndefined();
-    expect(refusalDestination(undefined)).toBeUndefined();
+    expect(detailsDestination(withDetails({}))).toBeUndefined();
+    expect(detailsDestination(withDetails({ destination: 42 }))).toBeUndefined();
+    expect(detailsDestination(withDetails({ destination: ['a'] }))).toBeUndefined();
+    expect(detailsDestination(withDetails({ destination: null }))).toBeUndefined();
+    expect(detailsDestination(withDetails())).toBeUndefined();
+    expect(detailsDestination({ status: 'blocked' })).toBeUndefined();
+    expect(detailsDestination(undefined)).toBeUndefined();
   });
 
   it('does not read a search refusal’s attempts', () => {
     expect(
-      refusalDestination(withDetails({ attempts: [{ destination: 'example.com (10.0.0.9)' }] })),
+      detailsDestination(withDetails({ attempts: [{ destination: 'example.com (10.0.0.9)' }] })),
     ).toBeUndefined();
   });
 });

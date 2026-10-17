@@ -313,12 +313,17 @@ describe('WebFetch', () => {
     expect(result.structuredError?.retryable).toBe(false);
     expect(result.structuredError?.details?.destination).toBe('example.com (10.0.0.9)');
     const message = result.structuredError?.message ?? '';
-    expect(message).toContain('https://example.com/start');
-    expect(message).toContain('same-origin redirect');
-    // Neither an intermediate hop nor the refused target is named.
+    // One sentence: the model's URL, the same-origin redirect, the refused target by its path
+    // only, and the policy's reason once.
+    expect(message).toBe(
+      'Web fetch of https://example.com/start was redirected on the same origin to /final, which is blocked: example.com resolves to private or special-use address 10.0.0.9.',
+    );
+    expect(message.match(/Web fetch/g)).toHaveLength(1);
+    expect(message.match(/blocked/g)).toHaveLength(1);
+    // Neither an intermediate hop, the target's query, nor any userinfo is named.
     expect(message).not.toContain('/hop');
-    expect(message).not.toContain('/final');
     expect(message).not.toContain('token=abc');
+    expect(message).not.toContain('@');
   });
 
   it('never echoes credentials from a same-origin redirect target', async () => {

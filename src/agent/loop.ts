@@ -3494,15 +3494,17 @@ export async function runAgentLoop(
       }
       if (toolCalls.length > 0 && refusedThisTurn === toolCalls.length) {
         blockedTurnStreak++;
-        for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
-        // Recorded on plan-mode turns too: the streak counts through them, and the mode can
-        // change before the brake fires.
-        recordBlockedStreakRefusals(
-          brakeArmed,
-          { causes: blockedStreakCauses, networkRefusals: blockedStreakNetworkRefusals },
-          orderedToolResults,
-          countsAsRefusal,
-        );
+        // Everything the brake's message reads is kept only when the brake can fire. Recorded on
+        // plan-mode turns too: the streak counts through them, and the mode can change before
+        // the brake fires.
+        if (brakeArmed) {
+          for (const call of toolCalls) blockedTurnTools.add(canonicalToolName(call.name));
+          recordBlockedStreakRefusals(
+            { causes: blockedStreakCauses, networkRefusals: blockedStreakNetworkRefusals },
+            orderedToolResults,
+            countsAsRefusal,
+          );
+        }
       } else {
         blockedTurnStreak = 0;
         blockedTurnTools.clear();

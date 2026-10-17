@@ -325,18 +325,9 @@ describe('recordBlockedStreakRefusals', () => {
       content: 'x'.repeat(10_000),
     });
 
-  it('records nothing when the brake is disarmed', () => {
-    const streak = emptyStreak();
-    recordBlockedStreakRefusals(false, streak, [blocked('hook_blocked'), network()], countsAll);
-
-    expect(streak.causes.size).toBe(0);
-    expect(streak.networkRefusals).toHaveLength(0);
-  });
-
-  it('puts local kinds in the set and network refusals in the list when armed', () => {
+  it('puts local kinds in the set and network refusals in the list', () => {
     const streak = emptyStreak();
     recordBlockedStreakRefusals(
-      true,
       streak,
       [blocked('hook_blocked'), network(), blocked('permission_denied')],
       countsAll,
@@ -349,7 +340,6 @@ describe('recordBlockedStreakRefusals', () => {
   it('never lets a network kind into the set of local causes', () => {
     const streak = emptyStreak();
     recordBlockedStreakRefusals(
-      true,
       streak,
       [
         network(),
@@ -367,7 +357,7 @@ describe('recordBlockedStreakRefusals', () => {
   it('keeps only the status and structured error of a network refusal, not its output', () => {
     const streak = emptyStreak();
     const result = network();
-    recordBlockedStreakRefusals(true, streak, [result], countsAll);
+    recordBlockedStreakRefusals(streak, [result], countsAll);
 
     const [kept] = streak.networkRefusals;
     expect(Object.keys(kept).sort()).toEqual(['status', 'structuredError']);
@@ -379,7 +369,6 @@ describe('recordBlockedStreakRefusals', () => {
   it('skips results that do not count as refusals and absent results', () => {
     const streak = emptyStreak();
     recordBlockedStreakRefusals(
-      true,
       streak,
       [blocked('hook_blocked'), undefined, network()],
       (result) => result !== undefined && refusalKind(result) === 'hook',
@@ -391,8 +380,8 @@ describe('recordBlockedStreakRefusals', () => {
 
   it('accumulates across turns into the same streak', () => {
     const streak = emptyStreak();
-    recordBlockedStreakRefusals(true, streak, [blocked('hook_blocked')], countsAll);
-    recordBlockedStreakRefusals(true, streak, [network(), blocked('tool_not_active')], countsAll);
+    recordBlockedStreakRefusals(streak, [blocked('hook_blocked')], countsAll);
+    recordBlockedStreakRefusals(streak, [network(), blocked('tool_not_active')], countsAll);
 
     expect([...streak.causes].sort()).toEqual(['hook', 'inactive']);
     expect(streak.networkRefusals).toHaveLength(1);
