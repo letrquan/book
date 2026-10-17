@@ -15,6 +15,8 @@ import {
   resolveMutationPath,
 } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
+import { PROVIDER_KEY_MARKER } from '../provider-secrets.js';
+import { redactedSecretDeletion, redactedSecretOverwrite } from './redacted-secret-guard.js';
 import {
   readTextSnapshot,
   removeFileAtomically,
@@ -291,6 +293,42 @@ function errorCodeFor(error: unknown): string {
     : 'filesystem_error';
 }
 
+/**
+ * The first operation that would lose a provider key (#519), checked before anything is staged.
+ *
+ * A delete of a file that holds a key is refused outright, since Book cannot write the real value
+ * back; an update is refused when its added lines carry the marker and the file holds a key, the
+ * rule Edit applies. A file that cannot be read is left to the staging pass to report.
+ */
+async function redactedSecretRefusal(
+  ctx: ToolContext,
+  entries: ReadonlyArray<{ operation: PatchOperation; filePath: string; messagePath: string }>,
+): Promise<ToolResult | undefined> {
+  for (const { operation, filePath, messagePath } of entries) {
+    if (operation.kind === 'add') continue;
+    const added =
+      operation.kind === 'update'
+        ? operation.hunks.flatMap((hunk) =>
+            hunk.lines.filter((line) => line.kind === 'add').map((line) => line.text),
+          )
+        : [];
+    if (operation.kind === 'update' && !added.some((text) => text.includes(PROVIDER_KEY_MARKER)))
+      continue;
+    let existing: string;
+    try {
+      existing = (await readTextSnapshot(filePath, true)).text;
+    } catch {
+      continue;
+    }
+    const refused =
+      operation.kind === 'delete'
+        ? redactedSecretDeletion(ctx, messagePath, existing)
+        : redactedSecretOverwrite(ctx, messagePath, existing, added);
+    if (refused) return refused;
+  }
+  return undefined;
+}
+
 async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const parsed = parsePatch(args.patch);
   if (!('operations' in parsed)) return parsed;
@@ -319,6 +357,8 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
     messagePath: string;
     memory?: true;
   }>;
+  const refused = await redactedSecretRefusal(ctx, entries);
+  if (refused) return refused;
   const canonicalKeys = entries.map((entry) =>
     process.platform === 'win32' ? entry.canonicalPath.toLowerCase() : entry.canonicalPath,
   );

@@ -12,6 +12,7 @@ import { buildChildEnv } from '../child-env.js';
 import { isTerminalShellStatus, ShellJobManager } from '../jobs/shell-manager.js';
 import { terminateForegroundProcess } from '../jobs/process-tree.js';
 import { secretSafeStart } from '../provider-secrets.js';
+import { redactedSecretCommand } from './redacted-secret-guard.js';
 import { toolFailure, toolSuccess } from './result.js';
 import {
   MAX_SAFE_TIMEOUT_MS,
@@ -200,6 +201,8 @@ function buildEffectiveCommand(
 }
 
 async function bash(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const refused = redactedSecretCommand(ctx, readString(args, 'command'));
+  if (refused) return refused;
   return readBoolean(args, 'run_in_background', 'runInBackground')
     ? bashBackground(args, ctx)
     : bashForeground(args, ctx);

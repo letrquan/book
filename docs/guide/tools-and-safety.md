@@ -756,6 +756,19 @@ unchanged, when the file on disk holds a configured provider key **and** the new
 change, leaving out the line that shows the marker, or asking you to make the change. Writing the
 marker into a file that holds no key is still allowed, so Book's own docs and tests are unaffected.
 
+`ApplyPatch` and `NotebookEdit` close the same gap with the same error code. `ApplyPatch` refuses
+the whole patch, writing nothing, when an operation **deletes** a file that holds a key (Book can
+never write the real value back, so a delete followed by an add loses it), or when an `Update File`
+operation adds the marker to a file that holds a key. `NotebookEdit` refuses a `replace` or
+`insert` whose `new_source` carries the marker when the notebook holds a key, and a `delete` of a
+cell that holds one. When you want such a file or cell deleted, delete it yourself.
+
+`Bash` refuses any command whose text contains the marker, searches and quotes included, whenever a
+provider key is configured. The error code is `redacted_secret_command`, and it applies in the
+foreground and in the background alike: the marker stands for a key the model cannot see, so a
+command has no business writing or using it. To search for the marker text itself, leave out the
+brackets.
+
 ## Shell command timeouts
 
 A foreground `Bash` command is given **300000 ms** (five minutes) by default. The model can raise
