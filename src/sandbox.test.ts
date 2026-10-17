@@ -3439,6 +3439,12 @@ describe('matchesExcludedCommand', () => {
     expect(matchesExcludedCommand('git status', ['docker *'])).toBe(false);
   });
 
+  it('reads ? as exactly one character (#522)', () => {
+    expect(matchesExcludedCommand('docker ps', ['docker p?'])).toBe(true);
+    expect(matchesExcludedCommand('docker p', ['docker p?'])).toBe(false);
+    expect(matchesExcludedCommand('docker ', ['docker p?'])).toBe(false);
+  });
+
   it('matches against the whole command, not the first line getPrimaryArg would keep', () => {
     // The permission path and the execution path must judge the same text.
     // getPrimaryArg truncates a command to its first line, so a pattern that

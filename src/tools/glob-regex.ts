@@ -4,12 +4,17 @@ import { convertPathToPattern } from 'tinyglobby';
 import { createDebugLogger } from '../debug-log.js';
 
 /**
- * Convert a glob pattern to a regex. Supports * (any chars) and ** (same as *).
- * The pattern is anchored at both ends (^...$).
+ * Convert a rule glob to a regex, anchored at both ends (^...$). Two characters are wildcards: `*`
+ * (and `**`, the same) matches any run of characters, `/` included, and `?` matches exactly one
+ * character, `/` included too (#522). Every other character, regex metacharacters included,
+ * matches itself. Used by every rule kind that is a glob: permission rules (all but an exact Bash
+ * allow rule, which is compared as plain text), capability rules and `sandbox.excludedCommands`.
  */
 export function globToRegex(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*|\*/g, '.*');
-  return new RegExp('^' + escaped + '$');
+  const source = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*|\*|\?/g, (wildcard) => (wildcard === '?' ? '.' : '.*'));
+  return new RegExp('^' + source + '$');
 }
 
 const log = createDebugLogger('tools:glob');

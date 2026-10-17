@@ -138,27 +138,51 @@ describe('PermissionButtons', () => {
     expect(onResolve).toHaveBeenCalledWith({ result: 'always', rule: 'Bash(echo one)' });
   });
 
-  it('saves no rule when the call has no primary argument to scope one to', () => {
-    // `{command: ''}` reaches the prompt, and a bare `Bash` rule would allow every Bash
-    // call afterwards. The card says so rather than naming a rule it will not write.
+  // `{command: ''}` has no primary argument, and a bare `Bash` rule would allow every Bash call
+  // afterwards. `rm -rf build/*` has no rule either (#521): its rule would be a glob, which admits
+  // `rm -rf build/ ~/` too. With no rule to save, the card offers only run once and skip.
+  it.each([
+    ['a call with no primary argument', ''],
+    ['a command holding * (#521)', 'rm -rf build/*'],
+  ])('offers no "Always allow" and no scope for %s', (_label, command) => {
     const onResolve = vi.fn();
     const view = render(
       withTheme(
         <PermissionButtons
-          toolCall={{ id: 'bash-empty', name: 'Bash', arguments: { command: '' } }}
+          toolCall={{ id: 'bash-no-rule', name: 'Bash', arguments: { command } }}
           onResolve={onResolve}
         />,
       ),
     );
 
-    expect(stripAnsi(view.lastFrame() ?? '')).toContain('no rule to save');
+    const frame = stripAnsi(view.lastFrame() ?? '');
+    expect(frame).not.toContain('Always allow');
+    expect(frame).not.toContain('A scope');
+    expect(frame).toContain('Run once');
+    expect(frame).toContain('Skip');
 
+    // `A` arms nothing, so Enter still answers the choice that was armed: run once.
     view.stdin.write('a');
     view.stdin.write('\r');
 
     expect(onResolve).toHaveBeenCalledOnce();
-    // `always` with no rule: the call is allowed and the loop persists nothing.
-    expect(onResolve).toHaveBeenCalledWith('always');
+    expect(onResolve).toHaveBeenCalledWith('allow');
+  });
+
+  it('reads no "Always allow" to a screen reader when there is no rule to save', () => {
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-sr', name: 'Bash', arguments: { command: 'rm -rf build/*' } }}
+          onResolve={vi.fn()}
+          screenReader
+        />,
+      ),
+    );
+    const frame = stripAnsi(view.lastFrame() ?? '');
+    expect(frame).toContain('[R] Run once');
+    expect(frame).not.toContain('Always allow');
+    expect(frame).not.toContain('Rule to be saved');
   });
 
   // The exact rule matches that byte sequence and nothing else, so a user who

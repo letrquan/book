@@ -79,6 +79,36 @@ describe('capability rule Bash(rm /abs/…)', () => {
   });
 });
 
+// `?` reached `new RegExp` as a quantifier, so `Bash(ls a?)` admitted `ls ` and `ls a`.
+describe('? in a capability rule is one character, glob style (#522)', () => {
+  it('in a Bash command rule', () => {
+    const rules = parseCapabilityRules(['Bash(ls a?)']);
+    const bash = (command: string) =>
+      isToolCallAllowed(rules, call('Bash', { command }), new Set(), 'linux');
+    expect(bash('ls ab')).toBe(true);
+    expect(bash('ls ')).toBe(false);
+    expect(bash('ls a')).toBe(false);
+    expect(bash('ls abc')).toBe(false);
+  });
+
+  it('in a file path rule', () => {
+    const rules = parseCapabilityRules(['Write(/mem/a?.md)']);
+    const write = (filePath: string) =>
+      isToolCallAllowed(rules, call('Write', { filePath }), new Set(), 'linux');
+    expect(write('/mem/ab.md')).toBe(true);
+    expect(write('/mem/a.md')).toBe(false);
+    expect(write('/mem/abc.md')).toBe(false);
+  });
+
+  it('in an rm rule operand', () => {
+    const rules = parseCapabilityRules(['Bash(rm /mem/a?.md)']);
+    const bash = (command: string) =>
+      isToolCallAllowed(rules, call('Bash', { command }), new Set(), 'linux');
+    expect(bash('rm /mem/ab.md')).toBe(true);
+    expect(bash('rm /mem/a.md')).toBe(false);
+  });
+});
+
 describe('capability rule Bash(<glob>) refuses compound commands', () => {
   const rules = parseCapabilityRules(['Bash(git *)']);
   const bash = (command: string, platform: NodeJS.Platform = 'linux') =>

@@ -53,7 +53,7 @@ import {
   permissionResultOf,
   permissionRuleForToolCall,
   permissionRuleMatchesCall,
-  isExactBashRule,
+  missingRuleReason,
   permissionRuleOf,
   WORKSPACE_READ_JUDGING_MODES,
   WORKSPACE_READ_REFUSAL_MODES,
@@ -2857,17 +2857,19 @@ export async function runAgentLoop(
         }
 
         // A compound Bash command under a Bash deny or ask rule asks in every mode but
-        // `bypassPermissions`, `auto` included, exactly as a persistent background shell does. It
-        // is OR-ed into the same condition, not into `persistentBackgroundShell` itself: that one
-        // also turns off the approve-all check below, and an exact session rule must still admit
-        // its exact command.
+        // `bypassPermissions`, `auto` included, exactly as a persistent background shell does; so
+        // does any call, of any tool, that an `ask` rule the user wrote matched (#527). Both are
+        // OR-ed into the same condition, not into `persistentBackgroundShell` itself: that one
+        // also turns off the approve-all check below, and a session rule must still admit what it
+        // covers. Where nothing can answer the prompt the call is refused, and the remedy names
+        // the ask rule.
         const compoundUnderPolicy = verdict.compoundUnderPolicy === true;
+        const askRuleMatched = verdict.decision === 'ask' && verdict.source === 'ask';
         const toolPermissionRequired = requiresToolPermission(
           effectiveMode,
-          persistentBackgroundShell || compoundUnderPolicy,
+          persistentBackgroundShell || compoundUnderPolicy || askRuleMatched,
         );
-        const userRuleAsked =
-          toolPermissionRequired && verdict.decision === 'ask' && verdict.source === 'ask';
+        const userRuleAsked = toolPermissionRequired && askRuleMatched;
         // A guarded read is not auto-safe in plan mode (decision C, PR #334 finding 5). The
         // verdict is `ask` for exactly the targets that keep asking in `default` — a local
         // settings file, a home the serving root holds, a search under a Read deny/ask rule — and
@@ -2887,14 +2889,19 @@ export async function runAgentLoop(
         const guardedReadInPlan =
           planAutoApproved && WORKSPACE_READ_TOOLS.has(canonName) && verdict.decision === 'ask';
 
+        // The rule that remembers exactly this call, if it has one.
+        const ownRule = permissionRuleForToolCall(call);
+        // A session approve-all rule is an allow rule. For a call an `ask` rule matched, which
+        // outranks every allow rule, and for a compound command under a Bash policy, which no glob
+        // can read, only the call's own exact rule vouches for it: a widened rung (`Bash(git *)`,
+        // `Write(secrets/*)`) or a bare tool rule must not skip the prompt (review of #531).
+        const exactSessionRuleOnly = compoundUnderPolicy || askRuleMatched;
         if (
           (forceSkillPermission || toolPermissionRequired) &&
           (persistentBackgroundShell ||
             !approveAllRules.some(
               (rule) =>
-                // A bare `Bash` or a glob session rule never vouches for a flagged command; only
-                // the exact rule for that very command does (a glob rule refuses it anyway).
-                (!compoundUnderPolicy || isExactBashRule(rule)) &&
+                (!exactSessionRuleOnly || rule === ownRule) &&
                 permissionRuleMatchesCall(rule, call, process.platform, scanShell),
             )) &&
           (!autoSafeTool || userRuleAsked || guardedReadInPlan) &&
@@ -2946,11 +2953,12 @@ export async function runAgentLoop(
               }
               const askRule = verdict.source === 'ask' ? verdict.matchedRule : undefined;
               // The rule the operator is told to add. A bare tool name allows every call of the
-              // tool, so for Bash, which has no rule for a multi-line command or a compound one
-              // holding `*`, the remedy names no rule at all rather than `Bash`.
+              // tool, so it is named only for a call with no argument to scope a rule to. A call
+              // that has one but no rule of its own (a Bash command that spans lines or holds `*`,
+              // #521; an argument holding `*` or `?`) gets no rule, and the remedy says why.
+              const noRule = missingRuleReason(call);
               const remedyRule =
-                permissionRuleForToolCall(call, process.platform, scanShell) ??
-                (canonName === 'Bash' ? undefined : canonName);
+                ownRule ?? (canonName === 'Bash' || noRule ? undefined : canonName);
               // What would actually let this call through if nobody could approve it. An
               // outside target comes first: no rule or mode makes the tool serve it.
               const remedy: UnattendedRemedy = persistentBackgroundShell
@@ -2966,8 +2974,8 @@ export async function runAgentLoop(
                     : askRule
                       ? { kind: 'ask_rule', rule: askRule }
                       : forceSkillPermission
-                        ? { kind: 'allow_rule_only', rule: remedyRule }
-                        : { kind: 'rule_or_auto', rule: remedyRule };
+                        ? { kind: 'allow_rule_only', rule: remedyRule, noRule }
+                        : { kind: 'rule_or_auto', rule: remedyRule, noRule };
               const cause: PermissionDenialCause =
                 effectiveMode === 'dontAsk'
                   ? { kind: 'dont_ask', askRule }
@@ -2988,10 +2996,10 @@ export async function runAgentLoop(
             if (permission === 'always' && !persistentBackgroundShell) {
               log.debug('permission always', { tool: canonName });
               // No rule, no write: a call with no primary argument has nothing to scope
-              // one to, and a bare `Bash` rule allows every shell command afterwards. The
-              // answer still stands for this one call.
-              const rule =
-                chosenRule ?? permissionRuleForToolCall(call, process.platform, scanShell);
+              // one to, and a bare `Bash` rule allows every shell command afterwards; a Bash
+              // command holding `*` has no rule either (#521). The answer still stands for this
+              // one call.
+              const rule = chosenRule ?? ownRule;
               if (!rule) {
                 log.debug('permission always with no rule to save', { tool: canonName });
               } else {

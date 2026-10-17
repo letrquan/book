@@ -94,6 +94,32 @@ describe('globToRegex', () => {
     expect(globToRegex('*.ts').test('a.ts')).toBe(true);
     expect(globToRegex('*.ts').test('a.ts.bak')).toBe(false);
   });
+
+  // `?` used to reach `new RegExp` unescaped, as a quantifier: `a?` matched `` and `a`, not `ab`.
+  it('reads ? as exactly one character, glob style (#522)', () => {
+    const one = globToRegex('a?');
+    expect(one.test('ab')).toBe(true);
+    expect(one.test('a?')).toBe(true);
+    expect(one.test('a')).toBe(false);
+    expect(one.test('abc')).toBe(false);
+    expect(one.test('')).toBe(false);
+  });
+
+  it('reads ? beside * as one more character', () => {
+    expect(globToRegex('a?*').test('ab')).toBe(true);
+    expect(globToRegex('a?*').test('abcd')).toBe(true);
+    expect(globToRegex('a?*').test('a')).toBe(false);
+    expect(globToRegex('*?').test('x')).toBe(true);
+    expect(globToRegex('*?').test('')).toBe(false);
+    expect(globToRegex('a*?b').test('ab')).toBe(false);
+    expect(globToRegex('a*?b').test('axb')).toBe(true);
+  });
+
+  it('still escapes a literal . and +', () => {
+    expect(globToRegex('a.+b').test('a.+b')).toBe(true);
+    expect(globToRegex('a.+b').test('axxb')).toBe(false);
+    expect(globToRegex('a.+b').test('a..b')).toBe(false);
+  });
 });
 
 describe('globWalkScopes', () => {

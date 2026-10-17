@@ -16,7 +16,6 @@ import {
   type MutationPreviewFile,
 } from '../../tools/mutation-preview.js';
 import { permissionRuleForToolCall, permissionRuleLadder } from '../../permissions.js';
-import type { ScanShell } from '../../tools/shell-chaining.js';
 import type { PermissionDecision, PermissionResult, ToolCall } from '../../types/tools.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
@@ -26,8 +25,6 @@ import { displayWidth, hardWrapLine, truncateDisplay } from './word-wrap.js';
 
 const uiLog = createUiDebugLogger('tui:permbtn');
 const PERMISSION_PATTERN_DISPLAY_MAX_LENGTH = 40;
-/** What the "Always allow" row offers when the call has nothing to scope a rule to. */
-const NO_RULE_TO_SAVE = 'this call only — no rule to save';
 
 /**
  * Rows the payload (a wrapped command, or a diff) may take before the card
@@ -62,11 +59,6 @@ interface PermissionButtonsProps {
    */
   workspaceRoot?: string;
   /**
-   * The session shell, which decides whether a Bash command is compound and so whether "Always
-   * allow" has a rule to offer; the loop reads it the same way (`toolContext.shell`).
-   */
-  shell?: ScanShell;
-  /**
    * Called when the card's height may have changed: when it opens, when the
    * diff preview arrives, when `D` opens or closes a cut payload, and when it
    * closes. The transcript above measures its viewport only on its own layout
@@ -88,6 +80,9 @@ const BUTTONS: ButtonDef[] = [
   { label: 'Skip', value: 'deny', key: 's' },
   { label: 'Always allow', value: 'always', key: 'a' },
 ];
+
+/** The choices for a call with no rule to save. */
+const BUTTONS_WITHOUT_ALWAYS: ButtonDef[] = BUTTONS.filter((button) => button.value !== 'always');
 
 export function toolRiskLevel(toolCall: ToolCall): 'safe' | 'network' | 'write' | 'shell' {
   const name = canonicalToolName(toolCall.name);
@@ -224,7 +219,6 @@ export function PermissionButtons({
   terminalWidth = 80,
   terminalRows = 24,
   workspaceRoot,
-  shell,
   onLayoutChange,
 }: PermissionButtonsProps) {
   const theme = useTheme();
@@ -244,19 +238,17 @@ export function PermissionButtons({
   // the exact rule matches that byte sequence and nothing else, so offering
   // only that made the button a no-op for the case it exists to serve; the user
   // steps the scope with `A` and always sees the pattern before Enter writes it.
-  const ladder = useMemo(
-    () => permissionRuleLadder(toolCall, process.platform, shell),
-    [toolCall, shell],
-  );
+  const ladder = useMemo(() => permissionRuleLadder(toolCall), [toolCall]);
   const ladderRef = useRef(ladder);
   ladderRef.current = ladder;
+  // No ladder means no rule to write — a call with no primary argument, a Bash command holding
+  // `*` (#521) — so the card offers no "Always allow" at all: only run once and skip. The list
+  // is fixed for the card's life: the host keys each card by its call, and the ladder is
+  // memoised on it.
+  const buttons = ladder.length > 0 ? BUTTONS : BUTTONS_WITHOUT_ALWAYS;
   const [scopeIndex, setScopeIndex, currentScope] = useKeyState(0);
-  // No ladder means no rule to write, so the row says so rather than naming one. The
-  // answer is still `always`: the loop applies it to this call and persists nothing.
   const alwaysPattern = ladder[scopeIndex] ?? ladder[0];
-  const alwaysPatternDisplay = alwaysPattern
-    ? permissionPatternForDisplay(alwaysPattern)
-    : NO_RULE_TO_SAVE;
+  const alwaysPatternDisplay = alwaysPattern ? permissionPatternForDisplay(alwaysPattern) : '';
   const scopeHint = scopeCaption(ladder, scopeIndex);
   const [expanded, setExpanded] = useState(false);
 
@@ -434,20 +426,20 @@ export function PermissionButtons({
     (input, key) => {
       if (key.leftArrow || key.upArrow) {
         const prev = selected;
-        moveSelection((s) => (s - 1 + BUTTONS.length) % BUTTONS.length);
+        moveSelection((s) => (s - 1 + buttons.length) % buttons.length);
         uiLog.event('input:Left', { tool: canonical, selected: `${prev}->?` });
         return;
       }
       if (key.rightArrow || key.downArrow) {
         const prev = selected;
-        moveSelection((s) => (s + 1) % BUTTONS.length);
+        moveSelection((s) => (s + 1) % buttons.length);
         uiLog.event('input:Right', { tool: canonical, selected: `${prev}->?` });
         return;
       }
       if (key.tab) {
         const prev = selected;
         moveSelection((s) =>
-          key.shift ? (s - 1 + BUTTONS.length) % BUTTONS.length : (s + 1) % BUTTONS.length,
+          key.shift ? (s - 1 + buttons.length) % buttons.length : (s + 1) % buttons.length,
         );
         uiLog.event('input:Tab', { tool: canonical, shift: key.shift, selected: `${prev}->?` });
         return;
@@ -460,9 +452,9 @@ export function PermissionButtons({
         uiLog.event('input:Enter', {
           tool: canonical,
           selected: armed,
-          rule: BUTTONS[armed].value === 'always' ? ladder[currentScope()] : undefined,
+          rule: buttons[armed].value === 'always' ? ladder[currentScope()] : undefined,
         });
-        handleResolve(BUTTONS[armed].value);
+        handleResolve(buttons[armed].value);
         return;
       }
       if (key.escape) {
@@ -501,7 +493,9 @@ export function PermissionButtons({
       // lone `a` used to grant a persistent shell allow with no visible trace.
       // Select it and press Enter.
       if (input === 'a' || input === 'A') {
-        const alwaysIndex = BUTTONS.findIndex((button) => button.value === 'always');
+        const alwaysIndex = buttons.findIndex((button) => button.value === 'always');
+        // No rule to save, so no "Always allow" to arm.
+        if (alwaysIndex === -1) return;
         // First `A` arms the button; each `A` after that widens the scope and
         // wraps back to the exact rule, so the key can explore every option
         // without ever committing one.
@@ -552,8 +546,12 @@ export function PermissionButtons({
           </Text>
         ))}
         <Text>Press: [R] Run once, [S] Skip, [Esc] Deny.</Text>
-        <Text>Always allow: press [A] to select it, then Enter to confirm.</Text>
-        <Text>Rule to be saved: {alwaysPattern ?? '(none — this call only)'}</Text>
+        {alwaysPattern ? (
+          <>
+            <Text>Always allow: press [A] to select it, then Enter to confirm.</Text>
+            <Text>Rule to be saved: {alwaysPattern}</Text>
+          </>
+        ) : null}
         {ladder.length > 1 ? <Text>Press [A] again to widen or narrow that rule.</Text> : null}
       </Box>
     );
@@ -610,7 +608,7 @@ export function PermissionButtons({
       : singlePath !== undefined && !pathOnTitle
         ? wrapPayload(singlePath, contentWidth - 2, COLLAPSED_COMMAND_ROWS).rows
         : [];
-  const choices: Choice[] = BUTTONS.map((button) =>
+  const choices: Choice[] = buttons.map((button) =>
     button.value === 'allow'
       ? { label: risk === 'shell' ? 'Run once' : 'Allow once', detail: 'this call only' }
       : button.value === 'deny'

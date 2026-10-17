@@ -35,8 +35,10 @@ describe('actionable tool errors', () => {
       remedy: { kind: 'ask_rule', rule: 'Read(secrets/**)' },
     });
     expect(error).toContain('permissions.ask rule Read(secrets/**)');
-    expect(error).toContain('--permission-mode auto');
     expect(error).not.toContain('add a permissions.allow rule');
+    // An ask rule prompts in `auto` too (#527), so `auto` is no way through.
+    expect(error).not.toContain('--permission-mode auto');
+    expect(error).toContain('--permission-mode bypassPermissions');
   });
 
   it('offers only what works for skill consent and a persistent background shell', () => {
@@ -169,7 +171,43 @@ describe('a remedy with no rule to name never suggests a bare Bash rule (#512)',
     ]) {
       expect(text).not.toMatch(/"Bash"/);
       expect(text).toContain('no single permissions.allow rule');
-      expect(text).toContain('as its own Bash call');
+      expect(text).toContain('one-line Bash call');
+    }
+  });
+
+  // The clause names why the command has no rule, not always the `*` (review of #531).
+  it.each([
+    ['a line break', { lineBreak: true, wildcard: false }, { star: false, oneLine: true }],
+    ['a *', { lineBreak: false, wildcard: true }, { star: true, oneLine: false }],
+    ['both', { lineBreak: true, wildcard: true }, { star: true, oneLine: true }],
+  ])('names %s as the reason', (_label, noRule, says) => {
+    for (const remedy of [
+      { kind: 'rule_or_auto', noRule },
+      { kind: 'allow_rule_only', noRule },
+    ] as const) {
+      for (const text of [
+        permissionDeniedError('Bash', { kind: 'no_approver', remedy }),
+        unattendedRefusalNotice('Bash', remedy)!,
+      ]) {
+        expect(text).toContain('no single permissions.allow rule');
+        expect(text.includes('`*`'), text).toBe(says.star);
+        expect(text.includes('a rule holds one line'), text).toBe(says.oneLine);
+        expect(text.includes('one-line Bash call'), text).toBe(says.oneLine);
+        expect(text.includes('names its files'), text).toBe(says.star);
+      }
+    }
+  });
+
+  it('says why a non-Bash call with a wildcard has no rule, and names no bare tool rule', () => {
+    const remedy = { kind: 'rule_or_auto', noRule: { lineBreak: false, wildcard: true } } as const;
+    for (const text of [
+      permissionDeniedError('Write', { kind: 'no_approver', remedy }),
+      unattendedRefusalNotice('Write', remedy)!,
+    ]) {
+      expect(text).not.toMatch(/"Write/);
+      expect(text).toContain('`*` or `?`');
+      expect(text).not.toContain('Bash call');
+      expect(text).toContain('--permission-mode auto');
     }
   });
 

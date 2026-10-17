@@ -104,6 +104,44 @@ describe('runScrollbackSession', () => {
     expect(decisions).toEqual(['deny', { result: 'deny', reason: 'no_approver' }]);
   });
 
+  // The Ink card offers no "Always allow" for a call with no rule to save (#521), so this prompt
+  // must not either: an `a` there used to answer `always` for `rm -rf build/*`.
+  it('offers [a]lways only for a call that has a rule to save', async () => {
+    const writes = captureOutput();
+    const decisions: unknown[] = [];
+    const runLoop: NonNullable<ScrollbackOptions['runLoop']> = async (
+      _config,
+      _registry,
+      _prompt,
+      history,
+      callbacks: AgentLoopCallbacks,
+    ): Promise<Message[]> => {
+      for (const [id, command] of [
+        ['t1', 'ls -la'],
+        ['t2', 'rm -rf build/*'],
+        ['t3', 'npm ci\nnpm test'],
+      ]) {
+        decisions.push(await callbacks.onPermissionRequired(toolCall(id, 'Bash', { command })));
+      }
+      return history;
+    };
+
+    await runScrollbackSession(defaultConfig(), {
+      mode: 'default',
+      readPrompt: promptReader(['hello', 'a', 'a', 'always', '/exit']),
+      output: writes.output,
+      runLoop,
+    });
+
+    // `a` is not an answer where it is not offered, so it is no `always` either.
+    expect(decisions).toEqual(['always', 'deny', 'deny']);
+    expect(writes.text().match(/Allow\? [^:]*: /g)).toEqual([
+      'Allow? [y]es/[n]o/[a]lways: ',
+      'Allow? [y]es/[n]o: ',
+      'Allow? [y]es/[n]o: ',
+    ]);
+  });
+
   it('/clear resets accumulated history without calling the agent loop', async () => {
     const writes = captureOutput();
     let calls = 0;

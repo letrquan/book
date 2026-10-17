@@ -340,6 +340,43 @@ describe('evaluatePermission', () => {
     expect(evaluatePermission('Read', { filePath: './subdir/.env' }, s)).toBe('deny');
   });
 
+  // `?` reached `new RegExp` as a quantifier: `deny: ["Bash(rm /tmp/a?)"]` denied `rm /tmp/` and
+  // `rm /tmp/a` but not `rm /tmp/ab`.
+  describe('? in a rule pattern is one character, glob style (#522)', () => {
+    const bash = (command: string, s: ResolvedSettings) =>
+      evaluatePermission('Bash', { command }, s, { platform: 'linux' });
+
+    it.each(['deny', 'ask'] as const)('in a Bash %s rule', (list) => {
+      const s = settings({ [list]: ['Bash(rm /tmp/a?)'] });
+      expect(bash('rm /tmp/ab', s)).toBe(list);
+      // `ask` is also the default, so a non-match is told apart by the rule it names.
+      for (const command of ['rm /tmp/', 'rm /tmp/a', 'rm /tmp/abc']) {
+        const verdict = evaluatePermissionDetail('Bash', { command }, s, { platform: 'linux' });
+        expect(verdict.matchedRule, command).toBeUndefined();
+        expect(verdict.decision, command).not.toBe('deny');
+      }
+    });
+
+    it('in a Bash glob allow rule', () => {
+      const s = settings({ allow: ['Bash(ls a? *)'] });
+      expect(bash('ls ab x', s)).toBe('allow');
+      expect(bash('ls a x', s)).toBe('ask');
+    });
+
+    it('not in an exact Bash allow rule, which compares as plain text', () => {
+      const s = settings({ allow: ['Bash(ls a?)'] });
+      expect(bash('ls a?', s)).toBe('allow');
+      expect(bash('ls ab', s)).toBe('ask');
+    });
+
+    it.each(['deny', 'allow'] as const)('in a Read %s path rule', (list) => {
+      const s = settings({ [list]: ['Read(src/a?.ts)'] });
+      expect(evaluatePermission('Read', { filePath: 'src/ab.ts' }, s)).toBe(list);
+      expect(evaluatePermission('Read', { filePath: 'src/a.ts' }, s)).toBe('ask');
+      expect(evaluatePermission('Read', { filePath: 'src/abc.ts' }, s)).toBe('ask');
+    });
+  });
+
   it('path normalization: ./ prefix stripped so Read(./.env) matches .env', () => {
     const s = settings({ deny: ['Read(./.env)'] });
     expect(evaluatePermission('Read', { filePath: '.env' }, s)).toBe('deny');
@@ -2533,10 +2570,101 @@ describe('exact Bash allow rules (#512, decision 1)', () => {
     }
   });
 
-  it('still remembers a single-line command with a * that is not compound', () => {
-    expect(permissionRuleLadder(bashCall('ls *.ts'))[0]).toBe('Bash(ls *.ts)');
-    expect(permissionRuleMatchesCall('Bash(ls *.ts)', bashCall('ls *.ts'))).toBe(true);
-    expect(permissionRuleForToolCall(bashCall('echo "a && b *"'))).toBe('Bash(echo "a && b *")');
+  it('remembers nothing for a single-line command with a * either (#521)', () => {
+    for (const command of ['ls *.ts', 'echo "a && b *"']) {
+      expect(permissionRuleLadder(bashCall(command)), command).toEqual([]);
+      expect(permissionRuleForToolCall(bashCall(command)), command).toBeUndefined();
+    }
+  });
+});
+
+// The rule "Always allow" wrote for `rm -rf build/*` was a glob, shown as the exact command: its
+// `*` crosses spaces and `/`, so it went on to admit commands the user never saw.
+describe('"Always allow" on a Bash command holding * or ? (#521)', () => {
+  const bashCall = (command: string) => ({ id: 'c', name: 'Bash', arguments: { command } });
+
+  it('offers no rule at all for a command holding *', () => {
+    const call = bashCall('rm -rf build/*');
+    expect(permissionRuleLadder(call)).toEqual([]);
+    expect(permissionRuleForToolCall(call)).toBeUndefined();
+  });
+
+  it('offers nothing that admits a command the card never showed', () => {
+    // What the ladder used to offer, which is what this guards against.
+    expect(permissionRuleMatchesCall('Bash(rm -rf build/*)', bashCall('rm -rf build/ ~/'))).toBe(
+      true,
+    );
+    for (const later of ['rm -rf build/ ~/', 'rm -rf build/../../src']) {
+      for (const rule of permissionRuleLadder(bashCall('rm -rf build/*'))) {
+        expect(permissionRuleMatchesCall(rule, bashCall(later)), `${rule} vs ${later}`).toBe(false);
+      }
+    }
+  });
+
+  it('offers only the exact rule for a command holding ?, which a wider rung would read as a wildcard', () => {
+    expect(permissionRuleLadder(bashCall('cat foo?.txt bar'))).toEqual(['Bash(cat foo?.txt bar)']);
+    expect(permissionRuleMatchesCall('Bash(cat foo?.txt bar)', bashCall('cat foo?.txt bar'))).toBe(
+      true,
+    );
+    expect(permissionRuleMatchesCall('Bash(cat foo?.txt bar)', bashCall('cat fooX.txt bar'))).toBe(
+      false,
+    );
+  });
+
+  it('still offers an ordinary command its three rungs', () => {
+    expect(permissionRuleLadder(bashCall('npm run check'))).toEqual([
+      'Bash(npm run check)',
+      'Bash(npm run *)',
+      'Bash(npm *)',
+    ]);
+  });
+});
+
+// A rule never carries a `*` or `?` taken from the call's own text: in a rule both are wildcards,
+// so "Always allow" on `docs/what?.md` admitted `docs/whatX.md`, and on `http://*.example.com/x`
+// it saved a WebFetch rule for any http host (review of #531).
+describe('"Always allow" on a non-Bash call whose text holds * or ?', () => {
+  const call = (name: string, args: Record<string, unknown>) => ({
+    id: 'c',
+    name,
+    arguments: args,
+  });
+
+  it.each([
+    ['Write', { filePath: 'docs/what?.md', content: 'x' }],
+    ['Edit', { filePath: 'src/*.ts', oldString: 'a', newString: 'b' }],
+    ['Read', { filePath: 'src/a?.ts' }],
+    ['Glob', { pattern: '**/*.ts' }],
+  ])('offers no rule for %s %j', (name, args) => {
+    expect(permissionRuleForToolCall(call(name, args))).toBeUndefined();
+    expect(permissionRuleLadder(call(name, args))).toEqual([]);
+  });
+
+  it('offers no WebFetch rule for an origin that holds a *', () => {
+    const fetch = call('WebFetch', { url: 'http://*.example.com/x' });
+    expect(permissionRuleForToolCall(fetch)).toBeUndefined();
+    expect(permissionRuleLadder(fetch)).toEqual([]);
+    // What it used to save, and what that admitted.
+    expect(
+      permissionRuleMatchesCall(
+        'WebFetch(http://*.example.com/**)',
+        call('WebFetch', { url: 'http://attacker.test/?q=.example.com/' }),
+      ),
+    ).toBe(true);
+  });
+
+  it('still offers the origin rule when only the path or query holds one', () => {
+    for (const url of ['https://example.com/a?b=1', 'https://example.com/*/x']) {
+      expect(permissionRuleForToolCall(call('WebFetch', { url })), url).toBe(
+        'WebFetch(https://example.com/**)',
+      );
+    }
+  });
+
+  it('still offers a plain path its rule', () => {
+    expect(permissionRuleForToolCall(call('Write', { filePath: 'docs/what.md' }))).toBe(
+      'Write(docs/what.md)',
+    );
   });
 });
 
