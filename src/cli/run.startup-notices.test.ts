@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { shellArgument } from '../trust-command.js';
@@ -131,6 +131,44 @@ describe('runMainAction — withheld-provider notices on the interactive launch 
 
     expect(rendered.props?.startupNotices).toEqual([]);
   });
+
+  // #539. A CLAUDE.md that links out of the workspace is not loaded, and the launch says so.
+  describe.skipIf(process.platform === 'win32')(
+    'an instruction file linked out of the workspace',
+    () => {
+      function workspaceWithLinkedClaudeMd(): string {
+        const workspace = mkdtempSync(join(tmpdir(), 'book-run-notices-link-'));
+        const home = mkdtempSync(join(tmpdir(), 'book-run-notices-home-'));
+        tempDirs.push(workspace, home);
+        stashEnv('BOOK_HOME', home);
+        stashEnv('BOOK_API_KEY', 'test-key');
+        writeFileSync(join(home, 'secret.txt'), 'SECRET');
+        symlinkSync(join(home, 'secret.txt'), join(workspace, 'CLAUDE.md'));
+        return workspace;
+      }
+
+      it('is handed to the TUI and not written to stderr', async () => {
+        const workspace = workspaceWithLinkedClaudeMd();
+        const stderr = captureStderr();
+
+        await runMainAction(interactiveOptions(workspace));
+
+        const notices = rendered.props?.startupNotices as string[] | undefined;
+        expect(notices).toHaveLength(1);
+        expect(notices?.[0]).toContain('Skipped project instructions CLAUDE.md');
+        expect(stderr.join('\n')).not.toContain('Skipped project instructions');
+      });
+
+      it('is printed in the scrollback mode', async () => {
+        const workspace = workspaceWithLinkedClaudeMd();
+        const stderr = captureStderr();
+
+        await runMainAction(interactiveOptions(workspace, { scrollback: true }));
+
+        expect(stderr.join('\n')).toContain('Skipped project instructions CLAUDE.md');
+      });
+    },
+  );
 
   it('still prints them in the scrollback mode, which has no App to show them', async () => {
     const workspace = workspaceWithWithheldProvider();

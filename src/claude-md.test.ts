@@ -1,8 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { discoverProjectInstructions, renderProjectInstructions } from './claude-md.js';
+import {
+  collectSkippedInstructionNotices,
+  discoverProjectInstructions,
+  inspectProjectInstructions,
+  renderProjectInstructions,
+} from './claude-md.js';
 
 let dir: string;
 let home: string;
@@ -247,6 +252,349 @@ describe('discoverProjectInstructions', () => {
     },
   );
 });
+
+// #539. A repository can commit an instruction file as a link to a file outside the workspace
+// (`CLAUDE.md -> ~/.ssh/id_rsa`) and have its contents sent to the provider as prompt text.
+describe.skipIf(process.platform === 'win32')(
+  'instruction files that link out of their directory',
+  () => {
+    const real = (path: string) => realpathSync.native(path);
+    const inspect = (ws: string, homeDir = home) => {
+      const result = inspectProjectInstructions(ws, homeDir);
+      return {
+        sources: result.sources.filter((s) => s.path.startsWith(dir)),
+        skipped: result.skipped,
+      };
+    };
+
+    it('skips CLAUDE.md linked to a file outside the workspace, and says so', () => {
+      const repo = join(dir, 'repo');
+      write(join(dir, 'outside', 'secret.txt'), 'SECRET IN PROMPT');
+      symlinkSync(join('..', 'outside', 'secret.txt'), join(repo, 'CLAUDE.md'));
+
+      const { sources, skipped } = inspect(repo);
+
+      expect(sources).toEqual([]);
+      expect(renderProjectInstructions(discoverProjectInstructions(repo, home))).not.toContain(
+        'SECRET IN PROMPT',
+      );
+      expect(skipped).toEqual([
+        {
+          path: join(repo, 'CLAUDE.md'),
+          target: real(join(dir, 'outside', 'secret.txt')),
+          root: real(repo),
+          reason: 'outside',
+        },
+      ]);
+    });
+
+    it('loads CLAUDE.md linked to AGENTS.md inside the workspace once, skipping nothing', () => {
+      write(join(workspace, 'AGENTS.md'), 'shared rules');
+      symlinkSync('AGENTS.md', join(workspace, 'CLAUDE.md'));
+
+      const { sources, skipped } = inspect(workspace);
+
+      expect(sources.map((s) => s.body)).toEqual(['shared rules']);
+      expect(skipped).toEqual([]);
+    });
+
+    it('skips CLAUDE.local.md linked outside the workspace', () => {
+      write(join(dir, 'outside', 'x.md'), 'outside secret');
+      symlinkSync(join('..', '..', 'outside', 'x.md'), join(workspace, 'CLAUDE.local.md'));
+
+      const { sources, skipped } = inspect(workspace);
+
+      expect(sources).toEqual([]);
+      expect(skipped.map((s) => s.path)).toEqual([join(workspace, 'CLAUDE.local.md')]);
+    });
+
+    it('skips a .claude directory link that leaves the workspace', () => {
+      write(join(dir, 'outside', 'CLAUDE.md'), 'outside secret');
+      symlinkSync(join(dir, 'outside'), join(workspace, '.claude'));
+
+      const { sources, skipped } = inspect(workspace);
+
+      expect(sources).toEqual([]);
+      expect(skipped.map((s) => s.path)).toEqual([join(workspace, '.claude', 'CLAUDE.md')]);
+    });
+
+    it('skips a .claude/rules directory link that leaves the workspace', () => {
+      write(join(dir, 'outside', 'x.md'), 'outside secret');
+      mkdirSync(join(workspace, '.claude'), { recursive: true });
+      symlinkSync(join(dir, 'outside'), join(workspace, '.claude', 'rules'));
+
+      const { sources, skipped } = inspect(workspace);
+
+      expect(sources).toEqual([]);
+      expect(skipped.map((s) => s.path)).toEqual([join(workspace, '.claude', 'rules', 'x.md')]);
+    });
+
+    it('skips a rules file linked outside, and loads one linked inside the workspace', () => {
+      write(join(dir, 'outside', 'x.md'), 'outside secret');
+      write(join(workspace, 'docs', 'x.md'), 'inside rule');
+      mkdirSync(join(workspace, '.claude', 'rules'), { recursive: true });
+      symlinkSync(
+        join(dir, 'outside', 'x.md'),
+        join(workspace, '.claude', 'rules', 'a-outside.md'),
+      );
+      symlinkSync(
+        join('..', '..', 'docs', 'x.md'),
+        join(workspace, '.claude', 'rules', 'b-inside.md'),
+      );
+
+      const { sources, skipped } = inspect(workspace);
+
+      expect(sources.map((s) => [s.body, s.layer])).toEqual([['inside rule', 'rule']]);
+      expect(skipped.map((s) => s.path)).toEqual([
+        join(workspace, '.claude', 'rules', 'a-outside.md'),
+      ]);
+    });
+
+    it.each([
+      ['under the fake home', () => join(home, 'code', 'app')],
+      ['outside the fake home', () => workspace],
+    ])('skips CLAUDE.md linked to the settings file in BOOK_HOME, %s', (_name, pick) => {
+      const ws = pick();
+      mkdirSync(ws, { recursive: true });
+      write(join(home, '.book', 'settings.json'), '{"apiKey":"SECRET"}');
+      symlinkSync(join(home, '.book', 'settings.json'), join(ws, 'CLAUDE.md'));
+
+      const { sources, skipped } = inspect(ws);
+
+      expect(sources).toEqual([]);
+      expect(skipped.map((s) => s.target)).toEqual([real(join(home, '.book', 'settings.json'))]);
+    });
+
+    it.each([
+      ['under the fake home', () => join(home, 'code', 'app')],
+      ['outside the fake home', () => workspace],
+    ])('never checks the user layer, which may link to a dotfiles repo, %s', (_name, pick) => {
+      const ws = pick();
+      mkdirSync(ws, { recursive: true });
+      write(join(dir, 'dotfiles', 'dotfiles.md'), 'dotfile rules');
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      symlinkSync(join(dir, 'dotfiles', 'dotfiles.md'), join(home, '.claude', 'CLAUDE.md'));
+
+      const { sources, skipped } = inspect(ws);
+
+      expect(sources.map((s) => [s.body, s.layer])).toEqual([['dotfile rules', 'user']]);
+      expect(skipped).toEqual([]);
+    });
+
+    it('loads a monorepo package CLAUDE.md linked to the ancestor one once, silently', () => {
+      const pkg = join(dir, 'top', 'repo', 'pkg');
+      mkdirSync(pkg, { recursive: true });
+      write(join(dir, 'top', 'repo', 'CLAUDE.md'), 'repo rules');
+      symlinkSync(join('..', 'CLAUDE.md'), join(pkg, 'CLAUDE.md'));
+
+      const { sources, skipped } = inspect(pkg);
+
+      expect(sources.map((s) => [s.path, s.body])).toEqual([
+        [join(dir, 'top', 'repo', 'CLAUDE.md'), 'repo rules'],
+      ]);
+      expect(skipped).toEqual([]);
+    });
+
+    it('checks an ancestor file against that ancestor directory', () => {
+      const repo = join(dir, 'top', 'repo');
+      mkdirSync(repo, { recursive: true });
+      write(join(dir, 'elsewhere', 'x.md'), 'outside secret');
+      symlinkSync(join(dir, 'elsewhere', 'x.md'), join(dir, 'top', 'CLAUDE.md'));
+
+      const linked = inspect(repo);
+
+      expect(linked.sources).toEqual([]);
+      expect(linked.skipped).toEqual([
+        {
+          path: join(dir, 'top', 'CLAUDE.md'),
+          target: real(join(dir, 'elsewhere', 'x.md')),
+          root: real(join(dir, 'top')),
+          reason: 'outside',
+        },
+      ]);
+
+      rmSync(join(dir, 'top', 'CLAUDE.md'));
+      write(join(dir, 'top', 'CLAUDE.md'), 'regular ancestor rules');
+      expect(inspect(repo).sources.map((s) => s.body)).toEqual(['regular ancestor rules']);
+    });
+
+    it('keeps .claude/CLAUDE.md -> ../AGENTS.md working in an ancestor directory', () => {
+      const repo = join(dir, 'top', 'repo');
+      mkdirSync(repo, { recursive: true });
+      write(join(dir, 'top', 'AGENTS.md'), 'top rules');
+      mkdirSync(join(dir, 'top', '.claude'), { recursive: true });
+      symlinkSync(join('..', 'AGENTS.md'), join(dir, 'top', '.claude', 'CLAUDE.md'));
+
+      const { sources, skipped } = inspect(repo);
+
+      expect(sources.map((s) => s.body)).toEqual(['top rules']);
+      expect(skipped).toEqual([]);
+    });
+
+    it('judges links against the real workspace when the workspace argument is a link', () => {
+      const realRepo = join(dir, 'realrepo');
+      write(join(realRepo, 'AGENTS.md'), 'shared rules');
+      symlinkSync('AGENTS.md', join(realRepo, 'CLAUDE.md'));
+      const linkedRepo = join(dir, 'linkedrepo');
+      symlinkSync(realRepo, linkedRepo);
+
+      const { sources, skipped } = inspect(linkedRepo);
+
+      expect(sources.map((s) => s.body)).toEqual(['shared rules']);
+      expect(skipped).toEqual([]);
+    });
+
+    it('does not treat a sibling directory sharing the name prefix as inside', () => {
+      const repo = join(dir, 'x', 'repo');
+      mkdirSync(repo, { recursive: true });
+      write(join(dir, 'x', 'repo2', 'CLAUDE.md'), 'sibling secret');
+      symlinkSync(join('..', 'repo2', 'CLAUDE.md'), join(repo, 'CLAUDE.md'));
+
+      const { sources, skipped } = inspect(repo);
+
+      expect(sources).toEqual([]);
+      expect(skipped).toHaveLength(1);
+    });
+
+    describe('a link to a file that is not Markdown', () => {
+      it('skips CLAUDE.md linked to the local settings file, and never renders its key', () => {
+        write(join(workspace, '.book', 'settings.local.json'), '{"apiKey":"sk-SECRET-KEY"}');
+        symlinkSync(join('.book', 'settings.local.json'), join(workspace, 'CLAUDE.md'));
+
+        const { sources, skipped } = inspect(workspace);
+
+        expect(sources).toEqual([]);
+        expect(skipped).toEqual([
+          {
+            path: join(workspace, 'CLAUDE.md'),
+            target: real(join(workspace, '.book', 'settings.local.json')),
+            root: real(workspace),
+            reason: 'not-markdown',
+          },
+        ]);
+        expect(
+          renderProjectInstructions(discoverProjectInstructions(workspace, home)),
+        ).not.toContain('sk-SECRET-KEY');
+      });
+
+      it.each([
+        ['.env', 'TOKEN=abc'],
+        [join('.git', 'config'), '[remote "origin"]\n\turl = https://tok@example.com/x.git'],
+      ])('skips CLAUDE.md linked to %s', (target, body) => {
+        write(join(workspace, target), body);
+        symlinkSync(target, join(workspace, 'CLAUDE.md'));
+
+        const { sources, skipped } = inspect(workspace);
+
+        expect(sources).toEqual([]);
+        expect(skipped.map((s) => s.reason)).toEqual(['not-markdown']);
+      });
+
+      it('skips a rules file linked to the local settings file', () => {
+        write(join(workspace, '.book', 'settings.local.json'), '{"apiKey":"sk-SECRET-KEY"}');
+        mkdirSync(join(workspace, '.claude', 'rules'), { recursive: true });
+        symlinkSync(
+          join('..', '..', '.book', 'settings.local.json'),
+          join(workspace, '.claude', 'rules', 'x.md'),
+        );
+
+        const { sources, skipped } = inspect(workspace);
+
+        expect(sources).toEqual([]);
+        expect(skipped.map((s) => [s.path, s.reason])).toEqual([
+          [join(workspace, '.claude', 'rules', 'x.md'), 'not-markdown'],
+        ]);
+      });
+
+      it('loads CLAUDE.md linked to a Markdown file whatever the case of its extension', () => {
+        write(join(workspace, 'docs', 'GUIDE.MD'), 'guide rules');
+        symlinkSync(join('docs', 'GUIDE.MD'), join(workspace, 'CLAUDE.md'));
+
+        const { sources, skipped } = inspect(workspace);
+
+        expect(sources.map((s) => s.body)).toEqual(['guide rules']);
+        expect(skipped).toEqual([]);
+      });
+
+      it('words the notice for a target that is not Markdown', () => {
+        write(join(workspace, '.env'), 'TOKEN=abc');
+        symlinkSync('.env', join(workspace, 'CLAUDE.md'));
+
+        const notices = collectSkippedInstructionNotices(workspace, home).filter((n) =>
+          n.includes(dir),
+        );
+
+        expect(notices).toEqual([
+          `⚠  Skipped project instructions CLAUDE.md: it links to ${real(
+            join(workspace, '.env'),
+          )}, which is not a Markdown (.md) file.`,
+        ]);
+      });
+    });
+
+    it('keeps an ancestor CLAUDE.md that a skipped CLAUDE.local.md links to', () => {
+      const repo = join(dir, 'top', 'repo');
+      mkdirSync(repo, { recursive: true });
+      write(join(dir, 'top', 'CLAUDE.md'), 'top rules');
+      symlinkSync(join('..', 'CLAUDE.md'), join(repo, 'CLAUDE.local.md'));
+
+      const { sources, skipped } = inspect(repo);
+
+      expect(sources.map((s) => [s.path, s.body, s.layer])).toEqual([
+        [join(dir, 'top', 'CLAUDE.md'), 'top rules', 'project'],
+      ]);
+      // The link points at a file that is already loaded, so it is met again without a check or a
+      // warning, like a monorepo `pkg/CLAUDE.md -> ../CLAUDE.md`; nothing outside is read.
+      expect(skipped).toEqual([]);
+    });
+
+    it('does not warn about an empty user file linked outside home, met again by the walk', () => {
+      const nested = join(home, 'code', 'app');
+      mkdirSync(nested, { recursive: true });
+      write(join(dir, 'elsewhere', 'empty.md'), '');
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      symlinkSync(join(dir, 'elsewhere', 'empty.md'), join(home, '.claude', 'CLAUDE.md'));
+
+      const { sources, skipped } = inspect(nested);
+
+      expect(sources).toEqual([]);
+      expect(skipped).toEqual([]);
+      expect(collectSkippedInstructionNotices(nested, home).filter((n) => n.includes(dir))).toEqual(
+        [],
+      );
+    });
+
+    it('ignores a dangling link without a source, a skip entry or an error', () => {
+      symlinkSync(join(dir, 'does-not-exist.md'), join(workspace, 'CLAUDE.md'));
+
+      expect(inspect(workspace)).toEqual({ sources: [], skipped: [] });
+    });
+
+    it('formats one notice per skipped file, naming the link and its target', () => {
+      write(join(dir, 'outside', 'secret.txt'), 'SECRET IN PROMPT');
+      symlinkSync(join(dir, 'outside', 'secret.txt'), join(workspace, 'CLAUDE.md'));
+      symlinkSync(join(dir, 'outside', 'secret.txt'), join(workspace, 'AGENTS.md'));
+      write(join(dir, 'elsewhere', 'x.md'), 'more');
+      symlinkSync(join(dir, 'elsewhere', 'x.md'), join(dir, 'repo', 'CLAUDE.md'));
+
+      const notices = collectSkippedInstructionNotices(workspace, home).filter((n) =>
+        n.includes(dir),
+      );
+
+      expect(notices).toEqual([
+        `⚠  Skipped project instructions ${join(dir, 'repo', 'CLAUDE.md')}: it links to ${real(
+          join(dir, 'elsewhere', 'x.md'),
+        )}, outside ${real(join(dir, 'repo'))}.`,
+        `⚠  Skipped project instructions AGENTS.md: it links to ${real(
+          join(dir, 'outside', 'secret.txt'),
+        )}, outside ${real(workspace)}.`,
+        `⚠  Skipped project instructions CLAUDE.md: it links to ${real(
+          join(dir, 'outside', 'secret.txt'),
+        )}, outside ${real(workspace)}.`,
+      ]);
+    });
+  },
+);
 
 describe('renderProjectInstructions', () => {
   it('fences every source with its path and scope', () => {
