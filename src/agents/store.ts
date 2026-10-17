@@ -10,11 +10,12 @@ import {
   writeFileSync,
   type Dirent,
 } from 'node:fs';
-import { access, mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import { hostname as readHostname } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { createDebugLogger } from '../debug-log.js';
 import { resolveBookHome } from '../book-home.js';
+import { pathExists } from '../fs-utils.js';
 import { deriveAgentDisplayName } from './naming.js';
 import { beginTerminalGeneration } from './completion-notification.js';
 import { inSpawnerRun, migrateSpawnerClaim } from './spawner-claim.js';
@@ -166,16 +167,6 @@ function writeFailure(
     attempts: 1,
     elapsedMs: 0,
   };
-}
-
-/** `existsSync`, on the thread pool. */
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function withoutStoreMetadata(record: PersistedAgentRecord): AgentRecord {
@@ -331,17 +322,23 @@ export class AgentStore {
   }
 
   /**
-   * Open the store for `repoHash` under `root`: create its directories, recover the temp files a
-   * crashed write left behind, load what is persisted, make the writes loading found it needed, and
-   * take this instance's lease, then start the heartbeat.
+   * Open the store for `repoHash` under `root`: create its directories, take this instance's lease
+   * and start the heartbeat, then recover the temp files a crashed write left behind, load what is
+   * persisted, and make the writes loading found it needed.
    *
    * All of that is on the thread pool. It is the first thing the TUI does after its first frame, and
    * done synchronously on a slow disk its `open`s and `fsync`s held the event loop for hundreds of
    * milliseconds: keys typed in that window arrived in one read and were taken for a paste (#516).
    *
+   * The lease comes before the first read, because on the thread pool the reads no longer run in
+   * one piece: a disposed manager's {@link recordLateApplication} can land between them. It
+   * writes only when no other instance holds a live lease, so with the lease already on disk it
+   * stands down; taken after loading, it found none, wrote a record this store had already read,
+   * and this store's next save of that stale copy undid it.
+   *
    * The promise resolves only once the lease is on disk, so no caller ever holds a store without one
-   * (#357). A store whose directories cannot be created is not an error: it resolves disabled, and
-   * runs in memory only.
+   * (#357). A store whose directories cannot be created, or whose contents cannot be read, is not an
+   * error: it resolves disabled, and runs in memory only.
    */
   static async open(
     repoHash: string,
@@ -362,18 +359,55 @@ export class AgentStore {
       this.enabled = false;
       return;
     }
+    await this.takeLease();
+    // Armed now rather than once loading is done: a slow disk can take longer to load than the
+    // lease stays fresh, and the lease is what keeps a late write away while it does.
+    this.scheduleHeartbeat();
     this.opening = true;
     try {
       await this.recoverTemps();
       await this.load();
+    } catch (error) {
+      // A file that vanishes or cannot be read is skipped where it is read; what lands here is a
+      // directory that could not be listed. The store is then one that cannot be read, so it runs
+      // in memory like one whose directories could not be created, rather than leaving its caller
+      // with an `open()` that rejected and a manager that can never initialize.
+      this.disableAfterFailedLoad(error);
+      return;
     } finally {
       this.opening = false;
     }
     for (const target of Array.from(this.pendingWrites.keys())) {
       await this.flushPendingAsync(target);
     }
-    await this.takeLease();
-    this.scheduleHeartbeat();
+  }
+
+  /**
+   * Turn an opening store whose contents could not be read into a disabled one: nothing of what it
+   * read is kept, nothing it queued is written, and the lease it took is removed with its heartbeat,
+   * since a disabled store writes nothing that a lease would speak for.
+   */
+  private disableAfterFailedLoad(error: unknown): void {
+    this.safeLog('store load failed', { code: errorCode(error) });
+    this.enabled = false;
+    if (this.heartbeatTimer) this.cancel(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
+    this.pendingWrites.clear();
+    this.agents.clear();
+    this.agentOwners.clear();
+    this.summaryAgentIds.clear();
+    this.plans.clear();
+    this.evidence.clear();
+    this.snapshots.clear();
+    this.removeLease();
+    // As in `dispose()`: a heartbeat still running would put the lease back with its rename.
+    const inFlight = this.leaseWrite;
+    if (inFlight) {
+      void inFlight.then(
+        () => this.removeLease(),
+        () => this.removeLease(),
+      );
+    }
   }
 
   private async ensureDirectories(): Promise<void> {
@@ -471,8 +505,11 @@ export class AgentStore {
    */
   private async load(): Promise<void> {
     let legacy: LegacyStoreState | undefined;
+    // Whether the manifest is still on disk once read: one that could not be parsed was quarantined.
+    let manifestPresent = false;
     if (await pathExists(this.statePath)) {
       const parsed = await this.readJsonAsync<LegacyStoreState>(this.statePath);
+      manifestPresent = parsed !== undefined;
       if (parsed?.version !== 3) legacy = parsed;
     }
 
@@ -535,7 +572,7 @@ export class AgentStore {
       for (const snapshot of legacy.snapshots ?? [])
         if (!this.snapshots.has(snapshot.id)) this.snapshots.set(snapshot.id, snapshot);
       this.flushAll();
-    } else if (!(await pathExists(this.statePath))) {
+    } else if (!manifestPresent) {
       this.queueWrite(this.statePath, MANIFEST, { targetType: 'manifest', immediate: true });
     }
   }
@@ -930,6 +967,11 @@ export class AgentStore {
    * here (the record is its to write now), when the record on disk is newer than `seenUpdatedAt`,
    * the `updatedAt` of the copy the disposed manager last had (someone wrote it since), or when
    * the record is not on disk.
+   *
+   * That is decided twice: once before the write, and again immediately before each rename, which
+   * is the step that changes the file. Between the two are a lock, a temp file and its fsync, and a
+   * save by the next manager or another process can land in that window (its writer reclaims the
+   * lock of a store that is gone); the copy read before it would otherwise be renamed over it.
    */
   async recordLateApplication(
     agentId: string,
@@ -937,12 +979,12 @@ export class AgentStore {
     seenUpdatedAt: number,
   ): Promise<'recorded' | 'skipped' | 'failed'> {
     if (!this.enabled) return 'skipped';
+    const path = this.agentPath(agentId);
     try {
       if (await this.anotherInstanceIsLive()) {
         this.safeLog('late application skipped', { reason: 'live_instance' });
         return 'skipped';
       }
-      const path = this.agentPath(agentId);
       const persisted = await this.readJsonAsync<PersistedAgentRecord>(path, false);
       if (!persisted?.id || !this.targetMatchesId(path, persisted)) {
         this.safeLog('late application skipped', { reason: 'missing' });
@@ -958,16 +1000,81 @@ export class AgentStore {
         updatedAt: this.now(),
         _store: this.ownerMetadata(),
       };
-      const result = await this.writer.writeAsync(path, detailed);
-      if (result.status !== 'ok') return 'failed';
-      const summary = await this.writer.writeAsync(this.agentSummaryPath(agentId), {
-        ...detailed,
-        transcript: [],
+      // Why the write was withdrawn at its rename, for the log line.
+      let withdrawn: string | undefined;
+      const unlessConflict = (newestAllowed: number) => () => {
+        withdrawn = this.lateWriteConflict(path, newestAllowed);
+        return withdrawn === undefined;
+      };
+      const record = await this.writer.writeAsync(path, detailed, {
+        canCommit: unlessConflict(seenUpdatedAt),
       });
-      return summary.status === 'ok' ? 'recorded' : 'failed';
-    } catch {
+      const notRecorded = this.lateWriteSetback('record', record, withdrawn);
+      if (notRecorded) return notRecorded;
+      // By now the record on disk is the one just written, unless something has replaced it.
+      const summary = await this.writer.writeAsync(
+        this.agentSummaryPath(agentId),
+        { ...detailed, transcript: [] },
+        { canCommit: unlessConflict(detailed.updatedAt) },
+      );
+      return this.lateWriteSetback('summary', summary, withdrawn) ?? 'recorded';
+    } catch (error) {
+      this.safeLog('late application failed', { code: errorCode(error) });
       return 'failed';
     }
+  }
+
+  /**
+   * What one write of {@link recordLateApplication} not landing makes of it, logged without any of
+   * the record's content; `undefined` when the write landed.
+   */
+  private lateWriteSetback(
+    target: 'record' | 'summary',
+    result: AtomicWriteResult,
+    withdrawn: string | undefined,
+  ): 'skipped' | 'failed' | undefined {
+    if (result.status === 'ok') return undefined;
+    if (result.status === 'cancelled') {
+      this.safeLog('late application skipped', { reason: withdrawn, target });
+      return 'skipped';
+    }
+    this.safeLog('late application failed', {
+      target,
+      status: result.status,
+      operation: result.operation,
+      code: result.status === 'unavailable' ? result.errorCode : undefined,
+    });
+    // A temp left behind would be promoted by the next open, past every check made here.
+    this.discardFailedRequiredWrite(result);
+    return 'failed';
+  }
+
+  /**
+   * Why a late write to the record at `path` must not land now, or `undefined` if it may: the skip
+   * rule of {@link recordLateApplication}, with `newestAllowed` the `updatedAt` the record on disk
+   * may have. Synchronous, because it is asked as the `canCommit` of a write, and an answer that
+   * waited for the thread pool would be one the rename no longer immediately follows. It is a
+   * directory listing and a few small reads, once per late apply.
+   */
+  private lateWriteConflict(path: string, newestAllowed: number): string | undefined {
+    try {
+      const leases = readdirSync(this.instancesDirectory, { withFileTypes: true });
+      for (const entry of leases) {
+        if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+        const lease = this.readJson<InstanceLease>(
+          join(this.instancesDirectory, entry.name),
+          false,
+        );
+        if (this.isLiveForeignLease(lease)) return 'live_instance';
+      }
+    } catch {
+      // A lease directory that cannot be listed is not one that can be said to be free.
+      return 'unreadable';
+    }
+    const persisted = this.readJson<PersistedAgentRecord>(path, false);
+    if (!persisted?.id || !this.targetMatchesId(path, persisted)) return 'missing';
+    if ((persisted.updatedAt ?? 0) > newestAllowed) return 'newer_on_disk';
+    return undefined;
   }
 
   /** Whether an instance other than this one holds a live lease in `instances/`. */
@@ -978,10 +1085,15 @@ export class AgentStore {
         join(this.instancesDirectory, entry.name),
         false,
       );
-      if (!lease?.instanceId || lease.instanceId === this.instanceId) continue;
-      if (this.aliveByLease(lease, lease.pid, lease.hostname)) return true;
+      if (this.isLiveForeignLease(lease)) return true;
     }
     return false;
+  }
+
+  /** Whether `lease`, as read from `instances/`, is another instance's, and live. */
+  private isLiveForeignLease(lease: InstanceLease | undefined): boolean {
+    if (!lease?.instanceId || lease.instanceId === this.instanceId) return false;
+    return this.aliveByLease(lease, lease.pid, lease.hostname);
   }
 
   removeAgent(agentId: string): void {
@@ -1253,7 +1365,8 @@ export class AgentStore {
   }
 
   /**
-   * Take the lease for this instance, before anything else reads it.
+   * Take the lease for this instance, before this store reads anything and before anything else
+   * reads it.
    *
    * {@link open} waits for this write before it resolves, and that order is the guarantee: a store
    * that has just been opened is asked whether its own instance is alive, and answered from this
@@ -1308,7 +1421,8 @@ export class AgentStore {
     if (this.leaseWrite) return;
     const write = this.writer
       .writeAsync(this.leasePath, this.leaseDocument(), {
-        canCommit: () => !this.disposed,
+        // A store that opened disabled has removed its lease too; see `disableAfterFailedLoad`.
+        canCommit: () => this.enabled && !this.disposed,
       })
       .then((result) => {
         // A write withdrawn by `dispose()` is the expected outcome of a heartbeat that was already
@@ -1409,6 +1523,11 @@ export class AgentStore {
       `${normalizedTarget}${process.platform === 'win32' ? '\\' : '/'}`.startsWith(root) ||
       normalizedTarget.startsWith(root);
     if (!inStore) return undefined;
+    // This store's own temps are its writes in flight: the lease it took before recovering, and the
+    // heartbeats that keep it. One read half-written would be quarantined from under its writer.
+    if (modern?.[3] === this.instanceId) return undefined;
+    // A temp that has vanished since it was listed reads as `undefined` here, and its quarantine
+    // finds nothing to move.
     const value = await this.readJsonAsync<unknown>(path, false);
     if (
       value === undefined ||
@@ -1419,12 +1538,21 @@ export class AgentStore {
       await this.quarantineAsync(path);
       return undefined;
     }
+    let mtimeMs: number;
+    try {
+      mtimeMs = (await stat(path)).mtimeMs;
+    } catch {
+      // Renamed away since it was read, as every live Book's heartbeat does with its own temp in
+      // `instances/` every few seconds, or no longer readable: not one this open can recover, and
+      // a later one retries whatever is still there.
+      return undefined;
+    }
     return {
       path,
       target,
       value,
       revision: logicalRevision(value, targetTypeFor(target)),
-      mtimeMs: (await stat(path)).mtimeMs,
+      mtimeMs,
       ownerInstanceId: modern?.[3],
     };
   }

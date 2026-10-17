@@ -42,9 +42,46 @@ vi.mock('../debug-log.js', async (importOriginal) => {
   };
 });
 
+/**
+ * Hooks into the store's own `readdir` and `stat`, run before the real call: a test that needs one
+ * of them held open, failed, or racing a rename sets the hook, and it is cleared after every test.
+ */
+const { fsHooks } = vi.hoisted(() => ({
+  fsHooks: {} as {
+    readdir?: (path: string) => Promise<void> | void;
+    stat?: (path: string) => Promise<void> | void;
+  },
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    readdir: async (...args: unknown[]) => {
+      await fsHooks.readdir?.(String(args[0]));
+      return (actual.readdir as (...forwarded: unknown[]) => Promise<unknown>)(...args);
+    },
+    stat: async (...args: unknown[]) => {
+      await fsHooks.stat?.(String(args[0]));
+      return (actual.stat as (...forwarded: unknown[]) => Promise<unknown>)(...args);
+    },
+  };
+});
+
+/** A promise and the function that settles it, for holding one filesystem call open. */
+function gate(): { promise: Promise<void>; release: () => void } {
+  let release = (): void => {};
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
 afterEach(() => {
   vi.useRealTimers();
   debugEvents.length = 0;
+  fsHooks.readdir = undefined;
+  fsHooks.stat = undefined;
   if (root) rmSync(root, { recursive: true, force: true });
   root = '';
 });
@@ -1267,15 +1304,6 @@ describe('AgentStore.open (#516)', () => {
   const leasePath = (directory: string) =>
     join(directory, 'repo', 'instances', `${instanceId}.json`);
 
-  /** A promise and the function that settles it, for holding one filesystem call open. */
-  function gate(): { promise: Promise<void>; release: () => void } {
-    let release = (): void => {};
-    const promise = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    return { promise, release };
-  }
-
   it('resolves only once the lease is on disk, with a store that persists and reloads', async () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const reached = gate();
@@ -1299,8 +1327,7 @@ describe('AgentStore.open (#516)', () => {
       return store;
     });
 
-    // The lease is the last step of opening, and it is held: the store is ready in every other
-    // respect, and it is still not handed out.
+    // The lease is the first step of opening, and it is held: nothing is handed out without it.
     await reached.promise;
     await new Promise((resolve) => setImmediate(resolve));
     expect(settled).toBe(false);
@@ -1401,5 +1428,182 @@ describe('AgentStore.open (#516)', () => {
     expect(store.listAgents()).toEqual([expect.objectContaining({ id: 'in-memory' })]);
     expect(readdirSync(root)).toEqual(['not-a-directory']);
     store.dispose();
+  });
+
+  it('holds its lease while it loads, so a late write that arrives then stands down', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const recordPath = join(root, 'repo', 'records', 'late.json');
+    // Each store takes the other's process for dead, so only a lease says an instance is live.
+    const disposed = await AgentStore.open('repo', root, true, {
+      instanceId: '66666666-6666-4666-8666-666666666666',
+      pid: 111,
+      processAlive: () => false,
+    });
+    const record = recordFixture('late');
+    disposed.saveAgent(record);
+    disposed.dispose();
+    const before = readFileSync(recordPath, 'utf8');
+
+    // Held at the second listing of `summaries/`: recovery lists it first, loading second.
+    const summaries = join(root, 'repo', 'summaries');
+    const reached = gate();
+    const held = gate();
+    let listings = 0;
+    fsHooks.readdir = async (path) => {
+      if (path !== summaries || ++listings !== 2) return;
+      reached.release();
+      await held.promise;
+    };
+    const opening = AgentStore.open('repo', root, true, {
+      instanceId,
+      pid: 222,
+      processAlive: () => false,
+    });
+    await reached.promise;
+    expect(existsSync(leasePath(root))).toBe(true);
+
+    // What a manager disposed with an apply still running writes when the pick lands.
+    await expect(disposed.recordLateApplication('late', 'applied', record.updatedAt)).resolves.toBe(
+      'skipped',
+    );
+    expect(debugEvents).toContainEqual({
+      event: 'late application skipped',
+      metadata: { reason: 'live_instance' },
+    });
+
+    held.release();
+    const next = await opening;
+    next.dispose();
+    expect(readFileSync(recordPath, 'utf8')).toBe(before);
+  });
+
+  it('skips a temp that is renamed away between its read and its stat', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const records = join(root, 'repo', 'records');
+    mkdirSync(records, { recursive: true });
+    // Named as another instance's write in flight, as a heartbeat temp in `instances/` is.
+    const temp = join(
+      records,
+      'vanishing.json.4321.77777777-7777-4777-8777-777777777777.88888888-8888-4888-8888-888888888888.tmp',
+    );
+    writeFileSync(temp, JSON.stringify(recordFixture('vanishing')));
+    // Its writer renames it away once it has been read and before it is stat'ed.
+    fsHooks.stat = (path) => {
+      if (path === temp) rmSync(path, { force: true });
+    };
+
+    const store = await AgentStore.open('repo', root, true, { instanceId });
+
+    // Opened, and not disabled: what it saves reaches the disk.
+    store.saveAgent(recordFixture('after-open'));
+    expect(existsSync(join(records, 'after-open.json'))).toBe(true);
+    store.dispose();
+  });
+
+  it('resolves a disabled store, without its lease, when a directory cannot be listed', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const records = join(root, 'repo', 'records');
+    fsHooks.readdir = (path) => {
+      if (path === records) throw Object.assign(new Error('i/o error'), { code: 'EIO' });
+    };
+
+    const store = await AgentStore.open('repo', root, true, { instanceId });
+
+    expect(existsSync(leasePath(root))).toBe(false);
+    expect(store.saveAgent(recordFixture('in-memory')).status).toBe('ok');
+    expect(store.listAgents()).toEqual([expect.objectContaining({ id: 'in-memory' })]);
+    expect(existsSync(join(records, 'in-memory.json'))).toBe(false);
+    expect(debugEvents).toContainEqual({ event: 'store load failed', metadata: { code: 'EIO' } });
+    store.dispose();
+  });
+});
+
+describe('AgentStore.recordLateApplication (#518)', () => {
+  it('does not rename over a save that landed while it was held before its rename', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const records = join(root, 'repo', 'records');
+    const recordPath = join(records, 'late.json');
+    const reached = gate();
+    const held = gate();
+    let hold = false;
+    const disposed = await AgentStore.open('repo', root, true, {
+      instanceId: '99999999-9999-4999-8999-999999999999',
+      pid: 111,
+      processAlive: () => false,
+      writerOptions: {
+        fsAsync: {
+          // Held at its temp file, once it holds the lock: the rename, and the question asked just
+          // before it, come after.
+          open: async (path, flags, mode) => {
+            if (hold && path.startsWith(`${recordPath}.`) && path.endsWith('.tmp')) {
+              hold = false;
+              reached.release();
+              await held.promise;
+            }
+            return openAsync(path, flags, mode);
+          },
+        },
+      },
+    });
+    const record = recordFixture('late');
+    disposed.saveAgent(record);
+    disposed.dispose();
+
+    hold = true;
+    const late = disposed.recordLateApplication('late', 'applied', record.updatedAt);
+    await reached.promise;
+    // Another process saves the record while the late write waits at its rename: past the check
+    // made before the write, as a writer that reclaimed the lock of a store that is gone would.
+    const saved = {
+      ...JSON.parse(readFileSync(recordPath, 'utf8')),
+      status: 'running',
+      updatedAt: 2,
+    };
+    writeFileSync(recordPath, JSON.stringify(saved));
+    held.release();
+
+    await expect(late).resolves.toBe('skipped');
+    expect(JSON.parse(readFileSync(recordPath, 'utf8'))).toEqual(saved);
+    expect(debugEvents).toContainEqual({
+      event: 'late application skipped',
+      metadata: { reason: 'newer_on_disk', target: 'record' },
+    });
+    // The withdrawn write left neither its temp nor its lock behind.
+    expect(readdirSync(records)).toEqual(['late.json']);
+  });
+
+  it('logs a write that fails, without the record in it', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const recordPath = join(root, 'repo', 'records', 'late.json');
+    let fail = false;
+    const disposed = await AgentStore.open('repo', root, true, {
+      instanceId: '99999999-9999-4999-8999-999999999999',
+      pid: 111,
+      processAlive: () => false,
+      writerOptions: {
+        fsAsync: {
+          rename: async (from, to) => {
+            if (fail && to === recordPath) {
+              throw Object.assign(new Error('read-only file system'), { code: 'EROFS' });
+            }
+            await renameAsync(from, to);
+          },
+        },
+      },
+    });
+    const record = recordFixture('late');
+    disposed.saveAgent(record);
+    disposed.dispose();
+
+    fail = true;
+    await expect(disposed.recordLateApplication('late', 'applied', record.updatedAt)).resolves.toBe(
+      'failed',
+    );
+    expect(debugEvents).toContainEqual({
+      event: 'late application failed',
+      metadata: { target: 'record', status: 'unavailable', operation: 'rename', code: 'EROFS' },
+    });
+    // Nor its temp, which the next open would otherwise promote past the checks.
+    expect(readdirSync(join(root, 'repo', 'records'))).toEqual(['late.json']);
   });
 });

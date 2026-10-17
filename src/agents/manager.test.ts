@@ -1122,7 +1122,7 @@ describe('AgentManager lifecycle', () => {
       manager.dispose();
     });
 
-    it('an apply that ends applied after dispose is recorded in memory, but not emitted', async () => {
+    it('an apply that ends applied after dispose returns its result, but is not emitted', async () => {
       // An apply function that ignores the abort and ends on its own afterwards.
       const { manager, patcher, candidate, signals, releases, events } =
         await managerWithPendingApplies({ obeyAbort: false });
@@ -1132,9 +1132,9 @@ describe('AgentManager lifecycle', () => {
       manager.dispose();
       releases[0]!('applied');
 
+      // What records it is the store's write, below; the disposed manager has no reader left.
       await expect(applying).resolves.toMatchObject({ status: 'applied' });
       expect(events.filter((event) => event.type === 'agent_apply')).toEqual([]);
-      expect((await manager.get(patcher.id))?.applicationStatus).toBe('applied');
     });
 
     it('persists an apply that ends applied after dispose, without emitting it', async () => {
@@ -1246,6 +1246,29 @@ describe('AgentManager lifecycle', () => {
         }
       });
 
+      it('AgentStop names the evidence of two applies of it once', async () => {
+        const fixture = await managerWithPendingApplies();
+        const { manager, patcher, candidate, signals } = fixture;
+        try {
+          const applying = [0, 1].map(() =>
+            runTool(fixture, 'AgentApply', { agentId: patcher.id, evidenceId: candidate.id }),
+          );
+          await vi.waitFor(() => expect(signals).toHaveLength(2));
+
+          const result = await runTool(fixture, 'AgentStop', { agentId: patcher.id });
+
+          expect(result.status).toBe('success');
+          expect(result.content).toContain(
+            `Stopped the 2 AgentApply applies of this agent's result that were running ` +
+              `(both of evidence ${candidate.id}); they have ended.`,
+          );
+          expect(result.content).not.toContain(`${candidate.id}, ${candidate.id}`);
+          for (const pending of applying) expect((await pending).status).toBe('error');
+        } finally {
+          manager.dispose();
+        }
+      });
+
       it('keepUserApplies stops only the model-started applies and reports both', async () => {
         const { manager, patcher, candidate, signals, releases } =
           await managerWithPendingApplies();
@@ -1322,7 +1345,8 @@ describe('AgentManager lifecycle', () => {
         return rest;
       }
 
-      async function disposedMidApply() {
+      /** A persisted manager with an apply running that ignores dispose and ends when released. */
+      async function midApply() {
         const fixture = await managerWithPendingApplies({
           obeyAbort: false,
           persist: true,
@@ -1330,8 +1354,13 @@ describe('AgentManager lifecycle', () => {
         });
         const applying = fixture.manager.apply(fixture.patcher.id, fixture.candidate.id);
         await vi.waitFor(() => expect(fixture.signals).toHaveLength(1));
-        fixture.manager.dispose();
         return { ...fixture, applying };
+      }
+
+      async function disposedMidApply() {
+        const fixture = await midApply();
+        fixture.manager.dispose();
+        return fixture;
       }
 
       it('does not overwrite what the next manager wrote to the record since', async () => {
@@ -1404,6 +1433,39 @@ describe('AgentManager lifecycle', () => {
           applicationStatus: 'applied',
           updatedAt: after.updatedAt,
         });
+      });
+
+      it('is recorded against the copy a hydration swapped in, and saved, during the apply', async () => {
+        const fixture = await midApply();
+        const { manager, patcher } = fixture;
+        try {
+          // Another writer's newer copy of the record, gone again before the manager reads it.
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          const other = await AgentStore.open(
+            repositoryHash(fixture.root),
+            fixture.storeRoot,
+            true,
+            { ...UNCONTENDED, ...nextStore },
+          );
+          const copy = other.loadAgent(patcher.id)!;
+          copy.updatedAt = Date.now();
+          other.saveAgent(copy);
+          other.dispose();
+          // Reading it swaps that copy in for the object the apply started with, and this
+          // manager's next save, of a run sent to the agent, is of the copy.
+          await manager.get(patcher.id);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          await manager.send(patcher.id, 'one more change');
+          await manager.wait(patcher.id, 1000);
+        } finally {
+          manager.dispose();
+        }
+
+        fixture.releases[0]!('applied');
+        await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+        // The record on disk is the last one this manager saved, so the status is written.
+        expect(recordOnDisk(fixture, patcher.id)).toMatchObject({ applicationStatus: 'applied' });
       });
 
       it('lands once the next manager has been disposed without touching the record', async () => {

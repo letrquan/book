@@ -24,6 +24,7 @@ import type {
   RewindSnapshotStoreInterface,
 } from '../types/sessions.js';
 import { resolveBookHome } from '../book-home.js';
+import { pathExists as pathExistsAsync } from '../fs-utils.js';
 
 export const REWIND_MAX_ENTRIES = 20_000;
 export const REWIND_MAX_FILE_BYTES = 16 * 1024 * 1024;
@@ -427,15 +428,6 @@ async function writeAtomicAsync(path: string, contents: Buffer | string): Promis
     await rename(temporary, path);
   } finally {
     await rm(temporary, { force: true });
-  }
-}
-
-async function pathExistsAsync(path: string): Promise<boolean> {
-  try {
-    await lstat(path);
-    return true;
-  } catch {
-    return false;
   }
 }
 

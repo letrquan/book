@@ -55,6 +55,7 @@ import {
 import { projectToolResultForDisplay, redactToolCallForDisplay } from './activity.js';
 import { AgentStore, type AgentStoreWriteResult } from './store.js';
 import { permissionRuleForToolCall } from '../permissions.js';
+import { createDebugLogger } from '../debug-log.js';
 import { createRunAmbientSnapshot } from '../session/run-ambient.js';
 import type {
   AgentApplyResult,
@@ -129,6 +130,7 @@ interface PublishEvidenceInput {
   references?: EvidenceReference[];
 }
 
+const log = createDebugLogger('agent-manager');
 const TERMINAL_STATUSES = new Set<AgentStatus>(['completed', 'failed', 'stopped', 'interrupted']);
 const DURABILITY_WARNING =
   'The latest agent state is still waiting for durable storage; Book will retry in the background.';
@@ -1503,11 +1505,19 @@ export class AgentManager {
       // finished after `dispose()` is on the operator's branch, and nothing else records that. No
       // event or telemetry, since the subscribers are gone. Only the status is written, and only
       // if nobody wrote the record after this manager last had it (#518): the session's next
-      // manager may own it now.
-      const seenUpdatedAt = record.updatedAt;
-      record.applicationStatus = result.status;
-      record.updatedAt = Date.now();
-      await this.store?.recordLateApplication(agentId, result.status, seenUpdatedAt);
+      // manager may own it now. The record this manager last had is the one in `agents` now, not
+      // necessarily `record`: a hydration during the apply swaps in a new object, and this manager's
+      // later saves were of that one.
+      const seenUpdatedAt = (this.agents.get(agentId) ?? record).updatedAt;
+      const outcome = await this.store?.recordLateApplication(
+        agentId,
+        result.status,
+        seenUpdatedAt,
+      );
+      if (outcome === 'failed') {
+        // The store logged why; the pick is on the branch, and the record does not say so.
+        log.event('late application not recorded', { status: result.status });
+      }
       return result;
     }
     record.applicationStatus = result.status;

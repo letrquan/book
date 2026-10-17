@@ -271,7 +271,16 @@ async function agentWait(args: Record<string, unknown>, ctx: ToolContext): Promi
 
 /** What a model's stop did with the applies of the agent that were running, said in words. */
 function appliesNote(outcome: AgentStopOutcome): string | undefined {
-  const evidence = (ids: string[]) => `(evidence ${ids.join(', ')})`;
+  // One id per apply, and two applies of one candidate name it twice: each is named once, with the
+  // count of applies saying how they divide where it does not match the ids named.
+  const evidence = (ids: string[]) => {
+    const unique = Array.from(new Set(ids));
+    if (unique.length === ids.length) return `(evidence ${unique.join(', ')})`;
+    if (unique.length === 1) {
+      return `(${ids.length === 2 ? 'both' : `all ${ids.length}`} of evidence ${unique[0]})`;
+    }
+    return `(${ids.length} applies across evidence ${unique.join(', ')})`;
+  };
   const notes: string[] = [];
   const stopped = outcome.stoppedApplies;
   if (stopped.length === 1) {
