@@ -5,11 +5,7 @@ import { join } from 'path';
 import { AgentManager } from '../agents/manager.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { defaultConfig } from '../test/fixtures.js';
-import {
-  enterIsolatedHome,
-  leaveIsolatedHome,
-  type IsolatedHome,
-} from '../test/isolated-book-home.js';
+import { isolateBookHome } from '../test/isolated-book-home.js';
 import { loadConfig } from '../config.js';
 import { agentLifecycleTools } from './agent-tools.js';
 import type { ToolContext } from '../types/tools.js';
@@ -18,16 +14,15 @@ import { createRegistry } from './registry-core.js';
 
 describe('Task tool', () => {
   let root: string;
-  let isolatedHome: IsolatedHome;
+
+  isolateBookHome('book-home-');
 
   beforeEach(() => {
-    isolatedHome = enterIsolatedHome('book-home-');
     root = mkdtempSync(join(tmpdir(), 'book-task-tool-'));
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    leaveIsolatedHome(isolatedHome);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -268,16 +263,15 @@ describe('Task tool', () => {
 
 describe('Task child continued with AgentSend', () => {
   let root: string;
-  let isolatedHome: IsolatedHome;
+
+  isolateBookHome('task-send-home-');
 
   beforeEach(() => {
-    isolatedHome = enterIsolatedHome('task-send-home-');
     root = mkdtempSync(join(tmpdir(), 'task-send-root-'));
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    leaveIsolatedHome(isolatedHome);
     rmSync(root, { recursive: true, force: true });
   });
 

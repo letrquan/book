@@ -10,7 +10,11 @@ import {
 } from './builtins.js';
 import { memoryConsolidateTools } from './builtins-prompts.js';
 import { defaultConfig } from '../test/fixtures.js';
-import { enterIsolatedHome, leaveIsolatedHome } from '../test/isolated-book-home.js';
+import {
+  enterIsolatedHome,
+  leaveIsolatedHome,
+  type IsolatedHome,
+} from '../test/isolated-book-home.js';
 import { loadConfig, resolveAdvisorModelConfig } from '../config.js';
 import {
   persistWorkspaceProviderChoice,
@@ -683,8 +687,11 @@ describe('built-in command contract', () => {
       // every live-setting delegation left the layer alone.
       expect(globalSettings()).toEqual({ maxTurns: 12 });
     } finally {
-      leaveIsolatedHome(isolatedHome);
-      rmSync(workspace, { recursive: true, force: true });
+      try {
+        rmSync(workspace, { recursive: true, force: true });
+      } finally {
+        leaveIsolatedHome(isolatedHome);
+      }
     }
   });
 
@@ -773,8 +780,11 @@ describe('built-in command contract', () => {
       });
       expect(existsSync(first)).toBe(true);
     } finally {
-      leaveIsolatedHome(isolatedHome);
-      rmSync(workspace, { recursive: true, force: true });
+      try {
+        rmSync(workspace, { recursive: true, force: true });
+      } finally {
+        leaveIsolatedHome(isolatedHome);
+      }
     }
   });
 
@@ -1086,19 +1096,22 @@ describe('/advisor', () => {
 
 describe('/memory consolidate', () => {
   const cleanup: string[] = [];
-  const previousBookHome = process.env.BOOK_HOME;
+  let isolatedHome: IsolatedHome | undefined;
   afterEach(() => {
-    for (const dir of cleanup.splice(0)) rmSync(dir, { recursive: true, force: true });
-    if (previousBookHome === undefined) delete process.env.BOOK_HOME;
-    else process.env.BOOK_HOME = previousBookHome;
+    try {
+      for (const dir of cleanup.splice(0)) rmSync(dir, { recursive: true, force: true });
+    } finally {
+      const entered = isolatedHome;
+      isolatedHome = undefined;
+      if (entered) leaveIsolatedHome(entered);
+    }
   });
 
   /** A workspace whose memory directory holds `files` (none: an empty directory). */
   function setup(files: string[] = ['build-cmd.md']) {
     const workspace = mkdtempSync(join(tmpdir(), 'book-consolidate-ws-'));
-    const bookHome = mkdtempSync(join(tmpdir(), 'book-consolidate-home-'));
-    cleanup.push(workspace, bookHome);
-    process.env.BOOK_HOME = bookHome;
+    cleanup.push(workspace);
+    isolatedHome = enterIsolatedHome('book-consolidate-home-');
     const memoryDir = getProjectMemoryDir(workspace);
     mkdirSync(memoryDir, { recursive: true });
     writeFileSync(join(memoryDir, '.format'), '2\n'); // already migrated: nothing rewrites the files

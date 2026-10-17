@@ -35,7 +35,7 @@ vi.mock('../sandbox.js', async (importOriginal) => {
 
 let workspace: string;
 const bookHome = isolateBookHome('book-doctor-home-');
-const previousEnv: Record<string, string | undefined> = {};
+let previousApiKey: string | undefined;
 
 function writeSettings(
   sandbox: Record<string, unknown>,
@@ -84,18 +84,13 @@ beforeEach(() => {
   // Doctor is the command a user reaches for when nothing works, so no test here
   // may hand it a credential: clearing the key means every case below also proves
   // the report survives an unconfigured environment.
-  for (const key of ['BOOK_API_KEY']) {
-    previousEnv[key] = process.env[key];
-    delete process.env[key];
-  }
+  previousApiKey = process.env.BOOK_API_KEY;
   delete process.env.BOOK_API_KEY;
 });
 
 afterEach(() => {
-  for (const [key, value] of Object.entries(previousEnv)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
+  if (previousApiKey === undefined) delete process.env.BOOK_API_KEY;
+  else process.env.BOOK_API_KEY = previousApiKey;
   rmSync(workspace, { recursive: true, force: true });
 });
 

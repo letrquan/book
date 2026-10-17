@@ -26,7 +26,7 @@ import { loadWorkspaceTrust } from '../workspace-trust.js';
 
 let workspace: string;
 const bookHome = isolateBookHome('book-trust-cmd-home-');
-const previousEnv: Record<string, string | undefined> = {};
+let previousApiKey: string | undefined;
 
 interface RunResult {
   out: string;
@@ -77,15 +77,13 @@ const storePath = () => join(bookHome(), 'trust.json');
 
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'book-trust-cmd-ws-'));
-  for (const key of ['BOOK_API_KEY']) previousEnv[key] = process.env[key];
+  previousApiKey = process.env.BOOK_API_KEY;
   delete process.env.BOOK_API_KEY;
 });
 
 afterEach(() => {
-  for (const [key, value] of Object.entries(previousEnv)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
+  if (previousApiKey === undefined) delete process.env.BOOK_API_KEY;
+  else process.env.BOOK_API_KEY = previousApiKey;
   rmSync(workspace, { recursive: true, force: true });
 });
 
