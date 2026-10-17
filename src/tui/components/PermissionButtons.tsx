@@ -228,7 +228,7 @@ export function PermissionButtons({
   // one React batch and an Enter handler closing over render state would still
   // see the previous index — resolving `allow` when the user asked for
   // `always`.
-  const [selectedState, setSelected, currentSelectedState] = useKeyState(0);
+  const [selected, setSelected, currentSelected] = useKeyState(0);
   const resolvedToolCallIdRef = useRef<string | null>(null);
   const canonical = canonicalToolName(toolCall.name);
   const payload = permissionPayloadText(toolCall);
@@ -242,11 +242,10 @@ export function PermissionButtons({
   const ladderRef = useRef(ladder);
   ladderRef.current = ladder;
   // No ladder means no rule to write — a call with no primary argument, a Bash command holding
-  // `*` (#521) — so the card offers no "Always allow" at all: only run once and skip.
+  // `*` (#521) — so the card offers no "Always allow" at all: only run once and skip. The list
+  // is fixed for the card's life: the host keys each card by its call, and the ladder is
+  // memoised on it.
   const buttons = ladder.length > 0 ? BUTTONS : BUTTONS_WITHOUT_ALWAYS;
-  // Clamped, so a selection carried over from a card that had the button never points past it.
-  const selected = Math.min(selectedState, buttons.length - 1);
-  const currentSelected = () => Math.min(currentSelectedState(), buttons.length - 1);
   const [scopeIndex, setScopeIndex, currentScope] = useKeyState(0);
   const alwaysPattern = ladder[scopeIndex] ?? ladder[0];
   const alwaysPatternDisplay = alwaysPattern ? permissionPatternForDisplay(alwaysPattern) : '';
@@ -397,9 +396,9 @@ export function PermissionButtons({
     primaryArg: payload ? payload.slice(0, 40) : null,
   });
 
-  const moveSelection = (next: (current: number) => number) => {
+  const moveSelection = useCallback((next: (current: number) => number) => {
     setSelected(next(currentSelected()));
-  };
+  }, []);
 
   const handleResolve = useCallback(
     (value: PermissionResult) => {

@@ -327,8 +327,8 @@ active instead of being refused.
 `deny` beats `ask`, and `ask` beats `allow`.
 
 A rule's pattern is a glob with two wildcards: `*` (or `**`, the same) matches any run of
-characters, spaces and `/` included, and `?` matches exactly one character, `/` included. Every
-other character matches itself. So `deny: ["Bash(rm /tmp/a?)"]` denies `rm /tmp/ab` but not
+characters except a line break, spaces and `/` included, and `?` matches exactly one character
+that is not a line break, `/` included. Every other character matches itself. So `deny: ["Bash(rm /tmp/a?)"]` denies `rm /tmp/ab` but not
 `rm /tmp/a` or `rm /tmp/abc`, and `Read(src/a?.ts)` covers `src/ab.ts` but not `src/a.ts`. The same
 reading applies to every rule kind: `deny`, `ask` and `allow`, the path rules of `Read`, `Write`,
 `Edit` and the other file tools, `allowed-tools` capability rules, and `sandbox.excludedCommands`.
@@ -365,8 +365,17 @@ asked about**, in `auto` as well. Only an exact `allow` rule for that very line,
 In `dontAsk` it is refused. The order for Bash is deny, then ask, then exact allow rules, then the
 compound prompt, then glob and bare allow rules. A command that only _quotes_ the text
 (`git commit -m "rm stuff"`) is not compound and is not prompted for. With no Bash `deny` or
-`ask` rule nothing changes. The same reading applies to the session's "approve all" rules: for a
-compound command under a Bash `deny` or `ask` rule only the exact rule counts.
+`ask` rule nothing changes.
+
+**Session rules.** "Always allow" also adds the rule it saves to the session's "approve all"
+rules, which act as `allow` rules for the rest of the session. Two kinds of call are admitted by
+only one session rule, the call's own exact rule (the one "Always allow" saves for that very call):
+a compound command under a Bash `deny` or `ask` rule, and any call a `permissions.ask` rule
+matches, of any tool. An `ask` rule outranks every `allow` rule, and a session rule is no
+stronger: with `ask: ["Bash(git push *)"]`, a `Bash(git *)` rule saved earlier in the session by
+widening "Always allow" on `git status` does not let `git push origin main` skip its prompt, and a
+`Write(secrets/*)` session rule does not skip an `ask: ["Write(secrets/**)"]`. "Always allow" on
+`git push origin main` itself does admit that same command again in the session.
 
 "Always allow" offers only the exact rule, with no widened `*` rungs, for a command that chains or
 redirects or contains a quote character or a `?` (a widened rung is a glob rule, where `?` matches
@@ -375,6 +384,17 @@ command have no rule at all, and the prompt offers only "Run once" and "Skip" fo
 that is multi-line after trimming, and any command that contains a `*`, compound or not. A rule
 holding that `*` would be a glob rule, which looks like the exact command on the prompt but admits
 more: `Bash(rm -rf build/*)` would go on to admit `rm -rf build/ ~/` without asking.
+
+The same holds for every other tool: a rule never carries a `*` or `?` taken from the call's own
+text. A `Write`, `Edit`, `Read` or other call whose path (or a `Glob` or `Grep` whose pattern)
+holds either has no rule, and the prompt offers only "Allow once" and "Skip": "Always allow" on
+`docs/what?.md` would have saved `Write(docs/what?.md)`, which admits `docs/whatX.md`. A `WebFetch`
+rule is the URL's origin with `/**` appended, and an origin holding a `*` (the URL parser accepts
+one in a host, `http://*.example.com/x`) has no rule either, since `WebFetch(http://*.example.com/**)`
+would admit any http host whose URL contains `.example.com/`. A `?` or `*` in the path or query
+is not part of the origin, so `https://example.com/a?b=1` still saves `WebFetch(https://example.com/**)`.
+The `--scrollback` prompt (`Allow? [y]es/[n]o/[a]lways`) offers `[a]lways`, and accepts `a`, on
+the same terms.
 
 **Windows and `'`.** `'` is a quote in Git Bash and PowerShell but not in cmd.exe, so on Windows a
 single-quoted argument (`git stash show 'stash@{0}'`) is treated as an ordinary argument only when
@@ -512,6 +532,11 @@ be `permission_denied`, whose remedy says to add an allow rule, and no rule or m
 serve a path outside every root. `dontAsk` still refuses a _workspace_ read with no allow rule, as
 before; only an outside target now gets the refusal that names the directory that would serve it.
 
+A `permissions.ask` rule that names such a target is still asked, in `default` and `auto` alike
+(`ask: ["Read(**/.env)"]` and a `Read` of `/etc/app/.env`): the rule outranks the early refusal,
+and allowing the call only lets the tool refuse it itself. With nobody to answer, the refusal names
+the unreachable target in both modes, never the ask rule, which could not help.
+
 **Writes in an approved directory.** An approved `additionalDirectories` entry is a root for the
 write tools too: `Write`, `Edit`, `MultiEdit`, `ApplyPatch` and `NotebookEdit` accept an absolute
 path inside one, and the write is judged, guarded and observed exactly as the same write in the
@@ -542,14 +567,15 @@ interactive approver cannot show a prompt, so a call that would prompt is refuse
 that nothing in the run could approve it, not that a policy blocked it, and what would let the call
 through:
 
-| The call                                         | What lets it through                                                                                                                                                                                 |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Most calls                                       | A `permissions.allow` rule for it, or `--permission-mode auto`                                                                                                                                       |
-| One an `ask` rule covers                         | Narrowing or removing that rule (it outranks allow), or `bypassPermissions`; `auto` still asks                                                                                                       |
-| A skill that asks for consent                    | A `permissions.allow` rule; `auto` still asks                                                                                                                                                        |
-| A compound Bash command under a Bash deny or ask | Sending each command as its own call, the exact rule `Bash(<whole command>)` in `permissions.allow`, or `bypassPermissions` (if an ask rule matches it, narrow that rule instead); `auto` still asks |
-| A persistent background shell                    | Only `--permission-mode bypassPermissions`                                                                                                                                                           |
-| A `Read`, `Glob` or `Grep` outside the workspace | Nothing: the tool cannot open it                                                                                                                                                                     |
+| The call                                         | What lets it through                                                                                                                                                                                        |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Most calls                                       | A `permissions.allow` rule for it, or `--permission-mode auto`                                                                                                                                              |
+| One with no rule of its own                      | `auto`, or what the remedy names for the reason: a multi-line Bash command sent as one-line calls, a Bash command naming its files instead of `*`, or an allow rule you write for another tool's `*` or `?` |
+| One an `ask` rule covers                         | Narrowing or removing that rule (it outranks allow), or `bypassPermissions`; `auto` still asks                                                                                                              |
+| A skill that asks for consent                    | A `permissions.allow` rule; `auto` still asks                                                                                                                                                               |
+| A compound Bash command under a Bash deny or ask | Sending each command as its own call, the exact rule `Bash(<whole command>)` in `permissions.allow`, or `bypassPermissions` (if an ask rule matches it, narrow that rule instead); `auto` still asks        |
+| A persistent background shell                    | Only `--permission-mode bypassPermissions`                                                                                                                                                                  |
+| A `Read`, `Glob` or `Grep` outside the workspace | Nothing: the tool cannot open it (under an `ask` rule too, in `auto` as in `default`)                                                                                                                       |
 
 In print mode and the SDK, the first such refusal of each tool in a session also prints the remedy
 for the operator (on stderr in `text` output, as a `notice` event in `stream-json`); a call nothing

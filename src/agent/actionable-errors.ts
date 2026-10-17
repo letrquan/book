@@ -1,3 +1,5 @@
+import type { MissingRuleReason } from '../permissions.js';
+
 export interface ActionableToolError {
   code: string;
   action: string;
@@ -21,14 +23,15 @@ export function formatActionableToolError(error: ActionableToolError): string {
 export type UnattendedRemedy =
   /**
    * A `permissions.allow` rule, or `--permission-mode auto`. `rule` is absent when no single rule
-   * covers exactly the call (a multi-line Bash command, or one holding `*`, #521): the bare tool
-   * name would allow every call, so it is never offered in its place.
+   * covers exactly the call (a Bash command that spans lines or holds `*`, #521; an argument
+   * holding `*` or `?`): the bare tool name would allow every call, so it is never offered in its
+   * place. `noRule` then says why (`missingRuleReason` in `permissions.ts`).
    */
-  | { kind: 'rule_or_auto'; rule?: string }
+  | { kind: 'rule_or_auto'; rule?: string; noRule?: MissingRuleReason }
   /** A `permissions.ask` rule asks for it, and no allow rule outranks an ask rule. */
   | { kind: 'ask_rule'; rule: string }
-  /** Skill consent: an allow rule lets it through, but `auto` still asks. `rule` as above. */
-  | { kind: 'allow_rule_only'; rule?: string }
+  /** Skill consent: an allow rule lets it through, but `auto` still asks. Fields as above. */
+  | { kind: 'allow_rule_only'; rule?: string; noRule?: MissingRuleReason }
   /** A persistent background shell asks in every mode but bypassPermissions, allow rules or not. */
   | { kind: 'bypass_only' }
   /** A Read, Glob or Grep the tool itself refuses: nothing lets it through. */
@@ -93,13 +96,35 @@ function quotableRule(rule: string): string | undefined {
   return printableRule(rule) === rule ? rule : undefined;
 }
 
-/** "a permissions.allow rule such as "<rule>"", or what to do when no rule can be shown. */
-function allowRuleClause(rule: string | undefined): string {
-  if (rule === undefined) {
-    // A multi-line command, or one holding `*` (#521): a rule holds one line, and its `*` is a
-    // wildcard that would admit other commands too.
-    return 'no single permissions.allow rule covers exactly this command (a rule holds one line, and a `*` in it is a wildcard that admits other commands too), so have each command sent as its own Bash call, on one line, naming its files instead of using `*`';
+/**
+ * What to do when a call has no rule of its own, naming the reason it has none: a Bash command
+ * that spans lines (a rule holds one line), one holding `*`, or both; or another tool's argument
+ * holding `*` or `?`. A rule holding those would be a wildcard that admits other calls too.
+ */
+function noRuleClause(toolName: string, noRule: MissingRuleReason | undefined): string {
+  if (toolName !== 'Bash') {
+    return 'write a permissions.allow rule that covers only what you mean to allow (none is derived from this call: its argument holds a `*` or `?`, which a rule reads as a wildcard that admits other calls too)';
   }
+  const star = 'a `*` in a rule is a wildcard that admits other commands too';
+  if (noRule?.lineBreak && noRule.wildcard) {
+    return `have each command sent as its own one-line Bash call that names its files instead of using \`*\` (no single permissions.allow rule covers this command: a rule holds one line, and ${star})`;
+  }
+  if (noRule?.wildcard) {
+    return `have the command sent as one that names its files instead of using \`*\` (no single permissions.allow rule covers this command: ${star})`;
+  }
+  if (noRule?.lineBreak) {
+    return 'have each command sent as its own one-line Bash call (no single permissions.allow rule covers this command: a rule holds one line)';
+  }
+  return 'have the command sent as its own one-line Bash call (no single permissions.allow rule covers this command)';
+}
+
+/** "a permissions.allow rule such as "<rule>"", or what to do when no rule can be shown. */
+function allowRuleClause(
+  toolName: string,
+  rule: string | undefined,
+  noRule: MissingRuleReason | undefined,
+): string {
+  if (rule === undefined) return noRuleClause(toolName, noRule);
   const quotable = quotableRule(rule);
   return quotable
     ? `add a permissions.allow rule such as "${quotable}" to your settings`
@@ -112,14 +137,14 @@ function askRuleRef(rule: string): string {
 }
 
 /** The operator's way through, as a clause that follows "To allow it, ". */
-function remedyClause(remedy: UnattendedRemedy): string | undefined {
+function remedyClause(toolName: string, remedy: UnattendedRemedy): string | undefined {
   switch (remedy.kind) {
     case 'rule_or_auto':
-      return `${allowRuleClause(remedy.rule)}, or run with --permission-mode auto`;
+      return `${allowRuleClause(toolName, remedy.rule, remedy.noRule)}, or run with --permission-mode auto`;
     case 'ask_rule':
       return `narrow or remove the ${askRuleRef(remedy.rule)}, which asks for it in every mode but bypassPermissions and outranks any allow rule, or run with --permission-mode bypassPermissions`;
     case 'allow_rule_only':
-      return `${allowRuleClause(remedy.rule)} (--permission-mode auto still asks for it)`;
+      return `${allowRuleClause(toolName, remedy.rule, remedy.noRule)} (--permission-mode auto still asks for it)`;
     case 'bypass_only':
       return 'run with --permission-mode bypassPermissions: a persistent background shell asks in every other mode, whatever the allow rules say';
     case 'compound_under_policy': {
@@ -182,7 +207,7 @@ export function permissionDeniedError(toolName: string, cause: PermissionDenialC
         requiresUserApproval: true,
       });
     case 'no_approver': {
-      const clause = remedyClause(cause.remedy);
+      const clause = remedyClause(toolName, cause.remedy);
       return formatActionableToolError({
         code: 'permission_denied',
         action: denied,
@@ -226,7 +251,7 @@ export function unattendedRefusalNotice(
   toolName: string,
   remedy: UnattendedRemedy,
 ): string | undefined {
-  const clause = remedyClause(remedy);
+  const clause = remedyClause(toolName, remedy);
   if (!clause) return undefined;
   return (
     `${toolName} needs approval, and nothing in this run can answer a permission prompt, so ` +

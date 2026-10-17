@@ -46,7 +46,8 @@ export interface PermissionVerdict {
   /**
    * Set on a Read, Glob or Grep whose target the tool itself refuses (outside the workspace and
    * every honored root): no approval can make it work, so the loop blocks it instead of prompting.
-   * Only set where reads are judged.
+   * Set where reads are judged, and on an ask-rule verdict in any mode, where an unattended
+   * refusal then names the unreachable target rather than the ask rule.
    */
   outsideWorkspace?: boolean;
   /**
@@ -183,9 +184,11 @@ const PATH_RULE_TOOLS: ReadonlySet<string> = new Set([
  * cannot serve is refused instead of prompted for (#264, then #305 item 3).
  *
  * `plan` joined the set when it started judging reads the way `default` does: a plan is written
- * by reading, and an outside target cannot be read in a plan either. `auto` asks only about a
- * read an `ask` rule names, which outranks a refusal anyway (#527), and `bypassPermissions` asks
- * about nothing, so there is nothing there to refuse early.
+ * by reading, and an outside target cannot be read in a plan either. `bypassPermissions` asks
+ * about nothing, so there is nothing there to refuse early. `auto` asks only about a read an `ask`
+ * rule names (#527); an ask rule is still asked in the judging modes too, so such a read is not
+ * refused early there either. Its target is judged for that verdict alone, so a read no root serves
+ * is marked `outsideWorkspace` in `auto` as in `default` (see `evaluatePermissionDetail`).
  */
 export const WORKSPACE_READ_JUDGING_MODES: ReadonlySet<string> = new Set([
   'default',
@@ -319,15 +322,6 @@ function isExactPattern(rule: ParsedRule): boolean {
 }
 
 /**
- * Whether a rule text is an exact Bash rule (`Bash(cd x && npm test)`): the only kind of session
- * approve-all rule that may skip the prompt for a compound command under a Bash policy.
- */
-export function isExactBashRule(rule: string): boolean {
-  const parsed = parseRule(rule);
-  return toolNameMatchesRule(parsed.toolName, 'Bash') && isExactPattern(parsed);
-}
-
-/**
  * Whether an `allow` rule admits a Bash call (#500, then #512). The Bash tool runs
  * `command.trim()`, and a rule is read against that:
  *
@@ -391,16 +385,48 @@ function bashRestrictiveCandidates(command: unknown, firstLine: string): string[
   return [...new Set([firstLine, trimmed.split('\n')[0], trimmed])];
 }
 
+/** A `*` or `?`: both are wildcards in a rule (`globToRegex`). */
+const RULE_WILDCARD = /[*?]/;
+
 /**
- * The rule that remembers exactly this call, or `undefined` when the call has no
- * primary argument to scope one to, or, for Bash, when the command has no rule that admits it
- * and nothing else.
+ * What a non-Bash call's rule is built from: `taken` is the part of the call's own text the rule
+ * holds, and `pattern` the rule's pattern. They differ only for WebFetch, whose rule is its URL's
+ * origin with a `/**` Book appends itself.
+ */
+function ruleScopeOf(
+  toolName: string,
+  primaryArg: string,
+): { taken: string; pattern: string } | undefined {
+  if (!primaryArg) return undefined;
+  if (toolName === 'WebFetch') {
+    try {
+      const origin = new URL(primaryArg).origin;
+      return { taken: origin, pattern: `${origin}/**` };
+    } catch {
+      // An invalid URL must not widen into a tool-wide permission: it is scoped as written.
+    }
+  }
+  return { taken: primaryArg, pattern: primaryArg };
+}
+
+/**
+ * The rule that remembers exactly this call, or `undefined` when the call has no rule that
+ * admits it and nothing else: it has no primary argument to scope one to, or, for Bash, the
+ * command has no such rule, or the rule would carry a `*` or `?` taken from the call's own text.
  *
  * A bare tool name means "every call of this tool", so a call whose primary argument
  * is empty must not produce one: `{command: ""}` and `{command: "\nrm -rf x"}` both
  * pass the schema, `getPrimaryArg` reads nothing out of either, and an "Always" on
  * them would have written a `Bash` rule allowing every shell command from then on.
  * The call is still allowed; nothing is remembered.
+ *
+ * A rule never carries a wildcard from the call's own text, because in a rule `*` and `?` match
+ * other text too: "Always allow" on `Write docs/what?.md` would save a rule that admits
+ * `docs/whatX.md`, and on `WebFetch http://*.example.com/x` (the URL parser accepts `*` in a
+ * host) one for `http://*.example.com/**`, which admits any http host whose URL contains
+ * `.example.com/` (review of #531). Book's own wildcard, WebFetch's `/**`, is not taken from the
+ * call. Glob and Grep patterns get no rule either; they rarely prompt. For Bash only `*` counts:
+ * an exact Bash allow rule compares as plain text, so its `?` stays literal (#522).
  */
 export function permissionRuleForToolCall(call: ToolCall): string | undefined {
   const toolName = canonicalToolName(call.name);
@@ -421,18 +447,44 @@ export function permissionRuleForToolCall(call: ToolCall): string | undefined {
     if (command.includes('*')) return undefined;
     return `Bash(${command})`;
   }
-  const primaryArg = getPrimaryArg(call.arguments);
   if (toolName === 'WebSearch') return toolName;
-  if (toolName === 'WebFetch' && primaryArg) {
-    try {
-      const url = new URL(primaryArg);
-      return `${toolName}(${url.origin}/**)`;
-    } catch {
-      // An invalid URL must not widen into a tool-wide permission.
-    }
+  const scope = ruleScopeOf(toolName, getPrimaryArg(call.arguments));
+  if (!scope || RULE_WILDCARD.test(scope.taken)) return undefined;
+  return `${toolName}(${scope.pattern})`;
+}
+
+/** Why a call that has an argument to scope a rule to still has no rule of its own. */
+export interface MissingRuleReason {
+  /** A Bash command that spans lines or opens with a blank line: a rule holds one line. */
+  lineBreak: boolean;
+  /**
+   * The call's own text holds a character a rule reads as a wildcard: a `*` in a Bash command,
+   * or a `*` or `?` in another tool's argument.
+   */
+  wildcard: boolean;
+}
+
+/**
+ * Why {@link permissionRuleForToolCall} has no rule for this call, so a remedy can say so, or
+ * `undefined` when it has one, or when the call has no argument at all (a non-Bash call with no
+ * primary argument is covered only by its bare tool name, which is then the rule to name).
+ */
+export function missingRuleReason(call: ToolCall): MissingRuleReason | undefined {
+  if (permissionRuleForToolCall(call) !== undefined) return undefined;
+  const toolName = canonicalToolName(call.name);
+  if (toolName === 'Bash' && typeof call.arguments.command === 'string') {
+    const command = call.arguments.command.trim();
+    return {
+      // A command that opens with a blank line has an empty first line, the line a rule holds.
+      lineBreak:
+        LINE_BREAK.test(command) || (command !== '' && !getPrimaryArg(call.arguments).trim()),
+      wildcard: command.includes('*'),
+    };
   }
-  if (!primaryArg) return undefined;
-  return `${toolName}(${primaryArg})`;
+  const scope = ruleScopeOf(toolName, getPrimaryArg(call.arguments));
+  return scope && RULE_WILDCARD.test(scope.taken)
+    ? { lineBreak: false, wildcard: true }
+    : undefined;
 }
 
 /**
@@ -476,9 +528,10 @@ const RULE_LADDER_MAX = 3;
  *
  * Only Bash gets a ladder. Paths are already reusable as written, and WebFetch
  * globs its own origin in {@link permissionRuleForToolCall}. The list is empty
- * when the call has no primary argument to scope a rule to, and for a Bash command that has no
- * exact rule (a multi-line one, or one holding a `*`; see {@link permissionRuleForToolCall}), so
- * the wider rungs go too; a caller reads that as "remember nothing". The ladder is the exact rule
+ * when the call has no primary argument to scope a rule to, for a Bash command that has no
+ * exact rule (a multi-line one, or one holding a `*`), and for another tool's call whose rule would
+ * carry a `*` or `?` from its own text (see {@link permissionRuleForToolCall}), so the wider rungs
+ * go too; a caller reads that as "remember nothing". The ladder is the exact rule
  * alone for a one-line compound command, a quoted one, and one holding a `?`: a wider rung is a
  * glob rule, and in a glob rule `?` matches any one character, so it would admit more than the
  * card shows. The exact rule has no `*` and compares as a plain string, so its `?` stays literal.
@@ -1238,11 +1291,22 @@ export function evaluatePermissionDetail(
   }
   for (const entry of parsed.ask) {
     if (matchesRule(entry.parsed, true)) {
+      // Where reads are not judged (`auto`), an ask rule still prompts (#527), so the target is
+      // judged here for this one verdict: a read no root serves carries the same marker as in
+      // `default`, which names the unreachable target, not the ask rule, as the remedy.
+      const askOutside =
+        readTarget === undefined &&
+        scope &&
+        paths &&
+        WORKSPACE_READ_TOOLS.has(tool) &&
+        readToolTarget(tool, args, paths) === 'outside'
+          ? { outsideWorkspace: true as const }
+          : outside;
       return {
         decision: 'ask',
         matchedRule: entry.text,
         source: 'ask',
-        ...outside,
+        ...askOutside,
         ...compoundUnderPolicy,
       };
     }

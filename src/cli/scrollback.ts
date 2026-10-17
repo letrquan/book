@@ -6,6 +6,7 @@ import type { PermissionDecision, PermissionResult, ToolCall, ToolResult } from 
 import { runAgentLoop } from '../agent/loop.js';
 import { createDefaultRegistry, type ToolRegistry } from '../tools/registry.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
+import { permissionRuleForToolCall } from '../permissions.js';
 import { toolResultErrorMessage, toolResultSucceeded } from '../tools/result.js';
 
 export interface ScrollbackOptions {
@@ -118,14 +119,18 @@ async function askPermission(
   read: (prompt?: string) => Promise<string | null>,
   output: { write: (s: string) => boolean | void },
 ): Promise<PermissionResult | PermissionDecision> {
+  // "Always" is offered only when the call has a rule to save, as on the Ink card: a Bash command
+  // holding `*` or spanning lines has none (#521), and neither has an argument holding `*` or `?`.
+  const canRemember = permissionRuleForToolCall(call) !== undefined;
   output.write(
-    `[permission] ${call.name}${getPrimaryArg(call.arguments) ? ` ${getPrimaryArg(call.arguments)}` : ''}\nAllow? [y]es/[n]o/[a]lways: `,
+    `[permission] ${call.name}${getPrimaryArg(call.arguments) ? ` ${getPrimaryArg(call.arguments)}` : ''}\nAllow? [y]es/[n]o${canRemember ? '/[a]lways' : ''}: `,
   );
   const line = await read('');
   // The input closed: nobody is left to answer, which is not a person saying no (#264).
   if (line === null) return { result: 'deny', reason: 'no_approver' };
   const answer = line.trim().toLowerCase();
-  if (answer === 'a' || answer === 'always') return 'always';
+  // Where it is not offered, `a` is no answer, and an unrecognized answer is a no.
+  if (canRemember && (answer === 'a' || answer === 'always')) return 'always';
   if (answer === 'y' || answer === 'yes') return 'allow';
   return 'deny';
 }

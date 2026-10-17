@@ -2044,14 +2044,55 @@ describe('runAgentLoop "Always allow" on a Bash command holding * (#521)', () =>
     expect(executed).toEqual([COMMAND, COMMAND]);
   });
 
-  it('names no rule in the unattended remedy, and never a bare Bash rule', async () => {
-    const executed: string[] = [];
+  // The remedy names the reason the command has no rule, not always the `*` (review of #531).
+  it.each([
+    ['a `*`', COMMAND, { star: true, lineBreak: false }],
+    ['a line break', 'npm ci\nnpm test', { star: false, lineBreak: true }],
+    ['both', 'rm -rf build/*\nnpm test', { star: true, lineBreak: true }],
+  ])(
+    'names no rule in the unattended remedy for a command with %s, and says why',
+    async (_label, command, why) => {
+      const executed: string[] = [];
+      const notices: string[] = [];
+      const results: ToolResult[] = [];
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 2 }),
+        recordingRegistry(executed),
+        'clean it',
+        [],
+        noopCallbacks({
+          onPermissionRequired: noApprover,
+          onToolResult: (r) => results.push(r),
+          onNotice: (notice) => notices.push(notice),
+        }),
+        'default',
+        {
+          provider: toolsThenText([{ id: 'b1', name: 'Bash', arguments: { command } }]),
+          isNewSession: false,
+        },
+      );
+      expect(executed).toEqual([]);
+      const texts = [
+        byId(results, 'b1')?.content ?? '',
+        ...notices.filter((n) => n.includes('needs approval')),
+      ];
+      expect(texts).toHaveLength(2);
+      for (const text of texts) {
+        expect(text).not.toMatch(/"Bash/);
+        expect(text).toContain('no single permissions.allow rule');
+        expect(text.includes('`*`'), text).toBe(why.star);
+        expect(text.includes('one-line Bash call'), text).toBe(why.lineBreak);
+      }
+    },
+  );
+
+  it('never offers a bare tool rule for a non-Bash call whose argument holds a wildcard', async () => {
     const notices: string[] = [];
     const results: ToolResult[] = [];
     await runAgentLoop(
       defaultConfig({ workspace, maxTurns: 2 }),
-      recordingRegistry(executed),
-      'clean it',
+      createDefaultRegistry(),
+      'write it',
       [],
       noopCallbacks({
         onPermissionRequired: noApprover,
@@ -2060,20 +2101,184 @@ describe('runAgentLoop "Always allow" on a Bash command holding * (#521)', () =>
       }),
       'default',
       {
-        provider: toolsThenText([{ id: 'b1', name: 'Bash', arguments: { command: COMMAND } }]),
+        provider: toolsThenText([
+          { id: 'w1', name: 'Write', arguments: { filePath: 'docs/what?.md', content: 'x\n' } },
+        ]),
         isNewSession: false,
       },
     );
-    expect(executed).toEqual([]);
     const texts = [
-      byId(results, 'b1')?.content ?? '',
+      byId(results, 'w1')?.content ?? '',
       ...notices.filter((n) => n.includes('needs approval')),
     ];
     expect(texts).toHaveLength(2);
     for (const text of texts) {
-      expect(text).not.toMatch(/"Bash/);
-      expect(text).toContain('no single permissions.allow rule');
-      expect(text).toContain('`*`');
+      expect(text).not.toMatch(/"Write/);
+      expect(text).toContain('`*` or `?`');
     }
+  });
+});
+
+// A session approve-all rule is an allow rule, and an `ask` rule outranks every allow rule: a
+// widened rung saved earlier in the session must not skip the prompt the ask rule asks for.
+describe('runAgentLoop session rules under an ask rule (review of #531)', () => {
+  const okResult = {
+    version: 2 as const,
+    toolCallId: '',
+    status: 'success' as const,
+    content: 'stub ran',
+  };
+
+  /**
+   * Runs `calls` one per turn. `answer` answers each prompt; the first call is the seed whose
+   * "Always" answer puts the session rule under test into the run's approve-all rules.
+   */
+  async function runTurns(options: {
+    mode: 'default' | 'auto';
+    ask: string[];
+    calls: ScriptedCall[];
+    answer: (call: ScriptedCall) => PermissionDecision | 'allow' | 'deny' | 'always';
+  }) {
+    const executed: string[] = [];
+    const registry = createDefaultRegistry();
+    registry.register({
+      ...registry.getTool('Bash')!,
+      execute: async (args) => {
+        executed.push(String(args.command));
+        return okResult;
+      },
+    });
+    const config = defaultConfig({ workspace, maxTurns: options.calls.length + 1 });
+    config.settings.permissions.ask = options.ask;
+    const prompted: string[] = [];
+    let turn = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        const next = options.calls[turn++];
+        if (next) yield { type: 'tool_call' as const, toolCall: next };
+        else yield { type: 'text' as const, content: 'done' };
+        yield { type: 'done' as const };
+      },
+    };
+    await runAgentLoop(
+      config,
+      registry,
+      'go',
+      [],
+      noopCallbacks({
+        onPermissionRequired: async (call) => {
+          prompted.push(call.id);
+          return options.answer(call as ScriptedCall);
+        },
+      }),
+      options.mode,
+      { provider, isNewSession: false },
+    );
+    return { executed, prompted };
+  }
+
+  const bash = (id: string, command: string): ScriptedCall => ({
+    id,
+    name: 'Bash',
+    arguments: { command },
+  });
+
+  for (const mode of ['default', 'auto'] as const) {
+    it(`a widened session rule does not skip the ask rule in ${mode}`, async () => {
+      const { executed, prompted } = await runTurns({
+        mode,
+        ask: ['Bash(git push *)'],
+        calls: [bash('seed', 'git push origin dev'), bash('push', 'git push origin main')],
+        answer: (call) => (call.id === 'seed' ? { result: 'always', rule: 'Bash(git *)' } : 'deny'),
+      });
+      expect(prompted).toEqual(['seed', 'push']);
+      expect(executed).toEqual(['git push origin dev']);
+    });
+
+    it(`the call's own exact session rule still admits it in ${mode}`, async () => {
+      const { executed, prompted } = await runTurns({
+        mode,
+        ask: ['Bash(git push *)'],
+        calls: [bash('first', 'git push origin main'), bash('again', 'git push origin main')],
+        // A bare "always" saves the call's exact rule, `Bash(git push origin main)`.
+        answer: (call) => (call.id === 'first' ? 'always' : 'deny'),
+      });
+      expect(prompted).toEqual(['first']);
+      expect(executed).toEqual(['git push origin main', 'git push origin main']);
+    });
+  }
+
+  it('a widened session rule does not skip an ask rule on another tool', async () => {
+    const write = (id: string, filePath: string): ScriptedCall => ({
+      id,
+      name: 'Write',
+      arguments: { filePath, content: 'k\n' },
+    });
+    const { prompted } = await runTurns({
+      mode: 'default',
+      ask: ['Write(secrets/**)'],
+      calls: [write('seed', 'secrets/a.txt'), write('next', 'secrets/b.txt')],
+      answer: (call) =>
+        call.id === 'seed' ? { result: 'always', rule: 'Write(secrets/*)' } : 'deny',
+    });
+    expect(prompted).toEqual(['seed', 'next']);
+    expect(existsSync(join(workspace, 'secrets', 'b.txt'))).toBe(false);
+  });
+});
+
+// In `auto` the read target was not judged, so an ask-ruled read of a file outside every root
+// carried no `outsideWorkspace` marker: an unattended run named the ask rule, which cannot help,
+// where `default` names the unreachable target (review of #531).
+describe('runAgentLoop an ask-ruled read outside every root (review of #531)', () => {
+  async function readOutside(
+    mode: 'default' | 'auto',
+    approver: AgentLoopCallbacks['onPermissionRequired'],
+  ) {
+    writeFileSync(join(outside, '.env'), 'SECRET=1\n');
+    const config = defaultConfig({ workspace, maxTurns: 2 });
+    config.settings.permissions.ask = ['Read(**/.env)'];
+    const prompt = vi.fn(approver);
+    const notices: string[] = [];
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      config,
+      createDefaultRegistry(),
+      'read it',
+      [],
+      noopCallbacks({
+        onPermissionRequired: prompt,
+        onToolResult: (r) => results.push(r),
+        onNotice: (notice) => notices.push(notice),
+      }),
+      mode,
+      {
+        provider: toolsThenText([
+          { id: 'r1', name: 'Read', arguments: { filePath: join(outside, '.env') } },
+        ]),
+        isNewSession: false,
+      },
+    );
+    return { prompt, notices, result: byId(results, 'r1') };
+  }
+
+  for (const mode of ['default', 'auto'] as const) {
+    it(`names the unreachable target, not the ask rule, when nobody can ask, in ${mode}`, async () => {
+      const { notices, result } = await readOutside(mode, noApprover);
+      expect(result?.status).toBe('blocked');
+      expect(result?.content).toContain('outside the workspace');
+      expect(result?.content).not.toContain('permissions.ask rule');
+      expect(result?.content).not.toContain('SECRET');
+      expect(notices.filter((notice) => notice.includes('needs approval'))).toHaveLength(0);
+    });
+  }
+
+  it('treats the call in auto exactly as default does when a person can answer', async () => {
+    const answered = async () => 'allow' as const;
+    const inDefault = await readOutside('default', answered);
+    const inAuto = await readOutside('auto', answered);
+    expect(inAuto.prompt.mock.calls.length).toBe(inDefault.prompt.mock.calls.length);
+    expect(inAuto.result?.status).toBe(inDefault.result?.status);
+    expect(inAuto.result?.content).not.toContain('SECRET');
   });
 });

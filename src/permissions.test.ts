@@ -2620,6 +2620,54 @@ describe('"Always allow" on a Bash command holding * or ? (#521)', () => {
   });
 });
 
+// A rule never carries a `*` or `?` taken from the call's own text: in a rule both are wildcards,
+// so "Always allow" on `docs/what?.md` admitted `docs/whatX.md`, and on `http://*.example.com/x`
+// it saved a WebFetch rule for any http host (review of #531).
+describe('"Always allow" on a non-Bash call whose text holds * or ?', () => {
+  const call = (name: string, args: Record<string, unknown>) => ({
+    id: 'c',
+    name,
+    arguments: args,
+  });
+
+  it.each([
+    ['Write', { filePath: 'docs/what?.md', content: 'x' }],
+    ['Edit', { filePath: 'src/*.ts', oldString: 'a', newString: 'b' }],
+    ['Read', { filePath: 'src/a?.ts' }],
+    ['Glob', { pattern: '**/*.ts' }],
+  ])('offers no rule for %s %j', (name, args) => {
+    expect(permissionRuleForToolCall(call(name, args))).toBeUndefined();
+    expect(permissionRuleLadder(call(name, args))).toEqual([]);
+  });
+
+  it('offers no WebFetch rule for an origin that holds a *', () => {
+    const fetch = call('WebFetch', { url: 'http://*.example.com/x' });
+    expect(permissionRuleForToolCall(fetch)).toBeUndefined();
+    expect(permissionRuleLadder(fetch)).toEqual([]);
+    // What it used to save, and what that admitted.
+    expect(
+      permissionRuleMatchesCall(
+        'WebFetch(http://*.example.com/**)',
+        call('WebFetch', { url: 'http://attacker.test/?q=.example.com/' }),
+      ),
+    ).toBe(true);
+  });
+
+  it('still offers the origin rule when only the path or query holds one', () => {
+    for (const url of ['https://example.com/a?b=1', 'https://example.com/*/x']) {
+      expect(permissionRuleForToolCall(call('WebFetch', { url })), url).toBe(
+        'WebFetch(https://example.com/**)',
+      );
+    }
+  });
+
+  it('still offers a plain path its rule', () => {
+    expect(permissionRuleForToolCall(call('Write', { filePath: 'docs/what.md' }))).toBe(
+      'Write(docs/what.md)',
+    );
+  });
+});
+
 describe('a compound Bash command under a Bash deny or ask policy (#512, decision 2)', () => {
   const settings = (
     overrides: Partial<ResolvedSettings['permissions']> = {},
