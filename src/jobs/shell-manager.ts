@@ -28,6 +28,7 @@ import {
 } from './persistent-store.js';
 import { isProcessAlive, terminateProcessTree, waitForProcessClose } from './process-tree.js';
 import { secretSafeCut, secretSafeStart } from '../provider-secrets.js';
+import { spawnCommandExecution } from '../shell-selection.js';
 
 const MAX_BACKGROUND_BUFFER = 1024 * 1024 * 5;
 const MAX_OUTPUT_RESULT = 32_000;
@@ -304,13 +305,8 @@ export class ShellJobManager {
       };
       // Sandboxed commands spawn bwrap directly; only the unsandboxed path may
       // hand a command string to the platform shell.
-      // `exec.env` goes last: it carries a Git Bash command on Windows (see `shellExecution`).
       proc = options.exec
-        ? spawn(options.exec.file, options.exec.args, {
-            ...base,
-            env: { ...options.env, ...options.exec.env },
-            shell: false,
-          })
+        ? spawnCommandExecution(options.exec, base)
         : spawn(options.effectiveCommand, { ...base, shell: true });
     } catch (error) {
       throw error instanceof Error ? error : new Error(String(error));

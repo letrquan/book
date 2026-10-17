@@ -8,7 +8,7 @@ import { persistentEnvironmentOverrides, shellTools, streamTail } from './shell.
 import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
 import { hasCompoundShellSyntax } from './shell-chaining.js';
-import { resolveShell } from '../shell-selection.js';
+import { windowsGitBash } from '../test/real-shells.js';
 import { PROVIDER_KEY_MARKER, redactToolResultSecrets } from '../provider-secrets.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
 import { SessionRuntime } from '../session/runtime.js';
@@ -1407,12 +1407,7 @@ describe('BashOutput result data', () => {
 // a word with no space, tab or `"` unwrapped and the MSYS runtime rebuilds argv itself, stripping
 // quotes, globbing and expanding `@file`. These run the real Git Bash through the Bash tool, so
 // they fail if a command stops reaching bash byte for byte. They run only on Windows with Git Bash
-// installed.
-const windowsGitBash = (() => {
-  if (process.platform !== 'win32') return undefined;
-  const resolved = resolveShell({ platform: 'win32', requested: 'bash' });
-  return resolved.kind === 'bash' && resolved.file ? resolved : undefined;
-})();
+// installed (`windowsGitBash`).
 
 interface ShellRun {
   stdout: string;

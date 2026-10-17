@@ -23,6 +23,7 @@ import { constants } from 'node:os';
 import { buildChildEnv } from './child-env.js';
 import { loadPersistentShellSpec } from './jobs/persistent-store.js';
 import { runTaskkill, TERMINATE_GRACE_MS } from './jobs/process-tree.js';
+import { spawnCommandExecution } from './shell-selection.js';
 
 /** Signals this process can die of just as the command did: Node gives them no meaning of its own. */
 const RERAISABLE_SIGNALS: ReadonlySet<NodeJS.Signals> = new Set([
@@ -68,14 +69,10 @@ const options: SpawnOptions = {
   env: commandEnv(),
 };
 // Sandboxed specs and a session shell spawned as argv carry an `exec`; the rest go through a shell.
-// `exec.env` goes last, on this spawn alone: it carries a Git Bash command on Windows (see
-// `shellExecution`) and belongs to neither the runner's environment nor this process's.
+// `exec.env` (a Git Bash command on Windows) reaches this spawn alone, never the runner's environment
+// or this process's.
 const command = spec.exec
-  ? spawn(spec.exec.file, spec.exec.args, {
-      ...options,
-      env: { ...options.env, ...spec.exec.env },
-      shell: false,
-    })
+  ? spawnCommandExecution(spec.exec, options)
   : spawn(spec.effectiveCommand, { ...options, shell: true });
 
 /** Set once the runner is gone and this process has begun ending the command's tree. */

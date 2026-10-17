@@ -233,15 +233,20 @@ describe('hasCompoundShellSyntax: the WSL launcher is not Git Bash (#512)', () =
     'C:\\WINDOWS\\SysWOW64\\bash.exe',
     'C:\\Windows\\Sysnative\\bash.exe',
     'C:/Windows/System32/bash',
+    // The app execution alias directory, where WSL also installs its launcher.
+    'C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe',
+    'c:/users/me/appdata/local/microsoft/windowsapps/bash.exe',
   ])('refuses a single quote under %s', (file) => {
     expect(hasCompoundShellSyntax("git log 'x'", 'win32', { kind: 'bash', file })).toBe(true);
+    expect(hasCompoundShellSyntax("echo';id'", 'win32', { kind: 'bash', file })).toBe(true);
   });
 
-  it('still reads a Git Bash outside a system directory as Git Bash', () => {
+  it('still reads a Git Bash outside a WSL launcher directory as Git Bash', () => {
     for (const file of [
       'C:\\Program Files\\Git\\bin\\bash.exe',
       'C:/Program Files/Git/usr/bin/bash.exe',
       'D:\\tools\\Windows Kits\\bash.exe',
+      'D:\\Microsoft\\Git\\bin\\bash.exe',
     ]) {
       expect(hasCompoundShellSyntax("git log 'x'", 'win32', { kind: 'bash', file }), file).toBe(
         false,

@@ -227,8 +227,8 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   `git commit -m "fix(x): y"` and `git stash show 'stash@{0}'` (on Windows only under Git Bash) pass
   `Bash(git *)`; a backslash or caret before a quote and a typographic quote are refused because a
   shell may read them differently, and on Windows any single quote is refused unless the session
-  shell is Git Bash, where `'` works exactly as on Linux (use double quotes under PowerShell). A
-  bare `Bash` rule admits any command. The
+  shell is Git Bash, where `'` is read exactly as on Linux (use double quotes under PowerShell,
+  cmd.exe and the other Windows shells). A bare `Bash` rule admits any command. The
   rule constrains the command's text, not what the program does with its options (`Bash(git *)`
   still admits `git -c core.fsmonitor=… status`), and is not a sandbox: narrow the pattern when
   that matters.
@@ -366,12 +366,15 @@ call still runs once): a command that is multi-line after trimming, and a compou
 contains a `*` (its rule would be a glob rule, which refuses compound commands).
 
 **Windows and `'`.** `'` is a quote in Git Bash and PowerShell but not in cmd.exe. Under Git Bash
-`'` works exactly as on Linux: `git stash show 'stash@{0}'` and `echo';id'` are each one command.
+`'` is read exactly as on Linux: `git stash show 'stash@{0}'` and `echo';id'` are each one command.
 That holds because the Bash tool hands Git Bash the command in the `BOOK_BASH_COMMAND` environment
 variable, unset before the command runs, rather than on the Windows command line, so the MSYS
-runtime cannot glob it, expand an `@file` in it or strip its quotes. WSL's `bash.exe` (in a Windows
-system directory), PowerShell, cmd.exe and any other shell still treat every `'` as making the
-command compound; use double quotes there.
+runtime cannot glob it, expand an `@file` in it or strip its quotes. The command runs through
+`eval`, so a syntax error reads `bash: eval: line N:` rather than `bash: -c: line N:`, and
+`BASH_EXECUTION_STRING` holds the fixed script that evaluates it rather than the command itself.
+WSL's `bash.exe` (in a Windows system directory or the `Microsoft\WindowsApps` alias directory),
+PowerShell, cmd.exe and any other shell still treat every `'` as making the command compound; use
+double quotes under those shells.
 
 Permission _modes_ decide whether you are prompted; they never relax a `deny` rule. A rule in
 `permissions.deny` blocks the matching call in every mode, including `auto` and

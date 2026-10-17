@@ -5,7 +5,7 @@ import type {
   CommandExecution,
   ResolvedShell,
 } from '../types/runtime.js';
-import { resolveShell, shellExecution } from '../shell-selection.js';
+import { resolveShell, shellExecution, spawnCommandExecution } from '../shell-selection.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { decideSandboxExecution, withGitConfigReadOnlyNotice } from '../sandbox.js';
 import { buildChildEnv } from '../child-env.js';
@@ -163,13 +163,8 @@ function spawnEffective(
     detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   };
-  // `exec.env` goes last: it carries a Git Bash command on Windows (see `shellExecution`).
   return built.exec
-    ? spawn(built.exec.file, built.exec.args, {
-        ...base,
-        env: { ...options.env, ...built.exec.env },
-        shell: false,
-      })
+    ? spawnCommandExecution(built.exec, base)
     : spawn(built.effectiveCommand, { ...base, shell: true });
 }
 

@@ -1,6 +1,4 @@
-import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { delimiter, join, win32 } from 'node:path';
+import { win32 } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   decodePowerShellCommand,
@@ -10,8 +8,10 @@ import {
   resolveShell,
   shellExecution,
   shellPromptLine,
+  spawnCommandExecution,
 } from './shell-selection.js';
-import type { ResolvedShell } from './types/runtime.js';
+import { posixBash } from './test/real-shells.js';
+import type { CommandExecution, ResolvedShell } from './types/runtime.js';
 
 const GIT_ROOT = 'C:\\Program Files\\Git';
 const GIT_BASH = win32.join(GIT_ROOT, 'bin', 'bash.exe');
@@ -160,8 +160,11 @@ describe('shellExecution', () => {
     expect(GIT_BASH_EVAL_SCRIPT).toContain(' ');
   });
 
-  it("keeps WSL's bash.exe on the plain argv: Windows variables do not reach WSL", () => {
-    const wsl = 'C:\\Windows\\System32\\bash.exe';
+  it.each([
+    'C:\\Windows\\System32\\bash.exe',
+    'C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe',
+    'c:/users/me/appdata/local/microsoft/windowsapps/bash.exe',
+  ])("keeps WSL's %s on the plain argv: Windows variables do not reach WSL", (wsl) => {
     const exec = shellExecution(bashAt(wsl), 'echo hi', 'win32');
     expect(exec).toEqual({ file: wsl, args: ['-c', 'echo hi'] });
     expect(exec).not.toHaveProperty('env');
@@ -190,6 +193,13 @@ describe('shellExecution', () => {
     expect(isGitBash({ kind: 'bash', file: 'C:/Program Files/Git/usr/bin/bash.exe' })).toBe(true);
     expect(isGitBash({ kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe' })).toBe(false);
     expect(isGitBash({ kind: 'bash', file: 'c:/windows/sysnative/bash.exe' })).toBe(false);
+    expect(
+      isGitBash({
+        kind: 'bash',
+        file: 'C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe',
+      }),
+    ).toBe(false);
+    expect(isGitBash({ kind: 'bash', file: 'D:/MICROSOFT/WINDOWSAPPS/bash.exe' })).toBe(false);
     expect(isGitBash({ kind: 'bash' })).toBe(false);
     expect(isGitBash({ kind: 'sh', file: 'C:\\tools\\sh.exe' })).toBe(false);
     expect(isGitBash({ kind: 'pwsh', file: PWSH })).toBe(false);
@@ -257,6 +267,38 @@ describe('shellExecution', () => {
   });
 });
 
+describe('spawnCommandExecution', () => {
+  const script =
+    'process.stdout.write(JSON.stringify([process.env.BOOK_TEST_A ?? null, process.env.BOOK_TEST_B ?? null, Boolean(process.env.PATH ?? process.env.Path)]))';
+
+  function printed(exec: CommandExecution, env?: NodeJS.ProcessEnv): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const child = spawnCommandExecution(exec, { stdio: ['ignore', 'pipe', 'inherit'], env });
+      let out = '';
+      child.stdout?.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
+      child.on('error', reject);
+      child.on('close', () => resolve(JSON.parse(out)));
+    });
+  }
+
+  it('merges exec.env last, over the env it is given', async () => {
+    const exec = { file: process.execPath, args: ['-e', script], env: { BOOK_TEST_A: 'exec' } };
+    const env = { ...process.env, BOOK_TEST_A: 'options', BOOK_TEST_B: 'options' };
+    expect(await printed(exec, env)).toEqual(['exec', 'options', true]);
+  });
+
+  it('merges exec.env over the inherited environment when no env is given', async () => {
+    const exec = { file: process.execPath, args: ['-e', script], env: { BOOK_TEST_A: 'exec' } };
+    expect(await printed(exec)).toEqual(['exec', null, true]);
+  });
+
+  it('passes the env through untouched when exec has none', async () => {
+    const exec = { file: process.execPath, args: ['-e', script] };
+    const env = { ...process.env, BOOK_TEST_B: 'options' };
+    expect(await printed(exec, env)).toEqual([null, 'options', true]);
+  });
+});
+
 describe('shellPromptLine', () => {
   const line = (kind: ResolvedShell['kind']): string =>
     shellPromptLine({ kind, file: 'X:\\shell.exe', label: kind, source: 'detected' });
@@ -281,28 +323,42 @@ describe('shellPromptLine', () => {
   });
 });
 
-function run(
-  exec: {
-    file: string;
-    args: string[];
-    env?: Record<string, string>;
-  },
-  timeoutMs?: number,
-): Promise<{ code: number | null; out: string }> {
+interface ShellRun {
+  code: number | null;
+  /** stdout and stderr interleaved in arrival order. */
+  out: string;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Run `exec` the way the Bash tool does (`spawnCommandExecution`, so `exec.env` is applied), with an
+ * environment that inherits no BOOK_BASH_COMMAND of its own.
+ */
+function run(exec: CommandExecution, timeoutMs?: number): Promise<ShellRun> {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env.BOOK_BASH_COMMAND;
   return new Promise((resolve, reject) => {
-    const child = spawn(exec.file, exec.args, {
+    const child = spawnCommandExecution(exec, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...exec.env },
-      shell: false,
+      env,
       // A deadline is a kill, not a warning: a shell that never returns must
       // not outlive the hook that waited for it.
       timeout: timeoutMs,
     });
     let out = '';
-    child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
-    child.stderr.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk: Buffer) => {
+      out += chunk.toString('utf8');
+      stdout += chunk.toString('utf8');
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      out += chunk.toString('utf8');
+      stderr += chunk.toString('utf8');
+    });
     child.on('error', reject);
-    child.on('close', (code) => resolve({ code, out }));
+    child.on('close', (code) => resolve({ code, out, stdout, stderr }));
   });
 }
 
@@ -353,47 +409,17 @@ describe.runIf(process.platform === 'win32')('real Windows shells', () => {
   }, 60_000);
 });
 
-/** `bash` on PATH, for the eval-script tests that need a real bash 5 off Windows. */
-const posixBash = (() => {
-  if (process.platform === 'win32') return undefined;
-  for (const dir of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
-    const candidate = join(dir, 'bash');
-    if (existsSync(candidate)) return candidate;
-  }
-  return undefined;
-})();
-
-interface BashRun {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-}
-
-/** Spawn `bash` with `args` and an environment without any inherited BOOK_BASH_COMMAND. */
-function runBash(args: string[], extraEnv: Record<string, string> = {}): Promise<BashRun> {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  delete env.BOOK_BASH_COMMAND;
-  return new Promise((resolve, reject) => {
-    const child = spawn(posixBash!, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...env, ...extraEnv },
-      shell: false,
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString('utf8')));
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
-  });
-}
-
 /** The command through the Git Bash delivery: the fixed script, the command in the variable. */
-const viaEval = (command: string): Promise<BashRun> =>
-  runBash(['-c', GIT_BASH_EVAL_SCRIPT], { BOOK_BASH_COMMAND: command });
+const viaEval = (command: string): Promise<ShellRun> =>
+  run({
+    file: posixBash!,
+    args: ['-c', GIT_BASH_EVAL_SCRIPT],
+    env: { BOOK_BASH_COMMAND: command },
+  });
 
 /** The command as `bash -c <command>`, the behaviour the eval script must reproduce. */
-const direct = (command: string): Promise<BashRun> => runBash(['-c', command]);
+const direct = (command: string): Promise<ShellRun> =>
+  run({ file: posixBash!, args: ['-c', command] });
 
 // #523: the fixed script is plain bash, so its contract is checked against a real bash here; the
 // MSYS side of the delivery only runs on the Windows CI leg (`src/tools/shell.test.ts`).
@@ -438,7 +464,7 @@ describe.skipIf(!posixBash)('GIT_BASH_EVAL_SCRIPT under a real bash', () => {
     const empty = await viaEval('');
     expect(empty.code).not.toBe(0);
     expect(empty.stderr).toContain('BOOK_BASH_COMMAND');
-    const missing = await runBash(['-c', GIT_BASH_EVAL_SCRIPT]);
+    const missing = await run({ file: posixBash!, args: ['-c', GIT_BASH_EVAL_SCRIPT] });
     expect(missing.code).not.toBe(0);
   });
 });

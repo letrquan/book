@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { GIT_BASH_EVAL_SCRIPT } from '../shell-selection.js';
+import { GIT_BASH_EVAL_SCRIPT, shellExecution } from '../shell-selection.js';
+import { posixBash, windowsGitBash } from '../test/real-shells.js';
 import { removeWhenReleased } from '../test/remove-when-released.js';
 import type { BackgroundShellStore } from '../types/runtime.js';
 import { persistentJobPaths } from './persistent-store.js';
@@ -609,16 +610,6 @@ setInterval(() => {}, 1000);\n`,
   }, 60_000);
 });
 
-/** `bash` on PATH, for the out-of-band delivery tests below. */
-const posixBash = (() => {
-  if (process.platform === 'win32') return undefined;
-  for (const dir of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
-    const candidate = join(dir, 'bash');
-    if (existsSync(candidate)) return candidate;
-  }
-  return undefined;
-})();
-
 // #523: Git Bash on Windows receives its command in `exec.env` rather than in argv, so every place
 // that spawns an `exec` must hand that env to the command. Real bash runs the same fixed script.
 describe.skipIf(!posixBash)('ShellJobManager and exec.env (#523)', () => {
@@ -675,6 +666,78 @@ describe.skipIf(!posixBash)('ShellJobManager and exec.env (#523)', () => {
     expect(manager.get(started.id)?.exitCode).toBe(0);
   }, 60_000);
 });
+
+// #523 on the one platform that uses the env delivery: the real Git Bash runs the real
+// `shellExecution` exec in a session job and a persistent job. `echo'1;echo'2` has no space, tab or
+// `"`, so in argv the MSYS runtime would strip its quotes and bash would report two missing commands,
+// `echo1` and `echo2`; delivered intact it is one command named `echo1;echo2`. The equally
+// space-free `env>env.txt` then records the command's environment, which must not hold the variable.
+describe.skipIf(!windowsGitBash)(
+  'ShellJobManager runs Git Bash commands intact on Windows (#523)',
+  () => {
+    const command = "echo'1;echo'2;env>env.txt";
+    const ACTIVE = ['starting', 'running', 'stopping'];
+
+    function gitBashExec() {
+      const exec = shellExecution(windowsGitBash!, command, 'win32')!;
+      expect(exec.env).toEqual({ BOOK_BASH_COMMAND: command });
+      return exec;
+    }
+
+    async function expectIntact(manager: ShellJobManager, id: string): Promise<void> {
+      await waitFor(
+        () => !ACTIVE.includes(manager.get(id)?.status ?? 'starting'),
+        'Git Bash job exit',
+        30_000,
+      );
+      const output = manager.readTail(id) ?? '';
+      expect(output.match(/command not found/g)?.length ?? 0, output).toBe(1);
+      expect(output).toContain('echo1;echo2: command not found');
+      expect(manager.get(id)?.status).toBe('exited');
+      const environment = readFileSync(join(directory, 'env.txt'), 'utf8');
+      expect(environment).toMatch(/^PATH=/m);
+      expect(environment).not.toMatch(/^BOOK_BASH_COMMAND=/m);
+    }
+
+    it('in a session background job', async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-session-git-bash-'));
+      const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+      managers.push(manager);
+      const started = await manager.start({
+        command,
+        effectiveCommand: command,
+        exec: gitBashExec(),
+        workdir: directory,
+        env: process.env,
+        sandboxed: false,
+      });
+      await expectIntact(manager, started.id);
+    }, 60_000);
+
+    it('in a persistent job, through the spec and the supervisor', async () => {
+      directory = mkdtempSync(join(tmpdir(), 'book-persistent-git-bash-'));
+      const persistentRoot = join(directory, 'jobs');
+      const manager = new ShellJobManager(
+        { nextId: 1, shells: new Map() },
+        { persistentRoot, ...ciBudgets },
+      );
+      managers.push(manager);
+      manager.configureWorkspace(directory);
+      const started = await manager.start({
+        command,
+        effectiveCommand: command,
+        exec: gitBashExec(),
+        workdir: directory,
+        env: process.env,
+        envOverrides: {},
+        sandboxed: false,
+        lifetime: 'persistent',
+        workspace: directory,
+      });
+      await expectIntact(manager, started.id);
+    }, 60_000);
+  },
+);
 
 // #411: a chunk limit that fell inside a provider key left half of it in each of two reads, and
 // neither half matches an exact-value redactor. The read now ends before the key (or after it, when
