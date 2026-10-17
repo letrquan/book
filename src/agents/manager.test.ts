@@ -20,6 +20,33 @@ import { agentLifecycleTools, evidenceTools } from '../tools/agent-tools.js';
 import { applyReviewFixes } from '../review/fix.js';
 import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewFinding } from '../review/types.js';
+import { AgentSession } from '../session/agent-session.js';
+
+/** What the agent modules logged, recorded on the way to the real logger. */
+const { debugEvents } = vi.hoisted(() => ({
+  debugEvents: [] as Array<{
+    namespace: string;
+    event: string;
+    metadata?: Record<string, unknown>;
+  }>,
+}));
+
+vi.mock('../debug-log.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../debug-log.js')>();
+  return {
+    ...actual,
+    createDebugLogger: (namespace: string) => {
+      const logger = actual.createDebugLogger(namespace);
+      return {
+        ...logger,
+        event: (event: string, metadata?: Record<string, unknown>) => {
+          debugEvents.push({ namespace, event, metadata });
+          logger.event(event, metadata);
+        },
+      };
+    },
+  };
+});
 
 /**
  * Real persistence, without the blocking backoff.
@@ -64,6 +91,7 @@ function snapshot(root: string): AgentSnapshot {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  debugEvents.length = 0;
   for (const root of tempRoots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 
@@ -924,6 +952,8 @@ describe('AgentManager lifecycle', () => {
       const mutationSignals: Array<AbortSignal | undefined> = [];
       const releases: Array<(status: 'applied' | 'failed') => void> = [];
       const events: AgentRuntimeEvent[] = [];
+      // The commit a patcher's next run ends on: a re-run's candidate is a different one.
+      let headCommit = 'head';
       const storeFactory = (storeOptions: AgentStoreOptions) => ({
         createStore: (repoHash: string, requestedRoot: string | undefined, enabled: boolean) =>
           AgentStore.open(repoHash, requestedRoot, enabled, { ...UNCONTENDED, ...storeOptions }),
@@ -940,7 +970,7 @@ describe('AgentManager lifecycle', () => {
           record.role === 'patcher'
             ? {
                 baseCommit: 'snapshot-commit',
-                headCommit: 'head',
+                headCommit,
                 branch: record.branch!,
                 agentId: record.id,
               }
@@ -1013,6 +1043,9 @@ describe('AgentManager lifecycle', () => {
         storeRoot,
         config,
         nextManager,
+        setHeadCommit: (commit: string) => {
+          headCommit = commit;
+        },
       };
     }
 
@@ -1481,6 +1514,341 @@ describe('AgentManager lifecycle', () => {
         expect(withoutBookkeeping(recordOnDisk(fixture, fixture.patcher.id))).toEqual({
           ...withoutBookkeeping(before),
           applicationStatus: 'applied',
+        });
+      });
+
+      describe("after a session switch, the session's current manager records it (#540)", () => {
+        // One process, as in the TUI: every store has the same pid, and that pid is alive. A
+        // disposed instance has no lease left, so that pid is what answers for it, and says alive.
+        const sameProcess: AgentStoreOptions = { pid: 333, processAlive: (pid) => pid === 333 };
+
+        /**
+         * A session whose runtime's manager has an apply running, with the pick held open, and a
+         * way to switch the session (`/clear`, `/resume`, `/rewind`) to a runtime whose manager
+         * opens the same store, as the next one does.
+         */
+        async function sessionMidApply(storeOptions: AgentStoreOptions) {
+          const fixture = await managerWithPendingApplies({
+            obeyAbort: false,
+            persist: true,
+            storeOptions,
+          });
+          const runtime = new SessionRuntime();
+          runtime.agentManager = fixture.manager;
+          const session = new AgentSession({ runtime });
+          const applying = fixture.manager.apply(fixture.patcher.id, fixture.candidate.id);
+          await vi.waitFor(() => expect(fixture.signals).toHaveLength(1));
+          const switchSession = async (
+            options: { storeOptions?: AgentStoreOptions; load?: boolean } = {},
+          ) => {
+            const nextRuntime = session.replaceRuntime({}, 'session_transition');
+            const next = fixture.nextManager(options.storeOptions ?? storeOptions);
+            nextRuntime.agentManager = next;
+            const events: AgentRuntimeEvent[] = [];
+            next.subscribe((event) => events.push(event));
+            if (options.load ?? true) await next.get(fixture.patcher.id);
+            return { next, events };
+          };
+          return { ...fixture, session, applying, switchSession };
+        }
+
+        const applyEvents = (events: AgentRuntimeEvent[]) =>
+          events.filter((event) => event.type === 'agent_apply');
+
+        const skipped = (reason: string) => ({
+          namespace: 'agent-manager',
+          event: 'late application skipped',
+          metadata: { reason },
+        });
+
+        /**
+         * The record on disk as a manager that loaded it saves it again: loading makes an implicit
+         * `completionDeliveredSequence` of 0 explicit (`migrateAgent`), and every save writes it.
+         */
+        const asLoaded = (record: Record<string, unknown>) => ({
+          ...record,
+          completionDeliveredSequence: record.completionDeliveredSequence ?? 0,
+        });
+
+        it('sets only applicationStatus, on disk and in the new manager, and emits it there', async () => {
+          const fixture = await sessionMidApply(sameProcess);
+          const { patcher, candidate } = fixture;
+          try {
+            const { next, events } = await fixture.switchSession();
+            const before = recordOnDisk(fixture, patcher.id);
+            const loaded = await next.get(patcher.id);
+            expect(before.applicationStatus).not.toBe('applied');
+
+            fixture.releases[0]!('applied');
+            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+            expect((await next.get(patcher.id))?.applicationStatus).toBe('applied');
+            await vi.waitFor(() =>
+              expect(recordOnDisk(fixture, patcher.id).applicationStatus).toBe('applied'),
+            );
+            // Read once the write has landed, so neither copy carries a durability warning.
+            const current = await next.get(patcher.id);
+            expect(withoutBookkeeping(current as unknown as Record<string, unknown>)).toEqual({
+              ...withoutBookkeeping(loaded as unknown as Record<string, unknown>),
+              applicationStatus: 'applied',
+            });
+            expect(withoutBookkeeping(recordOnDisk(fixture, patcher.id))).toEqual({
+              ...withoutBookkeeping(asLoaded(before)),
+              applicationStatus: 'applied',
+            });
+            expect(applyEvents(events)).toEqual([
+              {
+                type: 'agent_apply',
+                agentId: patcher.id,
+                evidenceId: candidate.id,
+                status: 'applied',
+                commit: 'head',
+                error: undefined,
+              },
+            ]);
+            expect(events).toContainEqual(
+              expect.objectContaining({
+                type: 'agent_update',
+                agent: expect.objectContaining({ id: patcher.id, applicationStatus: 'applied' }),
+              }),
+            );
+          } finally {
+            fixture.session.dispose();
+          }
+        });
+
+        it("keeps the status through the new manager's next save of the record", async () => {
+          const fixture = await sessionMidApply(sameProcess);
+          const { patcher } = fixture;
+          try {
+            const { next } = await fixture.switchSession();
+            fixture.releases[0]!('applied');
+            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+            expect((await next.get(patcher.id))?.applicationStatus).toBe('applied');
+
+            // An unrelated save of the record: it must not put the old status back.
+            const published = await next.publishEvidence(patcher.id, {
+              kind: 'finding',
+              summary: 'written by the new manager',
+            });
+
+            const written = recordOnDisk(fixture, patcher.id);
+            expect(written.producedEvidenceIds).toContain(published.id);
+            expect(written.applicationStatus).toBe('applied');
+            expect((await next.get(patcher.id))?.applicationStatus).toBe('applied');
+          } finally {
+            fixture.session.dispose();
+          }
+        });
+
+        it('leaves alone a record whose candidate a re-run has replaced', async () => {
+          // Two processes, as in #518, so the new manager may re-run the agent the disposed one
+          // last wrote: in one process that record reads as another live owner's (#540 item 5).
+          const fixture = await sessionMidApply(disposedStore);
+          const { patcher } = fixture;
+          try {
+            const { next, events } = await fixture.switchSession({ storeOptions: nextStore });
+            fixture.setHeadCommit('head-2');
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            await next.send(patcher.id, 'one more change');
+            await next.wait(patcher.id, 1000);
+            const rerun = await next.get(patcher.id);
+            expect(rerun?.patchCandidate?.headCommit).toBe('head-2');
+            const before = recordOnDisk(fixture, patcher.id);
+
+            fixture.releases[0]!('applied');
+            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+            expect(await next.get(patcher.id)).toEqual(rerun);
+            expect(withoutBookkeeping(recordOnDisk(fixture, patcher.id))).toEqual(
+              withoutBookkeeping(before),
+            );
+            expect(recordOnDisk(fixture, patcher.id).applicationStatus).not.toBe('applied');
+            expect(applyEvents(events)).toEqual([]);
+            expect(debugEvents).toContainEqual(skipped('superseded'));
+          } finally {
+            fixture.session.dispose();
+          }
+        });
+
+        it('does not write a record another live instance owns', async () => {
+          const fixture = await sessionMidApply(sameProcess);
+          const { patcher } = fixture;
+          let other: AgentStore | undefined;
+          try {
+            const { next, events } = await fixture.switchSession();
+            // Another live owner, with a lease of its own: neither the new manager nor the one
+            // handing the outcome over.
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            other = await AgentStore.open(repositoryHash(fixture.root), fixture.storeRoot, true, {
+              ...UNCONTENDED,
+              ...sameProcess,
+            });
+            const copy = other.loadAgent(patcher.id)!;
+            copy.updatedAt = Date.now();
+            other.saveAgent(copy);
+            const written = recordOnDisk(fixture, patcher.id);
+            expect((written._store as { instanceId: string }).instanceId).toBe(other.instanceId);
+
+            fixture.releases[0]!('applied');
+            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+            expect(recordOnDisk(fixture, patcher.id)).toEqual(written);
+            expect((await next.get(patcher.id))?.applicationStatus).not.toBe('applied');
+            expect(applyEvents(events)).toEqual([]);
+            expect(debugEvents).toContainEqual(skipped('live_owner'));
+          } finally {
+            other?.dispose();
+            fixture.session.dispose();
+          }
+        });
+
+        it('reaches the newest manager after two switches during one pick', async () => {
+          const fixture = await sessionMidApply(sameProcess);
+          const { patcher, candidate } = fixture;
+          try {
+            const first = await fixture.switchSession();
+            const before = recordOnDisk(fixture, patcher.id);
+            const second = await fixture.switchSession();
+
+            fixture.releases[0]!('applied');
+            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+            expect((await second.next.get(patcher.id))?.applicationStatus).toBe('applied');
+            await vi.waitFor(() =>
+              expect(recordOnDisk(fixture, patcher.id).applicationStatus).toBe('applied'),
+            );
+            expect(withoutBookkeeping(recordOnDisk(fixture, patcher.id))).toEqual({
+              ...withoutBookkeeping(asLoaded(before)),
+              applicationStatus: 'applied',
+            });
+            expect(applyEvents(second.events)).toEqual([
+              expect.objectContaining({ agentId: patcher.id, evidenceId: candidate.id }),
+            ]);
+            expect(applyEvents(first.events)).toEqual([]);
+          } finally {
+            fixture.session.dispose();
+          }
+        });
+
+        it('waits for a current manager that has not opened its store yet', async () => {
+          const fixture = await sessionMidApply(sameProcess);
+          const { patcher } = fixture;
+          try {
+            const { next, events } = await fixture.switchSession({ load: false });
+
+            fixture.releases[0]!('applied');
+            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+            expect((await next.get(patcher.id))?.applicationStatus).toBe('applied');
+            expect(applyEvents(events)).toEqual([
+              expect.objectContaining({ agentId: patcher.id, status: 'applied' }),
+            ]);
+          } finally {
+            fixture.session.dispose();
+          }
+        });
+
+        it('falls back to the field-level late write when the session has no manager yet', async () => {
+          const fixture = await sessionMidApply(sameProcess);
+          const { patcher } = fixture;
+          try {
+            // The next runtime creates its manager lazily, and has not yet.
+            fixture.session.replaceRuntime({}, 'session_transition');
+            const before = recordOnDisk(fixture, patcher.id);
+
+            fixture.releases[0]!('applied');
+            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+            const after = recordOnDisk(fixture, patcher.id);
+            expect(withoutBookkeeping(after)).toEqual({
+              ...withoutBookkeeping(before),
+              applicationStatus: 'applied',
+            });
+            // Stamped by the disposed store, as `recordLateApplication` stamps it.
+            expect(after._store).toMatchObject({
+              instanceId: (before._store as { instanceId: string }).instanceId,
+            });
+          } finally {
+            fixture.session.dispose();
+          }
+        });
+
+        describe('a hand-off that throws', () => {
+          const handOffFailed = expect.objectContaining({
+            namespace: 'agent-manager',
+            event: 'late application hand-off failed',
+          });
+          // The fallback is the disposed store's own late write; with the receiver's lease live it
+          // stands down, and says so.
+          const fallbackRan = {
+            namespace: 'agent-store',
+            event: 'late application skipped',
+            metadata: { reason: 'live_instance' },
+          };
+
+          it("still returns the pick's result, and falls back, when the receiver cannot read the record", async () => {
+            const fixture = await sessionMidApply(sameProcess);
+            try {
+              await fixture.switchSession();
+              // Every way the receiver could read the record fails, as a disk error would.
+              const failRead = () => {
+                throw Object.assign(new Error('read failed'), { code: 'EIO' });
+              };
+              vi.spyOn(AgentStore.prototype, 'loadAgent').mockImplementation(failRead);
+              vi.spyOn(AgentStore.prototype, 'listAgents').mockImplementation(failRead);
+
+              fixture.releases[0]!('applied');
+
+              await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+              expect(debugEvents).toContainEqual({
+                namespace: 'agent-manager',
+                event: 'late application hand-off failed',
+                metadata: { code: 'EIO' },
+              });
+              expect(debugEvents).toContainEqual(fallbackRan);
+            } finally {
+              vi.restoreAllMocks();
+              fixture.session.dispose();
+            }
+          });
+
+          it("still returns the pick's result, and falls back, when a listener of the receiver throws", async () => {
+            const fixture = await sessionMidApply(sameProcess);
+            try {
+              const { next } = await fixture.switchSession();
+              next.subscribe((event) => {
+                if (event.type === 'agent_apply') throw new Error('listener failed');
+              });
+
+              fixture.releases[0]!('applied');
+
+              await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+              expect(debugEvents).toContainEqual(handOffFailed);
+              expect(debugEvents).toContainEqual(fallbackRan);
+            } finally {
+              fixture.session.dispose();
+            }
+          });
+        });
+
+        it('reads only the one record, not every summary in the store', async () => {
+          const fixture = await sessionMidApply(sameProcess);
+          const { patcher } = fixture;
+          try {
+            const { next } = await fixture.switchSession();
+            const listed = vi.spyOn(AgentStore.prototype, 'listAgents');
+
+            fixture.releases[0]!('applied');
+            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+            expect(listed).not.toHaveBeenCalled();
+            listed.mockRestore();
+            expect((await next.get(patcher.id))?.applicationStatus).toBe('applied');
+          } finally {
+            vi.restoreAllMocks();
+            fixture.session.dispose();
+          }
         });
       });
     });

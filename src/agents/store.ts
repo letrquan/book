@@ -1234,6 +1234,16 @@ export class AgentStore {
     );
   }
 
+  /**
+   * {@link isOwnedByLiveForeign}, except that a record `exemptInstanceId` owns does not count: the
+   * disposed instance that hands a late apply's outcome to the session's next manager (#540). In
+   * one process its pid is this process's, so without the exemption it would read as alive.
+   */
+  isOwnedByLiveForeignOtherThan(agentId: string, exemptInstanceId: string | undefined): boolean {
+    const owner = this.agentOwners.get(agentId);
+    return owner?.instanceId !== exemptInstanceId && this.isOwnedByLiveForeign(agentId);
+  }
+
   hasPendingAgent(agentId: string): boolean {
     return Array.from(this.pendingWrites.values()).some((pending) => pending.agentId === agentId);
   }
