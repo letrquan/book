@@ -18,6 +18,7 @@ const TEST_SHELL: ResolvedShell =
     ? { kind: 'cmd', label: 'cmd.exe', source: 'fallback' }
     : { kind: 'sh', label: '/bin/sh', source: 'detected' };
 
+const KEY = 'sk-live-0123456789abcdef';
 const bash = shellTools.find((tool) => tool.name === 'Bash')!;
 
 let dir: string;
@@ -25,7 +26,7 @@ let context: ToolContext;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'book-shell-redacted-'));
-  context = { workspaceRoot: dir, env: {}, shell: TEST_SHELL };
+  context = { workspaceRoot: dir, env: {}, shell: TEST_SHELL, providerSecrets: [KEY] };
 });
 // Nothing is spawned by a refused command, and the control runs in the foreground to completion.
 afterEach(async () => {

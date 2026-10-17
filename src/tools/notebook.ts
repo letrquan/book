@@ -10,6 +10,7 @@ import {
   requireFreshObservation,
   requireObservationForMutation,
 } from './file-provenance.js';
+import { redactedSecretDeletion, redactedSecretOverwrite } from './redacted-secret-guard.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 type CellType = 'code' | 'markdown';
@@ -132,6 +133,10 @@ function findTargetIndex(cells: NotebookCell[], cellId: string): number | ToolRe
   return matches[0];
 }
 
+function cellText(cell: NotebookCell): string {
+  return typeof cell.source === 'string' ? cell.source : cell.source.join('');
+}
+
 function setCellType(cell: NotebookCell, cellType: CellType): void {
   cell.cell_type = cellType;
   if (cellType === 'code') {
@@ -211,6 +216,14 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   const { notebook } = parsed;
   await yieldToEventLoop(ctx.signal);
 
+  // The model sees the marker where a key is (#411, #519). Cell sources are decoded, so a key that
+  // JSON escapes in the raw file is still found.
+  const decoded = `${original}\n${notebook.cells.map(cellText).join('\n')}`;
+  if (mode !== 'delete') {
+    const refused = redactedSecretOverwrite(ctx, shownPath, decoded, [args.new_source]);
+    if (refused) return refused;
+  }
+
   if (mode === 'replace') {
     const target = findTargetIndex(notebook.cells, cellId as string);
     if (typeof target !== 'number') return target;
@@ -220,6 +233,13 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   } else if (mode === 'delete') {
     const target = findTargetIndex(notebook.cells, cellId as string);
     if (typeof target !== 'number') return target;
+    const refused = redactedSecretDeletion(
+      ctx,
+      `${shownPath} (cell ${cellId as string})`,
+      cellText(notebook.cells[target]),
+      'cell',
+    );
+    if (refused) return refused;
     notebook.cells.splice(target, 1);
   } else {
     let insertionIndex = 0;

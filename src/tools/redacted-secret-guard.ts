@@ -2,6 +2,12 @@ import { PROVIDER_KEY_MARKER } from '../provider-secrets.js';
 import type { ToolContext, ToolResult } from '../types/tools.js';
 import { toolFailure } from './result.js';
 
+/** Whether `text` holds one of the session's provider keys. False when none is configured. */
+export function holdsProviderKey(ctx: ToolContext, text: string): boolean {
+  const secrets = ctx.providerSecrets;
+  return !!secrets?.length && secrets.some((secret) => text.includes(secret));
+}
+
 /**
  * Refuse a mutation that would put the redaction marker into a file that holds a provider key.
  *
@@ -16,10 +22,8 @@ export function redactedSecretOverwrite(
   existing: string,
   incoming: readonly string[],
 ): ToolResult | undefined {
-  const secrets = ctx.providerSecrets;
-  if (!secrets?.length) return undefined;
   if (!incoming.some((text) => text.includes(PROVIDER_KEY_MARKER))) return undefined;
-  if (!secrets.some((secret) => existing.includes(secret))) return undefined;
+  if (!holdsProviderKey(ctx, existing)) return undefined;
   return toolFailure(
     `${shownPath} holds a provider key, which Book shows as ${PROVIDER_KEY_MARKER}. Writing that marker back would replace the real key.`,
     {
@@ -31,44 +35,49 @@ export function redactedSecretOverwrite(
 }
 
 /**
- * Refuse deleting a file that holds a provider key (#519).
+ * Refuse deleting a file, or a notebook cell, that holds a provider key (#519).
  *
  * Book never sees the real value, so it can never write it back: a delete is how a rewrite loses
  * the key (Delete File, then Add File with the marker), whether the two arrive in one patch or two.
+ * `subject` is what is being deleted, for the message: a file by default.
  */
 export function redactedSecretDeletion(
   ctx: ToolContext,
   shownPath: string,
   existing: string,
+  subject = 'file',
 ): ToolResult | undefined {
-  const secrets = ctx.providerSecrets;
-  if (!secrets?.length) return undefined;
-  if (!secrets.some((secret) => existing.includes(secret))) return undefined;
+  if (!holdsProviderKey(ctx, existing)) return undefined;
   return toolFailure(
-    `${shownPath} holds a provider key, which Book shows as ${PROVIDER_KEY_MARKER}. Deleting or rewriting the file would lose the real key, and Book cannot write it back.`,
+    `${shownPath} holds a provider key, which Book shows as ${PROVIDER_KEY_MARKER}. Deleting or rewriting the ${subject} would lose the real key, and Book cannot write it back.`,
     {
       code: 'redacted_secret_overwrite',
       remediation:
-        'Edit only the lines that need to change, with Edit or an Update File hunk that leaves the key line alone, or ask the user to make the change.',
+        'If the user asked for this file (or cell) to be deleted, ask them to delete it themselves. To change it, edit only the lines that need to change, with Edit or an Update File hunk that leaves the key line alone.',
     },
   );
 }
 
 /**
- * Refuse a shell command whose text carries the redaction marker (#519).
+ * Refuse a shell command whose text carries the redaction marker, while a provider key is
+ * configured (#519).
  *
  * The marker stands for a provider key the model cannot see, so a command that names it can only
- * write the marker where the key was, or use it as though it were a credential. Matching the text
- * needs no secrets: the marker is a fixed string, and a command has no business containing it.
+ * write the marker where the key was, or use it as though it were a credential. The match is on
+ * the command text alone, so a search for the marker is refused too.
  */
-export function redactedSecretCommand(command: string | undefined): ToolResult | undefined {
+export function redactedSecretCommand(
+  ctx: ToolContext,
+  command: string | undefined,
+): ToolResult | undefined {
+  if (!ctx.providerSecrets?.length) return undefined;
   if (!command?.includes(PROVIDER_KEY_MARKER)) return undefined;
   return toolFailure(
     `The command contains ${PROVIDER_KEY_MARKER}, which stands for a real provider key that the model cannot see. A command must not write or use it.`,
     {
       code: 'redacted_secret_command',
       remediation:
-        'Edit the file with Edit on only the lines that need to change, or ask the user to make the change.',
+        'The marker is not the key, and Book cannot write the real key. To change a file that holds a key, edit only the lines that need to change with Edit. To delete or replace such a file, or to run a command that needs the key, ask the user. To search for or quote the marker text itself, leave out the brackets.',
     },
   );
 }

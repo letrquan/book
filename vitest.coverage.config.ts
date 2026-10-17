@@ -14,6 +14,7 @@ export default mergeConfig(
         'src/rewind/snapshot-store.test.ts',
         'src/settings-cli.test.ts',
         'src/tools/shell.test.ts',
+        'src/tools/shell-redacted-command.test.ts',
         'src/tui/tui-integration.test.ts',
       ],
       maxWorkers: 1,

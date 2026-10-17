@@ -201,7 +201,7 @@ function buildEffectiveCommand(
 }
 
 async function bash(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const refused = redactedSecretCommand(readString(args, 'command'));
+  const refused = redactedSecretCommand(ctx, readString(args, 'command'));
   if (refused) return refused;
   return readBoolean(args, 'run_in_background', 'runInBackground')
     ? bashBackground(args, ctx)

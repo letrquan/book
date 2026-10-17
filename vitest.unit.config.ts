@@ -16,6 +16,7 @@ export default mergeConfig(
         'src/rewind/snapshot-store.test.ts',
         'src/settings-cli.test.ts',
         'src/tools/shell.test.ts',
+        'src/tools/shell-redacted-command.test.ts',
         'src/tui/tui-integration.test.ts',
       ],
       // Ink and process-lifecycle tests share host-level stdin/listener state.

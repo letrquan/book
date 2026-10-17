@@ -304,7 +304,6 @@ async function redactedSecretRefusal(
   ctx: ToolContext,
   entries: ReadonlyArray<{ operation: PatchOperation; filePath: string; messagePath: string }>,
 ): Promise<ToolResult | undefined> {
-  if (!ctx.providerSecrets?.length) return undefined;
   for (const { operation, filePath, messagePath } of entries) {
     if (operation.kind === 'add') continue;
     const added =
