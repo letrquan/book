@@ -29,7 +29,9 @@ import {
   type SkillActivation,
   type SkillExecution,
 } from '../settings.js';
+import { resolveSettings } from '../settings-loader.js';
 import { blockedWorkspaceSettingWrite } from '../settings-scope.js';
+import type { AgentConfig } from '../types/runtime.js';
 
 const LOCAL_DIR = '.book';
 const LOCAL_FILE = 'settings.local.json';
@@ -302,6 +304,60 @@ export function clearLocalSettings(
   return result.ok
     ? { ok: true }
     : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+}
+
+/**
+ * The keys of a provider entry a `/model` save supersedes: where requests go, the key they carry
+ * and the wire type. These are `providerConfigSchema`'s connection fields, the same four the
+ * workspace-provider gate refuses a workspace layer for a user-defined id. Everything else in a
+ * workspace-local entry (the per-model `contextWindow`, `maxOutputTokens`, `vision`,
+ * `editFormat`, `effort`) is the user's own and outranks what discovery reports (#514).
+ */
+const PROVIDER_CONNECTION_KEYS = ['baseURL', 'baseUrl', 'apiKey', 'type'] as const;
+
+/**
+ * Save a provider from `/model` to the user-global file, and clear what that save supersedes from
+ * the workspace-local layer, which would otherwise shadow it: the entry's connection keys, and
+ * the local `model` when the save activates (`selection` is the `provider/model` it selects).
+ * Per-model overrides in the local entry stay, for a refresh and an activating save alike.
+ */
+export function persistProviderSave(
+  workspace: string,
+  providerId: string,
+  provider: ProviderConfig,
+  selection?: string,
+): { ok: boolean; error?: string } {
+  const result = persistSettingsGlobal({
+    [`provider.${providerId}`]: provider,
+    ...(selection !== undefined ? { model: selection } : {}),
+  });
+  if (!result.ok) return result;
+  clearLocalSettings(workspace, [
+    ...PROVIDER_CONNECTION_KEYS.map((key) => `provider.${providerId}.${key}`),
+    ...(selection !== undefined ? ['model'] : []),
+  ]);
+  return { ok: true };
+}
+
+/**
+ * The provider entry the live config holds after a save. The user-global entry alone would drop
+ * what the workspace layers add to it (a local per-model override, a repository's models), so a
+ * session would resolve a different window than the next launch does. Re-resolved from the layers
+ * on disk the way a launch does; the saved entry itself when they cannot be read or the session
+ * runs without settings layers.
+ */
+export function liveProviderAfterSave(
+  config: Pick<AgentConfig, 'workspace' | 'settingsContext'>,
+  providerId: string,
+  saved: ProviderConfig,
+): ProviderConfig {
+  if (config.settingsContext?.noSettings) return saved;
+  try {
+    const resolved = resolveSettings(config.workspace, config.settingsContext?.overridePath);
+    return Object.hasOwn(resolved.provider, providerId) ? resolved.provider[providerId] : saved;
+  } catch {
+    return saved;
+  }
 }
 
 /** Remove one provider from the settings file at `path` and any default targeting it. */

@@ -3,7 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveSettings } from '../settings-loader.js';
-import { configuredAdvisorModel, loadConfig } from '../config.js';
+import { configuredAdvisorModel, loadConfig, resolveModelProviderConfig } from '../config.js';
+import { resolveContextWindow } from '../models.js';
+import { defaultConfig } from '../test/fixtures.js';
 import {
   persistWorkspaceProviderChoice,
   workspaceProviderFingerprint,
@@ -24,6 +26,8 @@ import {
   removeProviderLocal,
   removeProviderGlobal,
   clearLocalSettings,
+  liveProviderAfterSave,
+  persistProviderSave,
   turnOffAdvisorModel,
 } from './persist.js';
 
@@ -653,5 +657,146 @@ describe('readUserProvider', () => {
     expect(readUserProvider('missing')).toBeUndefined();
     expect(readUserProvider('constructor')).toBeUndefined();
     expect(readUserProvider('bad')).toBeUndefined();
+  });
+});
+
+// #514: a `/model` provider save used to delete the whole local `provider.<id>` entry, taking a
+// hand-set per-model override (the guide promises "a `contextWindow` you set yourself always
+// wins") with it. A save clears only the connection keys it supersedes.
+describe('persistProviderSave (#514)', () => {
+  const claude = 'claude-test-9';
+  const selection = `anthro/${claude}`;
+  let savedBookHome: string | undefined;
+  beforeEach(() => {
+    savedBookHome = process.env.BOOK_HOME;
+    process.env.BOOK_HOME = join(dir, 'book-home');
+  });
+  afterEach(() => {
+    if (savedBookHome === undefined) delete process.env.BOOK_HOME;
+    else process.env.BOOK_HOME = savedBookHome;
+  });
+
+  const override = {
+    contextWindow: 150_000,
+    maxOutputTokens: 4096,
+    vision: false,
+    editFormat: 'whole',
+    effort: false,
+  };
+  /** What the save writes to the user file: the catalog the endpoint just reported. */
+  const savedProvider = () =>
+    ({
+      type: 'anthropic',
+      baseURL: 'https://user.example',
+      apiKey: 'user-key',
+      models: { [claude]: { reportedContextWindow: 345_678 } },
+    }) as const;
+  const writeLocal = (document: Record<string, unknown>) => {
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(join(dir, '.book', 'settings.local.json'), JSON.stringify(document));
+  };
+  const seedLocal = () =>
+    writeLocal({
+      model: 'anthro/stale',
+      provider: {
+        anthro: {
+          type: 'openai',
+          baseURL: 'https://stale.example',
+          baseUrl: 'https://stale-legacy.example',
+          apiKey: 'stale-key',
+          models: { [claude]: override },
+        },
+      },
+    });
+  const localProvider = () =>
+    (readSettingsLocal(dir).provider as Record<string, Record<string, unknown>> | undefined)
+      ?.anthro;
+  /** The window a fresh launch resolves: loaded from the layers on disk, not the live config. */
+  const freshWindow = () => {
+    const config = loadConfig(dir, { allowMissingApiKey: true });
+    return resolveContextWindow(resolveModelProviderConfig(config, selection));
+  };
+
+  it('keeps a per-model override through a refresh and clears the keys it supersedes', () => {
+    seedLocal();
+
+    expect(persistProviderSave(dir, 'anthro', savedProvider())).toEqual({ ok: true });
+
+    expect(localProvider()).toEqual({ models: { [claude]: override } });
+    // A refresh activates nothing, so the local `model` is not this save's to clear.
+    expect(readSettingsLocal(dir).model).toBe('anthro/stale');
+    expect(readSettingsGlobal().provider).toEqual({ anthro: savedProvider() });
+    expect(freshWindow()).toEqual({ window: 150_000, source: 'declared' });
+  });
+
+  it('keeps a per-model override through an activating save and still clears local model', () => {
+    seedLocal();
+
+    expect(persistProviderSave(dir, 'anthro', savedProvider(), selection)).toEqual({ ok: true });
+
+    expect(localProvider()).toEqual({ models: { [claude]: override } });
+    expect(readSettingsLocal(dir).model).toBeUndefined();
+    expect(readSettingsGlobal().model).toBe(selection);
+    expect(freshWindow()).toEqual({ window: 150_000, source: 'declared' });
+  });
+
+  it('prunes a local entry that held only connection keys', () => {
+    writeLocal({ provider: { anthro: { type: 'openai', baseURL: 'https://stale.example' } } });
+
+    expect(persistProviderSave(dir, 'anthro', savedProvider())).toEqual({ ok: true });
+
+    expect(readSettingsLocal(dir)).toEqual({});
+  });
+
+  it('leaves another provider and an absent local file alone', () => {
+    writeLocal({ provider: { other: { baseURL: 'https://other.example' } } });
+    expect(persistProviderSave(dir, 'anthro', savedProvider())).toEqual({ ok: true });
+    expect(readSettingsLocal(dir)).toEqual({
+      provider: { other: { baseURL: 'https://other.example' } },
+    });
+
+    rmSync(join(dir, '.book'), { recursive: true, force: true });
+    expect(persistProviderSave(dir, 'anthro', savedProvider(), selection)).toEqual({ ok: true });
+    expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(false);
+  });
+
+  describe('liveProviderAfterSave', () => {
+    it('keeps resolving the local override after an activating save, until restart too', () => {
+      seedLocal();
+      persistProviderSave(dir, 'anthro', savedProvider(), selection);
+
+      const live = liveProviderAfterSave({ workspace: dir }, 'anthro', savedProvider());
+
+      expect(live.models[claude]).toMatchObject({ ...override, reportedContextWindow: 345_678 });
+      const config = defaultConfig({
+        workspace: dir,
+        settings: { ...defaultConfig().settings, provider: { anthro: live } },
+      });
+      expect(resolveContextWindow(resolveModelProviderConfig(config, selection))).toEqual({
+        window: 150_000,
+        source: 'declared',
+      });
+    });
+
+    it('falls back to the saved provider when the layers cannot be read', () => {
+      writeLocal({});
+      writeFileSync(join(dir, '.book', 'settings.local.json'), '{ not json');
+
+      expect(liveProviderAfterSave({ workspace: dir }, 'anthro', savedProvider())).toEqual(
+        savedProvider(),
+      );
+    });
+
+    it('is the saved provider under --no-settings', () => {
+      seedLocal();
+
+      expect(
+        liveProviderAfterSave(
+          { workspace: dir, settingsContext: { noSettings: true } },
+          'anthro',
+          savedProvider(),
+        ),
+      ).toEqual(savedProvider());
+    });
   });
 });

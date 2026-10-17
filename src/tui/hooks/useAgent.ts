@@ -59,7 +59,7 @@ import {
   readUserProvider,
   removeProviderGlobal,
   persistAgentProfileModel,
-  persistSettingsGlobal,
+  persistProviderSave,
   persistUserSettingClearingLocal,
   turnOffAdvisorModel,
   persistPermissionRuleLocal,
@@ -67,7 +67,7 @@ import {
   persistSkillActivationLocal,
   persistSkillExecutionLocal,
   persistSkillsEnabledLocal,
-  clearLocalSettings,
+  liveProviderAfterSave,
 } from '../persist.js';
 import {
   DEFAULT_SETTINGS,
@@ -2124,18 +2124,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
       const selection = `${providerId}/${request.activeModelId}`;
       const activate = request.activate !== false;
-      const result = persistSettingsGlobal({
-        [`provider.${providerId}`]: savedProvider,
-        ...(activate ? { model: selection } : {}),
-      });
+      // Clears the local connection keys this save supersedes (and the local model when it
+      // activates) so this folder inherits the global value; per-model overrides stay (#514).
+      const result = persistProviderSave(
+        config.workspace,
+        providerId,
+        savedProvider,
+        activate ? selection : undefined,
+      );
       if (!result.ok) return result;
-      // Drop any stale per-project entries for this provider (and the active
-      // model when we just set it) so this folder inherits the global value
-      // instead of a local override shadowing it.
-      clearLocalSettings(config.workspace, [
-        `provider.${providerId}`,
-        ...(activate ? ['model'] : []),
-      ]);
+      // The live entry keeps what the workspace layers add to the user's, as a launch would.
+      const liveProvider = liveProviderAfterSave(config, providerId, savedProvider);
 
       setLiveConfig((current) => {
         const withProvider: AgentConfig = {
@@ -2145,7 +2144,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             ...(activate ? { model: selection } : {}),
             provider: {
               ...current.settings.provider,
-              [providerId]: savedProvider,
+              [providerId]: liveProvider,
             },
           },
         };

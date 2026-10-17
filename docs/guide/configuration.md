@@ -225,6 +225,12 @@ when the endpoint stops reporting one). Discovery never writes `contextWindow`. 
 the family table; then the default. A reported window is not a declaration, so an overflow can still
 lower it by learning a ceiling, and `/context` shows its source as `reported`.
 
+A save from `/model` (a new provider, a model added by hand, or a catalog refresh) writes your user
+file, and replaces only the connection keys (`baseURL`, `baseUrl`, `apiKey` and `type`) of a
+same-named entry in `.book/settings.local.json`, plus the local `model` when the save activates a
+model. Per-model overrides in that entry (`contextWindow`, `maxOutputTokens`, `vision`,
+`editFormat`, `effort`) are kept, so a `contextWindow` you set there survives a refresh.
+
 ### Prompt caching on OpenAI-compatible providers
 
 On the Anthropic Messages API, Book places its own cache breakpoints: the last tool, the cached
