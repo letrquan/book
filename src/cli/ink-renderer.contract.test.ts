@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { Box, Text, render } from 'ink';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
+import { installInkFrameClip } from './ink-frame-clip.js';
 import { installInkFrameThrottle } from './ink-frame-throttle.js';
 import {
   createRowCachedGet,
@@ -111,6 +112,32 @@ describe('Ink renderer contract', () => {
           expected,
         );
       }
+    }
+  });
+
+  it("lets Book clip Ink's frame rows to the terminal width", async () => {
+    // The frame clip reads `this.width` and the `{ output, height }` that `get` returns, and cuts
+    // the rows Ink lets run past the width. An upgrade that renames either fails here.
+    const outputPath = join(inkBuildDir(), 'output.js');
+    const outputModule = (await import(pathToFileURL(outputPath).href)) as {
+      default: InkOutputConstructor;
+    };
+    const Output = outputModule.default;
+    const originalGet = Output.prototype.get;
+    try {
+      const output = new Output({ width: 4, height: 2 });
+      expect(output.width).toBe(4);
+      output.write(0, 1, 'abcdefgh', { transformers: [] });
+      expect(originalGet.call(output)).toEqual({ output: '\nabcdefgh', height: 2 });
+      expect(
+        await installInkFrameClip(),
+        "Ink's private Output changed shape; update ink-frame-clip.ts before VERIFIED_INK_VERSION.",
+      ).toBe(true);
+      const clipped = new Output({ width: 4, height: 2 });
+      clipped.write(0, 1, 'abcdefgh', { transformers: [] });
+      expect(Output.prototype.get.call(clipped)).toEqual({ output: '\nabcd', height: 2 });
+    } finally {
+      Output.prototype.get = originalGet;
     }
   });
 

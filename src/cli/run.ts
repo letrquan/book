@@ -42,6 +42,7 @@ import { hasInkTrailingNewlineFix } from './ink-renderer.js';
 import { installInkFrameThrottle } from './ink-frame-throttle.js';
 import { installInkOutputCache } from './ink-output-cache.js';
 import { installInkRenderCull } from './ink-render-cull.js';
+import { installInkFrameClip } from './ink-frame-clip.js';
 import { isCiEnvironment, resolveInkMaxFps, resolveTuiRendererMode } from './tui-renderer-mode.js';
 import { resolvePermissionMode } from '../permission-mode.js';
 import { spawn } from 'node:child_process';
@@ -461,6 +462,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       await installInkOutputCache();
       // Ink's walk draws every mounted transcript row, even the ones the viewport cannot see.
       await installInkRenderCull();
+      await installInkFrameClip();
       app = render(
         createElement(App, {
           config,
