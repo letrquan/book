@@ -1,11 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { tmpdir } from 'os';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   collectAtMentionObservations,
   expandAtMentions,
   expandShellCommands,
+  expandUserInput,
 } from './input-expansion.js';
 
 let dirs: string[] = [];
@@ -17,6 +18,7 @@ function workspace(): string {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   dirs = [];
 });
@@ -201,5 +203,103 @@ describe('expandShellCommands', () => {
     controller.abort();
 
     await expect(pending).resolves.toMatch(/failed:.*abort/i);
+  });
+});
+
+// #559. A repository can commit `docs/conventions.txt -> ../../.ssh/id_rsa` and mention it in a
+// project command, and the target would be inlined into the turn sent to the provider. A mention is
+// read only when its real path is inside the containment root: the repository root, else the
+// workspace. A refused one stays as written, like `@../x`.
+describe.skipIf(process.platform === 'win32')('expandAtMentions — links (#559)', () => {
+  function write(path: string, body: string) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, body, 'utf-8');
+  }
+
+  it('leaves a mention of a committed link to a file outside the repository as written', async () => {
+    const top = workspace();
+    const repo = join(top, 'repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    write(join(top, 'secret_id_rsa'), 'SECRET-PRIVATE-KEY');
+    mkdirSync(join(repo, 'docs'));
+    symlinkSync(join('..', '..', 'secret_id_rsa'), join(repo, 'docs', 'conventions.txt'));
+    const input = 'Follow @docs/conventions.txt when editing.';
+
+    expect(expandAtMentions(input, repo)).toBe(input);
+    await expect(expandUserInput(input, repo)).resolves.toBe(input);
+    expect(collectAtMentionObservations(input, repo, 'ref')).toEqual([]);
+  });
+
+  it('leaves a file reached through a directory linked outside the workspace as written', () => {
+    const top = workspace();
+    const ws = join(top, 'ws');
+    write(join(top, 'outside', 'id_rsa'), 'SECRET-PRIVATE-KEY');
+    mkdirSync(ws);
+    symlinkSync(join(top, 'outside'), join(ws, 'linkdir'));
+    const input = 'Read @linkdir/id_rsa and @linkdir';
+
+    expect(expandAtMentions(input, ws)).toBe(input);
+    expect(collectAtMentionObservations(input, ws, 'ref')).toEqual([]);
+  });
+
+  it('expands a link to a file inside the workspace, under the name it was mentioned by', () => {
+    const ws = workspace();
+    write(join(ws, 'STYLE.txt'), 'in-repo style');
+    mkdirSync(join(ws, 'docs'));
+    symlinkSync(join('..', 'STYLE.txt'), join(ws, 'docs', 'style.txt'));
+
+    const result = expandAtMentions('Follow @docs/style.txt', ws);
+
+    expect(result).toContain('Contents of docs/style.txt:');
+    expect(result).toContain('in-repo style');
+    expect(collectAtMentionObservations('@docs/style.txt', ws, 'ref')).toEqual([
+      expect.objectContaining({ path: 'docs/style.txt', operation: 'mention' }),
+    ]);
+  });
+
+  it('expands a monorepo link from a package workspace to a shared file in the repository', () => {
+    const repo = workspace();
+    mkdirSync(join(repo, '.git'));
+    write(join(repo, 'packages', 'shared', 'conventions.txt'), 'shared conventions');
+    const pkg = join(repo, 'packages', 'a');
+    mkdirSync(pkg);
+    symlinkSync(join('..', 'shared', 'conventions.txt'), join(pkg, 'conventions.txt'));
+
+    expect(expandAtMentions('Follow @conventions.txt', pkg)).toContain('shared conventions');
+    // The path as written is still measured from the workspace.
+    expect(expandAtMentions('Follow @../shared/conventions.txt', pkg)).toBe(
+      'Follow @../shared/conventions.txt',
+    );
+  });
+
+  it('measures from the workspace when there is no repository', () => {
+    const top = workspace();
+    const ws = join(top, 'ws');
+    write(join(top, 'sibling.txt'), 'SIBLING-SECRET');
+    mkdirSync(ws);
+    symlinkSync(join('..', 'sibling.txt'), join(ws, 'notes.txt'));
+
+    expect(expandAtMentions('Read @notes.txt', ws)).toBe('Read @notes.txt');
+  });
+
+  // A dotfiles `~/.git` would otherwise make the whole home directory one repository.
+  it('treats a dotfiles .git in the home directory as no repository', () => {
+    const home = workspace();
+    mkdirSync(join(home, '.git'));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    write(join(home, 'other', 'secret.txt'), 'HOME-SECRET');
+    const project = join(home, 'proj');
+    mkdirSync(project);
+    symlinkSync(join('..', 'other', 'secret.txt'), join(project, 'notes.txt'));
+    // A project with its own repository under that home is measured from its own root.
+    const repo = join(home, 'repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    write(join(repo, 'shared', 'notes.txt'), 'repo notes');
+    mkdirSync(join(repo, 'pkg'));
+    symlinkSync(join('..', 'shared', 'notes.txt'), join(repo, 'pkg', 'notes.txt'));
+
+    expect(expandAtMentions('Read @notes.txt', project)).toBe('Read @notes.txt');
+    expect(expandAtMentions('Read @notes.txt', join(repo, 'pkg'))).toContain('repo notes');
   });
 });

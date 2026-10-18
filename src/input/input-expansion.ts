@@ -1,9 +1,11 @@
-import { existsSync, readFileSync, statSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
 import { exec } from 'child_process';
 import { createHash } from 'crypto';
 import { buildChildEnv } from '../child-env.js';
+import { projectContainmentRoot, tryRealPath } from '../repo-containment.js';
 import type { FileObservation } from '../types/tools.js';
 import { workspaceIdentity } from '../tools/file-provenance.js';
+import { isOutside } from '../tools/path-utils.js';
 import { resolveWorkspaceMentionPath } from './file-mentions.js';
 
 const AT_MENTION_CHAR_LIMIT = 20_000;
@@ -199,26 +201,65 @@ function looksBinary(content: string): boolean {
   return content.includes('\0');
 }
 
+/** The real path of the root mentions must stay inside, worked out once, when first needed. */
+type ContainmentRoot = () => string | undefined;
+
+/**
+ * The repository root (`projectContainmentRoot`: the workspace with no repository), as a real
+ * path. Lazy, so a prompt whose tokens all fail before the disk is looked at (most name no file)
+ * never walks the workspace's ancestors.
+ */
+function mentionContainmentRoot(workspace: string): ContainmentRoot {
+  let root: { real: string | undefined } | undefined;
+  return () => (root ??= { real: tryRealPath(projectContainmentRoot(workspace)) }).real;
+}
+
+/**
+ * The file a mention names: the real path it is read from, which is the path that was checked,
+ * and the workspace-relative name it was mentioned by. `null` for a path as written outside the
+ * workspace, which is never probed (a token like `\\server\share` would otherwise make a network
+ * request for every prompt that mentions one), for a missing path, and for a path whose real path
+ * leaves the repository root, so a committed `docs/conventions.txt -> ../../.ssh/id_rsa` is not
+ * sent to the provider (#559) while a monorepo package's link to a shared file elsewhere in the
+ * repository is.
+ */
+function resolveMentionFile(
+  workspace: string,
+  mentionPath: string,
+  containmentRoot: ContainmentRoot,
+): { realPath: string; relativePath: string } | null {
+  const resolved = resolveWorkspaceMentionPath(workspace, mentionPath);
+  if (!resolved) return null;
+  const realPath = tryRealPath(resolved.filePath);
+  if (realPath === undefined) return null;
+  const rootReal = containmentRoot();
+  if (rootReal === undefined || isOutside(rootReal, realPath)) return null;
+  return { realPath, relativePath: resolved.relativePath };
+}
+
 /**
  * Returns null when the token names nothing a file's contents could be read
  * from, so it stays as written: a directory (a `@Test` annotation matches a
- * `test/` directory case-insensitively on Windows and macOS), a missing path,
- * and a path outside the workspace, which is never probed — a token like
- * `\\server\share` would otherwise make a network request for every prompt that
- * mentions one.
+ * `test/` directory case-insensitively on Windows and macOS), and anything
+ * `resolveMentionFile` refuses — a missing path, a path outside the workspace,
+ * and a link out of the repository, which is left exactly as a mention of
+ * `@../x` is, without a note.
  */
-function expandMention(filePath: string, workspace: string): string | null {
-  const resolved = resolveWorkspaceMentionPath(workspace, filePath);
+function expandMention(
+  filePath: string,
+  workspace: string,
+  containmentRoot: ContainmentRoot,
+): string | null {
+  const resolved = resolveMentionFile(workspace, filePath, containmentRoot);
   if (!resolved) return null;
-  if (!existsSync(resolved.filePath)) return null;
 
   try {
-    const stat = statSync(resolved.filePath);
+    const stat = statSync(resolved.realPath);
     if (stat.isDirectory()) return null;
     if (!stat.isFile())
       return formatMentionError(resolved.relativePath, 'path is not a regular file');
 
-    const content = readFileSync(resolved.filePath, 'utf-8');
+    const content = readFileSync(resolved.realPath, 'utf-8');
     if (looksBinary(content))
       return formatMentionError(resolved.relativePath, 'file appears to be binary');
 
@@ -246,19 +287,21 @@ export function mentionTokenRanges(input: string): Array<[number, number]> {
 
 /**
  * Expand @path references to file contents in user input. Only a token outside
- * fenced and inline code that names a regular file inside the workspace is
- * expanded; a directory, a missing path and a path outside the workspace stay
- * exactly as the user wrote them (#261).
+ * fenced and inline code that names a regular file inside the workspace, whose
+ * real path is inside the repository root (the workspace with no repository),
+ * is expanded; a directory, a missing path, a path outside the workspace and a
+ * link out of the repository stay exactly as the user wrote them (#261, #559).
  */
 export function expandAtMentions(input: string, workspace: string): string {
   const tokens = findMentionTokens(input);
   if (tokens.length === 0) return input;
 
+  const containmentRoot = mentionContainmentRoot(workspace);
   let output = '';
   let cursor = 0;
   for (const token of tokens) {
     output += input.slice(cursor, token.start);
-    output += expandMention(token.path, workspace) ?? token.raw;
+    output += expandMention(token.path, workspace, containmentRoot) ?? token.raw;
     output += token.trailing;
     cursor = token.end + token.trailing.length;
   }
@@ -280,13 +323,15 @@ export function collectAtMentionObservations(
   const workspaceId = workspaceIdentity(workspace);
   const observations: FileObservation[] = [];
   const shellLines = expandShellInput ? findShellLines(input) : [];
+  const containmentRoot = mentionContainmentRoot(workspace);
   for (const token of findMentionTokens(input, shellLineRanges(shellLines))) {
-    const resolved = resolveWorkspaceMentionPath(workspace, token.path);
-    if (!resolved || !existsSync(resolved.filePath)) continue;
+    // The same files `expandMention` inlines, so a refused mention is never observed either.
+    const resolved = resolveMentionFile(workspace, token.path, containmentRoot);
+    if (!resolved) continue;
     try {
-      const info = statSync(resolved.filePath);
+      const info = statSync(resolved.realPath);
       if (!info.isFile()) continue;
-      const bytes = readFileSync(resolved.filePath);
+      const bytes = readFileSync(resolved.realPath);
       observations.push({
         path: resolved.relativePath,
         workspaceId,
@@ -355,6 +400,7 @@ export async function expandUserInput(
   // One left-to-right walk of the typed text, replacing each `!` line and each
   // mention where it was written. Output is inserted, never rescanned, so the
   // spans below can never overlap and are already in order.
+  const containmentRoot = mentionContainmentRoot(workspace);
   const edits: Array<{ start: number; end: number; apply: () => string | Promise<string> }> = [
     ...shellLines.map((line) => ({
       start: line.start,
@@ -364,7 +410,7 @@ export async function expandUserInput(
     ...tokens.map((token) => ({
       start: token.start,
       end: token.end,
-      apply: () => expandMention(token.path, workspace) ?? token.raw,
+      apply: () => expandMention(token.path, workspace, containmentRoot) ?? token.raw,
     })),
   ].sort((left, right) => left.start - right.start);
 

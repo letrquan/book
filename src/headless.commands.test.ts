@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Readable } from 'stream';
@@ -357,5 +357,33 @@ describe('runHeadless — session name for a prompt-body command', () => {
     const result = await run(makeConfig(), 'fix the flaky login test', { sessionStore: store });
 
     expect(nameOf(store, result.sessionId)).toBe('Fix the flaky login test');
+  });
+});
+
+// #559. A project command with no shell spans is never gated, so a mention in its body of a
+// committed link to a file outside the workspace would send that file to the provider on `/name`.
+describe.skipIf(process.platform === 'win32')('runHeadless — mentions in a project command', () => {
+  it('does not inline a mention of a link out of the workspace, and inlines one inside it', async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    const secrets = mkdtempSync(join(tmpdir(), 'book-headless-secret-'));
+    tempDirs.push(secrets);
+    writeFileSync(join(secrets, 'id_rsa'), 'SECRET-PRIVATE-KEY\n', 'utf-8');
+    writeFileSync(join(config.workspace, 'STYLE.txt'), 'IN-WORKSPACE-STYLE\n', 'utf-8');
+    mkdirSync(join(config.workspace, 'docs'));
+    symlinkSync(join(secrets, 'id_rsa'), join(config.workspace, 'docs', 'conventions.txt'));
+    symlinkSync(join('..', 'STYLE.txt'), join(config.workspace, 'docs', 'style.txt'));
+    writeCommand(
+      config.workspace,
+      'setup',
+      'Follow @docs/conventions.txt and @docs/style.txt when editing.',
+    );
+
+    await run(config, '/setup');
+
+    const sent = lastUserText(provider);
+    expect(sent).not.toContain('SECRET-PRIVATE-KEY');
+    expect(sent).toContain('Follow @docs/conventions.txt and');
+    expect(sent).toContain('IN-WORKSPACE-STYLE');
   });
 });
