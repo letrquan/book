@@ -28,6 +28,7 @@ import {
   type WorkspaceScope,
 } from './permissions.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from './settings.js';
+import { resolveShell } from './shell-selection.js';
 
 describe('parseRule', () => {
   it('parses bare tool name', () => {
@@ -2825,5 +2826,45 @@ describe('Git Bash reads a single quote as a quote on Windows (#512, decision 3)
       );
     expect(detail(gitBash).compoundUnderPolicy).toBeUndefined();
     expect(detail({ kind: 'cmd' }).compoundUnderPolicy).toBe(true);
+  });
+});
+
+// #548: the session shell reaches the scanner as resolution built it, so the MSYS flag that lets `'`
+// read as on Linux is not dropped on the way, and an unflagged sh still refuses `'`.
+describe('an MSYS sh reads a single quote as a quote on Windows (#548)', () => {
+  const settings: ResolvedSettings = {
+    ...DEFAULT_SETTINGS,
+    permissions: { ...DEFAULT_SETTINGS.permissions, allow: ['Bash(git *)'] },
+  };
+  const resolved = (file: string, ...present: string[]) => {
+    const files = new Set([file, ...present]);
+    return resolveShell({
+      platform: 'win32',
+      env: {},
+      requested: file,
+      existsSync: (path) => files.has(path),
+    });
+  };
+  const usrBin = 'C:\\Program Files\\Git\\usr\\bin';
+  const msysSh = resolved(win32.join(usrBin, 'sh.exe'), win32.join(usrBin, 'msys-2.0.dll'));
+  const cygwinSh = resolved('C:\\cygwin64\\bin\\sh.exe', 'C:\\cygwin64\\bin\\cygwin1.dll');
+  const shim = resolved('C:\\Users\\u\\scoop\\shims\\sh.exe');
+  const verdict = (command: string, shell: ReturnType<typeof resolveShell>) =>
+    evaluatePermission('Bash', { command }, settings, { platform: 'win32', shell });
+
+  it('admits a single-quoted argument under a resolved MSYS sh', () => {
+    expect(msysSh.msys).toBe(true);
+    expect(verdict("git log 'x'", msysSh)).toBe('allow');
+    expect(verdict("git log 'x' ; id", msysSh)).not.toBe('allow');
+    const call = { id: 'c', name: 'Bash', arguments: { command: "git log 'x'" } };
+    expect(permissionRuleMatchesCall('Bash(git *)', call, 'win32', msysSh)).toBe(true);
+  });
+
+  it('still refuses it under a Cygwin sh and a shim, which get no MSYS flag', () => {
+    for (const shell of [cygwinSh, shim]) {
+      expect(shell.msys).toBeUndefined();
+      expect(verdict("git log 'x'", shell)).not.toBe('allow');
+      expect(verdict('git log x', shell)).toBe('allow');
+    }
   });
 });

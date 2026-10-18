@@ -224,9 +224,10 @@ describe('hasCompoundShellSyntax under Git Bash reads single quotes as on Linux 
   });
 });
 
-// #532: an MSYS POSIX sh gets Git Bash's out-of-band delivery, but by owner decision the scanner
-// still refuses `'` under it: only Git Bash relaxes the quote rule.
-describe('hasCompoundShellSyntax still refuses a single quote under an MSYS sh (#532)', () => {
+// #548: a POSIX sh on the MSYS runtime gets the command out of band, byte for byte, exactly as Git
+// Bash does, so `'` reads as on Linux under it. Every other out-of-band sh (Cygwin, a shim or copy
+// with no DLL, busybox) still refuses `'`: Windows CI proves only the MSYS runtime's delivery.
+describe('hasCompoundShellSyntax under an MSYS sh reads single quotes as on Linux (#548)', () => {
   const msysSh = {
     kind: 'sh',
     file: 'C:\\Program Files\\Git\\usr\\bin\\sh.exe',
@@ -235,12 +236,80 @@ describe('hasCompoundShellSyntax still refuses a single quote under an MSYS sh (
     msys: true,
   } as const;
 
-  it.each(["echo'1;echo'2", "echo';id'", "git log 'x'", "echo 'a;b'"])('refuses %j', (command) => {
-    expect(hasCompoundShellSyntax(command, 'win32', msysSh)).toBe(true);
+  it.each([
+    "git commit -m 'fix(x): y'",
+    "echo';id'",
+    "echo'1;echo'2",
+    "git log 'x'",
+    "echo 'a;b'",
+    'echo "it\'s"',
+  ])('admits %j as one command, as on Linux', (command) => {
+    expect(hasCompoundShellSyntax(command, 'win32', msysSh)).toBe(false);
+    expect(hasCompoundShellSyntax(command, 'linux')).toBe(false);
   });
 
-  it('reads it as on Linux off win32', () => {
-    expect(hasCompoundShellSyntax("git log 'x'", 'linux', msysSh)).toBe(false);
+  it.each([
+    "echo 'a' ; id",
+    "echo 'a';id",
+    "echo \\'x",
+    "echo 'unterminated",
+    "echo 'a'\nid",
+    "echo 'a'\rid",
+    'echo "$HOME"',
+    'echo "`id`"',
+  ])('still refuses %j, as on Linux', (command) => {
+    expect(hasCompoundShellSyntax(command, 'win32', msysSh)).toBe(true);
+    expect(hasCompoundShellSyntax(command, 'linux')).toBe(true);
+  });
+
+  it.each([
+    ['the same file without the MSYS flag', { kind: 'sh', file: msysSh.file } as const],
+    ['a Cygwin sh', { kind: 'sh', file: 'C:\\cygwin64\\bin\\sh.exe' } as const],
+    ['a scoop shim', { kind: 'sh', file: 'C:\\Users\\u\\scoop\\shims\\sh.exe' } as const],
+    ['a busybox-w32 copy', { kind: 'sh', file: 'C:\\tools\\busybox\\sh.exe' } as const],
+    [
+      'a forged System32 sh with the flag',
+      { kind: 'sh', file: 'C:\\Windows\\System32\\sh.exe', msys: true } as const,
+    ],
+    [
+      'a forged WindowsApps sh with the flag',
+      {
+        kind: 'sh',
+        file: 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\sh.exe',
+        msys: true,
+      } as const,
+    ],
+    [
+      'a forged fish with the flag',
+      { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\fish.exe', msys: true } as const,
+    ],
+    ['a flagged sh with no file', { kind: 'sh', msys: true } as const],
+    [
+      'WSL bash.exe in System32',
+      { kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe' } as const,
+    ],
+    [
+      'WSL bash.exe in WindowsApps',
+      {
+        kind: 'bash',
+        file: 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe',
+      } as const,
+    ],
+    ['cmd', { kind: 'cmd' } as const],
+    ['pwsh', { kind: 'pwsh', file: 'C:/pwsh.exe' } as const],
+    ['powershell', { kind: 'powershell', file: 'C:/powershell.exe' } as const],
+    ['no known shell', undefined],
+  ])('still refuses any single quote under %s on win32', (_label, shell) => {
+    for (const command of ["echo';id'", "echo'1;echo'2", "git log 'x'", "echo 'a;b'"]) {
+      expect(hasCompoundShellSyntax(command, 'win32', shell), command).toBe(true);
+    }
+  });
+
+  it('reads it as on Linux off win32, whatever the shell', () => {
+    for (const shell of [msysSh, { kind: 'sh', file: 'C:\\cygwin64\\bin\\sh.exe' } as const]) {
+      expect(hasCompoundShellSyntax("git log 'x'", 'linux', shell)).toBe(false);
+      expect(hasCompoundShellSyntax("echo 'a' ; id", 'linux', shell)).toBe(true);
+    }
   });
 });
 
