@@ -1204,7 +1204,7 @@ describe('ShellJobManager persistent start budget', () => {
     expect(DEFAULT_RUNNER_START_BUDGET_MS).toBe(10_000);
   });
 
-  it('starts a job whose runner takes longer than three seconds under the default budget', async () => {
+  it.each(Array.from({ length: 10 }, (_, i) => i + 1))('starts a job whose runner takes longer than three seconds under the default budget (run %i)', async () => {
     directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
     const persistentRoot = join(directory, 'jobs');
     const workerPidPath = join(directory, 'worker.pid');
