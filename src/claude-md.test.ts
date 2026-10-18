@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   collectSkippedInstructionNotices,
   discoverProjectInstructions,
@@ -26,6 +26,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -812,6 +813,47 @@ describe.skipIf(process.platform === 'win32')('instruction files and the reposit
 
     expect(sources.map((s) => s.body)).toEqual(['other rules']);
     expect(skipped).toEqual([]);
+  });
+
+  // A dotfiles `~/.git` is no repository, or every project under the home directory without its
+  // own `.git` would be measured from the whole home directory.
+  describe('with a dotfiles .git in the home directory', () => {
+    beforeEach(() => {
+      mkdirSync(join(home, '.git'), { recursive: true });
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('USERPROFILE', home);
+    });
+
+    it('checks a project without its own .git against the directory each file is in', () => {
+      write(join(home, 'other', 'rules.md'), 'HOME-SECRET');
+      const project = join(home, 'proj');
+      mkdirSync(project, { recursive: true });
+      symlinkSync(join('..', 'other', 'rules.md'), join(project, 'CLAUDE.md'));
+
+      const { sources, skipped } = inspect(project);
+
+      expect(sources).toEqual([]);
+      expect(skipped.map((s) => [s.path, s.root, s.reason])).toEqual([
+        [join(project, 'CLAUDE.md'), real(project), 'outside'],
+      ]);
+    });
+
+    it('measures a project with its own .git from its own root, the home above it unchecked', () => {
+      const repo = join(home, 'mono');
+      mkdirSync(join(repo, '.git'), { recursive: true });
+      write(join(repo, 'packages', 'shared', 'AGENTS.md'), 'shared rules');
+      mkdirSync(join(repo, 'packages', 'a'), { recursive: true });
+      symlinkSync(join('..', 'shared', 'AGENTS.md'), join(repo, 'packages', 'a', 'CLAUDE.md'));
+      // The home directory is above the repository root, so its files are the user's: a
+      // home-manager link into a store outside the home directory loads.
+      write(join(dir, 'store', 'hm-AGENTS.md'), 'home-manager rules');
+      symlinkSync(join(dir, 'store', 'hm-AGENTS.md'), join(home, 'AGENTS.md'));
+
+      const { sources, skipped } = inspect(join(repo, 'packages', 'a'));
+
+      expect(sources.map((s) => s.body)).toEqual(['home-manager rules', 'shared rules']);
+      expect(skipped).toEqual([]);
+    });
   });
 
   it('falls back to the directory the file was found in when there is no repository', () => {
