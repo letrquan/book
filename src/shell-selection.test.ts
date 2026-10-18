@@ -331,6 +331,20 @@ describe('resolveShell marks a bash.exe on the MSYS runtime on Windows (#548)', 
     expect(readsSingleQuoteAsPosix(shell)).toBe(false);
   });
 
+  // The `..\usr\bin` probe is for Git's `bin\` launcher stubs only: a bash or sh in any other
+  // directory whose parent happens to hold `usr\bin\msys-2.0.dll` is not on the MSYS runtime.
+  it.each<[ResolvedShell['kind'], string, string]>([
+    ['bash', win32.join(GIT_ROOT, 'cmd', 'bash.exe'), GIT_DLL],
+    ['sh', win32.join(GIT_ROOT, 'cmd', 'sh.exe'), GIT_DLL],
+    ['bash', 'C:\\msys64\\opt\\bash.exe', `${MSYS2_USR_BIN}\\msys-2.0.dll`],
+  ])('reads ..\\usr\\bin only from a bin directory: %s %s', (kind, file, dll) => {
+    const shell = requestedAlone(file, dll);
+    expect(shell).toMatchObject({ kind, file });
+    expect(shell).not.toHaveProperty('msys');
+    expect(receivesCommandOutOfBand(shell)).toBe(true);
+    expect(readsSingleQuoteAsPosix(shell)).toBe(false);
+  });
+
   it.each([
     'C:\\Windows\\System32\\bash.exe',
     'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe',

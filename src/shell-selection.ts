@@ -131,15 +131,9 @@ function createProbe(
   };
 }
 
-function shell(
-  kind: ShellKind,
-  source: ShellSource,
-  file?: string,
-  warning?: string,
-): ResolvedShell {
+function shell(kind: ShellKind, source: ShellSource, file?: string): ResolvedShell {
   const resolved: ResolvedShell = { kind, label: LABELS[kind], source };
   if (file) resolved.file = file;
-  if (warning) resolved.warning = warning;
   return resolved;
 }
 
@@ -222,9 +216,10 @@ function isPosixShellFile(file: string): boolean {
  * Whether the Windows `shell` runs on the MSYS runtime (#532, #548): one that gets its command out of
  * band ({@link receivesCommandOutOfBand}: a bash outside the WSL launcher directories, or a POSIX-named
  * sh), whose file is outside the WSL launcher directories (see {@link WSL_LAUNCHER_DIRECTORY}) and
- * has `msys-2.0.dll` beside it, or in `..\usr\bin` for Git for Windows' `<root>\bin\bash.exe` and
- * `<root>\bin\sh.exe`, launcher stubs with no DLL of their own that hand their raw command line to
- * `<root>\usr\bin`. This sets `ResolvedShell.msys`, which does not decide delivery: it only lets the
+ * has `msys-2.0.dll` beside it, or, for a file in a directory named `bin`, in `..\usr\bin`: Git for
+ * Windows' `<root>\bin\bash.exe` and `<root>\bin\sh.exe` are launcher stubs with no DLL of their
+ * own that hand their raw command line to `<root>\usr\bin`, and no other directory is read as one
+ * (a `<root>\cmd\bash.exe` is not). This sets `ResolvedShell.msys`, which does not decide delivery: it only lets the
  * permission scanner read `'` as on Linux ({@link readsSingleQuoteAsPosix}), because Windows CI
  * proves the MSYS runtime's delivery. A Cygwin `bash.exe` or `sh.exe` (`cygwin1.dll` beside it), a
  * shim or copy with no DLL beside it (scoop's `shims\bash.exe`), and busybox-w32 copied as `sh.exe`
@@ -236,8 +231,9 @@ function isOnMsysRuntime(resolved: ResolvedShell, probe: Probe): boolean {
     return false;
   }
   const dir = win32.dirname(file);
+  if (probe.exists(win32.join(dir, MSYS_RUNTIME_DLL))) return true;
   return (
-    probe.exists(win32.join(dir, MSYS_RUNTIME_DLL)) ||
+    win32.basename(dir).toLowerCase() === 'bin' &&
     probe.exists(win32.join(dir, '..', 'usr', 'bin', MSYS_RUNTIME_DLL))
   );
 }

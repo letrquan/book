@@ -56,7 +56,7 @@ export interface ResolvedShell {
    * Set on Windows for a `kind: 'bash'` or `kind: 'sh'` executable that runs on the MSYS runtime
    * (Git for Windows' `bin\bash.exe`, `usr\bin\bash.exe` and `sh.exe`; MSYS2's `bash.exe`,
    * `dash.exe`, `zsh.exe` and other POSIX shells), detected at resolution by `msys-2.0.dll` beside
-   * it or in `..\usr\bin` (#532, #548). It does not decide delivery: every non-WSL bash and every
+   * it, or in `..\usr\bin` for one in a `bin` directory (#532, #548). It does not decide delivery: every non-WSL bash and every
    * POSIX-named sh gets its command out of band, flagged or not (`receivesCommandOutOfBand`). It
    * only lets the permission scanner read `'` as on Linux (`readsSingleQuoteAsPosix`), because
    * Windows CI proves this runtime's delivery. Never set off Windows, in a WSL launcher directory,
