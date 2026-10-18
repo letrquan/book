@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
@@ -24,6 +24,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -126,6 +127,35 @@ describe.skipIf(process.platform === 'win32')('REVIEW.md that is a link', () => 
       config: { body: 'other review rules', path: join(repo, 'ext', 'REVIEW.md') },
       skipped: [],
     });
+  });
+
+  it('treats a dotfiles .git in the home directory as no repository', () => {
+    const home = join(dir, 'home');
+    mkdirSync(join(home, '.git'), { recursive: true });
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    write(join(home, 'other', 'review.md'), 'HOME-SECRET');
+    const project = join(home, 'proj');
+    mkdirSync(project, { recursive: true });
+    symlinkSync(join('..', 'other', 'review.md'), join(project, 'REVIEW.md'));
+    // A project with its own .git under that home is measured from its own root.
+    const own = join(home, 'own');
+    mkdirSync(join(own, '.git'), { recursive: true });
+    write(join(own, 'docs', 'review.md'), 'own review rules');
+    symlinkSync(join('docs', 'review.md'), join(own, 'REVIEW.md'));
+
+    expect(inspectReviewConfig(project)).toEqual({
+      config: {},
+      skipped: [
+        {
+          path: join(project, 'REVIEW.md'),
+          target: real(join(home, 'other', 'review.md')),
+          root: real(project),
+          reason: 'outside',
+        },
+      ],
+    });
+    expect(loadReviewConfig(own).body).toBe('own review rules');
   });
 
   it('ignores a dangling link without a skipped entry', () => {

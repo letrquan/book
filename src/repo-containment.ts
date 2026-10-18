@@ -1,14 +1,16 @@
 import { existsSync, realpathSync } from 'fs';
+import { homedir } from 'os';
 import { basename, dirname, join, parse, relative, resolve } from 'path';
 import { renderUntrustedText } from './hook-approvals.js';
 import { isOutside } from './tools/path-utils.js';
 
 /**
  * Repository containment for the project files a repository can commit as links (#539, #543):
- * instruction files, REVIEW.md and project command files. A repository can commit any of them as
- * a link to `~/.ssh/id_rsa`, and the target would be sent to the provider as prompt text. Each
- * loader checks the real path of what it found against the real path of the repository root, and
- * reports what it refused through `formatSkippedNotice`. This module imports no loader.
+ * instruction files, REVIEW.md and project command files, and the files an `@path` mention inlines
+ * (#559). A repository can commit any of them as a link to `~/.ssh/id_rsa`, and the target would
+ * be sent to the provider as prompt text. Each loader checks the real path of what it found
+ * against the real path of the repository root, and reports what it refused through
+ * `formatSkippedNotice`; a refused mention stays as written. This module imports no loader.
  */
 
 /** Why a project file must not load: its real path left the root, or it is not Markdown. */
@@ -65,17 +67,39 @@ export function ancestorsFromRoot(workspace: string): string[] {
  * repository it is really in. A linked worktree is its own root, not its main checkout (which
  * `findGitRoot` in `memory-store.ts` maps it to, on purpose, for memory keying). Only stats
  * files; git is never spawned.
+ *
+ * A `.git` at the real path of `home` (the user's home directory by default, read on every call)
+ * is a dotfiles repository, not a project: it is no repository (`undefined`, and the walk stops),
+ * so a project under the home directory without its own `.git` is measured as one in no
+ * repository, not from the whole home directory.
  */
-export function findRepositoryRoot(dir: string): string | undefined {
+export function findRepositoryRoot(dir: string, home?: string): string | undefined {
   for (const candidate of ancestorsFromRoot(tryRealPath(dir) ?? resolve(dir)).reverse()) {
-    if (existsSync(join(candidate, '.git'))) return candidate;
+    if (existsSync(join(candidate, '.git'))) {
+      return isUserHome(candidate, home) ? undefined : candidate;
+    }
   }
   return undefined;
 }
 
+/** Whether the real path `real` is that of `home`, the user's home directory when not given. */
+function isUserHome(real: string, home: string | undefined): boolean {
+  let path = home;
+  if (path === undefined) {
+    try {
+      path = homedir();
+    } catch {
+      return false;
+    }
+  }
+  const homeReal = path ? tryRealPath(path) : undefined;
+  // `relative`, so the comparison ignores case where the platform's paths do (Windows).
+  return homeReal !== undefined && relative(homeReal, real) === '';
+}
+
 /** The directory project files are measured from: the repository root, else the workspace. */
-export function projectContainmentRoot(workspace: string): string {
-  return findRepositoryRoot(workspace) ?? resolve(workspace);
+export function projectContainmentRoot(workspace: string, home?: string): string {
+  return findRepositoryRoot(workspace, home) ?? resolve(workspace);
 }
 
 /**

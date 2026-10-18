@@ -331,6 +331,32 @@ describe.skipIf(process.platform === 'win32')('command files that are links', ()
     expect(skipped.map((s) => s.path)).toEqual([join(repo, '.book', 'commands', 'a.md')]);
   });
 
+  it('treats a dotfiles .git in the home directory as no repository', () => {
+    const home = join(dir, 'home');
+    mkdirSync(join(home, '.git'), { recursive: true });
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    write(join(home, 'other', 'cmd.md'), 'HOME-SECRET');
+    const project = join(home, 'proj');
+    mkdirSync(join(project, '.book', 'commands'), { recursive: true });
+    symlinkSync(
+      join('..', '..', '..', 'other', 'cmd.md'),
+      join(project, '.book', 'commands', 'cmd.md'),
+    );
+
+    expect(inspectCommands(project)).toEqual({
+      commands: [],
+      skipped: [
+        {
+          path: join(project, '.book', 'commands', 'cmd.md'),
+          target: real(join(home, 'other', 'cmd.md')),
+          root: real(project),
+          reason: 'outside',
+        },
+      ],
+    });
+  });
+
   it('measures from the repository root, so a package command may link to a shared file', () => {
     write(join(repo, 'shared', 'cmd.md'), 'Shared body');
     const pkg = join(repo, 'packages', 'a');

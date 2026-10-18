@@ -63,7 +63,7 @@ function readSource(
  * that is above every repository root, is not checked: those directories belong to the user (a
  * home-manager `~/AGENTS.md` links into the Nix store). A file in any other directory above every
  * repository root, and any file when there is no repository, is checked against the directory it
- * was found in. The user
+ * was found in; a dotfiles `.git` in the home directory is no repository. The user
  * layer is the user's own and is never checked. Nothing is exempt by directory
  * (`~/.book/settings.json` holds the API key); a file already loaded is the only one met again
  * without a check. Discovery itself never prints.
@@ -91,10 +91,11 @@ export function inspectProjectInstructions(
   // root: `null` (not checked) when it is the user's home or one of its ancestors (a home-manager
   // `~/AGENTS.md` links into the Nix store), and otherwise still `dir` itself, since it may be an
   // unpacked archive whose `app/.git` makes `app` look like a root.
-  const workspaceRepo = findRepositoryRoot(workspaceRoot);
+  // A dotfiles `.git` in the home directory is no repository (`findRepositoryRoot`).
+  const workspaceRepo = findRepositoryRoot(workspaceRoot, systemHome);
   const homeReal = tryRealPath(systemHome);
   const containerFor = (dir: string): string | null => {
-    const repo = findRepositoryRoot(dir);
+    const repo = findRepositoryRoot(dir, systemHome);
     if (repo !== undefined) return repo;
     if (workspaceRepo === undefined) return dir;
     const dirReal = tryRealPath(dir);

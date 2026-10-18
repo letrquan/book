@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   findRepositoryRoot,
   formatSkippedNotice,
@@ -19,6 +19,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -67,6 +68,53 @@ describe('findRepositoryRoot', () => {
     // …and a link from inside a repository to a directory outside it is in no repository.
     symlinkSync(join(dir, 'plain'), join(dir, 'outer', 'ext'));
     expect(findRepositoryRoot(join(dir, 'outer', 'ext'))).toBeUndefined();
+  });
+});
+
+// A dotfiles repository at the home directory would make every directory under it one repository,
+// so a project without its own `.git` would be measured from the whole home directory.
+describe('findRepositoryRoot and a dotfiles ~/.git', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = join(dir, 'home');
+    mkdirSync(join(home, '.git'), { recursive: true });
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+  });
+
+  it('is no repository: a project without its own .git under the home directory has none', () => {
+    mkdirSync(join(home, 'proj', 'sub'), { recursive: true });
+
+    expect(findRepositoryRoot(join(home, 'proj', 'sub'))).toBeUndefined();
+    expect(findRepositoryRoot(home)).toBeUndefined();
+    expect(projectContainmentRoot(join(home, 'proj'))).toBe(join(home, 'proj'));
+  });
+
+  it('leaves a project with its own .git under the home directory unaffected', () => {
+    mkdirSync(join(home, 'repo', '.git'), { recursive: true });
+    mkdirSync(join(home, 'repo', 'pkg'), { recursive: true });
+
+    expect(findRepositoryRoot(join(home, 'repo', 'pkg'))).toBe(real(join(home, 'repo')));
+    expect(projectContainmentRoot(join(home, 'repo', 'pkg'))).toBe(real(join(home, 'repo')));
+  });
+
+  it('takes the home directory as an argument', () => {
+    mkdirSync(join(home, 'proj'), { recursive: true });
+    mkdirSync(join(dir, 'other-home'), { recursive: true });
+
+    expect(findRepositoryRoot(join(home, 'proj'), join(dir, 'other-home'))).toBe(real(home));
+    expect(findRepositoryRoot(join(home, 'proj'), home)).toBeUndefined();
+    expect(projectContainmentRoot(join(home, 'proj'), home)).toBe(join(home, 'proj'));
+  });
+
+  it.skipIf(process.platform === 'win32')('compares real paths: a home reached by a link', () => {
+    mkdirSync(join(home, 'proj'), { recursive: true });
+    symlinkSync(home, join(dir, 'home-link'));
+    vi.stubEnv('HOME', join(dir, 'home-link'));
+
+    expect(findRepositoryRoot(join(home, 'proj'))).toBeUndefined();
+    expect(findRepositoryRoot(join(dir, 'home-link', 'proj'))).toBeUndefined();
   });
 });
 
