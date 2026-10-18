@@ -1,17 +1,20 @@
-import { win32 } from 'node:path';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, win32 } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   decodePowerShellCommand,
   describeShell,
   GIT_BASH_EVAL_SCRIPT,
   isGitBash,
+  readsSingleQuoteAsPosix,
   receivesCommandOutOfBand,
   resolveShell,
   shellExecution,
   shellPromptLine,
   spawnCommandExecution,
 } from './shell-selection.js';
-import { posixBash } from './test/real-shells.js';
+import { posixBash, posixExecutable } from './test/real-shells.js';
 import type { CommandExecution, ResolvedShell } from './types/runtime.js';
 
 const GIT_ROOT = 'C:\\Program Files\\Git';
@@ -101,10 +104,11 @@ describe('resolveShell on Windows', () => {
   });
 });
 
-// #532: a POSIX sh on the MSYS runtime rebuilds argv exactly as Git Bash does, so resolution marks
-// it for the same out-of-band delivery. The signal is the runtime's DLL beside the executable, or
-// under `..\usr\bin` for Git's `bin\sh.exe` launcher stub.
-describe('resolveShell marks an MSYS POSIX sh on Windows (#532)', () => {
+// #532: resolution marks a POSIX sh on the MSYS runtime, by the runtime's DLL beside the executable
+// or under `..\usr\bin` for Git's `bin\sh.exe` launcher stub. Since #548 the flag no longer decides
+// delivery (every POSIX-named sh outside the WSL directories gets the command out of band); it only
+// lets the permission scanner read `'` as on Linux, where Windows CI proves the delivery.
+describe('resolveShell marks an MSYS POSIX sh on Windows (#532, #548)', () => {
   const GIT_USR_BIN = win32.join(GIT_ROOT, 'usr', 'bin');
   const MSYS2_USR_BIN = 'C:\\msys64\\usr\\bin';
   const requestedAlone = (file: string, ...present: string[]): ResolvedShell =>
@@ -129,36 +133,104 @@ describe('resolveShell marks an MSYS POSIX sh on Windows (#532)', () => {
     });
   });
 
-  it.each(['dash.exe', 'zsh.exe', 'ash.exe', 'ksh.exe', 'mksh.exe', 'SH.EXE', 'sh'])(
-    'flags MSYS2 %s beside msys-2.0.dll',
-    (name) => {
-      const file = win32.join(MSYS2_USR_BIN, name);
-      expect(requestedAlone(file, win32.join(MSYS2_USR_BIN, 'msys-2.0.dll'))).toMatchObject({
-        kind: 'sh',
-        msys: true,
+  it.each([
+    'dash.exe',
+    'zsh.exe',
+    'ash.exe',
+    'ksh.exe',
+    'mksh.exe',
+    'SH.EXE',
+    'sh',
+    'zsh-5.9.exe',
+    'ksh93.exe',
+  ])('flags MSYS2 %s beside msys-2.0.dll', (name) => {
+    const file = win32.join(MSYS2_USR_BIN, name);
+    expect(requestedAlone(file, win32.join(MSYS2_USR_BIN, 'msys-2.0.dll'))).toMatchObject({
+      kind: 'sh',
+      msys: true,
+    });
+  });
+
+  it.each(['C:\\Program Files\\Git\\usr\\bin\\sh.exe', `${MSYS2_USR_BIN}\\dash.exe`])(
+    'delivers flagged %s out of band, and lets the scanner read its quotes',
+    (file) => {
+      const dll = win32.join(win32.dirname(file), 'msys-2.0.dll');
+      const shell = requestedAlone(file, dll);
+      expect(shellExecution(shell, 'echo hi', 'win32')).toEqual({
+        file,
+        args: ['-c', GIT_BASH_EVAL_SCRIPT],
+        env: { BOOK_BASH_COMMAND: 'echo hi' },
       });
+      expect(readsSingleQuoteAsPosix(shell)).toBe(true);
     },
   );
 
+  // #548: fail closed. The DLL no longer decides delivery: any runtime that rebuilds argv (Cygwin's
+  // `build_argv`, which MSYS forked; a shim or copy of an MSYS sh with no DLL beside it) would
+  // otherwise get the command where it can be globbed, unquoted or read as `@file`. None of these is
+  // flagged, so the scanner still refuses `'` under them.
   it.each<[string, string, string[]]>([
-    ['busybox-w32 with no DLL', 'C:\\tools\\sh.exe', []],
     ['Cygwin beside cygwin1.dll', 'C:\\cygwin64\\bin\\sh.exe', ['C:\\cygwin64\\bin\\cygwin1.dll']],
+    ['a scoop shim with no DLL', 'C:\\Users\\u\\scoop\\shims\\sh.exe', []],
+    ['a copy with no DLL', 'D:\\tools\\sh.exe', []],
+    ['busybox-w32 copied as sh.exe', 'C:\\tools\\busybox\\sh.exe', []],
+    ['dash.exe with no DLL', 'D:\\tools\\dash.exe', []],
+    ['ash.exe with no DLL', 'D:\\tools\\ash.exe', []],
+    ['ksh.exe with no DLL', 'D:\\tools\\ksh.exe', []],
+    ['mksh.exe with no DLL', 'D:\\tools\\mksh.exe', []],
+    ['zsh.exe with no DLL', 'D:\\tools\\zsh.exe', []],
+    ['an extensionless sh with no DLL', 'D:\\tools\\sh', []],
+    ['a versioned zsh-5.9.exe with no DLL', 'D:\\tools\\zsh-5.9.exe', []],
+    ["Debian's versioned zsh5", 'D:\\tools\\zsh5', []],
+    ['a versioned ksh93.exe', 'D:\\tools\\ksh93.exe', []],
+    // The WSL exception is WSL's `bash.exe` alone (see isGitBash): WSL ships no `sh.exe` there, so a
+    // POSIX name in these directories is some other program, and failing closed is the safe side.
+    // The MSYS flag is still never set there, so the scanner keeps refusing `'`.
+    [
+      'a sh.exe in System32, even beside msys-2.0.dll',
+      'C:\\Windows\\System32\\sh.exe',
+      ['C:\\Windows\\System32\\msys-2.0.dll'],
+    ],
+    [
+      'an app execution alias zsh.exe',
+      'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\zsh.exe',
+      [],
+    ],
+  ])('delivers %s out of band, unflagged (#548)', (_label, file, present) => {
+    const shell = requestedAlone(file, ...present);
+    expect(shell).toMatchObject({ kind: 'sh', file });
+    expect(shell).not.toHaveProperty('msys');
+    const command = "ls?echo_INJECTED 'a b'";
+    expect(shellExecution(shell, command, 'win32')).toEqual({
+      file,
+      args: ['-c', GIT_BASH_EVAL_SCRIPT],
+      env: { BOOK_BASH_COMMAND: command },
+    });
+    expect(receivesCommandOutOfBand(shell)).toBe(true);
+    expect(readsSingleQuoteAsPosix(shell)).toBe(false);
+  });
+
+  it.each<[string, string, string[]]>([
     [
       'a non-POSIX fish beside msys-2.0.dll',
       `${MSYS2_USR_BIN}\\fish.exe`,
       [`${MSYS2_USR_BIN}\\msys-2.0.dll`],
     ],
+    ['fish with no DLL', 'D:\\tools\\fish.exe', []],
     ['nu beside msys-2.0.dll', `${MSYS2_USR_BIN}\\nu.exe`, [`${MSYS2_USR_BIN}\\msys-2.0.dll`]],
-    [
-      'a WSL launcher directory',
-      'C:\\Windows\\System32\\sh.exe',
-      ['C:\\Windows\\System32\\msys-2.0.dll'],
-    ],
+    ['nu with no DLL', 'D:\\tools\\nu.exe', []],
+    ['busybox.exe under its own name', 'C:\\tools\\busybox.exe', []],
+    ['ssh.exe', 'C:\\Windows\\System32\\OpenSSH\\ssh.exe', []],
+    ['a name that only starts like a shell', 'D:\\tools\\shell.exe', []],
+    ['a non-numeric suffix', 'D:\\tools\\zsh-static.exe', []],
   ])('leaves %s unflagged, on argv', (_label, file, present) => {
     const shell = requestedAlone(file, ...present);
     expect(shell).toMatchObject({ kind: 'sh', file });
     expect(shell).not.toHaveProperty('msys');
-    expect(shellExecution(shell, 'echo hi', 'win32')).toEqual({ file, args: ['-c', 'echo hi'] });
+    const exec = shellExecution(shell, 'echo hi', 'win32');
+    expect(exec).toEqual({ file, args: ['-c', 'echo hi'] });
+    expect(exec).not.toHaveProperty('env');
+    expect(receivesCommandOutOfBand(shell)).toBe(false);
   });
 
   it('flags no bash: Git Bash is recognised by isGitBash, not the flag', () => {
@@ -250,7 +322,8 @@ describe('shellExecution', () => {
     expect(exec).not.toHaveProperty('env');
   });
 
-  it('keeps sh with a file on Windows on the plain argv', () => {
+  // #548: whether or not resolution found the MSYS runtime, a POSIX sh gets the command out of band.
+  it('hands an unflagged sh with a file on Windows the command out of band too (#548)', () => {
     const sh: ResolvedShell = {
       kind: 'sh',
       file: 'C:\\tools\\sh.exe',
@@ -259,8 +332,26 @@ describe('shellExecution', () => {
     };
     expect(shellExecution(sh, 'echo hi', 'win32')).toEqual({
       file: 'C:\\tools\\sh.exe',
-      args: ['-c', 'echo hi'],
+      args: ['-c', GIT_BASH_EVAL_SCRIPT],
+      env: { BOOK_BASH_COMMAND: 'echo hi' },
     });
+  });
+
+  it.each(['linux', 'darwin'] as const)('keeps every shell on the plain argv on %s', (platform) => {
+    const shells: ResolvedShell[] = [
+      bashAt('/usr/bin/bash'),
+      bashAt(GIT_BASH),
+      { kind: 'sh', file: '/usr/bin/sh', label: '/bin/sh', source: 'setting' },
+      { kind: 'sh', file: '/usr/bin/zsh', label: '/bin/sh', source: 'setting' },
+      { kind: 'sh', file: 'C:\\tools\\sh.exe', label: '/bin/sh', source: 'setting', msys: true },
+      { kind: 'sh', file: '/usr/bin/fish', label: '/bin/sh', source: 'setting' },
+    ];
+    for (const shell of shells) {
+      expect(shellExecution(shell, 'echo hi', platform), shell.file).toEqual({
+        file: shell.file,
+        args: ['-c', 'echo hi'],
+      });
+    }
   });
 
   // #532: an MSYS POSIX sh rebuilds argv like Git Bash, so it gets the same delivery on Windows.
@@ -278,20 +369,99 @@ describe('shellExecution', () => {
     }
   });
 
-  it('delivers out of band to Git Bash and a flagged sh only', () => {
-    expect(receivesCommandOutOfBand({ kind: 'bash', file: GIT_BASH })).toBe(true);
+  // #548: delivery is decided by kind and file name alone, never by the MSYS flag or the directory.
+  it('delivers out of band to Git Bash and every POSIX-named sh, wherever it lives', () => {
+    const outOfBand: Array<Pick<ResolvedShell, 'kind' | 'file' | 'msys'> | undefined> = [
+      { kind: 'bash', file: GIT_BASH },
+      { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\sh.exe', msys: true },
+      { kind: 'sh', file: 'C:\\tools\\sh.exe' },
+      { kind: 'sh', file: 'C:\\cygwin64\\bin\\sh.exe' },
+      { kind: 'sh', file: 'C:\\Users\\u\\scoop\\shims\\sh.exe' },
+      { kind: 'sh', file: 'D:/tools/ZSH.EXE' },
+      { kind: 'sh', file: 'D:\\tools\\mksh' },
+      { kind: 'sh', file: 'D:\\tools\\zsh-5.9.exe' },
+      { kind: 'sh', file: 'C:\\Windows\\System32\\sh.exe', msys: true },
+      { kind: 'sh', file: 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\sh.exe' },
+    ];
+    for (const shell of outOfBand) expect(receivesCommandOutOfBand(shell), shell?.file).toBe(true);
+    const argv: Array<Pick<ResolvedShell, 'kind' | 'file' | 'msys'> | undefined> = [
+      { kind: 'sh' },
+      { kind: 'sh', msys: true },
+      { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\fish.exe', msys: true },
+      { kind: 'sh', file: 'D:\\tools\\nu.exe' },
+      { kind: 'sh', file: 'C:\\tools\\busybox.exe' },
+      { kind: 'sh', file: 'D:\\tools\\shell.exe' },
+      { kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe' },
+      { kind: 'bash' },
+      { kind: 'pwsh', file: PWSH },
+      { kind: 'powershell', file: POWERSHELL },
+      { kind: 'cmd', file: CMD },
+      undefined,
+    ];
+    for (const shell of argv) expect(receivesCommandOutOfBand(shell), shell?.file).toBe(false);
+  });
+
+  // #548: the scanner reads `'` as on Linux only where CI proves the delivery: Git Bash and a sh on
+  // the MSYS runtime. Cygwin, shims and copies with no DLL, and busybox get the delivery but not this.
+  it('reads single quotes as POSIX under Git Bash and a flagged MSYS sh only', () => {
+    expect(readsSingleQuoteAsPosix({ kind: 'bash', file: GIT_BASH })).toBe(true);
     expect(
-      receivesCommandOutOfBand({ kind: 'sh', file: 'C:\\msys64\\usr\\bin\\sh.exe', msys: true }),
+      readsSingleQuoteAsPosix({ kind: 'sh', file: 'C:\\msys64\\usr\\bin\\sh.exe', msys: true }),
     ).toBe(true);
-    expect(receivesCommandOutOfBand({ kind: 'sh', file: 'C:\\tools\\sh.exe' })).toBe(false);
-    expect(receivesCommandOutOfBand({ kind: 'sh', msys: true })).toBe(false);
     expect(
-      receivesCommandOutOfBand({ kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe' }),
-    ).toBe(false);
-    expect(receivesCommandOutOfBand({ kind: 'pwsh', file: PWSH })).toBe(false);
-    expect(receivesCommandOutOfBand(undefined)).toBe(false);
-    // The quote scanner keeps asking isGitBash, so a flagged sh still refuses `'` (#532).
+      readsSingleQuoteAsPosix({
+        kind: 'sh',
+        file: 'C:\\msys64\\usr\\bin\\zsh-5.9.exe',
+        msys: true,
+      }),
+    ).toBe(true);
+    for (const shell of [
+      { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\sh.exe' },
+      { kind: 'sh', file: 'C:\\cygwin64\\bin\\sh.exe' },
+      { kind: 'sh', file: 'C:\\Users\\u\\scoop\\shims\\sh.exe' },
+      { kind: 'sh', msys: true },
+      { kind: 'sh', file: 'C:\\Windows\\System32\\sh.exe', msys: true },
+      {
+        kind: 'sh',
+        file: 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\sh.exe',
+        msys: true,
+      },
+      { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\fish.exe', msys: true },
+      { kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe' },
+      { kind: 'bash' },
+      { kind: 'pwsh', file: PWSH, msys: true },
+      { kind: 'cmd', file: CMD },
+      undefined,
+    ] as const) {
+      expect(readsSingleQuoteAsPosix(shell), JSON.stringify(shell)).toBe(false);
+    }
     expect(isGitBash({ kind: 'sh', file: 'C:\\msys64\\usr\\bin\\sh.exe' })).toBe(false);
+  });
+
+  // The scanner must never be laxer than delivery: a shell that reads `'` as POSIX must also get the
+  // command byte for byte, or the scanner and the shell could read two different commands.
+  it('never relaxes the quote rule for a shell that gets the command in argv', () => {
+    const table: Array<Pick<ResolvedShell, 'kind' | 'file' | 'msys'>> = [
+      { kind: 'bash', file: GIT_BASH },
+      { kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe' },
+      { kind: 'bash', file: 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe' },
+      { kind: 'sh', file: 'C:\\Program Files\\Git\\usr\\bin\\sh.exe', msys: true },
+      { kind: 'sh', file: 'C:\\cygwin64\\bin\\sh.exe' },
+      { kind: 'sh', file: 'C:\\Users\\u\\scoop\\shims\\sh.exe' },
+      { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\fish.exe' },
+      { kind: 'sh', file: 'D:\\tools\\nu.exe' },
+      { kind: 'sh', file: 'C:\\Windows\\System32\\sh.exe', msys: true },
+      { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\fish.exe', msys: true },
+      { kind: 'sh', msys: true },
+      { kind: 'cmd', file: CMD },
+      { kind: 'pwsh', file: PWSH },
+      { kind: 'pwsh', file: PWSH, msys: true },
+    ];
+    for (const shell of table) {
+      if (readsSingleQuoteAsPosix(shell)) {
+        expect(receivesCommandOutOfBand(shell), JSON.stringify(shell)).toBe(true);
+      }
+    }
   });
 
   it('leaves a bash without a file to Node on Windows', () => {
@@ -446,13 +616,14 @@ interface ShellRun {
  * Run `exec` the way the Bash tool does (`spawnCommandExecution`, so `exec.env` is applied), with an
  * environment that inherits no BOOK_BASH_COMMAND of its own.
  */
-function run(exec: CommandExecution, timeoutMs?: number): Promise<ShellRun> {
+function run(exec: CommandExecution, timeoutMs?: number, cwd?: string): Promise<ShellRun> {
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.BOOK_BASH_COMMAND;
   return new Promise((resolve, reject) => {
     const child = spawnCommandExecution(exec, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env,
+      cwd,
       // A deadline is a kill, not a warning: a shell that never returns must
       // not outlive the hook that waited for it.
       timeout: timeoutMs,
@@ -579,3 +750,88 @@ describe.skipIf(!posixBash)('GIT_BASH_EVAL_SCRIPT under a real bash', () => {
     expect(missing.code).not.toBe(0);
   });
 });
+
+// #548: every POSIX-named sh on Windows gets the command through GIT_BASH_EVAL_SCRIPT, whatever its
+// runtime, so the script must behave as a direct `-c` in each shell of the set. That is checked here
+// against the real shells found on PATH (each skipped when absent, nothing is downloaded); the
+// Windows side of the delivery runs on the Windows CI leg (`src/tools/shell.test.ts`).
+const posixShells: ReadonlyArray<
+  readonly [label: string, file: string | undefined, prefix: readonly string[]]
+> = [
+  ['sh', posixExecutable('sh'), []],
+  ['bash', posixExecutable('bash'), []],
+  ['dash', posixExecutable('dash'), []],
+  ['zsh', posixExecutable('zsh'), []],
+  ['ksh', posixExecutable('ksh'), []],
+  ['mksh', posixExecutable('mksh'), []],
+  ['busybox sh', posixExecutable('busybox'), ['sh']],
+];
+for (const [label, file, prefix] of posixShells) {
+  describe.skipIf(!file)(`GIT_BASH_EVAL_SCRIPT under a real ${label} (#548)`, () => {
+    let dir = '';
+    beforeAll(() => {
+      dir = mkdtempSync(join(tmpdir(), 'book-eval-script-'));
+    });
+    afterAll(() => {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+
+    const evaluated = (command: string): Promise<ShellRun> =>
+      run(
+        {
+          file: file!,
+          args: [...prefix, '-c', GIT_BASH_EVAL_SCRIPT],
+          env: { BOOK_BASH_COMMAND: command },
+        },
+        undefined,
+        dir,
+      );
+    const plain = (command: string): Promise<ShellRun> =>
+      run({ file: file!, args: [...prefix, '-c', command] }, undefined, dir);
+    const notFound = (text: string): number => text.match(/not found/g)?.length ?? 0;
+
+    it('keeps a quoted space-free word as one word, byte for byte', async () => {
+      const result = await evaluated("printf '%s\\n' a'1;b'2");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe('a1;b2\n');
+    });
+
+    it("runs `echo'1;echo'2` as one command, not two", async () => {
+      const result = await evaluated("echo'1;echo'2");
+      expect(notFound(result.stderr), result.stderr).toBe(1);
+      expect(result.stderr).toContain('echo1;echo2');
+      expect(result.code).not.toBe(0);
+    });
+
+    it('does not read a leading @word as a response file', async () => {
+      writeFileSync(join(dir, 'f'), 'echo INJECTED\n');
+      const result = await evaluated('@f');
+      expect(notFound(result.stderr), result.stderr).toBe(1);
+      expect(result.out).not.toContain('INJECTED');
+    });
+
+    it('hides BOOK_BASH_COMMAND from the command and its children', async () => {
+      const result = await evaluated(
+        `printf '%s\\n' "[\${BOOK_BASH_COMMAND+LEAK}]" "$(env | grep -c '^BOOK_BASH_COMMAND=')"`,
+      );
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe('[]\n0\n');
+    });
+
+    it('keeps the stdout, $0, $# and exit status of a direct -c', async () => {
+      const command = 'echo "x [$0][$#]"; exit 7';
+      const [tool, direct] = await Promise.all([evaluated(command), plain(command)]);
+      expect(tool.stdout).toBe(direct.stdout);
+      expect(tool.code).toBe(direct.code);
+      expect(tool.code).toBe(7);
+    });
+
+    // bash, dash and busybox exit 2 on a syntax error and zsh exits 1, through eval or not alike.
+    it('exits as a direct -c does on a syntax error', async () => {
+      const command = 'echo "a" )';
+      const [tool, direct] = await Promise.all([evaluated(command), plain(command)]);
+      expect(tool.code).toBe(direct.code);
+      expect(tool.code).not.toBe(0);
+    });
+  });
+}
