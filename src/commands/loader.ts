@@ -13,7 +13,7 @@ import {
 import { isOutside } from '../tools/path-utils.js';
 
 /**
- * Load a single .md command file. Returns null if the file doesn't exist. The command is named
+ * Load a single .md command file. Returns null if the file doesn't exist or can't be read. The command is named
  * after `filePath`; `readFrom` is the real path that was checked, when it is not `filePath`.
  */
 function loadCommandFile(
@@ -22,7 +22,13 @@ function loadCommandFile(
   readFrom: string = filePath,
 ): SlashCommand | null {
   if (!existsSync(readFrom) || extname(filePath) !== '.md') return null;
-  const raw = readFileSync(readFrom, 'utf-8');
+  let raw: string;
+  try {
+    raw = readFileSync(readFrom, 'utf-8');
+  } catch {
+    // An unreadable file is skipped, not thrown: discovery also runs for the start-up notices.
+    return null;
+  }
   const { body, frontmatter } = parseFrontmatter(raw);
   const name = filePath.split(/[/\\]/).pop()!.replace(/\.md$/, '');
   return {

@@ -771,6 +771,49 @@ describe.skipIf(process.platform === 'win32')('instruction files and the reposit
     ]);
   });
 
+  it('checks a directory above the repository root that is not the home against itself', () => {
+    // An unpacked archive whose `app/.git` (an empty file is enough) makes `app` look like a
+    // root: `bundle` is not the user's home, so its files keep the #541 check.
+    const bundle = join(dir, 'bundle');
+    mkdirSync(join(bundle, 'app'), { recursive: true });
+    writeFileSync(join(bundle, 'app', '.git'), '');
+    write(join(dir, 'outside', 'secret'), 'SECRET');
+    symlinkSync(join(dir, 'outside', 'secret'), join(bundle, 'CLAUDE.md'));
+
+    const { sources, skipped } = inspect(join(bundle, 'app'));
+
+    expect(sources).toEqual([]);
+    expect(skipped.map((s) => [s.path, s.root, s.reason])).toEqual([
+      [join(bundle, 'CLAUDE.md'), real(bundle), 'outside'],
+    ]);
+  });
+
+  it('finds the repository of a workspace opened through a link', () => {
+    const repo = join(dir, 'mono');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    write(join(repo, 'packages', 'shared', 'AGENTS.md'), 'shared rules');
+    mkdirSync(join(repo, 'packages', 'a'), { recursive: true });
+    symlinkSync(join('..', 'shared', 'AGENTS.md'), join(repo, 'packages', 'a', 'CLAUDE.md'));
+    symlinkSync(join(repo, 'packages', 'a'), join(dir, 'pkg'));
+
+    const { sources, skipped } = inspect(join(dir, 'pkg'));
+
+    expect(sources.map((s) => s.body)).toEqual(['shared rules']);
+    expect(skipped).toEqual([]);
+  });
+
+  it('loads the files of a workspace linked from inside a repository to outside it', () => {
+    const repo = join(dir, 'repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    write(join(dir, 'other', 'CLAUDE.md'), 'other rules');
+    symlinkSync(join(dir, 'other'), join(repo, 'ext'));
+
+    const { sources, skipped } = inspect(join(repo, 'ext'));
+
+    expect(sources.map((s) => s.body)).toEqual(['other rules']);
+    expect(skipped).toEqual([]);
+  });
+
   it('falls back to the directory the file was found in when there is no repository', () => {
     const repo = join(dir, 'top', 'repo');
     mkdirSync(repo, { recursive: true });

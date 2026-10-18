@@ -45,8 +45,8 @@ that substitutes no shell has nothing to approve.
 A project command file also has to stay in the repository: it loads only when its real path is a
 Markdown file inside the git repository (the workspace without one), so a `.book/commands/leak.md`
 committed as a link to a file outside it is skipped with a start-up warning instead of sending the
-target to the provider. This covers a linked `.book` or `.book/commands` directory too. Commands
-in `~/.book/commands/` are never checked.
+target to the provider. This covers a linked `.book` or `.book/commands` directory too. Your user
+commands, in `$BOOK_HOME/commands/` (default `~/.book/commands/`), are never checked.
 
 **`allowed-tools` narrows what a command, skill, or agent role may run.** A rule such as
 `Bash(git *)` admits a Bash call only if the whole command matches the pattern, and only if the

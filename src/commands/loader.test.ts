@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, realpathSync, symlinkSync } from 'fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  mkdirSync,
+  realpathSync,
+  symlinkSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import {
@@ -383,6 +391,25 @@ describe.skipIf(process.platform === 'win32')('command files that are links', ()
 
     expect(commands.map((c) => c.body)).toEqual(['User body']);
     expect(skipped).toEqual([]);
+  });
+
+  it('loads the commands of a workspace linked from inside a repository to outside it', () => {
+    write(join(dir, 'other', '.book', 'commands', 'hi.md'), 'say hi\n');
+    symlinkSync(join(dir, 'other'), join(repo, 'ext'));
+
+    const { commands, skipped } = inspectCommands(join(repo, 'ext'));
+
+    expect(commands.map((c) => [c.name, c.source, c.body.trim()])).toEqual([
+      ['hi', 'project', 'say hi'],
+    ]);
+    expect(skipped).toEqual([]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('skips an unreadable command file instead of throwing', () => {
+    write(join(repo, '.book', 'commands', 'locked.md'), 'locked body\n');
+    chmodSync(join(repo, '.book', 'commands', 'locked.md'), 0o000);
+
+    expect(inspectCommands(repo)).toEqual({ commands: [], skipped: [] });
   });
 
   it('ignores a dangling link without a skipped entry', () => {

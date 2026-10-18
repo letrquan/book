@@ -118,6 +118,16 @@ describe.skipIf(process.platform === 'win32')('REVIEW.md that is a link', () => 
     ]);
   });
 
+  it('loads the REVIEW.md of a workspace linked from inside a repository to outside it', () => {
+    write(join(dir, 'other', 'REVIEW.md'), 'other review rules');
+    symlinkSync(join(dir, 'other'), join(repo, 'ext'));
+
+    expect(inspectReviewConfig(join(repo, 'ext'))).toEqual({
+      config: { body: 'other review rules', path: join(repo, 'ext', 'REVIEW.md') },
+      skipped: [],
+    });
+  });
+
   it('ignores a dangling link without a skipped entry', () => {
     symlinkSync(join(dir, 'missing.md'), join(repo, 'REVIEW.md'));
 

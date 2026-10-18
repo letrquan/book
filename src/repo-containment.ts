@@ -58,15 +58,17 @@ export function ancestorsFromRoot(workspace: string): string[] {
 }
 
 /**
- * The git repository root: the nearest directory, walking up the logical path from the
- * workspace, with a `.git` entry (a directory, or a file for a linked worktree or a submodule).
- * Like `git rev-parse --show-toplevel`, a linked worktree is its own root, not its main
- * checkout (which `findGitRoot` in `memory-store.ts` maps it to, on purpose, for memory keying).
- * Only stats files; git is never spawned.
+ * The git repository root, as a real path: the nearest directory, walking up the real path of
+ * `dir`, with a `.git` entry (a directory, or a file for a linked worktree or a submodule). Like
+ * `git rev-parse --show-toplevel`, which starts from the real working directory, so the root
+ * always contains the real path of `dir`, and a workspace opened through a link finds the
+ * repository it is really in. A linked worktree is its own root, not its main checkout (which
+ * `findGitRoot` in `memory-store.ts` maps it to, on purpose, for memory keying). Only stats
+ * files; git is never spawned.
  */
-export function findRepositoryRoot(workspace: string): string | undefined {
-  for (const dir of ancestorsFromRoot(workspace).reverse()) {
-    if (existsSync(join(dir, '.git'))) return dir;
+export function findRepositoryRoot(dir: string): string | undefined {
+  for (const candidate of ancestorsFromRoot(tryRealPath(dir) ?? resolve(dir)).reverse()) {
+    if (existsSync(join(candidate, '.git'))) return candidate;
   }
   return undefined;
 }

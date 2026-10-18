@@ -11,6 +11,8 @@ import {
 } from './repo-containment.js';
 
 let dir: string;
+// Roots are real paths; a Windows runner's temp directory has 8.3 short names in its logical path.
+const real = (path: string) => realpathSync.native(path);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'book-repo-containment-'));
@@ -25,8 +27,8 @@ describe('findRepositoryRoot', () => {
     mkdirSync(join(dir, 'repo', '.git'), { recursive: true });
     mkdirSync(join(dir, 'repo', 'packages', 'a'), { recursive: true });
 
-    expect(findRepositoryRoot(join(dir, 'repo', 'packages', 'a'))).toBe(join(dir, 'repo'));
-    expect(findRepositoryRoot(join(dir, 'repo'))).toBe(join(dir, 'repo'));
+    expect(findRepositoryRoot(join(dir, 'repo', 'packages', 'a'))).toBe(real(join(dir, 'repo')));
+    expect(findRepositoryRoot(join(dir, 'repo'))).toBe(real(join(dir, 'repo')));
   });
 
   it('treats a .git file (linked worktree, submodule) as its own root, not the main checkout', () => {
@@ -37,14 +39,16 @@ describe('findRepositoryRoot', () => {
       `gitdir: ${join(dir, 'main', '.git', 'worktrees', 'wt')}\n`,
     );
 
-    expect(findRepositoryRoot(join(dir, 'wt', 'src'))).toBe(join(dir, 'wt'));
+    expect(findRepositoryRoot(join(dir, 'wt', 'src'))).toBe(real(join(dir, 'wt')));
   });
 
   it('prefers the nearest .git over an outer one', () => {
     mkdirSync(join(dir, 'outer', '.git'), { recursive: true });
     mkdirSync(join(dir, 'outer', 'inner', '.git'), { recursive: true });
 
-    expect(findRepositoryRoot(join(dir, 'outer', 'inner'))).toBe(join(dir, 'outer', 'inner'));
+    expect(findRepositoryRoot(join(dir, 'outer', 'inner'))).toBe(
+      real(join(dir, 'outer', 'inner')),
+    );
   });
 
   it('returns undefined when no directory up the walk has a .git entry', () => {
@@ -53,12 +57,18 @@ describe('findRepositoryRoot', () => {
     expect(findRepositoryRoot(join(dir, 'plain', 'sub'))).toBeUndefined();
   });
 
-  it.skipIf(process.platform === 'win32')('walks the logical path, not the real one', () => {
-    mkdirSync(join(dir, 'real', 'ws'), { recursive: true });
-    mkdirSync(join(dir, 'logical', '.git'), { recursive: true });
-    symlinkSync(join(dir, 'real', 'ws'), join(dir, 'logical', 'ws'));
-
-    expect(findRepositoryRoot(join(dir, 'logical', 'ws'))).toBe(join(dir, 'logical'));
+  // Like git, which starts from the real working directory: the root always holds the real path.
+  it.skipIf(process.platform === 'win32')('walks the real path, not the logical one', () => {
+    mkdirSync(join(dir, 'mono', '.git'), { recursive: true });
+    mkdirSync(join(dir, 'mono', 'packages', 'a'), { recursive: true });
+    mkdirSync(join(dir, 'outer', '.git'), { recursive: true });
+    mkdirSync(join(dir, 'plain'), { recursive: true });
+    // A workspace opened through a link finds the repository it is really in…
+    symlinkSync(join(dir, 'mono', 'packages', 'a'), join(dir, 'pkg'));
+    expect(findRepositoryRoot(join(dir, 'pkg'))).toBe(real(join(dir, 'mono')));
+    // …and a link from inside a repository to a directory outside it is in no repository.
+    symlinkSync(join(dir, 'plain'), join(dir, 'outer', 'ext'));
+    expect(findRepositoryRoot(join(dir, 'outer', 'ext'))).toBeUndefined();
   });
 });
 
@@ -68,7 +78,7 @@ describe('projectContainmentRoot', () => {
     mkdirSync(join(dir, 'repo', 'pkg'), { recursive: true });
     mkdirSync(join(dir, 'plain'), { recursive: true });
 
-    expect(projectContainmentRoot(join(dir, 'repo', 'pkg'))).toBe(join(dir, 'repo'));
+    expect(projectContainmentRoot(join(dir, 'repo', 'pkg'))).toBe(real(join(dir, 'repo')));
     expect(projectContainmentRoot(join(dir, 'plain'))).toBe(join(dir, 'plain'));
   });
 });

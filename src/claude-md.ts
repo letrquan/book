@@ -10,6 +10,7 @@ import {
   tryRealPath,
   type SkippedProjectFile,
 } from './repo-containment.js';
+import { isOutside } from './tools/path-utils.js';
 
 export type ProjectInstructionLayer = 'user' | 'project' | 'local' | 'rule';
 
@@ -58,9 +59,11 @@ function readSource(
  * that root and is a Markdown file: a repository can commit `CLAUDE.md` as a link to
  * `~/.ssh/id_rsa`, and the target would otherwise be sent to the provider as prompt text. A link
  * to a shared file elsewhere in the repository is fine (a monorepo package's
- * `CLAUDE.md -> ../shared/AGENTS.md`). A file in a directory above every repository root is not
- * checked: those directories belong to the user (a home-manager `~/AGENTS.md` links into the Nix
- * store). With no repository, a file is checked against the directory it was found in. The user
+ * `CLAUDE.md -> ../shared/AGENTS.md`). A file in the user's home or a directory above it, when
+ * that is above every repository root, is not checked: those directories belong to the user (a
+ * home-manager `~/AGENTS.md` links into the Nix store). A file in any other directory above every
+ * repository root, and any file when there is no repository, is checked against the directory it
+ * was found in. The user
  * layer is the user's own and is never checked. Nothing is exempt by directory
  * (`~/.book/settings.json` holds the API key); a file already loaded is the only one met again
  * without a check. Discovery itself never prints.
@@ -83,13 +86,25 @@ export function inspectProjectInstructions(
   // The directory a file found in `dir` (the workspace or one of its ancestors) must stay inside:
   // the root of the repository `dir` is in, measured per directory, so when the workspace is a
   // submodule or a worktree inside its main checkout, the outer repository's files are still
-  // checked, against the outer root. `null` (not checked) for a directory above every repository;
-  // `dir` itself when there is no repository up the walk at all (#541).
+  // checked, against the outer root. `dir` itself when there is no repository up the walk at all
+  // (#541). A directory in no repository while the workspace is in one is above every repository
+  // root: `null` (not checked) when it is the user's home or one of its ancestors (a home-manager
+  // `~/AGENTS.md` links into the Nix store), and otherwise still `dir` itself, since it may be an
+  // unpacked archive whose `app/.git` makes `app` look like a root.
   const workspaceRepo = findRepositoryRoot(workspaceRoot);
-  const containerFor = (dir: string): string | null =>
-    findRepositoryRoot(dir) ?? (workspaceRepo === undefined ? dir : null);
-  const localContainer = containerFor(workspaceRoot);
-  const localRootReal = localContainer === null ? undefined : tryRealPath(localContainer);
+  const homeReal = tryRealPath(systemHome);
+  const containerFor = (dir: string): string | null => {
+    const repo = findRepositoryRoot(dir);
+    if (repo !== undefined) return repo;
+    if (workspaceRepo === undefined) return dir;
+    const dirReal = tryRealPath(dir);
+    const holdsHome =
+      homeReal !== undefined && dirReal !== undefined && !isOutside(dirReal, homeReal);
+    return holdsHome ? null : dir;
+  };
+  // Never `null` (the workspace is in its own repository or in none); `??` keeps that explicit.
+  const localContainer = containerFor(workspaceRoot) ?? workspaceRoot;
+  const localRootReal = tryRealPath(localContainer);
   const localKey =
     localReal !== undefined &&
     localRootReal !== undefined &&
@@ -98,8 +113,9 @@ export function inspectProjectInstructions(
       ? localReal
       : undefined;
   const loaded = new Set<string>();
-  // `dir` is the directory the file was found in (not given for `user`).
-  const add = (path: string, layer: ProjectInstructionLayer, dir?: string) => {
+  // `root` is `containerFor` of the directory the file was found in: the directory it must stay
+  // inside, or `null` when it is not checked. Not given for `user`.
+  const add = (path: string, layer: ProjectInstructionLayer, root?: string | null) => {
     // The user layer is never checked, so where no real path can be had it is read by name.
     const key = tryRealPath(path) ?? (layer === 'user' ? resolve(path) : undefined);
     if (key === undefined || !isFile(key)) return;
@@ -118,9 +134,8 @@ export function inspectProjectInstructions(
       // again as a project file does not warn about the user's own file.
       loaded.add(key);
     } else {
-      const container = dir === undefined ? undefined : containerFor(dir);
-      if (container !== null) {
-        const rootReal = container === undefined ? undefined : tryRealPath(container);
+      if (root !== null) {
+        const rootReal = root === undefined ? undefined : tryRealPath(root);
         if (rootReal === undefined) return;
         const reason = refusalFor(rootReal, key);
         if (reason) {
@@ -140,12 +155,13 @@ export function inspectProjectInstructions(
   add(join(bookHome, 'AGENTS.md'), 'user');
 
   for (const dir of ancestorsFromRoot(workspaceRoot)) {
-    add(join(dir, 'AGENTS.md'), 'project', dir);
-    add(join(dir, 'CLAUDE.md'), 'project', dir);
-    add(join(dir, '.claude', 'CLAUDE.md'), 'project', dir);
+    const root = containerFor(dir);
+    add(join(dir, 'AGENTS.md'), 'project', root);
+    add(join(dir, 'CLAUDE.md'), 'project', root);
+    add(join(dir, '.claude', 'CLAUDE.md'), 'project', root);
   }
 
-  add(localPath, 'local', workspaceRoot);
+  add(localPath, 'local', localContainer);
 
   // ponytail: rules are standing guidance; add glob/frontmatter matching when path-specific activation matters.
   try {
@@ -153,7 +169,7 @@ export function inspectProjectInstructions(
       encoding: 'utf-8',
     }).sort()) {
       if (entry.endsWith('.md')) {
-        add(join(workspaceRoot, '.claude', 'rules', entry), 'rule', workspaceRoot);
+        add(join(workspaceRoot, '.claude', 'rules', entry), 'rule', localContainer);
       }
     }
   } catch {

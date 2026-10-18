@@ -39,8 +39,9 @@ export function inspectReviewConfig(workspace: string): ReviewConfigInspection {
   const empty: ReviewConfigInspection = { config: {}, skipped: [] };
   try {
     const real = tryRealPath(path);
+    if (real === undefined || !statSync(real).isFile()) return empty;
     const rootReal = tryRealPath(projectContainmentRoot(root));
-    if (real === undefined || rootReal === undefined || !statSync(real).isFile()) return empty;
+    if (rootReal === undefined) return empty;
     const reason = refusalFor(rootReal, real);
     if (reason) return { config: {}, skipped: [{ path, target: real, root: rootReal, reason }] };
     const body = readFileSync(real, 'utf-8').trim();
