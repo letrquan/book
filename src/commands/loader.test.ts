@@ -1,8 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  mkdirSync,
+  realpathSync,
+  symlinkSync,
+} from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
-import { discoverCommands, generateCommandListing, resolveCommandBody } from './loader.js';
+import { dirname, join } from 'path';
+import {
+  collectSkippedCommandNotices,
+  discoverCommands,
+  generateCommandListing,
+  inspectCommands,
+  resolveCommandBody,
+} from './loader.js';
 import { projectCommandFingerprint } from '../command-approvals.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import type { SlashCommand } from '../types/commands.js';
@@ -212,6 +226,200 @@ describe('discoverCommands', () => {
 
     const result = discoverCommands(dir);
     expect(result.find((c) => c.name === 'same')?.description).toBe('Project version');
+  });
+});
+
+// #543. A repository can commit a command file as a link to a file outside it, and the target would
+// be sent to the provider when `/name` is run.
+describe.skipIf(process.platform === 'win32')('command files that are links', () => {
+  let repo: string;
+  let bookHome: string;
+  const real = (path: string) => realpathSync.native(path);
+  const write = (path: string, body: string) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, body, 'utf-8');
+  };
+
+  beforeEach(() => {
+    repo = join(dir, 'repo');
+    bookHome = join(dir, 'book-home');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    mkdirSync(join(bookHome, 'commands'), { recursive: true });
+    vi.stubEnv('BOOK_HOME', bookHome);
+  });
+
+  it('does not load a project command linked outside the repository, and reports it', () => {
+    write(join(dir, 'outside', 'secret.md'), 'TOP-SECRET\n');
+    mkdirSync(join(repo, '.book', 'commands'), { recursive: true });
+    symlinkSync(join(dir, 'outside', 'secret.md'), join(repo, '.book', 'commands', 'leak.md'));
+
+    expect(discoverCommands(repo)).toEqual([]);
+    expect(inspectCommands(repo)).toEqual({
+      commands: [],
+      skipped: [
+        {
+          path: join(repo, '.book', 'commands', 'leak.md'),
+          target: real(join(dir, 'outside', 'secret.md')),
+          root: real(repo),
+          reason: 'outside',
+        },
+      ],
+    });
+    expect(collectSkippedCommandNotices(repo)).toEqual([
+      `⚠  Skipped project command ${join('.book', 'commands', 'leak.md')}: it links to ${real(
+        join(dir, 'outside', 'secret.md'),
+      )}, outside ${real(repo)}.`,
+    ]);
+  });
+
+  it('loads a project command linked to a Markdown file inside the repository', () => {
+    write(join(repo, 'docs', 'shared.md'), '---\ndescription: Shared\n---\nShared body');
+    mkdirSync(join(repo, '.book', 'commands'), { recursive: true });
+    symlinkSync(
+      join('..', '..', 'docs', 'shared.md'),
+      join(repo, '.book', 'commands', 'shared-link.md'),
+    );
+
+    const { commands, skipped } = inspectCommands(repo);
+
+    expect(commands).toEqual([
+      expect.objectContaining({
+        name: 'shared-link',
+        description: 'Shared',
+        body: 'Shared body',
+        source: 'project',
+      }),
+    ]);
+    expect(skipped).toEqual([]);
+  });
+
+  it('does not load a project command linked to a file that is not Markdown', () => {
+    write(join(repo, '.env'), 'TOKEN=abc');
+    mkdirSync(join(repo, '.book', 'commands'), { recursive: true });
+    symlinkSync(join('..', '..', '.env'), join(repo, '.book', 'commands', 'env.md'));
+
+    const { commands, skipped } = inspectCommands(repo);
+
+    expect(commands).toEqual([]);
+    expect(skipped.map((s) => [s.path, s.reason])).toEqual([
+      [join(repo, '.book', 'commands', 'env.md'), 'not-markdown'],
+    ]);
+  });
+
+  it('reports each file of a linked .book/commands directory that points outside', () => {
+    write(join(dir, 'outside', 'a.md'), 'A secret');
+    write(join(dir, 'outside', 'b.md'), 'B secret');
+    mkdirSync(join(repo, '.book'), { recursive: true });
+    symlinkSync(join(dir, 'outside'), join(repo, '.book', 'commands'));
+
+    const { commands, skipped } = inspectCommands(repo);
+
+    expect(commands).toEqual([]);
+    expect(skipped.map((s) => [s.path, s.target])).toEqual([
+      [join(repo, '.book', 'commands', 'a.md'), real(join(dir, 'outside', 'a.md'))],
+      [join(repo, '.book', 'commands', 'b.md'), real(join(dir, 'outside', 'b.md'))],
+    ]);
+  });
+
+  it('reports each file of a linked .book directory that points outside', () => {
+    write(join(dir, 'outside-book', 'commands', 'a.md'), 'A secret');
+    symlinkSync(join(dir, 'outside-book'), join(repo, '.book'));
+
+    const { commands, skipped } = inspectCommands(repo);
+
+    expect(commands).toEqual([]);
+    expect(skipped.map((s) => s.path)).toEqual([join(repo, '.book', 'commands', 'a.md')]);
+  });
+
+  it('measures from the repository root, so a package command may link to a shared file', () => {
+    write(join(repo, 'shared', 'cmd.md'), 'Shared body');
+    const pkg = join(repo, 'packages', 'a');
+    mkdirSync(join(pkg, '.book', 'commands'), { recursive: true });
+    symlinkSync(
+      join('..', '..', '..', '..', 'shared', 'cmd.md'),
+      join(pkg, '.book', 'commands', 'cmd.md'),
+    );
+
+    expect(discoverCommands(pkg).map((c) => c.body)).toEqual(['Shared body']);
+  });
+
+  it('measures from the workspace root when there is no repository', () => {
+    const plain = join(dir, 'plain');
+    write(join(dir, 'outside', 'x.md'), 'secret');
+    mkdirSync(join(plain, '.book', 'commands'), { recursive: true });
+    symlinkSync(join(dir, 'outside', 'x.md'), join(plain, '.book', 'commands', 'x.md'));
+
+    expect(inspectCommands(plain).skipped.map((s) => s.root)).toEqual([real(plain)]);
+  });
+
+  it('never checks a user command, which may link anywhere', () => {
+    write(join(dir, 'dotfiles', 'mine.md'), '---\ndescription: Mine\n---\nUser body');
+    write(join(dir, 'dotfiles', 'notes.txt'), 'Text body');
+    symlinkSync(join(dir, 'dotfiles', 'mine.md'), join(bookHome, 'commands', 'mine.md'));
+    symlinkSync(join(dir, 'dotfiles', 'notes.txt'), join(bookHome, 'commands', 'notes.md'));
+
+    const { commands, skipped } = inspectCommands(repo);
+
+    expect(commands.map((c) => [c.name, c.body, c.source]).sort()).toEqual([
+      ['mine', 'User body', 'user'],
+      ['notes', 'Text body', 'user'],
+    ]);
+    expect(skipped).toEqual([]);
+  });
+
+  it('does not check the project entries when the project commands directory is the user one', () => {
+    // The workspace is the home directory: `<home>/.book/commands` is both.
+    const home = join(dir, 'home');
+    write(join(dir, 'dotfiles', 'mine.md'), 'User body');
+    mkdirSync(join(home, '.book', 'commands'), { recursive: true });
+    symlinkSync(join(dir, 'dotfiles', 'mine.md'), join(home, '.book', 'commands', 'mine.md'));
+    vi.stubEnv('BOOK_HOME', join(home, '.book'));
+
+    const { commands, skipped } = inspectCommands(home);
+
+    expect(commands.map((c) => c.body)).toEqual(['User body']);
+    expect(skipped).toEqual([]);
+  });
+
+  it('does not check the project entries when the commands directory is a link to the user one', () => {
+    write(join(dir, 'dotfiles', 'mine.md'), 'User body');
+    symlinkSync(join(dir, 'dotfiles', 'mine.md'), join(bookHome, 'commands', 'mine.md'));
+    mkdirSync(join(repo, '.book'), { recursive: true });
+    symlinkSync(join(bookHome, 'commands'), join(repo, '.book', 'commands'));
+
+    const { commands, skipped } = inspectCommands(repo);
+
+    expect(commands.map((c) => c.body)).toEqual(['User body']);
+    expect(skipped).toEqual([]);
+  });
+
+  it('loads the commands of a workspace linked from inside a repository to outside it', () => {
+    write(join(dir, 'other', '.book', 'commands', 'hi.md'), 'say hi\n');
+    symlinkSync(join(dir, 'other'), join(repo, 'ext'));
+
+    const { commands, skipped } = inspectCommands(join(repo, 'ext'));
+
+    expect(commands.map((c) => [c.name, c.source, c.body.trim()])).toEqual([
+      ['hi', 'project', 'say hi'],
+    ]);
+    expect(skipped).toEqual([]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    'skips an unreadable command file instead of throwing',
+    () => {
+      write(join(repo, '.book', 'commands', 'locked.md'), 'locked body\n');
+      chmodSync(join(repo, '.book', 'commands', 'locked.md'), 0o000);
+
+      expect(inspectCommands(repo)).toEqual({ commands: [], skipped: [] });
+    },
+  );
+
+  it('ignores a dangling link without a skipped entry', () => {
+    mkdirSync(join(repo, '.book', 'commands'), { recursive: true });
+    symlinkSync(join(dir, 'missing.md'), join(repo, '.book', 'commands', 'gone.md'));
+
+    expect(inspectCommands(repo)).toEqual({ commands: [], skipped: [] });
   });
 });
 

@@ -10,8 +10,10 @@ import { createDefaultRegistry } from './tools/registry.js';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
 import { mcpServersToRecord, partitionMcpServersByApproval } from './mcp-approvals.js';
 import { resolveMcpServerList } from './mcp-config.js';
-import { collectSkippedInstructionNotices } from './claude-md.js';
-import { collectWithheldProjectNotices } from './project-approval-notices.js';
+import {
+  collectSkippedProjectFileNotices,
+  collectWithheldProjectNotices,
+} from './project-approval-notices.js';
 import { AgentManager } from './agents/manager.js';
 import { SessionStore } from './session/store.js';
 import { discardUntouchedSession, resolveSessionBootstrap } from './session/resolve.js';
@@ -148,8 +150,9 @@ export async function* query(
           settingsEnabled: !options.noSettings,
           providerGate: config.workspaceProviderGate,
         }),
-        // Instruction files that link out of their directory are not loaded (#539).
-        ...collectSkippedInstructionNotices(config.workspace),
+        // Instruction files, REVIEW.md and command files that link out of the repository are not
+        // loaded (#539, #543).
+        ...collectSkippedProjectFileNotices(config.workspace),
       ]) {
         console.warn(notice);
       }

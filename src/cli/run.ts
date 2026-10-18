@@ -8,10 +8,10 @@ import { McpSessionHost } from '../mcp-host.js';
 import { mcpServersToRecord, partitionMcpServersByApproval } from '../mcp-approvals.js';
 import { resolveMcpServerList } from '../mcp-config.js';
 import {
+  collectSkippedProjectFileNotices,
   collectWithheldProjectNotices,
   collectWithheldProviderNotices,
 } from '../project-approval-notices.js';
-import { collectSkippedInstructionNotices } from '../claude-md.js';
 import { isExiting, setExitCode } from './exit.js';
 import { installPrintInterrupt, printExitCode, type PrintInterrupt } from './print-interrupt.js';
 import { parseNumericFlag } from './utils.js';
@@ -233,9 +233,10 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       options.print === undefined && config.workspaceProviderGate
         ? collectWithheldProviderNotices(config.workspaceProviderGate, config.workspace)
         : [];
-    // Project instruction files that link out of their directory are not loaded (#539). Not tied
-    // to `--no-settings`: they are read whatever the settings layers are.
-    const instructionNotices = collectSkippedInstructionNotices(config.workspace);
+    // Project instruction files, REVIEW.md and command files that link out of the repository are
+    // not loaded (#539, #543). Not tied to `--no-settings`: they are read whatever the settings
+    // layers are.
+    const instructionNotices = collectSkippedProjectFileNotices(config.workspace);
     if (options.scrollback) {
       for (const notice of [...providerNotices, ...instructionNotices]) console.warn(notice);
     }

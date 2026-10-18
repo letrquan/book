@@ -3,13 +3,32 @@ import { join, extname } from 'path';
 import { parseFrontmatter } from '../frontmatter.js';
 import type { SlashCommand } from '../types/commands.js';
 import { resolveBookHome } from '../book-home.js';
+import {
+  formatSkippedNotice,
+  projectContainmentRoot,
+  refusalFor,
+  tryRealPath,
+  type SkippedProjectFile,
+} from '../repo-containment.js';
+import { isOutside } from '../tools/path-utils.js';
 
 /**
- * Load a single .md command file. Returns null if the file doesn't exist.
+ * Load a single .md command file. Returns null if the file doesn't exist or can't be read. The command is named
+ * after `filePath`; `readFrom` is the real path that was checked, when it is not `filePath`.
  */
-function loadCommandFile(filePath: string, source: 'user' | 'project'): SlashCommand | null {
-  if (!existsSync(filePath) || extname(filePath) !== '.md') return null;
-  const raw = readFileSync(filePath, 'utf-8');
+function loadCommandFile(
+  filePath: string,
+  source: 'user' | 'project',
+  readFrom: string = filePath,
+): SlashCommand | null {
+  if (!existsSync(readFrom) || extname(filePath) !== '.md') return null;
+  let raw: string;
+  try {
+    raw = readFileSync(readFrom, 'utf-8');
+  } catch {
+    // An unreadable file is skipped, not thrown: discovery also runs for the start-up notices.
+    return null;
+  }
   const { body, frontmatter } = parseFrontmatter(raw);
   const name = filePath.split(/[/\\]/).pop()!.replace(/\.md$/, '');
   return {
@@ -30,20 +49,42 @@ function loadCommandFile(filePath: string, source: 'user' | 'project'): SlashCom
   };
 }
 
+export interface CommandInspection {
+  commands: SlashCommand[];
+  /** Project command files that were found but refused (#543). */
+  skipped: SkippedProjectFile[];
+}
+
 /**
- * Discover all slash commands from the conventional directories.
+ * Discovery plus the project command files it refused (#543). A repository can commit a command
+ * file as a link to a file outside it, and the target would be sent to the provider when its
+ * `/name` is run, so each entry of the project directory loads only when its real path is a
+ * Markdown file inside the real path of the repository root (the workspace root with no
+ * repository). That covers a linked `.book` or `.book/commands` directory, and the file is read
+ * from the real path that was checked. User commands are the user's own and are never checked,
+ * and neither are the entries of the project directory when it is the user directory (the
+ * workspace is the home directory).
  *
  * Search order (project wins on name collision):
  *   1. ~/.book/commands/*.md  (user)
  *   2. .book/commands/*.md    (project)
- *
- * Project commands with the same name as a user command override the user one.
  */
-export function discoverCommands(workspace: string): SlashCommand[] {
+export function inspectCommands(workspace: string): CommandInspection {
   const userDir = join(resolveBookHome(), 'commands');
   const projectDir = join(workspace, '.book', 'commands');
+  const userReal = tryRealPath(userDir);
+  const projectReal = tryRealPath(projectDir);
+  const projectIsUserDir =
+    userReal !== undefined &&
+    projectReal !== undefined &&
+    !isOutside(userReal, projectReal) &&
+    !isOutside(projectReal, userReal);
+  // Fails closed: a project directory whose real path cannot be had is checked (and so skipped).
+  const checked = !projectIsUserDir;
+  const rootReal = checked ? tryRealPath(projectContainmentRoot(workspace)) : undefined;
 
   const byName = new Map<string, SlashCommand>();
+  const skipped: SkippedProjectFile[] = [];
 
   // User commands first (lowest priority).
   for (const dir of [userDir, projectDir]) {
@@ -57,22 +98,54 @@ export function discoverCommands(workspace: string): SlashCommand[] {
     for (const entry of entries) {
       if (!entry.endsWith('.md')) continue;
       const fullPath = join(dir, entry);
-      let stat;
-      try {
-        stat = statSync(fullPath);
-      } catch {
-        continue;
+      // Only a file inside the repository is read, by its real path; a name that links elsewhere
+      // is reported, not followed.
+      let readFrom = fullPath;
+      if (dir === projectDir && checked) {
+        const real = tryRealPath(fullPath);
+        if (rootReal === undefined || real === undefined) continue;
+        try {
+          if (!statSync(real).isFile()) continue;
+        } catch {
+          continue;
+        }
+        const reason = refusalFor(rootReal, real);
+        if (reason) {
+          skipped.push({ path: fullPath, target: real, root: rootReal, reason });
+          continue;
+        }
+        readFrom = real;
+      } else {
+        try {
+          if (!statSync(fullPath).isFile()) continue;
+        } catch {
+          continue;
+        }
       }
-      if (!stat.isFile()) continue;
       const source = dir === userDir ? 'user' : 'project';
-      const cmd = loadCommandFile(fullPath, source);
+      const cmd = loadCommandFile(fullPath, source, readFrom);
       if (cmd) {
         byName.set(cmd.name, cmd); // project overrides user via set
       }
     }
   }
 
-  return Array.from(byName.values());
+  return { commands: Array.from(byName.values()), skipped };
+}
+
+/**
+ * Discover all slash commands from the conventional directories. Project commands with the same
+ * name as a user command override the user one. See `inspectCommands` for what is refused.
+ */
+export function discoverCommands(workspace: string): SlashCommand[] {
+  return inspectCommands(workspace).commands;
+}
+
+/** One start-up warning per project command file that was not loaded. */
+export function collectSkippedCommandNotices(workspace: string): string[] {
+  return inspectCommands(workspace).skipped.map((entry) =>
+    formatSkippedNotice('project command', workspace, entry),
+  );
 }
 
 // Re-export resolveCommandBody from resolve.ts for backward compatibility.
