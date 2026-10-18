@@ -409,12 +409,13 @@ PowerShell, cmd.exe and any other shell except an MSYS `sh` (below) still treat 
 the command compound; use double quotes under those shells.
 
 Every POSIX `sh` on Windows gets the same `BOOK_BASH_COMMAND` delivery: `shell` set to an
-executable named `sh`, `dash`, `ash`, `ksh`, `mksh` or `zsh` (with or without `.exe`), whatever runtime
-it is built on and wherever it lives, outside WSL's launcher directories. That covers Git's and
-MSYS2's `sh.exe` and `dash.exe`, a Cygwin `sh.exe`, a shim, hardlink or copy of any of them (such as
+executable named `sh`, `dash`, `ash`, `ksh`, `mksh` or `zsh` (with or without `.exe`, and with or
+without a version such as `zsh-5.9.exe`), whatever runtime it is built on and wherever it lives;
+only WSL's `bash.exe` keeps the command line. That covers Git's and MSYS2's `sh.exe` and
+`dash.exe`, a Cygwin `sh.exe`, a shim, hardlink, copy or app execution alias of any of them (such as
 scoop's `shims\sh.exe`), and busybox-w32 copied as `sh.exe`. Book chooses the delivery by name
-alone, so a runtime it cannot recognise still gets the command intact rather than on a command
-line it could rebuild. Non-POSIX shells such as `fish.exe` or `nu.exe`, and `busybox.exe` under its
+alone, so a runtime it cannot recognise still gets the command intact rather than on a command line
+it could rebuild, and a program that cannot read the variable fails instead of running anything. Non-POSIX shells such as `fish.exe` or `nu.exe`, and `busybox.exe` under its
 own name, keep the command on the command line, because the script that reads the variable is
 POSIX sh; that is a known gap rather than a safe choice, so prefer a POSIX shell.
 

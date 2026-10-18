@@ -201,41 +201,42 @@ function resolveRequested(
 const MSYS_RUNTIME_DLL = 'msys-2.0.dll';
 
 /**
- * POSIX shells, by lowercased name without `.exe`. {@link GIT_BASH_EVAL_SCRIPT} is POSIX sh, so only
- * these get the out-of-band delivery (see {@link isOutOfBandPosixShellFile}): `kindFromExecutable`
- * also calls `fish`, `nu`, `busybox` and any other name `sh`, and MSYS2 ships `fish.exe` beside the
- * runtime.
+ * POSIX shells, by lowercased name without `.exe`: `sh`, `dash`, `ash`, `ksh`, `mksh` or `zsh`,
+ * optionally followed by a version, as installs name their hardlinks (`zsh-5.9`, `zsh5`, `ksh93`).
+ * {@link GIT_BASH_EVAL_SCRIPT} is POSIX sh, so only these get the out-of-band delivery (see
+ * {@link isPosixShellFile}): `kindFromExecutable` also calls `fish`, `nu`, `busybox` and any other
+ * name `sh`, and MSYS2 ships `fish.exe` beside the runtime.
  */
-const POSIX_SHELL_NAMES = new Set(['sh', 'dash', 'ash', 'ksh', 'mksh', 'zsh']);
+const POSIX_SHELL_NAME = /^(?:sh|dash|ash|ksh|mksh|zsh)(?:-?\d+(?:\.\d+)*)?$/;
 
 /**
- * Whether a Windows `sh`-kind `file` gets its command out of band (#548): its lowercased name
- * without `.exe` is in {@link POSIX_SHELL_NAMES} and it is not in a WSL launcher directory (see
- * {@link WSL_LAUNCHER_DIRECTORY}). By name and directory alone, with no file probe: whatever runtime
- * it is on (MSYS, Cygwin, busybox-w32 copied as `sh.exe`) and whether it is the shell itself or a
- * shim, hardlink or copy of one, it fails closed onto the delivery that reaches every runtime byte
- * for byte.
+ * Whether a Windows `sh`-kind `file` has a POSIX shell's name (see {@link POSIX_SHELL_NAME}), and so
+ * gets its command out of band (#548). By name alone, with no file probe and wherever it lives:
+ * whatever runtime it is on (MSYS, Cygwin, busybox-w32 copied as `sh.exe`) and whether it is the
+ * shell itself or a shim, hardlink, copy or app execution alias of one, it fails closed onto the
+ * delivery that reaches every runtime byte for byte. A program behind it that cannot see the
+ * variable fails loudly on `${BOOK_BASH_COMMAND:?}` rather than run anything.
  */
-function isOutOfBandPosixShellFile(file: string): boolean {
+function isPosixShellFile(file: string): boolean {
   const name = win32
     .basename(file)
     .toLowerCase()
     .replace(/\.exe$/, '');
-  return POSIX_SHELL_NAMES.has(name) && !WSL_LAUNCHER_DIRECTORY.test(file);
+  return POSIX_SHELL_NAME.test(name);
 }
 
 /**
- * Whether `file` is a POSIX shell running on the MSYS runtime (#532): an out-of-band POSIX shell
- * (see {@link isOutOfBandPosixShellFile}) with `msys-2.0.dll` beside it, or in `..\usr\bin` for Git
- * for Windows' `<root>\bin\sh.exe`, a launcher stub with no DLL of its own that hands its raw
- * command line to `<root>\usr\bin\sh.exe`. This sets `ResolvedShell.msys`, which no longer decides
- * delivery (#548): it only lets the permission scanner read `'` as on Linux
- * ({@link readsSingleQuoteAsPosix}), because Windows CI proves the MSYS runtime's delivery. A
- * Cygwin `sh.exe` (`cygwin1.dll` beside it), a shim or copy with no DLL beside it, and busybox-w32
- * copied as `sh.exe` get the delivery but not the flag.
+ * Whether `file` is a POSIX shell running on the MSYS runtime (#532): a POSIX shell name (see
+ * {@link isPosixShellFile}) outside the WSL launcher directories (see {@link WSL_LAUNCHER_DIRECTORY})
+ * with `msys-2.0.dll` beside it, or in `..\usr\bin` for Git for Windows' `<root>\bin\sh.exe`, a
+ * launcher stub with no DLL of its own that hands its raw command line to `<root>\usr\bin\sh.exe`.
+ * This sets `ResolvedShell.msys`, which no longer decides delivery (#548): it only lets the
+ * permission scanner read `'` as on Linux ({@link readsSingleQuoteAsPosix}), because Windows CI
+ * proves the MSYS runtime's delivery. A Cygwin `sh.exe` (`cygwin1.dll` beside it), a shim or copy
+ * with no DLL beside it, and busybox-w32 copied as `sh.exe` get the delivery but not the flag.
  */
 function isMsysPosixShell(file: string, probe: Probe): boolean {
-  if (!isOutOfBandPosixShellFile(file)) return false;
+  if (!isPosixShellFile(file) || WSL_LAUNCHER_DIRECTORY.test(file)) return false;
   const dir = win32.dirname(file);
   return (
     probe.exists(win32.join(dir, MSYS_RUNTIME_DLL)) ||
@@ -370,34 +371,38 @@ export function isGitBash(shell: Pick<ResolvedShell, 'kind' | 'file'> | undefine
 
 /**
  * Whether {@link shellExecution} hands `shell` its command out of band on Windows: Git Bash
- * ({@link isGitBash}), or a `kind: 'sh'` shell with a POSIX-named `file` outside the WSL launcher
- * directories (#548, see {@link isOutOfBandPosixShellFile}), whatever its runtime. It does not read
+ * ({@link isGitBash}), or a `kind: 'sh'` shell whose `file` has a POSIX shell's name (#548, see
+ * {@link isPosixShellFile}), whatever its runtime and directory. It does not read
  * `ResolvedShell.msys`: delivery fails closed, so a Cygwin sh, or a shim or copy of an MSYS sh with
- * no DLL beside it, is never left on an argv its runtime could rebuild. Off Windows `shellExecution`
- * does not ask.
+ * no DLL beside it, is never left on an argv its runtime could rebuild. The one exception is WSL's
+ * `bash.exe`, which {@link isGitBash} leaves on argv. Off Windows `shellExecution` does not ask.
  */
 export function receivesCommandOutOfBand(
-  shell: Pick<ResolvedShell, 'kind' | 'file' | 'msys'> | undefined,
+  shell: Pick<ResolvedShell, 'kind' | 'file'> | undefined,
 ): boolean {
   if (isGitBash(shell)) return true;
-  return shell?.kind === 'sh' && Boolean(shell.file) && isOutOfBandPosixShellFile(shell.file ?? '');
+  return shell?.kind === 'sh' && !!shell.file && isPosixShellFile(shell.file);
 }
 
 /**
  * Whether the permission scanner reads `'` as on Linux under `shell` on Windows (see
- * `hasCompoundShellSyntax`): Git Bash, or an out-of-band sh that resolution found on the MSYS
- * runtime (`ResolvedShell.msys`, #548), the two runtimes whose byte-for-byte delivery Windows CI
- * proves. A Cygwin sh, a shim or copy with no DLL beside it, and busybox-w32 copied as `sh.exe` get
- * the command out of band too, but still refuse `'` until CI proves their delivery.
+ * `hasCompoundShellSyntax`): a shell that gets its command out of band and is Git Bash, or a sh
+ * that resolution found on the MSYS runtime (`ResolvedShell.msys`, #548) outside the WSL launcher
+ * directories: the two runtimes whose byte-for-byte delivery Windows CI proves. A Cygwin sh, a shim
+ * or copy with no DLL beside it, and busybox-w32 copied as `sh.exe` get the command out of band
+ * too, but still refuse `'` until CI proves their delivery.
  *
- * Built on {@link receivesCommandOutOfBand}, so it is never true for a shell that gets the command
- * in argv: the scanner is never laxer than delivery, even for a forged `msys` flag. The converse
- * does not hold, so the scanner must ask this, never `receivesCommandOutOfBand`.
+ * The {@link receivesCommandOutOfBand} conjunct comes first, so this is never true for a shell that
+ * gets the command in argv: the scanner is never laxer than delivery, even for a forged `msys` flag.
+ * The converse does not hold, so the scanner must ask this, never `receivesCommandOutOfBand`.
  */
 export function readsSingleQuoteAsPosix(
   shell: Pick<ResolvedShell, 'kind' | 'file' | 'msys'> | undefined,
 ): boolean {
-  return isGitBash(shell) || (shell?.msys === true && receivesCommandOutOfBand(shell));
+  if (!receivesCommandOutOfBand(shell)) return false;
+  return (
+    isGitBash(shell) || (shell?.msys === true && !WSL_LAUNCHER_DIRECTORY.test(shell.file ?? ''))
+  );
 }
 
 /** The environment variable that carries a Git Bash or POSIX sh command on Windows. */
@@ -428,8 +433,8 @@ export const GIT_BASH_EVAL_SCRIPT = `eval "unset ${GIT_BASH_COMMAND_VARIABLE};\$
  *
  * Git Bash on Windows gets the command out of band, in `BOOK_BASH_COMMAND`
  * with {@link GIT_BASH_EVAL_SCRIPT} as its `-c` script (#523), and so does
- * every POSIX-named sh outside the WSL launcher directories, whatever its
- * runtime (#532, #548; see {@link receivesCommandOutOfBand}). Passed in argv,
+ * every POSIX-named sh, whatever its runtime and directory (#532, #548; see
+ * {@link receivesCommandOutOfBand}). Passed in argv,
  * the command could reach the shell altered: libuv (`quote_cmd_arg`) leaves an
  * argument with no space, tab or `"` unquoted on the Windows command line, and
  * the MSYS runtime rebuilds argv from that line itself (`build_argv` in
@@ -440,7 +445,7 @@ export const GIT_BASH_EVAL_SCRIPT = `eval "unset ${GIT_BASH_COMMAND_VARIABLE};\$
  * run a different string from the one the permission scanner read. An
  * environment variable reaches it byte for byte.
  *
- * WSL's launchers keep the plain argv: Windows variables do not reach WSL
+ * WSL's `bash.exe` keeps the plain argv: Windows variables do not reach WSL
  * without WSLENV. Non-POSIX shells (`fish`, `nu`, `busybox.exe` under its own
  * name, any other name `kindFromExecutable` calls `sh`) keep it too, because
  * the script is POSIX sh; that is a known gap, not a safe case. Every other

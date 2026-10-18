@@ -133,16 +133,23 @@ describe('resolveShell marks an MSYS POSIX sh on Windows (#532, #548)', () => {
     });
   });
 
-  it.each(['dash.exe', 'zsh.exe', 'ash.exe', 'ksh.exe', 'mksh.exe', 'SH.EXE', 'sh'])(
-    'flags MSYS2 %s beside msys-2.0.dll',
-    (name) => {
-      const file = win32.join(MSYS2_USR_BIN, name);
-      expect(requestedAlone(file, win32.join(MSYS2_USR_BIN, 'msys-2.0.dll'))).toMatchObject({
-        kind: 'sh',
-        msys: true,
-      });
-    },
-  );
+  it.each([
+    'dash.exe',
+    'zsh.exe',
+    'ash.exe',
+    'ksh.exe',
+    'mksh.exe',
+    'SH.EXE',
+    'sh',
+    'zsh-5.9.exe',
+    'ksh93.exe',
+  ])('flags MSYS2 %s beside msys-2.0.dll', (name) => {
+    const file = win32.join(MSYS2_USR_BIN, name);
+    expect(requestedAlone(file, win32.join(MSYS2_USR_BIN, 'msys-2.0.dll'))).toMatchObject({
+      kind: 'sh',
+      msys: true,
+    });
+  });
 
   it.each(['C:\\Program Files\\Git\\usr\\bin\\sh.exe', `${MSYS2_USR_BIN}\\dash.exe`])(
     'delivers flagged %s out of band, and lets the scanner read its quotes',
@@ -173,6 +180,22 @@ describe('resolveShell marks an MSYS POSIX sh on Windows (#532, #548)', () => {
     ['mksh.exe with no DLL', 'D:\\tools\\mksh.exe', []],
     ['zsh.exe with no DLL', 'D:\\tools\\zsh.exe', []],
     ['an extensionless sh with no DLL', 'D:\\tools\\sh', []],
+    ['a versioned zsh-5.9.exe with no DLL', 'D:\\tools\\zsh-5.9.exe', []],
+    ["Debian's versioned zsh5", 'D:\\tools\\zsh5', []],
+    ['a versioned ksh93.exe', 'D:\\tools\\ksh93.exe', []],
+    // The WSL exception is WSL's `bash.exe` alone (see isGitBash): WSL ships no `sh.exe` there, so a
+    // POSIX name in these directories is some other program, and failing closed is the safe side.
+    // The MSYS flag is still never set there, so the scanner keeps refusing `'`.
+    [
+      'a sh.exe in System32, even beside msys-2.0.dll',
+      'C:\\Windows\\System32\\sh.exe',
+      ['C:\\Windows\\System32\\msys-2.0.dll'],
+    ],
+    [
+      'an app execution alias zsh.exe',
+      'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\zsh.exe',
+      [],
+    ],
   ])('delivers %s out of band, unflagged (#548)', (_label, file, present) => {
     const shell = requestedAlone(file, ...present);
     expect(shell).toMatchObject({ kind: 'sh', file });
@@ -197,16 +220,9 @@ describe('resolveShell marks an MSYS POSIX sh on Windows (#532, #548)', () => {
     ['nu beside msys-2.0.dll', `${MSYS2_USR_BIN}\\nu.exe`, [`${MSYS2_USR_BIN}\\msys-2.0.dll`]],
     ['nu with no DLL', 'D:\\tools\\nu.exe', []],
     ['busybox.exe under its own name', 'C:\\tools\\busybox.exe', []],
-    [
-      'a WSL launcher directory',
-      'C:\\Windows\\System32\\sh.exe',
-      ['C:\\Windows\\System32\\msys-2.0.dll'],
-    ],
-    [
-      'the app execution alias directory',
-      'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\zsh.exe',
-      [],
-    ],
+    ['ssh.exe', 'C:\\Windows\\System32\\OpenSSH\\ssh.exe', []],
+    ['a name that only starts like a shell', 'D:\\tools\\shell.exe', []],
+    ['a non-numeric suffix', 'D:\\tools\\zsh-static.exe', []],
   ])('leaves %s unflagged, on argv', (_label, file, present) => {
     const shell = requestedAlone(file, ...present);
     expect(shell).toMatchObject({ kind: 'sh', file });
@@ -353,9 +369,9 @@ describe('shellExecution', () => {
     }
   });
 
-  // #548: delivery is decided by kind, file name and directory alone, never by the MSYS flag.
-  it('delivers out of band to Git Bash and every POSIX-named sh outside the WSL directories', () => {
-    const outOfBand: Array<Parameters<typeof receivesCommandOutOfBand>[0]> = [
+  // #548: delivery is decided by kind and file name alone, never by the MSYS flag or the directory.
+  it('delivers out of band to Git Bash and every POSIX-named sh, wherever it lives', () => {
+    const outOfBand: Array<Pick<ResolvedShell, 'kind' | 'file' | 'msys'> | undefined> = [
       { kind: 'bash', file: GIT_BASH },
       { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\sh.exe', msys: true },
       { kind: 'sh', file: 'C:\\tools\\sh.exe' },
@@ -363,13 +379,14 @@ describe('shellExecution', () => {
       { kind: 'sh', file: 'C:\\Users\\u\\scoop\\shims\\sh.exe' },
       { kind: 'sh', file: 'D:/tools/ZSH.EXE' },
       { kind: 'sh', file: 'D:\\tools\\mksh' },
-    ];
-    for (const shell of outOfBand) expect(receivesCommandOutOfBand(shell), shell?.file).toBe(true);
-    const argv: Array<Parameters<typeof receivesCommandOutOfBand>[0]> = [
-      { kind: 'sh' },
-      { kind: 'sh', msys: true },
+      { kind: 'sh', file: 'D:\\tools\\zsh-5.9.exe' },
       { kind: 'sh', file: 'C:\\Windows\\System32\\sh.exe', msys: true },
       { kind: 'sh', file: 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\sh.exe' },
+    ];
+    for (const shell of outOfBand) expect(receivesCommandOutOfBand(shell), shell?.file).toBe(true);
+    const argv: Array<Pick<ResolvedShell, 'kind' | 'file' | 'msys'> | undefined> = [
+      { kind: 'sh' },
+      { kind: 'sh', msys: true },
       { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\fish.exe', msys: true },
       { kind: 'sh', file: 'D:\\tools\\nu.exe' },
       { kind: 'sh', file: 'C:\\tools\\busybox.exe' },
@@ -391,12 +408,24 @@ describe('shellExecution', () => {
     expect(
       readsSingleQuoteAsPosix({ kind: 'sh', file: 'C:\\msys64\\usr\\bin\\sh.exe', msys: true }),
     ).toBe(true);
+    expect(
+      readsSingleQuoteAsPosix({
+        kind: 'sh',
+        file: 'C:\\msys64\\usr\\bin\\zsh-5.9.exe',
+        msys: true,
+      }),
+    ).toBe(true);
     for (const shell of [
       { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\sh.exe' },
       { kind: 'sh', file: 'C:\\cygwin64\\bin\\sh.exe' },
       { kind: 'sh', file: 'C:\\Users\\u\\scoop\\shims\\sh.exe' },
       { kind: 'sh', msys: true },
       { kind: 'sh', file: 'C:\\Windows\\System32\\sh.exe', msys: true },
+      {
+        kind: 'sh',
+        file: 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\sh.exe',
+        msys: true,
+      },
       { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\fish.exe', msys: true },
       { kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe' },
       { kind: 'bash' },

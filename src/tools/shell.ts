@@ -127,7 +127,7 @@ interface EffectiveCommand {
   effectiveCommand: string;
   /**
    * Present for sandboxed commands and for a session shell spawned as argv
-   * (Git Bash or PowerShell on Windows); absent means Node's `shell: true`,
+   * (Git Bash, a POSIX sh or PowerShell on Windows); absent means Node's `shell: true`,
    * which is how cmd.exe and the POSIX default are driven.
    */
   exec?: CommandExecution;
@@ -178,7 +178,7 @@ function buildEffectiveCommand(
   const workdir = readString(args, 'workdir') || ctx.workspaceRoot;
   const plain: EffectiveCommand = { command, workdir, effectiveCommand: command, sandboxed: false };
   // An unsandboxed command still spawns as argv when the session shell is a
-  // real program (Git Bash, PowerShell); only cmd.exe and `/bin/sh` fall back
+  // real program (Git Bash, a POSIX sh, PowerShell); only cmd.exe and `/bin/sh` fall back
   // to `shell: true`.
   const shellExec = shellExecution(sessionShell(ctx), command);
   if (shellExec) plain.exec = shellExec;
