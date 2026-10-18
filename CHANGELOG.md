@@ -91,7 +91,8 @@ All notable changes to this project are documented in this file.
 - **Symbols such as `⎿`, `⏺` and `⌘` are measured one column wide.** Book's `displayWidth` counted
   the whole Miscellaneous Technical block (U+2300–U+23FF) as two columns, while Ink and the
   terminal draw them in one, so a row that used one wrapped or padded a column early. Only its
-  emoji-presentation characters (`⌚`, `⏳`, `⏰`) are wide now.
+  emoji-presentation characters (`⌚`, `⏳`, `⏰`) and the East Asian Wide angle brackets (`〈`,
+  `〉`) are wide now.
 - **Resizing the terminal during a turn no longer leaves a second working indicator, input bar and
   footer on screen** (#525, #538, #537, #547). On a narrowing resize Ink drew at once with the old
   layout, and a row wider than the new width autowrapped and threw off its line count, so the next
