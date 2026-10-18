@@ -2780,11 +2780,12 @@ describe('Git Bash reads a single quote as a quote on Windows (#512, decision 3)
     ...DEFAULT_SETTINGS,
     permissions: { ...DEFAULT_SETTINGS.permissions, ...overrides },
   });
-  const gitBash = { kind: 'bash', file: 'C:/Program Files/Git/bin/bash.exe' } as const;
+  // Resolution flags a Git Bash on the MSYS runtime (#548); see the resolved cases below.
+  const gitBash = { kind: 'bash', file: 'C:/Program Files/Git/bin/bash.exe', msys: true } as const;
   const verdict = (
     command: string,
     platform: NodeJS.Platform,
-    shell?: { kind: 'bash' | 'pwsh' | 'powershell' | 'cmd' | 'sh'; file?: string },
+    shell?: { kind: 'bash' | 'pwsh' | 'powershell' | 'cmd' | 'sh'; file?: string; msys?: true },
   ) =>
     evaluatePermission('Bash', { command }, settings({ allow: ['Bash(git *)'] }), {
       platform,
@@ -2801,6 +2802,7 @@ describe('Git Bash reads a single quote as a quote on Windows (#512, decision 3)
     );
     expect(verdict("git log 'x'", 'win32', { kind: 'cmd' })).not.toBe('allow');
     expect(verdict("git log 'x'", 'win32', { kind: 'bash' })).not.toBe('allow');
+    expect(verdict("git log 'x'", 'win32', { kind: 'bash', file: gitBash.file })).not.toBe('allow');
     expect(verdict("git log 'x'", 'win32')).not.toBe('allow');
   });
 
@@ -2817,7 +2819,7 @@ describe('Git Bash reads a single quote as a quote on Windows (#512, decision 3)
   });
 
   it('flags a compound command under the policy by the same reading', () => {
-    const detail = (shell?: { kind: 'bash' | 'cmd'; file?: string }) =>
+    const detail = (shell?: { kind: 'bash' | 'cmd'; file?: string; msys?: true }) =>
       evaluatePermissionDetail(
         'Bash',
         { command: "git log 'x'" },
@@ -2849,6 +2851,12 @@ describe('an MSYS sh reads a single quote as a quote on Windows (#548)', () => {
   const msysSh = resolved(win32.join(usrBin, 'sh.exe'), win32.join(usrBin, 'msys-2.0.dll'));
   const cygwinSh = resolved('C:\\cygwin64\\bin\\sh.exe', 'C:\\cygwin64\\bin\\cygwin1.dll');
   const shim = resolved('C:\\Users\\u\\scoop\\shims\\sh.exe');
+  const gitBash = resolved(
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    win32.join(usrBin, 'msys-2.0.dll'),
+  );
+  const cygwinBash = resolved('C:\\cygwin64\\bin\\bash.exe', 'C:\\cygwin64\\bin\\cygwin1.dll');
+  const bashShim = resolved('C:\\Users\\u\\scoop\\shims\\bash.exe');
   const verdict = (command: string, shell: ReturnType<typeof resolveShell>) =>
     evaluatePermission('Bash', { command }, settings, { platform: 'win32', shell });
 
@@ -2860,8 +2868,14 @@ describe('an MSYS sh reads a single quote as a quote on Windows (#548)', () => {
     expect(permissionRuleMatchesCall('Bash(git *)', call, 'win32', msysSh)).toBe(true);
   });
 
-  it('still refuses it under a Cygwin sh and a shim, which get no MSYS flag', () => {
-    for (const shell of [cygwinSh, shim]) {
+  it('admits it under a resolved Git Bash, flagged by the same DLL', () => {
+    expect(gitBash).toMatchObject({ kind: 'bash', msys: true });
+    expect(verdict("git log 'x'", gitBash)).toBe('allow');
+    expect(verdict("git log 'x' ; id", gitBash)).not.toBe('allow');
+  });
+
+  it('still refuses it under a Cygwin sh or bash and a shim, which get no MSYS flag', () => {
+    for (const shell of [cygwinSh, shim, cygwinBash, bashShim]) {
       expect(shell.msys).toBeUndefined();
       expect(verdict("git log 'x'", shell)).not.toBe('allow');
       expect(verdict('git log x', shell)).toBe('allow');

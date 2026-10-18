@@ -56,7 +56,8 @@ export interface ShellStartOptions {
   effectiveCommand: string;
   /**
    * Present for sandboxed commands and for a session shell spawned as argv
-   * (Git Bash or PowerShell on Windows); absent means Node's `shell: true`.
+   * (on Windows Git Bash, a POSIX sh or PowerShell, where Git Bash and a POSIX
+   * sh carry the command in `env`); absent means Node's `shell: true`.
    */
   exec?: CommandExecution;
   workdir: string;

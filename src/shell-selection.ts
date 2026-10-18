@@ -131,15 +131,9 @@ function createProbe(
   };
 }
 
-function shell(
-  kind: ShellKind,
-  source: ShellSource,
-  file?: string,
-  warning?: string,
-): ResolvedShell {
+function shell(kind: ShellKind, source: ShellSource, file?: string): ResolvedShell {
   const resolved: ResolvedShell = { kind, label: LABELS[kind], source };
   if (file) resolved.file = file;
-  if (warning) resolved.warning = warning;
   return resolved;
 }
 
@@ -185,14 +179,7 @@ function resolveRequested(
     }
   }
   if (probe.exists(requested)) {
-    const kind = kindFromExecutable(requested, platform);
-    const resolved = shell(kind, 'setting', requested);
-    // The only route to a win32 `sh` with a file, so the MSYS runtime is detected here, once, and
-    // `shellExecution` and the permission scanner stay pure.
-    if (platform === 'win32' && kind === 'sh' && isMsysPosixShell(requested, probe)) {
-      resolved.msys = true;
-    }
-    return resolved;
+    return shell(kindFromExecutable(requested, platform), 'setting', requested);
   }
   return undefined;
 }
@@ -226,20 +213,27 @@ function isPosixShellFile(file: string): boolean {
 }
 
 /**
- * Whether `file` is a POSIX shell running on the MSYS runtime (#532): a POSIX shell name (see
- * {@link isPosixShellFile}) outside the WSL launcher directories (see {@link WSL_LAUNCHER_DIRECTORY})
- * with `msys-2.0.dll` beside it, or in `..\usr\bin` for Git for Windows' `<root>\bin\sh.exe`, a
- * launcher stub with no DLL of its own that hands its raw command line to `<root>\usr\bin\sh.exe`.
- * This sets `ResolvedShell.msys`, which no longer decides delivery (#548): it only lets the
+ * Whether the Windows `shell` runs on the MSYS runtime (#532, #548): one that gets its command out of
+ * band ({@link receivesCommandOutOfBand}: a bash outside the WSL launcher directories, or a POSIX-named
+ * sh), whose file is outside the WSL launcher directories (see {@link WSL_LAUNCHER_DIRECTORY}) and
+ * has `msys-2.0.dll` beside it, or, for a file in a directory named `bin`, in `..\usr\bin`: Git for
+ * Windows' `<root>\bin\bash.exe` and `<root>\bin\sh.exe` are launcher stubs with no DLL of their
+ * own that hand their raw command line to `<root>\usr\bin`, and no other directory is read as one
+ * (a `<root>\cmd\bash.exe` is not). This sets `ResolvedShell.msys`, which does not decide delivery: it only lets the
  * permission scanner read `'` as on Linux ({@link readsSingleQuoteAsPosix}), because Windows CI
- * proves the MSYS runtime's delivery. A Cygwin `sh.exe` (`cygwin1.dll` beside it), a shim or copy
- * with no DLL beside it, and busybox-w32 copied as `sh.exe` get the delivery but not the flag.
+ * proves the MSYS runtime's delivery. A Cygwin `bash.exe` or `sh.exe` (`cygwin1.dll` beside it), a
+ * shim or copy with no DLL beside it (scoop's `shims\bash.exe`), and busybox-w32 copied as `sh.exe`
+ * get the delivery but not the flag.
  */
-function isMsysPosixShell(file: string, probe: Probe): boolean {
-  if (!isPosixShellFile(file) || WSL_LAUNCHER_DIRECTORY.test(file)) return false;
+function isOnMsysRuntime(resolved: ResolvedShell, probe: Probe): boolean {
+  const file = resolved.file;
+  if (!file || !receivesCommandOutOfBand(resolved) || WSL_LAUNCHER_DIRECTORY.test(file)) {
+    return false;
+  }
   const dir = win32.dirname(file);
+  if (probe.exists(win32.join(dir, MSYS_RUNTIME_DLL))) return true;
   return (
-    probe.exists(win32.join(dir, MSYS_RUNTIME_DLL)) ||
+    win32.basename(dir).toLowerCase() === 'bin' &&
     probe.exists(win32.join(dir, '..', 'usr', 'bin', MSYS_RUNTIME_DLL))
   );
 }
@@ -271,15 +265,18 @@ export function resolveShell(input: ShellSelectionInput = {}): ResolvedShell {
   const probe = createProbe(platform, env, input.existsSync ?? fsExistsSync);
   const requested = (env.BOOK_SHELL || input.requested || '').trim();
 
-  let warning: string | undefined;
-  if (requested) {
-    const chosen = resolveRequested(requested, platform, probe);
-    if (chosen) return chosen;
-    warning = `Requested shell "${requested}" was not found; Book chose one automatically instead.`;
-  }
+  const chosen = requested ? resolveRequested(requested, platform, probe) : undefined;
   // POSIX keeps Node's default: `/bin/sh` through `shell: true`, exactly as before.
-  const automatic = platform === 'win32' ? resolveWindows(env, probe) : shell('sh', 'detected');
-  return warning ? { ...automatic, warning } : automatic;
+  const resolved =
+    chosen ?? (platform === 'win32' ? resolveWindows(env, probe) : shell('sh', 'detected'));
+  if (requested && !chosen) {
+    resolved.warning = `Requested shell "${requested}" was not found; Book chose one automatically instead.`;
+  }
+  // Every route can choose a bash or sh with a file (a path or a `bash` request, the launching
+  // shell, the installed fallback), so the MSYS runtime is detected here, once, on the chosen shell,
+  // and `shellExecution` and the permission scanner stay pure.
+  if (platform === 'win32' && isOnMsysRuntime(resolved, probe)) resolved.msys = true;
+  return resolved;
 }
 
 /**
@@ -359,9 +356,10 @@ const WSL_LAUNCHER_DIRECTORY =
 /**
  * Whether `shell` is Git Bash: `kind: 'bash'` with a `file` (a `bash` without one goes to Node's
  * `shell: true`, which is cmd.exe on Windows), and the file is not WSL's launcher (see
- * {@link WSL_LAUNCHER_DIRECTORY}). Every shell this answers true for is delivered out of band
- * ({@link receivesCommandOutOfBand}) and has its `'` read as on Linux by the permission scanner
- * ({@link readsSingleQuoteAsPosix}).
+ * {@link WSL_LAUNCHER_DIRECTORY}). By name alone, so Cygwin's `bash.exe`, scoop's `shims\bash.exe`
+ * and a copy count too. Every shell this answers true for is delivered out of band
+ * ({@link receivesCommandOutOfBand}), but the permission scanner reads its `'` as on Linux only when
+ * resolution found it on the MSYS runtime ({@link readsSingleQuoteAsPosix}, #548).
  */
 export function isGitBash(shell: Pick<ResolvedShell, 'kind' | 'file'> | undefined): boolean {
   return (
@@ -386,11 +384,12 @@ export function receivesCommandOutOfBand(
 
 /**
  * Whether the permission scanner reads `'` as on Linux under `shell` on Windows (see
- * `hasCompoundShellSyntax`): a shell that gets its command out of band and is Git Bash, or a sh
- * that resolution found on the MSYS runtime (`ResolvedShell.msys`, #548) outside the WSL launcher
- * directories: the two runtimes whose byte-for-byte delivery Windows CI proves. A Cygwin sh, a shim
- * or copy with no DLL beside it, and busybox-w32 copied as `sh.exe` get the command out of band
- * too, but still refuse `'` until CI proves their delivery.
+ * `hasCompoundShellSyntax`): a bash or sh that gets its command out of band and that resolution
+ * found on the MSYS runtime (`ResolvedShell.msys`, #548), outside the WSL launcher directories. That
+ * is Git for Windows' `bin\bash.exe`, `usr\bin\bash.exe` and `sh.exe`, and MSYS2's shells: the
+ * runtime whose byte-for-byte delivery Windows CI proves. A Cygwin bash or sh, a shim or copy with no
+ * DLL beside it (scoop's `shims\bash.exe`), and busybox-w32 copied as `sh.exe` get the command out
+ * of band too, but still refuse `'` until CI proves their delivery.
  *
  * The {@link receivesCommandOutOfBand} conjunct comes first, so this is never true for a shell that
  * gets the command in argv: the scanner is never laxer than delivery, even for a forged `msys` flag.
@@ -400,9 +399,7 @@ export function readsSingleQuoteAsPosix(
   shell: Pick<ResolvedShell, 'kind' | 'file' | 'msys'> | undefined,
 ): boolean {
   if (!receivesCommandOutOfBand(shell)) return false;
-  return (
-    isGitBash(shell) || (shell?.msys === true && !WSL_LAUNCHER_DIRECTORY.test(shell.file ?? ''))
-  );
+  return shell?.msys === true && !WSL_LAUNCHER_DIRECTORY.test(shell.file ?? '');
 }
 
 /** The environment variable that carries a Git Bash or POSIX sh command on Windows. */

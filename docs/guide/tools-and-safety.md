@@ -225,10 +225,11 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   an unterminated quote is refused the same way, and the refusal says to send each command as its
   own Bash call; the whole command must also match the pattern. Quotes are read, so
   `git commit -m "fix(x): y"` and `git stash show 'stash@{0}'` (on Windows only under Git Bash or
-  an MSYS `sh`) pass `Bash(git *)`; a backslash or caret before a quote and a typographic quote are
-  refused because a shell may read them differently, and on Windows any single quote is refused
-  unless the session shell is Git Bash or a POSIX `sh` on the MSYS runtime, where `'` is read
-  exactly as on Linux (use double quotes under PowerShell, cmd.exe and the other Windows shells). A
+  another `bash` or `sh` on the MSYS runtime) pass `Bash(git *)`; a backslash or caret before a
+  quote and a typographic quote are refused because a shell may read them differently, and on
+  Windows any single quote is refused unless the session shell is a `bash` or POSIX `sh` on the
+  MSYS runtime, such as Git Bash, where `'` is read exactly as on Linux (use double quotes under
+  PowerShell, cmd.exe and the other Windows shells). A
   bare `Bash` rule admits any command. The
   rule constrains the command's text, not what the program does with its options (`Bash(git *)`
   still admits `git -c core.fsmonitor=… status`), and is not a sandbox: narrow the pattern when
@@ -405,8 +406,14 @@ runtime cannot glob it, expand an `@file` in it or strip its quotes. The command
 `eval`, so a syntax error reads `bash: eval: line N:` rather than `bash: -c: line N:`, and
 `BASH_EXECUTION_STRING` holds the fixed script that evaluates it rather than the command itself.
 WSL's `bash.exe` (in a Windows system directory or the `Microsoft\WindowsApps` alias directory),
-PowerShell, cmd.exe and any other shell except an MSYS `sh` (below) still treat every `'` as making
-the command compound; use double quotes under those shells.
+PowerShell, cmd.exe and any shell that is not on the MSYS runtime (below) still treat every `'` as
+making the command compound; use double quotes under those shells.
+
+Every `bash.exe` outside those WSL directories gets the `BOOK_BASH_COMMAND` delivery, but `'` reads
+as on Linux only under one on the MSYS runtime: Git for Windows' `bin\bash.exe` and
+`usr\bin\bash.exe`, and MSYS2's `usr\bin\bash.exe`. Under Cygwin's `bash.exe`, a shim such as
+scoop's `shims\bash.exe`, or a copy with no `msys-2.0.dll` beside it, `'` makes a command compound,
+as under the `sh` shells below.
 
 Every POSIX `sh` on Windows gets the same `BOOK_BASH_COMMAND` delivery: `shell` set to an
 executable named `sh`, `dash`, `ash`, `ksh`, `mksh` or `zsh` (with or without `.exe`, and with or
@@ -420,10 +427,11 @@ own name, keep the command on the command line, because the script that reads th
 POSIX sh; that is a known gap rather than a safe choice, so prefer a POSIX shell.
 
 Under an `sh` on the MSYS runtime `'` is read exactly as under Git Bash. Book detects the runtime
-when it resolves the shell, by `msys-2.0.dll` beside the executable, or in `..\usr\bin` for Git's
-`bin\sh.exe` launcher. Under every other `sh` (Cygwin, a shim or copy with no `msys-2.0.dll`
-beside it, busybox-w32) `'` still makes a command compound: the command is delivered to those
-shells the same way, but Windows CI proves only the MSYS runtime's delivery.
+when it resolves the shell, for a `bash` and an `sh` alike and however the shell was chosen, by
+`msys-2.0.dll` beside the executable, or in `..\usr\bin` for Git's `bin\bash.exe` and `bin\sh.exe`
+launchers. Under every other `bash` or `sh` (Cygwin, a shim or copy with no `msys-2.0.dll` beside
+it, busybox-w32) `'` still makes a command compound: the command is delivered to those shells the
+same way, but Windows CI proves only the MSYS runtime's delivery.
 
 Permission _modes_ decide whether you are prompted; they never relax a `deny` rule. A rule in
 `permissions.deny` blocks the matching call in every mode, including `auto` and
