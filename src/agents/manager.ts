@@ -1644,8 +1644,9 @@ export class AgentManager {
 
   /**
    * Whether a live instance other than this one holds the record a late application is for, so
-   * the application must leave it alone. Asked once the record has been read again, so the owner is
-   * the one on disk now. Two paths:
+   * the application must leave it alone. Asked once the record has been read again. The owner it
+   * compares is the one {@link AgentStore.isOwnedByLiveForeign} judges: the writer of the newest
+   * copy the store knows, which is the one on disk unless the store holds a newer one. Two paths:
    *
    * - **Main (#544):** an instance of this process without a fresh lease is a disposed one and
    *   owns nothing. That covers the manager handing the pick over, and any manager of this

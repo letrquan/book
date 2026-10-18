@@ -1578,6 +1578,37 @@ describe('AgentManager lifecycle', () => {
           completionDeliveredSequence: record.completionDeliveredSequence ?? 0,
         });
 
+        /**
+         * Switch the session as a failed unlink in `dispose()` leaves it (a Windows scanner holding
+         * the file): the lease of the manager that started the apply stays on disk, and fresh, so
+         * for up to 15 s that manager reads as a live owner. The store's unlink, `removeLease`,
+         * does nothing until the test restores its mocks, so a heartbeat write still settling
+         * after the switch cannot remove the lease either.
+         */
+        async function switchLeavingLeaseBehind(
+          fixture: Awaited<ReturnType<typeof sessionMidApply>>,
+        ) {
+          const { instanceId } = recordOnDisk(fixture, fixture.patcher.id)._store as {
+            instanceId: string;
+          };
+          const leasePath = join(
+            fixture.storeRoot,
+            repositoryHash(fixture.root),
+            'instances',
+            `${instanceId}.json`,
+          );
+          vi.spyOn(
+            AgentStore.prototype as unknown as { removeLease: () => void },
+            'removeLease',
+          ).mockImplementation(() => {});
+          const switched = await fixture.switchSession({ load: false });
+          const lease = JSON.parse(readFileSync(leasePath, 'utf8')) as Record<string, unknown>;
+          // As fresh as the next heartbeat would have left it.
+          writeFileSync(leasePath, JSON.stringify({ ...lease, heartbeatAt: Date.now() }));
+          await switched.next.get(fixture.patcher.id);
+          return switched;
+        }
+
         it('sets only applicationStatus, on disk and in the new manager, and emits it there', async () => {
           const fixture = await sessionMidApply(sameProcess);
           const { patcher, candidate } = fixture;
@@ -1684,37 +1715,55 @@ describe('AgentManager lifecycle', () => {
           }
         });
 
-        it('does not write a record another live instance owns', async () => {
-          const fixture = await sessionMidApply(sameProcess);
-          const { patcher } = fixture;
-          let other: AgentStore | undefined;
-          try {
-            const { next, events } = await fixture.switchSession();
-            // Another live owner, with a lease of its own: neither the new manager nor the one
-            // handing the outcome over.
-            await new Promise((resolve) => setTimeout(resolve, 5));
-            other = await AgentStore.open(repositoryHash(fixture.root), fixture.storeRoot, true, {
-              ...UNCONTENDED,
-              ...sameProcess,
-            });
-            const copy = other.loadAgent(patcher.id)!;
-            copy.updatedAt = Date.now();
-            other.saveAgent(copy);
-            const written = recordOnDisk(fixture, patcher.id);
-            expect((written._store as { instanceId: string }).instanceId).toBe(other.instanceId);
+        // Only the manager handing the pick over is exempt from the owner check, so a record
+        // another live instance owns stays as it is either way.
+        for (const [label, switchSession] of [
+          ['', (fixture) => fixture.switchSession()],
+          [
+            ", even when the handing-over manager's lease outlived its dispose",
+            switchLeavingLeaseBehind,
+          ],
+        ] as Array<
+          [
+            string,
+            (
+              fixture: Awaited<ReturnType<typeof sessionMidApply>>,
+            ) => Promise<{ next: AgentManager; events: AgentRuntimeEvent[] }>,
+          ]
+        >) {
+          it(`does not write a record another live instance owns${label}`, async () => {
+            const fixture = await sessionMidApply(sameProcess);
+            const { patcher } = fixture;
+            let other: AgentStore | undefined;
+            try {
+              const { next, events } = await switchSession(fixture);
+              // Another live owner, with a lease of its own: neither the new manager nor the one
+              // handing the outcome over.
+              await new Promise((resolve) => setTimeout(resolve, 5));
+              other = await AgentStore.open(repositoryHash(fixture.root), fixture.storeRoot, true, {
+                ...UNCONTENDED,
+                ...sameProcess,
+              });
+              const copy = other.loadAgent(patcher.id)!;
+              copy.updatedAt = Date.now();
+              other.saveAgent(copy);
+              const written = recordOnDisk(fixture, patcher.id);
+              expect((written._store as { instanceId: string }).instanceId).toBe(other.instanceId);
 
-            fixture.releases[0]!('applied');
-            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+              fixture.releases[0]!('applied');
+              await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
 
-            expect(recordOnDisk(fixture, patcher.id)).toEqual(written);
-            expect((await next.get(patcher.id))?.applicationStatus).not.toBe('applied');
-            expect(applyEvents(events)).toEqual([]);
-            expect(debugEvents).toContainEqual(skipped('live_owner'));
-          } finally {
-            other?.dispose();
-            fixture.session.dispose();
-          }
-        });
+              expect(recordOnDisk(fixture, patcher.id)).toEqual(written);
+              expect((await next.get(patcher.id))?.applicationStatus).not.toBe('applied');
+              expect(applyEvents(events)).toEqual([]);
+              expect(debugEvents).toContainEqual(skipped('live_owner'));
+            } finally {
+              vi.restoreAllMocks();
+              other?.dispose();
+              fixture.session.dispose();
+            }
+          });
+        }
 
         it('reaches the newest manager after two switches during one pick', async () => {
           const fixture = await sessionMidApply(sameProcess);
@@ -1904,25 +1953,10 @@ describe('AgentManager lifecycle', () => {
         });
 
         it("records it when the handing-over manager's lease outlived its dispose", async () => {
-          // `dispose()` removes the lease best effort. When that unlink fails (a Windows scanner
-          // holding the file), the lease still reads as fresh for up to 15 s, and the record's
-          // owner, the manager handing the pick over, reads as a live one.
           const fixture = await sessionMidApply(sameProcess);
           const { patcher, candidate } = fixture;
           try {
-            const startedBy = recordOnDisk(fixture, patcher.id)._store as { instanceId: string };
-            const leasePath = join(
-              fixture.storeRoot,
-              repositoryHash(fixture.root),
-              'instances',
-              `${startedBy.instanceId}.json`,
-            );
-            const lease = JSON.parse(readFileSync(leasePath, 'utf8')) as Record<string, unknown>;
-            const { next, events } = await fixture.switchSession({ load: false });
-            // What a failed unlink leaves: the disposed manager's lease, still on disk and fresh.
-            expect(existsSync(leasePath)).toBe(false);
-            writeFileSync(leasePath, JSON.stringify({ ...lease, heartbeatAt: Date.now() }));
-            await next.get(patcher.id);
+            const { next, events } = await switchLeavingLeaseBehind(fixture);
             // The window is real: everything else the new manager might do to the record is refused.
             await expect(next.send(patcher.id, 'one more change')).rejects.toMatchObject({
               code: 'agent_owned_by_other_process',
@@ -1940,48 +1974,7 @@ describe('AgentManager lifecycle', () => {
             ]);
             expect(debugEvents).not.toContainEqual(skipped('live_owner'));
           } finally {
-            fixture.session.dispose();
-          }
-        });
-
-        it('still leaves a record alone whose live owner is not the manager handing it over', async () => {
-          // The same leftover lease, but the record is another live instance's by the time the
-          // pick lands: only the instance that hands the pick over is exempt.
-          const fixture = await sessionMidApply(sameProcess);
-          const { patcher } = fixture;
-          let other: AgentStore | undefined;
-          try {
-            const startedBy = recordOnDisk(fixture, patcher.id)._store as { instanceId: string };
-            const leasePath = join(
-              fixture.storeRoot,
-              repositoryHash(fixture.root),
-              'instances',
-              `${startedBy.instanceId}.json`,
-            );
-            const lease = JSON.parse(readFileSync(leasePath, 'utf8')) as Record<string, unknown>;
-            const { next, events } = await fixture.switchSession({ load: false });
-            writeFileSync(leasePath, JSON.stringify({ ...lease, heartbeatAt: Date.now() }));
-            await next.get(patcher.id);
-            await new Promise((resolve) => setTimeout(resolve, 5));
-            other = await AgentStore.open(repositoryHash(fixture.root), fixture.storeRoot, true, {
-              ...UNCONTENDED,
-              ...sameProcess,
-            });
-            const copy = other.loadAgent(patcher.id)!;
-            copy.updatedAt = Date.now();
-            other.saveAgent(copy);
-            const written = recordOnDisk(fixture, patcher.id);
-            expect((written._store as { instanceId: string }).instanceId).toBe(other.instanceId);
-
-            fixture.releases[0]!('applied');
-            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
-
-            expect(recordOnDisk(fixture, patcher.id)).toEqual(written);
-            expect((await next.get(patcher.id))?.applicationStatus).not.toBe('applied');
-            expect(applyEvents(events)).toEqual([]);
-            expect(debugEvents).toContainEqual(skipped('live_owner'));
-          } finally {
-            other?.dispose();
+            vi.restoreAllMocks();
             fixture.session.dispose();
           }
         });
