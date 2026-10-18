@@ -596,6 +596,196 @@ describe.skipIf(process.platform === 'win32')(
   },
 );
 
+// #539 refined: containment is measured from the git repository root, not from the directory the
+// file was found in; files above the repository root belong to the user and are not checked.
+describe.skipIf(process.platform === 'win32')('instruction files and the repository root', () => {
+  const real = (path: string) => realpathSync.native(path);
+  const inspect = (ws: string) => {
+    const result = inspectProjectInstructions(ws, home);
+    return {
+      sources: result.sources.filter((s) => s.path.startsWith(dir)),
+      skipped: result.skipped,
+    };
+  };
+
+  it('loads a monorepo link to a shared file elsewhere in the repository', () => {
+    const repo = join(dir, 'mono');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    write(join(repo, 'packages', 'shared', 'AGENTS.md'), 'shared rules');
+    mkdirSync(join(repo, 'packages', 'a'), { recursive: true });
+    symlinkSync(join('..', 'shared', 'AGENTS.md'), join(repo, 'packages', 'a', 'CLAUDE.md'));
+
+    const { sources, skipped } = inspect(join(repo, 'packages', 'a'));
+
+    expect(sources.map((s) => [s.path, s.body, s.layer])).toEqual([
+      [join(repo, 'packages', 'a', 'CLAUDE.md'), 'shared rules', 'project'],
+    ]);
+    expect(renderProjectInstructions(sources)).toContain('shared rules');
+    expect(skipped).toEqual([]);
+  });
+
+  it('still skips a link from inside the repository to a file outside it', () => {
+    const repo = join(dir, 'mono');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    mkdirSync(join(repo, 'packages', 'a'), { recursive: true });
+    write(join(dir, 'outside', 'secret.md'), 'SECRET');
+    symlinkSync(join(dir, 'outside', 'secret.md'), join(repo, 'packages', 'a', 'CLAUDE.md'));
+
+    const { sources, skipped } = inspect(join(repo, 'packages', 'a'));
+
+    expect(sources).toEqual([]);
+    expect(skipped).toEqual([
+      {
+        path: join(repo, 'packages', 'a', 'CLAUDE.md'),
+        target: real(join(dir, 'outside', 'secret.md')),
+        root: real(repo),
+        reason: 'outside',
+      },
+    ]);
+    expect(
+      collectSkippedInstructionNotices(join(repo, 'packages', 'a'), home).filter((n) =>
+        n.includes(dir),
+      ),
+    ).toEqual([
+      `⚠  Skipped project instructions ${join('CLAUDE.md')}: it links to ${real(
+        join(dir, 'outside', 'secret.md'),
+      )}, outside ${real(repo)}.`,
+    ]);
+  });
+
+  it('judges an ancestor file inside the repository against the repository root', () => {
+    const repo = join(dir, 'mono');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    write(join(repo, 'docs', 'rules.md'), 'doc rules');
+    symlinkSync(join('docs', 'rules.md'), join(repo, 'AGENTS.md'));
+    mkdirSync(join(repo, 'packages', 'a'), { recursive: true });
+
+    const { sources, skipped } = inspect(join(repo, 'packages', 'a'));
+
+    expect(sources.map((s) => s.body)).toEqual(['doc rules']);
+    expect(skipped).toEqual([]);
+  });
+
+  it('loads an ancestor file above the repository root without a check', () => {
+    const repo = join(home, 'repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    write(join(dir, 'store', 'hm-AGENTS.md'), 'home-manager rules');
+    symlinkSync(join(dir, 'store', 'hm-AGENTS.md'), join(home, 'AGENTS.md'));
+
+    const { sources, skipped } = inspect(repo);
+
+    expect(sources.map((s) => [s.path, s.body, s.layer])).toEqual([
+      [join(home, 'AGENTS.md'), 'home-manager rules', 'project'],
+    ]);
+    expect(skipped).toEqual([]);
+  });
+
+  it('does not require Markdown of an ancestor file above the repository root', () => {
+    const repo = join(home, 'repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    write(join(dir, 'store', 'agents-text'), 'plain rules');
+    symlinkSync(join(dir, 'store', 'agents-text'), join(home, 'CLAUDE.md'));
+
+    const { sources, skipped } = inspect(repo);
+
+    expect(sources.map((s) => s.body)).toEqual(['plain rules']);
+    expect(skipped).toEqual([]);
+  });
+
+  it('still skips a link inside the repository to a file that is not Markdown', () => {
+    const repo = join(dir, 'mono');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    write(join(repo, 'packages', 'shared', 'rules.txt'), 'text rules');
+    mkdirSync(join(repo, 'packages', 'a'), { recursive: true });
+    symlinkSync(join('..', 'shared', 'rules.txt'), join(repo, 'packages', 'a', 'AGENTS.md'));
+
+    const { sources, skipped } = inspect(join(repo, 'packages', 'a'));
+
+    expect(sources).toEqual([]);
+    expect(skipped.map((s) => [s.path, s.reason, s.root])).toEqual([
+      [join(repo, 'packages', 'a', 'AGENTS.md'), 'not-markdown', real(repo)],
+    ]);
+  });
+
+  it('checks CLAUDE.local.md and rules against the repository root too', () => {
+    const repo = join(dir, 'mono');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    const ws = join(repo, 'packages', 'a');
+    write(join(repo, 'shared', 'local.md'), 'local rules');
+    write(join(repo, 'shared', 'rule.md'), 'rule body');
+    write(join(dir, 'outside', 'x.md'), 'outside secret');
+    mkdirSync(join(ws, '.claude', 'rules'), { recursive: true });
+    symlinkSync(join('..', '..', 'shared', 'local.md'), join(ws, 'CLAUDE.local.md'));
+    symlinkSync(
+      join('..', '..', '..', '..', 'shared', 'rule.md'),
+      join(ws, '.claude', 'rules', 'a.md'),
+    );
+    symlinkSync(join(dir, 'outside', 'x.md'), join(ws, '.claude', 'rules', 'b.md'));
+
+    const { sources, skipped } = inspect(ws);
+
+    expect(sources.map((s) => [s.body, s.layer])).toEqual([
+      ['local rules', 'local'],
+      ['rule body', 'rule'],
+    ]);
+    expect(skipped.map((s) => s.path)).toEqual([join(ws, '.claude', 'rules', 'b.md')]);
+  });
+
+  it('treats a linked worktree as its own root, not the main checkout', () => {
+    const main = join(dir, 'main');
+    const wt = join(dir, 'wt');
+    mkdirSync(join(main, '.git', 'worktrees', 'wt'), { recursive: true });
+    mkdirSync(wt, { recursive: true });
+    writeFileSync(join(wt, '.git'), `gitdir: ${join(main, '.git', 'worktrees', 'wt')}\n`);
+    write(join(main, 'AGENTS.md'), 'main checkout rules');
+    symlinkSync(join('..', 'main', 'AGENTS.md'), join(wt, 'CLAUDE.md'));
+
+    const { sources, skipped } = inspect(wt);
+
+    expect(sources).toEqual([]);
+    expect(skipped.map((s) => [s.path, s.root, s.reason])).toEqual([
+      [join(wt, 'CLAUDE.md'), real(wt), 'outside'],
+    ]);
+  });
+
+  it('checks the outer repository from its own root when the workspace is a repository inside it', () => {
+    // A worktree (or a submodule) inside the main checkout: the outer directories are not above
+    // every repository, so their files are still checked, against the outer root.
+    const outer = join(dir, 'outer');
+    const wt = join(outer, '.book', 'worktrees', 'x');
+    mkdirSync(join(outer, '.git', 'worktrees', 'x'), { recursive: true });
+    mkdirSync(wt, { recursive: true });
+    writeFileSync(join(wt, '.git'), `gitdir: ${join(outer, '.git', 'worktrees', 'x')}\n`);
+    write(join(outer, 'AGENTS.md'), 'outer rules');
+    write(join(outer, 'shared.md'), 'outer shared');
+    write(join(dir, 'outside', 'secret.md'), 'SECRET');
+    symlinkSync(join(dir, 'outside', 'secret.md'), join(outer, 'CLAUDE.md'));
+    symlinkSync(join('..', '..', '..', 'shared.md'), join(wt, 'AGENTS.md'));
+
+    const { sources, skipped } = inspect(wt);
+
+    expect(sources.map((s) => s.body)).toEqual(['outer rules']);
+    expect(skipped.map((s) => [s.path, s.root, s.reason])).toEqual([
+      [join(outer, 'CLAUDE.md'), real(outer), 'outside'],
+      [join(wt, 'AGENTS.md'), real(wt), 'outside'],
+    ]);
+  });
+
+  it('falls back to the directory the file was found in when there is no repository', () => {
+    const repo = join(dir, 'top', 'repo');
+    mkdirSync(repo, { recursive: true });
+    write(join(dir, 'elsewhere', 'x.md'), 'outside secret');
+    symlinkSync(join(dir, 'elsewhere', 'x.md'), join(dir, 'top', 'CLAUDE.md'));
+
+    const { sources, skipped } = inspect(repo);
+
+    expect(sources).toEqual([]);
+    expect(skipped.map((s) => [s.path, s.root, s.reason])).toEqual([
+      [join(dir, 'top', 'CLAUDE.md'), real(join(dir, 'top')), 'outside'],
+    ]);
+  });
+});
+
 describe('renderProjectInstructions', () => {
   it('fences every source with its path and scope', () => {
     const rendered = renderProjectInstructions([
