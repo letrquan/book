@@ -126,6 +126,11 @@ interface LateApplication {
   /** The commit of the candidate that was applied. */
   headCommit: string;
   result: AgentApplyResult;
+  /**
+   * The store instance of the manager that hands it over, disposed by then: the one live-looking
+   * owner the receiver may write over (see `heldByLiveOwner`).
+   */
+  fromInstanceId?: string;
 }
 
 interface SubscribeOptions {
@@ -1526,6 +1531,7 @@ export class AgentManager {
         evidenceId: evidence.id,
         headCommit: evidence.patchCandidate!.headCommit,
         result,
+        fromInstanceId: this.store?.instanceId,
       });
       if (!handedOver) {
         // No manager took it, so this is the one write that still has to land. No
@@ -1610,10 +1616,8 @@ export class AgentManager {
    * Only `applicationStatus` changes, on the record as this manager has it now, so its own later
    * saves keep it. The record is left alone when it is gone, when its candidate is no longer the
    * one applied (a re-run replaced it: `applied` would be false of the new one), or when another
-   * live owner holds it (#518). The disposed manager that hands it over is no such owner, and
-   * neither is any manager of this process disposed since: an instance of this process without a
-   * lease reads as gone (#544). A skip is logged rather than thrown, because the pick is on the
-   * branch either way and nobody is waiting on this to fail.
+   * live owner holds it (#518, {@link heldByLiveOwner}). A skip is logged rather than thrown,
+   * because the pick is on the branch either way and nobody is waiting on this to fail.
    *
    * False when this manager was disposed before it could open its store, and took nothing.
    */
@@ -1627,7 +1631,7 @@ export class AgentManager {
         ? 'missing'
         : record.patchCandidate?.headCommit !== late.headCommit
           ? 'superseded'
-          : store.isOwnedByLiveForeign(late.agentId)
+          : this.heldByLiveOwner(store, late)
             ? 'live_owner'
             : undefined;
     if (!record || skip) {
@@ -1636,6 +1640,30 @@ export class AgentManager {
     }
     this.recordApplication(record, late.evidenceId, late.result);
     return true;
+  }
+
+  /**
+   * Whether a live instance other than this one holds the record a late application is for, so
+   * the application must leave it alone. Asked once the record has been read again, so the owner is
+   * the one on disk now. Two paths:
+   *
+   * - **Main (#544):** an instance of this process without a fresh lease is a disposed one and
+   *   owns nothing. That covers the manager handing the pick over, and any manager of this
+   *   session disposed after it that wrote the record in between.
+   * - **Fallback, the handing-over instance:** it is disposed, whatever its lease file says.
+   *   `dispose()` removes the lease best effort, and when that unlink fails (a scanner holding the
+   *   file) the lease reads as fresh for up to 15 s; a pick landing then would otherwise be skipped
+   *   and the record say `not_applied` for good. So a record whose owner is
+   *   {@link LateApplication.fromInstanceId} is this manager's to write. No other instance is
+   *   exempt: a live owner keeps the record, and so, until its lease goes stale, does a manager
+   *   in between whose own lease outlived its dispose, which is left as a gap.
+   */
+  private heldByLiveOwner(store: AgentStore, late: LateApplication): boolean {
+    if (!store.isOwnedByLiveForeign(late.agentId)) return false;
+    const handedOverByOwner =
+      late.fromInstanceId !== undefined &&
+      store.ownerInstanceId(late.agentId) === late.fromInstanceId;
+    return !handedOverByOwner;
   }
 
   /**
