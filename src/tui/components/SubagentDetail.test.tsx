@@ -248,3 +248,65 @@ describe('SubagentDetail', () => {
     expect(view.lastFrame()).toContain('CHILD_TOOL_OUTPUT');
   });
 });
+
+describe('SubagentDetail application status', () => {
+  function patcher(overrides: Partial<AgentRecord> = {}): AgentRecord {
+    return {
+      id: 'agent-patch',
+      profile: 'patcher',
+      displayName: 'Fix the login bug',
+      resolvedModel: 'gateway/code',
+      isolation: 'worktree',
+      name: 'patcher',
+      role: 'patcher',
+      description: 'Patch the code',
+      status: 'completed',
+      applicationStatus: 'not_applied',
+      prompt: 'Fix the login bug',
+      referencedEvidenceIds: [],
+      transcript: [],
+      pendingMessages: [],
+      patchCandidate: {
+        baseCommit: '0000000000000000000000000000000000000000',
+        headCommit: '1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d',
+        branch: 'book/agent-patch',
+        agentId: 'agent-patch',
+      },
+      createdAt: 1,
+      updatedAt: 2,
+      ...overrides,
+    };
+  }
+
+  function frame(record: AgentRecord): string {
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <SubagentDetail record={record} width={100} height={30} reducedMotion />
+      </ThemeContext.Provider>,
+    );
+    return view.lastFrame() ?? '';
+  }
+
+  it('says the candidate was applied, with its short commit', () => {
+    expect(frame(patcher({ applicationStatus: 'applied' }))).toContain(
+      'Candidate 1a2b3c4: applied',
+    );
+  });
+
+  it('says a candidate that has not been applied is not', () => {
+    expect(frame(patcher())).toContain('Candidate 1a2b3c4: not applied');
+  });
+
+  it('says an apply that conflicted failed', () => {
+    expect(frame(patcher({ applicationStatus: 'conflicted' }))).toContain(
+      'Candidate 1a2b3c4: apply failed',
+    );
+  });
+
+  it('says nothing about a record without a candidate', () => {
+    const output = frame(patcher({ patchCandidate: undefined }));
+    expect(output).toContain('main > Fix the login bug');
+    expect(output).not.toContain('Candidate');
+    expect(output).not.toContain('applied');
+  });
+});

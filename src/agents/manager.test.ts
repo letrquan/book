@@ -1008,8 +1008,15 @@ describe('AgentManager lifecycle', () => {
         ...(options.storeOptions ? storeFactory(options.storeOptions) : {}),
       });
       /** Another manager on the same repository and store, as the session's next one would be. */
-      const nextManager = (storeOptions: AgentStoreOptions) =>
-        new AgentManager(config, [], { ...managerOptions, ...storeFactory(storeOptions) });
+      const nextManager = (
+        storeOptions: AgentStoreOptions,
+        overrides: ConstructorParameters<typeof AgentManager>[2] = {},
+      ) =>
+        new AgentManager(config, [], {
+          ...managerOptions,
+          ...storeFactory(storeOptions),
+          ...overrides,
+        });
       const plan = await manager.createPlan({
         taskShape: 'patch and validate',
         issueQuality: 'clear',
@@ -1519,7 +1526,8 @@ describe('AgentManager lifecycle', () => {
 
       describe("after a session switch, the session's current manager records it (#540)", () => {
         // One process, as in the TUI: every store has the same pid, and that pid is alive. A
-        // disposed instance has no lease left, so that pid is what answers for it, and says alive.
+        // disposed instance has no lease left, and an instance of this process without one is
+        // gone (#544).
         const sameProcess: AgentStoreOptions = { pid: 333, processAlive: (pid) => pid === 333 };
 
         /**
@@ -1586,7 +1594,12 @@ describe('AgentManager lifecycle', () => {
             await vi.waitFor(() =>
               expect(recordOnDisk(fixture, patcher.id).applicationStatus).toBe('applied'),
             );
-            // Read once the write has landed, so neither copy carries a durability warning.
+            // Read once the write has landed, so neither copy carries a durability warning. The
+            // record file can land before its summary, which is still pending then: on a slow
+            // disk a read between the two carried the warning.
+            await vi.waitFor(async () =>
+              expect((await next.get(patcher.id))?.durabilityWarning).toBeUndefined(),
+            );
             const current = await next.get(patcher.id);
             expect(withoutBookkeeping(current as unknown as Record<string, unknown>)).toEqual({
               ...withoutBookkeeping(loaded as unknown as Record<string, unknown>),
@@ -1642,12 +1655,12 @@ describe('AgentManager lifecycle', () => {
         });
 
         it('leaves alone a record whose candidate a re-run has replaced', async () => {
-          // Two processes, as in #518, so the new manager may re-run the agent the disposed one
-          // last wrote: in one process that record reads as another live owner's (#540 item 5).
-          const fixture = await sessionMidApply(disposedStore);
+          // The new manager re-runs the agent the disposed one last wrote, which it may since
+          // that one, in this process, owns nothing (#544).
+          const fixture = await sessionMidApply(sameProcess);
           const { patcher } = fixture;
           try {
-            const { next, events } = await fixture.switchSession({ storeOptions: nextStore });
+            const { next, events } = await fixture.switchSession();
             fixture.setHeadCommit('head-2');
             await new Promise((resolve) => setTimeout(resolve, 5));
             await next.send(patcher.id, 'one more change');
@@ -1850,7 +1863,133 @@ describe('AgentManager lifecycle', () => {
             fixture.session.dispose();
           }
         });
+
+        it('records it after a manager in between wrote the record and was disposed (#544)', async () => {
+          const fixture = await sessionMidApply(sameProcess);
+          const { patcher, candidate } = fixture;
+          try {
+            const startedBy = recordOnDisk(fixture, patcher.id)._store as { instanceId: string };
+            // The session's next manager writes the record, so it is the owner the record names
+            // when the session switches again and disposes it.
+            const between = await fixture.switchSession();
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            await between.next.publishEvidence(patcher.id, {
+              kind: 'finding',
+              summary: 'written by the manager in between',
+            });
+            const before = recordOnDisk(fixture, patcher.id);
+            expect((before._store as { instanceId: string }).instanceId).not.toBe(
+              startedBy.instanceId,
+            );
+            const current = await fixture.switchSession();
+
+            fixture.releases[0]!('applied');
+            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+            expect((await current.next.get(patcher.id))?.applicationStatus).toBe('applied');
+            await vi.waitFor(() =>
+              expect(recordOnDisk(fixture, patcher.id).applicationStatus).toBe('applied'),
+            );
+            expect(withoutBookkeeping(recordOnDisk(fixture, patcher.id))).toEqual({
+              ...withoutBookkeeping(asLoaded(before)),
+              applicationStatus: 'applied',
+            });
+            expect(applyEvents(current.events)).toEqual([
+              expect.objectContaining({ agentId: patcher.id, evidenceId: candidate.id }),
+            ]);
+            expect(debugEvents).not.toContainEqual(skipped('live_owner'));
+          } finally {
+            fixture.session.dispose();
+          }
+        });
       });
+    });
+
+    describe('a disposed manager in this process owns nothing (#544)', () => {
+      // Both managers' stores are this process's, with its pid, as every runtime a Book process
+      // replaces on `/clear`, `/resume` or `/rewind` is: once through the store's own check of
+      // whether that pid is alive, and once through a check that says it is.
+      const variants: Array<[string, AgentStoreOptions]> = [
+        ["the store's own process check", {}],
+        [
+          'a process check that finds this process alive',
+          { processAlive: (pid) => pid === process.pid },
+        ],
+      ];
+
+      for (const [label, storeOptions] of variants) {
+        it(`lets the next manager apply, send to and dismiss what it wrote, with ${label}`, async () => {
+          const fixture = await managerWithPendingApplies({ persist: true, storeOptions });
+          const { patcher, candidate } = fixture;
+          fixture.manager.dispose();
+          const next = fixture.nextManager(storeOptions, {
+            removeWorktree: async () => {},
+            removeSnapshot: async () => {},
+          });
+          try {
+            expect(await next.get(patcher.id)).toMatchObject({ status: 'completed' });
+
+            const applying = next.apply(patcher.id, candidate.id);
+            await vi.waitFor(() => expect(fixture.signals).toHaveLength(1));
+            fixture.releases[0]!('applied');
+            await expect(applying).resolves.toMatchObject({ status: 'applied' });
+            expect((await next.get(patcher.id))?.applicationStatus).toBe('applied');
+
+            await next.send(patcher.id, 'one more change');
+            await next.wait(patcher.id, 1000);
+            expect(await next.get(patcher.id)).toMatchObject({ status: 'completed' });
+
+            await next.dismiss(patcher.id);
+            expect(await next.get(patcher.id)).toBeUndefined();
+          } finally {
+            next.dispose();
+          }
+        });
+      }
+    });
+
+    it("does not carry an applied status over to a re-run's new candidate", async () => {
+      const fixture = await managerWithPendingApplies();
+      const { manager, patcher, candidate } = fixture;
+      try {
+        const applying = manager.apply(patcher.id, candidate.id);
+        await vi.waitFor(() => expect(fixture.signals).toHaveLength(1));
+        fixture.releases[0]!('applied');
+        await expect(applying).resolves.toMatchObject({ status: 'applied' });
+        expect((await manager.get(patcher.id))?.applicationStatus).toBe('applied');
+
+        fixture.setHeadCommit('head-2');
+        await manager.send(patcher.id, 'one more change');
+        await manager.wait(patcher.id, 1000);
+
+        expect(await manager.get(patcher.id)).toMatchObject({
+          patchCandidate: { headCommit: 'head-2' },
+          applicationStatus: 'not_applied',
+        });
+      } finally {
+        manager.dispose();
+      }
+    });
+
+    it('keeps the applied status when a re-run ends on the same candidate', async () => {
+      const fixture = await managerWithPendingApplies();
+      const { manager, patcher, candidate } = fixture;
+      try {
+        const applying = manager.apply(patcher.id, candidate.id);
+        await vi.waitFor(() => expect(fixture.signals).toHaveLength(1));
+        fixture.releases[0]!('applied');
+        await expect(applying).resolves.toMatchObject({ status: 'applied' });
+
+        await manager.send(patcher.id, 'nothing more to change');
+        await manager.wait(patcher.id, 1000);
+
+        expect(await manager.get(patcher.id)).toMatchObject({
+          patchCandidate: { headCommit: 'head' },
+          applicationStatus: 'applied',
+        });
+      } finally {
+        manager.dispose();
+      }
     });
   });
 
@@ -3286,7 +3425,10 @@ describe('delivery belongs to a run, not to the record (#245 item 5)', () => {
       completionSequence: 1,
       completionDeliveredSequence: 0,
       createdAt: 1,
-      updatedAt: 1,
+      // Recent, as a crash a moment ago leaves it: a terminal record older than
+      // `agents.retentionDays` is cleaned up on start once its writer, a disposed store of
+      // this process, reads as gone (#544).
+      updatedAt: Date.now(),
     } as unknown as Parameters<AgentStore['saveAgent']>[0]);
     store.dispose();
 
@@ -3348,7 +3490,10 @@ describe('delivery belongs to a run, not to the record (#245 item 5)', () => {
       completionSequence: 1,
       completionDeliveredSequence: 1,
       createdAt: 1,
-      updatedAt: 1,
+      // Recent, as a crash a moment ago leaves it: a terminal record older than
+      // `agents.retentionDays` is cleaned up on start once its writer, a disposed store of
+      // this process, reads as gone (#544).
+      updatedAt: Date.now(),
       ...seeded,
     } as unknown as Parameters<AgentStore['saveAgent']>[0]);
     store.dispose();
@@ -4082,7 +4227,10 @@ describe("a plan's shared snapshot (#357)", () => {
       isolation: 'worktree',
       runSequence: 1,
       createdAt: 1,
-      updatedAt: 1,
+      // Recent, as a crash a moment ago leaves it: a terminal record older than
+      // `agents.retentionDays` is cleaned up on start once its writer, a disposed store of
+      // this process, reads as gone (#544).
+      updatedAt: Date.now(),
     } as unknown as Parameters<AgentStore['saveAgent']>[0]);
     store.dispose();
 

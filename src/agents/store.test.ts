@@ -1132,6 +1132,7 @@ describe('AgentStore lease heartbeat', () => {
     // Opening took the lease through this double before the hold was armed, so the single delivered
     // tick catches the first heartbeat; its renames are not the one this test waits for.
     expect(existsSync(leasePath(root))).toBe(true);
+    expect(agents.saveAgent(recordFixture('owned'), { required: true }).status).toBe('ok');
     renamed.length = 0;
     held = true;
     clock.tick();
@@ -1154,6 +1155,23 @@ describe('AgentStore lease heartbeat', () => {
       'the lease the settled write left behind to be removed again',
     );
     expect(contents(root)).toEqual([]);
+
+    // So nothing the disposed store wrote reads as a live owner's to a store this process opens
+    // next, whose pid is the same and alive (#544).
+    const next = await AgentStore.open('repo', root, true, {
+      instanceId: '55555555-5555-4555-8555-555555555555',
+      pid: 4321,
+      hostname: 'test-host',
+      processAlive: (pid) => pid === 4321,
+      now: () => 1_000,
+      setTimeout: clock.options.setTimeout,
+      clearTimeout: clock.options.clearTimeout,
+    });
+    try {
+      expect(next.isOwnedByLiveForeign('owned')).toBe(false);
+    } finally {
+      next.dispose();
+    }
   });
 
   it('keeps agent records synchronous, because a caller is told when they are durable', async () => {
@@ -1605,5 +1623,106 @@ describe('AgentStore.recordLateApplication (#518)', () => {
     });
     // Nor its temp, which the next open would otherwise promote past the checks.
     expect(readdirSync(join(root, 'repo', 'records'))).toEqual(['late.json']);
+  });
+});
+
+describe('a disposed instance in this process owns nothing (#544)', () => {
+  // Every store here is in one process: the same pid on the same host, and that pid is alive, as
+  // it is for each runtime a Book process replaces on `/clear`, `/resume` or `/rewind`.
+  const PID = 4242;
+  const HOST = 'test-host';
+  const thisProcess = {
+    pid: PID,
+    hostname: HOST,
+    processAlive: (pid: number) => pid === PID,
+    // A contended lock gives up at once rather than spinning for the default budget.
+    writerOptions: { sleep: () => {}, deadlineMs: 20 },
+  } as const;
+
+  const open = (instanceId: string) =>
+    AgentStore.open('repo', root, true, { ...thisProcess, instanceId });
+
+  const FIRST = '66666666-6666-4666-8666-666666666666';
+  const SECOND = '77777777-7777-4777-8777-777777777777';
+
+  const recordPath = (id: string) => join(root, 'repo', 'records', `${id}.json`);
+
+  /** A lock on `id`'s record, held by `instanceId` of this process, as a write in flight holds it. */
+  function lockRecord(id: string, instanceId: string): string {
+    const lock = `${recordPath(id)}.lock`;
+    writeFileSync(
+      lock,
+      JSON.stringify({ schemaVersion: 1, instanceId, pid: PID, hostname: HOST, createdAt: 1 }),
+    );
+    return lock;
+  }
+
+  it('lets the next store recover and own the active records it left', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const disposed = await open(FIRST);
+    disposed.saveAgent(
+      { ...recordFixture('running-agent'), status: 'running' },
+      { required: true },
+    );
+    disposed.dispose();
+
+    const next = await open(SECOND);
+    try {
+      expect(next.isOwnedByLiveForeign('running-agent')).toBe(false);
+      expect(next.recoverAbandonedAgents()).toEqual([
+        expect.objectContaining({
+          id: 'running-agent',
+          status: 'interrupted',
+          stopReason: 'process_exit',
+        }),
+      ]);
+      expect(JSON.parse(readFileSync(recordPath('running-agent'), 'utf8'))).toMatchObject({
+        status: 'interrupted',
+        _store: { instanceId: SECOND },
+      });
+    } finally {
+      next.dispose();
+    }
+  });
+
+  it('lets the next store take a lock it left behind', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const disposed = await open(FIRST);
+    disposed.dispose();
+    const lock = lockRecord('locked-agent', FIRST);
+
+    const next = await open(SECOND);
+    try {
+      expect(next.saveAgent(recordFixture('locked-agent'), { required: true }).status).toBe('ok');
+      expect(existsSync(lock)).toBe(false);
+      expect(debugEvents).toContainEqual({
+        event: 'stale lock reclaimed',
+        metadata: { target: 'record' },
+      });
+    } finally {
+      next.dispose();
+    }
+  });
+
+  it('still counts a live sibling, whose lease is fresh, as the owner of its records and locks', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const live = await open(FIRST);
+    live.saveAgent({ ...recordFixture('live-agent'), status: 'running' }, { required: true });
+    const next = await open(SECOND);
+    try {
+      const lock = lockRecord('live-agent', FIRST);
+
+      expect(next.isOwnedByLiveForeign('live-agent')).toBe(true);
+      expect(next.recoverAbandonedAgents()).toEqual([]);
+      expect(next.saveAgent(recordFixture('live-agent'), { required: true }).status).toBe('busy');
+      expect(existsSync(lock)).toBe(true);
+      expect(JSON.parse(readFileSync(recordPath('live-agent'), 'utf8'))).toMatchObject({
+        status: 'running',
+        _store: { instanceId: FIRST },
+      });
+    } finally {
+      next.dispose();
+      live.dispose();
+    }
   });
 });
