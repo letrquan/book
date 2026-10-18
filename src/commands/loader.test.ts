@@ -405,12 +405,15 @@ describe.skipIf(process.platform === 'win32')('command files that are links', ()
     expect(skipped).toEqual([]);
   });
 
-  it.skipIf(process.getuid?.() === 0)('skips an unreadable command file instead of throwing', () => {
-    write(join(repo, '.book', 'commands', 'locked.md'), 'locked body\n');
-    chmodSync(join(repo, '.book', 'commands', 'locked.md'), 0o000);
+  it.skipIf(process.getuid?.() === 0)(
+    'skips an unreadable command file instead of throwing',
+    () => {
+      write(join(repo, '.book', 'commands', 'locked.md'), 'locked body\n');
+      chmodSync(join(repo, '.book', 'commands', 'locked.md'), 0o000);
 
-    expect(inspectCommands(repo)).toEqual({ commands: [], skipped: [] });
-  });
+      expect(inspectCommands(repo)).toEqual({ commands: [], skipped: [] });
+    },
+  );
 
   it('ignores a dangling link without a skipped entry', () => {
     mkdirSync(join(repo, '.book', 'commands'), { recursive: true });

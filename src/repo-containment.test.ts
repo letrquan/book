@@ -46,9 +46,7 @@ describe('findRepositoryRoot', () => {
     mkdirSync(join(dir, 'outer', '.git'), { recursive: true });
     mkdirSync(join(dir, 'outer', 'inner', '.git'), { recursive: true });
 
-    expect(findRepositoryRoot(join(dir, 'outer', 'inner'))).toBe(
-      real(join(dir, 'outer', 'inner')),
-    );
+    expect(findRepositoryRoot(join(dir, 'outer', 'inner'))).toBe(real(join(dir, 'outer', 'inner')));
   });
 
   it('returns undefined when no directory up the walk has a .git entry', () => {
