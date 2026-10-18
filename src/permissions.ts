@@ -156,8 +156,8 @@ export interface PermissionEvaluationOptions {
   platform?: NodeJS.Platform;
   /**
    * The session shell a Bash command is read for (`toolContext.shell ?? config.shell`). On win32
-   * only Git Bash and a POSIX sh on the MSYS runtime read `'` as a quote; see
-   * {@link hasCompoundShellSyntax}.
+   * only a bash or POSIX sh that resolution found on the MSYS runtime (`msys`, such as Git Bash)
+   * reads `'` as a quote; see {@link hasCompoundShellSyntax}.
    */
   shell?: ScanShell;
 }

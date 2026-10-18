@@ -137,7 +137,7 @@ describe('hasCompoundShellSyntax', () => {
 });
 
 describe('hasCompoundShellSyntax on win32 reads the session shell (#512, decision 3)', () => {
-  const gitBash = { kind: 'bash', file: 'C:/Program Files/Git/bin/bash.exe' } as const;
+  const gitBash = { kind: 'bash', file: 'C:/Program Files/Git/bin/bash.exe', msys: true } as const;
 
   it.each(["git log 'x'", "git stash show 'stash@{0}'", "git commit -m 'a; b | c'"])(
     'admits %j under Git Bash',
@@ -169,6 +169,7 @@ describe('hasCompoundShellSyntax on win32 reads the session shell (#512, decisio
     ['powershell', { kind: 'powershell', file: 'C:/powershell.exe' } as const],
     ['cmd', { kind: 'cmd' } as const],
     ['bash without a file', { kind: 'bash' } as const],
+    ['Git Bash with no MSYS flag', { kind: 'bash', file: gitBash.file } as const],
     ['sh with a file', { kind: 'sh', file: 'C:/sh.exe' } as const],
     ['no shell', undefined],
   ])('refuses any single quote under %s', (_label, shell) => {
@@ -187,7 +188,7 @@ describe('hasCompoundShellSyntax on win32 reads the session shell (#512, decisio
 // MSYS runtime never rebuilds it and `'` is a POSIX single quote exactly as on Linux (#527): a
 // space-free command is read like any other.
 describe('hasCompoundShellSyntax under Git Bash reads single quotes as on Linux (#527)', () => {
-  const gitBash = { kind: 'bash', file: 'C:/Program Files/Git/bin/bash.exe' } as const;
+  const gitBash = { kind: 'bash', file: 'C:/Program Files/Git/bin/bash.exe', msys: true } as const;
 
   it.each([
     "git commit -m 'fix(x): y'",
@@ -284,9 +285,21 @@ describe('hasCompoundShellSyntax under an MSYS sh reads single quotes as on Linu
       { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\fish.exe', msys: true } as const,
     ],
     ['a flagged sh with no file', { kind: 'sh', msys: true } as const],
+    // #548 (owner, 2026-10-18): a non-WSL bash.exe off the MSYS runtime gets the command out of band
+    // too, but refuses `'` as an unflagged sh does.
+    ['a Cygwin bash.exe', { kind: 'bash', file: 'C:\\cygwin64\\bin\\bash.exe' } as const],
+    [
+      'a scoop bash.exe shim',
+      { kind: 'bash', file: 'C:\\Users\\u\\scoop\\shims\\bash.exe' } as const,
+    ],
+    ['a bash.exe copy with no DLL', { kind: 'bash', file: 'D:\\tools\\bash.exe' } as const],
     [
       'WSL bash.exe in System32',
       { kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe' } as const,
+    ],
+    [
+      'a forged WSL bash.exe with the flag',
+      { kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe', msys: true } as const,
     ],
     [
       'WSL bash.exe in WindowsApps',
@@ -326,19 +339,27 @@ describe('hasCompoundShellSyntax: the WSL launcher is not Git Bash (#512)', () =
     'C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe',
     'c:/users/me/appdata/local/microsoft/windowsapps/bash.exe',
   ])('refuses a single quote under %s', (file) => {
-    expect(hasCompoundShellSyntax("git log 'x'", 'win32', { kind: 'bash', file })).toBe(true);
-    expect(hasCompoundShellSyntax("echo';id'", 'win32', { kind: 'bash', file })).toBe(true);
+    for (const shell of [
+      { kind: 'bash', file },
+      { kind: 'bash', file, msys: true },
+    ] as const) {
+      expect(hasCompoundShellSyntax("git log 'x'", 'win32', shell)).toBe(true);
+      expect(hasCompoundShellSyntax("echo';id'", 'win32', shell)).toBe(true);
+    }
   });
 
-  it('still reads a Git Bash outside a WSL launcher directory as Git Bash', () => {
+  it('still reads a flagged Git Bash outside a WSL launcher directory as Git Bash', () => {
     for (const file of [
       'C:\\Program Files\\Git\\bin\\bash.exe',
       'C:/Program Files/Git/usr/bin/bash.exe',
       'D:\\tools\\Windows Kits\\bash.exe',
       'D:\\Microsoft\\Git\\bin\\bash.exe',
     ]) {
+      const shell = { kind: 'bash', file, msys: true } as const;
+      expect(hasCompoundShellSyntax("git log 'x'", 'win32', shell), file).toBe(false);
+      // Only resolution sets the flag, from the MSYS DLL (#548); without it `'` is refused.
       expect(hasCompoundShellSyntax("git log 'x'", 'win32', { kind: 'bash', file }), file).toBe(
-        false,
+        true,
       );
     }
   });

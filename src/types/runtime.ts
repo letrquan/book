@@ -53,14 +53,14 @@ export interface ResolvedShell {
   /** Set when a requested shell could not be honoured and the automatic ladder was used instead. */
   warning?: string;
   /**
-   * Set on Windows for a `kind: 'sh'` executable that runs on the MSYS runtime (Git's or MSYS2's
-   * `sh.exe`, `dash.exe`, `zsh.exe` and other POSIX shells), detected at resolution by
-   * `msys-2.0.dll` beside it or in `..\usr\bin` (#532). It does not decide delivery: every
-   * POSIX-named sh gets its command out of band, flagged or not, wherever it lives
-   * (`receivesCommandOutOfBand`, #548). It only lets the permission scanner read `'` as on Linux
-   * (`readsSingleQuoteAsPosix`), because Windows CI proves this runtime's delivery. Never set off
-   * Windows, in a WSL launcher directory, for a non-POSIX shell, or for `bash` (Git Bash is
-   * recognised by `isGitBash`).
+   * Set on Windows for a `kind: 'bash'` or `kind: 'sh'` executable that runs on the MSYS runtime
+   * (Git for Windows' `bin\bash.exe`, `usr\bin\bash.exe` and `sh.exe`; MSYS2's `bash.exe`,
+   * `dash.exe`, `zsh.exe` and other POSIX shells), detected at resolution by `msys-2.0.dll` beside
+   * it or in `..\usr\bin` (#532, #548). It does not decide delivery: every non-WSL bash and every
+   * POSIX-named sh gets its command out of band, flagged or not (`receivesCommandOutOfBand`). It
+   * only lets the permission scanner read `'` as on Linux (`readsSingleQuoteAsPosix`), because
+   * Windows CI proves this runtime's delivery. Never set off Windows, in a WSL launcher directory,
+   * or for a non-POSIX shell, a Cygwin shell or a shim or copy with no DLL beside it.
    */
   msys?: true;
 }

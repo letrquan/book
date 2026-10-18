@@ -233,22 +233,113 @@ describe('resolveShell marks an MSYS POSIX sh on Windows (#532, #548)', () => {
     expect(receivesCommandOutOfBand(shell)).toBe(false);
   });
 
-  it('flags no bash: Git Bash is recognised by isGitBash, not the flag', () => {
-    const bash = win32.join(GIT_USR_BIN, 'bash.exe');
-    const shell = requestedAlone(bash, win32.join(GIT_USR_BIN, 'msys-2.0.dll'));
-    expect(shell).toMatchObject({ kind: 'bash', file: bash });
-    expect(shell).not.toHaveProperty('msys');
+  it.each(['linux', 'darwin'] as const)('never flags a sh or a bash on %s', (platform) => {
+    for (const [kind, file] of [
+      ['sh', '/usr/bin/sh'],
+      ['bash', '/usr/bin/bash'],
+    ] as const) {
+      const shell = resolveShell({ platform, env: {}, requested: file, existsSync: () => true });
+      expect(shell).toMatchObject({ kind, file });
+      expect(shell).not.toHaveProperty('msys');
+    }
+  });
+});
+
+// #548 (owner, 2026-10-18): a non-WSL `bash.exe` reads `'` as on Linux only on the MSYS runtime,
+// found as for a sh: `msys-2.0.dll` beside it, or under `..\usr\bin` for Git's `bin\bash.exe`
+// launcher stub. Every other one (Cygwin's, scoop's `shims\bash.exe`, a copy) still gets the command
+// out of band, but refuses `'` as an unflagged sh does.
+describe('resolveShell marks a bash.exe on the MSYS runtime on Windows (#548)', () => {
+  const GIT_USR_BIN = win32.join(GIT_ROOT, 'usr', 'bin');
+  const GIT_DLL = win32.join(GIT_USR_BIN, 'msys-2.0.dll');
+  const MSYS2_USR_BIN = 'C:\\msys64\\usr\\bin';
+  const requestedAlone = (file: string, ...present: string[]): ResolvedShell =>
+    windows([file, ...present], {}, file);
+  const outOfBand = (file: string, command: string): CommandExecution => ({
+    file,
+    args: ['-c', GIT_BASH_EVAL_SCRIPT],
+    env: { BOOK_BASH_COMMAND: command },
   });
 
-  it.each(['linux', 'darwin'] as const)('never flags a sh on %s', (platform) => {
-    const shell = resolveShell({
-      platform,
-      env: {},
-      requested: '/usr/bin/sh',
-      existsSync: () => true,
-    });
-    expect(shell).toMatchObject({ kind: 'sh', file: '/usr/bin/sh' });
+  it.each<[string, string, string]>([
+    ["Git's bin\\bash.exe launcher through ..\\usr\\bin", GIT_BASH, GIT_DLL],
+    ["Git's usr\\bin\\bash.exe beside the DLL", win32.join(GIT_USR_BIN, 'bash.exe'), GIT_DLL],
+    [
+      "MSYS2's usr\\bin\\bash.exe beside the DLL",
+      `${MSYS2_USR_BIN}\\bash.exe`,
+      `${MSYS2_USR_BIN}\\msys-2.0.dll`,
+    ],
+  ])('flags %s, so its quotes read as on Linux', (_label, file, dll) => {
+    const shell = requestedAlone(file, dll);
+    expect(shell).toMatchObject({ kind: 'bash', file, source: 'setting', msys: true });
+    expect(shellExecution(shell, 'echo hi', 'win32')).toEqual(outOfBand(file, 'echo hi'));
+    expect(readsSingleQuoteAsPosix(shell)).toBe(true);
+  });
+
+  // Git Bash also reaches a session by name, as the launching shell and as the installed fallback,
+  // not only as a path; each route must probe the DLL, or real Git Bash users lose `'`.
+  const routes: Array<[string, (present: string[]) => ResolvedShell, Partial<ResolvedShell>]> = [
+    [
+      'the launching shell',
+      (present) => windows(present, { MSYSTEM: 'MINGW64', EXEPATH: GIT_ROOT }),
+      { source: 'launching-shell' },
+    ],
+    ['the installed fallback', (present) => windows(present, {}), { source: 'detected' }],
+    ['a `bash` request', (present) => windows(present, {}, 'bash'), { source: 'setting' }],
+    [
+      'BOOK_SHELL=git-bash',
+      (present) => windows(present, { BOOK_SHELL: 'git-bash' }),
+      { source: 'setting' },
+    ],
+    [
+      'the fallback after a request that was not found',
+      (present) => windows(present, {}, 'D:\\missing\\sh.exe'),
+      { source: 'detected', warning: expect.stringContaining('D:\\missing\\sh.exe') as string },
+    ],
+  ];
+
+  it.each(routes)('flags Git Bash chosen as %s', (_label, resolve, expected) => {
+    const shell = resolve([GIT_BASH, GIT_DLL]);
+    expect(shell).toMatchObject({ kind: 'bash', file: GIT_BASH, msys: true, ...expected });
+    expect(readsSingleQuoteAsPosix(shell)).toBe(true);
+  });
+
+  it.each(routes)('leaves Git Bash chosen as %s unflagged with no DLL', (_label, resolve) => {
+    const shell = resolve([GIT_BASH]);
+    expect(shell).toMatchObject({ kind: 'bash', file: GIT_BASH });
     expect(shell).not.toHaveProperty('msys');
+    expect(shellExecution(shell, 'echo hi', 'win32')).toEqual(outOfBand(GIT_BASH, 'echo hi'));
+    expect(readsSingleQuoteAsPosix(shell)).toBe(false);
+  });
+
+  it.each<[string, string, string[]]>([
+    [
+      'a Cygwin bash.exe beside cygwin1.dll',
+      'C:\\cygwin64\\bin\\bash.exe',
+      ['C:\\cygwin64\\bin\\cygwin1.dll'],
+    ],
+    ["scoop's shims\\bash.exe", 'C:\\Users\\u\\scoop\\shims\\bash.exe', []],
+    ['a copy of bash.exe with no DLL', 'D:\\tools\\bash.exe', []],
+    ['a bash5.exe with no DLL', 'D:\\tools\\bash5.exe', []],
+  ])('delivers %s out of band, unflagged, and refuses its quotes', (_label, file, present) => {
+    const shell = requestedAlone(file, ...present);
+    expect(shell).toMatchObject({ kind: 'bash', file });
+    expect(shell).not.toHaveProperty('msys');
+    const command = "ls?echo_INJECTED 'a b'";
+    expect(shellExecution(shell, command, 'win32')).toEqual(outOfBand(file, command));
+    expect(receivesCommandOutOfBand(shell)).toBe(true);
+    expect(readsSingleQuoteAsPosix(shell)).toBe(false);
+  });
+
+  it.each([
+    'C:\\Windows\\System32\\bash.exe',
+    'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe',
+  ])("never flags WSL's %s, even beside msys-2.0.dll", (file) => {
+    const shell = requestedAlone(file, win32.join(win32.dirname(file), 'msys-2.0.dll'));
+    expect(shell).toMatchObject({ kind: 'bash', file });
+    expect(shell).not.toHaveProperty('msys');
+    expect(shellExecution(shell, 'echo hi', 'win32')).toEqual({ file, args: ['-c', 'echo hi'] });
+    expect(readsSingleQuoteAsPosix(shell)).toBe(false);
   });
 });
 
@@ -401,10 +492,13 @@ describe('shellExecution', () => {
     for (const shell of argv) expect(receivesCommandOutOfBand(shell), shell?.file).toBe(false);
   });
 
-  // #548: the scanner reads `'` as on Linux only where CI proves the delivery: Git Bash and a sh on
-  // the MSYS runtime. Cygwin, shims and copies with no DLL, and busybox get the delivery but not this.
-  it('reads single quotes as POSIX under Git Bash and a flagged MSYS sh only', () => {
-    expect(readsSingleQuoteAsPosix({ kind: 'bash', file: GIT_BASH })).toBe(true);
+  // #548: the scanner reads `'` as on Linux only where CI proves the delivery: a bash or sh on the
+  // MSYS runtime. Cygwin, shims and copies with no DLL, and busybox get the delivery but not this.
+  it('reads single quotes as POSIX under a flagged Git Bash or MSYS sh only', () => {
+    expect(readsSingleQuoteAsPosix({ kind: 'bash', file: GIT_BASH, msys: true })).toBe(true);
+    expect(
+      readsSingleQuoteAsPosix({ kind: 'bash', file: 'C:\\msys64\\usr\\bin\\bash.exe', msys: true }),
+    ).toBe(true);
     expect(
       readsSingleQuoteAsPosix({ kind: 'sh', file: 'C:\\msys64\\usr\\bin\\sh.exe', msys: true }),
     ).toBe(true);
@@ -427,8 +521,18 @@ describe('shellExecution', () => {
         msys: true,
       },
       { kind: 'sh', file: 'C:\\msys64\\usr\\bin\\fish.exe', msys: true },
+      { kind: 'bash', file: GIT_BASH },
+      { kind: 'bash', file: 'C:\\cygwin64\\bin\\bash.exe' },
+      { kind: 'bash', file: 'C:\\Users\\u\\scoop\\shims\\bash.exe' },
       { kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe' },
+      { kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe', msys: true },
+      {
+        kind: 'bash',
+        file: 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe',
+        msys: true,
+      },
       { kind: 'bash' },
+      { kind: 'bash', msys: true },
       { kind: 'pwsh', file: PWSH, msys: true },
       { kind: 'cmd', file: CMD },
       undefined,
@@ -443,7 +547,10 @@ describe('shellExecution', () => {
   it('never relaxes the quote rule for a shell that gets the command in argv', () => {
     const table: Array<Pick<ResolvedShell, 'kind' | 'file' | 'msys'>> = [
       { kind: 'bash', file: GIT_BASH },
+      { kind: 'bash', file: GIT_BASH, msys: true },
       { kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe' },
+      { kind: 'bash', file: 'C:\\Windows\\System32\\bash.exe', msys: true },
+      { kind: 'bash', msys: true },
       { kind: 'bash', file: 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe' },
       { kind: 'sh', file: 'C:\\Program Files\\Git\\usr\\bin\\sh.exe', msys: true },
       { kind: 'sh', file: 'C:\\cygwin64\\bin\\sh.exe' },
