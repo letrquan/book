@@ -397,6 +397,8 @@ const TEXT_DEFAULT_SYMBOL_BLOCKS: [number, number][] = [
   [0x2600, 0x26ff],
 ];
 const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
+/** The angle brackets 〈 〉 (U+2329, U+232A): East Asian Wide, so two columns, unlike the rest of Misc Technical. */
+const EAST_ASIAN_WIDE_TECHNICAL = new Set([0x2329, 0x232a]);
 const ASCII_PRINTABLE = /^[\x20-\x7e]*$/;
 
 /**
@@ -445,7 +447,7 @@ export function displayWidth(text: string): number {
     if (inRanges(cp, SORTED_ZERO_WIDTH_RANGES)) {
       // width += 0
     } else if (inRanges(cp, TEXT_DEFAULT_SYMBOL_BLOCKS)) {
-      width += EMOJI_PRESENTATION.test(ch) ? 2 : 1;
+      width += EMOJI_PRESENTATION.test(ch) || EAST_ASIAN_WIDE_TECHNICAL.has(cp) ? 2 : 1;
     } else if (inRanges(cp, SORTED_WIDE_RANGES)) {
       width += 2;
     } else {

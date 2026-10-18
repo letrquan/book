@@ -542,8 +542,9 @@ describe('edit diff preview', () => {
     expect(body[3]).toContain('after 1');
     expect(rendered).not.toContain('omitted');
     expect(footer).toHaveLength(0);
-    // Ctrl+E still has the rest of the file's lines to show.
-    expect(diffPreviewOmittedRows(output, { terminalWidth: 80, ...options })).toBe(7);
+    // Nor does it count as hidden for Ctrl+E: no footer names the key, so the key goes to a row
+    // that says it hides something. A click on the row still opens the whole diff.
+    expect(diffPreviewOmittedRows(output, { terminalWidth: 80, ...options })).toBe(0);
   });
 
   it('reports the changes a compact edit had no room for', () => {

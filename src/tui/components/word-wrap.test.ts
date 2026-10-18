@@ -269,4 +269,11 @@ describe('status glyph widths agree with the renderer', () => {
       expect(displayWidth(glyph), glyph).toBe(2);
     }
   });
+
+  it('measures the East Asian Wide angle brackets in Misc Technical as two columns', () => {
+    // U+2329 and U+232A sit in the text-default block but are East Asian Wide, as string-width
+    // and the terminal measure them.
+    expect(displayWidth('〈')).toBe(2);
+    expect(displayWidth('〉')).toBe(2);
+  });
 });

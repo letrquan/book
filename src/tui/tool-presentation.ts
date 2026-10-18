@@ -748,6 +748,14 @@ const FAILED_META_WIDTH = 28;
 /** The metadata item {@link exitMetadata} writes. */
 const EXIT_METADATA = /^exit -?\d+$/;
 
+/**
+ * A row's `exit N` item, if its metadata carries one. ToolCallBlock, the Ctrl+E target and the
+ * transcript's row estimate all ask it, so they agree on which failures open on an exit code.
+ */
+export function exitCodeMetadata(metadata: readonly string[]): string | undefined {
+  return metadata.find((part) => EXIT_METADATA.test(part));
+}
+
 /** The three aligned columns of a tool row, already padded to the grid. */
 export interface ToolRowColumns {
   /** Verb, padded to the grid's label column. Empty when labels are inline. */

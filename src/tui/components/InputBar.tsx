@@ -1016,7 +1016,7 @@ export function InputBar({
         width={frame.width}
         marginX={frame.marginX}
       >
-        {/* The pilcrow that will open this turn in the transcript. */}
+        {/* The prompt mark that will open this turn in the transcript. */}
         <Text color={promptColor}>{screenReader ? '> ' : `${PROMPT_MARK} `}</Text>
         <Box width={inputWidth} flexShrink={1}>
           <InputBox

@@ -14,6 +14,7 @@ import {
   composeResultErrorDetail,
   composeToolHeading,
   deriveToolPresentation,
+  exitCodeMetadata,
   EXPAND_KEY,
   hasNonBlankOutputLine,
   isCommandTool,
@@ -290,7 +291,7 @@ function ToolCallBlockInner({
   // The detail shows everything only while its row is itself expanded: the ids that ask for it are
   // never removed, so a row folded back (a click, or Ctrl+O out of detailed mode) must fold it too.
   const showFullError = showAllToolOutput && isExpanded;
-  const exitCode = presentation.metadata.find((part) => /^exit -?\d+$/.test(part));
+  const exitCode = exitCodeMetadata(presentation.metadata);
   // A command's failure says its exit code on the result's first row, and its output's last
   // lines follow. Any other failure is a sentence, which opens on what kind of stop it was.
   const errorMessage =

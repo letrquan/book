@@ -550,7 +550,7 @@ export function ModelPicker({
       meta={`${filteredOptions.length} ${filteredOptions.length === 1 ? 'model' : 'models'}`}
       width={sheetWidth}
     >
-      {/* Typing filters, the way the composer takes a prompt: after a pilcrow. */}
+      {/* Typing filters, the way the composer takes a prompt: after the prompt mark. */}
       <Text>
         <Text color={theme.brand}>{`${PROMPT_MARK} `}</Text>
         <Text color={filter ? theme.text : theme.inactive}>{filter || 'type to filter'}</Text>

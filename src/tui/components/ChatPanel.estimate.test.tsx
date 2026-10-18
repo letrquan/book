@@ -3,6 +3,7 @@ import { render, cleanup } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { ChatPanel, estimateTimelineRows } from './ChatPanel.js';
 import { createShellPartsMemo, type QuietToolContext } from '../quiet-tools.js';
+import { messagesFollowedByWork } from './transcript-messages.js';
 import type { ToolCall, ToolResult } from '../../types/tools.js';
 import type { Message } from '../../types/messages.js';
 
@@ -149,5 +150,78 @@ describe('the transcript row estimate', () => {
     );
     // The first entry's blank row above it is the one the transcript does not draw.
     expect(estimated - 1).toBe(rendered);
+  });
+
+  /** The estimate ChatPanel makes for each entry, with what it knows of the turn around it. */
+  function estimateAll(messages: Message[], width: number): number {
+    const quietTools: QuietToolContext = { pinned: new Set(), shellParts: createShellPartsMemo() };
+    const followedByWork = messagesFollowedByWork(messages, messages[0]?.id);
+    return messages.reduce(
+      (rows, message) =>
+        rows +
+        estimateTimelineRows(message, width, quietTools, 'compact', {
+          continuesTurn: followedByWork.has(message.id),
+        }),
+      0,
+    );
+  }
+
+  function renderedRows(messages: Message[], width: number): number {
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ChatPanel messages={messages} terminalWidth={width} terminalHeight={200} />
+      </ThemeContext.Provider>,
+    );
+    return stripAnsi(view.lastFrame()).split('\n').length;
+  }
+
+  it('sizes a failed command with no output as its heading and its exit code', () => {
+    const messages: Message[] = [
+      { id: 'u1', role: 'user', content: 'run it', includeInContext: true, timestamp: 1 },
+      step(
+        'a1',
+        'I will run the script.',
+        { name: 'Bash', arguments: { command: 'false' } },
+        {
+          status: 'error',
+          content: '',
+          structuredError: {
+            code: 'command_failed',
+            message: '',
+            retryable: false,
+            details: { exitCode: 1 },
+          },
+        },
+      ),
+      { id: 'a2', role: 'assistant', content: 'It failed.', includeInContext: true, timestamp: 1 },
+      { id: 'u2', role: 'user', content: 'ok', includeInContext: true, timestamp: 2 },
+    ];
+    expect(estimateAll(messages, 73) - 1).toBe(renderedRows(messages, 73));
+  });
+
+  it('sets prose that a step of work follows against its call, as the transcript does', () => {
+    const messages: Message[] = [
+      { id: 'u1', role: 'user', content: 'fix it', includeInContext: true, timestamp: 1 },
+      step(
+        'a1',
+        'I will plan the fix first.',
+        {
+          name: 'TodoWrite',
+          arguments: {
+            todos: [{ content: 'Fix it', status: 'in_progress', activeForm: 'Fixing' }],
+          },
+        },
+        { status: 'success', content: 'ok' },
+      ),
+      step(
+        'a2',
+        'I will read the settings.',
+        { name: 'Read', arguments: { file_path: 'src/settings.ts' } },
+        { status: 'success', content: '1: export const a = 1;' },
+      ),
+      { id: 'a3', role: 'assistant', content: 'Done.', includeInContext: true, timestamp: 1 },
+      { id: 'u2', role: 'user', content: 'ok', includeInContext: true, timestamp: 2 },
+    ];
+    expect(estimateAll(messages, 73) - 1).toBe(renderedRows(messages, 73));
   });
 });

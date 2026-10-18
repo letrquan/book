@@ -806,8 +806,17 @@ export interface DiffPreviewOptions {
 export function diffPreviewOmittedRows(output: string, options: DiffPreviewOptions): number {
   const rows = prepareDiffRows(parseDiffLines(output));
   const { contentWidth } = diffGeometry(rows, options.terminalWidth);
-  return layoutDiff(rows, contentWidth, true, options.maxRows, options.preview, options.contextRows)
-    .omittedLines;
+  const layout = layoutDiff(
+    rows,
+    contentWidth,
+    true,
+    options.maxRows,
+    options.preview,
+    options.contextRows,
+  );
+  // Context an edit's preview trims around changes it shows whole is not a cut: the block draws
+  // no footer for it, so nothing is hidden that Ctrl+E should be pointed at.
+  return layout.showsOmissions ? layout.omittedLines : 0;
 }
 
 /**

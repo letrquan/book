@@ -310,6 +310,41 @@ describe('toolRowHidesContent', () => {
     }
   });
 
+  it('says an open edit hides nothing when its preview drops only context around changes it shows', () => {
+    // The compact preview keeps one line of context around each change and draws no footer for
+    // the context it trims, so Ctrl+E must not be pointed at it.
+    const diff = [
+      '@@ -1,7 +1,7 @@',
+      ' line 1',
+      ' line 2',
+      ' line 3',
+      '-old',
+      '+new',
+      ' line 5',
+      ' line 6',
+      ' line 7',
+    ].join('\n');
+    expect(
+      toolRowHidesContent({
+        name: 'Edit',
+        args: { file_path: 'src/a.ts', old_string: 'old', new_string: 'new' },
+        result: {
+          version: 2,
+          toolCallId: 'edit-context',
+          status: 'success',
+          content: diff,
+          artifacts: {
+            fileMutation: { kind: 'update', filePath: 'src/a.ts', addedLines: 1, removedLines: 1 },
+          },
+        },
+        isExpanded: true,
+        transcriptMode: 'compact',
+        terminalWidth: WIDTH,
+        showAllToolOutput: false,
+      }),
+    ).toBe(false);
+  });
+
   it('says a screen reader row hides nothing', () => {
     const row = workloadRows()[3]!;
     expect(

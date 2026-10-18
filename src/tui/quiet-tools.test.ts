@@ -12,6 +12,7 @@ import {
   isQuietInvocation,
   continuesQuietRun,
   summarizeQuietRun,
+  quietRunFiles,
   quietRunHeading,
   type QuietToolContext,
 } from './quiet-tools.js';
@@ -573,6 +574,18 @@ describe('quietRunHeading', () => {
         { call: call('b', 'Bash', { command: 'git status' }), result: ok('b') },
       ]),
     ).toBe('List(src), git status');
+  });
+
+  it('folds a newline or an escape sequence in a pattern or a file name to a space', () => {
+    const summary = summarizeQuietRun([
+      { call: call('a', 'Grep', { pattern: 'foo\nbar\u001b[2J' }), result: ok('a') },
+      { call: call('b', 'Read', { file_path: 'src/a\u202eb.ts' }), result: ok('b') },
+      { call: call('c', 'Read', { file_path: 'README.md' }), result: ok('c') },
+    ]);
+    const heading = quietRunHeading(summary);
+    expect(heading).not.toMatch(/[\u0000-\u001f\u202e]/);
+    expect(heading).toContain('Search(foo bar [2J)');
+    expect(quietRunFiles(summary)).not.toMatch(/[\u0000-\u001f\u202e]/);
   });
 });
 

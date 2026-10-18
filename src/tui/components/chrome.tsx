@@ -176,8 +176,8 @@ export function floatingFrameMetrics(terminalWidth: number): { width: number; ma
  *
  *   `─ ¶ Permission required ──────────────────────────── shell command ─`
  *
- * The pilcrow is the composer's mark and means the same thing here: the next
- * move is yours. The label carries the surface's one tone (amber for a write,
+ * The pilcrow marks a surface that waits on you: the next move is yours. The
+ * label carries the surface's one tone (amber for a write,
  * rose for a shell command); the line itself stays a quiet hairline, so the
  * tone reads as a word, not as a frame.
  */

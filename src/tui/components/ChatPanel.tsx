@@ -28,6 +28,7 @@ import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js
 import { useDebugMount, useDebugRender } from '../debug.js';
 import { useDensity, type TuiDensity } from '../density.js';
 import {
+  handsBack,
   isWorkStep,
   mergeAssistantMessages,
   messagesFollowedByWork,
@@ -37,6 +38,7 @@ import {
   commandOutputPreview,
   deriveToolPresentation,
   estimateToolErrorDetailRows,
+  exitCodeMetadata,
   isCommandTool,
   mutationDiffPreviewInput,
   toolItemGrids,
@@ -110,8 +112,11 @@ function estimateToolCallRows(
   const presentation = deriveToolPresentation(call.name, call.arguments, result);
   const resultWidth = toolItemGrids(terminalWidth).result.content;
   if (presentation.status !== 'success') {
-    const exit = presentation.metadata.some((part) => /^exit -?\d+$/.test(part));
-    return 1 + (exit ? 1 : 0) + Math.max(1, estimateToolErrorDetailRows(result));
+    // An exit code opens the result on a row of its own; with no exit code and no detail to
+    // say, the row reads `Error` alone. Any other failure's detail opens on its own label.
+    const exit = exitCodeMetadata(presentation.metadata) !== undefined;
+    const detail = estimateToolErrorDetailRows(result);
+    return 1 + (exit || detail === 0 ? 1 : 0) + detail;
   }
   const mutation = getFileMutationDisplaySummary(call.name, call.arguments, result);
   if (mutation) {
@@ -148,7 +153,10 @@ function estimateToolRows(
     ? groupQuietInvocations(invocations, message, quietTools).map((row) =>
         row.kind === 'quiet'
           ? 1 +
-            (summarizeQuietRun(row.indices.map((index) => invocations[index]!)).files.length > 1
+            (summarizeQuietRun(
+              row.indices.map((index) => invocations[index]!),
+              quietTools,
+            ).files.length > 1
               ? 1
               : 0)
           : estimateToolCallRows(
@@ -175,11 +183,20 @@ function withoutThoughts(content: string): string {
     .join('');
 }
 
+/** What the estimate cannot read from an entry alone, as ChatPanel knows it when it draws one. */
+export interface TimelineRowContext {
+  /** A step of work follows the entry in the same turn, so its prose is narration. */
+  continuesTurn?: boolean;
+  /** One of the entry's calls waits for your approval. */
+  awaitsApproval?: boolean;
+}
+
 export function estimateTimelineRows(
   entry: Message | CompactBoundary,
   terminalWidth: number,
   quietTools?: QuietToolContext,
   density: TuiDensity = 'compact',
+  context: TimelineRowContext = {},
 ): number {
   // A boundary is one row of its own plus the blank row it takes, which tight density drops, and
   // the one detail line a warning adds.
@@ -202,9 +219,15 @@ export function estimateTimelineRows(
   const textRows = prose ? estimateWrappedRows(content, transcriptGrid(terminalWidth).content) : 0;
   const attachmentRows = entry.attachments?.length ? 1 : 0;
   const toolRows = estimateToolRows(entry, quietTools, terminalWidth, density);
-  // An answer stands a blank row above its first call; a step's narration sits against it.
-  const proseGap =
-    prose && toolRows > 0 && density !== 'tight' && !(quietTools && isWorkStep(entry)) ? 1 : 0;
+  // An answer stands a blank row above its first call; prose that captions the call under it
+  // sits against it, as AgentMessage decides: a step's narration (prose a step of work follows,
+  // unless it handed the turn back), and the sentence of a call that waits for your approval.
+  const captionsCall =
+    quietTools !== undefined &&
+    (context.awaitsApproval === true ||
+      isWorkStep(entry) ||
+      (context.continuesTurn === true && !handsBack(entry)));
+  const proseGap = prose && toolRows > 0 && density !== 'tight' && !captionsCall ? 1 : 0;
   // The blank row an entry opens with, after a prompt or an earlier call: nearly every one.
   const leadingGap = density === 'tight' ? 0 : 1;
   return Math.max(1, leadingGap + textRows + attachmentRows + proseGap + toolRows);
@@ -388,9 +411,26 @@ export function ChatPanelInner({
       'transcriptOrdinal' in entry ? `boundary-${entry.id}` : entry.id,
     [],
   );
+  // Read through a ref, so the estimator keeps its identity while a turn streams: a new one
+  // would make the virtual transcript estimate every entry again on each update.
+  const estimateContextRef = useRef({ followedByWork, pendingToolId });
+  estimateContextRef.current = { followedByWork, pendingToolId };
   const estimateRows = useCallback(
-    (entry: Message | CompactBoundary) =>
-      estimateTimelineRows(entry, terminalWidth ?? 80, quietTools, density),
+    (entry: Message | CompactBoundary) => {
+      const context = estimateContextRef.current;
+      return estimateTimelineRows(
+        entry,
+        terminalWidth ?? 80,
+        quietTools,
+        density,
+        'role' in entry
+          ? {
+              continuesTurn: context.followedByWork.has(entry.id),
+              awaitsApproval: messageOwnsTool(entry, context.pendingToolId),
+            }
+          : {},
+      );
+    },
     [quietTools, terminalWidth, density],
   );
   const hiddenHistoryRows = hiddenTimelineEntries > 0 ? (density === 'tight' ? 1 : 2) : 0;
@@ -543,7 +583,7 @@ export function ChatPanelInner({
               <Box
                 flexDirection="column"
                 marginTop={
-                  followsToolCall ||
+                  (followsToolCall && density !== 'tight') ||
                   // A boundary takes a blank row above it, so the reply that
                   // follows one keeps the blank row below it too.
                   (previous && 'transcriptOrdinal' in previous && density !== 'tight') ||

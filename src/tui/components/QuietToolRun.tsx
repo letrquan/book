@@ -2,7 +2,8 @@ import { Box, Text } from 'ink';
 import React from 'react';
 import { useTheme } from '../theme.js';
 import { resultContentWidth, type TranscriptGrid } from '../layout.js';
-import { quietRunHeading, type QuietRunSummary } from '../quiet-tools.js';
+import { quietRunFiles, quietRunHeading, type QuietRunSummary } from '../quiet-tools.js';
+import { foldControlCharacters } from '../../control-characters.js';
 import { truncateDisplay } from './word-wrap.js';
 import { ItemMark, ResultBox, ResultLine } from './transcript-item.js';
 
@@ -31,7 +32,9 @@ function QuietToolRunInner({
     return (
       <Box>
         <Text>
-          {summary.title} {summary.target} ({summary.metadata.join(', ')})
+          {foldControlCharacters(
+            `${summary.title} ${summary.target} (${summary.metadata.join(', ')})`,
+          )}
         </Text>
       </Box>
     );
@@ -49,7 +52,7 @@ function QuietToolRunInner({
       </Box>
       {summary.files.length > 1 ? (
         <ResultBox width={width}>
-          <ResultLine text={summary.files.join(', ')} color={theme.inactive} />
+          <ResultLine text={quietRunFiles(summary)} color={theme.inactive} />
         </ResultBox>
       ) : null}
     </Box>

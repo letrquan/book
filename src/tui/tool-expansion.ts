@@ -18,6 +18,7 @@ import {
   commandOutputPreview,
   composeResultErrorDetail,
   deriveToolPresentation,
+  exitCodeMetadata,
   isCommandTool,
   labelFailure,
   mutationDiffPreviewInput,
@@ -83,7 +84,7 @@ export function toolRowHidesContent(input: ToolRowPreviewInput): boolean {
     });
     // The row opens a sentence of a failure on what kind of stop it was, and a command's on its
     // exit code, as ToolCallBlock draws it.
-    const exitCode = presentation.metadata.some((part) => /^exit -?\d+$/.test(part));
+    const exitCode = exitCodeMetadata(presentation.metadata) !== undefined;
     const detail = composeResultErrorDetail({
       presentation: { title: '', target: undefined },
       message: exitCode ? inlineError : labelFailure(inlineError, presentation.status),
