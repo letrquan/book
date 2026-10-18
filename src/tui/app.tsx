@@ -446,6 +446,12 @@ export function App({
     [liveConfig, mode, persistPermissionRule, runtime],
   );
   const managedAgents = useManagedAgents(managedAgentManager, sessionId);
+  // An `/agent` answer is judged against the session current when it lands, not the one it was
+  // typed in: after a `/clear` in between, the old session's agent has no record in the view (#554).
+  const belongsToCurrentSession = useRef(managedAgents.belongsToCurrentSession);
+  useEffect(() => {
+    belongsToCurrentSession.current = managedAgents.belongsToCurrentSession;
+  }, [managedAgents.belongsToCurrentSession]);
   const shellManager = useMemo(() => {
     const resolved = runtime?.shellManager ?? new ShellJobManager({ nextId: 1, shells: new Map() });
     resolved.configureWorkspace(liveConfig.workspace);
@@ -2446,7 +2452,7 @@ export function App({
               .then((record) => {
                 // Sent all the same, but the detail view has another session's agent to show
                 // only as `Loading subagent…`, for good (#554).
-                if (!managedAgents.belongsToCurrentSession(record.parentSessionId)) {
+                if (!belongsToCurrentSession.current(record.parentSessionId)) {
                   addLocalMessage(
                     `Sent to agent ${record.id}. It belongs to another session, so its view is not shown here.`,
                   );
@@ -2479,7 +2485,7 @@ export function App({
                 if (!record) throw new Error(`Agent ${effect.agentId} was not found.`);
                 // The detail view renders this session's agents only, and would wait on
                 // `Loading subagent…` for good on any other (#554).
-                if (!managedAgents.belongsToCurrentSession(record.parentSessionId)) {
+                if (!belongsToCurrentSession.current(record.parentSessionId)) {
                   throw new Error(`Agent ${record.id} belongs to another session.`);
                 }
                 managedAgents.selectAgent(record.id);

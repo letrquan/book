@@ -2217,6 +2217,11 @@ export class AgentManager {
           const candidate = await (this.options.commitWork ?? commitAgentWork)(record, snapshot);
           if (controller.signal.aborted || this.agents.get(record.id)?.status === 'stopped') return;
           if (candidate) {
+            // `applicationStatus` is the candidate's, and a re-run that ends on a new commit has a
+            // candidate nothing has applied yet, whatever became of the last one.
+            if (record.patchCandidate?.headCommit !== candidate.headCommit) {
+              record.applicationStatus = 'not_applied';
+            }
             record.patchCandidate = candidate;
             const now = Date.now();
             const item: EvidenceItem = {

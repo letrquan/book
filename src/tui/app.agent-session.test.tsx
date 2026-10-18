@@ -190,16 +190,21 @@ async function submit(view: ReturnType<typeof render>, value: string): Promise<v
 
 function startApp() {
   const addLocalMessage = vi.fn();
+  const appConfig = config();
   useAgentMock.mockReturnValue(agentState('session-a', addLocalMessage));
   useTasksMock.mockReturnValue({ tasks: [], refresh: vi.fn() });
-  const view = render(<App config={config()} session={session} />);
-  return { view, addLocalMessage };
+  const view = render(<App config={appConfig} session={session} />);
+  const rerender = () => view.rerender(<App config={appConfig} session={session} />);
+  return { view, addLocalMessage, rerender };
 }
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
+
+const SENT_ELSEWHERE = (id: string) =>
+  `Sent to agent ${id}. It belongs to another session, so its view is not shown here.`;
 
 describe('/agent for an agent of another session (#554)', () => {
   it("opens this session's agent", async () => {
@@ -208,7 +213,7 @@ describe('/agent for an agent of another session (#554)', () => {
 
     await submit(view, '/agent agent-mine');
 
-    expect(view.lastFrame()).toContain('main > Patch agent-mine');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('main > Patch agent-mine'));
     expect(addLocalMessage).not.toHaveBeenCalled();
   });
 
@@ -218,7 +223,11 @@ describe('/agent for an agent of another session (#554)', () => {
 
     await submit(view, '/agent agent-other');
 
-    expect(addLocalMessage).toHaveBeenCalledWith('✕ Agent agent-other belongs to another session.');
+    await vi.waitFor(() =>
+      expect(addLocalMessage).toHaveBeenCalledWith(
+        '✕ Agent agent-other belongs to another session.',
+      ),
+    );
     expect(view.lastFrame()).not.toContain('Loading subagent');
     expect(view.lastFrame()).not.toContain('main > Patch agent-other');
   });
@@ -229,8 +238,10 @@ describe('/agent for an agent of another session (#554)', () => {
 
     await submit(view, '/agent agent-orphan');
 
-    expect(addLocalMessage).toHaveBeenCalledWith(
-      '✕ Agent agent-orphan belongs to another session.',
+    await vi.waitFor(() =>
+      expect(addLocalMessage).toHaveBeenCalledWith(
+        '✕ Agent agent-orphan belongs to another session.',
+      ),
     );
     expect(view.lastFrame()).not.toContain('Loading subagent');
   });
@@ -241,10 +252,10 @@ describe('/agent for an agent of another session (#554)', () => {
 
     await submit(view, '/agent send agent-other one more change');
 
-    expect(managedAgentManagerMock.send).toHaveBeenCalledWith('agent-other', 'one more change');
-    expect(addLocalMessage).toHaveBeenCalledWith(
-      'Sent to agent agent-other. It belongs to another session, so its view is not shown here.',
+    await vi.waitFor(() =>
+      expect(addLocalMessage).toHaveBeenCalledWith(SENT_ELSEWHERE('agent-other')),
     );
+    expect(managedAgentManagerMock.send).toHaveBeenCalledWith('agent-other', 'one more change');
     expect(view.lastFrame()).not.toContain('Loading subagent');
     expect(view.lastFrame()).not.toContain('main > Patch agent-other');
   });
@@ -255,6 +266,31 @@ describe('/agent for an agent of another session (#554)', () => {
 
     await submit(view, '/agent send agent-mine one more change');
 
-    expect(view.lastFrame()).toContain('main > Patch agent-mine');
+    await vi.waitFor(() => expect(view.lastFrame()).toContain('main > Patch agent-mine'));
+  });
+
+  it('judges a send by the session it lands in, not the one it was typed in', async () => {
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    managedAgentManagerMock.send.mockImplementationOnce(async (id: string) => {
+      await held;
+      return records.get(id)!;
+    });
+    const { view, addLocalMessage, rerender } = startApp();
+    await settle();
+
+    await submit(view, '/agent send agent-mine one more change');
+    // A `/clear` while the send is pending: the app is on a new session when it lands.
+    useAgentMock.mockReturnValue(agentState('session-c', addLocalMessage));
+    rerender();
+    await settle();
+    release();
+
+    await vi.waitFor(() =>
+      expect(addLocalMessage).toHaveBeenCalledWith(SENT_ELSEWHERE('agent-mine')),
+    );
+    expect(view.lastFrame()).not.toContain('Loading subagent');
   });
 });

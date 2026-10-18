@@ -1500,10 +1500,14 @@ export class AgentStore {
    * A fresh lease is alive. Without one, an owner on this host is alive while its process is (a
    * Book from before leases, or one whose heartbeat is late), except when that process is this one
    * (#544). Every live store takes its lease before anything else and keeps it fresh until
-   * `dispose()` removes it, so an instance of this process without one is a disposed sibling: the
-   * manager a `/clear`, `/resume` or `/rewind` replaced. Its records are the next manager's to
-   * write and recover, and its locks are left over. No registry of disposed instances is needed for
-   * that, and an earlier process whose pid this one now has reads as gone too, which it is.
+   * `dispose()` removes it, so an instance of this process without one is taken for a disposed
+   * sibling: the manager a `/clear`, `/resume` or `/rewind` replaced. Its records are the next
+   * manager's to write and recover, and its locks are left over. No registry of disposed instances
+   * is needed for that, and an earlier process whose pid this one now has reads as gone too, which
+   * it is. The cost is a live sibling whose lease is missing or late: its first lease write failed,
+   * or its heartbeat stalled past {@link LEASE_FRESH_MS}. It reads as gone until its next
+   * heartbeat lands. Two live stores on one repository in one process come only from an SDK host
+   * running sessions side by side; the TUI and print mode dispose a runtime before replacing it.
    */
   private aliveByLease(
     lease: InstanceLease | undefined,

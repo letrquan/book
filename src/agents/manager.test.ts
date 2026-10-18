@@ -1942,6 +1942,50 @@ describe('AgentManager lifecycle', () => {
         });
       }
     });
+
+    it("does not carry an applied status over to a re-run's new candidate", async () => {
+      const fixture = await managerWithPendingApplies();
+      const { manager, patcher, candidate } = fixture;
+      try {
+        const applying = manager.apply(patcher.id, candidate.id);
+        await vi.waitFor(() => expect(fixture.signals).toHaveLength(1));
+        fixture.releases[0]!('applied');
+        await expect(applying).resolves.toMatchObject({ status: 'applied' });
+        expect((await manager.get(patcher.id))?.applicationStatus).toBe('applied');
+
+        fixture.setHeadCommit('head-2');
+        await manager.send(patcher.id, 'one more change');
+        await manager.wait(patcher.id, 1000);
+
+        expect(await manager.get(patcher.id)).toMatchObject({
+          patchCandidate: { headCommit: 'head-2' },
+          applicationStatus: 'not_applied',
+        });
+      } finally {
+        manager.dispose();
+      }
+    });
+
+    it('keeps the applied status when a re-run ends on the same candidate', async () => {
+      const fixture = await managerWithPendingApplies();
+      const { manager, patcher, candidate } = fixture;
+      try {
+        const applying = manager.apply(patcher.id, candidate.id);
+        await vi.waitFor(() => expect(fixture.signals).toHaveLength(1));
+        fixture.releases[0]!('applied');
+        await expect(applying).resolves.toMatchObject({ status: 'applied' });
+
+        await manager.send(patcher.id, 'nothing more to change');
+        await manager.wait(patcher.id, 1000);
+
+        expect(await manager.get(patcher.id)).toMatchObject({
+          patchCandidate: { headCommit: 'head' },
+          applicationStatus: 'applied',
+        });
+      } finally {
+        manager.dispose();
+      }
+    });
   });
 
   it('runs the complete review fix adapter against manager evidence locks', async () => {
