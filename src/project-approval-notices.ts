@@ -10,6 +10,8 @@
  * lives here so there is one wording and one read.
  */
 import { join } from 'path';
+import { collectSkippedInstructionNotices } from './claude-md.js';
+import { collectSkippedCommandNotices } from './commands/loader.js';
 import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
@@ -24,6 +26,7 @@ import {
   type WorkspaceProviderGate,
 } from './provider-approvals.js';
 import { renderUntrustedText } from './hook-approvals.js';
+import { collectSkippedReviewNotices } from './review/config.js';
 import { providerTrustCommand } from './trust-command.js';
 import {
   formatIgnoredWorkspaceSandboxKey,
@@ -239,4 +242,17 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
   }
 
   return [...notices, ...providerNotices];
+}
+
+/**
+ * One warning per project file the loaders refused because it links out of the repository or to
+ * a file that is not Markdown (#539, #543): instruction files, REVIEW.md and project command
+ * files. Not tied to `--no-settings`: they are read whatever the settings layers are.
+ */
+export function collectSkippedProjectFileNotices(workspace: string): string[] {
+  return [
+    ...collectSkippedInstructionNotices(workspace),
+    ...collectSkippedReviewNotices(workspace),
+    ...collectSkippedCommandNotices(workspace),
+  ];
 }

@@ -115,7 +115,10 @@ evidence id (agents cannot approve their own work), and only then is it applied.
 Drop a **`REVIEW.md`** at the workspace root to calibrate reviews for your repository — severity
 conventions, known-noisy areas, project-specific rules. It is read fresh on every run and injected
 as calibration only: it cannot change the output contract, disable verification, or broaden the
-tools a reviewer may use.
+tools a reviewer may use. It is repository-controlled, so it loads only when its real path is a
+Markdown file inside the git repository (the workspace without one): a `REVIEW.md` committed as a
+link to a file outside the repository, or to a non-Markdown file, is skipped with a start-up
+warning.
 
 **Outside the TUI.** `book -p /review`, `book -p "/review --deep"`, `book -p "/review --base main"`,
 path scopes and `<base>...<head>` all run headlessly through the identical pipeline — the host still
