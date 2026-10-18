@@ -89,20 +89,30 @@ All notable changes to this project are documented in this file.
 ### Fixed
 
 - **Resizing the terminal during a turn no longer leaves a second working indicator, input bar and
-  footer on screen** (#525, #538, #537). On a narrowing resize Ink drew at once with the old layout,
-  and a row wider than the new width autowrapped and threw off its line count, so the next frame
-  left a second working indicator, extra rules, input bar and footer behind. Every Ink frame row is
-  now clipped to the terminal width, with tabs expanded. After a resize the new size is committed
-  before Ink draws, so the first frame and the forced redraw already use it. Tabs in tool output
-  are expanded to 8-column stops, so a tab-separated row is measured at its real width.
-  `BOOK_INK_FRAME_CLIP=off` turns the row clip off. Ctrl+L redraws once per press.
-- **The agent store opens off the event loop, and an apply that outlives its session's manager is
-  still recorded** (#516, #518, #527, #540). Opening the managed-agent store stalled the first
-  190 to 670 ms after the first frame, and text typed then and submitted with Enter became a paste.
-  The store now opens off the event loop, so there is no stall and that Enter submits. An apply
-  that finishes after `/clear`, `/resume` or `/rewind` is recorded by the session's current manager,
-  so the same apply is not offered again; when no manager is current, it still never overwrites a
-  newer record. `AgentStop` leaves an apply that you started running, and its result says so.
+  footer on screen** (#525, #538, #537, #547). On a narrowing resize Ink drew at once with the old
+  layout, and a row wider than the new width autowrapped and threw off its line count, so the next
+  frame left a second working indicator, extra rules, input bar and footer behind. Every Ink frame
+  row is now clipped to the terminal width, with tabs expanded. After a resize the new size is
+  committed before Ink draws, so the first frame and the forced redraw already use it. Tabs in tool
+  output are expanded to 8-column stops, so a tab-separated row is measured at its real width, and
+  so are tabs in a code block of an agent message before the block is wrapped, so a tab-indented
+  line near the edge wraps inside the block instead of losing its end. `BOOK_INK_FRAME_CLIP=off`
+  turns the row clip off. Ctrl+L redraws once per press.
+- **The agent store opens off the event loop, an apply that outlives its session's manager is
+  still recorded, and earlier agents stay usable after `/clear`** (#516, #518, #527, #540, #544,
+  #554). Opening the managed-agent store stalled the first 190 to 670 ms after the first frame, and
+  text typed then and submitted with Enter became a paste. The store now opens off the event loop,
+  so there is no stall and that Enter submits. An apply that finishes after `/clear`, `/resume` or
+  `/rewind` is recorded by the session's current manager, so the same apply is not offered again,
+  even when the old manager could not delete its lease file; when no manager is current, it still
+  never overwrites a newer record. After `/clear`, `/resume` or `/rewind` the earlier agents of the
+  same Book process can be sent to, applied, dismissed and recovered again; they had read as owned
+  by another live Book process until Book exited. `AgentStop` leaves an apply that you started
+  running, and its result says so. The agent detail view shows whether its current candidate was
+  applied (`applied`, `not applied` or `apply failed`), and a re-run that ends on a new candidate
+  commit resets it to not applied. `/agent <id>` for another session's agent says
+  `✕ Agent <id> belongs to another session.` instead of staying on `Loading subagent…`;
+  `/agent send` to such an agent still sends and says its view is not shown.
 - **A spent-limit or rate-limit message states the reset time once, and a WebFetch same-origin
   redirect refusal names the URL the model asked for** (#513, #246). A provider message that gave
   its own reset time had it repeated by Book's text, including when the wait was too long to retry;
@@ -797,8 +807,9 @@ All notable changes to this project are documented in this file.
   closed past that: an unterminated quote, a line break anywhere (even quoted), a backslash before
   a quote, a `^` before a quote outside quotes, and a typographic quote (U+2018 to U+201E) are all
   refused, since some shell reads each of them differently. On Windows a single quote is refused,
-  because the session shell may be cmd.exe, where it is not a quote, except under Git Bash, where
-  the command arrives out of band and `'` reads as on Linux (#523). This holds for an exact rule
+  because the session shell may be cmd.exe, where it is not a quote, except under a shell on the
+  MSYS runtime (Git Bash, or another POSIX shell with `msys-2.0.dll`), where the command arrives out
+  of band and `'` reads as on Linux (#523, #548). This holds for an exact rule
   and for `Bash(*)` too; a bare `Bash` still admits any command, and the strict `rm` rule is
   unchanged. The refusal tells the model to send each command as its own Bash call.
 - **Bash permission rules read the whole command, and a compound command asks when a Bash deny or
@@ -819,15 +830,24 @@ All notable changes to this project are documented in this file.
   to use `bypassPermissions`. A deny or ask rule now also tests the trimmed command's first line and
   its whole text, so leading whitespace no longer slides past `Bash(git push *)` into an allow rule.
   The Windows quote reading above applies.
-- **A committed instruction file could put any readable file into the system prompt** (#539). A
-  repository's `CLAUDE.md` symlinked to a private key, `/proc/self/environ` or
-  `.book/settings.local.json` was read as an instruction file, so that file went to the provider in
-  the system prompt. A project instruction file (`CLAUDE.md`, `AGENTS.md`, `.claude/CLAUDE.md`, a
-  rules file or `CLAUDE.local.md`) now loads only when its real path stays inside the directory it
-  was found in, which is the workspace root or the ancestor directory the walk reached, and is a
-  Markdown file. A skipped file gets a one-line warning at start-up: in the TUI, on stderr in print
-  mode, in scrollback mode and in the SDK. Your own instruction files (the user-global ones) are not
-  checked.
+- **A committed instruction file, `REVIEW.md`, project command or `@` mention could put any
+  readable file into the prompt** (#539, #543, #559). A repository's `CLAUDE.md` symlinked to a
+  private key, `/proc/self/environ` or `.book/settings.local.json` was read as an instruction file,
+  so that file went to the provider in the system prompt; a linked `REVIEW.md` went into every
+  `/review` pass, a linked `.book/commands/*.md` file went out when its command ran, and an `@path`
+  mention of a committed link inlined the link's target. A project instruction file (`CLAUDE.md`,
+  `AGENTS.md`, `.claude/CLAUDE.md`, a rules file or `CLAUDE.local.md`), `REVIEW.md` and a project
+  command file now load only when their real path is a Markdown file inside the git repository root:
+  the nearest `.git` directory or file, found from the real path, with a linked worktree as its own
+  root. So a monorepo link such as `packages/a/CLAUDE.md -> ../shared/AGENTS.md` loads. With no
+  repository, a file must stay inside the directory it was found in. Above the repository root only
+  your home directory and its parents go unchecked; any other directory is checked against itself,
+  so an unpacked archive with an empty `.git` cannot vouch for the directory above it. A `.git` in
+  your home directory (a dotfiles repository) does not count as a repository root. An `@path`
+  mention is inlined only when its real path is inside the same root, with no Markdown rule;
+  otherwise it stays as written, like `@../x`. A skipped file gets a one-line warning at start-up:
+  in the TUI, on stderr in print mode, in scrollback mode and in the SDK. Your own instruction files
+  and commands (the user-global ones) are not checked.
 - **No tool can replace a real provider key with the redaction marker any more** (#519, #535). The
   guard from #411 covered only `Write`, `Edit` and `MultiEdit` over a file that held a key, so a
   model could still destroy a credential another way. `Bash` now refuses a command that contains
@@ -840,16 +860,19 @@ All notable changes to this project are documented in this file.
   over the old one with `mv`. The marker is counted over the whole file before and after the write,
   so an edit that keeps or removes a quote of it still works. All of this applies only while a
   provider key is configured.
-- **Under Git Bash the Bash tool runs the command the permission check read** (#523, #527, #532). On
-  Windows the MSYS runtime rebuilt a program's argv from the Windows command line: it globbed the
-  words, expanded `@file` arguments and stripped the quotes from a command with no space, tab or
-  `"`, so bash could run a different command from the one the permission check had read. Under Git
-  Bash, or any POSIX shell on the MSYS runtime (`sh`, `dash`, `ash`, `ksh`, `mksh`, `zsh`, detected
-  by `msys-2.0.dll`), the command now travels in the `BOOK_BASH_COMMAND` variable and the shell
-  gets a fixed `-c 'eval …'` script. The variable is unset before the command runs; `$0`, `$#` and
-  the exit status are unchanged. WSL's `bash.exe`, busybox, Cygwin and fish keep argv delivery. A
-  single quote is therefore read exactly as on Linux under Git Bash, and is still refused under
-  `sh`, WSL, cmd and PowerShell.
+- **Under Git Bash and every other POSIX shell on Windows the Bash tool runs the command the
+  permission check read** (#523, #527, #532, #548). On Windows the MSYS runtime rebuilt a program's
+  argv from the Windows command line: it globbed the words, expanded `@file` arguments and stripped
+  the quotes from a command with no space, tab or `"`, so bash could run a different command from
+  the one the permission check had read; Cygwin's runtime and shims can do the same. Every session
+  shell with a POSIX name (`bash`, `sh`, `dash`, `ash`, `ksh`, `mksh`, `zsh`, versioned names such
+  as `zsh-5.9.exe` included), whatever its runtime (Git Bash, MSYS2, Cygwin, a shim or a copy), now
+  gets the command in the `BOOK_BASH_COMMAND` variable and a fixed `-c 'eval …'` script. The
+  variable is unset before the command runs; `$0`, `$#` and the exit status are unchanged. Only
+  WSL's `bash.exe` and non-POSIX shells (fish, nu, `busybox.exe` under its own name) keep argv
+  delivery. A single quote is read exactly as on Linux only under a shell on the MSYS runtime
+  (`msys-2.0.dll` beside it, or in `..\usr\bin` from a `bin` directory, as in Git for Windows); it
+  is still refused under Cygwin, a shim or a copy without the DLL, busybox, WSL, cmd and PowerShell.
 - **"Always allow" no longer saves a rule that a wildcard in the call would widen, and `ask` rules
   hold in `auto`** (#521, #522, #527). "Always allow" saved no rule only for a compound Bash
   command with a `*`; it now saves none for any call whose own text holds a wildcard: a Bash
