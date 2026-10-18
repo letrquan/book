@@ -51,6 +51,11 @@ export interface ManagedAgentState {
   resolveQuestion: (agentId: string, response: UserQuestionResponse) => Promise<void>;
   acknowledgeCompletions: (ids: string[]) => Promise<void>;
   refresh: () => Promise<void>;
+  /**
+   * Whether an agent with this `parentSessionId` is one of this session's: the rule `records` and
+   * the rows are scoped by, so the detail view can show exactly the agents it answers true for.
+   */
+  belongsToCurrentSession: (parentSessionId: string | undefined) => boolean;
 }
 
 function upsertSummary(current: AgentSummary[], next: AgentSummary): AgentSummary[] {
@@ -435,5 +440,6 @@ export function useManagedAgents(
     resolveQuestion,
     acknowledgeCompletions,
     refresh,
+    belongsToCurrentSession,
   };
 }
