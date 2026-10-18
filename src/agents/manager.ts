@@ -126,8 +126,6 @@ interface LateApplication {
   /** The commit of the candidate that was applied. */
   headCommit: string;
   result: AgentApplyResult;
-  /** The disposed manager's store instance, which may still be named as the record's owner. */
-  fromInstanceId?: string;
 }
 
 interface SubscribeOptions {
@@ -1528,7 +1526,6 @@ export class AgentManager {
         evidenceId: evidence.id,
         headCommit: evidence.patchCandidate!.headCommit,
         result,
-        fromInstanceId: this.store?.instanceId,
       });
       if (!handedOver) {
         // No manager took it, so this is the one write that still has to land. No
@@ -1613,8 +1610,10 @@ export class AgentManager {
    * Only `applicationStatus` changes, on the record as this manager has it now, so its own later
    * saves keep it. The record is left alone when it is gone, when its candidate is no longer the
    * one applied (a re-run replaced it: `applied` would be false of the new one), or when another
-   * live owner holds it (#518). The disposed manager that hands it over is no such owner, though
-   * in one process its pid reads as alive. Not `assertMutable`, for that reason.
+   * live owner holds it (#518). The disposed manager that hands it over is no such owner, and
+   * neither is any manager of this process disposed since: an instance of this process without a
+   * lease reads as gone (#544). A skip is logged rather than thrown, because the pick is on the
+   * branch either way and nobody is waiting on this to fail.
    *
    * False when this manager was disposed before it could open its store, and took nothing.
    */
@@ -1628,7 +1627,7 @@ export class AgentManager {
         ? 'missing'
         : record.patchCandidate?.headCommit !== late.headCommit
           ? 'superseded'
-          : store.isOwnedByLiveForeignOtherThan(late.agentId, late.fromInstanceId)
+          : store.isOwnedByLiveForeign(late.agentId)
             ? 'live_owner'
             : undefined;
     if (!record || skip) {
