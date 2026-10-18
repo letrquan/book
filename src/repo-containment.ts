@@ -93,7 +93,8 @@ function isUserHome(real: string, home: string | undefined): boolean {
     }
   }
   const homeReal = path ? tryRealPath(path) : undefined;
-  return homeReal !== undefined && !isOutside(homeReal, real) && !isOutside(real, homeReal);
+  // `relative`, so the comparison ignores case where the platform's paths do (Windows).
+  return homeReal !== undefined && relative(homeReal, real) === '';
 }
 
 /** The directory project files are measured from: the repository root, else the workspace. */

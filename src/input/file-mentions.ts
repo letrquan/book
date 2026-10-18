@@ -4,6 +4,7 @@ import { glob } from 'tinyglobby';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { loadGitignore } from '../tools/gitignore.js';
 import { globWalkIgnore } from '../tools/glob-regex.js';
+import { isOutside } from '../tools/path-utils.js';
 
 export interface ActiveFileMention {
   start: number;
@@ -44,10 +45,10 @@ export function resolveWorkspaceMentionPath(
   const normalized = mentionPath.replace(/\\/g, '/');
   const candidate = isAbsolute(normalized) ? normalized : resolve(root, normalized);
   const filePath = resolve(candidate);
-  const rel = relative(root, filePath);
 
-  if (rel.startsWith('..') || isAbsolute(rel)) return null;
-  return { filePath, relativePath: normalizeMentionPath(rel) };
+  // `isOutside`, not a `..` prefix: `..notes.md` is a name in the workspace, not a parent step.
+  if (isOutside(root, filePath)) return null;
+  return { filePath, relativePath: normalizeMentionPath(relative(root, filePath)) };
 }
 
 export function findActiveFileMention(input: string): ActiveFileMention | null {

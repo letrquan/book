@@ -169,6 +169,16 @@ describe('expandAtMentions — only real paths outside code (#261)', () => {
     expect(result).toContain('Contents of src/app.ts:');
   });
 
+  it('expands a file whose name starts with two dots, which is no parent step', () => {
+    const ws = codeWorkspace();
+    writeFileSync(join(ws, '..notes.md'), 'dot-dot notes');
+
+    expect(expandAtMentions('Read @..notes.md', ws)).toContain('dot-dot notes');
+    expect(collectAtMentionObservations('Read @..notes.md', ws, 'ref')).toEqual([
+      expect.objectContaining({ path: '..notes.md' }),
+    ]);
+  });
+
   it('leaves a mention outside the workspace that does not exist as written', () => {
     const ws = codeWorkspace();
     expect(expandAtMentions('Read @../nope-not-here.txt', ws)).toBe('Read @../nope-not-here.txt');
