@@ -29,6 +29,27 @@ function liveMessage(agentId: string, text: string): Message {
   };
 }
 
+/**
+ * Whether the record's patch candidate is on the operator's branch, as the header says it, with
+ * the candidate's short commit. `undefined` for a record with no candidate that was never applied:
+ * "not applied" on an explorer, or on a patcher that produced nothing, would be noise.
+ */
+function applicationLine(
+  record: AgentRecord,
+): { text: string; tone: 'success' | 'error' | 'subtle' } | undefined {
+  const candidate = record.patchCandidate;
+  if (!candidate && record.applicationStatus === 'not_applied') return undefined;
+  const label = `Candidate${candidate ? ` ${candidate.headCommit.slice(0, 7)}` : ''}`;
+  switch (record.applicationStatus) {
+    case 'applied':
+      return { text: `${label}: applied`, tone: 'success' };
+    case 'conflicted':
+      return { text: `${label}: apply failed`, tone: 'error' };
+    default:
+      return { text: `${label}: not applied`, tone: 'subtle' };
+  }
+}
+
 export function SubagentDetail({
   record,
   liveText,
@@ -64,6 +85,7 @@ export function SubagentDetail({
     () => (streaming ? liveMessage(record.id, liveText!) : undefined),
     [liveText, record.id, streaming],
   );
+  const application = applicationLine(record);
   return (
     <Box flexDirection="column" width={width}>
       <Box flexDirection="column" paddingX={1} marginBottom={1}>
@@ -74,6 +96,7 @@ export function SubagentDetail({
           {record.profile ?? record.name} | {record.resolvedModel ?? 'unknown'} |{' '}
           {record.isolation ?? 'worktree'} | {record.status}
         </Text>
+        {application ? <Text color={theme[application.tone]}>{application.text}</Text> : null}
         {record.referencedEvidenceIds.length > 0 ? (
           <Text color={theme.subtle}>Evidence: {record.referencedEvidenceIds.join(', ')}</Text>
         ) : null}
