@@ -43,9 +43,9 @@ fresh verification pass.
   stays near the row it belongs to, the aligned label column is sized per message rather
   than globally and renders inline instead of truncating when a label overflows, and bordered
   surfaces sit flush at column 0 so their one column of padding lands their text on that same
-  content column. Tool rows and managed-agent blocks take the one deliberate step in from that
-  column: they carry their own gutter a level deeper, so the work a turn did reads as nested under
-  the prose that ordered it rather than hanging a column of status glyphs to its left. The grid
+  content column. A turn is a column of items on that one gutter: the agent's prose and each call
+  open on the same mark (`●`), and a call's result hangs under its name after a `⎿` connector
+  (`RESULT_INDENT`, `resultGrid`), so what a call did reads as belonging to the call. The grid
   narrows by exactly what it shifts, so every row keeps the same right edge and right-aligned
   metadata still lines up down the transcript. Sixteen non-test modules across the transcript path
   resolve through it. A few components outside that path — diff cards, subagent and
