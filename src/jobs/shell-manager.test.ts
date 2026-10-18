@@ -1190,9 +1190,13 @@ describe('ShellJobManager and keys split at the edge of a window', () => {
 // starts the command. A loaded Windows runner took over the old 3s budget (#495). These tests drive
 // the budget's clock by hand, so neither needs a real multi-second wait.
 describe('ShellJobManager persistent start budget', () => {
-  function idleCommand(): string {
+  /** An idle command; with `pidPath` it first writes its own pid there. */
+  function idleCommand(pidPath?: string): string {
     const script = join(directory, 'idle.cjs');
-    writeFileSync(script, 'setInterval(() => {}, 1000);\n');
+    const recordPid = pidPath
+      ? `require('fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));\n`
+      : '';
+    writeFileSync(script, `${recordPid}setInterval(() => {}, 1000);\n`);
     return `${shellQuote(process.execPath)} ${shellQuote(script)}`;
   }
 
@@ -1203,20 +1207,34 @@ describe('ShellJobManager persistent start budget', () => {
   it('starts a job whose runner takes longer than three seconds under the default budget', async () => {
     directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
     const persistentRoot = join(directory, 'jobs');
-    const command = idleCommand();
+    const workerPidPath = join(directory, 'worker.pid');
+    const command = idleCommand(workerPidPath);
     // 0, 2000, 4000, then held: by the third reading the old 3s budget is spent, as if the runner
     // had taken about 4s. The hold is bounded in real time. Once it ends the clock runs a thousand
     // times fast, so the start, and the stop in `afterEach`, end inside the timeouts even when the
     // runner never starts, instead of hanging on a clock that never reaches its deadline.
+    //
+    // That hold and fast-forward are for a start that never completes. Once `start()` has returned
+    // the clock runs at the real rate, so the stop that follows is timed in real milliseconds and
+    // its teardown cannot sit on a held clock for as long as `removeWhenReleased` waits for the
+    // directory (#549).
     const HOLD_REAL_MS = 20_000;
     const createdAt = performance.now();
     let readings = 0;
+    let lastReading = 0;
+    const realRate: { since?: { clockMs: number; realMs: number } } = {};
     const clock = {
       monotonicNowMs: () => {
+        if (realRate.since) {
+          return realRate.since.clockMs + (performance.now() - realRate.since.realMs);
+        }
         const reading = readings++;
         const real = performance.now() - createdAt;
-        if (real < HOLD_REAL_MS) return Math.min(reading * 2_000, 4_000);
-        return 4_000 + (real - HOLD_REAL_MS) * 1_000;
+        lastReading =
+          real < HOLD_REAL_MS
+            ? Math.min(reading * 2_000, 4_000)
+            : 4_000 + (real - HOLD_REAL_MS) * 1_000;
+        return lastReading;
       },
       wallNowMs: () => Date.now(),
     };
@@ -1238,11 +1256,32 @@ describe('ShellJobManager persistent start budget', () => {
       workspace: directory,
     });
 
+    realRate.since = { clockMs: lastReading, realMs: performance.now() };
+
     expect(readings).toBeGreaterThanOrEqual(3);
     // `start()` only returns once the runner has reported, and an idle command is still running.
     expect(started.status).toBe('running');
     expect(manager.get(started.id)).toBeDefined();
-  }, 30_000);
+
+    // End the job here rather than leave it to `afterEach`, and see its processes gone: the runner,
+    // the supervisor and the command (whose cwd is the directory that is removed next) must not
+    // outlive the test, or Windows refuses that removal while they hold it.
+    await waitFor(
+      () => existsSync(workerPidPath) && readFileSync(workerPidPath, 'utf8') !== '',
+      'the command to record its pid',
+      15_000,
+    );
+    const workerPid = Number(readFileSync(workerPidPath, 'utf8'));
+    expect(await manager.stop(started.id)).toBe(true);
+    expect(manager.get(started.id)?.status).toBe('killed');
+    const pids = [started.runnerPid, started.pid, workerPid];
+    expect(pids.every((pid) => typeof pid === 'number')).toBe(true);
+    await waitFor(
+      () => pids.every((pid) => !isProcessAlive(pid!)),
+      'the runner, supervisor and command to be gone',
+      15_000,
+    );
+  }, 60_000);
 
   it('kills the runner, forgets the job and throws when a start outlasts the default budget', async () => {
     directory = mkdtempSync(join(tmpdir(), 'book-persistent-shell-'));
