@@ -1211,7 +1211,7 @@ describe('ShellJobManager persistent start budget', () => {
     const command = idleCommand(workerPidPath);
     // 0, 2000, 4000, then held: by the third reading the old 3s budget is spent, as if the runner
     // had taken about 4s. The hold is bounded in real time. Once it ends the clock runs a thousand
-    // times fast, so the start, and the stop in `afterEach`, end inside the timeouts even when the
+    // times fast, so the start ends inside the timeouts even when the
     // runner never starts, instead of hanging on a clock that never reaches its deadline.
     //
     // That hold and fast-forward are for a start that never completes. Once `start()` has returned
