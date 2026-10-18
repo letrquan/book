@@ -1594,7 +1594,12 @@ describe('AgentManager lifecycle', () => {
             await vi.waitFor(() =>
               expect(recordOnDisk(fixture, patcher.id).applicationStatus).toBe('applied'),
             );
-            // Read once the write has landed, so neither copy carries a durability warning.
+            // Read once the write has landed, so neither copy carries a durability warning. The
+            // record file can land before its summary, which is still pending then: on a slow
+            // disk a read between the two carried the warning.
+            await vi.waitFor(async () =>
+              expect((await next.get(patcher.id))?.durabilityWarning).toBeUndefined(),
+            );
             const current = await next.get(patcher.id);
             expect(withoutBookkeeping(current as unknown as Record<string, unknown>)).toEqual({
               ...withoutBookkeeping(loaded as unknown as Record<string, unknown>),
