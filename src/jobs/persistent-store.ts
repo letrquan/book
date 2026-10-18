@@ -26,7 +26,8 @@ export interface PersistentShellSpec {
   effectiveCommand: string;
   /**
    * Present for sandboxed commands and for a session shell spawned as argv,
-   * stored whole: its `env` (a Git Bash command on Windows) reaches only the
+   * stored whole: its `env` (on Windows, the command itself in
+   * `BOOK_BASH_COMMAND`, for Git Bash or any POSIX-named sh) reaches only the
    * supervisor's spawn of the command. Specs written before this field existed
    * simply lack it and fall back to the shell path, which is what they were
    * already doing.
@@ -210,7 +211,7 @@ export function readJsonFile<T>(path: string): T | undefined {
  * while the job panel said otherwise. `effectiveCommand` is the raw user command now that
  * sandboxing rides on `exec`, so that combination is refused rather than silently downgraded; the
  * reverse is legitimate, since an unsandboxed command also carries an `exec` when the session shell
- * is spawned as argv (Git Bash or PowerShell on Windows).
+ * is spawned as argv (on Windows Git Bash, a POSIX sh or PowerShell).
  */
 export function loadPersistentShellSpec(
   path: string,
