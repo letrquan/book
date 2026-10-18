@@ -10,7 +10,7 @@ import ts from 'typescript';
  * - A drive point is a call of `runHeadless` / `runMainAction`, a call of anything imported from an
  *   `sdk.js` module (a name, the default, or a member of a namespace import), or a dynamic
  *   `import('…sdk.js')` expression.
- * - A pin is `isolateBookHome(…)`, an assignment to `process.env.BOOK_HOME`,
+ * - A pin is `isolateBookHome(…)`, `enterIsolatedHome(…)`, an assignment to `process.env.BOOK_HOME`,
  *   `vi.stubEnv('BOOK_HOME', …)` or `stashEnv('BOOK_HOME', …)`. A restore is never one: anything
  *   inside an `afterEach` / `afterAll` callback or a `finally` block, or an assignment of a value
  *   previously read from `process.env.BOOK_HOME`.
@@ -208,7 +208,12 @@ function pinNodes(file: ts.SourceFile): ts.Node[] {
   forEachNode(file, (node) => {
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
-      if (ts.isIdentifier(callee) && callee.text === 'isolateBookHome') found.push(node);
+      if (
+        ts.isIdentifier(callee) &&
+        (callee.text === 'isolateBookHome' || callee.text === 'enterIsolatedHome')
+      ) {
+        found.push(node);
+      }
       const stubs =
         (ts.isIdentifier(callee) && callee.text === 'stashEnv') ||
         (ts.isPropertyAccessExpression(callee) && callee.name.text === 'stubEnv');
