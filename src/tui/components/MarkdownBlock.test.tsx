@@ -12,6 +12,7 @@ import {
   useThrottledValue,
   wrapParagraphLines,
 } from './MarkdownBlock.js';
+import { expandTabs } from '../../cli/ink-frame-clip.js';
 import { displayWidth } from './word-wrap.js';
 
 function stripAnsi(value: string | undefined): string {
@@ -747,6 +748,53 @@ describe('MarkdownBlock', () => {
     );
 
     expect(frame(view.lastFrame)).toContain('final response with complete content');
+  });
+});
+
+describe('MarkdownBlock code block with tabs (#547)', () => {
+  const WIDTH = 73;
+  const RECIPE = 'gcc -o program main.c util.c parser.c lexer.c codegen.c optimize.c -lm';
+  const CONTENT = `Here is the Makefile:\n\n\`\`\`make\nall:\n\t${RECIPE}\n\tstrip program END\n\`\`\`\n\nThat is it. DONE`;
+
+  /** The rows as the terminal draws them: each tab moved to the next 8-column stop from column 0. */
+  function terminalRows(output: string): string[] {
+    return output.split('\n').map((row) => expandTabs(row, displayWidth));
+  }
+
+  function nonBlank(value: string): string {
+    return value.replace(/\s+/g, '');
+  }
+
+  it.each([
+    ['settled', false],
+    ['streaming', true],
+  ])('measures a tab-led code line as the terminal does when %s', (_name, isStreaming) => {
+    const view = render(
+      withTheme(
+        React.createElement(MarkdownBlock, {
+          content: CONTENT,
+          terminalWidth: WIDTH,
+          isStreaming,
+        }),
+      ),
+    );
+    const output = frame(view.lastFrame);
+
+    // A tab left in a row is one the terminal expands past the width Ink laid the row out in.
+    expect(output).not.toContain('\t');
+    for (const row of terminalRows(output)) {
+      expect(displayWidth(row)).toBeLessThanOrEqual(WIDTH);
+    }
+    // Nothing is lost: the recipe's characters are all there, in order, across its wrapped rows.
+    const kept = nonBlank(
+      output
+        .split('\n')
+        .map((row) => row.replace(/^[│\s]+/, ''))
+        .join(''),
+    );
+    expect(kept).toContain(nonBlank(RECIPE));
+    expect(kept).toContain(nonBlank('strip program END'));
+    expect(output).toContain('DONE');
   });
 });
 

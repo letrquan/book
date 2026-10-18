@@ -92,6 +92,18 @@ describe('what pins BOOK_HOME for a drive point', () => {
       `describe('a', () => {\n  isolateBookHome();\n  ${drive}\n});`,
     ],
     [
+      'a describe-scoped enterIsolatedHome',
+      `describe('a', () => {\n  let h: IsolatedHome;\n  beforeEach(() => {\n    h = enterIsolatedHome();\n  });\n  afterEach(() => leaveIsolatedHome(h));\n  ${drive}\n});`,
+    ],
+    [
+      'an enterIsolatedHome in a beforeAll of the describe that holds the drive point',
+      `describe('a', () => {\n  beforeAll(() => {\n    enterIsolatedHome();\n  });\n  ${drive}\n});`,
+    ],
+    [
+      'an enterIsolatedHome earlier in the same it, left in a finally',
+      `it('runs', async () => {\n  const h = enterIsolatedHome();\n  try {\n    await runHeadless(c);\n  } finally {\n    leaveIsolatedHome(h);\n  }\n});`,
+    ],
+    [
       'a pin next to a glob string that a comment regex would mistake for a comment',
       `const glob = 'src/**/*.ts';\nprocess.env.BOOK_HOME = home;\nconst other = 'https://x.test'; // done\n${drive}`,
     ],
@@ -101,6 +113,10 @@ describe('what pins BOOK_HOME for a drive point', () => {
 
   it.each([
     ['no pin at all', drive],
+    [
+      'an enterIsolatedHome in a sibling describe',
+      `describe('a', () => {\n  beforeEach(() => {\n    enterIsolatedHome();\n  });\n});\ndescribe('b', () => {\n  ${drive}\n});`,
+    ],
     [
       'only a restore in afterEach',
       `const previous = process.env.BOOK_HOME;\nafterEach(() => {\n  if (previous === undefined) delete process.env.BOOK_HOME;\n  else process.env.BOOK_HOME = previous;\n});\n${drive}`,
