@@ -1225,6 +1225,14 @@ export class AgentStore {
     return this.agentOwners.get(agentId)?.instanceId === this.instanceId;
   }
 
+  /**
+   * The instance that wrote the newest copy of the record this store knows, as
+   * {@link isOwnedByLiveForeign} reads it.
+   */
+  ownerInstanceId(agentId: string): string | undefined {
+    return this.agentOwners.get(agentId)?.instanceId;
+  }
+
   isOwnedByLiveForeign(agentId: string): boolean {
     const owner = this.agentOwners.get(agentId);
     return Boolean(
