@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -8,7 +8,12 @@ import { persistentEnvironmentOverrides, shellTools, streamTail } from './shell.
 import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
 import { hasCompoundShellSyntax } from './shell-chaining.js';
-import { windowsGitBash, windowsGitBinSh, windowsMsysSh } from '../test/real-shells.js';
+import { GIT_BASH_EVAL_SCRIPT, shellExecution } from '../shell-selection.js';
+import {
+  windowsGitBash,
+  windowsPosixShells,
+  type WindowsPosixShellSetup,
+} from '../test/real-shells.js';
 import { PROVIDER_KEY_MARKER, redactToolResultSecrets } from '../provider-secrets.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
 import { SessionRuntime } from '../session/runtime.js';
@@ -1538,20 +1543,35 @@ describe.skipIf(!windowsGitBash)('Git Bash commands on Windows (#512, #523)', ()
   });
 });
 
-// #532: Git's `usr\bin\sh.exe` runs on the same MSYS runtime as Git Bash, so it gets the same
-// out-of-band delivery. So does Git's `bin\sh.exe`, a launcher stub that hands its environment and
-// raw command line to `usr\bin\sh.exe`; running every case through it too checks that forwarding
-// end to end. Each shell is resolved from its path the way a `shell` setting is, so the
-// `msys-2.0.dll` detection runs for real (for the stub, through `..\usr\bin`). sh words its errors
-// its own way (`sh: x: command not found` or `sh: 1: x: not found`), so they are matched loosely.
-const msysShells: ReadonlyArray<readonly [label: string, shell: ResolvedShell | undefined]> = [
-  ['usr\\bin\\sh.exe', windowsMsysSh],
-  ['bin\\sh.exe launcher stub', windowsGitBinSh],
-];
-for (const [label, msysSh] of msysShells) {
-  describe.skipIf(!msysSh)(`MSYS sh commands on Windows: ${label} (#532)`, () => {
+// #532, #548: every POSIX-named sh on Windows gets Git Bash's out-of-band delivery, whatever its
+// runtime. These run each real one the Windows runner offers (`windowsPosixShells`, each skipped when
+// absent) through the Bash tool: Git's `usr\bin\sh.exe`; Git's `bin\sh.exe`, a launcher stub that
+// hands its environment and raw command line to `usr\bin\sh.exe`, so its forwarding is checked end
+// to end; a copy of Git's `usr\bin\sh.exe` in a directory with no MSYS DLL (the shim or copy case,
+// started with Git's `usr\bin` first on its search path so the DLL loads); MSYS2's `dash.exe`;
+// Cygwin's `sh.exe`; busybox-w32 copied as `sh.exe`. Each is resolved from its path the way a
+// `shell` setting is, so the `msys-2.0.dll` detection runs for real. sh words its errors its own way
+// (`sh: x: command not found` or `sh: 1: x: not found`), so they are matched loosely.
+
+/** Windows' exit status for a process whose DLL could not be found (0xC0000135). */
+const DLL_NOT_FOUND = 3221225781;
+
+for (const entry of windowsPosixShells()) {
+  describe.skipIf(!entry.setup)(`POSIX sh commands on Windows: ${entry.label} (#532, #548)`, () => {
+    let setup = undefined as unknown as WindowsPosixShellSetup;
+
+    beforeAll(async () => {
+      setup = entry.setup!();
+      // A fresh copy pays for a Defender scan on its first start; pay it here, not in a test.
+      await direct('exit 0', tmpdir()).catch(() => undefined);
+    }, 120_000);
+
+    afterAll(async () => {
+      if (setup !== undefined && setup.tempDir) await removeWhenReleased(setup.tempDir);
+    }, 30_000);
+
     function shContext(): ToolContext {
-      const c: ToolContext = { workspaceRoot: dir, env: {}, shell: msysSh };
+      const c: ToolContext = { workspaceRoot: dir, env: { ...setup.env }, shell: setup.shell };
       contexts.push(c);
       return c;
     }
@@ -1567,6 +1587,8 @@ for (const [label, msysSh] of msysShells) {
       }
       const message = result.structuredError?.message ?? '';
       const exitCode = result.structuredError?.details?.exitCode;
+      // A shell that could not start is not testing the delivery.
+      expect(exitCode, message).not.toBe(DLL_NOT_FOUND);
       return {
         stdout: result.content,
         stderr: /^Exit code: \d+$/.test(message) ? '' : message,
@@ -1574,11 +1596,12 @@ for (const [label, msysSh] of msysShells) {
       };
     }
 
-    /** The sh spawned directly with the command in argv, as before #532. */
-    function direct(command: string): Promise<ShellRun> {
+    /** The sh spawned directly with the command in argv, as before #532, in the same environment. */
+    function direct(command: string, cwd = dir): Promise<ShellRun> {
       return new Promise((resolve, reject) => {
-        const child = spawn(msysSh!.file!, ['-c', command], {
-          cwd: dir,
+        const child = spawn(setup.shell.file!, ['-c', command], {
+          cwd,
+          env: { ...process.env, ...setup.env },
           stdio: ['ignore', 'pipe', 'pipe'],
         });
         let stdout = '';
@@ -1592,13 +1615,27 @@ for (const [label, msysSh] of msysShells) {
 
     const notFound = (text: string): number => text.match(/not found/g)?.length ?? 0;
 
-    it('resolves the sh with the MSYS flag', () => {
-      expect(msysSh!.msys).toBe(true);
+    it('resolves the sh with its MSYS flag and hands it the command out of band', () => {
+      expect(setup.shell.kind).toBe('sh');
+      expect(setup.shell.msys === true).toBe(entry.msys);
+      expect(shellExecution(setup.shell, 'x', 'win32')!.args).toEqual(['-c', GIT_BASH_EVAL_SCRIPT]);
+      if (setup.tempDir) {
+        // The copy stands for a shim: no MSYS DLL beside it, and none under `..\usr\bin`.
+        expect(existsSync(join(setup.tempDir, 'msys-2.0.dll'))).toBe(false);
+        expect(existsSync(join(setup.tempDir, '..', 'usr', 'bin', 'msys-2.0.dll'))).toBe(false);
+      }
+    });
+
+    it('starts and runs a command', async () => {
+      const result = await viaTool('echo ok');
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toBe('ok\n');
     });
 
     it("delivers `'` quoting a space-free word intact: one command, not two", async () => {
-      // The scanner still refuses `'` under sh (owner decision); the tool is called directly here.
-      expect(hasCompoundShellSyntax("echo'1;echo'2", 'win32', msysSh)).toBe(true);
+      // The scanner reads `'` as on Linux only under a sh on the MSYS runtime (#548); the tool is
+      // called directly here, so the delivery is checked for every entry.
+      expect(hasCompoundShellSyntax("echo'1;echo'2", 'win32', setup.shell)).toBe(!entry.msys);
       const result = await viaTool("echo'1;echo'2");
       expect(notFound(result.stderr), result.stderr).toBe(1);
       expect(result.stderr).toContain('echo1;echo2');
@@ -1641,6 +1678,22 @@ for (const [label, msysSh] of msysShells) {
       const [tool, plain] = await Promise.all([viaTool(command), direct(command)]);
       expect(tool.code).toBe(plain.code);
       expect(tool.code).not.toBe(0);
+      expect(plain.code).not.toBe(DLL_NOT_FOUND);
+    });
+
+    it('runs a ~20,000-character command', async () => {
+      const literal = 'x'.repeat(20_000);
+      const result = await viaTool(`echo ${literal}`);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe(`${literal}\n`);
+    });
+
+    it('echoes non-ASCII text, backslashes and a path list back byte for byte', async () => {
+      const values = ['h\u00e9llo w\u00f6rld \u2713 \u65e5\u672c', 'a\\b\\\\c', 'C:\\a;D:\\b'];
+      const command = `printf '%s\\n' ${values.map((value) => `'${value}'`).join(' ')}`;
+      const result = await viaTool(command);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe(values.map((value) => `${value}\n`).join(''));
     });
   });
 }

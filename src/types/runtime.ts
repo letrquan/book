@@ -19,7 +19,7 @@ export type PermissionMode =
  * `ResolvedShell`).
  *
  * `env` holds variables the spawn must add to the child's environment, merged
- * last over everything else. Git Bash and an MSYS POSIX sh on Windows receive
+ * last over everything else. Git Bash and a POSIX-named sh on Windows receive
  * their command there rather than in `args` (see `shellExecution`), so every
  * site that spawns an `exec` must apply it to that spawn alone.
  */
@@ -55,9 +55,12 @@ export interface ResolvedShell {
   /**
    * Set on Windows for a `kind: 'sh'` executable that runs on the MSYS runtime (Git's or MSYS2's
    * `sh.exe`, `dash.exe`, `zsh.exe` and other POSIX shells), detected at resolution by
-   * `msys-2.0.dll` beside it or in `..\usr\bin`. Such a shell rebuilds argv as Git Bash does, so it
-   * gets the same out-of-band command delivery (`receivesCommandOutOfBand`, #532). Never set off
-   * Windows, for a non-POSIX shell, or for `bash` (Git Bash is recognised by `isGitBash`).
+   * `msys-2.0.dll` beside it or in `..\usr\bin` (#532). It does not decide delivery: every
+   * POSIX-named sh gets its command out of band, flagged or not, wherever it lives
+   * (`receivesCommandOutOfBand`, #548). It only lets the permission scanner read `'` as on Linux
+   * (`readsSingleQuoteAsPosix`), because Windows CI proves this runtime's delivery. Never set off
+   * Windows, in a WSL launcher directory, for a non-POSIX shell, or for `bash` (Git Bash is
+   * recognised by `isGitBash`).
    */
   msys?: true;
 }
