@@ -436,8 +436,8 @@ same way, but Windows CI proves only the MSYS runtime's delivery.
 Book only calls a `bash` "Git Bash" when it found it on the MSYS runtime. Any other `bash` is named
 as a bash whose runtime was not detected as Git Bash. Under every Windows shell that refuses `'`,
 the system prompt and `book doctor` carry a hint to use double quotes, and a refusal of a command
-with a `'` under an `allowed-tools` rule names the single-quote rule instead of only asking for the
-command to be split. `book doctor` prints `msys: yes` or `msys: no` under `Shell:`, the flag that
+whose only problem is a `'`, under an `allowed-tools` rule, names the single-quote rule instead of only asking for the
+command to be split. On Windows, with a `bash` or `sh`, `book doctor` prints `msys: yes` or `msys: no` under `Shell:`, the flag that
 decides whether `'` is read as on Linux.
 
 Permission _modes_ decide whether you are prompted; they never relax a `deny` rule. A rule in

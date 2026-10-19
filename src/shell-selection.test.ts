@@ -753,6 +753,15 @@ describe('shellPromptLine', () => {
     expect(shellPromptLine(resolved, 'win32')).not.toContain('runs Git Bash');
   });
 
+  it('keeps the Git Bash label for a requested bash off Windows', () => {
+    const resolved = resolveShell({
+      platform: 'linux',
+      env: { BOOK_SHELL: 'bash' },
+      existsSync: () => true,
+    });
+    expect(resolved.label).not.toContain('not detected');
+  });
+
   it('adds no quoting hint under an MSYS bash, or off Windows', () => {
     expect(describeShell(msysBash, 'win32')).toBe('Git Bash (C:\\Git\\bin\\bash.exe)');
     expect(shellPromptLine(msysBash, 'win32')).not.toContain('double quotes');

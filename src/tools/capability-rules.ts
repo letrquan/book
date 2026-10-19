@@ -151,7 +151,9 @@ export function compoundCommandRefusal(
     platform === 'win32' &&
     typeof command === 'string' &&
     command.includes("'") &&
-    !readsSingleQuoteAsPosix(shell);
+    !readsSingleQuoteAsPosix(shell) &&
+    // Only when the quote is the whole reason: read as on Linux, the command would pass.
+    !hasCompoundShellSyntax(command, 'linux');
   return quoteRule
     ? `${COMPOUND_COMMAND_REFUSAL} Under this Windows shell any single quote (\`'\`) makes a command compound: use double quotes instead.`
     : COMPOUND_COMMAND_REFUSAL;

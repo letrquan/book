@@ -438,6 +438,13 @@ describe('compoundCommandRefusal names the Windows single-quote rule (#566)', ()
     expect(text).toContain('use double quotes');
   });
 
+  it('does not blame the quote when something else makes the command compound', () => {
+    const chained = call('Bash', { command: "git log 'x' && rm y" });
+    expect(compoundCommandRefusal(chained, 'win32', { kind: 'cmd' })).toBe(
+      COMPOUND_COMMAND_REFUSAL,
+    );
+  });
+
   it('keeps the plain text under an MSYS bash, off Windows, and for a command with no quote', () => {
     const gitBash = { kind: 'bash', file: 'C:/Git/bin/bash.exe', msys: true } as const;
     expect(compoundCommandRefusal(quoted, 'win32', gitBash)).toBe(COMPOUND_COMMAND_REFUSAL);

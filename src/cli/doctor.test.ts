@@ -108,10 +108,14 @@ afterEach(() => {
 });
 
 describe('runDoctorCommand shell section (#566)', () => {
+  const platform = process.platform;
+  afterEach(() => Object.defineProperty(process, 'platform', { value: platform }));
+
   it.each([
     ['yes', true],
     ['no', undefined],
-  ])('prints msys: %s for the session shell', async (expected, msys) => {
+  ])('prints msys: %s for a Windows bash session shell', async (expected, msys) => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
     shellOverride.value = {
       kind: 'bash',
       file: 'C:\\Git\\bin\\bash.exe',
@@ -119,14 +123,12 @@ describe('runDoctorCommand shell section (#566)', () => {
       source: 'detected',
       ...(msys ? { msys } : {}),
     };
-    const output = await doctorOutput();
-    expect(output).toContain(`  msys: ${expected}`);
+    expect(await doctorOutput()).toContain(`  msys: ${expected}`);
   });
 
-  it('prints it for the default shell too', async () => {
-    expect(await doctorOutput()).toMatch(
-      /Bash tool runs: [^\n]*\n {2}Selected by: [^\n]*\n {2}msys: no/,
-    );
+  it('prints no msys line off Windows', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    expect(await doctorOutput()).not.toContain('msys:');
   });
 });
 

@@ -281,7 +281,8 @@ export function resolveShell(input: ShellSelectionInput = {}): ResolvedShell {
   if (platform === 'win32' && isOnMsysRuntime(resolved, probe)) resolved.msys = true;
   // "Git Bash" is a claim about the runtime: a Cygwin bash, a shim or a copy with no DLL beside it
   // is only a bash (#566).
-  if (resolved.kind === 'bash' && !resolved.msys) resolved.label = UNKNOWN_BASH_LABEL;
+  if (platform === 'win32' && resolved.kind === 'bash' && !resolved.msys)
+    resolved.label = UNKNOWN_BASH_LABEL;
   return resolved;
 }
 
@@ -553,7 +554,10 @@ function shellPromptBase(resolved: ResolvedShell): string {
       return (
         `- The Bash tool runs ${resolved.msys ? 'Git Bash' : 'a bash that is not confirmed to be Git Bash'} (POSIX sh)${where}, not cmd.exe or PowerShell. Use Unix shell ` +
         'syntax: `/dev/null` not `NUL`, forward slashes, `$VAR` not `%VAR%` or `$env:VAR`. Windows ' +
-        'drive paths such as `C:/dir` and MSYS paths such as `/c/dir` both work. The bash sandbox ' +
+        (resolved.msys
+          ? 'drive paths such as `C:/dir` and MSYS paths such as `/c/dir` both work. '
+          : 'drive paths such as `C:/dir` work. ') +
+        'The bash sandbox ' +
         'requires bubblewrap and is unavailable on Windows.'
       );
     case 'pwsh':
