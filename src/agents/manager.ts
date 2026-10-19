@@ -53,7 +53,7 @@ import {
   unrunFollowUps,
 } from './spawner-claim.js';
 import { projectToolResultForDisplay, redactToolCallForDisplay } from './activity.js';
-import { AgentStore, type AgentStoreWriteResult } from './store.js';
+import { AgentStore, type AgentStoreOptions, type AgentStoreWriteResult } from './store.js';
 import { permissionRuleForToolCall } from '../permissions.js';
 import { createDebugLogger } from '../debug-log.js';
 import { createRunAmbientSnapshot } from '../session/run-ambient.js';
@@ -102,6 +102,8 @@ interface ManagerOptions {
     repoHash: string,
     root: string | undefined,
     enabled: boolean,
+    /** What the manager hands every store it opens: its session's disposed instances (#568). */
+    options: Pick<AgentStoreOptions, 'disposedInstanceIds'>,
   ) => AgentStore | Promise<AgentStore>;
 }
 
@@ -458,13 +460,19 @@ export class AgentManager {
       // take a lease and arm a heartbeat that nothing is left to release.
       if (this.disposed) return;
       const hash = repositoryHash(this.repoRoot ?? this.config.workspace);
+      // The managers this session disposed own nothing, even when a lease outlived its dispose.
+      const sessionOptions = {
+        disposedInstanceIds: this.options.runtime?.disposedAgentInstanceIds,
+      };
       const store = await (this.options.createStore
         ? this.options.createStore(
             hash,
             this.options.storeRoot,
             this.config.settings.agents.persist,
+            sessionOptions,
           )
         : AgentStore.open(hash, this.options.storeRoot, this.config.settings.agents.persist, {
+            ...sessionOptions,
             eventSink: (event) => this.handlePersistenceEvent(event),
           }));
       // Disposed while the store opened: `dispose()` had no store to release, so it is released
@@ -1648,16 +1656,17 @@ export class AgentManager {
    * compares is the one {@link AgentStore.isOwnedByLiveForeign} judges: the writer of the newest
    * copy the store knows, which is the one on disk unless the store holds a newer one. Two paths:
    *
-   * - **Main (#544):** an instance of this process without a fresh lease is a disposed one and
-   *   owns nothing. That covers the manager handing the pick over, and any manager of this
-   *   session disposed after it that wrote the record in between.
-   * - **Fallback, the handing-over instance:** it is disposed, whatever its lease file says.
-   *   `dispose()` removes the lease best effort, and when that unlink fails (a scanner holding the
-   *   file) the lease reads as fresh for up to 15 s; a pick landing then would otherwise be skipped
-   *   and the record say `not_applied` for good. So a record whose owner is
+   * - **Main (#544, #568):** an instance of this process without a fresh lease is a disposed one
+   *   and owns nothing, and so does one this session has disposed, whatever its lease file says.
+   *   That covers the manager handing the pick over, and any manager of this session disposed
+   *   after it that wrote the record in between, even when `dispose()` could not remove its lease
+   *   (a scanner holding the file) and the lease reads as fresh for up to 15 s.
+   * - **Fallback, the handing-over instance:** it is disposed, whatever its lease file says. This
+   *   manager may not know the session's disposed instances: a host can build it by hand rather
+   *   than on the session's runtime. A pick landing while that lease reads as fresh would then be
+   *   skipped and the record say `not_applied` for good. So a record whose owner is
    *   {@link LateApplication.fromInstanceId} is this manager's to write. No other instance is
-   *   exempt: a live owner keeps the record, and so, until its lease goes stale, does a manager
-   *   in between whose own lease outlived its dispose, which is left as a gap.
+   *   exempt: a live owner keeps the record.
    */
   private heldByLiveOwner(store: AgentStore, late: LateApplication): boolean {
     if (!store.isOwnedByLiveForeign(late.agentId)) return false;

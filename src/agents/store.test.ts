@@ -1726,3 +1726,187 @@ describe('a disposed instance in this process owns nothing (#544)', () => {
     }
   });
 });
+
+describe('a lease that outlives its dispose (#568)', () => {
+  // One process, as in the #544 suite above. The lease file of a disposed store can outlive its
+  // dispose when the unlink fails (a Windows scanner holding the file), and then reads as fresh for
+  // up to 15 s.
+  const PID = 4242;
+  const HOST = 'test-host';
+  const thisProcess = {
+    pid: PID,
+    hostname: HOST,
+    processAlive: (pid: number) => pid === PID,
+    writerOptions: { sleep: () => {}, deadlineMs: 20 },
+  } as const;
+
+  const FIRST = '88888888-8888-4888-8888-888888888888';
+  const SECOND = '99999999-9999-4999-8999-999999999999';
+  const THIRD = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const FOURTH = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+  const open = (instanceId: string, disposedInstanceIds?: Set<string>, options = {}) =>
+    AgentStore.open('repo', root, true, {
+      ...thisProcess,
+      instanceId,
+      disposedInstanceIds,
+      ...options,
+    } as Parameters<typeof AgentStore.open>[3]);
+
+  const leasePath = (instanceId: string) => join(root, 'repo', 'instances', `${instanceId}.json`);
+  const recordPath = (id: string) => join(root, 'repo', 'records', `${id}.json`);
+
+  const lifecycle = AgentStore.prototype as unknown as {
+    removeLease: () => void;
+    markLeaseStale: () => void;
+  };
+
+  /** The failed unlink: `removeLease` leaves the file where it is. */
+  const failLeaseRemoval = () => vi.spyOn(lifecycle, 'removeLease').mockImplementation(() => {});
+
+  /** The unlink fails, and so does the stale overwrite after it, as both do on Windows. */
+  const failLeaseRelease = () => {
+    failLeaseRemoval();
+    vi.spyOn(lifecycle, 'markLeaseStale').mockImplementation(() => {});
+  };
+
+  /** The lease as the disposed store's last heartbeat left it: fresh. */
+  function freshenLease(instanceId: string): void {
+    const lease = JSON.parse(readFileSync(leasePath(instanceId), 'utf8')) as object;
+    writeFileSync(leasePath(instanceId), JSON.stringify({ ...lease, heartbeatAt: Date.now() }));
+  }
+
+  it('reads an instance this session disposed as gone, however fresh its lease (b)', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const session = new Set<string>();
+    const disposed = await open(FIRST, session);
+    disposed.saveAgent(
+      { ...recordFixture('running-agent'), status: 'running' },
+      { required: true },
+    );
+    failLeaseRelease();
+    try {
+      disposed.dispose();
+      freshenLease(FIRST);
+      const lock = `${recordPath('locked-agent')}.lock`;
+      writeFileSync(
+        lock,
+        JSON.stringify({
+          schemaVersion: 1,
+          instanceId: FIRST,
+          pid: PID,
+          hostname: HOST,
+          createdAt: 1,
+        }),
+      );
+
+      const next = await open(SECOND, session);
+      try {
+        expect(next.isOwnedByLiveForeign('running-agent')).toBe(false);
+        expect(next.recoverAbandonedAgents()).toEqual([
+          expect.objectContaining({ id: 'running-agent', status: 'interrupted' }),
+        ]);
+        expect(next.saveAgent(recordFixture('locked-agent'), { required: true }).status).toBe('ok');
+        expect(existsSync(lock)).toBe(false);
+      } finally {
+        next.dispose();
+      }
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("lets a disposed store's late write land past a sibling disposed after it (b)", async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const session = new Set<string>();
+    const first = await open(FIRST, session);
+    const record = recordFixture('late');
+    first.saveAgent(record, { required: true });
+    failLeaseRelease();
+    try {
+      first.dispose();
+      const second = await open(SECOND, session);
+      second.dispose();
+      freshenLease(FIRST);
+      freshenLease(SECOND);
+
+      await expect(first.recordLateApplication('late', 'applied', record.updatedAt)).resolves.toBe(
+        'recorded',
+      );
+      expect(JSON.parse(readFileSync(recordPath('late'), 'utf8'))).toMatchObject({
+        applicationStatus: 'applied',
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('still counts a live sibling, and another process, as live owners', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const session = new Set<string>();
+    // The session has disposed an instance, so the set it hands on is not empty.
+    const gone = await open(FOURTH, session);
+    gone.dispose();
+    const sibling = await open(FIRST, session);
+    sibling.saveAgent({ ...recordFixture('sibling-agent'), status: 'running' }, { required: true });
+    // Another Book process on this host: another pid, alive, with a lease of its own.
+    const otherProcess = await open(THIRD, undefined, { pid: 5151 });
+    otherProcess.saveAgent(
+      { ...recordFixture('other-agent'), status: 'running' },
+      { required: true },
+    );
+    const next = await open(SECOND, session, {
+      processAlive: (pid: number) => pid === PID || pid === 5151,
+    });
+    try {
+      expect(next.isOwnedByLiveForeign('sibling-agent')).toBe(true);
+      expect(next.isOwnedByLiveForeign('other-agent')).toBe(true);
+      expect(next.recoverAbandonedAgents()).toEqual([]);
+    } finally {
+      next.dispose();
+      otherProcess.dispose();
+      sibling.dispose();
+    }
+  });
+
+  it('overwrites a lease it could not delete with a stale heartbeat (a)', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    // No session set: what another session, or another host, reads.
+    const disposed = await open(FIRST);
+    disposed.saveAgent(
+      { ...recordFixture('running-agent'), status: 'running' },
+      { required: true },
+    );
+    failLeaseRemoval();
+    try {
+      disposed.dispose();
+    } finally {
+      vi.restoreAllMocks();
+    }
+    const lease = JSON.parse(readFileSync(leasePath(FIRST), 'utf8')) as { heartbeatAt: number };
+    expect(Date.now() - lease.heartbeatAt).toBeGreaterThan(15_000);
+
+    const next = await open(SECOND);
+    const elsewhere = await open(THIRD, undefined, { hostname: 'other-host' });
+    try {
+      expect(next.isOwnedByLiveForeign('running-agent')).toBe(false);
+      expect(elsewhere.isOwnedByLiveForeign('running-agent')).toBe(false);
+    } finally {
+      elsewhere.dispose();
+      next.dispose();
+    }
+  });
+
+  it('finishes its dispose when the stale write fails too (a)', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const session = new Set<string>();
+    const store = await open(FIRST, session);
+    // A directory where the lease was: neither the unlink nor the overwrite can touch it.
+    rmSync(leasePath(FIRST));
+    mkdirSync(leasePath(FIRST));
+
+    expect(() => store.dispose()).not.toThrow();
+    expect(session.has(FIRST)).toBe(true);
+    expect(existsSync(leasePath(FIRST))).toBe(true);
+  });
+});

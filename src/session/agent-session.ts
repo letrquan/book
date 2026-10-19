@@ -635,7 +635,12 @@ export class AgentSession {
     outgoing.agentManager?.handOffLateApplications(() => this.runtime.agentManager);
     outgoing.dispose(via);
     this.releaseRunUsage(outgoing);
-    this.runtime = new SessionRuntime(options);
+    this.runtime = new SessionRuntime({
+      ...options,
+      // The managers this session disposed, the outgoing one included, own nothing (#568).
+      disposedAgentInstanceIds:
+        options.disposedAgentInstanceIds ?? outgoing.disposedAgentInstanceIds,
+    });
     return this.runtime;
   }
 

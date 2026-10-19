@@ -942,6 +942,8 @@ describe('AgentManager lifecycle', () => {
         onSettled?: () => void;
         /** Options for the manager's store; without them it opens the store the default way. */
         storeOptions?: AgentStoreOptions;
+        /** The session runtime the manager is on, as a host's `getOrCreateAgentManager` passes it. */
+        runtime?: SessionRuntime;
       } = {},
     ) {
       const root = tempRoot();
@@ -955,8 +957,18 @@ describe('AgentManager lifecycle', () => {
       // The commit a patcher's next run ends on: a re-run's candidate is a different one.
       let headCommit = 'head';
       const storeFactory = (storeOptions: AgentStoreOptions) => ({
-        createStore: (repoHash: string, requestedRoot: string | undefined, enabled: boolean) =>
-          AgentStore.open(repoHash, requestedRoot, enabled, { ...UNCONTENDED, ...storeOptions }),
+        createStore: (
+          repoHash: string,
+          requestedRoot: string | undefined,
+          enabled: boolean,
+          // What the manager hands every store it opens: the session's disposed ids (#568).
+          sessionOptions?: AgentStoreOptions,
+        ) =>
+          AgentStore.open(repoHash, requestedRoot, enabled, {
+            ...UNCONTENDED,
+            ...sessionOptions,
+            ...storeOptions,
+          }),
       });
       const managerOptions: ConstructorParameters<typeof AgentManager>[2] = {
         storeRoot,
@@ -1006,6 +1018,7 @@ describe('AgentManager lifecycle', () => {
       const manager = new AgentManager(config, [], {
         ...managerOptions,
         ...(options.storeOptions ? storeFactory(options.storeOptions) : {}),
+        ...(options.runtime ? { runtime: options.runtime } : {}),
       });
       /** Another manager on the same repository and store, as the session's next one would be. */
       const nextManager = (
@@ -1054,6 +1067,31 @@ describe('AgentManager lifecycle', () => {
           headCommit = commit;
         },
       };
+    }
+
+    /**
+     * Leave on disk, and fresh, every lease a dispose from now on fails to remove (#568): the unlink
+     * fails, and so does the stale overwrite that follows it, as both do on Windows when a scanner
+     * holds the file.
+     */
+    function leaveLeasesBehind(): void {
+      const store = AgentStore.prototype as unknown as {
+        removeLease: () => void;
+        markLeaseStale: () => void;
+      };
+      vi.spyOn(store, 'removeLease').mockImplementation(() => {});
+      vi.spyOn(store, 'markLeaseStale').mockImplementation(() => {});
+    }
+
+    /** Every lease in the fixture's store as fresh as its next heartbeat would leave it. */
+    function freshenLeases(fixture: { storeRoot: string; root: string }): void {
+      const instances = join(fixture.storeRoot, repositoryHash(fixture.root), 'instances');
+      for (const name of readdirSync(instances)) {
+        if (!name.endsWith('.json')) continue;
+        const path = join(instances, name);
+        const lease = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+        writeFileSync(path, JSON.stringify({ ...lease, heartbeatAt: Date.now() }));
+      }
     }
 
     it('stop aborts every running apply of the agent and leaves the agent completed', async () => {
@@ -1535,13 +1573,26 @@ describe('AgentManager lifecycle', () => {
          * way to switch the session (`/clear`, `/resume`, `/rewind`) to a runtime whose manager
          * opens the same store, as the next one does.
          */
-        async function sessionMidApply(storeOptions: AgentStoreOptions) {
+        async function sessionMidApply(
+          storeOptions: AgentStoreOptions,
+          {
+            wired = false,
+          }: {
+            /**
+             * Each manager is on its session runtime, as `getOrCreateAgentManager` builds it, so it
+             * has the instance ids the session disposed (#568). Without it the managers are built
+             * by hand, as an SDK host's `createAgentManager` would be, and do not.
+             */
+            wired?: boolean;
+          } = {},
+        ) {
+          const runtime = new SessionRuntime();
           const fixture = await managerWithPendingApplies({
             obeyAbort: false,
             persist: true,
             storeOptions,
+            ...(wired ? { runtime } : {}),
           });
-          const runtime = new SessionRuntime();
           runtime.agentManager = fixture.manager;
           const session = new AgentSession({ runtime });
           const applying = fixture.manager.apply(fixture.patcher.id, fixture.candidate.id);
@@ -1550,7 +1601,10 @@ describe('AgentManager lifecycle', () => {
             options: { storeOptions?: AgentStoreOptions; load?: boolean } = {},
           ) => {
             const nextRuntime = session.replaceRuntime({}, 'session_transition');
-            const next = fixture.nextManager(options.storeOptions ?? storeOptions);
+            const next = fixture.nextManager(
+              options.storeOptions ?? storeOptions,
+              wired ? { runtime: nextRuntime } : {},
+            );
             nextRuntime.agentManager = next;
             const events: AgentRuntimeEvent[] = [];
             next.subscribe((event) => events.push(event));
@@ -1581,9 +1635,10 @@ describe('AgentManager lifecycle', () => {
         /**
          * Switch the session as a failed unlink in `dispose()` leaves it (a Windows scanner holding
          * the file): the lease of the manager that started the apply stays on disk, and fresh, so
-         * for up to 15 s that manager reads as a live owner. The store's unlink, `removeLease`,
-         * does nothing until the test restores its mocks, so a heartbeat write still settling
-         * after the switch cannot remove the lease either.
+         * for up to 15 s that manager reads as a live owner to a manager that does not know the
+         * session disposed it (one not `wired`). The store's unlink, and the stale overwrite that
+         * follows it, do nothing until the test restores its mocks, so a heartbeat write still
+         * settling after the switch cannot remove or age the lease either.
          */
         async function switchLeavingLeaseBehind(
           fixture: Awaited<ReturnType<typeof sessionMidApply>>,
@@ -1597,10 +1652,7 @@ describe('AgentManager lifecycle', () => {
             'instances',
             `${instanceId}.json`,
           );
-          vi.spyOn(
-            AgentStore.prototype as unknown as { removeLease: () => void },
-            'removeLease',
-          ).mockImplementation(() => {});
+          leaveLeasesBehind();
           const switched = await fixture.switchSession({ load: false });
           const lease = JSON.parse(readFileSync(leasePath, 'utf8')) as Record<string, unknown>;
           // As fresh as the next heartbeat would have left it.
@@ -1952,6 +2004,44 @@ describe('AgentManager lifecycle', () => {
           }
         });
 
+        it('records it after a manager in between wrote the record and its lease outlived its dispose (#568)', async () => {
+          const fixture = await sessionMidApply(sameProcess, { wired: true });
+          const { patcher, candidate } = fixture;
+          try {
+            const between = await fixture.switchSession();
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            await between.next.publishEvidence(patcher.id, {
+              kind: 'finding',
+              summary: 'written by the manager in between',
+            });
+            const before = recordOnDisk(fixture, patcher.id);
+            // The manager in between, which the record now names, keeps its lease past its dispose.
+            leaveLeasesBehind();
+            const current = await fixture.switchSession({ load: false });
+            freshenLeases(fixture);
+            await current.next.get(patcher.id);
+
+            fixture.releases[0]!('applied');
+            await expect(fixture.applying).resolves.toMatchObject({ status: 'applied' });
+
+            expect((await current.next.get(patcher.id))?.applicationStatus).toBe('applied');
+            await vi.waitFor(() =>
+              expect(recordOnDisk(fixture, patcher.id).applicationStatus).toBe('applied'),
+            );
+            expect(withoutBookkeeping(recordOnDisk(fixture, patcher.id))).toEqual({
+              ...withoutBookkeeping(asLoaded(before)),
+              applicationStatus: 'applied',
+            });
+            expect(applyEvents(current.events)).toEqual([
+              expect.objectContaining({ agentId: patcher.id, evidenceId: candidate.id }),
+            ]);
+            expect(debugEvents).not.toContainEqual(skipped('live_owner'));
+          } finally {
+            vi.restoreAllMocks();
+            fixture.session.dispose();
+          }
+        });
+
         it("records it when the handing-over manager's lease outlived its dispose", async () => {
           const fixture = await sessionMidApply(sameProcess);
           const { patcher, candidate } = fixture;
@@ -2022,6 +2112,51 @@ describe('AgentManager lifecycle', () => {
           }
         });
       }
+    });
+
+    describe('a disposed manager whose lease outlived its dispose owns nothing either (#568)', () => {
+      it('lets the next manager on the session apply, send to and dismiss what it wrote', async () => {
+        const runtime = new SessionRuntime();
+        const fixture = await managerWithPendingApplies({
+          persist: true,
+          storeOptions: {},
+          runtime,
+        });
+        runtime.agentManager = fixture.manager;
+        const session = new AgentSession({ runtime });
+        const { patcher, candidate } = fixture;
+        leaveLeasesBehind();
+        const nextRuntime = session.replaceRuntime({}, 'session_transition');
+        freshenLeases(fixture);
+        const next = fixture.nextManager(
+          {},
+          {
+            runtime: nextRuntime,
+            removeWorktree: async () => {},
+            removeSnapshot: async () => {},
+          },
+        );
+        nextRuntime.agentManager = next;
+        try {
+          expect(await next.get(patcher.id)).toMatchObject({ status: 'completed' });
+
+          const applying = next.apply(patcher.id, candidate.id);
+          await vi.waitFor(() => expect(fixture.signals).toHaveLength(1));
+          fixture.releases[0]!('applied');
+          await expect(applying).resolves.toMatchObject({ status: 'applied' });
+          expect((await next.get(patcher.id))?.applicationStatus).toBe('applied');
+
+          await next.send(patcher.id, 'one more change');
+          await next.wait(patcher.id, 1000);
+          expect(await next.get(patcher.id)).toMatchObject({ status: 'completed' });
+
+          await next.dismiss(patcher.id);
+          expect(await next.get(patcher.id)).toBeUndefined();
+        } finally {
+          vi.restoreAllMocks();
+          session.dispose();
+        }
+      });
     });
 
     it("does not carry an applied status over to a re-run's new candidate", async () => {
