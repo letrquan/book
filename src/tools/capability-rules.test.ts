@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  COMPOUND_COMMAND_REFUSAL,
+  compoundCommandRefusal,
   isCompoundShellCommand,
   isToolCallAllowed,
   parseCapabilityRules,
@@ -417,5 +419,31 @@ describe('Bash(git *) capability rule and the session shell on win32 (#512, deci
   ])('refuses it under %s, and the refusal text agrees', (_label, shell) => {
     expect(allowed(shell)).toBe(false);
     expect(compound(shell)).toBe(true);
+  });
+});
+
+describe('compoundCommandRefusal names the Windows single-quote rule (#566)', () => {
+  const quoted = call('Bash', { command: "git log 'x'" });
+
+  it.each([
+    ['cmd.exe', { kind: 'cmd' } as const],
+    ['PowerShell 7', { kind: 'pwsh', file: 'C:/pwsh.exe' } as const],
+    ['a DLL-less bash.exe', { kind: 'bash', file: 'C:/scoop/shims/bash.exe' } as const],
+    ['no shell', undefined],
+  ])('under %s a lone single quote is refused with the rule named', (_label, shell) => {
+    expect(isCompoundShellCommand(quoted, 'win32', shell)).toBe(true);
+    const text = compoundCommandRefusal(quoted, 'win32', shell);
+    expect(text).toContain(COMPOUND_COMMAND_REFUSAL);
+    expect(text).toContain('single quote');
+    expect(text).toContain('use double quotes');
+  });
+
+  it('keeps the plain text under an MSYS bash, off Windows, and for a command with no quote', () => {
+    const gitBash = { kind: 'bash', file: 'C:/Git/bin/bash.exe', msys: true } as const;
+    expect(compoundCommandRefusal(quoted, 'win32', gitBash)).toBe(COMPOUND_COMMAND_REFUSAL);
+    expect(compoundCommandRefusal(quoted, 'linux')).toBe(COMPOUND_COMMAND_REFUSAL);
+    expect(
+      compoundCommandRefusal(call('Bash', { command: 'a && b' }), 'win32', { kind: 'cmd' }),
+    ).toBe(COMPOUND_COMMAND_REFUSAL);
   });
 });

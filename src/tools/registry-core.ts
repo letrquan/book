@@ -4,7 +4,7 @@ import { escapeInvisibleCharacters } from '../control-characters.js';
 import { TOOL_ALIASES, unwrapProviderPrefix } from './aliases.js';
 import { normalizeToolDefinition } from './catalog.js';
 import {
-  COMPOUND_COMMAND_REFUSAL,
+  compoundCommandRefusal,
   COMPOUND_COMMAND_REMEDIATION,
   isCompoundShellCommand,
 } from './capability-rules.js';
@@ -662,17 +662,14 @@ export function createRegistry() {
     normalizedCall: ToolCall,
     context: ToolContext,
   ): ToolResult => {
-    const compound = isCompoundShellCommand(
-      normalizedCall,
-      process.platform,
-      context.shell ?? context.agentConfig?.shell,
-    );
+    const scanShell = context.shell ?? context.agentConfig?.shell;
+    const compound = isCompoundShellCommand(normalizedCall, process.platform, scanShell);
     return noteRepeatedFailure(
       context,
       normalizedCall,
       toolFailure(
         `Tool "${call.name}" is active, but this run's allowed tools do not cover these arguments.${
-          compound ? ` ${COMPOUND_COMMAND_REFUSAL}` : ''
+          compound ? ` ${compoundCommandRefusal(normalizedCall, process.platform, scanShell)}` : ''
         }`,
         {
           toolCallId: call.id,

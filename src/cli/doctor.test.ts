@@ -33,6 +33,18 @@ vi.mock('../sandbox.js', async (importOriginal) => {
   };
 });
 
+// The shell section reads the session shell; a test can pin it to a Windows bash (#566).
+const shellOverride = vi.hoisted(() => ({ value: undefined as unknown }));
+vi.mock('../shell-selection.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../shell-selection.js')>();
+  return {
+    ...actual,
+    resolveShell: (...args: Parameters<typeof actual.resolveShell>) =>
+      (shellOverride.value as ReturnType<typeof actual.resolveShell> | undefined) ??
+      actual.resolveShell(...args),
+  };
+});
+
 let workspace: string;
 const bookHome = isolateBookHome('book-doctor-home-');
 let previousApiKey: string | undefined;
@@ -89,9 +101,33 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  shellOverride.value = undefined;
   if (previousApiKey === undefined) delete process.env.BOOK_API_KEY;
   else process.env.BOOK_API_KEY = previousApiKey;
   rmSync(workspace, { recursive: true, force: true });
+});
+
+describe('runDoctorCommand shell section (#566)', () => {
+  it.each([
+    ['yes', true],
+    ['no', undefined],
+  ])('prints msys: %s for the session shell', async (expected, msys) => {
+    shellOverride.value = {
+      kind: 'bash',
+      file: 'C:\\Git\\bin\\bash.exe',
+      label: 'Git Bash',
+      source: 'detected',
+      ...(msys ? { msys } : {}),
+    };
+    const output = await doctorOutput();
+    expect(output).toContain(`  msys: ${expected}`);
+  });
+
+  it('prints it for the default shell too', async () => {
+    expect(await doctorOutput()).toMatch(
+      /Bash tool runs: [^\n]*\n {2}Selected by: [^\n]*\n {2}msys: no/,
+    );
+  });
 });
 
 describe('runDoctorCommand sandbox policy', () => {

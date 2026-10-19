@@ -433,6 +433,13 @@ launchers. Under every other `bash` or `sh` (Cygwin, a shim or copy with no `msy
 it, busybox-w32) `'` still makes a command compound: the command is delivered to those shells the
 same way, but Windows CI proves only the MSYS runtime's delivery.
 
+Book only calls a `bash` "Git Bash" when it found it on the MSYS runtime. Any other `bash` is named
+as a bash whose runtime was not detected as Git Bash. Under every Windows shell that refuses `'`,
+the system prompt and `book doctor` carry a hint to use double quotes, and a refusal of a command
+with a `'` under an `allowed-tools` rule names the single-quote rule instead of only asking for the
+command to be split. `book doctor` prints `msys: yes` or `msys: no` under `Shell:`, the flag that
+decides whether `'` is read as on Linux.
+
 Permission _modes_ decide whether you are prompted; they never relax a `deny` rule. A rule in
 `permissions.deny` blocks the matching call in every mode, including `auto` and
 `bypassPermissions`, and it is evaluated before the prompt, so a denied call never reaches one.
