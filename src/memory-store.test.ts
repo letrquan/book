@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   chmodSync,
   existsSync,
@@ -225,6 +225,84 @@ describe('findGitRoot', () => {
       }
     },
   );
+});
+
+// A dotfiles repository at the home directory is no project (#567): taking it as the root, every
+// project under the home directory without its own `.git` shared the home directory's memory.
+describe('findGitRoot and a dotfiles ~/.git', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = makeGitRepo('home');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('keys a project under the home directory without its own .git by the project', () => {
+    const proj = join(home, 'code', 'proj');
+    mkdirSync(join(proj, 'src'), { recursive: true });
+
+    expect(findGitRoot(proj)).toBe(proj);
+    expect(findGitRoot(join(proj, 'src'))).toBe(join(proj, 'src'));
+    expect(getProjectMemoryDir(proj, { bookRoot })).toBe(
+      join(bookRoot, 'projects', slugifyWorkspace(proj), 'memory'),
+    );
+    expect(findGitRoot(home)).toBe(home);
+  });
+
+  it('keeps a project with its own .git under the home directory keyed by its root', () => {
+    const repo = join(home, 'repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    mkdirSync(join(repo, 'pkg'));
+
+    expect(findGitRoot(join(repo, 'pkg'))).toBe(repo);
+  });
+
+  it('still maps a linked worktree to its main checkout under the home directory', () => {
+    const main = join(home, 'main');
+    mkdirSync(join(main, '.git'), { recursive: true });
+    const worktree = makeLinkedWorktree(main, 'wt');
+
+    expect(findGitRoot(worktree)).toBe(main);
+  });
+
+  // Only a `.git` at the home directory is no repository, as in `findRepositoryRoot`; a linked
+  // worktree of the dotfiles repository elsewhere still maps to its main checkout.
+  it('maps a linked worktree of the home repository to the home directory, as before', () => {
+    const worktree = makeLinkedWorktree(home, 'dotfiles-wt');
+
+    expect(findGitRoot(worktree)).toBe(home);
+  });
+
+  it.skipIf(process.platform === 'win32')('compares real paths: a home reached by a link', () => {
+    const proj = join(home, 'proj');
+    mkdirSync(proj);
+    symlinkSync(home, join(scratch, 'home-link'));
+    vi.stubEnv('HOME', join(scratch, 'home-link'));
+
+    expect(findGitRoot(proj)).toBe(proj);
+  });
+
+  it('leaves memory stored under the home directory key where it is', () => {
+    const proj = join(home, 'proj');
+    mkdirSync(proj);
+    const homeMemory = getProjectMemoryDir(home, { bookRoot });
+    mkdirSync(homeMemory, { recursive: true });
+    writeFileSync(join(homeMemory, 'shared.md'), 'from the home key');
+    const projMemory = join(bookRoot, 'projects', slugifyWorkspace(proj), 'memory');
+    mkdirSync(projMemory, { recursive: true });
+    writeFileSync(join(projMemory, 'own.md'), 'from the project key');
+
+    migrateLegacyMemoryDir(proj, { bookRoot });
+
+    expect(readdirSync(homeMemory)).toEqual(['shared.md']);
+    expect(getProjectMemoryDir(proj, { bookRoot })).toBe(projMemory);
+    expect(readdirSync(projMemory)).toEqual(['own.md']);
+  });
 });
 
 describe('moving the old workspace-keyed directory', () => {

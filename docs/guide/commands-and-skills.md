@@ -301,7 +301,9 @@ and their normal approvals.
 Discovery scans these roots from lowest to highest precedence: user `~/.claude/skills`, user
 `~/.agents/skills`, user `~/.config/opencode/skills`, user `~/.book/skills`, then the matching
 `.claude/skills`, `.agents/skills`, `.opencode/skills`, and `.book/skills` directories from the Git
-root to the current working directory. Deeper project directories and native `.book` roots win;
+root to the current working directory. A `.git` in your home directory itself (a dotfiles
+repository) is not a Git root, so a project under your home without its own `.git` scans only its
+own directory. Deeper project directories and native `.book` roots win;
 duplicate names are shadowed rather than merged and are shown in `/skills` diagnostics. Skill
 directories may be symlinked after canonical path and size checks; resource symlinks are rejected.
 

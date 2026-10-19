@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
@@ -782,5 +782,89 @@ describe('generateSkillListing', () => {
     expect(review.issues.map((issue) => issue.code)).toEqual(
       expect.arrayContaining(['unsupported_model_hint', 'invalid_lifetime']),
     );
+  });
+});
+
+// A dotfiles repository at the home directory is no project (#567): taking it as the root, a
+// project under the home directory without its own `.git` loaded skills from every directory
+// between the home directory and itself.
+describe('project skill roots and a dotfiles ~/.git', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = join(dir, 'home');
+    mkdirSync(join(home, '.git'), { recursive: true });
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const projectRootsOf = (directory: string) => [
+    join(directory, '.claude', 'skills'),
+    join(directory, '.agents', 'skills'),
+    join(directory, '.opencode', 'skills'),
+    join(directory, '.book', 'skills'),
+  ];
+
+  function writeSkill(skillsDir: string, name: string): void {
+    mkdirSync(join(skillsDir, name), { recursive: true });
+    writeFileSync(
+      join(skillsDir, name, 'SKILL.md'),
+      ['---', `name: ${name}`, `description: The ${name} skill`, '---', 'body'].join('\n'),
+    );
+  }
+
+  it('scans a project without its own .git, not the directories up to the home directory', () => {
+    const proj = join(home, 'code', 'proj');
+    mkdirSync(proj, { recursive: true });
+    writeSkill(join(home, 'code', '.claude', 'skills'), 'outer');
+    writeSkill(join(proj, '.claude', 'skills'), 'inner');
+
+    const roots = skillRoots(proj, { includeUser: false }).map((root) => root.path);
+    expect(roots).toEqual(projectRootsOf(proj));
+    const names = discoverSkillsFromDisk(proj, {}, { includeUser: false }).map((s) => s.name);
+    expect(names).toEqual(['inner']);
+  });
+
+  it('takes the home directory from the options when given', () => {
+    const proj = join(home, 'code', 'proj');
+    mkdirSync(proj, { recursive: true });
+    mkdirSync(join(dir, 'other-home'), { recursive: true });
+
+    const rootsWith = (homeDir: string) =>
+      skillRoots(proj, { includeUser: false, homeDir }).map((root) => root.path);
+    expect(rootsWith(home)).toEqual(projectRootsOf(proj));
+    expect(rootsWith(join(dir, 'other-home'))).toEqual([
+      ...projectRootsOf(home),
+      ...projectRootsOf(join(home, 'code')),
+      ...projectRootsOf(proj),
+    ]);
+  });
+
+  it('keeps a project with its own .git under the home directory scanned from its root', () => {
+    const repo = join(home, 'repo');
+    const pkg = join(repo, 'pkg');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    mkdirSync(pkg, { recursive: true });
+    writeSkill(join(repo, '.claude', 'skills'), 'repo-wide');
+
+    const roots = skillRoots(pkg, { includeUser: false }).map((root) => root.path);
+    expect(roots).toEqual([...projectRootsOf(repo), ...projectRootsOf(pkg)]);
+    const names = discoverSkillsFromDisk(pkg, {}, { includeUser: false }).map((s) => s.name);
+    expect(names).toEqual(['repo-wide']);
+  });
+
+  it.skipIf(process.platform === 'win32')('compares real paths: a home reached by a link', () => {
+    const proj = join(home, 'proj');
+    mkdirSync(proj, { recursive: true });
+    symlinkSync(home, join(dir, 'home-link'));
+    vi.stubEnv('HOME', join(dir, 'home-link'));
+    vi.stubEnv('USERPROFILE', join(dir, 'home-link'));
+
+    const roots = skillRoots(proj, { includeUser: false }).map((root) => root.path);
+    expect(roots).toEqual(projectRootsOf(proj));
   });
 });

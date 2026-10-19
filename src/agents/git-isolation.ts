@@ -8,6 +8,7 @@ import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 import { hardenedGitArgs, hardenedGitEnv, HARDENED_DIFF_ARGS } from '../tools/git.js';
 import { readRepositoryProgramPins } from '../tools/git-repository-programs.js';
+import { isUserHome, tryRealPath } from '../repo-containment.js';
 import {
   signingPinArgs,
   type HardenedRunner,
@@ -694,7 +695,11 @@ export async function findGitRoot(
     return undefined;
   }
   try {
-    return (await git(workspace, ['rev-parse', '--show-toplevel'], { signal })).stdout.trim();
+    const top = (await git(workspace, ['rev-parse', '--show-toplevel'], { signal })).stdout.trim();
+    // A `.git` at the user's home directory is a dotfiles repository, not a project
+    // (`findRepositoryRoot` in `repo-containment.ts`). Taking it would snapshot the whole home
+    // directory, untracked files included, and isolate patchers in worktrees of it.
+    return isUserHome(tryRealPath(top) ?? resolve(top), undefined) ? undefined : top;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
