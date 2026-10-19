@@ -8,7 +8,7 @@ import { AgentMessage } from './AgentMessage.js';
 import { ToolExpandTargetContext } from './ToolCallBlock.js';
 import { userTurnRows } from './UserMessage.js';
 import { DROP_CAP } from './WelcomeScreen.js';
-import { PILCROW } from '../marks.js';
+import { PROMPT_MARK } from '../marks.js';
 import type { FileMutationSummary, ToolCall, ToolResult } from '../../types/tools.js';
 import type { Message } from '../../types/messages.js';
 
@@ -249,7 +249,7 @@ describe('ChatPanel Ink rendering', () => {
     const output = frame(view.lastFrame);
     expect(output).toContain('before compact');
     expect(output).toContain('after compact');
-    expect(output).toContain('✓ Compact conversation');
+    expect(output).toContain('● Compact conversation');
     expect(output).not.toContain('context messages');
     expect(output).not.toContain('recent');
     expect(output).not.toContain('tokens');
@@ -295,15 +295,15 @@ describe('ChatPanel Ink rendering', () => {
     const boundary = lines.findIndex((line) => line.includes('Compact conversation'));
     const toolRow = lines.findIndex((line) => line.includes('npm test'));
     expect(boundary).toBeGreaterThan(toolRow);
-    // The mark sits in the column every tool row's status mark does, not at column 0.
-    expect(lines[boundary]!.indexOf('✓')).toBe(lines[toolRow]!.indexOf('✓'));
-    expect(lines[boundary]!.indexOf('✓')).toBeGreaterThan(0);
+    // The mark sits in the gutter every item's mark does, its title on the content column.
+    expect(lines[boundary]!.indexOf('●')).toBe(lines[toolRow]!.indexOf('●'));
+    expect(lines[boundary]!.indexOf('Compact conversation')).toBe(lines[toolRow]!.indexOf('Bash'));
     expect(lines[boundary - 1]!.trim()).toBe('');
     expect(lines[boundary + 1]!.trim()).toBe('');
     expect(lines[boundary + 2]).toContain('answer after the compaction');
   });
 
-  it('greys the check on a compact boundary, which is a transcript event', () => {
+  it('greys the mark on a compact boundary, which is a transcript event', () => {
     // Ink styles through chalk, which emits nothing off a TTY; force truecolor
     // so the mark's ink is visible in the frame.
     const level = chalk.level;
@@ -337,8 +337,8 @@ describe('ChatPanel Ink rendering', () => {
     } finally {
       chalk.level = level;
     }
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}✓`);
-    expect(raw).not.toContain(`${rgb(DEFAULT_THEME.success)}✓`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}●`);
+    expect(raw).not.toContain(`${rgb(DEFAULT_THEME.success)}●`);
   });
 
   it('sets a compact boundary flush left for a screen reader, like the assistant rows', () => {
@@ -370,7 +370,9 @@ describe('ChatPanel Ink rendering', () => {
     const row = frame(view.lastFrame)
       .split('\n')
       .find((line) => line.includes('Compact conversation'));
-    expect(row?.indexOf('✓')).toBe(0);
+    // Spoken, it is a line of text: no mark, and nothing before it.
+    expect(row?.indexOf('Compact conversation')).toBe(0);
+    expect(row).not.toContain('●');
   });
 
   describe('a compact boundary with a warning', () => {
@@ -410,14 +412,13 @@ describe('ChatPanel Ink rendering', () => {
 
     it('names reduced fidelity in the title and shows the warning on one detail line', () => {
       const lines = renderBoundary({ degraded: true, warning: REDUCED });
-      const title = lines.findIndex((line) => line.includes('✓ Compact conversation'));
-      expect(lines[title]).toContain('✓ Compact conversation · reduced fidelity');
+      const title = lines.findIndex((line) => line.includes('● Compact conversation'));
+      expect(lines[title]).toContain('● Compact conversation · reduced fidelity');
       const detail = lines[title + 1]!;
       expect(detail).toContain('Compaction used reduced-fidelity coverage (summary-truncated).');
-      expect(detail).toContain('│');
-      // Under the tool-row mark, with the text under the title's.
-      expect(detail.indexOf('│')).toBe(lines[title]!.indexOf('✓'));
-      expect(detail.indexOf('Compaction')).toBe(lines[title]!.indexOf('Compact conversation'));
+      // Hung under the title on the result connector, like a call's result.
+      expect(detail.indexOf('⎿')).toBe(lines[title]!.indexOf('Compact conversation'));
+      expect(detail.indexOf('Compaction')).toBe(detail.indexOf('⎿') + 3);
       expect(lines.join('\n')).not.toContain('SessionHistorySearch');
       expect(lines.join('\n')).not.toContain('Exact history');
       expect(lines[title + 2]!.trim()).toBe('');
@@ -426,15 +427,15 @@ describe('ChatPanel Ink rendering', () => {
     it('says "with a warning" when the compaction was not degraded', () => {
       const lines = renderBoundary({ warning: 'One event addressed the summarizer.' });
       const output = lines.join('\n');
-      expect(output).toContain('✓ Compact conversation · with a warning');
+      expect(output).toContain('● Compact conversation · with a warning');
       expect(output).toContain('One event addressed the summarizer.');
     });
 
     it('draws a boundary without a warning exactly as before', () => {
       const lines = renderBoundary({});
       const title = lines.findIndex((line) => line.includes('Compact conversation'));
-      expect(lines[title]!.trim()).toBe('✓ Compact conversation');
-      expect(lines.join('\n')).not.toContain('│');
+      expect(lines[title]!.trim()).toBe('● Compact conversation');
+      expect(lines.join('\n')).not.toContain('⎿');
       expect(lines[title + 1]!.trim()).toBe('');
     });
 
@@ -454,10 +455,11 @@ describe('ChatPanel Ink rendering', () => {
     it('keeps the full warning, flush left, for a screen reader', () => {
       const lines = renderBoundary({ degraded: true, warning: REDUCED }, { screenReader: true });
       const output = lines.join('\n');
-      expect(output).toContain('✓ Compact conversation · reduced fidelity');
+      expect(output).toContain('Compact conversation · reduced fidelity');
       expect(output).toContain('Compaction used reduced-fidelity coverage (summary-truncated).');
       expect(output).not.toContain('SessionHistorySearch');
-      expect(output).not.toContain('│');
+      expect(output).not.toContain('⎿');
+      expect(output).not.toContain('●');
     });
   });
 
@@ -625,7 +627,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).not.toContain('You');
     expect(output).not.toContain('Book');
     // The user turn opens with a pilcrow, with no role label.
-    expect(output).toContain(`${PILCROW} compact request`);
+    expect(output).toContain(`${PROMPT_MARK} compact request`);
     expect(output).not.toContain('── you ');
     expect(output).toContain('compact reply');
   });
@@ -669,11 +671,10 @@ describe('ChatPanel Ink rendering', () => {
     const answerLine = lines.findIndex((line) => line.includes('FIRST_ANSWER_MARKER'));
     const nextQuestionLine = lines.findIndex((line) => line.includes('SECOND_QUESTION_MARKER'));
 
-    // Two blank rows, then the prompt: the pilcrow marks the boundary itself, so
-    // the next turn needs no separate rule row — and it opens like a new
-    // section rather than another paragraph of the reply above it.
-    expect(nextQuestionLine - answerLine).toBe(3);
-    expect(lines[nextQuestionLine]).toContain(`${PILCROW} SECOND_QUESTION_MARKER`);
+    // One blank row, then the prompt: the prompt mark marks the boundary itself,
+    // so the next turn needs no separate rule row.
+    expect(nextQuestionLine - answerLine).toBe(2);
+    expect(lines[nextQuestionLine]).toContain(`${PROMPT_MARK} SECOND_QUESTION_MARKER`);
   });
 
   it('keeps wrapped content mounted exactly once when streaming completes', () => {
@@ -846,7 +847,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output.indexOf('src/b.ts')).toBeLessThan(output.indexOf('src/c.ts'));
   });
 
-  it("runs a step's narration into its actions in compact density", () => {
+  it("runs a step's narration into its first call, and stands each call a blank row apart", () => {
     const message: Message = {
       ...msg('a1', 'assistant', 'I will inspect both files.'),
       toolCalls: [
@@ -861,16 +862,18 @@ describe('ChatPanel Ink rendering', () => {
     const view = render(
       withDensity(<AgentMessage message={message} isStreaming={false} reducedMotion />, 'compact'),
     );
-    const lines = frame(view.lastFrame).split('\n');
+    const lines = frame(view.lastFrame)
+      .split('\n')
+      .map((line) => line.trimEnd());
     const narration = lines.findIndex((line) => line.includes('I will inspect both files.'));
-    const first = lines.findIndex((line) => /Read\s+src\/a\.ts/.test(line));
-    const second = lines.findIndex((line) => /Read\s+src\/b\.ts/.test(line));
+    const first = lines.findIndex((line) => line === '● Read(src/a.ts)');
+    const second = lines.findIndex((line) => line === '● Read(src/b.ts)');
 
-    // A step of work is one quiet unit: the sentence it says before acting runs
-    // straight into the rows it acts on, with no blank row in between. The rows
-    // inside it run together so they read as a single aligned column.
+    // The sentence a step says before acting is the caption of the call under it,
+    // with no blank row in between. Each call is an item: its heading, the result
+    // hung under it, and a blank row before the next one.
     expect(lines.slice(narration + 1, first)).toEqual([]);
-    expect(lines.slice(first + 1, second)).toEqual([]);
+    expect(lines.slice(first + 1, second)).toEqual(['  ⎿  Read 1 line', '']);
   });
 
   it('dims a plan update that more work follows, and only that', () => {
@@ -912,12 +915,13 @@ describe('ChatPanel Ink rendering', () => {
 
     expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)}PLAN-NARRATION`);
     expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)}STEP-NARRATION`);
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.text)}FINAL-ANSWER`);
+    // The answer opens on its mark, set in the answer's ink.
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.text)}● FINAL-ANSWER`);
   });
 
-  it('opens each of your turns after two blank rows, like a new section', () => {
-    // Your turn is the landmark in a long transcript. One blank row left it
-    // reading as another paragraph of the reply above it.
+  it('opens each of your turns after one blank row, like any other item', () => {
+    // Your turn is the landmark in a long transcript; its mark and its ink set it
+    // apart, so it takes the same blank row as every other item.
     const messages = [
       msg('u1', 'user', 'first question'),
       msg('a1', 'assistant', 'The answer is 42.'),
@@ -925,7 +929,7 @@ describe('ChatPanel Ink rendering', () => {
     ];
 
     for (const [density, gap] of [
-      ['compact', ['', '']],
+      ['compact', ['']],
       ['tight', []],
     ] as const) {
       const view = render(
@@ -937,7 +941,7 @@ describe('ChatPanel Ink rendering', () => {
       const lines = frame(view.lastFrame).split('\n');
       const answer = lines.findIndex((line) => line.includes('The answer is 42.'));
       const turns = lines
-        .map((line, index) => (line.includes(PILCROW) ? index : -1))
+        .map((line, index) => (line.includes(PROMPT_MARK) ? index : -1))
         .filter((index) => index >= 0);
 
       expect(turns).toHaveLength(2);
@@ -948,8 +952,8 @@ describe('ChatPanel Ink rendering', () => {
 
   it('estimates your turn with the blank rows above it', () => {
     // The virtual transcript sizes its spacers from the estimate until a row is
-    // measured. Leaving the two blank rows out made every unmeasured turn two
-    // rows short, so the scroll offset jumped the moment a row was measured.
+    // measured. Leaving the blank row out made every unmeasured turn a row
+    // short, so the scroll offset jumped the moment a row was measured.
     const messages = [
       msg('u1', 'user', 'first question'),
       msg('a1', 'assistant', 'The answer is 42.'),
@@ -957,7 +961,7 @@ describe('ChatPanel Ink rendering', () => {
     ];
 
     for (const [density, margin] of [
-      ['compact', 2],
+      ['compact', 1],
       ['tight', 0],
     ] as const) {
       const view = render(
@@ -993,13 +997,16 @@ describe('ChatPanel Ink rendering', () => {
     const view = render(
       withDensity(<AgentMessage message={message} isStreaming={false} reducedMotion />, 'tight'),
     );
-    const lines = frame(view.lastFrame).split('\n');
+    const lines = frame(view.lastFrame)
+      .split('\n')
+      .map((line) => line.trimEnd());
     const narration = lines.findIndex((line) => line.includes('Inspecting.'));
-    const first = lines.findIndex((line) => /Read\s+src\/a\.ts/.test(line));
-    const second = lines.findIndex((line) => /Read\s+src\/b\.ts/.test(line));
+    const first = lines.findIndex((line) => line === '● Read(src/a.ts)');
+    const second = lines.findIndex((line) => line === '● Read(src/b.ts)');
 
+    // Tight density drops the blank row between items; the result row stays.
     expect(lines.slice(narration + 1, first)).toEqual([]);
-    expect(lines.slice(first + 1, second)).toEqual([]);
+    expect(lines.slice(first + 1, second)).toEqual(['  ⎿  Read 1 line']);
   });
 
   it('applies the same sibling spacing to nested actions', () => {
@@ -1034,11 +1041,15 @@ describe('ChatPanel Ink rendering', () => {
     const view = render(
       withDensity(<AgentMessage message={message} isStreaming={false} reducedMotion />, 'compact'),
     );
-    const lines = frame(view.lastFrame).split('\n');
-    const first = lines.findIndex((line) => /Read\s+src\/a\.ts/.test(line));
-    const second = lines.findIndex((line) => /Read\s+src\/b\.ts/.test(line));
+    const lines = frame(view.lastFrame)
+      .split('\n')
+      .map((line) => line.trimEnd());
+    const first = lines.findIndex((line) => line.includes('● Read(src/a.ts)'));
+    const second = lines.findIndex((line) => line.includes('● Read(src/b.ts)'));
 
-    expect(lines.slice(first + 1, second)).toEqual([]);
+    // A subagent's calls run together under it: only the first's result row between them.
+    expect(first).toBeGreaterThan(0);
+    expect(lines.slice(first + 1, second).map((line) => line.trim())).toEqual(['⎿  Read 1 line']);
   });
 
   it('rerenders a tool result when array lengths stay unchanged', () => {
@@ -1181,11 +1192,14 @@ describe('ChatPanel Ink rendering', () => {
     const view = render(
       withTheme(<ChatPanel messages={messages} terminalWidth={100} reducedMotion />),
     );
-    const lines = frame(view.lastFrame).split('\n');
-    const toolLine = lines.findIndex((line) => /Read\s+src\/a\.ts/.test(line));
+    const lines = frame(view.lastFrame)
+      .split('\n')
+      .map((line) => line.trimEnd());
+    const toolLine = lines.findIndex((line) => line === '● Read(src/a.ts)');
     const followupLine = lines.findIndex((line) => line.includes('FOLLOWUP_MESSAGE_MARKER'));
 
-    expect(lines.slice(toolLine + 1, followupLine)).toEqual(['']);
+    // The call's result row, then one blank row before the prose.
+    expect(lines.slice(toolLine + 1, followupLine)).toEqual(['  ⎿  Read 1 line', '']);
   });
 
   it('marks a pending permission on the matching assistant tool row', () => {
@@ -1475,10 +1489,11 @@ describe('ChatPanel Ink rendering', () => {
       ),
     );
 
-    expect(frame(view.lastFrame)).toMatch(/Read\s+src\/a\.ts/);
-    expect(frame(view.lastFrame)).toMatch(/Bash\s+npm test/);
+    expect(frame(view.lastFrame)).toContain('● Read(src/a.ts)');
+    expect(frame(view.lastFrame)).toContain('● Bash(npm test)');
+    // A read reports what it read in words; a command's result is its output's first lines.
     expect(frame(view.lastFrame)).not.toContain('READ_RESULT_MARKER');
-    expect(frame(view.lastFrame)).not.toContain('BASH_RESULT_MARKER');
+    expect(frame(view.lastFrame)).toContain('⎿  BASH_RESULT_MARKER');
 
     view.rerender(
       withTheme(
@@ -1498,7 +1513,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(frame(view.lastFrame)).toContain('BASH_RESULT_MARKER');
   });
 
-  it('collapses completed reasoning and reopens it in detailed mode', () => {
+  it('hides completed reasoning in compact mode and reopens it in detailed mode', () => {
     const message: Message = {
       ...msg('a1', 'assistant', 'The stream framing is compatible.'),
       reasoningContent: [
@@ -1519,11 +1534,10 @@ describe('ChatPanel Ink rendering', () => {
       ),
     );
 
-    // A finished thought collapses to one row: reasoning is the least
-    // important content in a turn and had been sitting above the answer.
+    // The compact transcript draws no thought: reasoning is the least important
+    // content in a turn and had been sitting above the answer.
     let output = frame(view.lastFrame);
-    expect(output).toContain('thought');
-    expect(output).toContain('3 lines');
+    expect(output).not.toContain('thought');
     expect(output).not.toContain('Inspecting the provider stream');
     expect(output).not.toContain('Comparing the final finish reason');
     expect(output).toContain('The stream framing is compatible.');
@@ -1546,7 +1560,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('Comparing the final finish reason');
   });
 
-  it('keeps the complete reasoning visible while streaming', () => {
+  it('keeps the complete reasoning visible while streaming in the detailed transcript', () => {
     const message: Message = {
       ...msg('a1', 'assistant', ''),
       reasoningContent: [
@@ -1562,7 +1576,7 @@ describe('ChatPanel Ink rendering', () => {
         <AgentMessage
           message={message}
           isStreaming
-          transcriptMode="compact"
+          transcriptMode="detailed"
           reducedMotion
           terminalWidth={100}
         />,
@@ -1573,6 +1587,20 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('Thinking');
     expect(output).toContain('OLD_REASONING_LINE');
     expect(output).toContain('LATEST_REASONING_LINE');
+
+    // The compact transcript draws none of it: the working line says the model thinks.
+    view.rerender(
+      withTheme(
+        <AgentMessage
+          message={message}
+          isStreaming
+          transcriptMode="compact"
+          reducedMotion
+          terminalWidth={100}
+        />,
+      ),
+    );
+    expect(frame(view.lastFrame)).not.toContain('OLD_REASONING_LINE');
   });
 
   it('can hide reasoning without hiding the final answer', () => {
@@ -1614,9 +1642,11 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    expect(frame(view.lastFrame)).toMatch(/Bash\s+npm test/);
+    expect(frame(view.lastFrame)).toContain('● Bash(npm test)');
+    expect(frame(view.lastFrame)).toContain('⎿  Running…');
     expect(frame(view.lastFrame)).not.toContain('command: npm test');
 
+    // A closed command previews its first line; the rest waits for an expansion.
     const completed: Message = {
       ...running,
       toolResults: [
@@ -1624,7 +1654,7 @@ describe('ChatPanel Ink rendering', () => {
           version: 2,
           toolCallId: 'bash',
           status: 'success',
-          content: 'PASSED_MARKER',
+          content: 'running 3 tests\nok\nPASSED_MARKER',
         },
       ],
     };
@@ -1639,7 +1669,9 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    expect(frame(view.lastFrame)).toMatch(/Bash\s+npm test/);
+    expect(frame(view.lastFrame)).toContain('● Bash(npm test)');
+    expect(frame(view.lastFrame)).toContain('⎿  running 3 tests');
+    expect(frame(view.lastFrame)).toContain('… +2 lines');
     expect(frame(view.lastFrame)).not.toContain('command: npm test');
     expect(frame(view.lastFrame)).not.toContain('PASSED_MARKER');
 
@@ -1678,9 +1710,9 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    // The label column carries the server; `Called` is redundant there.
-    expect(frame(view.lastFrame)).toMatch(/slack\s+search/);
-    expect(frame(view.lastFrame)).toMatch(/slack\s+post/);
+    // Each call is its own item, named for its server, its tool the argument.
+    expect(frame(view.lastFrame)).toContain('● Called slack(search)');
+    expect(frame(view.lastFrame)).toContain('● Called slack(post)');
     expect(frame(view.lastFrame)).not.toContain('Called slack 2 times');
 
     view.rerender(
@@ -1693,9 +1725,8 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    // The label column carries the server; `Called` is redundant there.
-    expect(frame(view.lastFrame)).toMatch(/slack\s+search/);
-    expect(frame(view.lastFrame)).toMatch(/slack\s+post/);
+    expect(frame(view.lastFrame)).toContain('● Called slack(search)');
+    expect(frame(view.lastFrame)).toContain('● Called slack(post)');
   });
 
   it('expands completed file mutation output by default and preserves manual collapse', () => {
@@ -1723,8 +1754,8 @@ describe('ChatPanel Ink rendering', () => {
     const output = frame(view.lastFrame);
     expect(output).toContain('I will update it.');
     expect(output).toContain('Done.');
-    expect(output).toMatch(/Edit\s+1 file\s+\+1 -1/);
-    expect(output).toMatch(/└ src\/a\.ts\s+\+1 -1/);
+    expect(output).toContain('● Update(src/a.ts)');
+    expect(output).toContain('⎿  Added 1 line, removed 1 line');
     expect(output).toContain('- old line');
     expect(output).toContain('+ new line');
 
@@ -1738,6 +1769,8 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
+    // Collapsed, the change is still said in words; only the diff goes.
+    expect(frame(view.lastFrame)).toContain('⎿  Added 1 line, removed 1 line');
     expect(frame(view.lastFrame)).not.toContain('- old line');
     expect(frame(view.lastFrame)).not.toContain('+ new line');
   });
@@ -1768,13 +1801,13 @@ describe('ChatPanel Ink rendering', () => {
     );
     const output = frame(view.lastFrame);
 
-    expect(output).toMatch(/Edit\s+1 file\s+\+1 -1/);
-    expect(output).toMatch(/└ src\/a\.ts\s+\+1 -1/);
+    expect(output).toContain('● Update(src/a.ts)');
+    expect(output).toContain('⎿  Added 1 line, removed 1 line');
     expect(output).toContain('- old marker');
     expect(output).toContain('+ new marker');
   });
 
-  it('caps a long default-expanded file mutation at 20 rows and shows it whole under show-all', () => {
+  it('caps a long default-expanded file mutation at the compact budget and shows it whole under show-all', () => {
     const changedRows = Array.from({ length: 100 }, (_, index) => `+new ${index + 1}`);
     const message: Message = {
       ...msg('a1', 'assistant', ''),
@@ -1798,14 +1831,16 @@ describe('ChatPanel Ink rendering', () => {
     );
     const output = frame(view.lastFrame);
 
-    expect(output).toMatch(/Edit\s+1 file\s+\+100 -1/);
-    expect(output).toMatch(/└ src\/a\.ts\s+\+100 -1/);
-    // The compact transcript previews the first 20 rows: `- old` and `+ new 1` to `+ new 19`.
+    expect(output).toContain('● Update(src/a.ts)');
+    expect(output).toContain('⎿  Added 100 lines, removed 1 line');
+    // The changes alone overflow the 12-row compact budget, so it keeps the first and last of
+    // them around one gap row: `- old` to `+ new 5`, then `+ new 96` to `+ new 100`.
     expect(output).toContain('- old');
-    expect(output).toContain('+ new 19');
-    expect(output).not.toContain('+ new 20');
-    expect(output).not.toContain('+ new 100');
-    expect(output).toContain('… +81 lines (Ctrl+E)');
+    expect(output).toContain('+ new 5');
+    expect(output).not.toContain('+ new 6');
+    expect(output).not.toContain('+ new 50');
+    expect(output).toContain('+ new 100');
+    expect(output).toContain('… 90 lines hidden (Ctrl+E)');
 
     const all = render(
       withTheme(
@@ -1813,11 +1848,12 @@ describe('ChatPanel Ink rendering', () => {
       ),
     );
     const allOutput = frame(all.lastFrame);
+    expect(allOutput).toContain('+ new 50');
     expect(allOutput).toContain('+ new 100');
-    expect(allOutput).not.toContain('… +');
+    expect(allOutput).not.toContain('hidden');
   });
 
-  it('groups adjacent mutations into a Codex-style changed-files summary', () => {
+  it('draws each adjacent mutation as an Update item of its own, with no group heading', () => {
     const message: Message = {
       ...msg('a1', 'assistant', ''),
       toolCalls: [
@@ -1845,12 +1881,14 @@ describe('ChatPanel Ink rendering', () => {
     );
     const output = frame(view.lastFrame);
 
-    expect(output).toMatch(/Edit\s+2 files\s+\+3 -3/);
-    expect(output).toMatch(/└ src\/first\.ts\s+\+2 -1/);
-    expect(output).toMatch(/└ src\/second\.ts\s+\+1 -2/);
+    expect(output).toContain('● Update(src/first.ts)');
+    expect(output).toContain('⎿  Added 2 lines, removed 1 line');
+    expect(output).toContain('● Update(src/second.ts)');
+    expect(output).toContain('⎿  Added 1 line, removed 2 lines');
     expect(output).toContain('- old first');
     expect(output).toContain('+ new second');
-    expect(output.match(/2 files/g)).toHaveLength(1);
+    expect(output).not.toContain('2 files');
+    expect(output).not.toContain('└');
   });
 
   it('merges adjacent assistant messages where later has no content (tool-call-only turn)', () => {
@@ -1997,9 +2035,9 @@ describe('ChatPanel Ink rendering', () => {
       .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
       .split('\n')
       .find((line) => line.includes('Could not save'));
-    expect(row?.startsWith('  ✕ Could not save the setting.')).toBe(true);
-    const [r, g, b] = [1, 3, 5].map((at) => parseInt(DEFAULT_THEME.error.slice(at, at + 2), 16));
-    expect(raw).toContain(`38;2;${r};${g};${b}m✕`);
+    // The note's own mark gives way to the item mark, in the failure's colour.
+    expect(row?.startsWith('● Could not save the setting.')).toBe(true);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}●`);
   });
 
   it('leaves exactly one blank row above each slash-command output', () => {
@@ -2074,10 +2112,11 @@ describe('ChatPanel quiet tool runs', () => {
     );
     const lines = frame(view.lastFrame).split('\n');
 
-    const summary = lines.filter((line) => /Read\s+a\.ts, b\.ts, c\.ts/.test(line));
-    expect(summary).toHaveLength(1);
-    expect(summary[0]).toContain('3 files');
-    expect(lines.some((line) => /Read\s+src\/b\.ts/.test(line))).toBe(false);
+    const summary = lines.findIndex((line) => line.includes('● Read(3 files)'));
+    expect(lines.filter((line) => line.includes('Read(3 files)'))).toHaveLength(1);
+    // The result row names the files the run read.
+    expect(lines[summary + 1]).toContain('⎿  a.ts, b.ts, c.ts');
+    expect(lines.some((line) => line.includes('Read(src/b.ts)'))).toBe(false);
     // The narration that started the run still shows, and the failed edit keeps its row.
     expect(lines.some((line) => line.includes('Reading the three modules.'))).toBe(true);
     expect(lines.some((line) => line.includes('old_string not found'))).toBe(true);
@@ -2096,9 +2135,9 @@ describe('ChatPanel quiet tool runs', () => {
     );
     const output = frame(view.lastFrame);
     for (const file of ['a', 'b', 'c']) {
-      expect(output).toMatch(new RegExp(`Read\\s+src/${file}\\.ts`));
+      expect(output).toContain(`● Read(src/${file}.ts)`);
     }
-    expect(output).not.toMatch(/Read\s+a\.ts, b\.ts/);
+    expect(output).not.toContain('Read(3 files)');
   });
 
   it('gives a pinned read back its own row', () => {
@@ -2114,7 +2153,8 @@ describe('ChatPanel quiet tool runs', () => {
       ),
     );
     const output = frame(view.lastFrame);
-    expect(output).toMatch(/Read\s+src\/b\.ts/);
+    expect(output).toContain('● Read(src/b.ts)');
+    expect(output).not.toContain('Read(3 files)');
     expect(output).not.toMatch(/a\.ts, b\.ts, c\.ts/);
   });
 });
@@ -2153,8 +2193,8 @@ describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
         ),
       );
       const lines = frame(view.lastFrame).split('\n');
-      expect(lines.filter((line) => /Read\s+a\.js, b\.js, c\.js/.test(line))).toHaveLength(1);
-      expect(lines.join('\n')).toContain('3 files · 1 search');
+      expect(lines.filter((line) => line.includes('Search(TODO), Read(3 files)'))).toHaveLength(1);
+      expect(lines.join('\n')).toContain('⎿  a.js, b.js, c.js');
       expect(lines.some((line) => line.includes('thought'))).toBe(false);
       expect(lines.some((line) => line.includes('Thought'))).toBe(false);
     },
@@ -2181,7 +2221,8 @@ describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
       ),
     );
     const output = frame(view.lastFrame);
-    expect(output).toMatch(/Read\s+a\.js, b\.js/);
+    expect(output).toContain('Read(2 files)');
+    expect(output).toContain('⎿  a.js, b.js');
     expect(output).not.toContain('thought');
   });
 
@@ -2202,7 +2243,7 @@ describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
     );
     const output = frame(view.lastFrame);
     expect(output).not.toContain('thought');
-    expect(output).toMatch(/Read\s+a\.js/);
+    expect(output).toContain('Read(a.js)');
   });
 
   it('keeps the prose of a step that speaks but not its thought, when its run folds', () => {
@@ -2230,7 +2271,7 @@ describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
     const output = frame(view.lastFrame);
     expect(output).toContain('Let me look around.');
     expect(output).not.toContain('thought');
-    expect(output).toMatch(/Read\s+a\.js, b\.js/);
+    expect(output).toContain('Read(2 files)');
   });
 
   it('hides the thought of a reasoned step that runs a command, and groups its reads as without one (#470)', () => {
@@ -2258,8 +2299,8 @@ describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
     // Both steps go without their thoughts, and the thought does not strand b.js on a row of
     // its own: the reads fold into one summary, then the command.
     expect(output).not.toContain('thought');
-    expect(output).toMatch(/Read\s+a\.js, b\.js/);
-    expect(output).toMatch(/Bash\s+npm test/);
+    expect(output).toContain('Read(2 files)');
+    expect(output).toContain('● Bash(npm test)');
   });
 
   it('hides the thought of a message whose quiet group is followed by an edit (#470)', () => {
@@ -2293,7 +2334,7 @@ describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
     );
     const output = frame(view.lastFrame);
     expect(output).not.toContain('thought');
-    expect(output).toMatch(/Read\s+a\.js, b\.js/);
+    expect(output).toContain('Read(2 files)');
   });
 
   it('still shows every thought and tool row in the detailed transcript', () => {
@@ -2311,10 +2352,10 @@ describe('ChatPanel quiet tool runs with reasoning (#455)', () => {
     const output = frame(view.lastFrame);
     expect(output.match(/Thought - 2 lines/g)).toHaveLength(4);
     for (const file of ['a.js', 'b.js', 'c.js']) {
-      expect(output).toMatch(new RegExp(`Read\\s+${file.replace('.', '\\.')}`));
+      expect(output).toContain(`● Read(${file})`);
     }
-    expect(output).toContain('Grep');
-    expect(output).not.toMatch(/Read\s+a\.js, b\.js/);
+    expect(output).toContain('● Search(TODO)');
+    expect(output).not.toContain('files)');
   });
 });
 
@@ -2372,12 +2413,12 @@ describe('ChatPanel quiet tool runs with read-only shell commands (#459)', () =>
       ),
     );
     const lines = frame(view.lastFrame).split('\n');
-    const summary = lines.filter((line) => /Read\s+a\.js/.test(line));
+    const summary = lines.filter((line) => line.includes('Read(a.js)'));
     expect(summary).toHaveLength(1);
-    // The metadata column is narrow, so the third count may be cut with an ellipsis.
-    expect(summary[0]).toContain('1 file · 1 search');
-    expect(lines.some((line) => /Bash\s+cat src\/a\.js/.test(line))).toBe(false);
-    expect(lines.filter((line) => /Bash\s+touch x/.test(line))).toHaveLength(1);
+    // The run is written as the calls it stands for.
+    expect(summary[0]).toContain('● Search(TODO), Read(a.js), List(src)');
+    expect(lines.some((line) => line.includes('Bash(cat src/a.js)'))).toBe(false);
+    expect(lines.filter((line) => line.includes('● Bash(touch x)'))).toHaveLength(1);
   });
 
   it('shows every command again in the detailed transcript', () => {
@@ -2392,8 +2433,8 @@ describe('ChatPanel quiet tool runs with read-only shell commands (#459)', () =>
       ),
     );
     const output = frame(view.lastFrame);
-    expect(output).toMatch(/Bash\s+cat src\/a\.js/);
-    expect(output).toMatch(/Bash\s+ls src/);
+    expect(output).toContain('● Bash(cat src/a.js)');
+    expect(output).toContain('● Bash(ls src)');
   });
 });
 
@@ -2426,30 +2467,30 @@ describe('ChatPanel hides a tool step’s thought in compact mode (#470)', () =>
       ).lastFrame,
     ).split('\n');
 
-  it('draws no thought row for a tool step, and keeps the final answer’s', () => {
+  it('draws no thought row at all, the final answer’s included', () => {
     const lines = show('compact');
 
-    expect(lines.filter((line) => line.includes('thought'))).toEqual([
-      expect.stringContaining('▸ thought · 2 lines'),
-    ]);
+    expect(lines.filter((line) => line.includes('thought'))).toEqual([]);
+    expect(lines.join('\n')).not.toContain('sum up');
     expect(lines.join('\n')).not.toContain('weigh a1');
     expect(lines.join('\n')).toContain('All three ran.');
   });
 
-  it('sits a thoughtless step against the rows before it, with no blank or doubled blank rows', () => {
-    const lines = show('compact');
-    const first = lines.findIndex((line) => /Bash\s+seq 1 3/.test(line));
-    const second = lines.findIndex((line) => /Bash\s+seq 1 4/.test(line));
+  it('stands a thoughtless step one blank row from the one before it, never two', () => {
+    const lines = show('compact').map((line) => line.trimEnd());
+    const first = lines.findIndex((line) => line === '● Bash(seq 1 3)');
+    const second = lines.findIndex((line) => line === '● Bash(seq 1 4)');
 
     expect(first).toBeGreaterThan(-1);
-    expect(second).toBe(first + 1);
+    // The first call's result row, then the blank row between items.
+    expect(lines.slice(first + 1, second)).toEqual(['  ⎿  output', '']);
     expect(lines.join('\n')).not.toMatch(/\n\n\n/);
   });
 
   it('keeps one blank row above the prose of a step, and none between it and its row', () => {
     const lines = show('compact');
     const prose = lines.findIndex((line) => line.includes('Step 3 is next'));
-    const tool = lines.findIndex((line) => /Bash\s+seq 1 5/.test(line));
+    const tool = lines.findIndex((line) => line.includes('● Bash(seq 1 5)'));
 
     expect(lines[prose - 1]).toBe('');
     expect(lines[prose - 2]).not.toBe('');
@@ -2460,11 +2501,11 @@ describe('ChatPanel hides a tool step’s thought in compact mode (#470)', () =>
     const output = show('detailed').join('\n');
 
     expect(output.match(/Thought - 2 lines/g)).toHaveLength(4);
-    expect(output).toMatch(/Bash\s+seq 1 3/);
+    expect(output).toContain('● Bash(seq 1 3)');
   });
 });
 
-describe('ChatPanel keeps the thought of a turn that is not a step (#470)', () => {
+describe('ChatPanel draws no thought of a turn that is not a step either (#470)', () => {
   const bashStep: Message = {
     ...msg('a1', 'assistant', ''),
     toolCalls: [{ id: 'a1-call', name: 'Bash', arguments: { command: 'seq 1 3' } }],
@@ -2489,16 +2530,19 @@ describe('ChatPanel keeps the thought of a turn that is not a step (#470)', () =
         />,
       ),
     );
-    const lines = frame(lastFrame).split('\n');
-    const bash = lines.findIndex((line) => /Bash\s+seq 1 3/.test(line));
-    const thought = lines.findIndex((line) => /thought|Thinking/i.test(line));
+    const lines = frame(lastFrame)
+      .split('\n')
+      .map((line) => line.trimEnd());
+    const bash = lines.findIndex((line) => line === '● Bash(seq 1 3)');
+    const ask = lines.findIndex((line) => line.startsWith('● Ask'));
 
     expect(bash).toBeGreaterThan(-1);
-    expect(thought).toBeGreaterThan(bash);
-    expect(lines.slice(bash + 1, thought)).toEqual(['']);
+    expect(ask).toBeGreaterThan(bash);
+    expect(lines.slice(bash + 1, ask)).toEqual(['  ⎿  output', '']);
+    expect(lines.some((line) => /thought|Thinking/i.test(line))).toBe(false);
   });
 
-  it('shows the thought of a step while the prompt for its call is open', () => {
+  it('draws no thought of a step while the prompt for its call is open', () => {
     const step: Message = {
       ...msg('a2', 'assistant', think),
       toolCalls: [{ id: 'bash-2', name: 'Bash', arguments: { command: 'seq 1 4' } }],
@@ -2518,7 +2562,8 @@ describe('ChatPanel keeps the thought of a turn that is not a step (#470)', () =
         ).lastFrame,
       );
 
-    expect(show(true)).toContain('▸ thought · 2 lines');
+    expect(show(true)).not.toContain('thought');
+    expect(show(true)).toContain('⎿  Waiting for your approval');
     expect(show(false)).not.toContain('thought');
   });
 });
@@ -2552,9 +2597,9 @@ describe('ChatPanel row estimate for a hidden thought (#470)', () => {
     );
   });
 
-  it('counts the thought of an answer, and every thought in the detailed transcript', () => {
+  it('counts no thought of an answer either, and every thought in the detailed transcript', () => {
     const answer = msg('a1', 'assistant', `${longThought}Done.`);
-    expect(estimate(answer)).toBeGreaterThanOrEqual(20);
+    expect(estimate(answer)).toBe(estimate(msg('a1', 'assistant', 'Done.')));
     expect(estimate(step(longThought), 'detailed')).toBeGreaterThanOrEqual(20);
   });
 });

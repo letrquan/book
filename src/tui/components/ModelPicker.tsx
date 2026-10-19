@@ -3,7 +3,7 @@ import TextInput from './TextInputField.js';
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
-import { PILCROW } from '../marks.js';
+import { PROMPT_MARK } from '../marks.js';
 import type { AgentConfig } from '../../types/runtime.js';
 import type { ProviderConfig } from '../../settings.js';
 import { resolveSecret } from '../../config.js';
@@ -485,7 +485,7 @@ export function ModelPicker({
           Model IDs
         </Text>
         <Box>
-          <Text color={theme.brand}>{`${PILCROW} `}</Text>
+          <Text color={theme.brand}>{`${PROMPT_MARK} `}</Text>
           <TextInput
             value={manualEntry.value}
             onChange={(value) => setManualEntry({ providerId: manualEntry.providerId, value })}
@@ -550,9 +550,9 @@ export function ModelPicker({
       meta={`${filteredOptions.length} ${filteredOptions.length === 1 ? 'model' : 'models'}`}
       width={sheetWidth}
     >
-      {/* Typing filters, the way the composer takes a prompt: after a pilcrow. */}
+      {/* Typing filters, the way the composer takes a prompt: after the prompt mark. */}
       <Text>
-        <Text color={theme.brand}>{`${PILCROW} `}</Text>
+        <Text color={theme.brand}>{`${PROMPT_MARK} `}</Text>
         <Text color={filter ? theme.text : theme.inactive}>{filter || 'type to filter'}</Text>
       </Text>
       <Box flexDirection="column" marginTop={1}>

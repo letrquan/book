@@ -255,14 +255,25 @@ describe('status glyph widths agree with the renderer', () => {
       '§',
       '☆',
       '♠',
+      '●',
+      '⏺',
+      '⎿',
+      '⌘',
     ]) {
       expect(displayWidth(glyph), `${glyph} (U+${glyph.codePointAt(0)!.toString(16)})`).toBe(1);
     }
   });
 
   it('still measures emoji-presentation characters as two columns', () => {
-    for (const glyph of ['✅', '❌', '✨', '🙂', '🚀', '☔', '⚡', '⛔']) {
+    for (const glyph of ['✅', '❌', '✨', '🙂', '🚀', '☔', '⚡', '⛔', '⌚', '⏳', '⏰']) {
       expect(displayWidth(glyph), glyph).toBe(2);
     }
+  });
+
+  it('measures the East Asian Wide angle brackets in Misc Technical as two columns', () => {
+    // U+2329 and U+232A sit in the text-default block but are East Asian Wide, as string-width
+    // and the terminal measure them.
+    expect(displayWidth('〈')).toBe(2);
+    expect(displayWidth('〉')).toBe(2);
   });
 });

@@ -82,32 +82,48 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered.match(/✓/g)).toHaveLength(1);
-    expect(rendered).not.toMatch(/[╰├›⌄]/);
+    // One item mark, and no check, cross, tree or disclosure glyph anywhere.
+    expect(rendered.match(/●/g)).toHaveLength(1);
+    expect(rendered).not.toMatch(/[✓×╰├›⌄]/);
   });
 
-  it('updates elapsed time once per second while a tool remains active', () => {
+  it('says a running call is running, and blinks its mark once a second', () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    const view = render(
-      withTheme(<ToolCallBlock name="Bash" args={{ command: 'npm test' }} isExpanded />),
-    );
-
-    void act(() => vi.advanceTimersByTime(2500));
-    expect(frame(view.lastFrame)).toMatch(/Bash\s+npm test\s+2s$/m);
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      const view = render(
+        withTheme(<ToolCallBlock name="Bash" args={{ command: 'npm test' }} isExpanded />),
+      );
+      expect(frame(view.lastFrame)).toBe('● Bash(npm test)\n  ⎿  Running…');
+      const before = view.lastFrame();
+      void act(() => vi.advanceTimersByTime(1000));
+      // The text holds still; only the mark's colour changes. No elapsed time is drawn.
+      expect(view.lastFrame()).not.toBe(before);
+      expect(frame(view.lastFrame)).toBe('● Bash(npm test)\n  ⎿  Running…');
+    } finally {
+      chalk.level = level;
+    }
   });
 
-  it('does not tick elapsed time under reduced motion', () => {
+  it('holds a running mark still under reduced motion', () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    const view = render(
-      withTheme(
-        <ToolCallBlock name="Bash" args={{ command: 'npm test' }} isExpanded reducedMotion />,
-      ),
-    );
-
-    void act(() => vi.advanceTimersByTime(2500));
-    expect(frame(view.lastFrame)).not.toMatch(/· \d+s/);
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      const view = render(
+        withTheme(
+          <ToolCallBlock name="Bash" args={{ command: 'npm test' }} isExpanded reducedMotion />,
+        ),
+      );
+      const before = view.lastFrame();
+      void act(() => vi.advanceTimersByTime(2500));
+      expect(view.lastFrame()).toBe(before);
+    } finally {
+      chalk.level = level;
+    }
   });
 
   it('renders a short collapsed preview for long tool output by default', () => {
@@ -199,7 +215,7 @@ describe('ToolCallBlock', () => {
     );
 
     let rendered = frame(view.lastFrame);
-    expect(rendered).toMatch(/Bash\s+npm test/);
+    expect(rendered).toContain('● Bash(npm test)');
     expect(rendered).toContain('VISIBLE_OUTPUT_MARKER');
     expect(rendered).not.toContain('command:');
     expect(rendered).not.toContain('PRIVATE_WORKDIR_MARKER');
@@ -244,7 +260,7 @@ describe('ToolCallBlock', () => {
     expect(rendered).toContain('error-');
   });
 
-  it('renders a custom Update(filePath) block with stats for file updates', () => {
+  it('renders an Update(filePath) item that says its change in words', () => {
     const diffOutput = [
       '@@ -1,3 +1,4 @@',
       ' unchanged',
@@ -272,8 +288,10 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toMatch(/Edit\s+src\/tui\/components\/Diff\.tsx\s+\+2 -1$/m);
-    expect(rendered.split('\n')).toHaveLength(1);
+    expect(rendered.split('\n')).toEqual([
+      '● Update(src/tui/components/Diff.tsx)',
+      '  ⎿  Added 2 lines, removed 1 line',
+    ]);
   });
 
   it('renders the complete file diff when the mutation row is expanded and show-all is on', () => {
@@ -343,17 +361,19 @@ describe('ToolCallBlock', () => {
       );
     }
 
-    it('previews only the first 10 lines of a new file', () => {
+    it('previews only the first 5 lines of a new file', () => {
       const view = render(writeBlock(false));
       const rendered = frame(view.lastFrame);
       const contentRows = rendered.split('\n').filter((row) => /\+ line \d+/.test(row));
 
-      expect(contentRows).toHaveLength(10);
+      expect(rendered).toContain('● Write(src/new.ts)');
+      expect(rendered).toContain('⎿  Wrote 150 lines');
+      expect(contentRows).toHaveLength(5);
       expect(rendered).toContain('+ line 1');
-      expect(rendered).toContain('+ line 10');
-      expect(rendered).not.toContain('+ line 11');
+      expect(rendered).toContain('+ line 5');
+      expect(rendered).not.toContain('+ line 6');
       expect(rendered).not.toContain('@@');
-      expect(rendered).toContain('… +140 lines (Ctrl+E)');
+      expect(rendered).toContain('… +145 lines (Ctrl+E)');
     });
 
     it('shows the whole new file under show-all', () => {
@@ -396,16 +416,19 @@ describe('ToolCallBlock', () => {
       );
     }
 
-    it('previews the first 20 rows of an Edit diff in the compact transcript', () => {
+    it('previews an Edit diff within the 12-row compact budget, first and last changes kept', () => {
       const rendered = frame(render(editBlock()).lastFrame);
       const contentRows = rendered.split('\n').filter((row) => /[-+] (old|new) \d+/.test(row));
 
-      expect(contentRows).toHaveLength(20);
-      expect(rendered).toContain('- old 20');
-      expect(rendered).not.toContain('- old 21');
+      // The changes alone overflow the budget: the first six and the last five, around one gap.
+      expect(contentRows).toHaveLength(11);
+      expect(rendered).toContain('- old 6');
+      expect(rendered).not.toContain('- old 7');
+      expect(rendered).toContain('+ new 96');
+      expect(rendered).toContain('+ new 100');
       expect(rendered).not.toContain('@@');
-      expect(rendered).not.toContain('lines omitted');
-      expect(rendered).toContain('… +180 lines (Ctrl+E)');
+      expect(rendered).toContain('⋮ 189 lines omitted');
+      expect(rendered).toContain('… 189 lines hidden (Ctrl+E)');
     });
 
     it('keeps the change-focused 80-row preview in the detailed transcript', () => {
@@ -437,7 +460,7 @@ describe('ToolCallBlock', () => {
       }
     });
 
-    it('previews a compact Edit rename as 20 rows with its true remainder in the footer', () => {
+    it('previews a compact Edit rename within its budget, with its true remainder in the footer', () => {
       const output = [
         '@@ -1 +1 @@',
         ...Array.from({ length: 6 }, (_, index) => ` before ${index + 1}`),
@@ -466,9 +489,25 @@ describe('ToolCallBlock', () => {
         ),
       );
       const rendered = frame(view.lastFrame);
+      const rows = resultRows(rendered);
 
-      expect(rendered.split('\n').filter((row) => row.includes('│'))).toHaveLength(21);
-      expect(rendered).toContain('… +19 lines (Ctrl+E)');
+      // The 24 changed lines overflow the 12-row budget: the first and last of them around one
+      // gap row, which the budget counts, then the footer with the true remainder.
+      expect(rows).toEqual([
+        'Added 12 lines, removed 12 lines',
+        ' 7 - const oldName0 = 1;',
+        ' 8 - const oldName1 = 1;',
+        ' 9 - const oldName2 = 1;',
+        '10 - const oldName3 = 1;',
+        '11 - const oldName4 = 1;',
+        ' ⋮ 14 lines omitted',
+        '14 + const newName7 = 1;',
+        '15 + const newName8 = 1;',
+        '16 + const newName9 = 1;',
+        '17 + const newName10 = 1;',
+        '18 + const newName11 = 1;',
+        '… 29 lines hidden (Ctrl+E)',
+      ]);
     });
 
     it('renders a multi-file creation with real file headers and no head preview', () => {
@@ -517,7 +556,7 @@ describe('ToolCallBlock', () => {
       expect(rendered).not.toContain('lines hidden');
     });
 
-    it('shares one 20-row compact budget across the files of one call', () => {
+    it('shares one compact budget across the files of one call, and still names each file', () => {
       const fileBlock = (name: string) => [
         `--- ${name}`,
         `+++ ${name}`,
@@ -555,15 +594,17 @@ describe('ToolCallBlock', () => {
       );
       const rendered = frame(view.lastFrame);
 
-      // Each file has one hunk, so neither draws a header. a.js takes 17 rows (two file headers,
-      // 15 lines); b.js gets its two file headers and its first line.
+      // Each file has one hunk, so neither draws a hunk header. The 30 changed lines overflow the
+      // 12-row budget. A change-focused cut would keep lines of a.js and of b.js and drop the rows
+      // that say which file each is in, so a diff that spans files previews from the top, in
+      // order: every row it draws sits under its file's name. The heading counts the files.
+      expect(rendered).toContain('● Update(2 files)');
+      expect(rendered).toContain('Changed 2 files, added 30 lines');
       expect(rendered).not.toContain('@@');
-      expect(rendered).toContain('+ a.js line 15');
-      expect(rendered).toContain('--- b.js');
-      expect(rendered).toContain('+++ b.js');
-      expect(rendered).toContain('+ b.js line 1');
-      expect(rendered).not.toContain('b.js line 2');
-      expect(rendered).toContain('… +14 lines (Ctrl+E)');
+      expect(rendered.indexOf('+++ a.js')).toBeGreaterThan(-1);
+      expect(rendered.indexOf('+++ a.js')).toBeLessThan(rendered.indexOf('+ a.js line 1'));
+      expect(rendered).not.toContain('b.js line');
+      expect(rendered).toContain('… +20 lines (Ctrl+E)');
     });
 
     it('drops the file metadata rows of a single-file ApplyPatch preview', () => {
@@ -648,11 +689,13 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toMatch(/Edit\s+analysis\.ipynb\s+\+1 -1$/m);
-    expect(rendered.split('\n')).toHaveLength(1);
+    expect(rendered.split('\n')).toEqual([
+      '● Update(analysis.ipynb)',
+      '  ⎿  Added 1 line, removed 1 line',
+    ]);
   });
 
-  it('renders a custom Create(filePath) block when a file is created', () => {
+  it('renders a Write(filePath) item when a file is created', () => {
     const view = render(
       withTheme(
         <ToolCallBlock
@@ -671,8 +714,7 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toMatch(/Create\s+src\/new-file\.txt\s+\+2$/m);
-    expect(rendered.split('\n')).toHaveLength(1);
+    expect(rendered.split('\n')).toEqual(['● Write(src/new-file.txt)', '  ⎿  Wrote 2 lines']);
   });
 
   it('wraps complete created-file diff lines when expanded under show-all', () => {
@@ -699,13 +741,13 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     expect(rendered).toContain('start-');
-    expect(rendered).toContain('d-end');
     expect(rendered).not.toContain('…');
     // Assert the content survives the wrap, not where the wrap lands: the
-    // break position moves with the rail's column budget, the completeness
-    // must not.
-    const diffRows = rendered.split('\n').filter((line) => line.includes('│'));
-    const diffText = diffRows.map((line) => line.slice(line.lastIndexOf('│') + 1).trim()).join('');
+    // break position moves with the result's column budget, the completeness
+    // must not. The diff's rows follow the heading and the `Wrote` row, past the
+    // result column, the line number and the marker.
+    const diffRows = rendered.split('\n').slice(2);
+    const diffText = diffRows.map((line) => line.replace(/^ {5}[\d ] [+ ] /, '').trim()).join('');
     expect(diffText).toContain(content);
     expect(diffText.match(/x/g)).toHaveLength(80);
     for (const line of rendered.split('\n')) expect(displayWidth(line)).toBeLessThanOrEqual(width);
@@ -725,8 +767,8 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toMatch(/Edit\s+src\/broken\.ts/);
-    expect(rendered).toContain('Failed to write file');
+    expect(rendered).toContain('● Update(src/broken.ts)');
+    expect(rendered).toContain('⎿  Error: Failed to write file');
   });
 
   it('renders friendly labels for background shell tools', () => {
@@ -753,9 +795,10 @@ describe('ToolCallBlock', () => {
       ),
     );
 
-    // `Shell output` and `Kill shell` are shortened to fit the label column.
-    expect(frame(outputView.lastFrame)).toMatch(/Shell\s+shell_1/);
-    expect(frame(killView.lastFrame)).toMatch(/Kill shell\s+shell_1/);
+    expect(frame(outputView.lastFrame)).toContain('● Shell output(shell_1)');
+    // A read of a shell is a command's output: its first line is the result.
+    expect(frame(outputView.lastFrame)).toContain('⎿  ready');
+    expect(frame(killView.lastFrame)).toContain('● Kill shell(shell_1)');
   });
 
   it('bounds expanded output, summaries, and errors to a narrow width', () => {
@@ -912,7 +955,7 @@ describe('ToolCallBlock', () => {
     expect(frame(view.lastFrame)).toContain('Built-in web search providers are unavailable');
   });
 
-  it('renders summary as exactly one line ending in … at narrow width with long target', () => {
+  it('renders the heading as exactly one line, its argument cut with … inside the parentheses', () => {
     const width = 24;
     const view = render(
       withTheme(
@@ -931,8 +974,11 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]!.trimEnd()).toMatch(/…$/);
+    // The heading, then the command's output.
+    expect(lines).toHaveLength(2);
+    expect(lines[0]!.trimEnd()).toMatch(/^● Bash\(git .*…\)$/);
+    expect(displayWidth(lines[0]!.trimEnd())).toBeLessThanOrEqual(width);
+    expect(lines[1]!.trim()).toBe('⎿  ok');
   });
 });
 
@@ -957,8 +1003,19 @@ function colourFrame(element: React.ReactElement): string {
   }
 }
 
+/**
+ * The rows hung under a call's heading, in order: past `⎿  ` on the first and the same five
+ * columns on the rest, their trailing spaces dropped. The heading itself is not one of them.
+ */
+function resultRows(rendered: string): string[] {
+  return rendered
+    .split('\n')
+    .slice(1)
+    .map((line) => line.replace(/^ {2}(?:⎿(?: {2}|$)| {3})/, '').trimEnd());
+}
+
 describe('ToolCallBlock output rows keep their empty lines (#494)', () => {
-  /** What each row of an expanded output block holds, past its rail, in order. */
+  /** What each row of an expanded output block holds, past `⎿`, in order. */
   const outputRows = (
     content: string,
     {
@@ -984,10 +1041,7 @@ describe('ToolCallBlock output rows keep their empty lines (#494)', () => {
         />,
       ),
     );
-    return frame(rendered.lastFrame)
-      .split('\n')
-      .filter((line) => line.includes('│'))
-      .map((line) => line.slice(line.indexOf('│') + 1).trim());
+    return resultRows(frame(rendered.lastFrame));
   };
 
   it('draws the blank line between two paragraphs as an empty row', () => {
@@ -1017,7 +1071,7 @@ describe('ToolCallBlock output rows keep their empty lines (#494)', () => {
     expect(outputRows('\n\n\n')).toEqual([]);
   });
 
-  it('counts the rows it draws in the row header, with no footer for them', () => {
+  it('draws one row per line of the output, with no footer for them', () => {
     const header = (content: string) => {
       const rendered = render(
         withTheme(
@@ -1032,15 +1086,15 @@ describe('ToolCallBlock output rows keep their empty lines (#494)', () => {
       );
       return frame(rendered.lastFrame);
     };
+    // A finished row carries no line count of its own: the rows are the output.
     const one = header('X\n');
-    expect(one).toMatch(/\b1 line\b/);
-    expect(one).not.toMatch(/\b2 lines\b/);
+    expect(one).not.toMatch(/\b1 line\b/);
     expect(one).not.toContain('… +');
-    expect(one.split('\n').filter((line) => line.includes('│'))).toHaveLength(1);
+    expect(resultRows(one)).toEqual(['X']);
 
     const three = header('A\n\nB\n\n\n');
-    expect(three).toMatch(/\b3 lines\b/);
-    expect(three.split('\n').filter((line) => line.includes('│'))).toHaveLength(3);
+    expect(three).not.toMatch(/\b3 lines\b/);
+    expect(resultRows(three)).toEqual(['A', '', 'B']);
     expect(three).not.toContain('… +');
   });
 
@@ -1059,22 +1113,23 @@ describe('ToolCallBlock output rows keep their empty lines (#494)', () => {
         />,
       ),
     );
-    const rows = frame(rendered.lastFrame)
-      .split('\n')
-      .filter((line) => line.includes('│'))
-      .map((line) => line.slice(line.indexOf('│') + 1).trim());
+    const rows = resultRows(frame(rendered.lastFrame));
+    // The exit code and the message open the result; the stdout block follows them.
+    expect(rows[0]).toBe('Error: exit 1');
     // 13 lines under a 10-line tail preview: the last nine and `FAIL x`, then the footer.
-    expect(rows.at(-1)).toMatch(/^… \+3 lines/);
-    expect(rows.at(-2)).toBe('FAIL x');
-    expect(rows).toHaveLength(11);
-    expect(rows).not.toContain('');
+    const block = rows.slice(-11);
+    expect(block.at(-1)).toMatch(/^… \+3 lines/);
+    expect(block.at(-2)).toBe('FAIL x');
+    expect(block[0]).toBe('out 4');
+    expect(block).not.toContain('');
   });
 
   it('keeps the empty lines of a highlighted output too', () => {
-    // A Read of a source file is highlighted: its own branch draws the rows.
-    expect(
-      outputRows('a.ts\n\nconst x = 1;\n', { name: 'Read', args: { filePath: 'a.ts' } }),
-    ).toEqual(['a.ts', '', 'const x = 1;']);
+    // A Read of a source file is highlighted: its own branch draws the rows, under the row
+    // that says what it read.
+    const rows = outputRows('a.ts\n\nconst x = 1;\n', { name: 'Read', args: { filePath: 'a.ts' } });
+    expect(rows[0]).toMatch(/^Read \d+ lines?$/);
+    expect(rows.slice(1)).toEqual(['a.ts', '', 'const x = 1;']);
   });
 
   it('draws as many rows as the footer of a cut output counts lines', () => {
@@ -1093,9 +1148,7 @@ describe('ToolCallBlock output rows keep their empty lines (#494)', () => {
     const text = frame(rendered.lastFrame);
     // 10 lines and the 9 empty ones between them are 19 rows, and the newline after the last is
     // none: a preview of 6 of them leaves 13 out.
-    const shown = text
-      .split('\n')
-      .filter((line) => line.includes('│') && !line.includes('…')).length;
+    const shown = resultRows(text).filter((line) => !line.includes('…')).length;
     expect(shown).toBe(6);
     expect(text).toContain('… +13 lines');
   });
@@ -1123,14 +1176,10 @@ describe('ToolCallBlock failures', () => {
       .split('\n')
       .filter((line) => line.trim().length > 0);
 
-    expect(lines[0]).toMatch(/Bash\s+npm test/);
+    expect(lines[0]).toBe('● Bash(npm test)');
     expect(lines[0]).not.toContain('Invalid arguments');
-    expect(
-      lines
-        .slice(1)
-        .map((line) => line.trim())
-        .join(' '),
-    ).toBe(MESSAGE);
+    // The message hangs under the heading and opens on what kind of stop it was.
+    expect(resultRows(lines.join('\n')).join(' ')).toBe(`Error: ${MESSAGE}`);
     for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(80);
   });
 
@@ -1168,7 +1217,7 @@ describe('ToolCallBlock failures', () => {
         />
       );
 
-      expect(firstLine(inMemory(row))).toMatch(/Edit\s+memory\/notes/);
+      expect(firstLine(inMemory(row))).toBe('● Update(memory/notes.md)');
       expect(firstLine(inMemory(row))).not.toContain('/home/u');
       // Without the provider the row keeps the path the model wrote.
       expect(firstLine(row)).toContain('/home/u/.book/projects/p/memory/');
@@ -1186,7 +1235,7 @@ describe('ToolCallBlock failures', () => {
         />
       );
 
-      expect(firstLine(inMemory(row))).toMatch(/Read\s+memory\/notes/);
+      expect(firstLine(inMemory(row))).toBe('● Read(memory/notes.md)');
     });
   });
 
@@ -1206,13 +1255,14 @@ describe('ToolCallBlock failures', () => {
       />,
     );
 
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}×`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}●`);
     expect(raw).not.toContain(rgb(DEFAULT_THEME.error));
     expect(stripAnsi(raw)).toContain('arguments.todos is required');
   });
 
-  it('keeps a call that ran and failed in rose', () => {
-    // A test run that exits 1 is the transcript's only record of a red suite.
+  it('marks a call that ran and failed in rose, on its mark and its label only', () => {
+    // A test run that exits 1 is the transcript's only record of a red suite. The mark and the
+    // `Error:` label say so; the message keeps the result's grey.
     const raw = colourFrame(
       <ToolCallBlock
         name="Bash"
@@ -1224,8 +1274,10 @@ describe('ToolCallBlock failures', () => {
       />,
     );
 
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}×`);
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}Exit code: 1`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}●`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}Error:`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)} Exit code: 1`);
+    expect(raw).not.toContain(`${rgb(DEFAULT_THEME.error)}Error: Exit code: 1`);
   });
 
   it('shows the exit code and the tail of a long failure, behind a count of what was cut', () => {
@@ -1259,8 +1311,11 @@ describe('ToolCallBlock failures', () => {
     const rendered = stripAnsi(raw);
     const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
 
-    expect(lines[0]).toMatch(/failed · exit 1 · 7ms/);
-    expect(lines.slice(1).map((line) => line.trim())).toEqual([
+    // The heading carries no duration; the exit code opens the result.
+    expect(lines[0]).toBe('● Bash(bash scripts/fail.sh)');
+    expect(rendered).not.toContain('7ms');
+    expect(resultRows(lines.join('\n'))).toEqual([
+      'Error: exit 1',
       '… +36 lines (Ctrl+E)',
       'error: assertion 37 failed in test/case_37.test.js: expected 200, got 500',
       'error: assertion 38 failed in test/case_38.test.js: expected 200, got 500',
@@ -1269,7 +1324,10 @@ describe('ToolCallBlock failures', () => {
     ]);
     expect(rendered).not.toContain('assertion 1 failed');
     expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}… +36 lines (Ctrl+E)`);
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}error: assertion 40`);
+    // The output's tail is detail, in the result's grey; only the label takes the rose.
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}Error:`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)}error: assertion 40`);
+    expect(raw).not.toContain(`${rgb(DEFAULT_THEME.error)}error: assertion 40`);
   });
 
   it('shows every line of the failure once the row is shown in full, with no hint', () => {
@@ -1301,8 +1359,8 @@ describe('ToolCallBlock failures', () => {
     );
     const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
 
-    expect(lines[0]).toMatch(/failed · exit 1 · 7ms/);
-    expect(lines.slice(1).map((line) => line.trim())).toEqual(stderr);
+    expect(lines[0]).toBe('● Bash(bash scripts/fail.sh)');
+    expect(resultRows(lines.join('\n'))).toEqual(['Error: exit 1', ...stderr]);
     expect(rendered).not.toContain('Ctrl+E');
     expect(rendered).not.toContain('… +');
   });
@@ -1335,13 +1393,9 @@ describe('ToolCallBlock failures', () => {
         ),
       ),
     );
-    const lines = rendered
-      .split('\n')
-      .filter((line) => line.trim().length > 0)
-      .slice(1)
-      .map((line) => line.trim());
+    const lines = resultRows(rendered).filter(Boolean);
 
-    expect(lines).toEqual(['… +36 lines (Ctrl+E)', ...stderr.slice(-4)]);
+    expect(lines).toEqual(['Error: exit 1', '… +36 lines (Ctrl+E)', ...stderr.slice(-4)]);
   });
 
   it('draws the stdout of a command with no stderr once when the row is expanded in full', () => {
@@ -1403,12 +1457,9 @@ describe('ToolCallBlock failures', () => {
         />,
       ),
     );
-    const detail = rendered
-      .split('\n')
-      .slice(1)
-      .map((line) => line.trim())
-      .filter(Boolean);
+    const [exit, ...detail] = resultRows(rendered).filter(Boolean);
 
+    expect(exit).toBe('Error: exit 1');
     expect(detail.length).toBeGreaterThan(1);
     expect(detail.join('')).toBe(long);
     expect(rendered).not.toContain('…');
@@ -1484,9 +1535,9 @@ describe('ToolCallBlock failures', () => {
     const rendered = stripAnsi(raw);
     const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
 
-    expect(lines[0]).toMatch(/failed · exit 1 · 7ms/);
-    expect(lines[0]).not.toMatch(/12 lines/);
-    expect(lines.slice(1).map((line) => line.trim())).toEqual([
+    expect(lines[0]).toBe('● Bash(npm test)');
+    expect(resultRows(lines.join('\n'))).toEqual([
+      'Error: exit 1',
       '… +8 lines (Ctrl+E)',
       'FAIL test/case_9.test.js',
       'FAIL test/case_10.test.js',
@@ -1494,7 +1545,8 @@ describe('ToolCallBlock failures', () => {
       'FAIL test/case_12.test.js',
     ]);
     expect(lines.slice(1).join('\n')).not.toContain('Exit code: 1');
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}FAIL test/case_12`);
+    expect(rendered).not.toContain('7ms');
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)}FAIL test/case_12`);
   });
 
   describe('a failed command with stdout under its stderr', () => {
@@ -1536,33 +1588,34 @@ describe('ToolCallBlock failures', () => {
           />,
         ),
       );
+    /** The rows of the frame, trimmed, the result's `⎿` connector dropped from its first. */
     const linesOf = (raw: string) =>
       stripAnsi(raw)
         .split('\n')
         .filter((line) => line.trim().length > 0)
-        .map((line) => line.trim());
+        .map((line) => line.trim().replace(/^⎿\s+/, ''));
 
     it('names the stdout under the stderr tail, and the key on the Ctrl+E target', () => {
       const raw = draw(failed());
       const lines = linesOf(raw);
 
-      expect(lines[0]).toMatch(/failed · exit 1 · 7ms/);
-      expect(lines.slice(1)).toEqual([STDERR, '… +1 line of output (Ctrl+E)']);
-      expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}${STDERR}`);
+      expect(lines[0]).toBe('● Bash(npm test)');
+      expect(lines.slice(1)).toEqual(['Error: exit 1', STDERR, '… +1 line of output (Ctrl+E)']);
+      expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)}${STDERR}`);
       expect(raw).toContain(`${rgb(DEFAULT_THEME.inactive)}… +1 line of output (Ctrl+E)`);
       expect(stripAnsi(raw)).not.toContain(STDOUT);
     });
 
     it('drops the key from the footer of a row that Ctrl+E does not target', () => {
       const lines = linesOf(draw(failed(), { targetId: 'some-other-row' }));
-      expect(lines.slice(1)).toEqual([STDERR, '… +1 line of output']);
+      expect(lines.slice(1)).toEqual(['Error: exit 1', STDERR, '… +1 line of output']);
     });
 
     it('does the same for a failed Check row', () => {
       const view = { name: 'Check', args: { name: 'unit' } };
       const lines = linesOf(draw(failed('Check', { name: 'unit' }), view));
-      expect(lines[0]).toMatch(/failed · exit 1 · 7ms/);
-      expect(lines.slice(1)).toEqual([STDERR, '… +1 line of output (Ctrl+E)']);
+      expect(lines[0]).toBe('● Check(unit)');
+      expect(lines.slice(1)).toEqual(['Error: exit 1', STDERR, '… +1 line of output (Ctrl+E)']);
     });
 
     it('draws the stdout once, with no footer, when Ctrl+E has shown the row in full', () => {
@@ -1593,6 +1646,7 @@ describe('ToolCallBlock failures', () => {
         details: { exitCode: 128 },
       });
       expect(linesOf(draw(result)).slice(1)).toEqual([
+        'Error: exit 128',
         STDERR,
         note,
         '… +1 line of output (Ctrl+E)',
@@ -1609,6 +1663,7 @@ describe('ToolCallBlock failures', () => {
       it('carries both counts in the one footer above the tail, with the key once', () => {
         const raw = draw(cut);
         expect(linesOf(raw).slice(1)).toEqual([
+          'Error: exit 1',
           '… +8 lines, +1 line of output (Ctrl+E)',
           ...stderr.slice(-4),
         ]);
@@ -1620,7 +1675,11 @@ describe('ToolCallBlock failures', () => {
 
       it('drops the key from it on a row that Ctrl+E does not target', () => {
         const lines = linesOf(draw(cut, { targetId: 'some-other-row' })).slice(1);
-        expect(lines).toEqual(['… +8 lines, +1 line of output', ...stderr.slice(-4)]);
+        expect(lines).toEqual([
+          'Error: exit 1',
+          '… +8 lines, +1 line of output',
+          ...stderr.slice(-4),
+        ]);
       });
 
       it('names no stdout when the row is open: the output block draws it', () => {
@@ -1634,10 +1693,10 @@ describe('ToolCallBlock failures', () => {
           content: 'OUT-A\n',
           details: { exitCode: 1 },
         });
-        expect(linesOf(draw(tail)).slice(1)[0]).toBe('… +8 lines, +1 line of output (Ctrl+E)');
+        expect(linesOf(draw(tail)).slice(1)[1]).toBe('… +8 lines, +1 line of output (Ctrl+E)');
         const open = stripAnsi(draw(tail, { isExpanded: true, showAllToolOutput: true }));
-        expect(open.split('\n').filter((line) => line.includes('│'))).toHaveLength(1);
-        expect(open).toContain('OUT-A');
+        // The exit code and the whole stderr, then the output block's one row.
+        expect(resultRows(open).slice(1 + stderr.length)).toEqual(['OUT-A']);
       });
     });
 
@@ -1647,8 +1706,8 @@ describe('ToolCallBlock failures', () => {
         const result = toolFailure(STDERR, { content: stdout, details: { exitCode: 1 } });
         const footer = /\+(\d+) lines? of output/.exec(stripAnsi(draw(result)));
         const open = stripAnsi(draw(result, { isExpanded: true, showAllToolOutput: true }));
-        // Every row of the output block starts at its rail.
-        const rows = open.split('\n').filter((line) => line.includes('│')).length;
+        // The output block's rows follow the exit code and the one stderr row.
+        const rows = resultRows(open).slice(2).length;
         return { named: Number(footer?.[1]), rows };
       };
 
@@ -1676,16 +1735,16 @@ describe('ToolCallBlock failures', () => {
 
     it('names no stdout that is only control characters', () => {
       const result = toolFailure(STDERR, { content: '\u200e\n\u001b\n', details: { exitCode: 1 } });
-      expect(linesOf(draw(result)).slice(1)).toEqual([STDERR]);
+      expect(linesOf(draw(result)).slice(1)).toEqual(['Error: exit 1', STDERR]);
     });
 
     it('names the stdout again once the row is folded back', () => {
       const lines = linesOf(draw(failed(), { isExpanded: false, showAllToolOutput: true }));
-      expect(lines.slice(1)).toEqual([STDERR, '… +1 line of output (Ctrl+E)']);
+      expect(lines.slice(1)).toEqual(['Error: exit 1', STDERR, '… +1 line of output (Ctrl+E)']);
     });
   });
 
-  it('shows no detail rows for a command that failed with no output at all', () => {
+  it('shows only its exit code for a command that failed with no output at all', () => {
     const result = toolFailure('Exit code: 3', { details: { exitCode: 3 } });
     const rendered = stripAnsi(
       colourFrame(
@@ -1700,8 +1759,7 @@ describe('ToolCallBlock failures', () => {
       ),
     );
     const lines = rendered.split('\n').filter((line) => line.trim().length > 0);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/failed · exit 3/);
+    expect(lines).toEqual(['● Bash(false)', '  ⎿  Error: exit 3']);
   });
 
   it('keeps the first line of a multi-line failure that is not command output', () => {
@@ -1721,7 +1779,7 @@ describe('ToolCallBlock failures', () => {
     expect(rendered).toContain('MCP tool x failed: connection refused');
   });
 
-  it('draws the sandbox note after the tail, in the error colour', () => {
+  it('draws the sandbox note after the tail, in the result grey', () => {
     const message = `fatal: Unable to create index.lock\nNote: run it outside the sandbox.`;
     const raw = colourFrame(
       <ToolCallBlock
@@ -1733,15 +1791,12 @@ describe('ToolCallBlock failures', () => {
         reducedMotion
       />,
     );
-    const lines = stripAnsi(raw)
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
-    expect(lines.slice(1)).toEqual([
+    expect(resultRows(stripAnsi(raw)).filter(Boolean)).toEqual([
+      'Error: exit 128',
       'fatal: Unable to create index.lock',
       'Note: run it outside the sandbox.',
     ]);
-    expect(raw).toContain(`${rgb(DEFAULT_THEME.error)}Note: run it outside`);
+    expect(raw).toContain(`${rgb(DEFAULT_THEME.subtle)}Note: run it outside`);
   });
 });
 
@@ -1768,19 +1823,19 @@ describe('ToolCallBlock plan rows', () => {
     );
   }
 
-  it('marks a plan under way rather than checking it', () => {
+  it('names the step in hand and says where the plan stands, with no check', () => {
     // `✓ Steps  Clone vibe-coding repo into workspace   0 of 3 done` read as a step done.
     const rendered = planFrame(['in_progress', 'pending', 'pending']);
-    expect(rendered).toMatch(/◔ Steps\s+Step 1\s+0 of 3 done/);
+    expect(rendered.split('\n')).toEqual(['● Steps(Step 1)', '  ⎿  0 of 3 done']);
     expect(rendered).not.toContain('✓');
   });
 
-  it('marks a plan set out and not begun', () => {
-    expect(planFrame(['pending', 'pending'])).toMatch(/◌ Steps/);
+  it('says a plan set out and not begun', () => {
+    expect(planFrame(['pending', 'pending']).split('\n')).toEqual(['● Steps', '  ⎿  0 of 2 done']);
   });
 
-  it('checks a finished plan', () => {
-    expect(planFrame(['completed', 'completed'])).toMatch(/✓ Steps\s+2 of 2 done/);
+  it('says a finished plan is done', () => {
+    expect(planFrame(['completed', 'completed'])).toContain('⎿  2 of 2 done');
   });
 });
 
@@ -1827,8 +1882,8 @@ describe('ToolCallBlock Ctrl+E hint', () => {
   }
 
   it.each([
-    ['a diff', 'write-new', '… +140 lines'],
-    ['a capped edit', 'edit-long', '… +180 lines'],
+    ['a diff', 'write-new', '… +145 lines'],
+    ['a capped edit', 'edit-long', '… 189 lines hidden'],
     ['a failed command', 'bash-fail', '… +36 lines'],
   ])('drops the key from %s footer when another row is the target', (_name, id, footer) => {
     const rendered = renderRow(id, { target: 'some-other-row' });
@@ -1861,8 +1916,8 @@ describe('ToolCallBlock Ctrl+E hint', () => {
   });
 
   it.each([
-    ['a diff', 'write-new', '… +140 lines (Ctrl+E)'],
-    ['a capped edit', 'edit-long', '… +180 lines (Ctrl+E)'],
+    ['a diff', 'write-new', '… +145 lines (Ctrl+E)'],
+    ['a capped edit', 'edit-long', '… 189 lines hidden (Ctrl+E)'],
     ['a failed command', 'bash-fail', '… +36 lines (Ctrl+E)'],
   ])('names the key in %s footer when the row is the target', (_name, id, footer) => {
     expect(renderRow(id, { target: id })).toContain(footer);
@@ -1871,7 +1926,7 @@ describe('ToolCallBlock Ctrl+E hint', () => {
   it('names no key in the compact transcript outside a provider', () => {
     // With no provider nothing says Ctrl+E acts on this row, so it must not claim the key.
     const rendered = renderRow('write-new');
-    expect(rendered).toContain('… +140 lines');
+    expect(rendered).toContain('… +145 lines');
     expect(rendered).not.toContain('Ctrl+E');
   });
 
@@ -1991,7 +2046,9 @@ describe('ToolCallBlock Ctrl+E hint', () => {
         terminalWidth: 100,
         showAllToolOutput: false,
       });
-      expect([call.id, rendered.includes('… +')]).toEqual([call.id, hides]);
+      // A footer is `… +N lines` under a head preview and `… N lines hidden` under a change one.
+      const footer = /… (?:\+\d|\d+ lines? hidden)/.test(rendered);
+      expect([call.id, footer]).toEqual([call.id, hides]);
       expect([call.id, rendered.includes('of output')]).toEqual([
         call.id,
         namesStdout.has(call.id),

@@ -5,7 +5,7 @@ import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { displayWidth } from './word-wrap.js';
 import { UserMessage, userTurnRows, wrapUserPrompt } from './UserMessage.js';
 import { CONTENT_COLUMN } from '../layout.js';
-import { PILCROW } from '../marks.js';
+import { PROMPT_MARK } from '../marks.js';
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
@@ -43,7 +43,7 @@ describe('UserMessage', () => {
     );
 
     expect(lines).toHaveLength(1);
-    expect(lines[0].startsWith(`${PILCROW} compact request`)).toBe(true);
+    expect(lines[0].startsWith(`${PROMPT_MARK} compact request`)).toBe(true);
     // Upright, and in the brightest ink on screen: italic monospace is the
     // hardest style to read, least of all with diacritics.
     expect(frame).not.toContain('\u001b[3m');
@@ -71,7 +71,7 @@ describe('UserMessage', () => {
     const lines = frameLines(view.lastFrame());
 
     expect(lines.length).toBeGreaterThan(1);
-    expect(lines[0].startsWith(`${PILCROW} `)).toBe(true);
+    expect(lines[0].startsWith(`${PROMPT_MARK} `)).toBe(true);
     for (const line of lines.slice(1)) {
       expect(line.startsWith('  ')).toBe(true);
       expect(line.trim().length).toBeGreaterThan(0);
@@ -96,7 +96,7 @@ describe('UserMessage', () => {
     const view = render(withTheme(<UserMessage content="hello" terminalWidth={80} />));
     const lines = frameLines(view.lastFrame());
 
-    expect(lines[0].trimEnd()).toBe(`${PILCROW} hello`);
+    expect(lines[0].trimEnd()).toBe(`${PROMPT_MARK} hello`);
   });
 
   it('keeps file mentions in the prompt', () => {
@@ -112,7 +112,7 @@ describe('UserMessage', () => {
     const output = stripAnsi(view.lastFrame());
 
     expect(output).toContain('compact request');
-    expect(output).not.toContain(PILCROW);
+    expect(output).not.toContain(PROMPT_MARK);
   });
 });
 

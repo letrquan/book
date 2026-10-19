@@ -1,12 +1,17 @@
 import { Box, Text } from 'ink';
+import React from 'react';
 import { useUiClock } from '../ui-clock.js';
 import type { ManagedAgentTrace, ManagedAgentToolUse } from '../managed-agent-transcript.js';
-import { formatDuration, deriveToolPresentation } from '../tool-presentation.js';
+import {
+  composeToolHeading,
+  deriveToolPresentation,
+  formatDuration,
+} from '../tool-presentation.js';
 import { useTheme } from '../theme.js';
 import { useMemoryRoot } from '../memory-root.js';
-import { CONTENT_COLUMN, GUTTER_WIDTH, indentedGrid, transcriptGrid } from '../layout.js';
-import { truncateDisplay } from './word-wrap.js';
-import { Spinner } from './Spinner.js';
+import { GUTTER_WIDTH, resultContentWidth, transcriptGrid } from '../layout.js';
+import { displayWidth, truncateDisplay } from './word-wrap.js';
+import { ItemMark, ResultBox, ResultLine, type ItemState } from './transcript-item.js';
 
 const MAX_VISIBLE_TOOL_USES = 1;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'stopped', 'interrupted']);
@@ -15,13 +20,6 @@ function useCurrentTime(active: boolean): number {
   const tick = useUiClock('slow', active);
   void tick;
   return Date.now();
-}
-
-function statusGlyph(status: ManagedAgentToolUse['status'] | ManagedAgentTrace['status']): string {
-  if (status === 'completed') return '✓';
-  if (status === 'failed') return '✕';
-  if (status === 'stopped' || status === 'interrupted') return '■';
-  return '›';
 }
 
 function resultPreview(tool: ManagedAgentToolUse): string | undefined {
@@ -40,11 +38,6 @@ function resultPreview(tool: ManagedAgentToolUse): string | undefined {
 function durationFor(trace: ManagedAgentTrace, now: number): string | undefined {
   const end = trace.finishedAt ?? now;
   return formatDuration(Math.max(0, end - trace.startedAt));
-}
-
-function toolDuration(tool: ManagedAgentToolUse): string | undefined {
-  if (!tool.finishedAt) return undefined;
-  return formatDuration(Math.max(0, tool.finishedAt - tool.startedAt));
 }
 
 export function ManagedAgentActivityBlock({
@@ -75,13 +68,17 @@ export function ManagedAgentActivityBlock({
     : trace.blocking
       ? `Lead paused · sidekick working${tabHint}`
       : `Running in background${tabHint}`;
+  // While it runs, the footer says for how long; a finished block's time is no news.
+  const footerLine =
+    terminal || !elapsed
+      ? footer
+      : [
+          trace.blocking ? 'Lead paused · sidekick working' : 'Running in background',
+          elapsed,
+          ...(trace.openable === false ? [] : ['Tab to open']),
+        ].join(' · ');
   const grid = transcriptGrid(terminalWidth);
-  // A managed-agent block fills the same transcript slot as a tool row — it is
-  // the other branch of the same ternary — so it sits on the same indented
-  // grid. Left on the bare grid it would be the only row still hanging its
-  // status glyph a gutter to the left of the prose column.
-  const rowGrid = indentedGrid(grid);
-  const width = rowGrid.content;
+  const width = grid.content;
 
   if (screenReader) {
     return (
@@ -112,74 +109,57 @@ export function ManagedAgentActivityBlock({
     );
   }
 
-  const headerColor =
+  const markState: ItemState =
     trace.status === 'failed'
-      ? theme.error
+      ? 'failure'
       : trace.status === 'completed'
-        ? theme.success
+        ? 'success'
         : trace.status === 'stopped' || trace.status === 'interrupted'
-          ? theme.warning
-          : theme.brand;
+          ? 'skipped'
+          : 'running';
+  // The block is an item like a call: the agent's profile is its name, the purpose its
+  // argument, and what it has been doing hangs under `⎿`. Time shows only while it runs.
+  const resultWidth = resultContentWidth(grid);
+  const purposeRoom = Math.max(4, grid.content - displayWidth(trace.profile) - 2);
   return (
-    <Box flexDirection="column" marginLeft={CONTENT_COLUMN} width={width + GUTTER_WIDTH}>
-      <Box>
-        {terminal ? (
-          <Text color={headerColor}>{statusGlyph(trace.status)} </Text>
-        ) : (
-          <Spinner active color={theme.assistantAccent} reducedMotion={reducedMotion} />
-        )}
-        <Text color={headerColor} bold>
+    <Box flexDirection="column" width={grid.content + GUTTER_WIDTH}>
+      <Box height={1}>
+        <ItemMark state={markState} reducedMotion={reducedMotion} />
+        <Text wrap="truncate-end" bold color={theme.text}>
           {trace.profile}
         </Text>
-        <Text color={theme.text}>
-          ({truncateDisplay(trace.purpose, Math.max(12, width - trace.profile.length - 18))})
-        </Text>
-        {elapsed ? <Text color={theme.subtle}> · {elapsed}</Text> : null}
+        <Text color={theme.inactive}>(</Text>
+        <Text color={theme.subtle}>{truncateDisplay(trace.purpose, purposeRoom)}</Text>
+        <Text color={theme.inactive}>)</Text>
       </Box>
-
-      {visible.map((tool, index) => {
-        const presentation = deriveToolPresentation(
-          tool.call.name,
-          tool.call.arguments,
-          tool.result,
-          { unparsedArguments: tool.call.unparsedArguments, memoryRoot },
-        );
-        const running = tool.status === 'running';
-        const connector = index === visible.length - 1 ? '└' : '├';
-        const color = tool.status === 'failed' ? theme.error : running ? theme.brand : theme.text;
-        const duration = toolDuration(tool);
-        return (
-          <Box key={tool.id} flexDirection="column" marginLeft={CONTENT_COLUMN}>
-            <Box>
-              <Text color={theme.toolRail}>{connector} </Text>
-              {running ? (
-                <Spinner active color={theme.assistantAccent} reducedMotion={reducedMotion} />
-              ) : (
-                <Text color={color}>{statusGlyph(tool.status)} </Text>
-              )}
-              <Text color={color}>
-                {truncateDisplay(presentation.summary, Math.max(12, width - 8))}
-              </Text>
-              {duration ? <Text color={theme.subtle}> · {duration}</Text> : null}
-            </Box>
-            {resultPreview(tool) ? (
-              <Text color={theme.subtle} dimColor>
-                {'    '}└ {resultPreview(tool)}
-              </Text>
-            ) : null}
-          </Box>
-        );
-      })}
-
-      {hiddenCount > 0 ? (
-        <Text color={theme.subtle}>
-          {'  '}… +{hiddenCount} tool {hiddenCount === 1 ? 'use' : 'uses'}
-        </Text>
-      ) : null}
-      <Text color={theme.subtle} dimColor>
-        {'  '}
-        {footer}
-      </Text>
+      <ResultBox width={resultWidth}>
+        {hiddenCount > 0 ? (
+          <ResultLine
+            text={`… +${hiddenCount} tool ${hiddenCount === 1 ? 'use' : 'uses'}`}
+            color={theme.inactive}
+          />
+        ) : null}
+        {visible.map((tool) => {
+          const presentation = deriveToolPresentation(
+            tool.call.name,
+            tool.call.arguments,
+            tool.result,
+            { unparsedArguments: tool.call.unparsedArguments, memoryRoot },
+          );
+          const heading = composeToolHeading(presentation, resultWidth);
+          const preview = tool.status === 'failed' ? resultPreview(tool) : undefined;
+          return (
+            <React.Fragment key={tool.id}>
+              <ResultLine
+                text={heading.target ? `${heading.name}(${heading.target})` : heading.name}
+                color={tool.status === 'failed' ? theme.error : theme.subtle}
+              />
+              {preview ? <ResultLine text={preview} color={theme.error} /> : null}
+            </React.Fragment>
+          );
+        })}
+        <ResultLine text={footerLine} color={theme.inactive} />
+      </ResultBox>
     </Box>
   );
 }

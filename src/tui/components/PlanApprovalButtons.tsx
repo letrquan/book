@@ -11,7 +11,7 @@ import { MarkdownBlock } from './MarkdownBlock.js';
 import { wordWrap } from './word-wrap.js';
 import { ChoiceList, DecisionSheet, type Choice } from './chrome.js';
 import { PANEL_CHROME, frameGrid } from '../layout.js';
-import { PILCROW } from '../marks.js';
+import { PROMPT_MARK } from '../marks.js';
 
 const uiLog = createUiDebugLogger('tui:planapproval');
 
@@ -220,7 +220,7 @@ export function PlanApprovalActions({
         <Box flexDirection="column" marginTop={1}>
           <Text color={theme.border}>{'─'.repeat(contentWidth)}</Text>
           <Box>
-            <Text color={theme.brand}>{`${PILCROW} `}</Text>
+            <Text color={theme.brand}>{`${PROMPT_MARK} `}</Text>
             <TextInput
               value={feedback}
               placeholder="Add feedback for the revised plan"

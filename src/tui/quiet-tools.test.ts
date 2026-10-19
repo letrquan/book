@@ -12,6 +12,8 @@ import {
   isQuietInvocation,
   continuesQuietRun,
   summarizeQuietRun,
+  quietRunFiles,
+  quietRunHeading,
   type QuietToolContext,
 } from './quiet-tools.js';
 
@@ -533,6 +535,10 @@ describe('summarizeQuietRun', () => {
       target: 'config.ts, loader.ts',
       metadata: ['2 files', '1 search'],
       running: false,
+      files: ['config.ts', 'loader.ts'],
+      patterns: ['timeoutMs'],
+      listed: [],
+      others: [],
     });
   });
 
@@ -545,6 +551,41 @@ describe('summarizeQuietRun', () => {
     expect(summary.target).toBe('retries, **/*.ts');
     expect(summary.metadata).toEqual(['2 searches']);
     expect(summary.running).toBe(true);
+  });
+});
+
+describe('quietRunHeading', () => {
+  it('writes a run as the calls it stands for, naming one file and counting several', () => {
+    const run = (invocations: Parameters<typeof summarizeQuietRun>[0]) =>
+      quietRunHeading(summarizeQuietRun(invocations));
+    expect(
+      run([
+        { call: call('a', 'Grep', { pattern: 'memory' }), result: ok('a') },
+        { call: call('b', 'Read', { file_path: 'src/settings.ts' }), result: ok('b') },
+        { call: call('c', 'Read', { file_path: 'README.md' }), result: ok('c') },
+      ]),
+    ).toBe('Search(memory), Read(2 files)');
+    expect(
+      run([{ call: call('a', 'Read', { file_path: 'src/settings.ts' }), result: ok('a') }]),
+    ).toBe('Read(settings.ts)');
+    expect(
+      run([
+        { call: call('a', 'Bash', { command: 'ls src' }), result: ok('a') },
+        { call: call('b', 'Bash', { command: 'git status' }), result: ok('b') },
+      ]),
+    ).toBe('List(src), git status');
+  });
+
+  it('folds a newline or an escape sequence in a pattern or a file name to a space', () => {
+    const summary = summarizeQuietRun([
+      { call: call('a', 'Grep', { pattern: 'foo\nbar\u001b[2J' }), result: ok('a') },
+      { call: call('b', 'Read', { file_path: 'src/a\u202eb.ts' }), result: ok('b') },
+      { call: call('c', 'Read', { file_path: 'README.md' }), result: ok('c') },
+    ]);
+    const heading = quietRunHeading(summary);
+    expect(heading).not.toMatch(/[\u0000-\u001f\u202e]/);
+    expect(heading).toContain('Search(foo bar [2J)');
+    expect(quietRunFiles(summary)).not.toMatch(/[\u0000-\u001f\u202e]/);
   });
 });
 
@@ -661,6 +702,10 @@ describe('read-only shell commands (#459)', () => {
       target: 'a.js',
       metadata: ['1 file', '1 search', '1 lookup'],
       running: false,
+      files: ['a.js'],
+      patterns: ['TODO'],
+      listed: [],
+      others: ['git status'],
     });
   });
 
@@ -690,6 +735,10 @@ describe('read-only shell commands (#459)', () => {
       target: 'TODO',
       metadata: ['1 search', '1 listing', '2 lookups'],
       running: false,
+      files: [],
+      patterns: ['TODO'],
+      listed: ['src'],
+      others: ['git status', 'git log'],
     });
     // With nothing else to name, the target is the git subcommand, not `Bash`.
     expect(
@@ -705,6 +754,10 @@ describe('read-only shell commands (#459)', () => {
       target: 'git status, git diff',
       metadata: ['2 lookups'],
       running: false,
+      files: [],
+      patterns: [],
+      listed: [],
+      others: ['git status', 'git diff'],
     });
   });
 
@@ -800,6 +853,10 @@ describe('read-only shell commands (#459)', () => {
         target: 'TODO',
         metadata: ['1 search'],
         running: false,
+        files: [],
+        patterns: ['TODO'],
+        listed: [],
+        others: [],
       });
     });
 
@@ -870,6 +927,10 @@ describe('read-only shell commands (#459)', () => {
       target: 'a.js',
       metadata: ['1 file', '1 search', '1 listing'],
       running: false,
+      files: ['a.js'],
+      patterns: ['TODO'],
+      listed: ['src'],
+      others: [],
     });
   });
 

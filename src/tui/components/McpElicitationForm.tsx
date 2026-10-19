@@ -17,7 +17,7 @@ import type {
 import { useTheme } from '../theme.js';
 import { truncateDisplay, wordWrap } from './word-wrap.js';
 import { ChoiceList, DecisionSheet, floatingFrameMetrics, type Choice } from './chrome.js';
-import { PILCROW } from '../marks.js';
+import { PROMPT_MARK } from '../marks.js';
 
 interface McpElicitationFormProps {
   request: ElicitationRequest;
@@ -330,7 +330,7 @@ export function McpElicitationForm({
           {field.kind === 'enum' ? (
             <Box flexDirection="column">
               <Box>
-                <Text color={theme.brand}>{`${PILCROW} `}</Text>
+                <Text color={theme.brand}>{`${PROMPT_MARK} `}</Text>
                 <TextInput
                   value={draft}
                   placeholder="type to filter"
@@ -361,7 +361,7 @@ export function McpElicitationForm({
             </Box>
           ) : (
             <Box>
-              <Text color={theme.brand}>{`${PILCROW} `}</Text>
+              <Text color={theme.brand}>{`${PROMPT_MARK} `}</Text>
               <TextInput
                 value={draft}
                 onChange={(value) => setDraft(value.slice(0, 2000))}

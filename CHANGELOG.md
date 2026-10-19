@@ -88,6 +88,11 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Symbols such as `⎿`, `⏺` and `⌘` are measured one column wide.** Book's `displayWidth` counted
+  the whole Miscellaneous Technical block (U+2300–U+23FF) as two columns, while Ink and the
+  terminal draw them in one, so a row that used one wrapped or padded a column early. Only its
+  emoji-presentation characters (`⌚`, `⏳`, `⏰`) and the East Asian Wide angle brackets (`〈`,
+  `〉`) are wide now.
 - **Resizing the terminal during a turn no longer leaves a second working indicator, input bar and
   footer on screen** (#525, #538, #537, #547). On a narrowing resize Ink drew at once with the old
   layout, and a row wider than the new width autowrapped and threw off its line count, so the next
@@ -597,6 +602,34 @@ All notable changes to this project are documented in this file.
   sends for the goal.
 
 ### Changed
+
+- **The transcript is set as Claude Code-style items.** Every item of a turn opens on one mark in
+  the margin, `●`, whose colour carries its state: green done, rose failed, amber waiting for your
+  approval or skipped, grey for a folded run of reads or a call Book refused before it ran, and
+  blinking while it runs. No row carries a check or a cross any more.
+  - A call is headed `Name(argument)` (`Bash(npm test)`, `Read(src/config.ts)`; a search is a
+    `Search`, an edit an `Update`, a new file a `Write`), and its result hangs under it after `⎿`
+    in words, with no timings on a finished row: `Read 40 lines`, `Found 67 matches`,
+    `Added 1 line, removed 1 line`, `Wrote 5 lines`. A command shows its first line of output, then
+    `… +N lines`.
+  - A failure opens on `Error: exit N` or on its message. Only the mark and the `Error:` label take
+    the rose; the message and the output's tail keep the result's grey.
+  - The sentence the agent says before acting is the grey caption of the call under it, with no
+    mark; the final answer opens on its own `●` once it settles.
+  - The compact transcript draws no thought at all (Ctrl+O and screen-reader mode still show
+    every thought).
+  - One blank row stands between items and before each prompt, and your turns and the composer open
+    on `>`. The pilcrow `¶` still heads decision prompts and the title page's contents.
+  - A diff has one line-number column and no rail. The compact transcript previews an edit as up to
+    12 rows of its changes with one line of context, a new file as its first 5 lines, and a change
+    across several files from the top with every row under its file's name. Each edit is its own
+    `Update(path)` item; the grouped-edits heading is gone.
+  - A folded run of reads reads `Search(memory), Read(3 files)`, with the files under `⎿`.
+  - An expanded command's output is never read as Markdown, so a test runner's `# pass 12` no
+    longer draws as a heading.
+  - The Ctrl+E target and the transcript's row estimate size rows the way they now draw.
+  - This supersedes the row formats that earlier entries in this section describe (the `✓` and
+    `×` rows, the `▸ thought` row a final answer kept, and the 20-row and 10-line diff previews).
 
 - **`quota_exhausted` is a new `AgentTerminalReason`: a spent usage limit, or a wait the retries
   cannot reach, parks the run** (#409). A change for SDK and stream-json consumers that switch over

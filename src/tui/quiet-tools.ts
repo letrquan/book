@@ -2,6 +2,7 @@ import { basename, isAbsolute, relative, resolve } from 'path';
 import { isTerminalShellStatus } from '../jobs/shell-manager.js';
 import { splitReasoningParts } from '../reasoning-tags.js';
 import { canonicalToolName } from '../tools/aliases.js';
+import { foldControlCharacters } from '../control-characters.js';
 import type { Message } from '../types/messages.js';
 import type { BackgroundShellStatus } from '../types/runtime.js';
 import type { ToolCall, ToolResult } from '../types/tools.js';
@@ -351,9 +352,8 @@ function isMessage(entry: TimelineEntry | undefined): entry is Message {
  * keeps the first message's id, so it holds its place in the virtual transcript
  * as the run grows.
  *
- * The merged entry carries every member's thoughts in its `reasoningContent`: the
- * compact transcript hides them ({@link hidesThoughtsInCompact}), except while a
- * permission prompt waits on one of the run's calls.
+ * The merged entry carries every member's thoughts in its `reasoningContent`, which the
+ * compact transcript does not draw; Ctrl+O's detailed transcript shows them.
  *
  * Merged entries are cached by the identity of the messages they were built
  * from, so a run that did not change keeps the same object and its row is not
@@ -463,6 +463,14 @@ export interface QuietRunSummary {
   target: string;
   metadata: string[];
   running: boolean;
+  /** The files the run read, by basename, in the order it first read them. */
+  files: string[];
+  /** What it searched for: patterns, queries, globs. */
+  patterns: string[];
+  /** The directories it listed; `.` for the current one. */
+  listed: string[];
+  /** Lookups that are none of those: a `git status`, a tool named by itself. */
+  others: string[];
 }
 
 function argString(args: Record<string, unknown>, ...keys: string[]): string | undefined {
@@ -550,5 +558,30 @@ export function summarizeQuietRun(
     target,
     metadata,
     running: invocations.some((invocation) => !invocation.result),
+    files,
+    patterns,
+    listed,
+    others: [...new Set(others)],
   };
+}
+
+/**
+ * A folded run's heading, written as the calls it stands for: `Search(memory), Read(4 files)`.
+ * A single file or listing is named; several are counted, and the result row names them.
+ */
+export function quietRunHeading(summary: QuietRunSummary): string {
+  const parts: string[] = [];
+  if (summary.patterns.length > 0) parts.push(`Search(${summary.patterns.join(', ')})`);
+  if (summary.files.length === 1) parts.push(`Read(${summary.files[0]})`);
+  else if (summary.files.length > 1) parts.push(`Read(${summary.files.length} files)`);
+  if (summary.listed.length > 0) parts.push(`List(${summary.listed.join(', ')})`);
+  if (summary.others.length > 0) parts.push(summary.others.join(', '));
+  // Patterns and file names are the model's: a newline or an escape sequence in one must not
+  // break the one-row heading or reach the terminal.
+  return foldControlCharacters(parts.join(', ') || summary.title);
+}
+
+/** The files a folded run read, for its result row, folded to one line like its heading. */
+export function quietRunFiles(summary: QuietRunSummary): string {
+  return foldControlCharacters(summary.files.join(', '));
 }
