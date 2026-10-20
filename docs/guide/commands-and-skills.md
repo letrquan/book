@@ -61,8 +61,13 @@ dotfiles repository) does not count as one. The rule covers the whole resolved b
 included, so `/review-file @notes.md` inlines `notes.md` only if it is committed and unchanged;
 mention a changed file in a message of your own instead. A line of the body that starts with `!`
 is not run either, in the TUI as in print mode: only the approved substitution above runs. Mentions
-you type, and commands in `$BOOK_HOME/commands/`, are not affected. Every mention, typed or not, also stays inside the
+you type, and mentions in commands in `$BOOK_HOME/commands/`, are not affected. Every mention, typed or not, also stays inside the
 boundary the Read tool uses: the workspace and your `additionalDirectories`.
+
+**A `!` line runs only in a message you type.** In the TUI, a line of your message that starts with
+`!` runs and its output replaces it. In a command's body, your own commands included, and in a
+built-in command's prompt, such a line stays text: run shell from a command with the substitution
+syntax above. Print mode and the SDK run no `!` line at all.
 
 **`allowed-tools` narrows what a command, skill, or agent role may run.** A rule such as
 `Bash(git *)` admits a Bash call only if the whole command matches the pattern, and only if the

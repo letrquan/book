@@ -123,7 +123,17 @@ export interface BuiltinCommandContext {
 }
 
 export type BuiltinCommandEffect =
-  | { type: 'send-prompt'; prompt: string; context: CommandContext }
+  | {
+      type: 'send-prompt';
+      prompt: string;
+      context: CommandContext;
+      /**
+       * The prompt carries the repository's own text (`REVIEW.md`), so the host expands it as it
+       * does a project command's body: its mentions inline only files git has committed,
+       * unchanged, and none of its `!` lines run (#564).
+       */
+      projectCommand?: boolean;
+    }
   | {
       type: 'local-message';
       content: string;
@@ -180,11 +190,16 @@ export type BuiltinCommandDefinition = CommandDefinition<
   BuiltinCommandEffect
 >;
 
+/**
+ * A built-in command's prompt. `repositoryText` says whether the prompt carries text the
+ * repository wrote (REVIEW.md), which the host then expands as a project command's body.
+ */
 function promptEffect(
   name: string,
   description: string,
   prompt: string,
   allowedTools: string[],
+  repositoryText: boolean,
 ): BuiltinCommandEffect {
   return {
     type: 'send-prompt',
@@ -194,6 +209,7 @@ function promptEffect(
       resolvedBody: prompt,
       allowedTools,
     },
+    ...(repositoryText ? { projectCommand: true } : {}),
   };
 }
 
@@ -500,6 +516,7 @@ function memoryConsolidateEffect(
     'Consolidate project memory',
     prompt,
     memoryConsolidateTools(dir),
+    false,
   );
 }
 
@@ -1030,12 +1047,13 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     nonInteractive: true,
     execute: (_invocation, context) => {
       const prompt = buildInitPrompt(context.workspace);
-      return promptEffect('init', 'Initialize CLAUDE.md', prompt, [
-        'Read',
-        'Glob',
-        'Grep',
-        'Write',
-      ]);
+      return promptEffect(
+        'init',
+        'Initialize CLAUDE.md',
+        prompt,
+        ['Read', 'Glob', 'Grep', 'Write'],
+        false,
+      );
     },
   },
   {
@@ -1104,9 +1122,15 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     nonInteractive: true,
     execute: ({ rawArguments }, context) => {
       const prompt = buildSecurityReviewPrompt(rawArguments, context.workspace);
-      return promptEffect('security-review', 'Security audit of current diff', prompt, [
-        ...SECURITY_REVIEW_TOOLS,
-      ]);
+      // REVIEW.md is the repository's text, so the whole prompt, arguments included, is expanded
+      // as a project command's body is, whether or not the workspace has one.
+      return promptEffect(
+        'security-review',
+        'Security audit of current diff',
+        prompt,
+        [...SECURITY_REVIEW_TOOLS],
+        true,
+      );
     },
   },
   {

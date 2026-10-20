@@ -276,6 +276,10 @@ interface SendMessageOptions {
   parentRunId?: string;
   /** The text is a project command's resolved body: its mentions inline only committed files (#564). */
   projectCommand?: boolean;
+  /** The text is what the user typed: its `!cmd` lines run. */
+  expandShellInput?: boolean;
+  /** What a rewind to this turn puts back in the composer instead of the text: a command's line. */
+  rewindPrompt?: string;
 }
 
 /** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
@@ -1143,6 +1147,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         sessionNameSource: messageOptions?.sessionNameSource,
         sessionNameExact: messageOptions?.sessionNameExact,
         projectCommand: messageOptions?.projectCommand,
+        expandShellInput: messageOptions?.expandShellInput,
+        rewindPrompt: messageOptions?.rewindPrompt,
         snapshotStore: session.snapshotStore,
         timelineStore,
         registryStore: timelineStore,
@@ -1561,6 +1567,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         attachments,
         sessionNameSource,
         projectCommand,
+        // A `!` line runs only in what the user typed, which the app sends with nothing but its
+        // attachments. A command's body (it always names its session after the typed line) or a
+        // built-in command's prompt keeps its `!` lines as text: shell substitution output, or the
+        // repository's own text (REVIEW.md), may be in it.
+        expandShellInput:
+          commandContext === undefined && sessionNameSource === undefined && !projectCommand,
+        // A rewind to a command's turn puts back the line the user typed, so sending it again
+        // runs the command again instead of sending its body as typed text.
+        rewindPrompt: sessionNameSource,
       });
     },
     [sendMessage],

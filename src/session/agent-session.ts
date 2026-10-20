@@ -157,8 +157,16 @@ export interface AgentSessionPrepareSendRequest {
   sessionNameExact?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
+  /** See {@link AgentSessionRecordUserRequest.expandShellInput}. */
+  expandShellInput?: boolean;
   /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
   projectCommand?: boolean;
+  /**
+   * What a rewind to this turn puts back in the composer, when that is not `displayMessage`: the
+   * command line the user typed, for a command's body. Sent again, it goes back through the
+   * command, rather than as typed text.
+   */
+  rewindPrompt?: string;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
@@ -184,6 +192,11 @@ export interface AgentSessionRecordUserRequest {
    */
   sessionNameExact?: string;
   timelineStore?: SessionTimelineStore;
+  /**
+   * `displayMessage` is text the user typed: its `!cmd` lines run. Off unless a host says so, so
+   * text it sends for any other reason (a command's body, a built-in command's prompt, a
+   * notification) never runs one.
+   */
   expandShellInput?: boolean;
   /**
    * `displayMessage` is the resolved body of a project command (`.book/commands/*.md`): its
@@ -216,8 +229,12 @@ export interface AgentSessionSendRequest {
   sessionNameSource?: string;
   /** See {@link AgentSessionRecordUserRequest.sessionNameExact}. */
   sessionNameExact?: string;
+  /** See {@link AgentSessionRecordUserRequest.expandShellInput}. */
+  expandShellInput?: boolean;
   /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
   projectCommand?: boolean;
+  /** See {@link AgentSessionPrepareSendRequest.rewindPrompt}. */
+  rewindPrompt?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
   registryStore?: SessionStoreInterface;
@@ -487,7 +504,9 @@ export class AgentSession {
           sessionName: request.sessionName,
           sessionNameSource: request.sessionNameSource,
           sessionNameExact: request.sessionNameExact,
+          expandShellInput: request.expandShellInput,
           projectCommand: request.projectCommand,
+          rewindPrompt: request.rewindPrompt,
           snapshotStore: request.snapshotStore,
           timelineStore: request.timelineStore,
           signal: control.signal,
@@ -994,10 +1013,11 @@ export class AgentSession {
           gitHead: capture.gitHead,
           codeUnavailableReason: capture.reason,
         };
+    const rewindPrompt = request.rewindPrompt ?? request.displayMessage;
     const rewindTarget: RewindTarget = {
       id: checkpointId,
       userEventId: request.userMessage.id,
-      prompt: request.displayMessage,
+      prompt: rewindPrompt,
       attachments: request.userMessage.attachments,
       timestamp: checkpointTimestamp,
       ...checkpoint,
@@ -1012,7 +1032,7 @@ export class AgentSession {
         version: 1,
         checkpointId,
         userEventId: request.userMessage.id,
-        prompt: request.displayMessage,
+        prompt: rewindPrompt,
         attachments: request.userMessage.attachments,
         checkpoint,
       } satisfies TurnCheckpointRecordData,
@@ -1038,7 +1058,7 @@ export class AgentSession {
       request.contextMessage !== undefined
         ? undefined
         : await expandUserInputDetailed(request.displayMessage, request.config.workspace, {
-            expandShell: request.expandShellInput !== false,
+            expandShell: request.expandShellInput === true,
             signal: request.signal,
             sourceRef: request.userMessage.id,
             // The roots Read serves besides the workspace, resolved as the agent loop does, and

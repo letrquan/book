@@ -237,6 +237,21 @@ describe('naming a session after the command line the user typed', () => {
     ]);
   });
 
+  // `/security-review`'s prompt carries the repository's REVIEW.md, so it is expanded as a project
+  // command's body is.
+  it("marks /security-review's prompt as the repository's text", async () => {
+    const view = startApp();
+    await settle();
+
+    await submit(view, '/security-review');
+
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    const [body, , , nameSource, projectCommand] = sendMock.mock.calls[0]!;
+    expect(String(body)).toContain('Perform a security review');
+    expect(nameSource).toBe('/security-review');
+    expect(projectCommand).toBe(true);
+  });
+
   it('sends an ordinary prompt with no name source', async () => {
     const view = startApp();
     await settle();

@@ -2233,7 +2233,15 @@ export function App({
           return;
         }
         if (effect?.type === 'send-prompt') {
-          void dispatchAgentSend(effect.prompt, effect.context, undefined, value);
+          // A prompt that carries the repository's text (`/security-review`'s REVIEW.md) is
+          // expanded as a project command's body is (#564).
+          void dispatchAgentSend(
+            effect.prompt,
+            effect.context,
+            undefined,
+            value,
+            effect.projectCommand,
+          );
           return;
         }
         if (effect?.type === 'local-message') {
