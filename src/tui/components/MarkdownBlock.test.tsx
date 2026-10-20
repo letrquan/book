@@ -798,6 +798,74 @@ describe('MarkdownBlock code block with tabs (#547)', () => {
   });
 });
 
+describe('MarkdownBlock prose with tabs (#565)', () => {
+  const WIDTH = 73;
+  const CONTENT = [
+    'Here is the data:',
+    '',
+    'name\tvalue\tunit\tcomment on the measured quantity which keeps going ENDA',
+    '',
+    '- item\tone\ttwo\tthree four five six seven eight nine ten eleven ENDB',
+    '',
+    '| name\tx | note |',
+    '| --- | --- |',
+    '| a\tb | cell\tENDC |',
+    '',
+    'span `x\ty\tz ENDD` end. DONE',
+  ].join('\n');
+
+  function terminalRows(output: string): string[] {
+    return output.split('\n').map((row) => expandTabs(row, displayWidth));
+  }
+
+  it.each([
+    ['settled', false],
+    ['streaming', true],
+  ])('measures a tab in a paragraph, list item, table cell and code span when %s', (_n, stream) => {
+    const view = render(
+      withTheme(
+        React.createElement(MarkdownBlock, {
+          content: CONTENT,
+          terminalWidth: WIDTH,
+          isStreaming: stream,
+        }),
+      ),
+    );
+    const output = frame(view.lastFrame);
+    expect(output).not.toContain('\t');
+    for (const row of terminalRows(output)) {
+      expect(displayWidth(row)).toBeLessThanOrEqual(WIDTH);
+    }
+    const flat = output.replace(/\s+/g, '');
+    for (const word of ['going', 'ENDA', 'eleven', 'ENDB', 'ENDC', 'ENDD', 'DONE']) {
+      expect(flat).toContain(word);
+    }
+  });
+
+  it('never carries a row past the width with a tab run at the edge', () => {
+    for (let lead = 60; lead < 74; lead++) {
+      const content = `${'a'.repeat(lead)}\tnext word here`;
+      const view = render(
+        withTheme(React.createElement(MarkdownBlock, { content, terminalWidth: WIDTH })),
+      );
+      const output = frame(view.lastFrame);
+      for (const row of output.split('\n')) {
+        expect(displayWidth(row), `lead ${lead}`).toBeLessThanOrEqual(WIDTH);
+      }
+      expect(output.replace(/\s+/g, '')).toContain('nextwordhere');
+    }
+  });
+
+  it('keeps a tab-aligned paragraph on tab stops from the start of the text', () => {
+    const view = render(
+      withTheme(
+        React.createElement(MarkdownBlock, { content: 'ab\tcd\tef', terminalWidth: WIDTH }),
+      ),
+    );
+    expect(frame(view.lastFrame).trimEnd()).toBe('ab      cd      ef');
+  });
+});
+
 describe('useThrottledValue', () => {
   // The trailing-emit / within-window cadence is the contract's non-trivial
   // half, but fake-timer tests are flaky under ink-testing-library (React

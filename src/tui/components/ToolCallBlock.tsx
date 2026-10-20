@@ -534,16 +534,7 @@ function OutputBlock({
 }) {
   const contentWidth = toolOutputContentWidth(terminalWidth);
   const footerWidth = contentWidth;
-  const display = useMemo(
-    () => toolOutputDisplay(output, { success, showAllToolOutput, terminalWidth, expandHint }),
-    [expandHint, output, showAllToolOutput, success, terminalWidth],
-  );
   const language = inferLanguage(output, toolName);
-  const displayText = display.lines.join('\n');
-  const highlighted = useMemo(
-    () => (language ? highlightCode(displayText, language, theme) : undefined),
-    [displayText, language, theme],
-  );
   // The markdown sniff regex scans the whole output string; memoize it so an
   // expanded multi-MB result pays that once per output, not once per render.
   // A command's output is never Markdown, whatever it looks like: a test runner's `# pass 12`
@@ -551,6 +542,23 @@ function OutputBlock({
   const renderAsMarkdown = useMemo(
     () => !language && !isCommandTool(toolName) && looksLikeMarkdown(output, toolName),
     [language, output, toolName],
+  );
+  // Shown in full, a long line continues on the rows below it; Markdown wraps its own text.
+  const display = useMemo(
+    () =>
+      toolOutputDisplay(output, {
+        success,
+        showAllToolOutput,
+        terminalWidth,
+        expandHint,
+        wrapLongLines: !renderAsMarkdown,
+      }),
+    [expandHint, output, renderAsMarkdown, showAllToolOutput, success, terminalWidth],
+  );
+  const displayText = display.lines.join('\n');
+  const highlighted = useMemo(
+    () => (language ? highlightCode(displayText, language, theme) : undefined),
+    [displayText, language, theme],
   );
 
   if (renderAsMarkdown) {
