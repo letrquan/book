@@ -520,6 +520,7 @@ describe('runHeadless — mentions in a project command', () => {
 
     const sent = lastUserText(provider);
     expect(sent).toContain('Calibrate severity for this repository.');
+    // Print mode runs no `!` line in any text; this holds that for REVIEW.md too.
     expect(sent).toContain('!echo review-line > review-line.txt');
     expect(existsSync(join(config.workspace, 'review-line.txt'))).toBe(false);
     expect(sent).not.toContain('FAKE-ENV-SECRET');

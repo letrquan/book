@@ -187,9 +187,9 @@ export interface AgentSessionRecordUserRequest {
   sessionNameExact?: string;
   timelineStore?: SessionTimelineStore;
   /**
-   * `displayMessage` is text the user typed, or the body of their own command: its `!cmd` lines
-   * run. Off unless a host says so, so text it sends for any other reason (a built-in command's
-   * prompt, a project command's body, a notification) never runs one.
+   * `displayMessage` is text the user typed: its `!cmd` lines run. Off unless a host says so, so
+   * text it sends for any other reason (a command's body, a built-in command's prompt, a
+   * notification) never runs one.
    */
   expandShellInput?: boolean;
   /**

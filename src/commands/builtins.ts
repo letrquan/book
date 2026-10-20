@@ -190,21 +190,26 @@ export type BuiltinCommandDefinition = CommandDefinition<
   BuiltinCommandEffect
 >;
 
+/**
+ * A built-in command's prompt. `repositoryText` says whether the prompt carries text the
+ * repository wrote (REVIEW.md), which the host then expands as a project command's body.
+ */
 function promptEffect(
   name: string,
   description: string,
   prompt: string,
   allowedTools: string[],
+  repositoryText: boolean,
 ): BuiltinCommandEffect {
   return {
     type: 'send-prompt',
     prompt,
     context: {
-      // Not the user's own command, so the TUI runs none of the prompt's `!` lines (`useAgent`).
       command: { name, description, body: prompt, source: 'project' },
       resolvedBody: prompt,
       allowedTools,
     },
+    ...(repositoryText ? { projectCommand: true } : {}),
   };
 }
 
@@ -511,6 +516,7 @@ function memoryConsolidateEffect(
     'Consolidate project memory',
     prompt,
     memoryConsolidateTools(dir),
+    false,
   );
 }
 
@@ -1041,12 +1047,13 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     nonInteractive: true,
     execute: (_invocation, context) => {
       const prompt = buildInitPrompt(context.workspace);
-      return promptEffect('init', 'Initialize CLAUDE.md', prompt, [
-        'Read',
-        'Glob',
-        'Grep',
-        'Write',
-      ]);
+      return promptEffect(
+        'init',
+        'Initialize CLAUDE.md',
+        prompt,
+        ['Read', 'Glob', 'Grep', 'Write'],
+        false,
+      );
     },
   },
   {
@@ -1117,12 +1124,13 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
       const prompt = buildSecurityReviewPrompt(rawArguments, context.workspace);
       // REVIEW.md is the repository's text, so the whole prompt, arguments included, is expanded
       // as a project command's body is, whether or not the workspace has one.
-      return {
-        ...promptEffect('security-review', 'Security audit of current diff', prompt, [
-          ...SECURITY_REVIEW_TOOLS,
-        ]),
-        projectCommand: true,
-      };
+      return promptEffect(
+        'security-review',
+        'Security audit of current diff',
+        prompt,
+        [...SECURITY_REVIEW_TOOLS],
+        true,
+      );
     },
   },
   {

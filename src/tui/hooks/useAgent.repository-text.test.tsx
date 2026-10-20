@@ -13,9 +13,9 @@ import { defaultConfig } from '../../test/fixtures.js';
 import { SessionStore } from '../../session/store.js';
 
 /**
- * What the TUI expands in the text it sends. A `!` line runs only in text the user typed or in
- * their own command's body, and the repository's text (a project command's body, or the
- * REVIEW.md that `/security-review` carries) inlines only files git has committed, unchanged.
+ * What the TUI expands in the text it sends. A `!` line runs only in text the user typed, and the
+ * repository's text (a project command's body, or the REVIEW.md that `/security-review` carries)
+ * inlines only files git has committed, unchanged.
  */
 
 const loop = vi.hoisted(() => ({ prompts: [] as string[] }));
@@ -192,16 +192,19 @@ describe('a `!` line in the text the TUI sends', () => {
     expect(lastPrompt()).not.toContain('!echo');
   });
 
-  it("runs in the body of the user's own command", async () => {
-    const { config, session } = fixture();
+  it("stays text in the body of the user's own command, with or without a context", async () => {
+    const { workspace, config, session } = fixture();
     render(<Harness config={config} session={session} />);
     await tick();
-    const body = 'Output:\n!echo user-command-line';
+    // Its shell substitution has already run, and what it printed is in the body.
+    const body = 'Output:\n!echo user-command-line > user-command-line.txt';
 
     await latest!.send(body, commandContext('user', body), undefined, '/check');
+    expect(lastPrompt()).toBe(body);
+    await latest!.send(body, undefined, undefined, '/check', false);
+    expect(lastPrompt()).toBe(body);
 
-    expect(lastPrompt()).toContain('user-command-line');
-    expect(lastPrompt()).not.toContain('!echo');
+    expect(existsSync(join(workspace, 'user-command-line.txt'))).toBe(false);
   });
 
   it("stays text in a built-in command's prompt, even one not marked as the repository's", async () => {
