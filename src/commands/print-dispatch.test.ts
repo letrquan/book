@@ -147,6 +147,8 @@ describe('resolvePrintCommand — prompt-body commands', () => {
       // Named after what was typed, not the substituted body (#524).
       sessionNameSource: '/triage parser high',
       shellErrors: [],
+      // Its mentions inline only committed files (#564).
+      projectCommand: true,
     });
   });
 

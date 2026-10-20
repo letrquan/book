@@ -11,6 +11,7 @@ import {
   type SkippedProjectFile,
 } from './repo-containment.js';
 import { isOutside } from './tools/path-utils.js';
+import { reachesUncPath } from './unc-path.js';
 
 export type ProjectInstructionLayer = 'user' | 'project' | 'local' | 'rule';
 
@@ -165,12 +166,14 @@ export function inspectProjectInstructions(
   add(localPath, 'local', localContainer);
 
   // ponytail: rules are standing guidance; add glob/frontmatter matching when path-specific activation matters.
+  const rulesDir = join(workspaceRoot, '.claude', 'rules');
   try {
-    for (const entry of readdirSync(join(workspaceRoot, '.claude', 'rules'), {
-      encoding: 'utf-8',
-    }).sort()) {
+    // A `.claude` committed as a link to a network share is not listed: listing it would reach
+    // the host (#567).
+    const entries = reachesUncPath(rulesDir) ? [] : readdirSync(rulesDir, { encoding: 'utf-8' });
+    for (const entry of entries.sort()) {
       if (entry.endsWith('.md')) {
-        add(join(workspaceRoot, '.claude', 'rules', entry), 'rule', localContainer);
+        add(join(rulesDir, entry), 'rule', localContainer);
       }
     }
   } catch {

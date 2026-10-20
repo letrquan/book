@@ -46,7 +46,8 @@ import type {
   ToolResult,
   UserQuestionResponse,
 } from '../types/tools.js';
-import { collectAtMentionObservations, expandUserInput } from '../input/input-expansion.js';
+import { resolveAdditionalRoots } from '../additional-roots.js';
+import { expandUserInputDetailed, formatRefusedMentionNotice } from '../input/input-expansion.js';
 import { observationKey } from '../tools/file-provenance.js';
 import { createDebugLogger } from '../debug-log.js';
 import { AgentInteractionController } from './agent-interactions.js';
@@ -156,6 +157,8 @@ export interface AgentSessionPrepareSendRequest {
   sessionNameExact?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
+  /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
+  projectCommand?: boolean;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
@@ -182,6 +185,11 @@ export interface AgentSessionRecordUserRequest {
   sessionNameExact?: string;
   timelineStore?: SessionTimelineStore;
   expandShellInput?: boolean;
+  /**
+   * `displayMessage` is the resolved body of a project command (`.book/commands/*.md`): its
+   * mentions inline only files git has committed, unchanged (#564).
+   */
+  projectCommand?: boolean;
   runtime?: SessionRuntime;
   signal?: AbortSignal;
   onUserMessagePersisted?: () => void;
@@ -208,6 +216,8 @@ export interface AgentSessionSendRequest {
   sessionNameSource?: string;
   /** See {@link AgentSessionRecordUserRequest.sessionNameExact}. */
   sessionNameExact?: string;
+  /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
+  projectCommand?: boolean;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
   registryStore?: SessionStoreInterface;
@@ -313,6 +323,8 @@ export type AgentSessionPrepareSendResult =
       rewindTarget: RewindTarget;
       /** `undefined` while the session has no name: a notification turn never gives it one. */
       sessionName: string | undefined;
+      /** One line per mention left as written, for the host to show the user (#567). */
+      mentionNotices: string[];
     }
   | { status: 'cancelled' };
 
@@ -475,6 +487,7 @@ export class AgentSession {
           sessionName: request.sessionName,
           sessionNameSource: request.sessionNameSource,
           sessionNameExact: request.sessionNameExact,
+          projectCommand: request.projectCommand,
           snapshotStore: request.snapshotStore,
           timelineStore: request.timelineStore,
           signal: control.signal,
@@ -1006,38 +1019,43 @@ export class AgentSession {
     } satisfies SessionRecord);
 
     // Expansion follows checkpoint capture so its side effects belong to this rewind boundary.
-    const { contextMessage, sessionName } = await this.recordUserMessage(request);
+    const { contextMessage, sessionName, mentionNotices } = await this.recordUserMessage(request);
 
-    return { status: 'prepared', contextMessage, rewindTarget, sessionName };
+    return { status: 'prepared', contextMessage, rewindTarget, sessionName, mentionNotices };
   }
 
-  async recordUserMessage(
-    request: AgentSessionRecordUserRequest,
-  ): Promise<{ contextMessage: string; sessionName: string | undefined }> {
+  async recordUserMessage(request: AgentSessionRecordUserRequest): Promise<{
+    contextMessage: string;
+    sessionName: string | undefined;
+    mentionNotices: string[];
+  }> {
     // One pass over what the user typed: a `!cmd` line runs, an `@path` mention
     // is inlined, and neither is found in the other's output. A mentioned file's
     // lines must never run as commands, and a command's output must never be read
-    // as the user's own mentions (#261 review).
-    const expandShellInput =
-      request.contextMessage === undefined && request.expandShellInput !== false;
-    const contextMessage =
+    // as the user's own mentions (#261 review). The files it inlined are observed
+    // from the same pass, so a mention left as written is never observed.
+    const expansion =
       request.contextMessage !== undefined
-        ? request.contextMessage
-        : await expandUserInput(request.displayMessage, request.config.workspace, {
-            expandShell: expandShellInput,
+        ? undefined
+        : await expandUserInputDetailed(request.displayMessage, request.config.workspace, {
+            expandShell: request.expandShellInput !== false,
             signal: request.signal,
+            sourceRef: request.userMessage.id,
+            // The roots Read serves besides the workspace, resolved as the agent loop does, and
+            // only for text that can hold a mention at all.
+            additionalRoots: request.displayMessage.includes('@')
+              ? resolveAdditionalRoots(
+                  request.config.workspace,
+                  request.config.settings.additionalDirectories,
+                )
+              : [],
+            projectCommand: request.projectCommand,
           });
+    const contextMessage = expansion?.text ?? request.contextMessage ?? request.displayMessage;
+    const mentionNotices = (expansion?.refused ?? []).map(formatRefusedMentionNotice);
     request.userMessage.contextContent =
       contextMessage === request.displayMessage ? undefined : contextMessage;
-    request.userMessage.fileObservations =
-      request.contextMessage === undefined
-        ? collectAtMentionObservations(
-            request.displayMessage,
-            request.config.workspace,
-            request.userMessage.id,
-            expandShellInput,
-          )
-        : [];
+    request.userMessage.fileObservations = expansion?.observations ?? [];
     const observationLedger = (request.runtime ?? this.runtime).fileObservationLedger;
     for (const observation of request.userMessage.fileObservations) {
       observationLedger.set(observationKey(observation.workspaceId, observation.path), observation);
@@ -1065,7 +1083,7 @@ export class AgentSession {
     // A completion notification is host-generated text, not something the user said: it
     // never names a session, or renames one, whether or not the caller passed a name (#446).
     if (request.userMessage.kind === 'agent-notification') {
-      return { contextMessage, sessionName: request.sessionName };
+      return { contextMessage, sessionName: request.sessionName, mentionNotices };
     }
     const sessionName =
       request.sessionName?.trim() ||
@@ -1075,7 +1093,7 @@ export class AgentSession {
       request.timelineStore?.patchMeta?.(request.sessionId, { name: sessionName });
     }
 
-    return { contextMessage, sessionName };
+    return { contextMessage, sessionName, mentionNotices };
   }
 
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {

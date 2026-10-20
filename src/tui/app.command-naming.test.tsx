@@ -37,6 +37,13 @@ const deploy: SlashCommand = {
   source: 'user',
 };
 
+const setup: SlashCommand = {
+  name: 'setup',
+  description: 'Setup',
+  body: 'Follow @.env when editing.',
+  source: 'project',
+};
+
 vi.mock('./hooks/useAgent.js', () => ({
   useAgent: (...args: unknown[]) => useAgentMock(...args),
 }));
@@ -44,9 +51,12 @@ vi.mock('./hooks/useTasks.js', () => ({
   useTasks: (...args: unknown[]) => useTasksMock(...args),
 }));
 vi.mock('../commands/loader.js', () => ({
-  discoverCommands: (): SlashCommand[] => [deploy],
-  resolveCommandBody: vi.fn(async (_command: SlashCommand, args: string) => ({
-    resolved: `Roll out to the ${args} environment and report.`,
+  discoverCommands: (): SlashCommand[] => [deploy, setup],
+  resolveCommandBody: vi.fn(async (command: SlashCommand, args: string) => ({
+    resolved:
+      command.source === 'project'
+        ? command.body
+        : `Roll out to the ${args} environment and report.`,
     shellErrors: [],
   })),
 }));
@@ -207,6 +217,24 @@ describe('naming a session after the command line the user typed', () => {
     expect(body).toBe('Roll out to the staging environment and report.');
     expect(nameSource).toBe('/deploy staging');
     expect(deriveSessionName(String(nameSource))).toBe('Deploy staging');
+  });
+
+  // #564: the mentions in a project command's body inline only committed files, so the host
+  // has to say which bodies those are; a user command and a builtin are the user's and Book's.
+  it('marks a project command body, and only that, as one', async () => {
+    const view = startApp();
+    await settle();
+
+    await submit(view, '/setup');
+    await submit(view, '/deploy staging');
+    await submit(view, '/init');
+
+    expect(sendMock).toHaveBeenCalledTimes(3);
+    expect(sendMock.mock.calls.map((call) => [call[0] === setup.body, call[4]])).toEqual([
+      [true, true],
+      [false, false],
+      [false, undefined],
+    ]);
   });
 
   it('sends an ordinary prompt with no name source', async () => {

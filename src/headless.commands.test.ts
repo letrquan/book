@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Readable } from 'stream';
@@ -360,30 +361,147 @@ describe('runHeadless — session name for a prompt-body command', () => {
   });
 });
 
-// #559. A project command with no shell spans is never gated, so a mention in its body of a
-// committed link to a file outside the workspace would send that file to the provider on `/name`.
-describe.skipIf(process.platform === 'win32')('runHeadless — mentions in a project command', () => {
-  it('does not inline a mention of a link out of the workspace, and inlines one inside it', async () => {
+function git(cwd: string, ...args: string[]): void {
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.name=Book Test',
+      '-c',
+      'user.email=book@example.com',
+      '-c',
+      'commit.gpgsign=false',
+      '-c',
+      'core.autocrlf=false',
+      '-c',
+      'init.defaultBranch=main',
+      ...args,
+    ],
+    { cwd, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+}
+
+/** A workspace that is a git repository, with every file written so far committed. */
+function commitAll(workspace: string): void {
+  git(workspace, 'init', '-q');
+  git(workspace, 'add', '.');
+  git(workspace, 'commit', '-q', '-m', 'init');
+}
+
+function stderrText(spy: { mock: { calls: unknown[][] } }): string {
+  return spy.mock.calls.map((call) => String(call[0])).join('');
+}
+
+// #559, #564. A project command with no shell spans is never gated, so a mention in its body would
+// send whatever it names to the provider on `/name`: a committed link to a file outside the
+// workspace, or the user's own local secrets in it. It inlines only a file git has committed,
+// unchanged, inside the workspace.
+describe('runHeadless — mentions in a project command', () => {
+  it.skipIf(process.platform === 'win32')(
+    'does not inline a mention of a link out of the workspace, and inlines one inside it',
+    async () => {
+      const provider = stubProvider();
+      const config = makeConfig();
+      const secrets = mkdtempSync(join(tmpdir(), 'book-headless-secret-'));
+      tempDirs.push(secrets);
+      writeFileSync(join(secrets, 'id_rsa'), 'SECRET-PRIVATE-KEY\n', 'utf-8');
+      writeFileSync(join(config.workspace, 'STYLE.txt'), 'IN-WORKSPACE-STYLE\n', 'utf-8');
+      mkdirSync(join(config.workspace, 'docs'));
+      symlinkSync(join(secrets, 'id_rsa'), join(config.workspace, 'docs', 'conventions.txt'));
+      symlinkSync(join('..', 'STYLE.txt'), join(config.workspace, 'docs', 'style.txt'));
+      writeCommand(
+        config.workspace,
+        'setup',
+        'Follow @docs/conventions.txt and @docs/style.txt when editing.',
+      );
+      commitAll(config.workspace);
+      const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+
+      await run(config, '/setup');
+
+      const sent = lastUserText(provider);
+      expect(sent).not.toContain('SECRET-PRIVATE-KEY');
+      expect(sent).toContain('Follow @docs/conventions.txt and');
+      expect(sent).toContain('IN-WORKSPACE-STYLE');
+      expect(stderrText(stderr)).toContain(
+        'Left @docs/conventions.txt as written: it is outside the workspace and additionalDirectories.',
+      );
+    },
+  );
+
+  it("does not inline the user's local .git/config, settings.local.json or .env", async () => {
     const provider = stubProvider();
     const config = makeConfig();
-    const secrets = mkdtempSync(join(tmpdir(), 'book-headless-secret-'));
-    tempDirs.push(secrets);
-    writeFileSync(join(secrets, 'id_rsa'), 'SECRET-PRIVATE-KEY\n', 'utf-8');
-    writeFileSync(join(config.workspace, 'STYLE.txt'), 'IN-WORKSPACE-STYLE\n', 'utf-8');
-    mkdirSync(join(config.workspace, 'docs'));
-    symlinkSync(join(secrets, 'id_rsa'), join(config.workspace, 'docs', 'conventions.txt'));
-    symlinkSync(join('..', 'STYLE.txt'), join(config.workspace, 'docs', 'style.txt'));
+    writeFileSync(join(config.workspace, 'STYLE.md'), 'COMMITTED-STYLE\n', 'utf-8');
+    writeFileSync(join(config.workspace, '.gitignore'), '.env\n.book/settings.local.json\n');
+    // The issue's command: a description and a body, so no frontmatter enforcement at all.
     writeCommand(
       config.workspace,
       'setup',
-      'Follow @docs/conventions.txt and @docs/style.txt when editing.',
+      '---\ndescription: setup\n---\n' +
+        'Follow @.git/config and @.book/settings.local.json and @.env and @STYLE.md when editing.\n',
     );
+    commitAll(config.workspace);
+    const gitConfig = join(config.workspace, '.git', 'config');
+    writeFileSync(
+      gitConfig,
+      readFileSync(gitConfig, 'utf-8') +
+        '[remote "origin"]\n\turl = https://user:ghp_FAKE-TOKEN-123@github.com/x/y.git\n',
+    );
+    writeFileSync(
+      join(config.workspace, '.book', 'settings.local.json'),
+      '{"provider":{"x":{"apiKey":"sk-FAKE-LOCAL-KEY"}}}\n',
+    );
+    writeFileSync(join(config.workspace, '.env'), 'API_TOKEN=FAKE-ENV-SECRET\n');
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
     await run(config, '/setup');
 
     const sent = lastUserText(provider);
-    expect(sent).not.toContain('SECRET-PRIVATE-KEY');
-    expect(sent).toContain('Follow @docs/conventions.txt and');
-    expect(sent).toContain('IN-WORKSPACE-STYLE');
+    expect(sent).not.toContain('ghp_FAKE-TOKEN-123');
+    expect(sent).not.toContain('sk-FAKE-LOCAL-KEY');
+    expect(sent).not.toContain('FAKE-ENV-SECRET');
+    expect(sent).toContain('Follow @.git/config and @.book/settings.local.json and @.env and');
+    expect(sent).toContain('COMMITTED-STYLE');
+    const warned = stderrText(stderr);
+    for (const path of ['.git/config', '.book/settings.local.json', '.env']) {
+      expect(warned).toContain(
+        `Left @${path} as written: a project command inlines only files committed to git, and git does not track it.`,
+      );
+    }
   });
+
+  it('inlines the same files from a user command, and from typed text', async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeFileSync(join(config.workspace, '.env'), 'API_TOKEN=USER-ENV\n');
+    const userCommands = join(process.env.BOOK_HOME!, 'commands');
+    mkdirSync(userCommands, { recursive: true });
+    writeFileSync(join(userCommands, 'mine.md'), 'Use @.env for the token.', 'utf-8');
+
+    await run(config, '/mine');
+    await run(config, 'Use @.env too.');
+
+    expect(lastUserText(provider, 0)).toContain('API_TOKEN=USER-ENV');
+    expect(lastUserText(provider, 1)).toContain('API_TOKEN=USER-ENV');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'reports a typed mention left as written on stderr',
+    async () => {
+      stubProvider();
+      const config = makeConfig();
+      const outside = mkdtempSync(join(tmpdir(), 'book-headless-outside-'));
+      tempDirs.push(outside);
+      writeFileSync(join(outside, 'notes.txt'), 'OUTSIDE\n');
+      symlinkSync(join(outside, 'notes.txt'), join(config.workspace, 'notes.txt'));
+      const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+
+      await run(config, 'Read @notes.txt please');
+
+      expect(stderrText(stderr)).toContain(
+        '⚠  Left @notes.txt as written: it is outside the workspace and additionalDirectories.\n',
+      );
+    },
+  );
 });

@@ -1006,9 +1006,13 @@ export async function runHeadless(
         sessionNameSource: dispatch.kind === 'prompt' ? dispatch.sessionNameSource : undefined,
         timelineStore: store && sessionId ? store : undefined,
         expandShellInput: false,
+        projectCommand: dispatch.kind === 'prompt' ? dispatch.projectCommand : undefined,
         runtime,
         signal: runSignal,
       });
+      // A mention left as written is reported, on stderr like the shell errors above, so the
+      // user knows why a file did not reach the turn (#567).
+      for (const notice of recorded.mentionNotices) process.stderr.write(`${notice}\n`);
       sessionName = recorded.sessionName;
       const contextMessage = recorded.contextMessage;
       transcript.push(userMessage);

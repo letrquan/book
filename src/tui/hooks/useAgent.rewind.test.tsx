@@ -49,11 +49,11 @@ vi.mock('../../agent/compact.js', () => ({
 vi.mock('../../input/input-expansion.js', () => ({
   // Shell and mention expansion is one pass over the typed text (#261 review),
   // so one call now stands for both.
-  expandUserInput: (value: string) => {
+  expandUserInputDetailed: (value: string) => {
     callOrder.push('expand-input');
-    return Promise.resolve(value);
+    return Promise.resolve({ text: value, observations: [], refused: [] });
   },
-  collectAtMentionObservations: () => [],
+  formatRefusedMentionNotice: () => '',
 }));
 
 vi.mock('../../agent/loop.js', () => ({

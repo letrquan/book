@@ -1,12 +1,16 @@
 import { readFileSync, statSync } from 'fs';
 import { exec } from 'child_process';
 import { createHash } from 'crypto';
+import { isAbsolute, relative, resolve } from 'path';
 import { buildChildEnv } from '../child-env.js';
-import { projectContainmentRoot, tryRealPath } from '../repo-containment.js';
+import { renderUntrustedText } from '../hook-approvals.js';
+import { findRepositoryRoot, tryRealPath } from '../repo-containment.js';
 import type { FileObservation } from '../types/tools.js';
-import { workspaceIdentity } from '../tools/file-provenance.js';
-import { isOutside } from '../tools/path-utils.js';
-import { resolveWorkspaceMentionPath } from './file-mentions.js';
+import { observationPathFor, workspaceIdentity } from '../tools/file-provenance.js';
+import { isOutside, resolveMentionReadablePath } from '../tools/path-utils.js';
+import { committedFileStates, type CommittedState } from './committed-files.js';
+import { reachesUncPath } from '../unc-path.js';
+import { normalizeMentionPath, resolveWorkspaceMentionPath } from './file-mentions.js';
 
 const AT_MENTION_CHAR_LIMIT = 20_000;
 
@@ -201,151 +205,234 @@ function looksBinary(content: string): boolean {
   return content.includes('\0');
 }
 
-/** The real path of the root mentions must stay inside, worked out once, when first needed. */
-type ContainmentRoot = () => string | undefined;
-
-/**
- * The repository root (`projectContainmentRoot`: the workspace with no repository), as a real
- * path. Lazy, so a prompt whose tokens all fail before the disk is looked at (most name no file)
- * never walks the workspace's ancestors.
- */
-function mentionContainmentRoot(workspace: string): ContainmentRoot {
-  let root: { real: string | undefined } | undefined;
-  return () => (root ??= { real: tryRealPath(projectContainmentRoot(workspace)) }).real;
+/** Where mentions may reach, beyond the workspace, and whose text they are in. */
+export interface MentionScope {
+  /**
+   * The honored `additionalDirectories`, as resolved real roots (`resolveAdditionalRoots`): the
+   * same roots Read serves besides the workspace.
+   */
+  additionalRoots?: readonly string[];
+  /**
+   * The text is the resolved body of a project command (`.book/commands/*.md`), which the
+   * repository wrote: a mention in it inlines only a file git has committed, unchanged (#564).
+   */
+  projectCommand?: boolean;
 }
 
 /**
- * The file a mention names: the real path it is read from, which is the path that was checked,
- * and the workspace-relative name it was mentioned by. `null` for a path as written outside the
- * workspace, which is never probed (a token like `\\server\share` would otherwise make a network
- * request for every prompt that mentions one), for a missing path, and for a path whose real path
- * leaves the repository root, so a committed `docs/conventions.txt -> ../../.ssh/id_rsa` is not
- * sent to the provider (#559) while a monorepo package's link to a shared file elsewhere in the
- * repository is.
+ * Why a mention of a file that is there was left as written.
+ *
+ * - `outside`: its real path is outside the workspace and every `additionalDirectories` entry,
+ *   where Read would not open it either.
+ * - `unc`: on Windows, it is, or reaches through a link, a network (UNC) path.
+ * - `no-repository`, `untracked`, `changed`, `git-failed`: in a project command's body, it is not a
+ *   file git has committed, unchanged, or git could not say (#564).
  */
-function resolveMentionFile(
+export type MentionRefusalReason =
+  'outside' | 'unc' | 'no-repository' | 'untracked' | 'changed' | 'git-failed';
+
+export interface RefusedMention {
+  /** The path as the mention spelled it. */
+  path: string;
+  reason: MentionRefusalReason;
+}
+
+const REFUSAL_TEXT: Record<MentionRefusalReason, string> = {
+  outside: 'it is outside the workspace and additionalDirectories',
+  unc: 'it is, or links to, a network (UNC) path',
+  'no-repository':
+    'a project command inlines only files committed to git, and there is no repository',
+  untracked: 'a project command inlines only files committed to git, and git does not track it',
+  changed: 'a project command inlines only committed files without local changes, and it has some',
+  'git-failed': 'a project command inlines only committed files, and git could not check it',
+};
+
+/**
+ * The one-line notice for a mention left as written. The path can come from a repository's
+ * command file, so it is shown without control characters.
+ */
+export function formatRefusedMentionNotice(refused: RefusedMention): string {
+  return `⚠  Left @${renderUntrustedText(refused.path, 400)} as written: ${REFUSAL_TEXT[refused.reason]}.`;
+}
+
+/**
+ * The absolute path a mention names, and the workspace-relative name it is shown and observed by.
+ * `null` for a path that, as written, is in neither the workspace nor an `additionalDirectories`
+ * entry: it is never probed, so a token like `\\server\share` makes no network request, and a
+ * relative path stays anchored to the workspace, as it does for Read.
+ */
+function mentionTarget(
   workspace: string,
   mentionPath: string,
-  containmentRoot: ContainmentRoot,
-): { realPath: string; relativePath: string } | null {
-  const resolved = resolveWorkspaceMentionPath(workspace, mentionPath);
-  if (!resolved) return null;
-  const realPath = tryRealPath(resolved.filePath);
+  additionalRoots: readonly string[],
+): { filePath: string; relativePath: string } | null {
+  const inWorkspace = resolveWorkspaceMentionPath(workspace, mentionPath);
+  if (inWorkspace) return inWorkspace;
+  const normalized = mentionPath.replace(/\\/g, '/');
+  if (!isAbsolute(normalized)) return null;
+  const filePath = resolve(normalized);
+  if (!additionalRoots.some((root) => !isOutside(root, filePath))) return null;
+  return { filePath, relativePath: normalizeMentionPath(relative(resolve(workspace), filePath)) };
+}
+
+/** What becomes of one mention. `null`: it stays as written, without a notice. */
+type MentionDecision =
+  | { kind: 'file'; realPath: string; relativePath: string; regular: boolean }
+  | { kind: 'refused'; reason: MentionRefusalReason }
+  | null;
+
+/**
+ * The file a mention names, by the boundary Read uses (#567): its real path must be inside the
+ * workspace or an `additionalDirectories` entry (`resolveMentionReadablePath`), so a committed
+ * `docs/conventions.txt -> ../../.ssh/id_rsa` (#559), or a package's link to a file elsewhere in
+ * the monorepo, inlines only when Read would open it. The real path is resolved first
+ * (`tryRealPath`), and it is what is checked and later read: a path whose real path cannot be had
+ * is left alone rather than judged by its spelling. A path Read would refuse is refused with a
+ * notice; a missing path and a directory (a `@Test` annotation matches a `test/` directory
+ * case-insensitively on Windows and macOS) stay as written, silently.
+ */
+function decideMention(
+  workspace: string,
+  mentionPath: string,
+  additionalRoots: readonly string[],
+): MentionDecision {
+  const target = mentionTarget(workspace, mentionPath, additionalRoots);
+  if (!target) return null;
+  if (reachesUncPath(target.filePath)) return { kind: 'refused', reason: 'unc' };
+  const realPath = tryRealPath(target.filePath);
   if (realPath === undefined) return null;
-  const rootReal = containmentRoot();
-  if (rootReal === undefined || isOutside(rootReal, realPath)) return null;
-  return { realPath, relativePath: resolved.relativePath };
+  let regular: boolean;
+  try {
+    const stat = statSync(realPath);
+    if (stat.isDirectory()) return null;
+    regular = stat.isFile();
+  } catch {
+    return null;
+  }
+  const readable = resolveMentionReadablePath(
+    { workspaceRoot: workspace, additionalRoots },
+    realPath,
+  );
+  if (!('path' in readable)) {
+    return { kind: 'refused', reason: readable.reason === 'unc' ? 'unc' : 'outside' };
+  }
+  return { kind: 'file', realPath, relativePath: target.relativePath, regular };
 }
 
 /**
- * Returns null when the token names nothing a file's contents could be read
- * from, so it stays as written: a directory (a `@Test` annotation matches a
- * `test/` directory case-insensitively on Windows and macOS), and anything
- * `resolveMentionFile` refuses — a missing path, a path outside the workspace,
- * and a link out of the repository, which is left exactly as a mention of
- * `@../x` is, without a note.
+ * The project-command rule (#564) over the files a body's mentions reached: each must be a file of
+ * the workspace's repository (`findRepositoryRoot`, so a dotfiles `~/.git` is none) that git has
+ * committed, unchanged. Judged on the real path, which is the file the read serves, so a committed,
+ * unmodified link to an untracked `.env` is refused like `@.env` itself. Fails closed: with no
+ * repository, or when git cannot answer, every one is refused.
  */
-function expandMention(
-  filePath: string,
+async function applyProjectCommandRule(
   workspace: string,
-  containmentRoot: ContainmentRoot,
-): string | null {
-  const resolved = resolveMentionFile(workspace, filePath, containmentRoot);
-  if (!resolved) return null;
+  decisions: MentionDecision[],
+  signal?: AbortSignal,
+): Promise<MentionDecision[]> {
+  const files = decisions.filter(
+    (decision): decision is Extract<MentionDecision, { kind: 'file' }> => decision?.kind === 'file',
+  );
+  if (files.length === 0) return decisions;
+  const refuse = (reason: MentionRefusalReason) =>
+    decisions.map((decision) =>
+      decision?.kind === 'file' ? { kind: 'refused' as const, reason } : decision,
+    );
+  const repoRoot = findRepositoryRoot(workspace);
+  if (repoRoot === undefined) return refuse('no-repository');
 
+  const inRepository = (realPath: string) =>
+    isOutside(repoRoot, realPath) ? undefined : relative(repoRoot, realPath).replace(/\\/g, '/');
+  // Only regular files go to git: `hash-object` would block on a FIFO. Anything else is refused.
+  const paths = new Set<string>();
+  for (const file of files) {
+    const path = file.regular ? inRepository(file.realPath) : undefined;
+    if (path !== undefined) paths.add(path);
+  }
+  let states: Map<string, CommittedState | 'git-failed'>;
   try {
-    const stat = statSync(resolved.realPath);
-    if (stat.isDirectory()) return null;
-    if (!stat.isFile())
-      return formatMentionError(resolved.relativePath, 'path is not a regular file');
+    states = await committedFileStates(repoRoot, [...paths], signal);
+  } catch {
+    // One unreadable or vanished file fails the whole batch, so each is asked about on its own,
+    // and only the ones git cannot answer for are refused as such.
+    states = new Map();
+    for (const path of paths) {
+      try {
+        states.set(path, (await committedFileStates(repoRoot, [path], signal)).get(path)!);
+      } catch {
+        states.set(path, 'git-failed');
+      }
+    }
+  }
+  return decisions.map((decision) => {
+    if (decision?.kind !== 'file') return decision;
+    const path = inRepository(decision.realPath);
+    const state = path === undefined ? 'untracked' : (states.get(path) ?? 'untracked');
+    return state === 'unchanged' ? decision : { kind: 'refused', reason: state };
+  });
+}
 
-    const content = readFileSync(resolved.realPath, 'utf-8');
-    if (looksBinary(content))
-      return formatMentionError(resolved.relativePath, 'file appears to be binary');
+/** Where an observation is filed, and what it is credited to. */
+interface ObservationScope {
+  workspace: string;
+  workspaceId: string;
+  sourceRef: string;
+}
 
-    const truncated = content.length > AT_MENTION_CHAR_LIMIT;
-    const body = truncated ? content.slice(0, AT_MENTION_CHAR_LIMIT) : content;
-    const suffix = truncated
-      ? `\n\n[File truncated at ${AT_MENTION_CHAR_LIMIT} characters; use the Read tool for more.]`
-      : '';
-
-    return `\nContents of ${resolved.relativePath}:\n\n\`\`\`\n${body}${suffix}\n\`\`\`\n`;
+/** The text a mention is replaced with, and its observation; `null` text leaves it as written. */
+function inlineMention(
+  token: MentionToken,
+  decision: MentionDecision,
+  scope: ObservationScope,
+): { text: string | null; observation?: FileObservation } {
+  if (decision?.kind !== 'file') return { text: null };
+  if (!decision.regular) {
+    return { text: formatMentionError(decision.relativePath, 'path is not a regular file') };
+  }
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(decision.realPath);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return formatMentionError(filePath, message.slice(0, 200) || 'unable to read file');
+    return { text: formatMentionError(token.path, message.slice(0, 200) || 'unable to read file') };
   }
+  const observation: FileObservation = {
+    // Filed the way Read and Edit file and look a file up (`observationPathFor`): canonical, so a
+    // mention through a link, or of a file in an `additionalDirectories` entry, counts as seen.
+    path: observationPathFor(scope.workspace, decision.realPath),
+    workspaceId: scope.workspaceId,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    byteSize: bytes.byteLength,
+    operation: 'mention',
+    sourceRef: scope.sourceRef,
+    timestamp: Date.now(),
+  };
+  const content = bytes.toString('utf-8');
+  if (looksBinary(content)) {
+    return {
+      text: formatMentionError(decision.relativePath, 'file appears to be binary'),
+      observation,
+    };
+  }
+  const truncated = content.length > AT_MENTION_CHAR_LIMIT;
+  const body = truncated ? content.slice(0, AT_MENTION_CHAR_LIMIT) : content;
+  const suffix = truncated
+    ? `\n\n[File truncated at ${AT_MENTION_CHAR_LIMIT} characters; use the Read tool for more.]`
+    : '';
+  return {
+    text: `\nContents of ${decision.relativePath}:\n\n\`\`\`\n${body}${suffix}\n\`\`\`\n`,
+    observation,
+  };
 }
 
 /**
  * Offsets of the at-sign tokens that name a path, outside fenced and inline code:
- * the same tokens `expandAtMentions` considers, without looking at the disk. The TUI
+ * the same tokens `expandUserInput` considers, without looking at the disk. The TUI
  * accents these in a user turn.
  */
 export function mentionTokenRanges(input: string): Array<[number, number]> {
   return findMentionTokens(input).map((token) => [token.start, token.end]);
-}
-
-/**
- * Expand @path references to file contents in user input. Only a token outside
- * fenced and inline code that names a regular file inside the workspace, whose
- * real path is inside the repository root (the workspace with no repository),
- * is expanded; a directory, a missing path, a path outside the workspace and a
- * link out of the repository stay exactly as the user wrote them (#261, #559).
- */
-export function expandAtMentions(input: string, workspace: string): string {
-  const tokens = findMentionTokens(input);
-  if (tokens.length === 0) return input;
-
-  const containmentRoot = mentionContainmentRoot(workspace);
-  let output = '';
-  let cursor = 0;
-  for (const token of tokens) {
-    output += input.slice(cursor, token.start);
-    output += expandMention(token.path, workspace, containmentRoot) ?? token.raw;
-    output += token.trailing;
-    cursor = token.end + token.trailing.length;
-  }
-  output += input.slice(cursor);
-  return output;
-}
-
-/**
- * Provenance for the files `expandUserInput` inlined. `expandShellInput` must
- * be the same value that call was given, so a mention inside a `!` line — which
- * is run, never inlined — is observed neither (#261).
- */
-export function collectAtMentionObservations(
-  input: string,
-  workspace: string,
-  sourceRef: string,
-  expandShellInput = false,
-): FileObservation[] {
-  const workspaceId = workspaceIdentity(workspace);
-  const observations: FileObservation[] = [];
-  const shellLines = expandShellInput ? findShellLines(input) : [];
-  const containmentRoot = mentionContainmentRoot(workspace);
-  for (const token of findMentionTokens(input, shellLineRanges(shellLines))) {
-    // The same files `expandMention` inlines, so a refused mention is never observed either.
-    const resolved = resolveMentionFile(workspace, token.path, containmentRoot);
-    if (!resolved) continue;
-    try {
-      const info = statSync(resolved.realPath);
-      if (!info.isFile()) continue;
-      const bytes = readFileSync(resolved.realPath);
-      observations.push({
-        path: resolved.relativePath,
-        workspaceId,
-        sha256: createHash('sha256').update(bytes).digest('hex'),
-        byteSize: bytes.byteLength,
-        operation: 'mention',
-        sourceRef,
-        timestamp: Date.now(),
-      });
-    } catch {
-      // Failed mentions are represented in expanded context, not provenance.
-    }
-  }
-  return observations;
 }
 
 /** One `!cmd` line the user typed, with the span it occupies. */
@@ -373,44 +460,87 @@ function shellLineRanges(lines: ShellLine[]): Array<[number, number]> {
   return lines.map((line) => [line.start, line.end]);
 }
 
-export interface UserInputExpansion {
+export interface UserInputExpansion extends MentionScope {
   /** Replace `!cmd` lines with their output. Off for a host that never expands them. */
   expandShell?: boolean;
   signal?: AbortSignal;
+  /** Recorded on each mention's observation: the user message the text belongs to. */
+  sourceRef?: string;
+}
+
+/** The expanded text, the files it inlined, and the mentions it left as written with a reason. */
+export interface ExpandedUserInput {
+  text: string;
+  /** Provenance for each inlined file, so a later Edit counts it as observed. */
+  observations: FileObservation[];
+  /** One per refused mention, in order; `formatRefusedMentionNotice` words each. */
+  refused: RefusedMention[];
 }
 
 /**
- * Expand what the user typed, in one pass and in one order.
+ * Expand what the user typed, or a command body, in one pass and in one order.
  *
  * `!cmd` lines run, `@path` mentions are inlined, and both are found on the
  * typed text — never on the result of the other. A file's contents must not run
  * as commands, and a command's output must not be read as the user's own
  * mentions: `@notes.md` is expanded where it was typed and its `!` lines stay
  * text, and `!cat @notes.md` prints the path rather than the file (#261).
+ *
+ * A mention inlines only a regular file Read would open (`decideMention`), and in
+ * a project command's body only one git has committed, unchanged
+ * (`applyProjectCommandRule`). The files inlined are observed from the same
+ * decisions, so a mention left as written is never observed either.
  */
-export async function expandUserInput(
+export async function expandUserInputDetailed(
   input: string,
   workspace: string,
   options: UserInputExpansion = {},
-): Promise<string> {
-  const shellLines = options.expandShell ? findShellLines(input) : [];
+): Promise<ExpandedUserInput> {
+  // A project command's body never runs `!` lines: they are not the shell its approval covers
+  // (`extractShellInjections`), and print mode never ran them. That also keeps every file the
+  // rule below checked exactly as it was when it is read.
+  const shellLines = options.expandShell && !options.projectCommand ? findShellLines(input) : [];
   const tokens = findMentionTokens(input, shellLineRanges(shellLines));
-  if (shellLines.length === 0 && tokens.length === 0) return input;
+  if (shellLines.length === 0 && tokens.length === 0) {
+    return { text: input, observations: [], refused: [] };
+  }
 
+  const additionalRoots = options.additionalRoots ?? [];
+  const decide = (token: MentionToken) => decideMention(workspace, token.path, additionalRoots);
+  // Typed text is decided mention by mention, in order, so a mention after a `!` line sees what
+  // the line did (`!echo x > new.md` then `@new.md`); a project command's body has no `!` lines
+  // to wait for, and its rule asks git about every file at once.
+  const decided = options.projectCommand
+    ? await applyProjectCommandRule(workspace, tokens.map(decide), options.signal)
+    : undefined;
+
+  const scope = {
+    workspace,
+    workspaceId: workspaceIdentity(workspace),
+    sourceRef: options.sourceRef ?? '',
+  };
+  const observations: FileObservation[] = [];
+  const refused: RefusedMention[] = [];
   // One left-to-right walk of the typed text, replacing each `!` line and each
   // mention where it was written. Output is inserted, never rescanned, so the
   // spans below can never overlap and are already in order.
-  const containmentRoot = mentionContainmentRoot(workspace);
   const edits: Array<{ start: number; end: number; apply: () => string | Promise<string> }> = [
     ...shellLines.map((line) => ({
       start: line.start,
       end: line.end,
       apply: () => executeShellExpansion(line.command, workspace, options.signal),
     })),
-    ...tokens.map((token) => ({
+    ...tokens.map((token, index) => ({
       start: token.start,
       end: token.end,
-      apply: () => expandMention(token.path, workspace, containmentRoot) ?? token.raw,
+      apply: () => {
+        const decision = decided ? decided[index] : decide(token);
+        if (decision?.kind === 'refused')
+          refused.push({ path: token.path, reason: decision.reason });
+        const inlined = inlineMention(token, decision, scope);
+        if (inlined.observation) observations.push(inlined.observation);
+        return inlined.text ?? token.raw;
+      },
     })),
   ].sort((left, right) => left.start - right.start);
 
@@ -420,10 +550,19 @@ export async function expandUserInput(
     output += input.slice(cursor, edit.start);
     output += await edit.apply();
     // A token's trailing punctuation is outside `end`, so it rides along in the
-    // next slice exactly as `expandAtMentions` leaves it.
+    // next slice, after the mention it followed.
     cursor = edit.end;
   }
-  return output + input.slice(cursor);
+  return { text: output + input.slice(cursor), observations, refused };
+}
+
+/** {@link expandUserInputDetailed}, for a caller that needs only the text. */
+export async function expandUserInput(
+  input: string,
+  workspace: string,
+  options: UserInputExpansion = {},
+): Promise<string> {
+  return (await expandUserInputDetailed(input, workspace, options)).text;
 }
 
 /**
