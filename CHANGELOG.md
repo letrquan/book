@@ -623,6 +623,15 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Only text you type runs a `!` line or invokes a skill by `$name`.** Expanded text (a command's
+  body, the review guidance `/security-review` reads from `REVIEW.md`, a file inlined by a
+  mention, a delegated task) no longer counts as typed: its `!` lines stay as text, and a `$name`
+  in it invokes nothing. So a `!` line in your own command's body no longer runs in the TUI (it
+  never ran in print mode), and `` !`cmd` `` substitution is unchanged. `/security-review` expands
+  `REVIEW.md` like a project command's body. A `$` right after `/`, `\`, `@` or `.` is not a skill
+  name, and a `$name` sent to a managed agent no longer invokes a skill. `/rewind` puts back only
+  what you typed: a command's line, never its body; a turn it can't show you typed (a print-mode
+  turn, a plan handoff, a session saved before this change) leaves the composer as it is.
 - **The transcript is set as Claude Code-style items.** Every item of a turn opens on one mark in
   the margin, `●`, whose colour carries its state: green done, rose failed, amber waiting for your
   approval or skipped, grey for a folded run of reads or a call Book refused before it ran, and
