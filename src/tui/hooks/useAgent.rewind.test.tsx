@@ -551,6 +551,7 @@ describe('useAgent rewind integration', () => {
         checkpointId: 'cp1',
         userEventId: 'u1',
         prompt: 'displayed prompt',
+        promptTyped: true,
         attachments: [attachment],
         checkpoint: { codeUnavailableReason: 'capture failed' },
       } satisfies TurnCheckpointRecordData,

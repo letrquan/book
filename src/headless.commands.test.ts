@@ -311,6 +311,23 @@ describe('runHeadless — session name for a prompt-body command', () => {
     );
   });
 
+  // A TUI that resumes this session lists the turn for `/rewind` by its body, but nothing records
+  // that body as typed, so the rewind never puts it back in the composer to be sent as typed text.
+  it("never records a command's body as a typed rewind prompt", async () => {
+    stubProvider();
+    const { store } = sessions();
+    const config = makeConfig();
+    writeCommand(config.workspace, 'deploy', 'Roll out to the $1 environment.');
+
+    const result = await run(config, '/deploy staging', { sessionStore: store });
+
+    const targets = store.load(result.sessionId!).rewindTargets;
+    expect(targets.map((target) => target.prompt)).toEqual([
+      'Roll out to the staging environment.',
+    ]);
+    expect(targets[0]?.promptTyped).toBeUndefined();
+  });
+
   it('names the session "Deploy staging" for a custom command with arguments', async () => {
     stubProvider();
     const { store } = sessions();

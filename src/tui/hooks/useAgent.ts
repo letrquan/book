@@ -1976,7 +1976,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         if (safetySnapshotId) session.snapshotStore?.discardManifest(safetySnapshotId);
         return {
           ok: true,
-          ...(action === 'code'
+          // The composer gets back only a prompt recorded as typed: the user's text, or the line
+          // that ran a command. Any other turn's text (a command's body, a notice, or a turn
+          // recorded before the distinction was) is never put back to be sent as typed text.
+          ...(action === 'code' || !target.promptTyped
             ? {}
             : {
                 restoredPrompt: target.prompt,

@@ -584,6 +584,7 @@ export class SessionStore {
           id: checkpoint.checkpointId,
           userEventId: checkpoint.userEventId,
           prompt: checkpoint.prompt,
+          ...(checkpoint.promptTyped === true ? { promptTyped: true } : {}),
           attachments: checkpoint.attachments,
           timestamp: record.timestamp,
           ...checkpoint.checkpoint,
@@ -668,6 +669,8 @@ export class SessionStore {
         let targetId = checkpointByUserEventId.get(eventId);
         if (!targetId) {
           targetId = `user:${eventId}`;
+          // Nothing records that this prompt was typed (a print-mode turn's may be a command's
+          // body), so a rewind lists it but never puts it back in the composer.
           const legacyTarget: RewindTarget = {
             id: targetId,
             userEventId: eventId,

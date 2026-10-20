@@ -153,6 +153,8 @@ export interface TurnCheckpointRecordData {
   checkpointId: string;
   userEventId: string;
   prompt: string;
+  /** See {@link RewindTarget.promptTyped}. */
+  promptTyped?: boolean;
   attachments?: ImageAttachment[];
   checkpoint: RewindCheckpointMetadata;
 }
@@ -168,6 +170,12 @@ export interface RewindTarget extends RewindCheckpointMetadata {
   id: string;
   userEventId: string;
   prompt: string;
+  /**
+   * `prompt` is what the user typed: their text, or the command line that ran a command. Only such
+   * a prompt goes back in the composer on a rewind. Absent for any other turn (a command's body, a
+   * notification) and for one recorded before this was, whose prompt may be a command's body.
+   */
+  promptTyped?: boolean;
   attachments?: ImageAttachment[];
   timestamp: number;
   codeAvailable: boolean;

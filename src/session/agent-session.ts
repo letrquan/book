@@ -1014,10 +1014,13 @@ export class AgentSession {
           codeUnavailableReason: capture.reason,
         };
     const rewindPrompt = request.rewindPrompt ?? request.displayMessage;
+    // Typed: the text the user typed, or the command line that ran a command's body.
+    const promptTyped = request.expandShellInput === true || request.rewindPrompt !== undefined;
     const rewindTarget: RewindTarget = {
       id: checkpointId,
       userEventId: request.userMessage.id,
       prompt: rewindPrompt,
+      ...(promptTyped ? { promptTyped } : {}),
       attachments: request.userMessage.attachments,
       timestamp: checkpointTimestamp,
       ...checkpoint,
@@ -1033,6 +1036,7 @@ export class AgentSession {
         checkpointId,
         userEventId: request.userMessage.id,
         prompt: rewindPrompt,
+        ...(promptTyped ? { promptTyped } : {}),
         attachments: request.userMessage.attachments,
         checkpoint,
       } satisfies TurnCheckpointRecordData,
