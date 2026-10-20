@@ -817,7 +817,9 @@ export function generateSkillListing(skills: readonly Skill[], budgetChars = 800
 export function explicitSkillMentions(prompt: string, skills: readonly Skill[]): string[] {
   const available = new Set(skills.map((skill) => skill.name));
   const mentions: string[] = [];
-  const pattern = /(?<![A-Za-z0-9_-])\$([a-z0-9]+(?:-[a-z0-9]+)*)(?![A-Za-z0-9_-])/g;
+  // A `$` that follows a path separator, a dot or a mention's `@` is part of a file or command name
+  // (`@$deploy.md`, `docs/$deploy/`, `/$deploy`), not a request for a skill.
+  const pattern = /(?<![A-Za-z0-9_\-/\\@.])\$([a-z0-9]+(?:-[a-z0-9]+)*)(?![A-Za-z0-9_-])/g;
   for (const match of prompt.matchAll(pattern)) {
     const name = match[1];
     if (available.has(name) && !mentions.includes(name)) mentions.push(name);

@@ -616,6 +616,7 @@ export async function runHeadless(
       userMessage: Message,
       runContext: AgentRunContext,
       commandContext?: CommandContext,
+      typedText?: string,
     ): Promise<void> => {
       // An earlier prompt's error must not hide why this one failed.
       eventState.errorReported = false;
@@ -656,6 +657,8 @@ export async function runHeadless(
             parentSessionId: runtimeSessionId,
             runContext,
             runtime,
+            // Only what the user typed invokes a skill by `$name`, as in the TUI.
+            typedText,
             // Command frontmatter enforcement, exactly as the TUI passes it.
             allowedTools: commandContext?.allowedTools,
             modelOverride: commandContext?.modelOverride,
@@ -1017,7 +1020,16 @@ export async function runHeadless(
       const contextMessage = recorded.contextMessage;
       transcript.push(userMessage);
       rootContexts.set(runContext.rootRunId, runContext);
-      await runParentTurn(contextMessage, prompt, userMessage, runContext, commandContext);
+      await runParentTurn(
+        contextMessage,
+        prompt,
+        userMessage,
+        runContext,
+        commandContext,
+        // What the user typed is the line they submitted, whatever it resolved to: a command's
+        // body or a built-in command's prompt is not.
+        submitted,
+      );
       // Fold this prompt's inclusive spend into the carry so the next root starts
       // where this one finished instead of back at zero — along with how much of it
       // a record already covers. The total can run ahead of the records: a

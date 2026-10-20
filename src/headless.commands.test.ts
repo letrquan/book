@@ -311,6 +311,41 @@ describe('runHeadless — session name for a prompt-body command', () => {
     );
   });
 
+  // A TUI that resumes this session lists each print-mode turn for `/rewind` from its user record,
+  // but print mode runs no `!` line in any text, so a rewind never puts one back in the composer,
+  // where it would be sent as typed text: not a command's body, nor a prompt.
+  it('records no print-mode prompt as a typed rewind prompt', async () => {
+    stubProvider();
+    const { store } = sessions();
+    const config = makeConfig();
+    writeCommand(config.workspace, 'deploy', 'Roll out to the $1 environment.');
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      inputFormat: 'stream-json',
+      outputFormat: 'text',
+      history: [],
+      mode: 'default',
+      maxTurns: 1,
+      stdin: Readable.from([
+        `${JSON.stringify({ type: 'user', content: 'Explain the build' })}\n`,
+        `${JSON.stringify({ type: 'user', content: '/deploy staging' })}\n`,
+      ]),
+      stdout: collectWrites().stdout,
+      sessionStore: store,
+    });
+
+    const loaded = store.load(result.sessionId!);
+    expect(loaded.transcript.map((message) => message.content)).toContain(
+      'Roll out to the staging environment.',
+    );
+    expect(
+      loaded.rewindTargets.map(({ prompt, promptTyped }) => ({ prompt, promptTyped })),
+    ).toEqual([
+      { prompt: 'Roll out to the staging environment.', promptTyped: undefined },
+      { prompt: 'Explain the build', promptTyped: undefined },
+    ]);
+  });
+
   it('names the session "Deploy staging" for a custom command with arguments', async () => {
     stubProvider();
     const { store } = sessions();
@@ -553,4 +588,84 @@ describe('runHeadless — mentions in a project command', () => {
       );
     },
   );
+});
+
+/** A skill the workspace provides, whose body the model would see once it is active. */
+function writeProjectSkill(workspace: string, name: string, body: string): void {
+  const dir = join(workspace, '.book', 'skills', name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'SKILL.md'),
+    ['---', `name: ${name}`, `description: Use the ${name} workflow`, '---', body].join('\n'),
+    'utf-8',
+  );
+}
+
+function sentAnywhere(provider: ScriptedProvider): string {
+  return JSON.stringify(requestBody(provider).messages);
+}
+
+// Only text the user typed invokes a skill by `$name`, as only it runs a `!` line. A token in any
+// other text (a command's body, the REVIEW.md that `/security-review` carries, a mentioned file) is
+// plain text.
+describe('runHeadless — invoking a skill by `$name`', () => {
+  const BODY = 'PROBE-SKILL-BODY-MARKER';
+
+  it('invokes the skill a typed `$name` names', async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeProjectSkill(config.workspace, 'probe', BODY);
+
+    await run(config, '$probe check the parser');
+
+    expect(sentAnywhere(provider)).toContain(BODY);
+  });
+
+  it("invokes the skill a `$name` typed in a command's arguments names", async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeProjectSkill(config.workspace, 'probe', BODY);
+    writeCommand(config.workspace, 'triage', 'Triage $ARGUMENTS');
+
+    await run(config, '/triage $probe parser');
+
+    expect(lastUserText(provider)).toContain('Triage $probe parser');
+    expect(sentAnywhere(provider)).toContain(BODY);
+  });
+
+  it("leaves a `$name` in a project command's body as text", async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeProjectSkill(config.workspace, 'probe', BODY);
+    writeCommand(config.workspace, 'triage', 'Triage $ARGUMENTS with $probe');
+
+    await run(config, '/triage parser');
+
+    expect(lastUserText(provider)).toContain('Triage parser with $probe');
+    expect(sentAnywhere(provider)).not.toContain(BODY);
+  });
+
+  it('leaves a `$name` in the REVIEW.md that /security-review carries as text', async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeProjectSkill(config.workspace, 'probe', BODY);
+    writeFileSync(join(config.workspace, 'REVIEW.md'), 'Review with $probe.\n', 'utf-8');
+
+    await run(config, '/security-review');
+
+    expect(lastUserText(provider)).toContain('Review with $probe.');
+    expect(sentAnywhere(provider)).not.toContain(BODY);
+  });
+
+  it('leaves a `$name` in a file a typed mention inlines as text', async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeProjectSkill(config.workspace, 'probe', BODY);
+    writeFileSync(join(config.workspace, 'NOTES.md'), 'Notes: use $probe.\n', 'utf-8');
+
+    await run(config, 'Summarize @NOTES.md');
+
+    expect(lastUserText(provider)).toContain('Notes: use $probe.');
+    expect(sentAnywhere(provider)).not.toContain(BODY);
+  });
 });

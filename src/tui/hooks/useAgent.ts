@@ -278,8 +278,11 @@ interface SendMessageOptions {
   projectCommand?: boolean;
   /** The text is what the user typed: its `!cmd` lines run. */
   expandShellInput?: boolean;
-  /** What a rewind to this turn puts back in the composer instead of the text: a command's line. */
-  rewindPrompt?: string;
+  /**
+   * What the user typed for this turn: the text, or the command line that ran a command. Only its
+   * `$name` tokens invoke a skill, and only it goes back in the composer on a rewind.
+   */
+  typedText?: string;
 }
 
 /** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
@@ -1148,7 +1151,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         sessionNameExact: messageOptions?.sessionNameExact,
         projectCommand: messageOptions?.projectCommand,
         expandShellInput: messageOptions?.expandShellInput,
-        rewindPrompt: messageOptions?.rewindPrompt,
+        typedText: messageOptions?.typedText,
         snapshotStore: session.snapshotStore,
         timelineStore,
         registryStore: timelineStore,
@@ -1563,19 +1566,21 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       sessionNameSource?: string,
       projectCommand?: boolean,
     ) => {
+      // A `!` line runs only in what the user typed, which the app sends with nothing but its
+      // attachments. A command's body (it always names its session after the typed line) or a
+      // built-in command's prompt keeps its `!` lines as text: shell substitution output, or the
+      // repository's own text (REVIEW.md), may be in it.
+      const typed =
+        commandContext === undefined && sessionNameSource === undefined && !projectCommand;
       return sendMessage(userMessage, commandContext, {
         attachments,
         sessionNameSource,
         projectCommand,
-        // A `!` line runs only in what the user typed, which the app sends with nothing but its
-        // attachments. A command's body (it always names its session after the typed line) or a
-        // built-in command's prompt keeps its `!` lines as text: shell substitution output, or the
-        // repository's own text (REVIEW.md), may be in it.
-        expandShellInput:
-          commandContext === undefined && sessionNameSource === undefined && !projectCommand,
-        // A rewind to a command's turn puts back the line the user typed, so sending it again
-        // runs the command again instead of sending its body as typed text.
-        rewindPrompt: sessionNameSource,
+        expandShellInput: typed,
+        // A `$name` invokes a skill only where the user typed it: in their text, or in the command
+        // line that ran a command, never in the body or prompt the command sent. A rewind to a
+        // command's turn puts back that line, so sending it again runs the command again.
+        typedText: typed ? userMessage : sessionNameSource,
       });
     },
     [sendMessage],
@@ -1969,7 +1974,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         if (safetySnapshotId) session.snapshotStore?.discardManifest(safetySnapshotId);
         return {
           ok: true,
-          ...(action === 'code'
+          // The composer gets back only a prompt recorded as typed: the user's text, or the line
+          // that ran a command. Any other turn's text (a command's body, a notice, or a turn
+          // recorded before the distinction was) is never put back to be sent as typed text.
+          ...(action === 'code' || !target.promptTyped
             ? {}
             : {
                 restoredPrompt: target.prompt,
@@ -2100,6 +2108,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         contextMessage: goalKickoffPrompt(condition),
         derived: true,
         sessionNameSource: condition,
+        // The line the user typed, as a command's turn records it.
+        typedText: `/goal ${condition}`,
       });
     },
     [addLocalMessage, agentSession, isThinking, operations, sendMessage, syncGoal, timelineStore],

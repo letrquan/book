@@ -397,7 +397,7 @@ describe('runAgentLoop workspace reads (#264)', () => {
         onNotice: (notice) => notices.push(notice),
       }),
       'default',
-      { provider, isNewSession: false },
+      { provider, isNewSession: false, typedText: '$review inspect this change' },
     );
     expect(requestText).toContain('nothing in this run can answer');
     const refusals = notices.filter((notice) => notice.includes('needs approval'));
@@ -431,7 +431,7 @@ describe('runAgentLoop workspace reads (#264)', () => {
         }),
       }),
       'default',
-      { provider, isNewSession: false },
+      { provider, isNewSession: false, typedText: '$review inspect this change' },
     );
     expect(requestText).toContain('was not answered');
     expect(requestText).not.toContain('Explicit skill activation was denied');

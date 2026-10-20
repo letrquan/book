@@ -162,11 +162,13 @@ export interface AgentSessionPrepareSendRequest {
   /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
   projectCommand?: boolean;
   /**
-   * What a rewind to this turn puts back in the composer, when that is not `displayMessage`: the
-   * command line the user typed, for a command's body. Sent again, it goes back through the
-   * command, rather than as typed text.
+   * What the user typed for this turn, when they typed it: `displayMessage` itself, or the command
+   * line that ran a command whose body `displayMessage` is. Only its `$name` tokens invoke a skill,
+   * and a rewind to the turn puts it back in the composer: sent again, a command line goes back
+   * through its command. Absent for a turn the user did not type (a notification, a handoff), whose
+   * text a rewind never puts back to be sent as typed.
    */
-  rewindPrompt?: string;
+  typedText?: string;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
@@ -233,8 +235,8 @@ export interface AgentSessionSendRequest {
   expandShellInput?: boolean;
   /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
   projectCommand?: boolean;
-  /** See {@link AgentSessionPrepareSendRequest.rewindPrompt}. */
-  rewindPrompt?: string;
+  /** See {@link AgentSessionPrepareSendRequest.typedText}. */
+  typedText?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
   registryStore?: SessionStoreInterface;
@@ -257,6 +259,7 @@ export interface AgentSessionSendRequest {
     | 'userFileObservations'
     | 'userAttachments'
     | 'resolveAttachment'
+    | 'typedText'
   >;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
@@ -506,7 +509,7 @@ export class AgentSession {
           sessionNameExact: request.sessionNameExact,
           expandShellInput: request.expandShellInput,
           projectCommand: request.projectCommand,
-          rewindPrompt: request.rewindPrompt,
+          typedText: request.typedText,
           snapshotStore: request.snapshotStore,
           timelineStore: request.timelineStore,
           signal: control.signal,
@@ -555,6 +558,7 @@ export class AgentSession {
             ...request.options,
             runtime,
             displayMessage: request.displayMessage,
+            typedText: request.typedText,
             userMessageId: userMessage.id,
             userMessageTimestamp: userMessage.timestamp,
             userFileObservations: userMessage.fileObservations,
@@ -1013,11 +1017,13 @@ export class AgentSession {
           gitHead: capture.gitHead,
           codeUnavailableReason: capture.reason,
         };
-    const rewindPrompt = request.rewindPrompt ?? request.displayMessage;
+    const rewindPrompt = request.typedText ?? request.displayMessage;
+    const promptTyped = request.typedText !== undefined;
     const rewindTarget: RewindTarget = {
       id: checkpointId,
       userEventId: request.userMessage.id,
       prompt: rewindPrompt,
+      ...(promptTyped ? { promptTyped } : {}),
       attachments: request.userMessage.attachments,
       timestamp: checkpointTimestamp,
       ...checkpoint,
@@ -1033,6 +1039,7 @@ export class AgentSession {
         checkpointId,
         userEventId: request.userMessage.id,
         prompt: rewindPrompt,
+        ...(promptTyped ? { promptTyped } : {}),
         attachments: request.userMessage.attachments,
         checkpoint,
       } satisfies TurnCheckpointRecordData,

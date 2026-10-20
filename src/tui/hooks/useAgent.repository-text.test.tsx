@@ -18,12 +18,24 @@ import { SessionStore } from '../../session/store.js';
  * inlines only files git has committed, unchanged.
  */
 
-const loop = vi.hoisted(() => ({ prompts: [] as string[] }));
+const loop = vi.hoisted(() => ({
+  prompts: [] as string[],
+  typed: [] as Array<string | undefined>,
+}));
 
 vi.mock('../../agent/loop.js', () => ({
   runAgentLoop: vi.fn(
-    async (_config: unknown, _registry: unknown, prompt: string, history: unknown) => {
+    async (
+      _config: unknown,
+      _registry: unknown,
+      prompt: string,
+      history: unknown,
+      _callbacks: unknown,
+      _mode: unknown,
+      options?: { typedText?: string },
+    ) => {
       loop.prompts.push(prompt);
+      loop.typed.push(options?.typedText);
       return history;
     },
   ),
@@ -138,6 +150,7 @@ afterEach(() => {
   cleanup();
   latest = undefined;
   loop.prompts = [];
+  loop.typed = [];
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -211,6 +224,108 @@ describe('a rewind to a turn', () => {
   });
 });
 
+/**
+ * Records a turn as a session file holds one: its checkpoint when it has one (print mode writes
+ * none), then the user event.
+ */
+function recordTurn(
+  timeline: SessionStore,
+  sessionId: string,
+  turn: {
+    id: string;
+    prompt: string;
+    content: string;
+    derived?: boolean;
+    promptTyped?: boolean;
+    checkpoint?: boolean;
+  },
+): void {
+  if (turn.checkpoint !== false) {
+    timeline.append(sessionId, {
+      type: 'turn_checkpoint',
+      eventId: `checkpoint-${turn.id}`,
+      timestamp: Date.now(),
+      data: {
+        version: 1,
+        checkpointId: `checkpoint-${turn.id}`,
+        userEventId: turn.id,
+        prompt: turn.prompt,
+        ...(turn.promptTyped ? { promptTyped: true } : {}),
+        checkpoint: { codeUnavailableReason: 'not captured' },
+      },
+    });
+  }
+  timeline.append(sessionId, {
+    type: 'user',
+    eventId: turn.id,
+    timestamp: Date.now(),
+    data: {
+      id: turn.id,
+      content: turn.content,
+      derivedContent: turn.derived,
+      kind: 'conversation',
+    },
+  });
+}
+
+describe('a rewind to a resumed turn', () => {
+  it('puts back only a prompt recorded as typed', async () => {
+    const { config, session } = fixture();
+    const timeline = session.timelineStore;
+    const body = 'Run this:\n!echo legacy-line > legacy-line.txt\nwith $probe';
+    recordTurn(timeline, session.sessionId, {
+      id: 'typed-turn',
+      prompt: 'Explain the build',
+      content: 'Explain the build',
+      promptTyped: true,
+    });
+    // A command's turn checkpointed before the typed line was recorded: its prompt is the body.
+    recordTurn(timeline, session.sessionId, {
+      id: 'checkpointed-body',
+      prompt: body,
+      content: body,
+    });
+    // A print-mode command's turn, which has no checkpoint.
+    recordTurn(timeline, session.sessionId, {
+      id: 'print-mode-body',
+      prompt: body,
+      content: body,
+      derived: true,
+      checkpoint: false,
+    });
+    const loaded = timeline.load(session.sessionId);
+    render(
+      <Harness
+        config={config}
+        session={{
+          ...session,
+          source: 'resume' as const,
+          persisted: true,
+          created: false,
+          history: loaded.contextHistory,
+          transcript: loaded.transcript,
+          contextHistory: loaded.contextHistory,
+          compactBoundaries: loaded.compactBoundaries,
+          rewindTargets: loaded.rewindTargets,
+          activeEventIds: loaded.activeEventIds,
+        }}
+      />,
+    );
+    await tick();
+
+    const targets = latest!.getRewindTargets();
+    expect(targets.map((target) => target.prompt)).toEqual([body, body, 'Explain the build']);
+    for (const target of targets.slice(0, 2)) {
+      expect(await latest!.rewind(target.id, 'conversation')).toEqual({ ok: true });
+      await tick();
+    }
+    expect(await latest!.rewind(targets[2]!.id, 'conversation')).toMatchObject({
+      ok: true,
+      restoredPrompt: 'Explain the build',
+    });
+  });
+});
+
 describe('a `!` line in the text the TUI sends', () => {
   it('runs in text the user typed', async () => {
     const { config, session } = fixture();
@@ -248,5 +363,104 @@ describe('a `!` line in the text the TUI sends', () => {
 
     expect(lastPrompt()).toBe(body);
     expect(existsSync(join(workspace, 'builtin-line.txt'))).toBe(false);
+  });
+});
+
+// Only what the user typed invokes a skill by `$name` (the loop scans `typedText` alone): their
+// text, or the command line that ran a command, never the body or prompt the command sent.
+describe('the typed text the TUI hands the loop', () => {
+  it('is the text the user typed', async () => {
+    const { config, session } = fixture();
+    render(<Harness config={config} session={session} />);
+    await tick();
+
+    await latest!.send('$probe check the parser');
+
+    expect(loop.typed.at(-1)).toBe('$probe check the parser');
+  });
+
+  it("is the command line, not a project command's body", async () => {
+    const { config, session } = fixture();
+    render(<Harness config={config} session={session} />);
+    await tick();
+    const body = 'Check with $probe';
+
+    await latest!.send(body, commandContext('project', body), undefined, '/check', true);
+    expect(loop.typed.at(-1)).toBe('/check');
+    await latest!.send(body, commandContext('user', body), undefined, '/check $other');
+    expect(loop.typed.at(-1)).toBe('/check $other');
+  });
+
+  it('is the command line, not the REVIEW.md /security-review carries', async () => {
+    const { workspace, config, session } = fixture();
+    writeFileSync(join(workspace, 'REVIEW.md'), 'Review with $probe.\n');
+    render(<Harness config={config} session={session} />);
+    await tick();
+    const effect = createBuiltinCommandRegistry().execute('security-review', '', {
+      workspace,
+    } as BuiltinCommandContext);
+    if (effect?.type !== 'send-prompt') throw new Error('expected a prompt');
+
+    await latest!.send(
+      effect.prompt,
+      effect.context,
+      undefined,
+      '/security-review',
+      effect.projectCommand,
+    );
+
+    expect(lastPrompt()).toContain('Review with $probe.');
+    expect(loop.typed.at(-1)).toBe('/security-review');
+  });
+
+  it("is the /goal line, not the goal's kickoff prompt", async () => {
+    const { config, session } = fixture();
+    render(<Harness config={config} session={session} />);
+    await tick();
+
+    latest!.setGoal('$probe passes');
+    await tick();
+
+    expect(loop.typed.at(-1)).toBe('/goal $probe passes');
+    expect(latest!.getRewindTargets()[0]?.prompt).toBe('/goal $probe passes');
+  });
+
+  it("is absent for a managed agent's completion notice", async () => {
+    const { config, session } = fixture();
+    render(<Harness config={config} session={session} />);
+    await tick();
+
+    await latest!.sendAgentCompletions([
+      {
+        deliveryId: 'agent-1:1',
+        sequence: 1,
+        completion: {
+          agentId: 'agent-1',
+          displayName: 'Atlas',
+          profile: 'explorer',
+          status: 'completed',
+          resolvedModel: 'test/model',
+          isolation: 'workspace-readonly',
+          summary: 'Use $probe next',
+          summaryCharacters: 15,
+          summaryTruncated: false,
+          errorCharacters: 0,
+          errorTruncated: false,
+          evidenceIds: [],
+          createdAt: 10,
+          startedAt: 20,
+          updatedAt: 80,
+          finishedAt: 80,
+        },
+      },
+    ]);
+
+    expect(loop.prompts.at(-1)).toContain('$probe');
+    expect(loop.typed.at(-1)).toBeUndefined();
+    // Nor does a rewind to it put the notice back in the composer to be sent as typed text.
+    await tick();
+    const target = latest!.getRewindTargets()[0]!;
+    expect(target.prompt).toBe('Atlas completed: Use $probe next');
+    expect(await latest!.rewind(target.id, 'conversation')).toEqual({ ok: true });
   });
 });

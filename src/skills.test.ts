@@ -752,6 +752,10 @@ describe('generateSkillListing', () => {
     expect(
       explicitSkillMentions('prefix$deploy and $deploy_suffix are unrelated.', skills),
     ).toEqual([]);
+    // Part of a file or command name the user picked, not a request for the skill.
+    expect(
+      explicitSkillMentions('/$deploy @$deploy.md docs/$deploy/x.md a\\$deploy x.$deploy', skills),
+    ).toEqual([]);
     expect(
       explicitSkillMentions('$disabled $invalid', [
         skill({ name: 'disabled', activation: 'off' }),

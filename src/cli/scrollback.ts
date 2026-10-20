@@ -83,6 +83,8 @@ export async function runScrollbackSession(
           onUsage: () => {},
         } satisfies AgentLoopCallbacks,
         options.mode,
+        // The line is what the user typed, so its `$name` tokens invoke skills.
+        { typedText: prompt },
       );
 
       history.length = 0;

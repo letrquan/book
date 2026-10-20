@@ -330,7 +330,9 @@ directories may be symlinked after canonical path and size checks; resource syml
 
 Visibility controls determine whether metadata participates in automatic matching: `auto` exposes
 name and description, `name-only` exposes only the name, `manual` requires explicit `$skill-name`,
-and `off` disables the skill. Project-sourced implicit activation requires consent. `ask` always
+and `off` disables the skill. Only a `$skill-name` you type invokes a skill, in your message or in
+the line that runs a command (`/triage $review`); in a command's body, the REVIEW.md that
+`/security-review` carries, a file a mention inlines, or a subagent's task, it is plain text. Project-sourced implicit activation requires consent. `ask` always
 requests consent, while `deny` fails closed; no skill can grant tools, bypass permissions, alter the
 sandbox, or execute a packaged script implicitly. Active instructions are scoped to the current run
 by default (or the next model step for `lifetime: turn`) and tool declarations are intersections
@@ -379,4 +381,4 @@ ambiguous, conflicting, disabled, invalid, missing-body, and missing-resource ca
 prompt hashes and aggregate evidence rather than raw prompts, skill bodies, or resource contents.
 Run `npm run eval:skills -- --help` to print the command syntax.
 
-`/rewind` first selects an active user prompt, then restores Conversation, Code, or Both to the state immediately before that prompt. Files are captured into local content-addressed snapshots under `~/.book/rewind/`; `--no-session-persistence` uses temporary storage that is removed on exit. `.git` and workspace-local `.book/` state are never captured by default, Git HEAD and the index are never moved, and Code/Both are disabled when HEAD drifted or a checkpoint exceeded its safety limits. Use `.book/rewindignore` to override the default exclusions for dependency, build, cache, coverage, and virtual-environment directories, or to explicitly opt selected `.book` paths back in. Other hidden, gitignored, and secret-like workspace files remain restorable; their contents stay in local blobs and are never written to session JSON or model context.
+`/rewind` first selects an active user prompt, then restores Conversation, Code, or Both to the state immediately before that prompt. Conversation and Both put the prompt you typed back in the composer (for a command's turn, the line that ran it); a turn with no typed prompt on record, such as a notification, a print-mode turn, or one saved by an earlier version, leaves the composer as it is. Files are captured into local content-addressed snapshots under `~/.book/rewind/`; `--no-session-persistence` uses temporary storage that is removed on exit. `.git` and workspace-local `.book/` state are never captured by default, Git HEAD and the index are never moved, and Code/Both are disabled when HEAD drifted or a checkpoint exceeded its safety limits. Use `.book/rewindignore` to override the default exclusions for dependency, build, cache, coverage, and virtual-environment directories, or to explicitly opt selected `.book` paths back in. Other hidden, gitignored, and secret-like workspace files remain restorable; their contents stay in local blobs and are never written to session JSON or model context.
