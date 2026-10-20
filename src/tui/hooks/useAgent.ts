@@ -276,6 +276,8 @@ interface SendMessageOptions {
   parentRunId?: string;
   /** The text is a project command's resolved body: its mentions inline only committed files (#564). */
   projectCommand?: boolean;
+  /** The text is what the user typed, or their own command's body: its `!cmd` lines run. */
+  expandShellInput?: boolean;
 }
 
 /** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
@@ -1143,6 +1145,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         sessionNameSource: messageOptions?.sessionNameSource,
         sessionNameExact: messageOptions?.sessionNameExact,
         projectCommand: messageOptions?.projectCommand,
+        expandShellInput: messageOptions?.expandShellInput,
         snapshotStore: session.snapshotStore,
         timelineStore,
         registryStore: timelineStore,
@@ -1561,6 +1564,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         attachments,
         sessionNameSource,
         projectCommand,
+        // `send` is how the app sends what the user typed and the body of a command they ran. A
+        // `!` line runs in what they typed and in their own command's body, never in a project
+        // command's body or a built-in command's prompt: `promptEffect` names its context's
+        // command a project one, and a repository's text may ride in that prompt (REVIEW.md).
+        expandShellInput: !projectCommand && commandContext?.command.source !== 'project',
       });
     },
     [sendMessage],

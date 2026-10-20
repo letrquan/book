@@ -157,6 +157,8 @@ export interface AgentSessionPrepareSendRequest {
   sessionNameExact?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
+  /** See {@link AgentSessionRecordUserRequest.expandShellInput}. */
+  expandShellInput?: boolean;
   /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
   projectCommand?: boolean;
   signal?: AbortSignal;
@@ -184,6 +186,11 @@ export interface AgentSessionRecordUserRequest {
    */
   sessionNameExact?: string;
   timelineStore?: SessionTimelineStore;
+  /**
+   * `displayMessage` is text the user typed, or the body of their own command: its `!cmd` lines
+   * run. Off unless a host says so, so text it sends for any other reason (a built-in command's
+   * prompt, a project command's body, a notification) never runs one.
+   */
   expandShellInput?: boolean;
   /**
    * `displayMessage` is the resolved body of a project command (`.book/commands/*.md`): its
@@ -216,6 +223,8 @@ export interface AgentSessionSendRequest {
   sessionNameSource?: string;
   /** See {@link AgentSessionRecordUserRequest.sessionNameExact}. */
   sessionNameExact?: string;
+  /** See {@link AgentSessionRecordUserRequest.expandShellInput}. */
+  expandShellInput?: boolean;
   /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
   projectCommand?: boolean;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
@@ -487,6 +496,7 @@ export class AgentSession {
           sessionName: request.sessionName,
           sessionNameSource: request.sessionNameSource,
           sessionNameExact: request.sessionNameExact,
+          expandShellInput: request.expandShellInput,
           projectCommand: request.projectCommand,
           snapshotStore: request.snapshotStore,
           timelineStore: request.timelineStore,
@@ -1038,7 +1048,7 @@ export class AgentSession {
       request.contextMessage !== undefined
         ? undefined
         : await expandUserInputDetailed(request.displayMessage, request.config.workspace, {
-            expandShell: request.expandShellInput !== false,
+            expandShell: request.expandShellInput === true,
             signal: request.signal,
             sourceRef: request.userMessage.id,
             // The roots Read serves besides the workspace, resolved as the agent loop does, and

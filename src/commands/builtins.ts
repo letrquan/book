@@ -123,7 +123,17 @@ export interface BuiltinCommandContext {
 }
 
 export type BuiltinCommandEffect =
-  | { type: 'send-prompt'; prompt: string; context: CommandContext }
+  | {
+      type: 'send-prompt';
+      prompt: string;
+      context: CommandContext;
+      /**
+       * The prompt carries the repository's own text (`REVIEW.md`), so the host expands it as it
+       * does a project command's body: its mentions inline only files git has committed,
+       * unchanged, and none of its `!` lines run (#564).
+       */
+      projectCommand?: boolean;
+    }
   | {
       type: 'local-message';
       content: string;
@@ -190,6 +200,7 @@ function promptEffect(
     type: 'send-prompt',
     prompt,
     context: {
+      // Not the user's own command, so the TUI runs none of the prompt's `!` lines (`useAgent`).
       command: { name, description, body: prompt, source: 'project' },
       resolvedBody: prompt,
       allowedTools,
@@ -1104,9 +1115,14 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     nonInteractive: true,
     execute: ({ rawArguments }, context) => {
       const prompt = buildSecurityReviewPrompt(rawArguments, context.workspace);
-      return promptEffect('security-review', 'Security audit of current diff', prompt, [
-        ...SECURITY_REVIEW_TOOLS,
-      ]);
+      // REVIEW.md is the repository's text, so the whole prompt, arguments included, is expanded
+      // as a project command's body is, whether or not the workspace has one.
+      return {
+        ...promptEffect('security-review', 'Security audit of current diff', prompt, [
+          ...SECURITY_REVIEW_TOOLS,
+        ]),
+        projectCommand: true,
+      };
     },
   },
   {

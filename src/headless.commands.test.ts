@@ -1,5 +1,13 @@
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Readable } from 'stream';
@@ -484,6 +492,46 @@ describe('runHeadless — mentions in a project command', () => {
 
     expect(lastUserText(provider, 0)).toContain('API_TOKEN=USER-ENV');
     expect(lastUserText(provider, 1)).toContain('API_TOKEN=USER-ENV');
+  });
+
+  // `/security-review`'s prompt carries the repository's REVIEW.md, which is expanded as a project
+  // command's body is.
+  it('expands the REVIEW.md in /security-review as it does a project command body', async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeFileSync(join(config.workspace, 'STYLE.md'), 'COMMITTED-STYLE\n', 'utf-8');
+    writeFileSync(join(config.workspace, '.gitignore'), '.env\n.book/settings.local.json\n');
+    writeFileSync(
+      join(config.workspace, 'REVIEW.md'),
+      'Calibrate severity for this repository.\n' +
+        '!echo review-line > review-line.txt\n' +
+        'See @.env and @.book/settings.local.json and @STYLE.md when reviewing.\n',
+    );
+    commitAll(config.workspace);
+    mkdirSync(join(config.workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(config.workspace, '.book', 'settings.local.json'),
+      '{"provider":{"x":{"apiKey":"sk-FAKE-LOCAL-KEY"}}}\n',
+    );
+    writeFileSync(join(config.workspace, '.env'), 'API_TOKEN=FAKE-ENV-SECRET\n');
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+
+    await run(config, '/security-review');
+
+    const sent = lastUserText(provider);
+    expect(sent).toContain('Calibrate severity for this repository.');
+    expect(sent).toContain('!echo review-line > review-line.txt');
+    expect(existsSync(join(config.workspace, 'review-line.txt'))).toBe(false);
+    expect(sent).not.toContain('FAKE-ENV-SECRET');
+    expect(sent).not.toContain('sk-FAKE-LOCAL-KEY');
+    expect(sent).toContain('See @.env and @.book/settings.local.json and');
+    expect(sent).toContain('COMMITTED-STYLE');
+    const warned = stderrText(stderr);
+    for (const path of ['.book/settings.local.json', '.env']) {
+      expect(warned).toContain(
+        `Left @${path} as written: a project command inlines only files committed to git, and git does not track it.`,
+      );
+    }
   });
 
   it.skipIf(process.platform === 'win32')(

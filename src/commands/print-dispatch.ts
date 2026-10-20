@@ -92,7 +92,8 @@ export type PrintCommandDispatch =
       /** Non-fatal shell-substitution failures, exactly as the TUI collects them. */
       shellErrors?: string[];
       /**
-       * `prompt` is the resolved body of a project command (`.book/commands/*.md`), so its
+       * `prompt` is the resolved body of a project command (`.book/commands/*.md`), or a built-in
+       * prompt that carries the repository's text (`/security-review`'s REVIEW.md), so its
        * mentions inline only files git has committed, unchanged (#564).
        */
       projectCommand?: boolean;
@@ -275,6 +276,7 @@ export function createPrintEffectRegistry(): PrintEffectRegistry {
       kind: 'prompt',
       prompt: effect.prompt,
       commandContext: effect.context,
+      projectCommand: effect.projectCommand,
     }))
     .register('local-message', (effect, _env, command) => {
       if (effect.isError) throw new PrintCommandUsageError(command, effect.content);

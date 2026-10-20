@@ -120,7 +120,8 @@ as calibration only: it cannot change the output contract, disable verification,
 tools a reviewer may use. It is repository-controlled, so it loads only when its real path is a
 Markdown file inside the git repository (the workspace without one): a `REVIEW.md` committed as a
 link to a file outside the repository, or to a non-Markdown file, is skipped with a start-up
-warning.
+warning. In `/security-review`, `REVIEW.md` is expanded like a project command's body (see
+[Commands and skills](commands-and-skills.md)).
 
 **Outside the TUI.** `book -p /review`, `book -p "/review --deep"`, `book -p "/review --base main"`,
 path scopes and `<base>...<head>` all run headlessly through the identical pipeline — the host still

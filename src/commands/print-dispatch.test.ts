@@ -113,6 +113,19 @@ describe('resolvePrintCommand — prompt-body commands', () => {
     ]);
   });
 
+  // REVIEW.md is the repository's text, so the prompt carrying it is expanded as a project
+  // command's body is; /init carries none.
+  it("marks /security-review's prompt as the repository's text, and /init's as not", async () => {
+    const workspace = tempWorkspace();
+
+    const review = await resolvePrintCommand('/security-review', env(workspace));
+    const init = await resolvePrintCommand('/init', env(workspace));
+
+    expect(review).toMatchObject({ kind: 'prompt', projectCommand: true });
+    expect(init).toMatchObject({ kind: 'prompt' });
+    expect(init).not.toHaveProperty('projectCommand', true);
+  });
+
   it('expands /init through the same registry the TUI uses', async () => {
     const workspace = tempWorkspace();
 

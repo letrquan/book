@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -2840,7 +2840,8 @@ describe('AgentSession.recordUserMessage — one pass over what the user typed',
     return dir;
   }
 
-  async function record(displayMessage: string, workspace: string): Promise<Message> {
+  /** Records `displayMessage` as text the user typed, unless `typed` is false. */
+  async function record(displayMessage: string, workspace: string, typed = true): Promise<Message> {
     const userMessage: Message = {
       id: 'user-shell',
       role: 'user',
@@ -2854,6 +2855,7 @@ describe('AgentSession.recordUserMessage — one pass over what the user typed',
       displayMessage,
       userMessage,
       timelineStore: { append: () => {} },
+      ...(typed ? { expandShellInput: true } : {}),
     });
     userMessage.contextContent = result.contextMessage;
     return userMessage;
@@ -2882,6 +2884,17 @@ describe('AgentSession.recordUserMessage — one pass over what the user typed',
 
     expect(message.contextContent).toContain('typed-by-user');
     expect(message.contextContent).not.toContain('!echo');
+  });
+
+  // A host says which text the user typed; any other text it sends keeps its `!` lines as text.
+  it('runs no command line in text the host did not mark as typed', async () => {
+    const workspace = workspaceWith({});
+    const text = 'Output:\n!echo not-typed > not-typed.txt';
+
+    const message = await record(text, workspace, false);
+
+    expect(message.contextContent).toBe(text);
+    expect(existsSync(join(workspace, 'not-typed.txt'))).toBe(false);
   });
 
   it("never mention-expands a command's output", async () => {
