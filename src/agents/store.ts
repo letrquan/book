@@ -119,6 +119,12 @@ export interface AgentStoreOptions {
   eventSink?: (event: AgentStorePersistenceEvent) => void;
   writer?: AtomicJsonWriter;
   writerOptions?: Omit<AtomicJsonWriterOptions, 'instanceId' | 'hostname'>;
+  /**
+   * The instances of the stores the session this one belongs to has disposed, shared rather than
+   * copied: this store adds its own when it is disposed, and reads each one in it as gone, whatever
+   * its lease says (#568). See {@link AgentStore.aliveByLease}.
+   */
+  disposedInstanceIds?: Set<string>;
 }
 
 export type AgentStoreWriteResult = AtomicWriteResult;
@@ -252,6 +258,7 @@ export class AgentStore {
   private readonly processAlive: (pid: number) => boolean;
   private readonly eventSink?: (event: AgentStorePersistenceEvent) => void;
   private readonly writer: AtomicJsonWriter;
+  private readonly disposedInstanceIds?: Set<string>;
   private enabled: boolean;
   private disposed = false;
   /**
@@ -306,6 +313,7 @@ export class AgentStore {
     this.cancel = options.clearTimeout ?? clearTimeout;
     this.processAlive = options.processAlive ?? ((pid) => this.defaultProcessAlive(pid));
     this.eventSink = options.eventSink;
+    this.disposedInstanceIds = options.disposedInstanceIds;
     this.enabled = enabled;
     this.writer =
       options.writer ??
@@ -399,13 +407,13 @@ export class AgentStore {
     this.plans.clear();
     this.evidence.clear();
     this.snapshots.clear();
-    this.removeLease();
+    this.releaseLease();
     // As in `dispose()`: a heartbeat still running would put the lease back with its rename.
     const inFlight = this.leaseWrite;
     if (inFlight) {
       void inFlight.then(
-        () => this.removeLease(),
-        () => this.removeLease(),
+        () => this.releaseLease(),
+        () => this.releaseLease(),
       );
     }
   }
@@ -1093,7 +1101,7 @@ export class AgentStore {
   /** Whether `lease`, as read from `instances/`, is another instance's, and live. */
   private isLiveForeignLease(lease: InstanceLease | undefined): boolean {
     if (!lease?.instanceId || lease.instanceId === this.instanceId) return false;
-    return this.aliveByLease(lease, lease.pid, lease.hostname);
+    return this.aliveByLease(lease.instanceId, lease, lease.pid, lease.hostname);
   }
 
   removeAgent(agentId: string): void {
@@ -1306,6 +1314,8 @@ export class AgentStore {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    // Gone, for this session's later stores, whatever becomes of the lease file below (#568).
+    this.disposedInstanceIds?.add(this.instanceId);
     if (this.heartbeatTimer) this.cancel(this.heartbeatTimer);
     this.heartbeatTimer = undefined;
     for (const pending of this.pendingWrites.values()) {
@@ -1328,7 +1338,7 @@ export class AgentStore {
     // has stopped answering, blocked the removal for good, which is the one case where the lease
     // most needs to be gone. Neither depends on the write: the unlink below is this store's own
     // file, and a write in flight is a *re-creation* of it, not part of it.
-    this.removeLease();
+    this.releaseLease();
     // The write still in flight gets the file back, because its final step is a rename. So the
     // rename is refused once the store is disposed — `refreshLease` asks before it lands — and the
     // unlink is repeated after the write settles, which covers a rename that had already passed that
@@ -1338,8 +1348,8 @@ export class AgentStore {
     const inFlight = this.leaseWrite;
     if (inFlight) {
       void inFlight.then(
-        () => this.removeLease(),
-        () => this.removeLease(),
+        () => this.releaseLease(),
+        () => this.releaseLease(),
       );
     }
   }
@@ -1460,6 +1470,34 @@ export class AgentStore {
     }
   }
 
+  /**
+   * {@link removeLease}, for a store that is done with its lease. A lease the unlink leaves behind
+   * (a Windows scanner holding the file, say) reads as fresh for up to {@link LEASE_FRESH_MS}, so
+   * it is overwritten with a dead one, best effort (#568). This session's own later stores read the
+   * instance as gone either way: see {@link aliveByLease}.
+   */
+  private releaseLease(): void {
+    this.removeLease();
+    if (existsSync(this.leasePath)) this.markLeaseStale();
+  }
+
+  /**
+   * Overwrite this instance's lease with one that reads as dead to every store: a heartbeat stale on
+   * any clock, and no process, so that a store of another process on this host does not fall back
+   * to this one's pid, which is still alive (see {@link isLiveForeignLease}). In place, not by temp
+   * file and rename like every other lease write: a file whose unlink was refused refuses a rename
+   * onto it the same way, but may still take a write. A reader that catches the write half done
+   * reads no lease, which is no fresher than a dead one.
+   */
+  private markLeaseStale(): void {
+    const dead = { instanceId: this.instanceId, heartbeatAt: Number.MIN_SAFE_INTEGER };
+    try {
+      writeFileSync(this.leasePath, JSON.stringify(dead));
+    } catch {
+      // Best effort: the lease goes stale on its own within LEASE_FRESH_MS.
+    }
+  }
+
   private scheduleHeartbeat(): void {
     if (this.disposed) return;
     this.heartbeatTimer = this.schedule(() => {
@@ -1484,7 +1522,7 @@ export class AgentStore {
   private isInstanceAlive(instanceId: string, pid?: number, ownerHostname?: string): boolean {
     if (instanceId === this.instanceId) return true;
     const lease = this.readJson<InstanceLease>(this.instanceLeasePath(instanceId), false);
-    return this.aliveByLease(lease, pid, ownerHostname);
+    return this.aliveByLease(instanceId, lease, pid, ownerHostname);
   }
 
   /** {@link isInstanceAlive}, reading the lease on the thread pool, for {@link open}. */
@@ -1494,7 +1532,7 @@ export class AgentStore {
       this.instanceLeasePath(instanceId),
       false,
     );
-    return this.aliveByLease(lease);
+    return this.aliveByLease(instanceId, lease);
   }
 
   private instanceLeasePath(instanceId: string): string {
@@ -1516,12 +1554,21 @@ export class AgentStore {
    * or its heartbeat stalled past {@link LEASE_FRESH_MS}. It reads as gone until its next
    * heartbeat lands. Two live stores on one repository in one process come only from an SDK host
    * running sessions side by side; the TUI and print mode dispose a runtime before replacing it.
+   *
+   * What that rule misses is a disposed sibling whose lease outlived its dispose: the unlink failed
+   * (a Windows scanner holding the file), and the lease reads as fresh for up to
+   * {@link LEASE_FRESH_MS}. So an instance the session has disposed, one in
+   * {@link AgentStoreOptions.disposedInstanceIds}, is gone whatever its lease says (#568). The set
+   * holds only this session's own instances, so a live instance of another process, or one another
+   * session in this process has not disposed, is judged as before.
    */
   private aliveByLease(
+    instanceId: string,
     lease: InstanceLease | undefined,
     pid?: number,
     ownerHostname?: string,
   ): boolean {
+    if (this.disposedInstanceIds?.has(instanceId)) return false;
     if (lease && this.now() - lease.heartbeatAt <= this.leaseFreshMs) return true;
     if (ownerHostname !== this.hostname || typeof pid !== 'number') return false;
     return pid !== this.pid && this.processAlive(pid);

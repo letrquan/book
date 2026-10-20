@@ -36,6 +36,11 @@ export interface SessionRuntimeOptions {
    * command as a background shell it would then destroy. Defaults to `true`.
    */
   ownsSessionShells?: boolean;
+  /**
+   * The store instances of every agent manager this session has disposed. Hand on the outgoing
+   * runtime's set to its replacement; see {@link SessionRuntime.disposedAgentInstanceIds}.
+   */
+  disposedAgentInstanceIds?: Set<string>;
 }
 
 /** Mutable resources owned by one logical agent session. */
@@ -113,6 +118,15 @@ export class SessionRuntime {
   readonly clippedOutputPaths = new Set<string>();
 
   agentManager?: import('../agents/manager.js').AgentManager;
+  /**
+   * The store instances of the agent managers this session has disposed, its earlier runtimes'
+   * included: one set, handed from each runtime to the next by `AgentSession.replaceRuntime`.
+   * Every manager built on this runtime gives it to its store, which adds its own instance when it
+   * is disposed and reads each instance in it as gone, whatever its lease file says (#568). A lease
+   * outlives its dispose when the unlink fails (a Windows scanner holding the file), and would read
+   * as a live owner of the records that manager wrote for up to 15 s.
+   */
+  readonly disposedAgentInstanceIds: Set<string>;
   private readonly abortControllers = new Set<AbortController>();
   private readonly timers = new Set<NodeJS.Timeout>();
   private readonly childProcesses = new Set<ChildProcess>();
@@ -143,6 +157,7 @@ export class SessionRuntime {
     this.skillRegistry = options.skillRegistry;
     this.skillDiscoveryOptions = options.skillDiscoveryOptions ?? {};
     this.ownsSessionShells = options.ownsSessionShells ?? true;
+    this.disposedAgentInstanceIds = options.disposedAgentInstanceIds ?? new Set();
   }
 
   /**
