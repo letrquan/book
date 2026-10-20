@@ -294,6 +294,24 @@ describe('toolRowHidesContent', () => {
     }
   });
 
+  it('points Ctrl+E at an open row whose only loss is a shortened line (#550)', () => {
+    const input = {
+      name: 'Bash',
+      args: { command: 'printf long' },
+      result: {
+        version: 2 as const,
+        toolCallId: 'long-line',
+        status: 'success' as const,
+        content: `start-${'0'.repeat(150)}-END\nshort`,
+      },
+      isExpanded: true,
+      transcriptMode: 'compact' as const,
+      terminalWidth: WIDTH,
+    };
+    expect(toolRowHidesContent({ ...input, showAllToolOutput: false })).toBe(true);
+    expect(toolRowHidesContent({ ...input, showAllToolOutput: true })).toBe(false);
+  });
+
   it('says a row shown in full hides nothing', () => {
     for (const row of workloadRows()) {
       expect(

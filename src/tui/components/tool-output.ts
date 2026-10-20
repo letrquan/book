@@ -1,5 +1,5 @@
 import { expandTabs as expandToTabStops } from '../../cli/ink-frame-clip.js';
-import { displayWidth, truncateDisplay } from './word-wrap.js';
+import { displayWidth, hardWrapLine, truncateDisplay } from './word-wrap.js';
 
 export interface ToolOutputDisplayOptions {
   maxLines: number;
@@ -8,6 +8,12 @@ export interface ToolOutputDisplayOptions {
   hint?: string;
   /** Select initial lines, final lines, or a balanced initial/final preview. */
   strategy?: 'head' | 'tail' | 'head-tail';
+  /**
+   * Continue a line wider than `maxLineWidth` on the rows after it instead of cutting it, so no
+   * line is shortened. `maxLines` then bounds the rows (a line the bound cuts into keeps its first
+   * rows and counts as hidden).
+   */
+  wrap?: boolean;
 }
 
 export interface ToolOutputDisplay {
@@ -83,8 +89,9 @@ export function countOutputLines(output: string): number {
  */
 export function prepareToolOutputDisplay(
   output: string,
-  { maxLines, maxLineWidth, hint, strategy = 'head' }: ToolOutputDisplayOptions,
+  { maxLines, maxLineWidth, hint, strategy = 'head', wrap = false }: ToolOutputDisplayOptions,
 ): ToolOutputDisplay {
+  if (wrap) return wrappedToolOutputDisplay(output, maxLines, maxLineWidth, hint);
   const rawLines = splitOutputLines(output);
   const lineLimit = Math.max(0, Math.floor(maxLines));
   const widthLimit = Math.max(0, Math.floor(maxLineWidth));
@@ -111,6 +118,43 @@ export function prepareToolOutputDisplay(
     hiddenLines,
     truncatedLines,
     truncated,
+    footer,
+  };
+}
+
+/**
+ * The head of `output` with each line wrapped at display width `maxLineWidth`, at most `maxLines`
+ * rows. Nothing is shortened: a line the row bound reaches keeps its first rows and is hidden.
+ */
+function wrappedToolOutputDisplay(
+  output: string,
+  maxLines: number,
+  maxLineWidth: number,
+  hint: string | undefined,
+): ToolOutputDisplay {
+  const rawLines = splitOutputLines(output);
+  const rowLimit = Math.max(0, Math.floor(maxLines));
+  const width = Math.max(1, Math.floor(maxLineWidth));
+  const lines: string[] = [];
+  let shownLines = 0;
+  for (const rawLine of rawLines) {
+    if (lines.length >= rowLimit) break;
+    const rows = hardWrapLine(expandTabs(rawLine), width);
+    const room = rowLimit - lines.length;
+    lines.push(...rows.slice(0, room));
+    if (rows.length > room) break;
+    shownLines++;
+  }
+  const hiddenLines = rawLines.length - shownLines;
+  const footer =
+    hiddenLines > 0 ? formatToolOutputFooter({ hiddenLines, truncatedLines: 0, hint }) : undefined;
+  return {
+    lines,
+    totalLines: rawLines.length,
+    totalChars: output.length,
+    hiddenLines,
+    truncatedLines: 0,
+    truncated: hiddenLines > 0,
     footer,
   };
 }

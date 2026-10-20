@@ -159,7 +159,38 @@ function appendRun(runs: InlineRun[], text: string, style: InlineStyle) {
 
 function plainTextFromTokens(tokens: Token[]): string {
   const runs = inlineRunsFromTokens(tokens, { color: undefined }, undefined);
-  return runs.map((run) => run.text).join('');
+  return expandRunTabs(runs)
+    .map((run) => run.text)
+    .join('');
+}
+
+/**
+ * `runs` with each tab replaced by spaces up to the next 8-column tab stop, counted from the start
+ * of the text column (the run's first character, or the one after a line break). `displayWidth`
+ * counts a tab as no cells while the terminal moves to the next stop, so a row holding one comes
+ * out wider on screen than the width it was wrapped to (#565). Runs without a tab come back as
+ * they are.
+ */
+function expandRunTabs(runs: InlineRun[]): InlineRun[] {
+  if (!runs.some((run) => run.text.includes('\t'))) return runs;
+  let column = 0;
+  return runs.map((run) => {
+    let text = '';
+    for (const part of run.text.split(/(\t|\n)/)) {
+      if (part === '\t') {
+        const pad = 8 - (column % 8);
+        text += ' '.repeat(pad);
+        column += pad;
+      } else if (part === '\n') {
+        text += part;
+        column = 0;
+      } else {
+        text += part;
+        column += displayWidth(part);
+      }
+    }
+    return text === run.text ? run : { ...run, text };
+  });
 }
 
 function inlineRunsFromTokens(
@@ -262,7 +293,8 @@ function inlineRunsFromTokens(
   return runs;
 }
 
-function wrappedInlineRuns(runs: InlineRun[], terminalWidth: number): InlineRun[][] {
+function wrappedInlineRuns(inlineRuns: InlineRun[], terminalWidth: number): InlineRun[][] {
+  const runs = expandRunTabs(inlineRuns);
   const rawText = runs.map((run) => run.text).join('');
   const lines = wrapParagraphLines(rawText, terminalWidth);
   let searchOffset = 0;
