@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from 'fs';
+import { readdirSync, statSync } from 'fs';
 import { platform, release, homedir } from 'os';
 import { dirname, join, parse, resolve } from 'path';
 import type { AgentConfig, ResolvedShell } from '../types/runtime.js';
@@ -24,7 +24,7 @@ import { BUILTIN_COMMANDS } from '../commands/builtins.js';
 import { discoverProjectInstructions, renderProjectInstructions } from '../claude-md.js';
 import { discoverAgents, type SubagentDef } from '../subagent-discovery.js';
 import { runGit } from '../tools/git.js';
-import { isUserHome, tryRealPath } from '../repo-containment.js';
+import { findRepositoryRoot } from '../repo-containment.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { resolveBookHome } from '../book-home.js';
 import { resolveAgentProfile } from '../agents/profile-resolver.js';
@@ -193,21 +193,13 @@ function mergeCommands(commands: SlashCommand[]): SlashCommand[] {
 }
 
 /**
- * Whether the workspace is in a git repository: the nearest directory above it with a `.git`
- * entry. A `.git` at the user's home directory is a dotfiles repository, not a project
- * (`findRepositoryRoot` in `repo-containment.ts`), so a project under the home directory without
- * its own `.git` is in none, and its prompt carries no git line about the dotfiles repository.
+ * Whether the workspace is in a git repository, found from its real path as git does. A `.git` at
+ * the user's home directory is a dotfiles repository, not a project (`findRepositoryRoot`), so a
+ * project under the home directory without its own `.git` is in none, and its prompt carries no
+ * git line about the dotfiles repository.
  */
 function isInGitWorktree(workspace: string): boolean {
-  let current = resolve(workspace);
-  const root = parse(current).root;
-  while (true) {
-    if (existsSync(join(current, '.git'))) {
-      return !isUserHome(tryRealPath(current) ?? current, undefined);
-    }
-    if (current === root) return false;
-    current = dirname(current);
-  }
+  return findRepositoryRoot(workspace) !== undefined;
 }
 
 async function gitContext(workspace: string, signal?: AbortSignal): Promise<string> {
