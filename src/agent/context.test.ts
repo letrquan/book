@@ -1,5 +1,6 @@
+import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { hostname, tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, it, expect, vi } from 'vitest';
@@ -1331,5 +1332,52 @@ describe('model-conditional mutation guidance', () => {
     expect(planPrompt).not.toContain('Plan mode');
     expect(out[1].content).toContain('- Plan mode: active');
     expect(out[1].content).toContain('ExitPlanMode');
+  });
+});
+
+// A dotfiles repository at the home directory is no project (#567): taking it as the repository,
+// a project under the home directory without its own `.git` was told the dotfiles branch and
+// status every turn.
+describe('session-state git line and a dotfiles ~/.git', () => {
+  /** A real repository with one commit: `rev-parse --abbrev-ref HEAD` fails on an unborn branch. */
+  function gitRepository(at: string): void {
+    mkdirSync(at, { recursive: true });
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: at, stdio: 'ignore' });
+    git('init', '-q');
+    git(
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'init',
+    );
+  }
+
+  it('carries no git line for a project under the home directory without its own .git', async () => {
+    // The long form on Windows, as git reports it, not the runner's 8.3 temp path.
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-git-home-')));
+    try {
+      const home = join(root, 'home');
+      gitRepository(home);
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('USERPROFILE', home);
+      const proj = join(home, 'proj');
+      mkdirSync(proj);
+
+      const out = await buildMessages(defaultConfig({ workspace: proj }), [userMsg('hi')]);
+      expect(out[1].content).toContain('<session-state>');
+      expect(out[1].content).not.toContain('- Git:');
+
+      // With its own repository, the project has its git line as before.
+      gitRepository(proj);
+      const own = await buildMessages(defaultConfig({ workspace: proj }), [userMsg('hi')]);
+      expect(own[1].content).toContain('- Git: branch ');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
