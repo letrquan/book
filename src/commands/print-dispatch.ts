@@ -91,6 +91,11 @@ export type PrintCommandDispatch =
       sessionNameSource?: string;
       /** Non-fatal shell-substitution failures, exactly as the TUI collects them. */
       shellErrors?: string[];
+      /**
+       * `prompt` is the resolved body of a project command (`.book/commands/*.md`), so its
+       * mentions inline only files git has committed, unchanged (#564).
+       */
+      projectCommand?: boolean;
     }
   /** The effect handler already did the work; the host runs no model turn. */
   | {
@@ -481,5 +486,6 @@ export async function resolvePrintCommand(
     commandContext: commandEnforcementContext(custom, body),
     sessionNameSource: input.trim(),
     shellErrors,
+    projectCommand: custom.source === 'project',
   };
 }

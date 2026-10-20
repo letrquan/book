@@ -274,6 +274,8 @@ interface SendMessageOptions {
   /** Managed-continuation linkage back to the originating root and parent run. */
   rootRunId?: string;
   parentRunId?: string;
+  /** The text is a project command's resolved body: its mentions inline only committed files (#564). */
+  projectCommand?: boolean;
 }
 
 /** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
@@ -1080,6 +1082,37 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           sessionNameRef.current = prepared.sessionName;
           setSessionName(prepared.sessionName);
         }
+        // A mention left as written is reported right under the message it was in, as a local
+        // line like a start-up notice, ahead of the reply (#567). `addLocalMessage` would hold it
+        // until the turn ends, since a send is in flight.
+        if (prepared.mentionNotices.length > 0) {
+          const notices = prepared.mentionNotices.map((text) => ({
+            ...makeMessage('assistant', text, undefined, false),
+            kind: 'local' as const,
+          }));
+          for (const notice of notices) {
+            timelineStore?.append(activeSessionId, {
+              type: 'local',
+              eventId: notice.id,
+              timestamp: notice.timestamp,
+              data: {
+                id: notice.id,
+                content: notice.content,
+                kind: 'local',
+                includeInContext: false,
+              },
+            });
+          }
+          setMessages((prev) => {
+            const at = prev.findIndex((message) => message.id === placeholder?.id);
+            const next =
+              at === -1
+                ? [...prev, ...notices]
+                : [...prev.slice(0, at), ...notices, ...prev.slice(at)];
+            messagesRef.current = next;
+            return next;
+          });
+        }
         setRewindTargets((current) => [prepared.rewindTarget, ...current]);
         // Ink layout plus markdown parsing commonly takes longer than a 60fps
         // frame on a real transcript. A 32ms cadence keeps streaming responsive
@@ -1109,6 +1142,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         sessionName: sessionNameRef.current,
         sessionNameSource: messageOptions?.sessionNameSource,
         sessionNameExact: messageOptions?.sessionNameExact,
+        projectCommand: messageOptions?.projectCommand,
         snapshotStore: session.snapshotStore,
         timelineStore,
         registryStore: timelineStore,
@@ -1521,8 +1555,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       commandContext?: CommandContext,
       attachments?: Message['attachments'],
       sessionNameSource?: string,
+      projectCommand?: boolean,
     ) => {
-      return sendMessage(userMessage, commandContext, { attachments, sessionNameSource });
+      return sendMessage(userMessage, commandContext, {
+        attachments,
+        sessionNameSource,
+        projectCommand,
+      });
     },
     [sendMessage],
   );

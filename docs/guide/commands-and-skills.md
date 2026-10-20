@@ -48,6 +48,21 @@ committed as a link to a file outside it is skipped with a start-up warning inst
 target to the provider. This covers a linked `.book` or `.book/commands` directory too. Your user
 commands, in `$BOOK_HOME/commands/` (default `~/.book/commands/`), are never checked.
 
+**An `@path` mention in a project command's body inlines only a committed file.** A mention is
+inlined into the turn sent to the provider, and a checked-in command needs no approval unless it
+substitutes shell, so a body that mentions `@.git/config`, `@.book/settings.local.json` or `@.env`
+would otherwise send your clone credentials, local provider key or secrets when you run it. In a
+`.book/commands/*.md` body, a mention is inlined only when the file it really reads (the target,
+for a link) is one git tracks in the workspace's repository with no local change, staged or not,
+so it holds exactly what the repository already published. Anything else stays as written, with a
+one-line notice (in the TUI, and on stderr in print mode) naming the path and the reason. With no
+git repository, nothing in a project command's body is inlined; a `.git` in your home directory (a
+dotfiles repository) does not count as one. The rule covers the whole resolved body, arguments
+included, so `/review-file @notes.md` inlines `notes.md` only if it is committed and unchanged;
+mention a changed file in a message of your own instead. Mentions you type, and commands in
+`$BOOK_HOME/commands/`, are not affected. Every mention, typed or not, also stays inside the
+boundary the Read tool uses: the workspace and your `additionalDirectories`.
+
 **`allowed-tools` narrows what a command, skill, or agent role may run.** A rule such as
 `Bash(git *)` admits a Bash call only if the whole command matches the pattern, and only if the
 command is a single command: one that chains, pipes, redirects or substitutes outside quotes

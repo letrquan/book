@@ -804,13 +804,14 @@ export function App({
       commandContext?: CommandContext,
       attachments?: ImageAttachment[],
       sessionNameSource?: string,
+      projectCommand?: boolean,
     ) => {
       setSendInFlight(true);
       try {
         const attached = attachments && attachments.length > 0 ? attachments : undefined;
         // A prompt-body command names a fresh session after the line the user typed (#524).
         if (sessionNameSource !== undefined) {
-          return await send(value, commandContext, attached, sessionNameSource);
+          return await send(value, commandContext, attached, sessionNameSource, projectCommand);
         }
         if (attached) {
           return await send(value, commandContext, attached);
@@ -2535,11 +2536,14 @@ export function App({
           // Pass command context for allowed-tools and model enforcement.
           // Shared with print/headless so both hosts enforce it identically.
           // The typed line, before argument or shell substitution, names a fresh session.
+          // A project command's body is the repository's text: its mentions inline only
+          // committed files (#564).
           void dispatchAgentSend(
             resolved,
             commandEnforcementContext(cmd, resolved),
             undefined,
             value,
+            cmd.source === 'project',
           );
         } else {
           // Unknown command — send as-is (the model might handle it).
