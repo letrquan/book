@@ -809,8 +809,9 @@ export function App({
       setSendInFlight(true);
       try {
         const attached = attachments && attachments.length > 0 ? attachments : undefined;
-        // A prompt-body command names a fresh session after the line the user typed (#524).
-        if (sessionNameSource !== undefined) {
+        // A prompt-body command names a fresh session after the line the user typed (#524), and a
+        // project command's body inlines only committed files (#564): both go through on any path.
+        if (sessionNameSource !== undefined || projectCommand) {
           return await send(value, commandContext, attached, sessionNameSource, projectCommand);
         }
         if (attached) {

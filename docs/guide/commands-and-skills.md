@@ -59,8 +59,9 @@ one-line notice (in the TUI, and on stderr in print mode) naming the path and th
 git repository, nothing in a project command's body is inlined; a `.git` in your home directory (a
 dotfiles repository) does not count as one. The rule covers the whole resolved body, arguments
 included, so `/review-file @notes.md` inlines `notes.md` only if it is committed and unchanged;
-mention a changed file in a message of your own instead. Mentions you type, and commands in
-`$BOOK_HOME/commands/`, are not affected. Every mention, typed or not, also stays inside the
+mention a changed file in a message of your own instead. A line of the body that starts with `!`
+is not run either, in the TUI as in print mode: only the approved substitution above runs. Mentions
+you type, and commands in `$BOOK_HOME/commands/`, are not affected. Every mention, typed or not, also stays inside the
 boundary the Read tool uses: the workspace and your `additionalDirectories`.
 
 **`allowed-tools` narrows what a command, skill, or agent role may run.** A rule such as

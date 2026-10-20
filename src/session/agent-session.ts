@@ -1036,11 +1036,14 @@ export class AgentSession {
             expandShell: request.expandShellInput !== false,
             signal: request.signal,
             sourceRef: request.userMessage.id,
-            // The roots Read serves besides the workspace, resolved as the agent loop does.
-            additionalRoots: resolveAdditionalRoots(
-              request.config.workspace,
-              request.config.settings.additionalDirectories,
-            ),
+            // The roots Read serves besides the workspace, resolved as the agent loop does, and
+            // only for text that can hold a mention at all.
+            additionalRoots: request.displayMessage.includes('@')
+              ? resolveAdditionalRoots(
+                  request.config.workspace,
+                  request.config.settings.additionalDirectories,
+                )
+              : [],
             projectCommand: request.projectCommand,
           });
     const contextMessage = expansion?.text ?? request.contextMessage ?? request.displayMessage;
