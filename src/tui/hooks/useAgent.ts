@@ -280,6 +280,8 @@ interface SendMessageOptions {
   expandShellInput?: boolean;
   /** What a rewind to this turn puts back in the composer instead of the text: a command's line. */
   rewindPrompt?: string;
+  /** What the user typed for this turn: only its `$name` tokens invoke a skill. */
+  typedText?: string;
 }
 
 /** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
@@ -1463,6 +1465,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           modelOverride: commandContext?.modelOverride,
           commands: commandContext ? [commandContext.command] : undefined,
           parentSessionId: activeSessionId,
+          typedText: messageOptions?.typedText,
         },
       });
       if (messageOptions?.kind !== 'agent-notification' && sendResult.status !== 'rejected') {
@@ -1563,19 +1566,23 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       sessionNameSource?: string,
       projectCommand?: boolean,
     ) => {
+      // A `!` line runs only in what the user typed, which the app sends with nothing but its
+      // attachments. A command's body (it always names its session after the typed line) or a
+      // built-in command's prompt keeps its `!` lines as text: shell substitution output, or the
+      // repository's own text (REVIEW.md), may be in it.
+      const typed =
+        commandContext === undefined && sessionNameSource === undefined && !projectCommand;
       return sendMessage(userMessage, commandContext, {
         attachments,
         sessionNameSource,
         projectCommand,
-        // A `!` line runs only in what the user typed, which the app sends with nothing but its
-        // attachments. A command's body (it always names its session after the typed line) or a
-        // built-in command's prompt keeps its `!` lines as text: shell substitution output, or the
-        // repository's own text (REVIEW.md), may be in it.
-        expandShellInput:
-          commandContext === undefined && sessionNameSource === undefined && !projectCommand,
+        expandShellInput: typed,
         // A rewind to a command's turn puts back the line the user typed, so sending it again
         // runs the command again instead of sending its body as typed text.
         rewindPrompt: sessionNameSource,
+        // A `$name` invokes a skill only where the user typed it: in their text, or in the command
+        // line that ran a command, never in the body or prompt the command sent.
+        typedText: typed ? userMessage : sessionNameSource,
       });
     },
     [sendMessage],
@@ -2100,6 +2107,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         contextMessage: goalKickoffPrompt(condition),
         derived: true,
         sessionNameSource: condition,
+        typedText: condition,
       });
     },
     [addLocalMessage, agentSession, isThinking, operations, sendMessage, syncGoal, timelineStore],

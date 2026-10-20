@@ -271,6 +271,13 @@ export async function runAgentLoop(
     userMessageKind?: Message['kind'];
     /** The prompt was resolved from a command or delegated, not typed by the user. */
     userMessageDerived?: boolean;
+    /**
+     * The text the user typed for this turn, when the turn comes from their typing: what they sent,
+     * or the command line that ran a command. Only its `$name` tokens invoke a skill by name; a
+     * token anywhere else in the prompt (a command's body, an inlined file, a notification, a
+     * delegated task) is plain text. Absent, no skill is invoked by name.
+     */
+    typedText?: string;
     /** Synthetic host notifications bypass user-authored prompt hooks and memory capture. */
     skipUserPromptHooks?: boolean;
     /** Host identity for each streamed assistant turn. */
@@ -521,7 +528,8 @@ export async function runAgentLoop(
     );
   const explicitSkillFailures: string[] = [];
   const explicitRestrictionSets: CapabilityRule[][] = [];
-  const explicitSkillNames = skillRegistry.beginRun(effectivePrompt);
+  // Called on every run, typed or not: it also ends the previous run's explicit requests.
+  const explicitSkillNames = skillRegistry.beginRun(options?.typedText ?? '');
   for (const skillName of explicitSkillNames) {
     const call: ToolCall = {
       id: `explicit-skill:${skillName}`,

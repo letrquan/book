@@ -330,7 +330,9 @@ directories may be symlinked after canonical path and size checks; resource syml
 
 Visibility controls determine whether metadata participates in automatic matching: `auto` exposes
 name and description, `name-only` exposes only the name, `manual` requires explicit `$skill-name`,
-and `off` disables the skill. Project-sourced implicit activation requires consent. `ask` always
+and `off` disables the skill. Only a `$skill-name` you type invokes a skill, in your message or in
+the line that runs a command (`/triage $review`); in a command's body, the REVIEW.md that
+`/security-review` carries, a file a mention inlines, or a subagent's task, it is plain text. Project-sourced implicit activation requires consent. `ask` always
 requests consent, while `deny` fails closed; no skill can grant tools, bypass permissions, alter the
 sandbox, or execute a packaged script implicitly. Active instructions are scoped to the current run
 by default (or the next model step for `lifetime: turn`) and tool declarations are intersections

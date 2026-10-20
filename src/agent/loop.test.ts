@@ -143,7 +143,7 @@ describe('runAgentLoop skill lifecycle', () => {
           },
         }),
         'default',
-        { provider, isNewSession: false },
+        { provider, isNewSession: false, typedText: '$review inspect this change' },
       );
 
       expect(systemPrompt).toContain('Apply the explicit review checklist.');
@@ -152,6 +152,49 @@ describe('runAgentLoop skill lifecycle', () => {
       expect(lifecycleEvents).toEqual(
         expect.arrayContaining(['skill_discovered', 'skill_activation_applied']),
       );
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  // A subagent's task, a managed agent's prompt, a notification, a command's body: the host names
+  // no typed text for any of them, so a `$name` in them is plain text. Nor does a `$name` count
+  // that only the expanded prompt holds (an inlined file's), when the text the user typed has none.
+  it.each([
+    ['no typed text', undefined],
+    ['typed text without the token', 'Summarize @NOTES.md'],
+  ])('invokes no skill for a `$name` outside the typed text (%s)', async (_label, typedText) => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-untyped-skill-'));
+    try {
+      writeLoopSkill(workspace, 'review', { body: 'This body must remain inactive.' });
+      let systemPrompt = '';
+      const lifecycleEvents: string[] = [];
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* (_config, messages) {
+          systemPrompt = JSON.stringify(messages.filter((message) => message.role === 'system'));
+          yield { type: 'text', content: 'done' };
+          yield { type: 'done' };
+        },
+      };
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 1 }),
+        createDefaultRegistry(),
+        'Summarize this file:\n$review inspect this change',
+        [],
+        noopCallbacks({
+          onAgentEvent: (event) => {
+            if (event.type === 'skill_lifecycle') lifecycleEvents.push(event.event.type);
+          },
+        }),
+        'default',
+        { provider, isNewSession: false, typedText },
+      );
+
+      expect(systemPrompt).not.toContain('This body must remain inactive.');
+      expect(lifecycleEvents).not.toContain('skill_activation_requested');
+      expect(lifecycleEvents).not.toContain('skill_consent_granted');
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -358,7 +401,11 @@ describe('runAgentLoop skill lifecycle', () => {
         [],
         noopCallbacks(),
         'default',
-        { provider, isNewSession: false },
+        {
+          provider,
+          isNewSession: false,
+          typedText: '$read-review $write-review inspect this change',
+        },
       );
 
       expect(systemPrompt).toContain('Use the read review procedure.');
@@ -401,7 +448,7 @@ describe('runAgentLoop skill lifecycle', () => {
           },
         }),
         'default',
-        { provider, isNewSession: false },
+        { provider, isNewSession: false, typedText: '$review inspect this change' },
       );
 
       expect(systemPrompt).toContain('Skill is disabled: \\"review\\".');
@@ -442,7 +489,7 @@ describe('runAgentLoop skill lifecycle', () => {
           },
         }),
         'default',
-        { provider, isNewSession: false },
+        { provider, isNewSession: false, typedText: '$review inspect this change' },
       );
 
       expect(systemPrompt).toContain('Skill activation is denied: review');
@@ -566,7 +613,7 @@ describe('runAgentLoop skill lifecycle', () => {
         [],
         noopCallbacks(),
         'default',
-        { provider, isNewSession: false },
+        { provider, isNewSession: false, typedText: '$review inspect this change' },
       );
 
       expect(systemPrompt).not.toContain('This must remain hidden.');

@@ -18,12 +18,24 @@ import { SessionStore } from '../../session/store.js';
  * inlines only files git has committed, unchanged.
  */
 
-const loop = vi.hoisted(() => ({ prompts: [] as string[] }));
+const loop = vi.hoisted(() => ({
+  prompts: [] as string[],
+  typed: [] as Array<string | undefined>,
+}));
 
 vi.mock('../../agent/loop.js', () => ({
   runAgentLoop: vi.fn(
-    async (_config: unknown, _registry: unknown, prompt: string, history: unknown) => {
+    async (
+      _config: unknown,
+      _registry: unknown,
+      prompt: string,
+      history: unknown,
+      _callbacks: unknown,
+      _mode: unknown,
+      options?: { typedText?: string },
+    ) => {
       loop.prompts.push(prompt);
+      loop.typed.push(options?.typedText);
       return history;
     },
   ),
@@ -138,6 +150,7 @@ afterEach(() => {
   cleanup();
   latest = undefined;
   loop.prompts = [];
+  loop.typed = [];
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -248,5 +261,87 @@ describe('a `!` line in the text the TUI sends', () => {
 
     expect(lastPrompt()).toBe(body);
     expect(existsSync(join(workspace, 'builtin-line.txt'))).toBe(false);
+  });
+});
+
+// Only what the user typed invokes a skill by `$name` (the loop scans `typedText` alone): their
+// text, or the command line that ran a command, never the body or prompt the command sent.
+describe('the typed text the TUI hands the loop', () => {
+  it('is the text the user typed', async () => {
+    const { config, session } = fixture();
+    render(<Harness config={config} session={session} />);
+    await tick();
+
+    await latest!.send('$probe check the parser');
+
+    expect(loop.typed.at(-1)).toBe('$probe check the parser');
+  });
+
+  it("is the command line, not a project command's body", async () => {
+    const { config, session } = fixture();
+    render(<Harness config={config} session={session} />);
+    await tick();
+    const body = 'Check with $probe';
+
+    await latest!.send(body, commandContext('project', body), undefined, '/check', true);
+    expect(loop.typed.at(-1)).toBe('/check');
+    await latest!.send(body, commandContext('user', body), undefined, '/check $other');
+    expect(loop.typed.at(-1)).toBe('/check $other');
+  });
+
+  it('is the command line, not the REVIEW.md /security-review carries', async () => {
+    const { workspace, config, session } = fixture();
+    writeFileSync(join(workspace, 'REVIEW.md'), 'Review with $probe.\n');
+    render(<Harness config={config} session={session} />);
+    await tick();
+    const effect = createBuiltinCommandRegistry().execute('security-review', '', {
+      workspace,
+    } as BuiltinCommandContext);
+    if (effect?.type !== 'send-prompt') throw new Error('expected a prompt');
+
+    await latest!.send(
+      effect.prompt,
+      effect.context,
+      undefined,
+      '/security-review',
+      effect.projectCommand,
+    );
+
+    expect(lastPrompt()).toContain('Review with $probe.');
+    expect(loop.typed.at(-1)).toBe('/security-review');
+  });
+
+  it("is absent for a managed agent's completion notice", async () => {
+    const { config, session } = fixture();
+    render(<Harness config={config} session={session} />);
+    await tick();
+
+    await latest!.sendAgentCompletions([
+      {
+        deliveryId: 'agent-1:1',
+        sequence: 1,
+        completion: {
+          agentId: 'agent-1',
+          displayName: 'Atlas',
+          profile: 'explorer',
+          status: 'completed',
+          resolvedModel: 'test/model',
+          isolation: 'workspace-readonly',
+          summary: 'Use $probe next',
+          summaryCharacters: 15,
+          summaryTruncated: false,
+          errorCharacters: 0,
+          errorTruncated: false,
+          evidenceIds: [],
+          createdAt: 10,
+          startedAt: 20,
+          updatedAt: 80,
+          finishedAt: 80,
+        },
+      },
+    ]);
+
+    expect(loop.prompts.at(-1)).toContain('$probe');
+    expect(loop.typed.at(-1)).toBeUndefined();
   });
 });

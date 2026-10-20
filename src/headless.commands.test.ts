@@ -554,3 +554,83 @@ describe('runHeadless — mentions in a project command', () => {
     },
   );
 });
+
+/** A skill the workspace provides, whose body the model would see once it is active. */
+function writeProjectSkill(workspace: string, name: string, body: string): void {
+  const dir = join(workspace, '.book', 'skills', name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'SKILL.md'),
+    ['---', `name: ${name}`, `description: Use the ${name} workflow`, '---', body].join('\n'),
+    'utf-8',
+  );
+}
+
+function sentAnywhere(provider: ScriptedProvider): string {
+  return JSON.stringify(requestBody(provider).messages);
+}
+
+// Only text the user typed invokes a skill by `$name`, as only it runs a `!` line. A token in any
+// other text (a command's body, the REVIEW.md that `/security-review` carries, a mentioned file) is
+// plain text.
+describe('runHeadless — invoking a skill by `$name`', () => {
+  const BODY = 'PROBE-SKILL-BODY-MARKER';
+
+  it('invokes the skill a typed `$name` names', async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeProjectSkill(config.workspace, 'probe', BODY);
+
+    await run(config, '$probe check the parser');
+
+    expect(sentAnywhere(provider)).toContain(BODY);
+  });
+
+  it("invokes the skill a `$name` typed in a command's arguments names", async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeProjectSkill(config.workspace, 'probe', BODY);
+    writeCommand(config.workspace, 'triage', 'Triage $ARGUMENTS');
+
+    await run(config, '/triage $probe parser');
+
+    expect(lastUserText(provider)).toContain('Triage $probe parser');
+    expect(sentAnywhere(provider)).toContain(BODY);
+  });
+
+  it("leaves a `$name` in a project command's body as text", async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeProjectSkill(config.workspace, 'probe', BODY);
+    writeCommand(config.workspace, 'triage', 'Triage $ARGUMENTS with $probe');
+
+    await run(config, '/triage parser');
+
+    expect(lastUserText(provider)).toContain('Triage parser with $probe');
+    expect(sentAnywhere(provider)).not.toContain(BODY);
+  });
+
+  it('leaves a `$name` in the REVIEW.md that /security-review carries as text', async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeProjectSkill(config.workspace, 'probe', BODY);
+    writeFileSync(join(config.workspace, 'REVIEW.md'), 'Review with $probe.\n', 'utf-8');
+
+    await run(config, '/security-review');
+
+    expect(lastUserText(provider)).toContain('Review with $probe.');
+    expect(sentAnywhere(provider)).not.toContain(BODY);
+  });
+
+  it('leaves a `$name` in a file a typed mention inlines as text', async () => {
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeProjectSkill(config.workspace, 'probe', BODY);
+    writeFileSync(join(config.workspace, 'NOTES.md'), 'Notes: use $probe.\n', 'utf-8');
+
+    await run(config, 'Summarize @NOTES.md');
+
+    expect(lastUserText(provider)).toContain('Notes: use $probe.');
+    expect(sentAnywhere(provider)).not.toContain(BODY);
+  });
+});
