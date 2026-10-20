@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, realpathSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import type { ToolResult } from '../types/tools.js';
+import { reachesUncPath } from '../unc-path.js';
 import { toolFailure } from './result.js';
 
 /**
@@ -180,6 +181,25 @@ function resolveMemorySearchPath(
     return null;
   }
   return { ...match, root: memoryRoot, inWorkspace: false };
+}
+
+/**
+ * The file an `@path` mention may inline (#567): what {@link resolveReadablePathDetail} serves for
+ * `absolutePath` from the workspace and the honored `additionalDirectories`, so a mention reaches
+ * exactly the files Read opens without a prompt. Read's other roots (the memory directory, clipped
+ * tool output) are not a mention's to reach. Refused as `unc`, before anything resolves it, when
+ * the path is, or reaches through a link, a UNC location on Windows (`reachesUncPath`). Read's own
+ * resolution is unchanged.
+ */
+export function resolveMentionReadablePath(
+  roots: Pick<PathRoots, 'workspaceRoot' | 'additionalRoots'>,
+  absolutePath: string,
+): ReadablePathDetail | { reason: 'unc' } {
+  if (reachesUncPath(absolutePath)) return { reason: 'unc' };
+  return resolveReadablePathDetail(
+    { workspaceRoot: roots.workspaceRoot, additionalRoots: roots.additionalRoots },
+    absolutePath,
+  );
 }
 
 export function resolveReadablePath(

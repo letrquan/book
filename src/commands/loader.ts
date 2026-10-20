@@ -11,6 +11,7 @@ import {
   type SkippedProjectFile,
 } from '../repo-containment.js';
 import { isOutside } from '../tools/path-utils.js';
+import { reachesUncPath } from '../unc-path.js';
 
 /**
  * Load a single .md command file. Returns null if the file doesn't exist or can't be read. The command is named
@@ -88,6 +89,9 @@ export function inspectCommands(workspace: string): CommandInspection {
 
   // User commands first (lowest priority).
   for (const dir of [userDir, projectDir]) {
+    // A `.book` committed as a link to a network share is not listed: listing it would reach the
+    // host (#567).
+    if (dir === projectDir && reachesUncPath(dir)) continue;
     if (!existsSync(dir)) continue;
     let entries: string[];
     try {

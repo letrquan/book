@@ -3,14 +3,15 @@ import { homedir } from 'os';
 import { basename, dirname, join, parse, relative, resolve } from 'path';
 import { renderUntrustedText } from './hook-approvals.js';
 import { isOutside } from './tools/path-utils.js';
+import { reachesUncPath } from './unc-path.js';
 
 /**
  * Repository containment for the project files a repository can commit as links (#539, #543):
- * instruction files, REVIEW.md and project command files, and the files an `@path` mention inlines
- * (#559). A repository can commit any of them as a link to `~/.ssh/id_rsa`, and the target would
- * be sent to the provider as prompt text. Each loader checks the real path of what it found
- * against the real path of the repository root, and reports what it refused through
- * `formatSkippedNotice`; a refused mention stays as written. This module imports no loader.
+ * instruction files, REVIEW.md and project command files. A repository can commit any of them as
+ * a link to `~/.ssh/id_rsa`, and the target would be sent to the provider as prompt text. Each
+ * loader checks the real path of what it found against the real path of the repository root, and
+ * reports what it refused through `formatSkippedNotice`. An `@path` mention follows Read's
+ * boundary instead (`src/input/input-expansion.ts`, #567). This module imports no loader.
  */
 
 /** Why a project file must not load: its real path left the root, or it is not Markdown. */
@@ -29,9 +30,12 @@ export interface SkippedProjectFile {
 
 /**
  * The native real path, else the JS one (`realpathSync.native` throws on some Windows volumes
- * where the JS version works), else `undefined`.
+ * where the JS version works), else `undefined`. Also `undefined`, before anything is resolved,
+ * for a Windows path that is, or reaches through a link, a UNC location (`reachesUncPath`), so no
+ * containment check sends a request to a host a repository named (#567).
  */
 export function tryRealPath(path: string): string | undefined {
+  if (reachesUncPath(path)) return undefined;
   try {
     return realpathSync.native(path);
   } catch {
@@ -74,6 +78,8 @@ export function ancestorsFromRoot(workspace: string): string[] {
  * repository, not from the whole home directory.
  */
 export function findRepositoryRoot(dir: string, home?: string): string | undefined {
+  // Its ancestors are probed for `.git` below, which would reach the share as well.
+  if (reachesUncPath(dir)) return undefined;
   for (const candidate of ancestorsFromRoot(tryRealPath(dir) ?? resolve(dir)).reverse()) {
     if (existsSync(join(candidate, '.git'))) {
       return isUserHome(candidate, home) ? undefined : candidate;
