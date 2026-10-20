@@ -278,6 +278,8 @@ interface SendMessageOptions {
   projectCommand?: boolean;
   /** The text is what the user typed: its `!cmd` lines run. */
   expandShellInput?: boolean;
+  /** What a rewind to this turn puts back in the composer instead of the text: a command's line. */
+  rewindPrompt?: string;
 }
 
 /** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
@@ -1146,6 +1148,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         sessionNameExact: messageOptions?.sessionNameExact,
         projectCommand: messageOptions?.projectCommand,
         expandShellInput: messageOptions?.expandShellInput,
+        rewindPrompt: messageOptions?.rewindPrompt,
         snapshotStore: session.snapshotStore,
         timelineStore,
         registryStore: timelineStore,
@@ -1570,6 +1573,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // repository's own text (REVIEW.md), may be in it.
         expandShellInput:
           commandContext === undefined && sessionNameSource === undefined && !projectCommand,
+        // A rewind to a command's turn puts back the line the user typed, so sending it again
+        // runs the command again instead of sending its body as typed text.
+        rewindPrompt: sessionNameSource,
       });
     },
     [sendMessage],

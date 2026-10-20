@@ -161,6 +161,12 @@ export interface AgentSessionPrepareSendRequest {
   expandShellInput?: boolean;
   /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
   projectCommand?: boolean;
+  /**
+   * What a rewind to this turn puts back in the composer, when that is not `displayMessage`: the
+   * command line the user typed, for a command's body. Sent again, it goes back through the
+   * command, rather than as typed text.
+   */
+  rewindPrompt?: string;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
@@ -227,6 +233,8 @@ export interface AgentSessionSendRequest {
   expandShellInput?: boolean;
   /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
   projectCommand?: boolean;
+  /** See {@link AgentSessionPrepareSendRequest.rewindPrompt}. */
+  rewindPrompt?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
   registryStore?: SessionStoreInterface;
@@ -498,6 +506,7 @@ export class AgentSession {
           sessionNameExact: request.sessionNameExact,
           expandShellInput: request.expandShellInput,
           projectCommand: request.projectCommand,
+          rewindPrompt: request.rewindPrompt,
           snapshotStore: request.snapshotStore,
           timelineStore: request.timelineStore,
           signal: control.signal,
@@ -1004,10 +1013,11 @@ export class AgentSession {
           gitHead: capture.gitHead,
           codeUnavailableReason: capture.reason,
         };
+    const rewindPrompt = request.rewindPrompt ?? request.displayMessage;
     const rewindTarget: RewindTarget = {
       id: checkpointId,
       userEventId: request.userMessage.id,
-      prompt: request.displayMessage,
+      prompt: rewindPrompt,
       attachments: request.userMessage.attachments,
       timestamp: checkpointTimestamp,
       ...checkpoint,
@@ -1022,7 +1032,7 @@ export class AgentSession {
         version: 1,
         checkpointId,
         userEventId: request.userMessage.id,
-        prompt: request.displayMessage,
+        prompt: rewindPrompt,
         attachments: request.userMessage.attachments,
         checkpoint,
       } satisfies TurnCheckpointRecordData,

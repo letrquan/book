@@ -180,6 +180,37 @@ describe('REVIEW.md in the /security-review prompt', () => {
   });
 });
 
+describe('a rewind to a turn', () => {
+  it("puts back the command line the user typed for a command's body", async () => {
+    const { workspace, config, session } = fixture();
+    render(<Harness config={config} session={session} />);
+    await tick();
+    const effect = createBuiltinCommandRegistry().execute('security-review', '', {
+      workspace,
+    } as BuiltinCommandContext);
+    if (effect?.type !== 'send-prompt') throw new Error('expected a prompt');
+
+    await latest!.send('Explain the build');
+    await tick();
+    await latest!.send(
+      effect.prompt,
+      effect.context,
+      undefined,
+      '/security-review',
+      effect.projectCommand,
+    );
+    await tick();
+
+    expect(latest!.getRewindTargets().map((target) => target.prompt)).toEqual([
+      '/security-review',
+      'Explain the build',
+    ]);
+    const target = latest!.getRewindTargets()[0]!;
+    const rewound = await latest!.rewind(target.id, 'conversation');
+    expect(rewound).toMatchObject({ ok: true, restoredPrompt: '/security-review' });
+  });
+});
+
 describe('a `!` line in the text the TUI sends', () => {
   it('runs in text the user typed', async () => {
     const { config, session } = fixture();
