@@ -49,15 +49,23 @@ describe('tool output with tabs (#537)', () => {
       const input = { success: true, showAllToolOutput, terminalWidth: 73 };
       const display = toolOutputDisplay(TAB_TABLE, input);
       const width = toolOutputContentWidth(73);
-      expect(display.lines).toHaveLength(2);
+      // Shown in full, a 86-column row continues on a second row instead of being cut (#550).
+      expect(display.lines).toHaveLength(showAllToolOutput ? 4 : 2);
       for (const line of display.lines) {
         expect(line).not.toContain('\t');
         expect(displayWidth(line)).toBeLessThanOrEqual(width);
       }
       expect(display.lines).toEqual(toolOutputDisplay(TAB_TABLE_EXPANDED, input).lines);
-      // The rows are cut where the view cuts any long row, and say so.
-      expect(display.lines[0]!.endsWith('…')).toBe(true);
-      expect(display.truncatedLines).toBe(2);
+      if (showAllToolOutput) {
+        expect(display.lines.join('').replace(/ /g, '')).toBe(
+          TAB_TABLE_EXPANDED.replace(/[ \n]/g, ''),
+        );
+        expect(display.truncatedLines).toBe(0);
+      } else {
+        // Collapsed, the rows are cut where the view cuts any long row, and say so.
+        expect(display.lines[0]!.endsWith('…')).toBe(true);
+        expect(display.truncatedLines).toBe(2);
+      }
     },
   );
 
@@ -72,7 +80,7 @@ describe('tool output with tabs (#537)', () => {
       expect(pick(display)).toEqual(pick(toolOutputDisplay(TAB_TABLE_EXPANDED.repeat(5), input)));
       expect(display.totalChars).toBe(TAB_TABLE.length * 5);
       expect(display.hiddenLines).toBe(showAllToolOutput ? 0 : 4);
-      expect(display.truncatedLines).toBe(showAllToolOutput ? 10 : 6);
+      expect(display.truncatedLines).toBe(showAllToolOutput ? 0 : 6);
     },
   );
 
@@ -119,6 +127,65 @@ describe('tool output with tabs (#537)', () => {
     expect(display.lines).toEqual(['all:', '        gcc -o foo foo.c', '        strip foo']);
     expect(display.totalLines).toBe(3);
     expect(countOutputLines(output)).toBe(3);
+  });
+});
+
+describe('an expanded row keeps a long line whole (#550)', () => {
+  const WIDTH = 70;
+  const LONG = `start-${'0'.repeat(150)}-END`;
+  const output = `${LONG}\nshort\n`;
+
+  it('wraps a 160-column line onto the rows below it when shown in full', () => {
+    const display = toolOutputDisplay(output, {
+      success: true,
+      showAllToolOutput: true,
+      terminalWidth: WIDTH,
+    });
+    expect(display.lines.join('')).toBe(`${LONG}short`);
+    expect(display.lines.at(-1)).toBe('short');
+    for (const row of display.lines) expect(displayWidth(row)).toBeLessThanOrEqual(WIDTH);
+    expect(display.truncatedLines).toBe(0);
+    expect(display.hiddenLines).toBe(0);
+    expect(display.footer).toBeUndefined();
+  });
+
+  it('still shortens the same line in a collapsed row, naming the key', () => {
+    const display = toolOutputDisplay(output, {
+      success: true,
+      showAllToolOutput: false,
+      terminalWidth: WIDTH,
+    });
+    expect(display.lines[0]).not.toContain('END');
+    expect(display.truncatedLines).toBe(1);
+    expect(display.footer).toContain('1 long line shortened (Ctrl+E)');
+  });
+
+  it('leaves the line whole for a caller that wraps it itself', () => {
+    const display = toolOutputDisplay(output, {
+      success: true,
+      showAllToolOutput: true,
+      terminalWidth: WIDTH,
+      wrapLongLines: false,
+    });
+    expect(display.lines[0]).toBe(LONG);
+  });
+
+  it('keeps an ANSI colour sequence whole and free of width when it wraps', () => {
+    const line = `\u001b[31m${'x'.repeat(20)}\u001b[0m`;
+    const display = prepareToolOutputDisplay(line, { maxLines: 10, maxLineWidth: 8, wrap: true });
+    expect(display.lines.map((row) => displayWidth(row))).toEqual([8, 8, 4]);
+    expect(display.lines.join('').replace(/\u001b\[[0-9;]*m/g, '')).toBe('x'.repeat(20));
+    expect(display.lines.join('')).toBe(line);
+  });
+
+  it('bounds the wrapped rows and counts the line the bound reaches as hidden', () => {
+    const display = prepareToolOutputDisplay(`${LONG}\n${LONG}\n${LONG}`, {
+      maxLines: 5,
+      maxLineWidth: WIDTH,
+      wrap: true,
+    });
+    expect(display.lines).toHaveLength(5);
+    expect(display.hiddenLines).toBe(2);
   });
 });
 

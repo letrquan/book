@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { parseFrontmatter } from './frontmatter.js';
 import { resolveBookHome } from './book-home.js';
+import { isUserHome, tryRealPath } from './repo-containment.js';
 import type { SkillActivation, SkillExecution } from './settings.js';
 
 export const SKILL_ENTRY_FILENAME = 'SKILL.md';
@@ -148,11 +149,20 @@ function isInside(root: string, candidate: string): boolean {
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
 }
 
-function projectRootFor(workspace: string): string {
+/**
+ * The nearest directory above `workspace`, as written, with a `.git` entry; the workspace when
+ * there is none. A `.git` at the home directory (`home`, the user's when not given) is a dotfiles
+ * repository, not a project (`findRepositoryRoot` in `repo-containment.ts`), so it ends the walk
+ * with no repository: a project under the home directory without its own `.git` scans its own
+ * directory, not every directory from the home directory down.
+ */
+function projectRootFor(workspace: string, home: string | undefined): string {
   let current = resolve(workspace);
   const filesystemRoot = parse(current).root;
   while (true) {
-    if (existsSync(join(current, '.git'))) return current;
+    if (existsSync(join(current, '.git'))) {
+      return isUserHome(tryRealPath(current) ?? current, home) ? resolve(workspace) : current;
+    }
     if (current === filesystemRoot) return resolve(workspace);
     current = dirname(current);
   }
@@ -195,7 +205,7 @@ export function skillRoots(workspace: string, options: DiscoverSkillsOptions = {
     );
   }
 
-  const projectRoot = options.projectRoot ?? projectRootFor(workspace);
+  const projectRoot = options.projectRoot ?? projectRootFor(workspace, options.homeDir);
   for (const directory of directoriesFromRoot(projectRoot, workspace)) {
     roots.push(
       { path: join(directory, '.claude', 'skills'), source: 'project', kind: 'claude' },

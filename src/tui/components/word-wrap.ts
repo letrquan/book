@@ -620,7 +620,8 @@ export function wordWrap(text: string, maxWidth: number): string {
     for (const word of words) {
       if (word === '') {
         // Consecutive spaces — add one space to current line if not empty.
-        if (current) {
+        // A run of spaces (a tab's padding, #565) never carries a row past the width.
+        if (current && currentWidth < maxWidth) {
           current += ' ';
           currentWidth += 1;
         }

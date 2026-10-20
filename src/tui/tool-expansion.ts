@@ -118,14 +118,14 @@ export function toolRowHidesContent(input: ToolRowPreviewInput): boolean {
     );
   }
   if (!result.content) return false;
-  return (
-    toolOutputDisplay(result.content, {
-      success: result.status === 'success',
-      showAllToolOutput: false,
-      terminalWidth: blockWidth,
-      expandHint: '',
-    }).hiddenLines > 0
-  );
+  // Ctrl+E also reveals the rest of a shortened line: shown in full, a long line wraps.
+  const preview = toolOutputDisplay(result.content, {
+    success: result.status === 'success',
+    showAllToolOutput: false,
+    terminalWidth: blockWidth,
+    expandHint: '',
+  });
+  return preview.hiddenLines > 0 || preview.truncatedLines > 0;
 }
 
 export interface ExpandTargetInput {

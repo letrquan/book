@@ -21,6 +21,7 @@ import { parseFrontmatter } from './frontmatter.js';
 import { writeFileAtomic } from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
 import { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES } from './memory-limits.js';
+import { isUserHome, tryRealPath } from './repo-containment.js';
 import type { SessionDriver } from './types/runtime.js';
 
 const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
@@ -225,13 +226,21 @@ function gitRootMarkedBy(dir: string): string | undefined {
  * subdirectory and every linked worktree of one repository shares one memory. Only reads files
  * (never spawns git). Falls back to the resolved workspace when there is no repository, or when
  * the walk meets anything it cannot read.
+ *
+ * A `.git` at the user's home directory is a dotfiles repository, not a project
+ * (`findRepositoryRoot` in `repo-containment.ts`): the walk stops there with no repository, so
+ * each project under the home directory without its own `.git` keeps its own memory instead of
+ * sharing the home directory's. Memory already stored under the home directory's key stays
+ * there.
  */
 export function findGitRoot(workspace: string): string {
   const resolved = canonicalPath(workspace);
   try {
     for (let dir = resolved; ;) {
       const root = gitRootMarkedBy(dir);
-      if (root !== undefined) return root;
+      if (root !== undefined) {
+        return isUserHome(tryRealPath(dir) ?? dir, undefined) ? resolved : root;
+      }
       const parent = dirname(dir);
       if (parent === dir) return resolved;
       dir = parent;

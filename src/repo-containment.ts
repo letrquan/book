@@ -89,7 +89,7 @@ export function findRepositoryRoot(dir: string, home?: string): string | undefin
 }
 
 /** Whether the real path `real` is that of `home`, the user's home directory when not given. */
-function isUserHome(real: string, home: string | undefined): boolean {
+export function isUserHome(real: string, home: string | undefined): boolean {
   let path = home;
   if (path === undefined) {
     try {

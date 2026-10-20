@@ -1,5 +1,6 @@
 import { posix } from 'path';
 import type { ToolCall, ToolDefinition } from '../types/tools.js';
+import { readsSingleQuoteAsPosix } from '../shell-selection.js';
 import { canonicalToolName } from './aliases.js';
 import { globToRegex } from './glob-regex.js';
 import { comparablePath } from './path-utils.js';
@@ -134,6 +135,29 @@ export function isCompoundShellCommand(
 /** What a capability refusal of a compound Bash command says was wrong with the command. */
 export const COMPOUND_COMMAND_REFUSAL =
   'The command was refused because it chains, pipes, redirects or substitutes outside quotes (`;`, `&`, `|`, `<`, `>`, `$`, `(`, `)`, `{`, `}`, a backtick), uses `$` or a backtick inside double quotes, or has a line break or an unterminated quote.';
+
+/**
+ * What a refusal of a compound Bash command says. On Windows, under a shell that does not read `'`
+ * as on Linux, a command with a `'` is also refused for that reason alone, so the text names the
+ * rule rather than only "split the command" (#566).
+ */
+export function compoundCommandRefusal(
+  call: ToolCall,
+  platform: NodeJS.Platform = process.platform,
+  shell?: ScanShell,
+): string {
+  const command = call.arguments.command;
+  const quoteRule =
+    platform === 'win32' &&
+    typeof command === 'string' &&
+    command.includes("'") &&
+    !readsSingleQuoteAsPosix(shell) &&
+    // Only when the quote is the whole reason: read as on Linux, the command would pass.
+    !hasCompoundShellSyntax(command, 'linux');
+  return quoteRule
+    ? `${COMPOUND_COMMAND_REFUSAL} Under this Windows shell any single quote (\`'\`) makes a command compound: use double quotes instead.`
+    : COMPOUND_COMMAND_REFUSAL;
+}
 
 /** What a capability refusal of a compound Bash command tells the model to do instead. */
 export const COMPOUND_COMMAND_REMEDIATION =
