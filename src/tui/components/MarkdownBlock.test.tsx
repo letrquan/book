@@ -842,6 +842,20 @@ describe('MarkdownBlock prose with tabs (#565)', () => {
     }
   });
 
+  it('never carries a row past the width with a tab run at the edge', () => {
+    for (let lead = 60; lead < 74; lead++) {
+      const content = `${'a'.repeat(lead)}\tnext word here`;
+      const view = render(
+        withTheme(React.createElement(MarkdownBlock, { content, terminalWidth: WIDTH })),
+      );
+      const output = frame(view.lastFrame);
+      for (const row of output.split('\n')) {
+        expect(displayWidth(row), `lead ${lead}`).toBeLessThanOrEqual(WIDTH);
+      }
+      expect(output.replace(/\s+/g, '')).toContain('nextwordhere');
+    }
+  });
+
   it('keeps a tab-aligned paragraph on tab stops from the start of the text', () => {
     const view = render(
       withTheme(

@@ -170,6 +170,14 @@ describe('an expanded row keeps a long line whole (#550)', () => {
     expect(display.lines[0]).toBe(LONG);
   });
 
+  it('keeps an ANSI colour sequence whole and free of width when it wraps', () => {
+    const line = `\u001b[31m${'x'.repeat(20)}\u001b[0m`;
+    const display = prepareToolOutputDisplay(line, { maxLines: 10, maxLineWidth: 8, wrap: true });
+    expect(display.lines.map((row) => displayWidth(row))).toEqual([8, 8, 4]);
+    expect(display.lines.join('').replace(/\u001b\[[0-9;]*m/g, '')).toBe('x'.repeat(20));
+    expect(display.lines.join('')).toBe(line);
+  });
+
   it('bounds the wrapped rows and counts the line the bound reaches as hidden', () => {
     const display = prepareToolOutputDisplay(`${LONG}\n${LONG}\n${LONG}`, {
       maxLines: 5,

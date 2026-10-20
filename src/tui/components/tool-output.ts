@@ -1,5 +1,5 @@
 import { expandTabs as expandToTabStops } from '../../cli/ink-frame-clip.js';
-import { displayWidth, hardWrapLine, truncateDisplay } from './word-wrap.js';
+import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 export interface ToolOutputDisplayOptions {
   maxLines: number;
@@ -122,6 +122,40 @@ export function prepareToolOutputDisplay(
   };
 }
 
+const SGR = /\u001b\[[0-9;]*m/y;
+
+/**
+ * `line` wrapped at display width `width` into at most `maxRows` rows (it stops once it has them,
+ * so a huge line costs only the rows kept). An ANSI SGR sequence stays whole and takes no width.
+ */
+function wrapRows(line: string, width: number, maxRows: number): string[] {
+  const rows: string[] = [];
+  let current = '';
+  let currentWidth = 0;
+  for (let i = 0; i < line.length && rows.length < maxRows;) {
+    SGR.lastIndex = i;
+    const sgr = SGR.exec(line);
+    if (sgr) {
+      current += sgr[0];
+      i += sgr[0].length;
+      continue;
+    }
+    const ch = String.fromCodePoint(line.codePointAt(i)!);
+    i += ch.length;
+    const chWidth = displayWidth(ch);
+    if (currentWidth > 0 && currentWidth + chWidth > width) {
+      rows.push(current);
+      current = '';
+      currentWidth = 0;
+      if (rows.length >= maxRows) return rows;
+    }
+    current += ch;
+    currentWidth += chWidth;
+  }
+  if (rows.length < maxRows) rows.push(current);
+  return rows;
+}
+
 /**
  * The head of `output` with each line wrapped at display width `maxLineWidth`, at most `maxLines`
  * rows. Nothing is shortened: a line the row bound reaches keeps its first rows and is hidden.
@@ -139,8 +173,8 @@ function wrappedToolOutputDisplay(
   let shownLines = 0;
   for (const rawLine of rawLines) {
     if (lines.length >= rowLimit) break;
-    const rows = hardWrapLine(expandTabs(rawLine), width);
     const room = rowLimit - lines.length;
+    const rows = wrapRows(expandTabs(rawLine), width, room + 1);
     lines.push(...rows.slice(0, room));
     if (rows.length > room) break;
     shownLines++;
