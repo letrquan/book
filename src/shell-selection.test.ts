@@ -770,9 +770,14 @@ describe('shellPromptLine', () => {
 
   it('describes a shell with its path for doctor', () => {
     expect(
-      describeShell({ kind: 'pwsh', file: PWSH, label: 'PowerShell 7', source: 'detected' }),
+      describeShell(
+        { kind: 'pwsh', file: PWSH, label: 'PowerShell 7', source: 'detected' },
+        'linux',
+      ),
     ).toBe(`PowerShell 7 (${PWSH})`);
-    expect(describeShell({ kind: 'sh', label: '/bin/sh', source: 'detected' })).toBe('/bin/sh');
+    expect(describeShell({ kind: 'sh', label: '/bin/sh', source: 'detected' }, 'linux')).toBe(
+      '/bin/sh',
+    );
   });
 });
 
