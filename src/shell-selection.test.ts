@@ -706,7 +706,16 @@ describe('shellPromptLine', () => {
     shellPromptLine({ kind, file: 'X:\\shell.exe', label: kind, source: 'detected' });
 
   it('names the shell and the syntax that changes with it', () => {
-    expect(line('bash')).toContain('Git Bash (POSIX sh)');
+    expect(line('bash')).toContain('not confirmed to be Git Bash (POSIX sh)');
+    expect(
+      shellPromptLine({
+        kind: 'bash',
+        file: 'X:\\bash.exe',
+        label: 'x',
+        source: 'detected',
+        msys: true,
+      }),
+    ).toContain('runs Git Bash (POSIX sh)');
     expect(line('bash')).toContain('not cmd.exe or PowerShell');
     expect(line('pwsh')).toContain('`&&` and `||` work');
     expect(line('powershell')).toContain('`&&` and `||` are NOT available');
@@ -717,11 +726,58 @@ describe('shellPromptLine', () => {
     );
   });
 
+  // #566: the label says Git Bash only for an MSYS-runtime bash, and a shell that refuses `'` says so.
+  const dllLess: ResolvedShell = {
+    kind: 'bash',
+    file: 'C:\\scoop\\shims\\bash.exe',
+    label: 'bash (runtime not detected as Git Bash)',
+    source: 'detected',
+  };
+  const msysBash: ResolvedShell = {
+    kind: 'bash',
+    file: 'C:\\Git\\bin\\bash.exe',
+    label: 'Git Bash',
+    source: 'detected',
+    msys: true,
+  };
+
+  it('labels a bash without the MSYS runtime as such and hints at double quotes', () => {
+    const resolved = resolveShell({
+      platform: 'win32',
+      env: { BOOK_SHELL: dllLess.file! },
+      existsSync: (path) => path === dllLess.file,
+    });
+    expect(resolved.label).not.toBe('Git Bash');
+    expect(describeShell(resolved, 'win32')).toContain('double quotes');
+    expect(shellPromptLine(resolved, 'win32')).toContain('Use double quotes');
+    expect(shellPromptLine(resolved, 'win32')).not.toContain('runs Git Bash');
+  });
+
+  it('keeps the Git Bash label for a requested bash off Windows', () => {
+    const resolved = resolveShell({
+      platform: 'linux',
+      env: { BOOK_SHELL: 'bash' },
+      existsSync: () => true,
+    });
+    expect(resolved.label).not.toContain('not detected');
+  });
+
+  it('adds no quoting hint under an MSYS bash, or off Windows', () => {
+    expect(describeShell(msysBash, 'win32')).toBe('Git Bash (C:\\Git\\bin\\bash.exe)');
+    expect(shellPromptLine(msysBash, 'win32')).not.toContain('double quotes');
+    expect(describeShell(dllLess, 'linux')).not.toContain('double quotes');
+  });
+
   it('describes a shell with its path for doctor', () => {
     expect(
-      describeShell({ kind: 'pwsh', file: PWSH, label: 'PowerShell 7', source: 'detected' }),
+      describeShell(
+        { kind: 'pwsh', file: PWSH, label: 'PowerShell 7', source: 'detected' },
+        'linux',
+      ),
     ).toBe(`PowerShell 7 (${PWSH})`);
-    expect(describeShell({ kind: 'sh', label: '/bin/sh', source: 'detected' })).toBe('/bin/sh');
+    expect(describeShell({ kind: 'sh', label: '/bin/sh', source: 'detected' }, 'linux')).toBe(
+      '/bin/sh',
+    );
   });
 });
 

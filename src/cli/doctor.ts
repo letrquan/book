@@ -580,6 +580,10 @@ export async function runDoctorCommand(
   console.log('Shell:');
   console.log('  Bash tool runs: ' + describeShell(shell));
   console.log('  Selected by: ' + shell.source);
+  // The MSYS-runtime flag decides whether `'` is read as on Linux under a Windows bash or sh (#566).
+  if (process.platform === 'win32' && (shell.kind === 'bash' || shell.kind === 'sh')) {
+    console.log('  msys: ' + (shell.msys ? 'yes' : 'no'));
+  }
   if (shell.warning) console.log(`  [!] ${shell.warning}`);
   console.log();
 

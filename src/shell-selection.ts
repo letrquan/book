@@ -58,6 +58,9 @@ const LABELS: Record<ShellKind, string> = {
   sh: '/bin/sh',
 };
 
+/** The label of a `bash` that was not detected on the MSYS runtime (#566). */
+const UNKNOWN_BASH_LABEL = 'bash (runtime not detected as Git Bash)';
+
 interface Probe {
   which: (name: string) => string | undefined;
   exists: (path: string) => boolean;
@@ -276,6 +279,10 @@ export function resolveShell(input: ShellSelectionInput = {}): ResolvedShell {
   // shell, the installed fallback), so the MSYS runtime is detected here, once, on the chosen shell,
   // and `shellExecution` and the permission scanner stay pure.
   if (platform === 'win32' && isOnMsysRuntime(resolved, probe)) resolved.msys = true;
+  // "Git Bash" is a claim about the runtime: a Cygwin bash, a shim or a copy with no DLL beside it
+  // is only a bash (#566).
+  if (platform === 'win32' && resolved.kind === 'bash' && !resolved.msys)
+    resolved.label = UNKNOWN_BASH_LABEL;
   return resolved;
 }
 
@@ -504,23 +511,53 @@ export function spawnCommandExecution(
   });
 }
 
-/** `label (file)` for doctor and the system prompt. */
-export function describeShell(resolved: ResolvedShell): string {
-  return resolved.file ? `${resolved.label} (${resolved.file})` : resolved.label;
+/**
+ * The hint that goes with a shell that refuses `'` (#566): the permission scanner treats every
+ * single quote as making a command compound on Windows, unless the shell is on the MSYS runtime
+ * ({@link readsSingleQuoteAsPosix}). Empty when `'` is read as on Linux.
+ */
+export function singleQuoteHint(
+  resolved: ResolvedShell,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== 'win32' || readsSingleQuoteAsPosix(resolved)) return '';
+  return "Use double quotes, not `'`: under this shell a single quote makes a command compound, so it is asked about or refused.";
+}
+
+/** `label (file)` for doctor and the system prompt, plus the quoting hint where `'` is refused. */
+export function describeShell(
+  resolved: ResolvedShell,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const base = resolved.file ? `${resolved.label} (${resolved.file})` : resolved.label;
+  const hint = singleQuoteHint(resolved, platform);
+  return hint ? `${base}. ${hint}` : base;
 }
 
 /**
  * The Harness bullet that tells the model which syntax to write. The shell is
  * fixed for the session, so this belongs in the cached prompt prefix.
  */
-export function shellPromptLine(resolved: ResolvedShell): string {
+export function shellPromptLine(
+  resolved: ResolvedShell,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const hint = singleQuoteHint(resolved, platform);
+  const line = shellPromptBase(resolved);
+  return hint ? `${line} ${hint}` : line;
+}
+
+function shellPromptBase(resolved: ResolvedShell): string {
   const where = resolved.file ? ` at \`${resolved.file}\`` : '';
   switch (resolved.kind) {
     case 'bash':
       return (
-        `- The Bash tool runs Git Bash (POSIX sh)${where}, not cmd.exe or PowerShell. Use Unix shell ` +
+        `- The Bash tool runs ${resolved.msys ? 'Git Bash' : 'a bash that is not confirmed to be Git Bash'} (POSIX sh)${where}, not cmd.exe or PowerShell. Use Unix shell ` +
         'syntax: `/dev/null` not `NUL`, forward slashes, `$VAR` not `%VAR%` or `$env:VAR`. Windows ' +
-        'drive paths such as `C:/dir` and MSYS paths such as `/c/dir` both work. The bash sandbox ' +
+        (resolved.msys
+          ? 'drive paths such as `C:/dir` and MSYS paths such as `/c/dir` both work. '
+          : 'drive paths such as `C:/dir` work. ') +
+        'The bash sandbox ' +
         'requires bubblewrap and is unavailable on Windows.'
       );
     case 'pwsh':

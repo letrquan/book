@@ -4,7 +4,7 @@ import { canonicalToolName } from '../tools/aliases.js';
 import { toolFailure } from '../tools/result.js';
 import { createRegistry, type ToolRegistry } from '../tools/registry-core.js';
 import {
-  COMPOUND_COMMAND_REFUSAL,
+  compoundCommandRefusal,
   COMPOUND_COMMAND_REMEDIATION,
   isCompoundShellCommand,
   isToolCallAllowed,
@@ -57,7 +57,7 @@ function denied(
     );
   }
   const compound = isCompoundShellCommand(call, process.platform, shell)
-    ? ` ${COMPOUND_COMMAND_REFUSAL} ${COMPOUND_COMMAND_REMEDIATION}`
+    ? ` ${compoundCommandRefusal(call, process.platform, shell)} ${COMPOUND_COMMAND_REMEDIATION}`
     : '';
   return toolFailure(
     `Capability denied: ${canonical} is outside this agent's tool policy.${compound} Report the blocked step and required capability to the parent.`,
