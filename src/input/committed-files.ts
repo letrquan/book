@@ -82,11 +82,17 @@ export async function committedFileStates(
         env: REPOSITORY_SELECTION,
       })
     ).stdout;
-  const [tree, index, hashes] = await Promise.all([
+  // Settled, not raced: a call that fails first (no commit yet) must not leave the others running
+  // in the repository after this returns.
+  const settled = await Promise.allSettled([
     git(['ls-tree', '-r', '-z', '--full-tree', 'HEAD', '--', ...paths]),
     git(['ls-files', '-z', '--stage', '--full-name', '--', ...paths]),
     git(['hash-object', '--', ...paths]),
   ]);
+  const [tree, index, hashes] = settled.map((result) => {
+    if (result.status === 'rejected') throw result.reason;
+    return result.value;
+  });
 
   // `<mode> <type> <object>`; a link (120000) or a submodule (160000) is not a committed file.
   const committed = new Map<string, string>();
