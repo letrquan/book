@@ -1000,6 +1000,9 @@ export async function runHeadless(
         }
       }
 
+      // What the user typed is the line they submitted, whatever it resolved to: a command's body
+      // or a built-in's prompt is not.
+      const typedText = submitted;
       const recorded = await agentSession.recordUserMessage({
         config,
         sessionId: runtimeSessionId,
@@ -1010,6 +1013,7 @@ export async function runHeadless(
         timelineStore: store && sessionId ? store : undefined,
         expandShellInput: false,
         projectCommand: dispatch.kind === 'prompt' ? dispatch.projectCommand : undefined,
+        typedText,
         runtime,
         signal: runSignal,
       });
@@ -1020,9 +1024,6 @@ export async function runHeadless(
       const contextMessage = recorded.contextMessage;
       transcript.push(userMessage);
       rootContexts.set(runContext.rootRunId, runContext);
-      // What the user typed: the line itself, or for a command, the line that ran it (`/goal`'s
-      // condition), never the body or prompt it resolved to.
-      const typedText = dispatch.kind === 'prompt' ? dispatch.sessionNameSource : submitted;
       await runParentTurn(
         contextMessage,
         prompt,

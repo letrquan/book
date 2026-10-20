@@ -278,9 +278,10 @@ interface SendMessageOptions {
   projectCommand?: boolean;
   /** The text is what the user typed: its `!cmd` lines run. */
   expandShellInput?: boolean;
-  /** What a rewind to this turn puts back in the composer instead of the text: a command's line. */
-  rewindPrompt?: string;
-  /** What the user typed for this turn: only its `$name` tokens invoke a skill. */
+  /**
+   * What the user typed for this turn: the text, or the command line that ran a command. Only its
+   * `$name` tokens invoke a skill, and only it goes back in the composer on a rewind.
+   */
   typedText?: string;
 }
 
@@ -1150,7 +1151,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         sessionNameExact: messageOptions?.sessionNameExact,
         projectCommand: messageOptions?.projectCommand,
         expandShellInput: messageOptions?.expandShellInput,
-        rewindPrompt: messageOptions?.rewindPrompt,
+        typedText: messageOptions?.typedText,
         snapshotStore: session.snapshotStore,
         timelineStore,
         registryStore: timelineStore,
@@ -1465,7 +1466,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           modelOverride: commandContext?.modelOverride,
           commands: commandContext ? [commandContext.command] : undefined,
           parentSessionId: activeSessionId,
-          typedText: messageOptions?.typedText,
         },
       });
       if (messageOptions?.kind !== 'agent-notification' && sendResult.status !== 'rejected') {
@@ -1577,11 +1577,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         sessionNameSource,
         projectCommand,
         expandShellInput: typed,
-        // A rewind to a command's turn puts back the line the user typed, so sending it again
-        // runs the command again instead of sending its body as typed text.
-        rewindPrompt: sessionNameSource,
         // A `$name` invokes a skill only where the user typed it: in their text, or in the command
-        // line that ran a command, never in the body or prompt the command sent.
+        // line that ran a command, never in the body or prompt the command sent. A rewind to a
+        // command's turn puts back that line, so sending it again runs the command again.
         typedText: typed ? userMessage : sessionNameSource,
       });
     },
@@ -2110,7 +2108,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         contextMessage: goalKickoffPrompt(condition),
         derived: true,
         sessionNameSource: condition,
-        typedText: condition,
+        // The line the user typed, as a command's turn records it.
+        typedText: `/goal ${condition}`,
       });
     },
     [addLocalMessage, agentSession, isThinking, operations, sendMessage, syncGoal, timelineStore],

@@ -161,12 +161,8 @@ export interface AgentSessionPrepareSendRequest {
   expandShellInput?: boolean;
   /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
   projectCommand?: boolean;
-  /**
-   * What a rewind to this turn puts back in the composer, when that is not `displayMessage`: the
-   * command line the user typed, for a command's body. Sent again, it goes back through the
-   * command, rather than as typed text.
-   */
-  rewindPrompt?: string;
+  /** See {@link AgentSessionRecordUserRequest.typedText}. */
+  typedText?: string;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
@@ -203,6 +199,14 @@ export interface AgentSessionRecordUserRequest {
    * mentions inline only files git has committed, unchanged (#564).
    */
   projectCommand?: boolean;
+  /**
+   * What the user typed for this turn, when they typed it: `displayMessage` itself, or the command
+   * line that ran a command whose body `displayMessage` is. Only its `$name` tokens invoke a skill,
+   * and a rewind to the turn puts it back in the composer: sent again, a command line goes back
+   * through its command. Absent for a turn the user did not type (a notification, a handoff), whose
+   * text a rewind never puts back to be sent as typed.
+   */
+  typedText?: string;
   runtime?: SessionRuntime;
   signal?: AbortSignal;
   onUserMessagePersisted?: () => void;
@@ -233,8 +237,8 @@ export interface AgentSessionSendRequest {
   expandShellInput?: boolean;
   /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
   projectCommand?: boolean;
-  /** See {@link AgentSessionPrepareSendRequest.rewindPrompt}. */
-  rewindPrompt?: string;
+  /** See {@link AgentSessionRecordUserRequest.typedText}. */
+  typedText?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
   registryStore?: SessionStoreInterface;
@@ -257,6 +261,7 @@ export interface AgentSessionSendRequest {
     | 'userFileObservations'
     | 'userAttachments'
     | 'resolveAttachment'
+    | 'typedText'
   >;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
@@ -506,7 +511,7 @@ export class AgentSession {
           sessionNameExact: request.sessionNameExact,
           expandShellInput: request.expandShellInput,
           projectCommand: request.projectCommand,
-          rewindPrompt: request.rewindPrompt,
+          typedText: request.typedText,
           snapshotStore: request.snapshotStore,
           timelineStore: request.timelineStore,
           signal: control.signal,
@@ -555,6 +560,7 @@ export class AgentSession {
             ...request.options,
             runtime,
             displayMessage: request.displayMessage,
+            typedText: request.typedText,
             userMessageId: userMessage.id,
             userMessageTimestamp: userMessage.timestamp,
             userFileObservations: userMessage.fileObservations,
@@ -1013,9 +1019,8 @@ export class AgentSession {
           gitHead: capture.gitHead,
           codeUnavailableReason: capture.reason,
         };
-    const rewindPrompt = request.rewindPrompt ?? request.displayMessage;
-    // Typed: the text the user typed, or the command line that ran a command's body.
-    const promptTyped = request.expandShellInput === true || request.rewindPrompt !== undefined;
+    const rewindPrompt = request.typedText ?? request.displayMessage;
+    const promptTyped = request.typedText !== undefined;
     const rewindTarget: RewindTarget = {
       id: checkpointId,
       userEventId: request.userMessage.id,
@@ -1100,6 +1105,16 @@ export class AgentSession {
         agentNotifications: request.userMessage.agentNotifications,
         attachments: request.userMessage.attachments,
         fileObservations: request.userMessage.fileObservations,
+        // A turn with no checkpoint (print mode's) is listed for a rewind from this record, so it
+        // carries what the user typed, if anything: the command line, when that is not the text.
+        ...(request.typedText !== undefined
+          ? {
+              promptTyped: true,
+              ...(request.typedText !== request.displayMessage
+                ? { typedText: request.typedText }
+                : {}),
+            }
+          : {}),
       },
     } satisfies SessionRecord);
     if (request.timelineStore) request.onUserMessagePersisted?.();

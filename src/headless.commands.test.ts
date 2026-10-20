@@ -311,21 +311,38 @@ describe('runHeadless — session name for a prompt-body command', () => {
     );
   });
 
-  // A TUI that resumes this session lists the turn for `/rewind` by its body, but nothing records
-  // that body as typed, so the rewind never puts it back in the composer to be sent as typed text.
-  it("never records a command's body as a typed rewind prompt", async () => {
+  // A TUI that resumes this session lists each print-mode turn for `/rewind` from its user record,
+  // and puts back what the user typed: the command line for a command's turn, never its body.
+  it("records the typed line, not the body, as a turn's rewind prompt", async () => {
     stubProvider();
     const { store } = sessions();
     const config = makeConfig();
     writeCommand(config.workspace, 'deploy', 'Roll out to the $1 environment.');
 
-    const result = await run(config, '/deploy staging', { sessionStore: store });
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      inputFormat: 'stream-json',
+      outputFormat: 'text',
+      history: [],
+      mode: 'default',
+      maxTurns: 1,
+      stdin: Readable.from([
+        `${JSON.stringify({ type: 'user', content: 'Explain the build' })}\n`,
+        `${JSON.stringify({ type: 'user', content: '/deploy staging' })}\n`,
+      ]),
+      stdout: collectWrites().stdout,
+      sessionStore: store,
+    });
 
-    const targets = store.load(result.sessionId!).rewindTargets;
-    expect(targets.map((target) => target.prompt)).toEqual([
+    const loaded = store.load(result.sessionId!);
+    expect(loaded.transcript.map((message) => message.content)).toContain(
       'Roll out to the staging environment.',
+    );
+    expect(
+      loaded.rewindTargets.map(({ prompt, promptTyped }) => ({ prompt, promptTyped })),
+    ).toEqual([
+      { prompt: '/deploy staging', promptTyped: true },
+      { prompt: 'Explain the build', promptTyped: true },
     ]);
-    expect(targets[0]?.promptTyped).toBeUndefined();
   });
 
   it('names the session "Deploy staging" for a custom command with arguments', async () => {
