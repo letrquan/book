@@ -407,13 +407,13 @@ export class AgentStore {
     this.plans.clear();
     this.evidence.clear();
     this.snapshots.clear();
-    this.removeLease();
+    this.releaseLease();
     // As in `dispose()`: a heartbeat still running would put the lease back with its rename.
     const inFlight = this.leaseWrite;
     if (inFlight) {
       void inFlight.then(
-        () => this.removeLease(),
-        () => this.removeLease(),
+        () => this.releaseLease(),
+        () => this.releaseLease(),
       );
     }
   }
@@ -1471,10 +1471,10 @@ export class AgentStore {
   }
 
   /**
-   * {@link removeLease}, for `dispose()`. A lease the unlink leaves behind (a Windows scanner
-   * holding the file, say) reads as fresh for up to {@link LEASE_FRESH_MS}, so it is overwritten
-   * once with a stale heartbeat, best effort, and no store reads it as fresh after that (#568).
-   * This session's own later stores read the instance as gone either way: see {@link aliveByLease}.
+   * {@link removeLease}, for a store that is done with its lease. A lease the unlink leaves behind
+   * (a Windows scanner holding the file, say) reads as fresh for up to {@link LEASE_FRESH_MS}, so
+   * it is overwritten with a dead one, best effort (#568). This session's own later stores read the
+   * instance as gone either way: see {@link aliveByLease}.
    */
   private releaseLease(): void {
     this.removeLease();
@@ -1482,14 +1482,17 @@ export class AgentStore {
   }
 
   /**
-   * Overwrite this instance's lease with a heartbeat stale on any clock. In place, not by temp file
-   * and rename like every other lease write: a file whose unlink was refused refuses a rename onto
-   * it the same way, but may still take a write. A reader that catches the write half done reads
-   * no lease, which is no fresher than a stale one.
+   * Overwrite this instance's lease with one that reads as dead to every store: a heartbeat stale on
+   * any clock, and no process, so that a store of another process on this host does not fall back
+   * to this one's pid, which is still alive (see {@link isLiveForeignLease}). In place, not by temp
+   * file and rename like every other lease write: a file whose unlink was refused refuses a rename
+   * onto it the same way, but may still take a write. A reader that catches the write half done
+   * reads no lease, which is no fresher than a dead one.
    */
   private markLeaseStale(): void {
+    const dead = { instanceId: this.instanceId, heartbeatAt: Number.MIN_SAFE_INTEGER };
     try {
-      writeFileSync(this.leasePath, JSON.stringify({ ...this.ownerMetadata(), heartbeatAt: 0 }));
+      writeFileSync(this.leasePath, JSON.stringify(dead));
     } catch {
       // Best effort: the lease goes stale on its own within LEASE_FRESH_MS.
     }

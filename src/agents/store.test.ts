@@ -1883,8 +1883,10 @@ describe('a lease that outlives its dispose (#568)', () => {
     } finally {
       vi.restoreAllMocks();
     }
-    const lease = JSON.parse(readFileSync(leasePath(FIRST), 'utf8')) as { heartbeatAt: number };
-    expect(Date.now() - lease.heartbeatAt).toBeGreaterThan(15_000);
+    const lease = JSON.parse(readFileSync(leasePath(FIRST), 'utf8')) as Record<string, unknown>;
+    expect(Date.now() - (lease.heartbeatAt as number)).toBeGreaterThan(15_000);
+    // No process either, so the pid of this process, still alive, does not keep it live.
+    expect(lease).toEqual({ instanceId: FIRST, heartbeatAt: expect.any(Number) });
 
     const next = await open(SECOND);
     const elsewhere = await open(THIRD, undefined, { hostname: 'other-host' });
@@ -1895,6 +1897,30 @@ describe('a lease that outlives its dispose (#568)', () => {
       elsewhere.dispose();
       next.dispose();
     }
+  });
+
+  it('leaves no lease that reads as live to another process on this host (a)', async () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    // Another Book process on this host, whose disposed store finishes a late write. To it, this
+    // process is alive.
+    const other = await open(THIRD, undefined, {
+      pid: 5151,
+      processAlive: (pid: number) => pid === PID || pid === 5151,
+    });
+    const record = recordFixture('late');
+    other.saveAgent(record, { required: true });
+    other.dispose();
+    const disposed = await open(FIRST);
+    failLeaseRemoval();
+    try {
+      disposed.dispose();
+    } finally {
+      vi.restoreAllMocks();
+    }
+
+    await expect(other.recordLateApplication('late', 'applied', record.updatedAt)).resolves.toBe(
+      'recorded',
+    );
   });
 
   it('finishes its dispose when the stale write fails too (a)', async () => {
