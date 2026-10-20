@@ -50,7 +50,9 @@ All notable changes to this project are documented in this file.
 - **Memory is keyed by the git repository root, and a cut `MEMORY.md` says so.** Linked worktrees
   and subdirectories of one repository now share one memory (before, each path got its own, so a
   fact taught in the main checkout was missing in a worktree). The root is found by reading `.git`
-  (no `git` process); outside a repository the key is the workspace itself. A directory under the
+  (no `git` process); outside a repository the key is the workspace itself, and a dotfiles `.git`
+  in your home directory is no repository for a project under it without its own `.git` (#567;
+  memory saved under the home key before stays there, unmigrated). A directory under the
   old workspace-path key is moved on first run, or merged into the new one with `-2`, `-3`
   suffixes on a name collision. `MEMORY.md` now loads its first 200 lines and 25,000 bytes, and a
   `> WARNING:` line at the end of the loaded index names how much was cut off and where. The
@@ -94,18 +96,21 @@ All notable changes to this project are documented in this file.
   emoji-presentation characters (`⌚`, `⏳`, `⏰`) and the East Asian Wide angle brackets (`〈`,
   `〉`) are wide now.
 - **Resizing the terminal during a turn no longer leaves a second working indicator, input bar and
-  footer on screen** (#525, #538, #537, #547). On a narrowing resize Ink drew at once with the old
+  footer on screen** (#525, #538, #537, #547, #565). On a narrowing resize Ink drew at once with the old
   layout, and a row wider than the new width autowrapped and threw off its line count, so the next
   frame left a second working indicator, extra rules, input bar and footer behind. Every Ink frame
   row is now clipped to the terminal width, with tabs expanded. After a resize the new size is
   committed before Ink draws, so the first frame and the forced redraw already use it. Tabs in tool
   output are expanded to 8-column stops, so a tab-separated row is measured at its real width, and
   so are tabs in a code block of an agent message before the block is wrapped, so a tab-indented
-  line near the edge wraps inside the block instead of losing its end. `BOOK_INK_FRAME_CLIP=off`
+  line near the edge wraps inside the block instead of losing its end. Tabs in an agent message's
+  paragraphs, list items, table cells and inline code are expanded the same way before wrapping,
+  with stops counted from the start of the text, so a tab-separated line keeps its last words.
+  `BOOK_INK_FRAME_CLIP=off`
   turns the row clip off. Ctrl+L redraws once per press.
 - **The agent store opens off the event loop, an apply that outlives its session's manager is
   still recorded, and earlier agents stay usable after `/clear`** (#516, #518, #527, #540, #544,
-  #554). Opening the managed-agent store stalled the first 190 to 670 ms after the first frame, and
+  #554, #568). Opening the managed-agent store stalled the first 190 to 670 ms after the first frame, and
   text typed then and submitted with Enter became a paste. The store now opens off the event loop,
   so there is no stall and that Enter submits. An apply that finishes after `/clear`, `/resume` or
   `/rewind` is recorded by the session's current manager, so the same apply is not offered again,
@@ -117,7 +122,22 @@ All notable changes to this project are documented in this file.
   applied (`applied`, `not applied` or `apply failed`), and a re-run that ends on a new candidate
   commit resets it to not applied. `/agent <id>` for another session's agent says
   `✕ Agent <id> belongs to another session.` instead of staying on `Loading subagent…`;
-  `/agent send` to such an agent still sends and says its view is not shown.
+  `/agent send` to such an agent still sends and says its view is not shown. A manager the session
+  disposed no longer reads as a live owner while a lease file it could not delete still looks
+  fresh (up to 15 s): the session remembers the instances it disposed, and a lease that cannot be
+  deleted is overwritten with a dead one where possible.
+- **Expanding a tool row shows its long output lines whole** (#550). A line wider than the output
+  block was shortened with `…` and the footer offered Ctrl+E, but the expanded row cut it the same
+  way, so the end of a long path, JSON blob or table row never showed. An expanded row (Ctrl+E, or
+  Ctrl+O then Ctrl+E) now wraps each long line onto the rows below; a collapsed row still shortens
+  it, and Ctrl+E also picks a row whose only loss is a shortened line.
+- **A dotfiles `.git` in your home directory is no longer the repository of every project under
+  it** (#567). For a project under your home directory without its own `.git`, Book took the home
+  directory as the project's repository: project skills were looked for in every directory from
+  home down, the prompt's git line showed the dotfiles branch, and managed agents snapshotted the
+  whole home directory, untracked files included. Memory, project skill discovery, the prompt's
+  git line and managed-agent isolation now treat such a project as in no repository, so patcher and
+  validator agents refuse as they do without one. A project with its own `.git` is unchanged.
 - **A spent-limit or rate-limit message states the reset time once, and a WebFetch same-origin
   redirect refusal names the URL the model asked for** (#513, #246). A provider message that gave
   its own reset time had it repeated by Book's text, including when the wait was too long to retry;
@@ -877,10 +897,24 @@ All notable changes to this project are documented in this file.
   your home directory and its parents go unchecked; any other directory is checked against itself,
   so an unpacked archive with an empty `.git` cannot vouch for the directory above it. A `.git` in
   your home directory (a dotfiles repository) does not count as a repository root. An `@path`
-  mention is inlined only when its real path is inside the same root, with no Markdown rule;
-  otherwise it stays as written, like `@../x`. A skipped file gets a one-line warning at start-up:
+  mention, typed or in a command body, is inlined only when the Read tool could open its real path:
+  inside the workspace or an `additionalDirectories` entry (#567). Otherwise it stays as written,
+  with a one-line `Left @<path> as written: <reason>.` notice (on stderr in print mode and the SDK,
+  as a transcript line in the TUI). A skipped file gets a one-line warning at start-up:
   in the TUI, on stderr in print mode, in scrollback mode and in the SDK. Your own instruction files
   and commands (the user-global ones) are not checked.
+- **A repository's project command no longer inlines your local files or runs `!` lines unasked**
+  (#564, #567). A `.book/commands/*.md` body could mention `@.git/config`,
+  `@.book/settings.local.json` or `@.env`, and running the command inlined them into the turn sent
+  to the provider, with no prompt, since only shell spans needed approval. In a project command's
+  body, arguments included, an `@` mention now inlines only a file git tracks with no local
+  changes, judged on the file the read really serves, so a committed link to an untracked `.env` is
+  refused; with no repository, or when git fails, nothing in the body is inlined. In the TUI a line
+  starting with `!` in a project command's body also ran as a shell command on `/name`, outside the
+  approval that covers shell spans; no host runs such a line now. On Windows a path that is, or
+  reaches through a link, a UNC location (`\\host\share`, `//host/share`) is refused before
+  anything resolves it, so a committed link cannot make Book contact an SMB host; a workspace
+  opened by its UNC path (not a mapped drive) loads no project files and inlines no mentions.
 - **No tool can replace a real provider key with the redaction marker any more** (#519, #535). The
   guard from #411 covered only `Write`, `Edit` and `MultiEdit` over a file that held a key, so a
   model could still destroy a credential another way. `Bash` now refuses a command that contains
@@ -906,6 +940,10 @@ All notable changes to this project are documented in this file.
   delivery. A single quote is read exactly as on Linux only under a shell on the MSYS runtime
   (`msys-2.0.dll` beside it, or in `..\usr\bin` from a `bin` directory, as in Git for Windows); it
   is still refused under Cygwin, a shim or a copy without the DLL, busybox, WSL, cmd and PowerShell.
+  The prompt and `book doctor` say which (#566): only a bash on the MSYS runtime is called Git
+  Bash, a shell that refuses `'` is described with a hint to use double quotes, a compound-command
+  refusal caused only by a `'` names that rule, and `book doctor` prints `msys: yes|no` for a
+  Windows bash or sh.
 - **"Always allow" no longer saves a rule that a wildcard in the call would widen, and `ask` rules
   hold in `auto`** (#521, #522, #527). "Always allow" saved no rule only for a compound Bash
   command with a `*`; it now saves none for any call whose own text holds a wildcard: a Bash
