@@ -238,8 +238,6 @@ function recordTurn(
     derived?: boolean;
     promptTyped?: boolean;
     checkpoint?: boolean;
-    /** What the user record says the user typed, as print mode records it. */
-    typedText?: string;
   },
 ): void {
   if (turn.checkpoint !== false) {
@@ -266,7 +264,6 @@ function recordTurn(
       content: turn.content,
       derivedContent: turn.derived,
       kind: 'conversation',
-      ...(turn.typedText !== undefined ? { promptTyped: true, typedText: turn.typedText } : {}),
     },
   });
 }
@@ -288,22 +285,13 @@ describe('a rewind to a resumed turn', () => {
       prompt: body,
       content: body,
     });
-    // A print-mode command's turn, which has no checkpoint, recorded before its typed line was.
+    // A print-mode command's turn, which has no checkpoint.
     recordTurn(timeline, session.sessionId, {
       id: 'print-mode-body',
       prompt: body,
       content: body,
       derived: true,
       checkpoint: false,
-    });
-    // And one that records it.
-    recordTurn(timeline, session.sessionId, {
-      id: 'print-mode-command',
-      prompt: body,
-      content: body,
-      derived: true,
-      checkpoint: false,
-      typedText: '/check',
     });
     const loaded = timeline.load(session.sessionId);
     render(
@@ -326,22 +314,12 @@ describe('a rewind to a resumed turn', () => {
     await tick();
 
     const targets = latest!.getRewindTargets();
-    expect(targets.map((target) => target.prompt)).toEqual([
-      '/check',
-      body,
-      body,
-      'Explain the build',
-    ]);
-    expect(await latest!.rewind(targets[0]!.id, 'conversation')).toMatchObject({
-      ok: true,
-      restoredPrompt: '/check',
-    });
-    await tick();
-    for (const target of targets.slice(1, 3)) {
+    expect(targets.map((target) => target.prompt)).toEqual([body, body, 'Explain the build']);
+    for (const target of targets.slice(0, 2)) {
       expect(await latest!.rewind(target.id, 'conversation')).toEqual({ ok: true });
       await tick();
     }
-    expect(await latest!.rewind(targets[3]!.id, 'conversation')).toMatchObject({
+    expect(await latest!.rewind(targets[2]!.id, 'conversation')).toMatchObject({
       ok: true,
       restoredPrompt: 'Explain the build',
     });

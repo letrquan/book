@@ -1000,9 +1000,6 @@ export async function runHeadless(
         }
       }
 
-      // What the user typed is the line they submitted, whatever it resolved to: a command's body
-      // or a built-in's prompt is not.
-      const typedText = submitted;
       const recorded = await agentSession.recordUserMessage({
         config,
         sessionId: runtimeSessionId,
@@ -1013,7 +1010,6 @@ export async function runHeadless(
         timelineStore: store && sessionId ? store : undefined,
         expandShellInput: false,
         projectCommand: dispatch.kind === 'prompt' ? dispatch.projectCommand : undefined,
-        typedText,
         runtime,
         signal: runSignal,
       });
@@ -1030,7 +1026,9 @@ export async function runHeadless(
         userMessage,
         runContext,
         commandContext,
-        typedText,
+        // What the user typed is the line they submitted, whatever it resolved to: a command's
+        // body or a built-in command's prompt is not.
+        submitted,
       );
       // Fold this prompt's inclusive spend into the carry so the next root starts
       // where this one finished instead of back at zero — along with how much of it

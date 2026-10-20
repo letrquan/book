@@ -161,7 +161,13 @@ export interface AgentSessionPrepareSendRequest {
   expandShellInput?: boolean;
   /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
   projectCommand?: boolean;
-  /** See {@link AgentSessionRecordUserRequest.typedText}. */
+  /**
+   * What the user typed for this turn, when they typed it: `displayMessage` itself, or the command
+   * line that ran a command whose body `displayMessage` is. Only its `$name` tokens invoke a skill,
+   * and a rewind to the turn puts it back in the composer: sent again, a command line goes back
+   * through its command. Absent for a turn the user did not type (a notification, a handoff), whose
+   * text a rewind never puts back to be sent as typed.
+   */
   typedText?: string;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
@@ -199,14 +205,6 @@ export interface AgentSessionRecordUserRequest {
    * mentions inline only files git has committed, unchanged (#564).
    */
   projectCommand?: boolean;
-  /**
-   * What the user typed for this turn, when they typed it: `displayMessage` itself, or the command
-   * line that ran a command whose body `displayMessage` is. Only its `$name` tokens invoke a skill,
-   * and a rewind to the turn puts it back in the composer: sent again, a command line goes back
-   * through its command. Absent for a turn the user did not type (a notification, a handoff), whose
-   * text a rewind never puts back to be sent as typed.
-   */
-  typedText?: string;
   runtime?: SessionRuntime;
   signal?: AbortSignal;
   onUserMessagePersisted?: () => void;
@@ -237,7 +235,7 @@ export interface AgentSessionSendRequest {
   expandShellInput?: boolean;
   /** See {@link AgentSessionRecordUserRequest.projectCommand}. */
   projectCommand?: boolean;
-  /** See {@link AgentSessionRecordUserRequest.typedText}. */
+  /** See {@link AgentSessionPrepareSendRequest.typedText}. */
   typedText?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: SessionTimelineStore;
@@ -1105,16 +1103,6 @@ export class AgentSession {
         agentNotifications: request.userMessage.agentNotifications,
         attachments: request.userMessage.attachments,
         fileObservations: request.userMessage.fileObservations,
-        // A turn with no checkpoint (print mode's) is listed for a rewind from this record, so it
-        // carries what the user typed, if anything: the command line, when that is not the text.
-        ...(request.typedText !== undefined
-          ? {
-              promptTyped: true,
-              ...(request.typedText !== request.displayMessage
-                ? { typedText: request.typedText }
-                : {}),
-            }
-          : {}),
       },
     } satisfies SessionRecord);
     if (request.timelineStore) request.onUserMessagePersisted?.();

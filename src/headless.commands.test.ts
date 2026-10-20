@@ -312,8 +312,9 @@ describe('runHeadless — session name for a prompt-body command', () => {
   });
 
   // A TUI that resumes this session lists each print-mode turn for `/rewind` from its user record,
-  // and puts back what the user typed: the command line for a command's turn, never its body.
-  it("records the typed line, not the body, as a turn's rewind prompt", async () => {
+  // but print mode runs no `!` line in any text, so a rewind never puts one back in the composer,
+  // where it would be sent as typed text: not a command's body, nor a prompt.
+  it('records no print-mode prompt as a typed rewind prompt', async () => {
     stubProvider();
     const { store } = sessions();
     const config = makeConfig();
@@ -340,8 +341,8 @@ describe('runHeadless — session name for a prompt-body command', () => {
     expect(
       loaded.rewindTargets.map(({ prompt, promptTyped }) => ({ prompt, promptTyped })),
     ).toEqual([
-      { prompt: '/deploy staging', promptTyped: true },
-      { prompt: 'Explain the build', promptTyped: true },
+      { prompt: 'Roll out to the staging environment.', promptTyped: undefined },
+      { prompt: 'Explain the build', promptTyped: undefined },
     ]);
   });
 

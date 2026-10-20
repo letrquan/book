@@ -515,8 +515,6 @@ export class SessionStore {
         providerMetadata?: Message['providerMetadata'];
         contextContent?: string;
         derivedContent?: boolean;
-        promptTyped?: boolean;
-        typedText?: string;
         complete?: boolean;
         toolCalls?: Message['toolCalls'];
         toolResults?: PersistedToolResult[];
@@ -671,15 +669,13 @@ export class SessionStore {
         let targetId = checkpointByUserEventId.get(eventId);
         if (!targetId) {
           targetId = `user:${eventId}`;
-          // A turn with no checkpoint (print mode's, or an old session's) puts back only what its
-          // record says the user typed: its text may be a command's body.
+          // Nothing records this prompt as typed: a print-mode turn's may be a command's body, and
+          // print mode runs no `!` line in any of it. A rewind lists it but never puts it back in
+          // the composer, where it would be sent as typed text.
           const legacyTarget: RewindTarget = {
             id: targetId,
             userEventId: eventId,
-            prompt: data.promptTyped
-              ? (data.typedText ?? data.content ?? '')
-              : (data.content ?? ''),
-            ...(data.promptTyped ? { promptTyped: true } : {}),
+            prompt: data.content ?? '',
             attachments: data.attachments,
             timestamp: record.timestamp,
             codeAvailable: false,
