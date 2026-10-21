@@ -213,9 +213,10 @@ function isInGitWorktree(workspace: string): boolean {
 
 /**
  * The prompt's git line. It runs on every turn with nothing asked first, so both calls take the
- * read-only Git tools' hardening (`readOnlyGit`): a checkout's own `core.fsmonitor`, filters and
- * hooks do not run, and git's built-in fsmonitor daemon (`core.fsmonitor=true`) stays allowed
- * (#574). A configuration the hardening cannot neutralize fails the call, so there is no line.
+ * read-only Git tools' hardening (`readOnlyGit`), exactly as `GitStatus` does: the program a
+ * checkout's `core.fsmonitor` names does not run, while git's built-in daemon
+ * (`core.fsmonitor=true`) stays allowed (#574). A configuration the hardening refuses fails the
+ * call, so there is no line. The two calls are independent reads, so they run side by side.
  */
 async function gitContext(workspace: string, signal?: AbortSignal): Promise<string> {
   if (!isInGitWorktree(workspace)) return '';
@@ -225,10 +226,12 @@ async function gitContext(workspace: string, signal?: AbortSignal): Promise<stri
     env: process.env as Record<string, string>,
     signal,
   };
-  const branch = await readOnlyGit(['rev-parse', '--abbrev-ref', 'HEAD'], ctx);
+  const [branch, status] = await Promise.all([
+    readOnlyGit(['rev-parse', '--abbrev-ref', 'HEAD'], ctx),
+    readOnlyGit(['status', '--short'], ctx),
+  ]);
   if (!branch.success) return '';
 
-  const status = await readOnlyGit(['status', '--short'], ctx);
   const branchName = branch.output.trim();
   if (!status.success) return `branch ${branchName}`;
 

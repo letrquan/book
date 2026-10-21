@@ -1426,7 +1426,14 @@ describe('session-state git line and repository-configured programs', () => {
   });
 
   afterEach(() => {
-    // Best effort: on Windows a built-in fsmonitor daemon may still hold the directory.
+    // `core.fsmonitor=true` starts git's built-in daemon where git has one (Windows, macOS); stop
+    // it so it does not outlive the test. Elsewhere `stop` just fails, which is fine.
+    try {
+      git('fsmonitor--daemon', 'stop');
+    } catch {
+      // no daemon here
+    }
+    // Best effort: a daemon that is still shutting down may hold the directory.
     try {
       rmSync(root, { recursive: true, force: true });
     } catch {

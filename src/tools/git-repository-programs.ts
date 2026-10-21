@@ -81,7 +81,8 @@ export function hardenedGitEnv(): Record<string, string> {
  *
  * Four callers, and they read this differently. The read-only Git tools (`readOnlyGit`) take
  * it because nothing asks before they run, so a checkout must not be able to start a program
- * through one. `/review`'s target (`src/review/target.ts`) and the TUI status poll
+ * through one; the prompt's per-turn git line (`gitContext` in `src/agent/context.ts`) goes
+ * through `readOnlyGit` for the same reason. `/review`'s target (`src/review/target.ts`) and the TUI status poll
  * (`src/tui/hooks/useGitStatus.ts`) are the same: reports and background polls that fire with no
  * prompt. Git isolation (`src/agents/git-isolation.ts`) is the one that takes it on writes as
  * well — the agent's commit, the cherry-pick, `worktree add`, `update-ref` — where hooks being
