@@ -342,6 +342,14 @@ describe('findGitRoot', () => {
     expect(findGitRoot(inner)).toBe(inner);
   });
 
+  it('falls back to the workspace on a .git file too big to be a pointer', () => {
+    const repo = makeGitRepo('repo');
+    const inner = join(repo, 'inner');
+    mkdirSync(inner);
+    writeFileSync(join(inner, '.git'), `gitdir: ${join(repo, '.git')}\n${'x'.repeat(64 * 1024)}`);
+    expect(findGitRoot(inner)).toBe(inner);
+  });
+
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'falls back to the workspace on an unreadable .git file',
     () => {

@@ -1,12 +1,16 @@
 import {
+  closeSync,
   constants,
   copyFileSync,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -199,14 +203,34 @@ const MAX_POINTER_FILE_BYTES = 64 * 1024;
 
 /**
  * The first line of the git pointer file `path`, trimmed; undefined when it is absent or no
- * regular file, which a checkout from an archive controls: a FIFO would block this synchronous
- * read and a device would never end it. Throws on one it cannot read or that is too big.
+ * regular file. A checkout from an archive controls these files, so the read never blocks or
+ * runs on: it opens without blocking (a FIFO, even one swapped in late), checks the open file,
+ * and reads at most one byte past the limit (a procfs file reports size 0 and never ends).
+ * Throws on one it cannot read or that is too big.
  */
 function readPointerFile(path: string): string | undefined {
-  const st = statIfPresent(path);
-  if (!st?.isFile()) return undefined;
-  if (st.size > MAX_POINTER_FILE_BYTES) throw new Error(`not a git pointer file: ${path}`);
-  return readFileSync(path, 'utf-8').split(/\r?\n/, 1)[0].trim();
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+  } catch (e) {
+    const code = errorCode(e);
+    if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR') return undefined;
+    throw e;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return undefined;
+    const buffer = Buffer.alloc(MAX_POINTER_FILE_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const n = readSync(fd, buffer, length, buffer.length - length, null);
+      if (n === 0) break;
+      length += n;
+    }
+    if (length > MAX_POINTER_FILE_BYTES) throw new Error(`not a git pointer file: ${path}`);
+    return buffer.toString('utf-8', 0, length).split(/\r?\n/, 1)[0].trim();
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** The git root `dir` itself marks with a `.git` entry; undefined when `dir` has none. Throws on a `.git` it cannot read. */
@@ -251,23 +275,29 @@ function samePath(a: string, b: string): boolean {
  * directory) could name another project's `.git`, the home directory's included, and take that
  * project's memory (#575). A worktree moved without `git worktree move` fails it until
  * `git worktree repair` relinks it.
+ *
+ * Stricter than git's own pointers: `dir/.git` and the entry's `gitdir` must have one owner, as
+ * every `git worktree add`, `move` and `repair` writes both. Another user's `.git` planted where a
+ * removed worktree's still-listed path was (a shared directory, `/tmp`) fails it. Windows reports
+ * uid 0 for every file, so there the owners always match.
  */
 function isListedWorktree(dir: string, gitDir: string, common: string): boolean {
   const entry = comparablePath(gitDir);
   if (!samePath(dirname(entry), join(common, 'worktrees'))) return false;
-  let backPointer: string | undefined;
+  const listing = join(entry, 'gitdir');
   try {
-    backPointer = readPointerFile(join(entry, 'gitdir'));
+    const backPointer = readPointerFile(listing);
+    if (!backPointer) return false;
+    // A relative back-pointer (`worktree.useRelativePaths`) resolves against the entry.
+    const target = resolve(entry, backPointer);
+    // The directories are compared, not the `.git` entries: a `.git` link in another directory to
+    // a real worktree's `.git` file makes that directory no worktree.
+    if (basename(target) !== '.git' || !samePath(dirname(target), dir)) return false;
+    return lstatSync(join(dir, '.git')).uid === statSync(listing).uid;
   } catch {
     // An entry it cannot read lists nothing, so every subdirectory keys by this checkout alike.
     return false;
   }
-  if (!backPointer) return false;
-  // A relative back-pointer (`worktree.useRelativePaths`) resolves against the entry.
-  const target = resolve(entry, backPointer);
-  // The directories are compared, not the `.git` entries: a `.git` link in another directory to a
-  // real worktree's `.git` file makes that directory no worktree.
-  return basename(target) === '.git' && samePath(dirname(target), dir);
 }
 
 /**
