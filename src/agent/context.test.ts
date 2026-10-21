@@ -1,9 +1,18 @@
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { hostname, tmpdir } from 'os';
 import { join } from 'path';
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   AgentContextCache,
   buildMessages,
@@ -1379,5 +1388,89 @@ describe('session-state git line and a dotfiles ~/.git', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// The git line is read on every turn, before any tool call or approval, so it is Book's own work
+// and takes the read-only Git tools' hardening (#574). A checkout's `.git/config` arrives with an
+// archive or a shared directory, and `git status` executes the program its `core.fsmonitor` names.
+describe('session-state git line and repository-configured programs', () => {
+  let root: string;
+  let repo: string;
+
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
+
+  function gitLine(content: unknown): string | undefined {
+    return String(content)
+      .split('\n')
+      .find((line) => line.startsWith('- Git:'));
+  }
+
+  beforeEach(() => {
+    // The long form on Windows, as git reports it, not the runner's 8.3 temp path.
+    root = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-git-fsmonitor-')));
+    repo = join(root, 'repo');
+    mkdirSync(repo);
+    git('init', '-q', '-b', 'main');
+    git(
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'init',
+    );
+  });
+
+  afterEach(() => {
+    // `core.fsmonitor=true` starts git's built-in daemon where git has one (Windows, macOS); stop
+    // it so it does not outlive the test. Elsewhere `stop` just fails, which is fine.
+    try {
+      git('fsmonitor--daemon', 'stop');
+    } catch {
+      // no daemon here
+    }
+    // Best effort: a daemon that is still shutting down may hold the directory.
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch {
+      // left for the OS temp cleanup
+    }
+  });
+
+  // The control below runs a `#!/bin/sh` program through git, which is not something every
+  // Windows git does; the hardening itself is covered on both legs by `git.test.ts`.
+  it.skipIf(process.platform === 'win32')(
+    'does not run the program core.fsmonitor names while still reporting the branch and status',
+    async () => {
+      // Outside the repository, so neither shows up as an untracked file.
+      const marker = join(root, 'FSMONITOR_RAN');
+      const program = join(root, 'fsmonitor.sh');
+      writeFileSync(program, `#!/bin/sh\necho ran >> '${marker}'\nexit 0\n`);
+      chmodSync(program, 0o755);
+      git('config', 'core.fsmonitor', program);
+      writeFileSync(join(repo, 'untracked.txt'), 'x\n');
+
+      // The config is capable of starting the program, or the assertion below asserts nothing.
+      git('status', '--short');
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
+
+      const out = await buildMessages(defaultConfig({ workspace: repo }), [userMsg('hi')]);
+
+      expect(existsSync(marker)).toBe(false);
+      expect(gitLine(out[1].content)).toBe('- Git: branch main, 1 changed file');
+    },
+  );
+
+  it('still reports the branch and status when core.fsmonitor is the built-in daemon', async () => {
+    git('config', 'core.fsmonitor', 'true');
+
+    const out = await buildMessages(defaultConfig({ workspace: repo }), [userMsg('hi')]);
+
+    expect(gitLine(out[1].content)).toBe('- Git: branch main, clean');
   });
 });
