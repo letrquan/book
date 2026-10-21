@@ -126,8 +126,17 @@ function makeLinkedWorktree(main: string, name: string): string {
   return worktree;
 }
 
-/** `git` in `cwd` with a throwaway identity, so a commit needs no user config. */
+/**
+ * `git` in `cwd` with a throwaway identity and no user config, and none of the `GIT_*` variables a
+ * git hook running the suite exports (`GIT_DIR`, `GIT_INDEX_FILE`, …), which would aim it at the
+ * developer's own repository.
+ */
 function git(cwd: string, ...args: string[]): void {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')),
+  );
+  const globalConfig = join(scratch, '.gitconfig-empty');
+  writeFileSync(globalConfig, '');
   execFileSync(
     'git',
     [
@@ -141,7 +150,11 @@ function git(cwd: string, ...args: string[]): void {
       'init.defaultBranch=main',
       ...args,
     ],
-    { cwd, stdio: 'ignore' },
+    {
+      cwd,
+      stdio: 'ignore',
+      env: { ...env, GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_NOSYSTEM: '1' },
+    },
   );
 }
 
@@ -175,7 +188,8 @@ describe('findGitRoot', () => {
     const main = makeGitRepo('main');
     mkdirSync(join(main, '.git', 'worktrees', 'rel'), { recursive: true });
     writeFileSync(join(main, '.git', 'worktrees', 'rel', 'commondir'), '../..');
-    writeFileSync(join(main, '.git', 'worktrees', 'rel', 'gitdir'), '../../../../rel/.git\n');
+    // Only the first line counts, as in the `.git` file.
+    writeFileSync(join(main, '.git', 'worktrees', 'rel', 'gitdir'), '../../../../rel/.git\r\nx\n');
     const worktree = join(scratch, 'rel');
     mkdirSync(worktree);
     writeFileSync(join(worktree, '.git'), 'gitdir: ../main/.git/worktrees/rel');
@@ -263,6 +277,17 @@ describe('findGitRoot', () => {
       rmSync(join(main, '.git', 'worktrees', 'wt', 'gitdir'));
 
       expect(findGitRoot(worktree)).toBe(worktree);
+    });
+
+    it('keys a worktree whose entry it cannot read by itself, from any subdirectory', () => {
+      const main = makeGitRepo('main');
+      const worktree = makeLinkedWorktree(main, 'wt');
+      mkdirSync(join(worktree, 'pkg'));
+      rmSync(join(main, '.git', 'worktrees', 'wt', 'gitdir'));
+      mkdirSync(join(main, '.git', 'worktrees', 'wt', 'gitdir'));
+
+      expect(findGitRoot(worktree)).toBe(worktree);
+      expect(findGitRoot(join(worktree, 'pkg'))).toBe(worktree);
     });
 
     it.skipIf(process.platform === 'win32')(

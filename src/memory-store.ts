@@ -194,6 +194,21 @@ function statIfPresent(path: string): Stats | null {
   }
 }
 
+/** Git's pointer files (`.git`, `commondir`, `gitdir`) hold one path; a bigger file is none. */
+const MAX_POINTER_FILE_BYTES = 64 * 1024;
+
+/**
+ * The first line of the git pointer file `path`, trimmed; undefined when it is absent or no
+ * regular file, which a checkout from an archive controls: a FIFO would block this synchronous
+ * read and a device would never end it. Throws on one it cannot read or that is too big.
+ */
+function readPointerFile(path: string): string | undefined {
+  const st = statIfPresent(path);
+  if (!st?.isFile()) return undefined;
+  if (st.size > MAX_POINTER_FILE_BYTES) throw new Error(`not a git pointer file: ${path}`);
+  return readFileSync(path, 'utf-8').split(/\r?\n/, 1)[0].trim();
+}
+
 /** The git root `dir` itself marks with a `.git` entry; undefined when `dir` has none. Throws on a `.git` it cannot read. */
 function gitRootMarkedBy(dir: string): string | undefined {
   const dotGit = join(dir, '.git');
@@ -202,20 +217,13 @@ function gitRootMarkedBy(dir: string): string | undefined {
   if (st.isDirectory()) return dir;
   if (!st.isFile()) return undefined;
 
-  const pointer = /^gitdir:[ \t]*(\S.*?)[ \t]*$/.exec(
-    readFileSync(dotGit, 'utf-8').split(/\r?\n/, 1)[0],
-  );
+  const pointer = /^gitdir:[ \t]*(\S.*)$/.exec(readPointerFile(dotGit) ?? '');
   if (!pointer) throw new Error(`unrecognized .git file: ${dotGit}`);
   // A relative gitdir resolves against the directory holding the `.git` file.
   const gitDir = resolve(dir, pointer[1]);
-  let commonDir: string;
-  try {
-    commonDir = readFileSync(join(gitDir, 'commondir'), 'utf-8').trim();
-  } catch (e) {
-    // A submodule or `--separate-git-dir` checkout has no commondir: it is its own root.
-    if (errorCode(e) === 'ENOENT' || errorCode(e) === 'ENOTDIR') return dir;
-    throw e;
-  }
+  const commonDir = readPointerFile(join(gitDir, 'commondir'));
+  // A submodule or `--separate-git-dir` checkout has no commondir: it is its own root.
+  if (commonDir === undefined) return dir;
   const common = canonicalPath(resolve(gitDir, commonDir));
   // A linked worktree's common dir is the main checkout's `.git`, which lists the worktree back.
   return basename(common) === '.git' && isListedWorktree(dir, gitDir, common)
@@ -223,7 +231,10 @@ function gitRootMarkedBy(dir: string): string | undefined {
     : dir;
 }
 
-/** The real path to compare: links followed and, on Windows, 8.3 short names expanded, as git writes them. */
+/**
+ * The real path to compare, links followed and Windows 8.3 short names expanded as git writes
+ * them. Only for comparing: the key itself stays `canonicalPath`'s, so no stored key changes.
+ */
 function comparablePath(path: string): string {
   return tryRealPath(path) ?? resolve(path);
 }
@@ -238,17 +249,18 @@ function samePath(a: string, b: string): boolean {
  * trip: the git dir `dir/.git` names must be an entry `<common>/worktrees/<name>`, and that entry's
  * `gitdir` file must name `dir/.git` back. Without it a `.git` file anywhere (an archive, a shared
  * directory) could name another project's `.git`, the home directory's included, and take that
- * project's memory (#575). Throws on an entry it cannot read.
+ * project's memory (#575). A worktree moved without `git worktree move` fails it until
+ * `git worktree repair` relinks it.
  */
 function isListedWorktree(dir: string, gitDir: string, common: string): boolean {
   const entry = comparablePath(gitDir);
   if (!samePath(dirname(entry), join(common, 'worktrees'))) return false;
-  let backPointer: string;
+  let backPointer: string | undefined;
   try {
-    backPointer = readFileSync(join(entry, 'gitdir'), 'utf-8').trim();
-  } catch (e) {
-    if (errorCode(e) === 'ENOENT' || errorCode(e) === 'ENOTDIR') return false;
-    throw e;
+    backPointer = readPointerFile(join(entry, 'gitdir'));
+  } catch {
+    // An entry it cannot read lists nothing, so every subdirectory keys by this checkout alike.
+    return false;
   }
   if (!backPointer) return false;
   // A relative back-pointer (`worktree.useRelativePaths`) resolves against the entry.
