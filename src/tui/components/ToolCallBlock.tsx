@@ -4,6 +4,7 @@ import { useTheme } from '../theme.js';
 import { DiffBlock, mutationDiffPreview } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { highlightCode } from './syntax-highlight.js';
+import { sliceStyledLine } from './markdown-layout.js';
 import { truncateDisplay } from './word-wrap.js';
 import {
   getFileMutationDisplaySummary,
@@ -551,15 +552,21 @@ function OutputBlock({
         showAllToolOutput,
         terminalWidth,
         expandHint,
-        wrapLongLines: !renderAsMarkdown,
+        longLines: renderAsMarkdown ? 'whole' : 'wrap',
       }),
     [expandHint, output, renderAsMarkdown, showAllToolOutput, success, terminalWidth],
   );
-  const displayText = display.lines.join('\n');
-  const highlighted = useMemo(
-    () => (language ? highlightCode(displayText, language, theme) : undefined),
-    [displayText, language, theme],
-  );
+  // Highlighting sees whole lines: a wrapped row cut from the middle of a string or a comment is
+  // coloured as part of its line, not as a line of its own (#578). A preview's rows are already
+  // the lines it shows.
+  const highlighted = useMemo(() => {
+    if (!language) return undefined;
+    const { sourceLines, rowSources } = display;
+    if (!sourceLines || !rowSources)
+      return highlightCode(display.lines.join('\n'), language, theme);
+    const whole = highlightCode(sourceLines.join('\n'), language, theme);
+    return rowSources.map(({ line, start, end }) => sliceStyledLine(whole[line] ?? [], start, end));
+  }, [display, language, theme]);
 
   if (renderAsMarkdown) {
     return (

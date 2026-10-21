@@ -2056,3 +2056,32 @@ describe('ToolCallBlock Ctrl+E hint', () => {
     }
   });
 });
+
+describe('ToolCallBlock highlighted output across a wrap break (#578)', () => {
+  const WIDTH = 60;
+
+  it('keeps the colour of a token the break cuts, on both sides', () => {
+    // One JSON line whose value is a string far wider than the block: the break lands inside it.
+    const content = `{"note": "see x.json ${'a'.repeat(70)}${'b'.repeat(70)}"}`;
+    const rendered = colourFrame(
+      <ToolCallBlock
+        name="Read"
+        args={{ file_path: 'x.json' }}
+        result={successResult('call-1', content)}
+        isExpanded
+        showAllToolOutput
+        reducedMotion
+        terminalWidth={WIDTH}
+      />,
+    );
+    const string = rgb(DEFAULT_THEME.mdCodeString);
+    const rows = rendered.split('\n').filter((row) => /[ab]{5}/.test(stripAnsi(row)));
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    // Each row that holds a part of the string sets it in the string colour before its letters;
+    // a row highlighted as a line of its own would start in the plain code colour.
+    for (const row of rows) {
+      expect(row.indexOf(string), stripAnsi(row)).toBeGreaterThanOrEqual(0);
+      expect(row.indexOf(string)).toBeLessThan(row.search(/[ab]{5}/));
+    }
+  });
+});
