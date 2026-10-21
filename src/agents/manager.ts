@@ -753,23 +753,28 @@ export class AgentManager {
     const above = this.homeDotfilesAbove();
     if (!above) return;
     const storeRoot = this.options.storeRoot ?? join(resolveBookHome(), 'agents');
+    const found: Array<{ hash: string; count: number }> = [];
     for (const hash of new Set([repositoryHash(above.homeReal), repositoryHash(above.home)])) {
       const count = countStoredAgentRecords(storeRoot, hash);
-      if (count === 0) continue;
-      const worktrees = join(this.options.worktreeRoot ?? defaultWorktreeRoot(), hash);
-      this.emit({
-        type: 'agent_persistence',
-        state: 'degraded',
-        reason: 'unavailable',
-        message:
-          `Book ignores the dotfiles repository at ${above.home}, so ${count} managed-agent record(s) kept under its key ` +
-          `(possibly made for this project) are not used. To clear them: git -C ${above.home} worktree list, ` +
-          `git worktree remove each one under ${worktrees}, then delete ${join(storeRoot, hash)}.`,
-        retrying: false,
-        timestamp: Date.now(),
-      });
-      return;
+      if (count > 0) found.push({ hash, count });
     }
+    if (found.length === 0) return;
+    const total = found.reduce((sum, entry) => sum + entry.count, 0);
+    const where = found.map((entry) => join(storeRoot, entry.hash)).join(' and ');
+    const worktrees = found
+      .map((entry) => join(this.options.worktreeRoot ?? defaultWorktreeRoot(), entry.hash))
+      .join(' and ');
+    this.emit({
+      type: 'agent_persistence',
+      state: 'degraded',
+      reason: 'unavailable',
+      message:
+        `Book ignores the dotfiles repository at ${above.home}, so ${total} managed-agent record(s) kept under its key ` +
+        `(possibly made for this project, possibly for ${above.home} itself) are not used. To clear them: git -C ${above.home} worktree list, ` +
+        `git worktree remove each one under ${worktrees}, delete the refs/book/snapshots/* refs there, then delete ${where}.`,
+      retrying: false,
+      timestamp: Date.now(),
+    });
   }
 
   private handlePersistenceEvent(
