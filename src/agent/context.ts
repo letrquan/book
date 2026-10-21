@@ -23,7 +23,7 @@ import { discoverCommands, generateCommandListing } from '../commands/loader.js'
 import { BUILTIN_COMMANDS } from '../commands/builtins.js';
 import { discoverProjectInstructions, renderProjectInstructions } from '../claude-md.js';
 import { discoverAgents, type SubagentDef } from '../subagent-discovery.js';
-import { runGit } from '../tools/git.js';
+import { readOnlyGit } from '../tools/git.js';
 import { isUserHome, tryRealPath } from '../repo-containment.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { resolveBookHome } from '../book-home.js';
@@ -211,6 +211,12 @@ function isInGitWorktree(workspace: string): boolean {
   }
 }
 
+/**
+ * The prompt's git line. It runs on every turn with nothing asked first, so both calls take the
+ * read-only Git tools' hardening (`readOnlyGit`): a checkout's own `core.fsmonitor`, filters and
+ * hooks do not run, and git's built-in fsmonitor daemon (`core.fsmonitor=true`) stays allowed
+ * (#574). A configuration the hardening cannot neutralize fails the call, so there is no line.
+ */
 async function gitContext(workspace: string, signal?: AbortSignal): Promise<string> {
   if (!isInGitWorktree(workspace)) return '';
 
@@ -219,10 +225,10 @@ async function gitContext(workspace: string, signal?: AbortSignal): Promise<stri
     env: process.env as Record<string, string>,
     signal,
   };
-  const branch = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], ctx);
+  const branch = await readOnlyGit(['rev-parse', '--abbrev-ref', 'HEAD'], ctx);
   if (!branch.success) return '';
 
-  const status = await runGit(['status', '--short'], ctx);
+  const status = await readOnlyGit(['status', '--short'], ctx);
   const branchName = branch.output.trim();
   if (!status.success) return `branch ${branchName}`;
 

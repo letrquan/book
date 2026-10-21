@@ -38,8 +38,8 @@ export { hardenedGitArgs };
  * mutating tool here: it comes through this function with its own argv and the environment the
  * user configured, exactly as it did before the hardening existed, so a `pre-commit` or
  * `commit-msg` hook still runs. Silently not running the user's hook would be a worse failure
- * than the one the hardening exists to prevent. The read-only tools go through
- * {@link readOnlyGit}, and a caller whose work is Book's own builds its argv with
+ * than the one the hardening exists to prevent. The read-only tools and the prompt's per-turn git
+ * line go through {@link readOnlyGit}, and a caller whose work is Book's own builds its argv with
  * {@link hardenedGitArgs} directly.
  */
 export async function runGit(
@@ -78,8 +78,14 @@ export async function runGit(
   });
 }
 
-/** A read-only report: hardened, and with the pager and credential prompt it cannot wait on. */
-async function readOnlyGit(args: readonly string[], ctx: ToolContext) {
+/**
+ * A read-only report: hardened, and with the pager and credential prompt it cannot wait on.
+ *
+ * Exported for the prompt's `<session-state>` git line (`gitContext` in `agent/context.ts`), which
+ * runs on every turn before any tool call or approval, and so must not start a program the
+ * checkout's `.git/config` names any more than `GitStatus` may (#574).
+ */
+export async function readOnlyGit(args: readonly string[], ctx: ToolContext) {
   try {
     const env = { ...ctx.env, ...hardenedGitEnv() };
     const pins = await readRepositoryProgramPins(ctx.workspaceRoot, undefined, {

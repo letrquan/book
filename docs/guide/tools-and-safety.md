@@ -546,8 +546,10 @@ clone brings with it, all four pass `-c core.fsmonitor=false`, `-c core.pager=ca
 and `--no-optional-locks`, with `GitDiff` adding `--no-ext-diff --no-textconv` and `GitLog` adding
 `--no-show-signature`, and `GIT_PAGER=cat` / `GIT_TERMINAL_PROMPT=0` in the environment. The
 signature switches matter because `log.showSignature` makes `git log` verify every signature it
-prints, and verification runs `gpg.program` — a program the repository names. The hardening covers
-**these four tools only**: `GitCommit` runs with your own `argv` and environment, exactly as before,
+prints, and verification runs `gpg.program` — a program the repository names. The branch and
+status in each turn's `<session-state>` git line are read the same way, since that runs before any
+tool call. Among the tools, the hardening covers
+**these four only**: `GitCommit` runs with your own `argv` and environment, exactly as before,
 so your `pre-commit` and `commit-msg` hooks still run. A repository can still configure clean and
 smudge filters, and those run on `status` and `diff`; Book does not suppress them, because that
 would mean rewriting the command you asked for.
