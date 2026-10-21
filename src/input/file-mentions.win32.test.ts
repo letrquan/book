@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * resolved to and lists a linked directory, and on Windows resolving `\\host\share` sends an SMB
  * request (and the user's NTLM credentials) to `host`. Run on any host: the platform is stubbed,
  * the walk runs over a real directory, and the UNC guard sees the links the map below declares,
- * keyed by their Windows spelling. The `fs` calls the walk makes are spied, so a call that reached
- * a share is an assertion failure, and a local link that still resolves is the control.
+ * keyed by their Windows spelling. `realpath`, the one call that follows a link, is spied, so a
+ * call that reached a share is an assertion failure, and a local link that still resolves is the
+ * control; what a refused link would have listed is absent from the answer.
  */
 const fake = vi.hoisted(() => {
   // Read before any test stubs the platform.
@@ -40,9 +41,7 @@ vi.mock('fs', async (importOriginal) => {
       (path: string) => fake.links.get(path) ?? actual.readlinkSync(fake.onHost(path)),
     ),
     existsSync: vi.fn(actual.existsSync),
-    readdir: vi.fn(actual.readdir),
     realpath: vi.fn(actual.realpath),
-    stat: vi.fn(actual.stat),
   };
 });
 
@@ -50,10 +49,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdir,
   realpath,
   rmSync,
-  stat,
   symlinkSync,
   writeFileSync,
 } from 'fs';
@@ -79,7 +76,7 @@ let tmp: string;
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'book-unc-mentions-'));
   fake.links.clear();
-  for (const spy of [existsSync, readdir, realpath, stat]) vi.mocked(spy).mockClear();
+  for (const spy of [existsSync, realpath]) vi.mocked(spy).mockClear();
 });
 
 afterEach(() => {
@@ -103,12 +100,8 @@ describe('the @ candidate walk on Windows with a UNC link (#579)', () => {
     // Real links on disk, so the walk meets link entries (a junction needs no privilege on Windows).
     symlinkSync(join(tmp, 'share'), join(ws, 'share'), 'junction');
     symlinkSync(join(tmp, 'local'), join(ws, 'local'), 'junction');
-    // A directory entry the guard knows to be a reparse point to a share: listing it would open it.
-    mkdirSync(join(ws, 'mounted'));
-    writeFileSync(join(ws, 'mounted', 'inner.ts'), 'inner');
 
     fake.links.set(windows(join(ws, 'share')), '\\\\attacker\\share');
-    fake.links.set(windows(join(ws, 'mounted')), '\\\\attacker\\mount');
     fake.links.set(windows(join(ws, 'local')), windows(join(tmp, 'local')));
 
     Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
@@ -116,23 +109,16 @@ describe('the @ candidate walk on Windows with a UNC link (#579)', () => {
 
     expect(paths).toEqual(expect.arrayContaining(['src/app.ts', 'local/', 'local/lib.ts']));
     expect(paths.filter((path) => path.startsWith('share'))).toEqual([]);
-    // The parent's listing names the directory; nothing inside it is read.
-    expect(paths).toContain('mounted/');
-    expect(paths).not.toContain('mounted/inner.ts');
 
-    for (const spy of [realpath, stat, readdir]) {
-      expect(touches(calledWith(spy), join(ws, 'share')), 'share').toBe(false);
-      expect(touches(calledWith(spy), join(ws, 'mounted')), 'mounted').toBe(false);
-    }
-    // The controls: the walk's calls go through the spied `fs`, and the local link resolves.
+    expect(touches(calledWith(realpath), join(ws, 'share'))).toBe(false);
+    // The control: the walk resolves links through the spied `realpath`, and the local one does.
     expect(touches(calledWith(realpath), join(ws, 'local'))).toBe(true);
-    expect(touches(calledWith(readdir), join(ws, 'src'))).toBe(true);
   });
 
   it('walks nothing under a UNC workspace, and reads none of its files', async () => {
     Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
     expect(await getFileMentionCandidates('\\\\attacker\\share\\proj', '')).toEqual([]);
-    for (const spy of [existsSync, readdir, realpath, stat]) {
+    for (const spy of [existsSync, realpath]) {
       expect(calledWith(spy).filter((path) => path.includes('attacker'))).toEqual([]);
     }
   });

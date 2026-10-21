@@ -58,7 +58,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { existsSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { tmpdir } from 'os';
 import { join, win32 } from 'path';
-import { discoverSkills } from './skills.js';
+import { discoverSkills, skillRoots } from './skills.js';
 
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 const windows = (path: string) => win32.resolve(path);
@@ -129,16 +129,19 @@ describe('skill discovery on Windows with UNC links (#579)', () => {
     fake.links.set(windows(join(bookRoot, 'good', 'assets')), '\\\\attacker\\share\\assets');
 
     Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
-    const skills = discoverSkills(
-      ws,
-      {},
-      {
-        homeDir: home,
-        bookHomeDir: join(home, '.book'),
-        projectRoot: ws,
-        includeOpenCode: false,
-      },
-    );
+    const options = {
+      homeDir: home,
+      bookHomeDir: join(home, '.book'),
+      projectRoot: ws,
+      includeOpenCode: false,
+    };
+    // Not a root at all, so nothing that takes its roots from here resolves it either.
+    const roots = skillRoots(ws, options).map((root) => root.path);
+    expect(roots).not.toContain(claudeRoot);
+    expect(roots).toEqual(expect.arrayContaining([bookRoot, join(home, '.claude', 'skills')]));
+    for (const spy of spies()) vi.mocked(spy).mockClear();
+
+    const skills = discoverSkills(ws, {}, options);
 
     expect(skills.map((skill) => skill.name)).toEqual(['good']);
     expect(skills[0].issues.map((issue) => issue.code)).toContain('resource_symlink_ignored');

@@ -327,9 +327,9 @@ repository) is not a Git root, so a project under your home without its own `.gi
 own directory. Deeper project directories and native `.book` roots win;
 duplicate names are shadowed rather than merged and are shown in `/skills` diagnostics. Skill
 directories may be symlinked after canonical path and size checks; resource symlinks are rejected.
-On Windows, a project skill root, skill directory or `SKILL.md` that is, or reaches through a link,
-a network (UNC) path such as `\\host\share` is skipped before anything resolves it, so a committed
-link cannot make Book contact that host; your own user roots are not checked.
+On Windows, skill discovery skips a project skill root, skill directory or `SKILL.md` that is, or
+reaches through a link, a network (UNC) path such as `\\host\share`, without resolving it; your own
+user roots are not checked.
 
 Visibility controls determine whether metadata participates in automatic matching: `auto` exposes
 name and description, `name-only` exposes only the name, `manual` requires explicit `$skill-name`,

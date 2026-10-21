@@ -141,7 +141,8 @@ export async function getFileMentionCandidates(
         // A pattern naming a directory returns that directory, not everything inside it — which is
         // the whole point of walking for mentions.
         expandDirectories: false,
-        // The walk follows links: each one is asked about first, so none to a share is opened.
+        // The walk follows links: on Windows each one is asked about first, so none to a share is
+        // resolved.
         fs: uncGuardedWalkFs(workspace, reachesUnc),
         signal,
       }),
