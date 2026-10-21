@@ -206,6 +206,31 @@ describe('an expanded row keeps a long line whole (#550)', () => {
     expect(display.footer).toBe('… 1 long line shortened');
   });
 
+  it('slices rows back out of their source lines at wide characters and colour escapes', () => {
+    const output = `\u001b[31m${'語'.repeat(9)}🙂🙂🙂\u001b[0m${'x'.repeat(9)}\nplain`;
+    const display = prepareToolOutputDisplay(output, {
+      maxLines: 10,
+      maxLineWidth: 7,
+      longLines: 'wrap',
+    });
+    expect(display.lines.length).toBeGreaterThan(3);
+    for (const row of display.lines) expect(displayWidth(row)).toBeLessThanOrEqual(7);
+    expect(display.lines.join('')).toBe(`${display.sourceLines?.[0]}plain`);
+    for (const [i, row] of (display.rowSources ?? []).entries()) {
+      expect(display.sourceLines?.[row.line]?.slice(row.start, row.end)).toBe(display.lines[i]);
+    }
+  });
+
+  it('leaves a line whole and uncut in whole mode, whatever the width', () => {
+    const display = prepareToolOutputDisplay(`${LONG}\nb`, {
+      maxLines: 10,
+      maxLineWidth: 8,
+      longLines: 'whole',
+    });
+    expect(display.lines).toEqual([LONG, 'b']);
+    expect(display.truncated).toBe(false);
+  });
+
   it('records where each wrapped row came from, tabs expanded', () => {
     const display = prepareToolOutputDisplay('a\tbcdefghij\nz', {
       maxLines: 10,

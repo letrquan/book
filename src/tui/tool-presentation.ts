@@ -1095,7 +1095,8 @@ function commandOutputDetail(
   const wrapped = expanded ? wrappedTail(source, width, budget) : undefined;
   const tail = prepareToolOutputDisplay(source.join('\n'), {
     maxLines: wrapped ? wrapped.wholeLines : budget,
-    maxLineWidth: wrapped ? Number.MAX_SAFE_INTEGER : width,
+    maxLineWidth: width,
+    longLines: wrapped ? 'whole' : 'cut',
     hint: expanded ? undefined : expandHint,
     strategy: 'tail',
   });

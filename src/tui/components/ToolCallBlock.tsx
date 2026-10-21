@@ -564,7 +564,15 @@ function OutputBlock({
     const { sourceLines, rowSources } = display;
     if (!sourceLines || !rowSources)
       return highlightCode(display.lines.join('\n'), language, theme);
-    const whole = highlightCode(sourceLines.join('\n'), language, theme);
+    // Only as far as the last row that is drawn: the highlighter reads left to right, so a huge
+    // line costs the rows kept, as it does in the wrapper.
+    const drawnEnd = sourceLines.map(() => 0);
+    for (const { line, end } of rowSources) drawnEnd[line] = Math.max(drawnEnd[line] ?? 0, end);
+    const whole = highlightCode(
+      sourceLines.map((text, line) => text.slice(0, drawnEnd[line])).join('\n'),
+      language,
+      theme,
+    );
     return rowSources.map(({ line, start, end }) => sliceStyledLine(whole[line] ?? [], start, end));
   }, [display, language, theme]);
 
