@@ -217,8 +217,45 @@ function gitRootMarkedBy(dir: string): string | undefined {
     throw e;
   }
   const common = canonicalPath(resolve(gitDir, commonDir));
-  // A linked worktree's common dir is the main checkout's `.git`.
-  return basename(common) === '.git' ? dirname(common) : dir;
+  // A linked worktree's common dir is the main checkout's `.git`, which lists the worktree back.
+  return basename(common) === '.git' && isListedWorktree(dir, gitDir, common)
+    ? dirname(common)
+    : dir;
+}
+
+/** The real path to compare: links followed and, on Windows, 8.3 short names expanded, as git writes them. */
+function comparablePath(path: string): string {
+  return tryRealPath(path) ?? resolve(path);
+}
+
+/** Whether `a` and `b` name one path; `relative`, so case folds where the platform's paths do (Windows). */
+function samePath(a: string, b: string): boolean {
+  return relative(comparablePath(a), comparablePath(b)) === '';
+}
+
+/**
+ * Whether the repository at `common` lists `dir` as one of its linked worktrees, git's own round
+ * trip: the git dir `dir/.git` names must be an entry `<common>/worktrees/<name>`, and that entry's
+ * `gitdir` file must name `dir/.git` back. Without it a `.git` file anywhere (an archive, a shared
+ * directory) could name another project's `.git`, the home directory's included, and take that
+ * project's memory (#575). Throws on an entry it cannot read.
+ */
+function isListedWorktree(dir: string, gitDir: string, common: string): boolean {
+  const entry = comparablePath(gitDir);
+  if (!samePath(dirname(entry), join(common, 'worktrees'))) return false;
+  let backPointer: string;
+  try {
+    backPointer = readFileSync(join(entry, 'gitdir'), 'utf-8').trim();
+  } catch (e) {
+    if (errorCode(e) === 'ENOENT' || errorCode(e) === 'ENOTDIR') return false;
+    throw e;
+  }
+  if (!backPointer) return false;
+  // A relative back-pointer (`worktree.useRelativePaths`) resolves against the entry.
+  const target = resolve(entry, backPointer);
+  // The directories are compared, not the `.git` entries: a `.git` link in another directory to a
+  // real worktree's `.git` file makes that directory no worktree.
+  return basename(target) === '.git' && samePath(dirname(target), dir);
 }
 
 /**
@@ -226,6 +263,9 @@ function gitRootMarkedBy(dir: string): string | undefined {
  * subdirectory and every linked worktree of one repository shares one memory. Only reads files
  * (never spawns git). Falls back to the resolved workspace when there is no repository, or when
  * the walk meets anything it cannot read.
+ *
+ * A `.git` file maps to the main checkout only for a linked worktree the main checkout lists
+ * back (`isListedWorktree`); any other is its own root.
  *
  * A `.git` at the user's home directory is a dotfiles repository, not a project
  * (`findRepositoryRoot` in `repo-containment.ts`): the walk stops there with no repository, so

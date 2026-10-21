@@ -14,6 +14,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'fs';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { dirname, isAbsolute, join, relative } from 'path';
 import {
@@ -109,7 +110,11 @@ function makeGitRepo(name: string): string {
   return root;
 }
 
-/** A linked worktree of `main`: `.git` is a file pointing into `main/.git/worktrees/<name>`. */
+/**
+ * A linked worktree of `main`, laid out as `git worktree add` writes it: `.git` is a file pointing
+ * into `main/.git/worktrees/<name>`, whose `commondir` leads back to `main/.git` and whose
+ * `gitdir` names the worktree's `.git`.
+ */
 function makeLinkedWorktree(main: string, name: string): string {
   const gitDir = join(main, '.git', 'worktrees', name);
   mkdirSync(gitDir, { recursive: true });
@@ -117,7 +122,27 @@ function makeLinkedWorktree(main: string, name: string): string {
   const worktree = join(scratch, name);
   mkdirSync(worktree, { recursive: true });
   writeFileSync(join(worktree, '.git'), `gitdir: ${gitDir}\n`);
+  writeFileSync(join(gitDir, 'gitdir'), `${join(worktree, '.git')}\n`);
   return worktree;
+}
+
+/** `git` in `cwd` with a throwaway identity, so a commit needs no user config. */
+function git(cwd: string, ...args: string[]): void {
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.name=Book Test',
+      '-c',
+      'user.email=book@example.com',
+      '-c',
+      'commit.gpgsign=false',
+      '-c',
+      'init.defaultBranch=main',
+      ...args,
+    ],
+    { cwd, stdio: 'ignore' },
+  );
 }
 
 describe('findGitRoot', () => {
@@ -144,10 +169,13 @@ describe('findGitRoot', () => {
     );
   });
 
+  // The layout git >= 2.48 writes with `worktree.useRelativePaths`: every pointer is relative,
+  // and the entry's `gitdir` resolves against the entry itself.
   it('resolves a relative gitdir against the directory holding the .git file', () => {
     const main = makeGitRepo('main');
     mkdirSync(join(main, '.git', 'worktrees', 'rel'), { recursive: true });
     writeFileSync(join(main, '.git', 'worktrees', 'rel', 'commondir'), '../..');
+    writeFileSync(join(main, '.git', 'worktrees', 'rel', 'gitdir'), '../../../../rel/.git\n');
     const worktree = join(scratch, 'rel');
     mkdirSync(worktree);
     writeFileSync(join(worktree, '.git'), 'gitdir: ../main/.git/worktrees/rel');
@@ -171,6 +199,85 @@ describe('findGitRoot', () => {
     writeFileSync(join(gitDir, 'commondir'), '.');
     writeFileSync(join(odd, '.git'), `gitdir: ${gitDir}`);
     expect(findGitRoot(odd)).toBe(odd);
+  });
+
+  it('maps a worktree made by git worktree add to its main checkout', () => {
+    const main = join(scratch, 'main');
+    mkdirSync(main);
+    git(main, 'init', '--quiet');
+    git(main, 'commit', '--quiet', '--allow-empty', '-m', 'init');
+    const worktree = join(scratch, 'wt');
+    git(main, 'worktree', 'add', '--quiet', worktree);
+    mkdirSync(join(worktree, 'pkg'));
+
+    // Git writes long paths on Windows, where the temp dir may have an 8.3 short name.
+    const real = (path: string) => realpathSync.native(path);
+    expect(real(findGitRoot(worktree))).toBe(real(main));
+    expect(real(findGitRoot(join(worktree, 'pkg')))).toBe(real(main));
+  });
+
+  // #575: a `.git` file in an archive or a shared directory named another project's `.git` as its
+  // common dir, and the session took that project's memory key.
+  describe('a .git file its main checkout does not list back (#575)', () => {
+    it('keys a checkout naming another repository as its common dir by itself', () => {
+      const victim = makeGitRepo('victim');
+      const archive = join(scratch, 'archive');
+      mkdirSync(join(archive, 'g'), { recursive: true });
+      mkdirSync(join(archive, 'src'));
+      writeFileSync(join(archive, '.git'), 'gitdir: ./g\n');
+      writeFileSync(join(archive, 'g', 'commondir'), `${join(victim, '.git')}\n`);
+      // A back-pointer of its own does not help: its git dir is none of the victim's worktrees.
+      writeFileSync(join(archive, 'g', 'gitdir'), `${join(archive, '.git')}\n`);
+
+      expect(findGitRoot(archive)).toBe(archive);
+      expect(findGitRoot(join(archive, 'src'))).toBe(archive);
+      expect(getProjectMemoryDir(archive, { bookRoot })).not.toBe(
+        getProjectMemoryDir(victim, { bookRoot }),
+      );
+    });
+
+    it('keys a relative commondir aimed at a .git above by the workspace', () => {
+      const outer = makeGitRepo('outer');
+      const archive = join(outer, 'vendor', 'archive');
+      mkdirSync(join(archive, 'g'), { recursive: true });
+      writeFileSync(join(archive, '.git'), 'gitdir: ./g\n');
+      writeFileSync(join(archive, 'g', 'commondir'), '../../../.git\n');
+      writeFileSync(join(archive, 'g', 'gitdir'), `${join(archive, '.git')}\n`);
+
+      expect(findGitRoot(archive)).toBe(archive);
+    });
+
+    it("keys a copy of a real worktree's .git file by itself", () => {
+      const main = makeGitRepo('main');
+      makeLinkedWorktree(main, 'wt');
+      const copy = join(scratch, 'copy');
+      mkdirSync(copy);
+      writeFileSync(join(copy, '.git'), `gitdir: ${join(main, '.git', 'worktrees', 'wt')}\n`);
+
+      expect(findGitRoot(copy)).toBe(copy);
+    });
+
+    it('keys a worktree whose entry has no gitdir back-pointer by itself', () => {
+      const main = makeGitRepo('main');
+      const worktree = makeLinkedWorktree(main, 'wt');
+      rmSync(join(main, '.git', 'worktrees', 'wt', 'gitdir'));
+
+      expect(findGitRoot(worktree)).toBe(worktree);
+    });
+
+    it.skipIf(process.platform === 'win32')(
+      "keys a .git link to a real worktree's .git file by itself",
+      () => {
+        const main = makeGitRepo('main');
+        const worktree = makeLinkedWorktree(main, 'wt');
+        const archive = join(scratch, 'archive');
+        mkdirSync(archive);
+        symlinkSync(join(worktree, '.git'), join(archive, '.git'));
+
+        expect(findGitRoot(archive)).toBe(archive);
+        expect(findGitRoot(worktree)).toBe(main);
+      },
+    );
   });
 
   it('is the workspace itself outside any repository', () => {
@@ -276,6 +383,21 @@ describe('findGitRoot and a dotfiles ~/.git', () => {
     const worktree = makeLinkedWorktree(home, 'dotfiles-wt');
 
     expect(findGitRoot(worktree)).toBe(home);
+  });
+
+  // #575: the home repository does not list this git dir as one of its worktrees, so the pointer
+  // is no worktree's, and the home directory's key stays out of reach.
+  it('keys a crafted relative commondir aimed at the home .git by the workspace', () => {
+    const archive = join(home, 'proj', 'archive');
+    mkdirSync(join(archive, 'g'), { recursive: true });
+    writeFileSync(join(archive, '.git'), 'gitdir: ./g\n');
+    writeFileSync(join(archive, 'g', 'commondir'), '../../../.git\n');
+    writeFileSync(join(archive, 'g', 'gitdir'), `${join(archive, '.git')}\n`);
+
+    expect(findGitRoot(archive)).toBe(archive);
+    expect(getProjectMemoryDir(archive, { bookRoot })).not.toBe(
+      getProjectMemoryDir(home, { bookRoot }),
+    );
   });
 
   it.skipIf(process.platform === 'win32')('compares real paths: a home reached by a link', () => {
