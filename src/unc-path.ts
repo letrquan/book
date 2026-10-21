@@ -1,5 +1,6 @@
-import { lstatSync, readlinkSync } from 'fs';
-import { win32 } from 'path';
+import { lstatSync, readdir, readlinkSync, realpath, stat } from 'fs';
+import { isAbsolute, resolve, win32 } from 'path';
+import type { FileSystemAdapter } from 'tinyglobby';
 
 /**
  * The UNC guard every containment check asks before it resolves a path (#567).
@@ -124,4 +125,33 @@ export function createUncGuard(probe: UncProbe = {}): UncGuard {
     }
     return false;
   };
+}
+
+type Callback = (error: NodeJS.ErrnoException | null, ...results: unknown[]) => void;
+
+/**
+ * The `fs` a tinyglobby walk under `root` is handed so that it never opens a UNC location (#579).
+ * tinyglobby follows links: fdir `realpath`s each link entry, `stat`s what that resolved to, and
+ * lists a linked directory, so a committed link to `\\host\share` had the walk open the share.
+ * Each of those three calls asks `reachesUnc` first and, when the answer is yes, fails the way an
+ * unreadable entry does; fdir drops an entry it cannot read, and a directory it cannot list is
+ * walked as empty. Every other call goes to `fs` unchanged, so off Windows, where the guard is
+ * always `false`, the walk is the same. A path the walk hands over relative is taken from `root`.
+ */
+export function uncGuardedWalkFs(root: string, reachesUnc: UncGuard): FileSystemAdapter {
+  const guarded = <Call>(call: Call): Call =>
+    ((path: unknown, ...rest: unknown[]): void => {
+      const asked = String(path);
+      if (reachesUnc(isAbsolute(asked) ? asked : resolve(root, asked))) {
+        const callback = rest[rest.length - 1] as Callback;
+        const error = Object.assign(new Error(`Not opened, it reaches a UNC location: ${asked}`), {
+          code: 'EUNC',
+        });
+        // Asynchronously, as `fs` answers: the walk counts its pending calls around this one.
+        process.nextTick(callback, error);
+        return;
+      }
+      (call as (...args: unknown[]) => void)(path, ...rest);
+    }) as Call;
+  return { readdir: guarded(readdir), realpath: guarded(realpath), stat: guarded(stat) };
 }
