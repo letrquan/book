@@ -39,7 +39,9 @@ function linkedWorktree(): string {
 }
 
 beforeEach(() => {
-  tmp = realpathSync(mkdtempSync(join(tmpdir(), 'book-memory-links-')));
+  // The native real path, as the code under test resolves it: on Windows it also expands an 8.3
+  // short name (`RUNNER~1`) in the temporary directory, which the links below are keyed by.
+  tmp = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-memory-links-')));
   ws = join(tmp, 'ws');
   main = join(tmp, 'main');
   links.map.clear();
