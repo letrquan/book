@@ -12,11 +12,22 @@ name: Release
 #
 # Publishing is driven by the tag, so a release is `git push origin vX.Y.Z`.
 # `workflow_dispatch` exists to re-run a failed publish without moving a tag.
+#
+# The npm dist-tag is chosen here, because npm 11 refuses to publish a prerelease
+# version (`0.4.0-beta.0`) without an explicit `--tag`. A tag push publishes under
+# `latest`; a manual run takes the `dist-tag` input, which defaults to `latest`.
+# The value is checked before anything is built or published.
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      dist-tag:
+        description: 'npm dist-tag to publish under (letters, digits, - and .; not a version)'
+        required: false
+        default: latest
+        type: string
 
 permissions:
   # `id-token: write` is what mints the OIDC token npm verifies. Nothing here
@@ -29,6 +40,10 @@ jobs:
     name: Publish to npm
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Through the environment, never interpolated into a script: a manual run's input is
+      # user-supplied text. A tag push has no input and always publishes under `latest`.
+      DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.dist-tag || 'latest' }}
 
     steps:
       - uses: actions/checkout@v7
@@ -61,7 +76,14 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match package.json version $manifest." >&2
             exit 1
           fi
-          echo "Publishing $manifest"
+          # A dist-tag is a name: npm rejects one that parses as a version or range, and a value
+          # that starts with a digit or `v<digit>` would be one, or look like one.
+          if ! printf '%s' "$DIST_TAG" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9.-]*$' \
+            || printf '%s' "$DIST_TAG" | grep -Eq '^[vV]?[0-9]'; then
+            echo "Invalid dist-tag '$DIST_TAG': use letters, digits, '-' and '.', and nothing that looks like a version." >&2
+            exit 1
+          fi
+          echo "Publishing $manifest under dist-tag $DIST_TAG"
 
       - run: npm run check
 
@@ -77,5 +99,6 @@ jobs:
       - run: npm run release:check
 
       # No token, no `--otp`: npm exchanges the OIDC token for publish rights
-      # and attaches provenance automatically.
-      - run: npm publish
+      # and attaches provenance automatically. `--tag` is required for a prerelease
+      # version; the value was validated in the verify step.
+      - run: npm publish --tag "$DIST_TAG"
