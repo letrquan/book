@@ -510,7 +510,8 @@ asks. A `Grep` with no `path` searches the workspace, and so does a relative `Gl
 pattern names its own root. A `Glob` that would start walking outside the roots
 (`../**`, `.{.,x}/*`, an absolute path elsewhere) still asks. Other read-only tools (`GitStatus`, `GitDiff`, `WebFetch`, …) still ask.
 On Windows, the walks of `Glob` and `Grep` neither start in, nor follow a link to, a network (UNC)
-path such as `\\host\share`, and `Grep`'s ripgrep backend takes its ignore rules from the root
+path such as `\\host\share`, a `Grep` `path` on one is refused before it is resolved, and
+`Grep`'s ripgrep backend takes its ignore rules from the root
 `.gitignore` alone, as the portable backend does: nested `.gitignore`, `.ignore` and `.rgignore`
 files, a parent directory's, `.git/info/exclude` and your global excludes file do not narrow a
 search there, and a search root on a UNC path is answered by the portable backend.

@@ -214,6 +214,17 @@ async function resolveGrepScope(
       },
     };
   }
+  // On Windows a path that is, or reaches through a link, a network (UNC) location is refused
+  // before anything resolves it, as the walk passes one over (`uncGuardedWalkFs`, #579).
+  if (reachesUncPath(resolvePath(ctx.workspaceRoot, raw))) {
+    return {
+      ok: false,
+      failure: toolFailure(`Path is on a network (UNC) path and is not searched: ${raw}`, {
+        code: 'path_unreadable',
+        remediation: 'Search a local path, or copy the files into the workspace.',
+      }),
+    };
+  }
   const resolved = resolveReadablePath(roots, raw);
   if (!resolved) return { ok: false, failure: pathOutsideWorkspaceResult(raw) };
   try {

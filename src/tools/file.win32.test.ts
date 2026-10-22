@@ -102,6 +102,34 @@ describe('Glob and Grep walks on Windows with a link to a network path', () => {
     expect(touches(nodeFs.readdir, ws)).toBe(false);
   });
 
+  it('Grep refuses a path that links to a share before resolving it', async () => {
+    for (const env of [{ BOOK_GREP_BACKEND: 'typescript' }, { BOOK_GREP_BACKEND: 'ripgrep' }]) {
+      const result = await grep.execute({ pattern: 'marker', path: 'share' }, { ...ctx, env });
+      expect(result.status).toBe('error');
+      expect(result.structuredError?.code).toBe('path_unreadable');
+    }
+    for (const spy of [
+      fs.realpathSync,
+      fs.realpathSync.native,
+      nodeFs.realpathSync,
+      nodeFs.realpathSync.native,
+      fs.realpath,
+      nodeFs.readdir,
+    ]) {
+      expect(touches(spy, join(ws, 'share'))).toBe(false);
+    }
+    // The control: a local path is resolved through the spied calls.
+    await grep.execute({ pattern: 'marker', path: 'src' }, ctx);
+    expect(
+      [
+        fs.realpathSync,
+        fs.realpathSync.native,
+        nodeFs.realpathSync,
+        nodeFs.realpathSync.native,
+      ].some((spy) => touches(spy, join(ws, 'src'))),
+    ).toBe(true);
+  });
+
   it('Glob and Grep do not list a workspace that links to a share', async () => {
     links.map.set(windowsSpelling(ws), '\\\\host\\share\\ws');
     await glob.execute({ pattern: '**/*.ts' }, ctx);
