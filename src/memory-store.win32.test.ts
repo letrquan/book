@@ -106,6 +106,13 @@ describe('memory keying on Windows with git pointers that link to a network path
     for (const spy of readers()) expect(touches(spy, join(entry, 'gitdir'))).toBe(false);
   });
 
+  it('neither resolves nor walks up a workspace that links to a share', () => {
+    mkdirSync(ws, { recursive: true });
+    links.map.set(windowsSpelling(ws), '\\\\host\\share\\ws');
+    expect(windowsSpelling(keyOnWindows())).toBe(windowsSpelling(ws));
+    for (const spy of readers()) expect(touches(spy, ws)).toBe(false);
+  });
+
   // Spelled as UNC, a git dir only resolves as one through Windows' own `path`.
   it.runIf(process.platform === 'win32')('does not open a git dir spelled as UNC', () => {
     mkdirSync(ws, { recursive: true });

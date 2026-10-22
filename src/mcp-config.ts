@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'fs';
+import { reachesUncPath } from './unc-path.js';
 import { join } from 'path';
 import { resolveBookHome } from './book-home.js';
 
@@ -217,6 +218,11 @@ export function resolveMcpServerList(
   const servers = new Map<string, ResolvedMcpServer>();
 
   for (const { path, source } of sources) {
+    // A project file on a network (UNC) path is not opened (#579): it counts as absent.
+    if (source === 'project' && reachesUncPath(path)) {
+      onDiagnostic({ level: 'warn', message: `Skipped MCP config on a network path: ${path}` });
+      continue;
+    }
     if (!existsSync(path)) continue;
     let parsed: McpConfigDocument;
     try {

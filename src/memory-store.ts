@@ -26,7 +26,7 @@ import { writeFileAtomic } from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
 import { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES } from './memory-limits.js';
 import { isUserHome, tryRealPath } from './repo-containment.js';
-import { createUncGuard, type UncGuard } from './unc-path.js';
+import { createUncGuard, reachesUncPath, type UncGuard } from './unc-path.js';
 import type { SessionDriver } from './types/runtime.js';
 
 const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
@@ -334,6 +334,9 @@ function isListedWorktree(
  * there.
  */
 export function findGitRoot(workspace: string): string {
+  // A workspace that is, or reaches through a link, a UNC location on Windows is neither resolved
+  // nor walked up (#579): it is its own key, as written.
+  if (reachesUncPath(workspace)) return resolve(workspace);
   const resolved = canonicalPath(workspace);
   try {
     for (let dir = resolved; ;) {

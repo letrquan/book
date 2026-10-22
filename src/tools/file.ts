@@ -7,7 +7,7 @@ import { describeInvalidPattern, portablePattern } from './grep-pattern.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { globWalkIgnore, globWalkPlan } from './glob-regex.js';
 import { recordingWalkFs, walkPartialNote, type WalkFailure } from './walk-fs.js';
-import { createUncGuard, uncGuardedWalkFs } from '../unc-path.js';
+import { createUncGuard, reachesUncPath, uncGuardedWalkFs } from '../unc-path.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { buildChildEnv } from '../child-env.js';
 import { markdownContentStart } from '../frontmatter.js';
@@ -2576,6 +2576,11 @@ export interface RipgrepArgOptions {
   ignoreCase?: boolean;
   /** The scope's path relative to the root ripgrep runs in; '' for the root itself. */
   relativePath: string;
+  /**
+   * The ignore file ripgrep is handed in place of finding its own, or null for none
+   * ({@link ripgrepIgnoreFile}); undefined lets ripgrep find its own.
+   */
+  ignoreFile?: string | null;
 }
 
 /**
@@ -2604,6 +2609,10 @@ export function buildRipgrepArgs(options: RipgrepArgOptions): string[] {
     options.includePattern,
   ];
   for (const ignored of GREP_DEFAULT_IGNORES) argv.push('--glob', `!${ignored}`);
+  if (options.ignoreFile !== undefined) {
+    argv.push('--no-ignore-vcs', '--no-ignore-dot', '--no-ignore-parent');
+    if (options.ignoreFile) argv.push('--ignore-file', options.ignoreFile);
+  }
   if (options.contextBefore > 0) argv.push('--before-context', String(options.contextBefore));
   if (options.contextAfter > 0) argv.push('--after-context', String(options.contextAfter));
   if (options.multiline) argv.push('--multiline', '--multiline-dotall');
@@ -2612,6 +2621,24 @@ export function buildRipgrepArgs(options: RipgrepArgOptions): string[] {
   // ignored — so a workspace file named `-` would report no matches at all. `./-` is that file.
   argv.push('--', options.relativePath === '-' ? './-' : options.relativePath || '.');
   return argv;
+}
+
+/**
+ * On Windows, the one ignore file ripgrep is handed (`--ignore-file`) in place of those it finds:
+ * the root's `.gitignore` once the UNC guard has passed it, or null for none. ripgrep opens each
+ * `.gitignore`, `.ignore` and `.rgignore` it meets wherever a link takes it, so on Windows it
+ * takes the root's rules the way the portable backend does (`loadGitignore`). Undefined elsewhere,
+ * where ripgrep finds its own.
+ */
+export async function ripgrepIgnoreFile(root: string): Promise<string | null | undefined> {
+  if (process.platform !== 'win32') return undefined;
+  const path = join(root, '.gitignore');
+  if (reachesUncPath(path)) return null;
+  try {
+    return (await stat(path)).isFile() ? path : null;
+  } catch {
+    return null;
+  }
 }
 
 async function grepSearchWithRipgrep(
@@ -2643,6 +2670,7 @@ async function grepSearchWithRipgrep(
     multiline,
     ignoreCase,
     relativePath: scope.relativePath,
+    ignoreFile: await ripgrepIgnoreFile(scope.root),
   });
 
   return new Promise<RipgrepOutcome>((resolve, reject) => {

@@ -25,7 +25,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { clearSpies, touches, windowsSpelling } from '../test/windows-links.js';
 import type { ToolContext } from '../types/tools.js';
-import { fileTools } from './file.js';
+import { buildRipgrepArgs, fileTools, ripgrepIgnoreFile } from './file.js';
 
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 const glob = fileTools.find((tool) => tool.name === 'Glob')!;
@@ -108,4 +108,54 @@ describe('Glob and Grep walks on Windows with a link to a network path', () => {
       }
     },
   );
+});
+
+describe('the ripgrep backend on Windows', () => {
+  it('is handed the root .gitignore once the guard passes it, and finds no ignore files itself', async () => {
+    writeFileSync(join(ws, '.gitignore'), 'build/\n');
+    expect(await ripgrepIgnoreFile(ws)).toBe(join(ws, '.gitignore'));
+    expect(await ripgrepIgnoreFile(join(ws, 'src'))).toBeNull();
+
+    links.map.set(windowsSpelling(join(ws, '.gitignore')), '\\\\host\\share\\ignore');
+    expect(await ripgrepIgnoreFile(ws)).toBeNull();
+
+    const argv = (ignoreFile?: string | null) =>
+      buildRipgrepArgs({
+        pattern: 'x',
+        includePattern: '**/*',
+        contextBefore: 0,
+        contextAfter: 0,
+        multiline: false,
+        relativePath: '',
+        ignoreFile,
+      });
+    const noDiscovery = ['--no-ignore-vcs', '--no-ignore-dot', '--no-ignore-parent'];
+    expect(argv(join(ws, '.gitignore'))).toEqual(
+      expect.arrayContaining([...noDiscovery, '--ignore-file', join(ws, '.gitignore')]),
+    );
+    expect(argv(null)).toEqual(expect.arrayContaining(noDiscovery));
+    expect(argv(null)).not.toContain('--ignore-file');
+  });
+
+  it('finds its own ignore files off Windows', async () => {
+    Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+    writeFileSync(join(ws, '.gitignore'), 'build/\n');
+    expect(await ripgrepIgnoreFile(ws)).toBeUndefined();
+    const argv = buildRipgrepArgs({
+      pattern: 'x',
+      includePattern: '**/*',
+      contextBefore: 0,
+      contextAfter: 0,
+      multiline: false,
+      relativePath: '',
+    });
+    for (const flag of [
+      '--no-ignore-vcs',
+      '--no-ignore-dot',
+      '--no-ignore-parent',
+      '--ignore-file',
+    ]) {
+      expect(argv).not.toContain(flag);
+    }
+  });
 });
