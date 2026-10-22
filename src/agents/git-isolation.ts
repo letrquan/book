@@ -2,13 +2,14 @@ import { createHash, randomUUID } from 'crypto';
 import { execFile, spawn } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
-import { dirname, join, resolve } from 'path';
+import { dirname, join, relative, resolve, sep } from 'path';
 import type { AgentApplyResult, AgentRecord, AgentSnapshot, PatchCandidate } from './types.js';
 import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 import { hardenedGitArgs, hardenedGitEnv, HARDENED_DIFF_ARGS } from '../tools/git.js';
 import { readRepositoryProgramPins } from '../tools/git-repository-programs.js';
-import { ignoresHomeRepository } from '../repo-containment.js';
+import { ignoresHomeRepository, tryRealPath } from '../repo-containment.js';
+import { isOutside } from '../tools/path-utils.js';
 import {
   signingPinArgs,
   type HardenedRunner,
@@ -721,6 +722,27 @@ export function repositoryHash(repoRoot: string): string {
   return createHash('sha256').update(resolve(repoRoot).toLowerCase()).digest('hex').slice(0, 20);
 }
 
+/**
+ * The pathspecs that leave Book's own home directory (`resolveBookHome()`) out of a snapshot of
+ * `repoRoot`, when the repository contains it, as it does when the workspace is the home directory
+ * (#579). Book writes there for as long as a run lasts (sessions, agent records and transcripts,
+ * jobs, rewind snapshots, memory, and the agent worktrees themselves), so taking it in would copy
+ * Book's state into the snapshot and the worktree, stage the worktrees as embedded repositories,
+ * and make the fingerprint taken again at apply differ from the snapshot's, so every apply would
+ * report drift. A file there that the repository tracks keeps its committed content. None when
+ * the home directory is outside the repository, or is its root.
+ */
+function bookHomeExclusions(repoRoot: string): string[] {
+  const rootReal = tryRealPath(repoRoot) ?? resolve(repoRoot);
+  const bookHome = resolveBookHome();
+  const bookHomeReal = tryRealPath(bookHome) ?? resolve(bookHome);
+  const inside = relative(rootReal, bookHomeReal);
+  if (inside === '' || isOutside(rootReal, bookHomeReal)) return [];
+  // `top`, so it is measured from the root whatever the call's directory; `literal`, so a home
+  // directory whose name holds a glob character is matched as written.
+  return [`:(top,literal,exclude)${inside.split(sep).join('/')}`];
+}
+
 async function writeWorkspaceTree(
   repoRoot: string,
   includeUntracked: boolean,
@@ -729,15 +751,20 @@ async function writeWorkspaceTree(
   const index = tempIndex();
   try {
     const env = { GIT_INDEX_FILE: index.path };
+    const exclusions = bookHomeExclusions(repoRoot);
     const head = (await git(repoRoot, ['rev-parse', 'HEAD'], { signal })).stdout.trim();
     await git(repoRoot, ['read-tree', head], { env, signal });
-    await git(repoRoot, includeUntracked ? ['add', '-A', '--', '.'] : ['add', '-u', '--', '.'], {
+    await git(repoRoot, ['add', includeUntracked ? '-A' : '-u', '--', '.', ...exclusions], {
       env,
       signal,
     });
     const tree = (await git(repoRoot, ['write-tree'], { env, signal })).stdout.trim();
     const status = (
-      await git(repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'], { signal })
+      await git(
+        repoRoot,
+        ['status', '--porcelain=v1', '--untracked-files=all', '--', '.', ...exclusions],
+        { signal },
+      )
     ).stdout;
     return { head, tree, status };
   } finally {
