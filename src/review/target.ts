@@ -9,6 +9,7 @@ import {
 } from '../tools/git.js';
 import {
   defaultGitRunner,
+  readRepositoryGitConfig,
   readRepositoryProgramPins,
   type RepositoryProgramRunner,
 } from '../tools/git-repository-programs.js';
@@ -58,7 +59,12 @@ async function git(
     });
   } catch (error) {
     if (!(error instanceof Error)) throw error;
-    const message = describeMissingObjects(error.message);
+    // Only a failed read pays for asking whether the repository is a partial clone.
+    const partialClone = await readRepositoryGitConfig(workspace, exec, { timeoutMs: 0 }).then(
+      (config) => config.partialClone,
+      () => false,
+    );
+    const message = describeMissingObjects(error.message, partialClone);
     throw message === error.message ? error : new Error(message, { cause: error });
   }
 }

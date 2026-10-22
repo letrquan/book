@@ -25,11 +25,15 @@ export { GIT_HARDENING_ARGS };
  * `--ignore-submodules=dirty` keeps the diff to this repository: a submodule whose recorded
  * commit moved still shows, what changed inside one does not. It is a flag rather than
  * `diff.ignoreSubmodules`, because a repository's own `.gitmodules` outranks that setting.
+ * `--submodule=short` shows that moved submodule as its two commit ids, whatever `diff.submodule`
+ * says: `log` and `diff` would have git run a second diff inside the submodule, which these flags
+ * do not reach.
  */
 export const HARDENED_DIFF_ARGS = [
   '--no-ext-diff',
   '--no-textconv',
   '--ignore-submodules=dirty',
+  '--submodule=short',
 ] as const;
 
 /** Environment floor for hardened calls; see {@link hardenedGitEnv} in `git-repository-programs.ts`. */
@@ -61,11 +65,19 @@ export function noFetchGitEnv(): Record<string, string> {
 export const MISSING_OBJECTS_NOTE =
   "This repository is a partial clone, and git needs an object that is not here. Book's git reads do not fetch missing objects: run the same git command yourself, which fetches what it needs, or `git fetch --refetch <remote>` after unsetting `remote.<remote>.partialclonefilter`, then retry.";
 
-/** `message`, with {@link MISSING_OBJECTS_NOTE} in front when it shows a missing object. */
-export function describeMissingObjects(message: string): string {
-  return /lazy fetching disabled|promisor remote|transport '[^']*' not allowed/i.test(message)
-    ? `${MISSING_OBJECTS_NOTE}\n${message}`
-    : message;
+/**
+ * `message`, with {@link MISSING_OBJECTS_NOTE} in front when it shows a missing object. Git says
+ * so in its own words only sometimes (a newer git prints just `unable to read tree`), so in a
+ * repository known to be a partial clone a failure to read an object counts too.
+ */
+export function describeMissingObjects(message: string, partialClone = false): string {
+  const missing =
+    /lazy fetching disabled|promisor remote|transport '[^']*' not allowed/i.test(message) ||
+    (partialClone &&
+      /unable to read|could not read|missing (blob|tree|commit)|bad object|could not fetch/i.test(
+        message,
+      ));
+  return missing ? `${MISSING_OBJECTS_NOTE}\n${message}` : message;
 }
 
 /**
@@ -141,7 +153,7 @@ export async function openReadOnlyGit(ctx: ToolContext): Promise<ReadOnlyGitRead
       const result = await runGit(hardenedGitArgs([...config.pins, ...args]), { ...ctx, env });
       return result.success || !result.error
         ? result
-        : { ...result, error: describeMissingObjects(result.error) };
+        : { ...result, error: describeMissingObjects(result.error, config.partialClone) };
     },
   };
 }

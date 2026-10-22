@@ -129,12 +129,12 @@ export type RepositoryProgramRunner = (
 
 /**
  * The config pattern that matches all repository-level programs: fsmonitor, filters, and merge
- * drivers; and the two keys that make a repository a partial clone, `extensions.partialClone`
- * and `remote.<name>.promisor` (see {@link isPartialClone}).
+ * drivers; and the keys that make a repository a partial clone, `extensions.partialClone`,
+ * `remote.<name>.promisor` and `remote.<name>.partialCloneFilter` (see {@link isPartialClone}).
  * Note: subsection name matching uses `.*` rather than `.+` to match empty subsection names (e.g. `[filter ""]`).
  */
 export const REPOSITORY_PROGRAM_CONFIG_PATTERN =
-  '^(core\\.fsmonitor|filter\\..*\\.(clean|smudge|process|required)|merge\\..*\\.driver|extensions\\.partialclone|remote\\..*\\.promisor)$';
+  '^(core\\.fsmonitor|filter\\..*\\.(clean|smudge|process|required)|merge\\..*\\.driver|extensions\\.partialclone|remote\\..*\\.(promisor|partialclonefilter))$';
 
 const OPERATOR_SCOPES: ReadonlySet<string> = new Set(['system', 'global', 'command']);
 const REPOSITORY_SCOPES: ReadonlySet<string> = new Set(['local', 'worktree']);
@@ -384,16 +384,19 @@ export interface ReadPinsOptions {
 }
 
 /**
- * Whether the configuration makes the repository a partial clone: `extensions.partialClone` names
- * a remote, or a `remote.<name>.promisor` is true, in any scope. A value git would not read as
- * false counts, so an unusual spelling errs towards a partial clone.
+ * Whether the configuration makes the repository a partial clone, in any scope:
+ * `extensions.partialClone` names a remote (any non-empty value, spaces included, as git takes it
+ * literally), a `remote.<name>.promisor` is true, or a `remote.<name>.partialCloneFilter` is set,
+ * which git also treats as a promisor remote. A promisor value git would not read as false counts,
+ * so an unusual spelling errs towards a partial clone.
  */
 export function isPartialClone(entries: readonly GitConfigEntry[]): boolean {
   return entries.some((entry) => {
-    const value = entry.value.trim().toLowerCase();
-    if (entry.key === 'extensions.partialclone') return value !== '';
-    if (entry.key.startsWith('remote.') && entry.key.endsWith('.promisor')) {
-      return !['false', 'no', 'off', '0', ''].includes(value);
+    if (entry.key === 'extensions.partialclone') return entry.value !== '';
+    if (!entry.key.startsWith('remote.')) return false;
+    if (entry.key.endsWith('.partialclonefilter')) return true;
+    if (entry.key.endsWith('.promisor')) {
+      return !['false', 'no', 'off', '0', ''].includes(entry.value.trim().toLowerCase());
     }
     return false;
   });

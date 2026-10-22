@@ -206,6 +206,7 @@ describe('git hardening', () => {
       '--no-ext-diff',
       '--no-textconv',
       '--ignore-submodules=dirty',
+      '--submodule=short',
     ]);
     expect(READ_ONLY_GIT_ARGS.GitDiff).toContain('--no-ext-diff');
     expect(READ_ONLY_GIT_ARGS.GitDiff).toContain('--no-textconv');
@@ -594,6 +595,29 @@ describe('GitStatus and GitDiff with submodules and partial clones', () => {
       expect(existsSync(fixture.marker)).toBe(false);
       await gitIn(fixture.repo, 'diff');
       expect(existsSync(fixture.marker)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'shows a moved submodule as its two commits in GitDiff, whatever diff.submodule says',
+    async () => {
+      const fixture = await repositoryWithSubmodule(root);
+      await fixture.commitChange();
+      const ran = join(root, 'DIFF_RAN');
+      const program = join(root, 'diff.sh');
+      writeFileSync(program, `#!/bin/sh\necho ran >> '${ran}'\n`);
+      chmodSync(program, 0o755);
+      await gitIn(fixture.repo, 'config', 'diff.submodule', 'diff');
+      await gitIn(join(fixture.repo, 'sub'), 'config', 'diff.external', program);
+
+      const result = await toolFor('GitDiff').execute({}, { workspaceRoot: fixture.repo, env: {} });
+
+      expect(result.status).toBe('success');
+      expect(result.content).toContain('Subproject commit');
+      expect(existsSync(ran)).toBe(false);
+      // A plain diff of the same checkout does diff inside the submodule.
+      await gitIn(fixture.repo, 'diff');
+      expect(existsSync(ran)).toBe(true);
     },
   );
 

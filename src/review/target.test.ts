@@ -13,6 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveReviewTarget } from './target.js';
+import { partialClone } from '../test/git-fixtures.js';
+import { MISSING_OBJECTS_NOTE } from '../tools/git.js';
 import {
   defaultGitRunner,
   type RepositoryProgramRunner,
@@ -261,6 +263,19 @@ describe('resolveReviewTarget', () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  // The fixture needs a POSIX shell.
+  it.skipIf(process.platform === 'win32')(
+    'fails without fetching in a partial clone missing an object, and says what to do',
+    async () => {
+      const fixture = await partialClone(root);
+
+      await expect(resolveReviewTarget(fixture.repo, scope())).rejects.toThrow(
+        MISSING_OBJECTS_NOTE,
+      );
+      expect(fixture.packs()).toBe(0);
+    },
+  );
+
   it('reads the diff without fetching, and not inside submodules', async () => {
     const calls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
     const runner: RepositoryProgramRunner = async (args, options) => {
@@ -276,7 +291,10 @@ describe('resolveReviewTarget', () => {
     }
     const diffs = reads.filter((call) => call.args.includes('diff'));
     expect(diffs.length).toBeGreaterThan(0);
-    for (const call of diffs) expect(call.args).toContain('--ignore-submodules=dirty');
+    for (const call of diffs) {
+      expect(call.args).toContain('--ignore-submodules=dirty');
+      expect(call.args).toContain('--submodule=short');
+    }
   });
 
   it('calls git runner with timeoutMs: 0 (no timeout) for all calls including pins read (Fix 3)', async () => {

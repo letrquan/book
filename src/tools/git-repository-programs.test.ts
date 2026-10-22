@@ -276,6 +276,9 @@ describe('isPartialClone', () => {
     expect(isPartialClone([entry('remote.up.promisor', 'yes', 'global')])).toBe(true);
     // A key written without a value is `true` to git.
     expect(isPartialClone(parseGitConfig('local\0remote.origin.promisor\0'))).toBe(true);
+    // A filter alone makes a promisor remote too, and git takes a remote name of spaces as is.
+    expect(isPartialClone([entry('remote.origin.partialclonefilter', 'blob:none')])).toBe(true);
+    expect(isPartialClone([entry('extensions.partialclone', '  ')])).toBe(true);
   });
 
   it('does not for a false promisor, an empty extension, or other keys', () => {

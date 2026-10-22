@@ -48,15 +48,17 @@ export async function gitIn(cwd: string, ...args: string[]): Promise<string> {
  *   have changed and has to read it again; its content stays the same.
  * - `movePointer()` adds an empty commit in the submodule, so the commit the outer repository
  *   records for `sub` no longer matches what is checked out.
+ * - `commitChange()` does the same with a commit that changes the submodule's file.
  *
- * The fixture and `movePointer()` both clear `marker` before returning, since setting up can
- * itself read the submodule's file.
+ * The fixture, `movePointer()` and `commitChange()` clear `marker` before returning, since setting
+ * up can itself read the submodule's file.
  */
 export async function repositoryWithSubmodule(root: string): Promise<{
   repo: string;
   marker: string;
   touch(): void;
   movePointer(): Promise<void>;
+  commitChange(): Promise<void>;
 }> {
   const source = join(root, 'sub-src');
   const repo = join(root, 'super');
@@ -90,6 +92,11 @@ export async function repositoryWithSubmodule(root: string): Promise<{
     },
     movePointer: async () => {
       await gitIn(sub, ...IDENTITY, 'commit', '-q', '--allow-empty', '-m', 'moved');
+      rmSync(marker, { force: true });
+    },
+    commitChange: async () => {
+      writeFileSync(join(sub, 'a.txt'), 'changed\n');
+      await gitIn(sub, ...IDENTITY, 'commit', '-q', '-a', '-m', 'changed');
       rmSync(marker, { force: true });
     },
   };
