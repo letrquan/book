@@ -173,22 +173,20 @@ function plainTextFromTokens(tokens: Token[]): string {
  */
 function expandRunTabs(runs: InlineRun[]): InlineRun[] {
   if (!runs.some((run) => run.text.includes('\t'))) return runs;
-  let column = 0;
+  // The expanded text of the line so far: a run's tabs stop at the columns it holds, and a tab
+  // stop depends on the text before it only, so the prefix's expansion is a prefix of the whole's.
+  let lineSoFar = '';
   return runs.map((run) => {
     let text = '';
-    for (const part of run.text.split(/(\t|\n)/)) {
-      if (part === '\t') {
-        const pad = 8 - (column % 8);
-        text += ' '.repeat(pad);
-        column += pad;
-      } else if (part === '\n') {
-        text += part;
-        column = 0;
-      } else {
-        text += part;
-        column += displayWidth(part);
+    run.text.split('\n').forEach((piece, index) => {
+      if (index > 0) {
+        text += '\n';
+        lineSoFar = '';
       }
-    }
+      const expanded = expandTabs(lineSoFar + piece).slice(lineSoFar.length);
+      text += expanded;
+      lineSoFar += expanded;
+    });
     return text === run.text ? run : { ...run, text };
   });
 }
@@ -644,7 +642,7 @@ function renderBlockToken(
       }
       return (
         <Box key={`p-${index}`} flexDirection="row" flexGrow={1}>
-          <InlineRuns runs={runs} />
+          <InlineRuns runs={expandRunTabs(runs)} />
         </Box>
       );
     }
@@ -816,7 +814,7 @@ function renderBlockToken(
                       }
                       return (
                         <Box key={`lit-${index}-${ii}-${ci}`}>
-                          <InlineRuns runs={childRuns} />
+                          <InlineRuns runs={expandRunTabs(childRuns)} />
                         </Box>
                       );
                     }

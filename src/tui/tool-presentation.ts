@@ -1095,7 +1095,8 @@ function commandOutputDetail(
   const wrapped = expanded ? wrappedTail(source, width, budget) : undefined;
   const tail = prepareToolOutputDisplay(source.join('\n'), {
     maxLines: wrapped ? wrapped.wholeLines : budget,
-    maxLineWidth: wrapped ? Number.MAX_SAFE_INTEGER : width,
+    maxLineWidth: width,
+    longLines: wrapped ? 'whole' : 'cut',
     hint: expanded ? undefined : expandHint,
     strategy: 'tail',
   });
@@ -1252,10 +1253,11 @@ export interface ToolOutputDisplayInput {
   /** The key the footer names; `''` for none. */
   expandHint?: string;
   /**
-   * A shown-in-full row continues a long line on the rows after it instead of cutting it. Left off
-   * for output the caller wraps itself (Markdown).
+   * What a shown-in-full row does with a long line: `wrap` (the default) continues it on the rows
+   * after it, `whole` leaves it for a caller that wraps the output itself (Markdown). A preview
+   * always cuts.
    */
-  wrapLongLines?: boolean;
+  longLines?: 'wrap' | 'whole';
 }
 
 /**
@@ -1289,13 +1291,11 @@ export function toolItemGrids(terminalWidth: number): {
 /** The preview OutputBlock draws for a row's output; the Ctrl+E target reads the same one. */
 export function toolOutputDisplay(output: string, input: ToolOutputDisplayInput) {
   const { success, showAllToolOutput, terminalWidth, expandHint = EXPAND_KEY } = input;
-  const wrap = showAllToolOutput && (input.wrapLongLines ?? true);
   return prepareToolOutputDisplay(output, {
-    wrap,
-    maxLines: showAllToolOutput ? EXPANDED_OUTPUT_MAX_LINES : success ? 6 : 10,
     // Shown in full, a line is never cut: it wraps here, or the caller wraps it.
-    maxLineWidth:
-      showAllToolOutput && !wrap ? Number.MAX_SAFE_INTEGER : toolOutputContentWidth(terminalWidth),
+    longLines: showAllToolOutput ? (input.longLines ?? 'wrap') : 'cut',
+    maxLines: showAllToolOutput ? EXPANDED_OUTPUT_MAX_LINES : success ? 6 : 10,
+    maxLineWidth: toolOutputContentWidth(terminalWidth),
     hint: showAllToolOutput ? undefined : expandHint || undefined,
     strategy: showAllToolOutput ? 'head' : success ? 'head-tail' : 'tail',
   });
