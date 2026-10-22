@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from 'fs';
+import { readdirSync, statSync } from 'fs';
 import { platform, release, homedir } from 'os';
 import { dirname, join, parse, resolve } from 'path';
 import type { AgentConfig, ResolvedShell } from '../types/runtime.js';
@@ -24,7 +24,7 @@ import { BUILTIN_COMMANDS } from '../commands/builtins.js';
 import { discoverProjectInstructions, renderProjectInstructions } from '../claude-md.js';
 import { discoverAgents, type SubagentDef } from '../subagent-discovery.js';
 import { readOnlyGit } from '../tools/git.js';
-import { isUserHome, tryRealPath } from '../repo-containment.js';
+import { isInGitRepository } from '../repo-containment.js';
 import { createUncGuard } from '../unc-path.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { resolveBookHome } from '../book-home.js';
@@ -202,25 +202,6 @@ function mergeCommands(commands: SlashCommand[]): SlashCommand[] {
 }
 
 /**
- * Whether the workspace is in a git repository: the nearest directory above it with a `.git`
- * entry. A `.git` at the user's home directory is a dotfiles repository, not a project
- * (`findRepositoryRoot` in `repo-containment.ts`), so a project under the home directory without
- * its own `.git` is in none, and its prompt carries no git line about the dotfiles repository.
- * The walk stays on the path as written, as before, so a repository anywhere else is unaffected.
- */
-function isInGitWorktree(workspace: string): boolean {
-  let current = resolve(workspace);
-  const root = parse(current).root;
-  while (true) {
-    if (existsSync(join(current, '.git'))) {
-      return !isUserHome(tryRealPath(current) ?? current, undefined);
-    }
-    if (current === root) return false;
-    current = dirname(current);
-  }
-}
-
-/**
  * The prompt's git line. It runs on every turn with nothing asked first, so both calls take the
  * read-only Git tools' hardening (`readOnlyGit`), exactly as `GitStatus` does: the program a
  * checkout's `core.fsmonitor` names does not run, while git's built-in daemon
@@ -228,7 +209,7 @@ function isInGitWorktree(workspace: string): boolean {
  * call, so there is no line. The two calls are independent reads, so they run side by side.
  */
 async function gitContext(workspace: string, signal?: AbortSignal): Promise<string> {
-  if (!isInGitWorktree(workspace)) return '';
+  if (!isInGitRepository(workspace)) return '';
 
   const ctx: ToolContext = {
     workspaceRoot: workspace,

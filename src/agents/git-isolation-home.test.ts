@@ -50,10 +50,17 @@ describe('findGitRoot and a dotfiles ~/.git', () => {
     writeFileSync(join(proj, 'a.txt'), 'a\n');
 
     expect(await findGitRoot(proj)).toBeUndefined();
-    expect(await findGitRoot(home)).toBeUndefined();
     await expect(createSyntheticSnapshot(proj)).rejects.toThrow(
       'Managed agents require a Git workspace',
     );
+  });
+
+  // The rule is for a project below the home directory (#579): a workspace that is the home
+  // directory is in its repository, as git, which never stops at the directory it starts in, sees.
+  it('finds the repository for a workspace that is the home directory', async () => {
+    const top = await findGitRoot(home);
+    expect(top).toBeDefined();
+    expect(realpathSync(top!)).toBe(realpathSync(home));
   });
 
   it('keeps a project with its own .git under the home directory', async () => {

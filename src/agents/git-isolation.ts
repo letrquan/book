@@ -8,7 +8,7 @@ import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 import { hardenedGitArgs, hardenedGitEnv, HARDENED_DIFF_ARGS } from '../tools/git.js';
 import { readRepositoryProgramPins } from '../tools/git-repository-programs.js';
-import { isUserHome, tryRealPath } from '../repo-containment.js';
+import { ignoresHomeRepository } from '../repo-containment.js';
 import {
   signingPinArgs,
   type HardenedRunner,
@@ -696,10 +696,13 @@ export async function findGitRoot(
   }
   try {
     const top = (await git(workspace, ['rev-parse', '--show-toplevel'], { signal })).stdout.trim();
-    // A `.git` at the user's home directory is a dotfiles repository, not a project
-    // (`findRepositoryRoot` in `repo-containment.ts`). Taking it would snapshot the whole home
-    // directory, untracked files included, and isolate patchers in worktrees of it.
-    return isUserHome(tryRealPath(top) ?? resolve(top), undefined) ? undefined : top;
+    // A `.git` at the user's home directory is a dotfiles repository, not the project, for a
+    // project below the home directory without its own `.git` (`ignoresHomeRepository` in
+    // `repo-containment.ts`). Taking it would snapshot the whole home directory, untracked files
+    // included, and isolate patchers in worktrees of it. Git already finds none there
+    // (`hardenedGitEnv`); this holds the rule if the two ever disagree. A workspace that is the
+    // home directory isolates in its repository (#579).
+    return ignoresHomeRepository(top, workspace) ? undefined : top;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const code = (error as NodeJS.ErrnoException | undefined)?.code;

@@ -7,6 +7,8 @@
     "scripts/compact-replay.ts",
     "scripts/verify-ink.ts",
     "scripts/package-smoke.ts",
+    "scripts/audit-gate.ts",
+    "scripts/audit-gate.test.ts",
     "scripts/prompt-eval.ts",
     "scripts/run-book-mock-provider.test.ts"
   ]
