@@ -4,6 +4,7 @@ import { parseFrontmatter } from './frontmatter.js';
 import { canonicalToolName } from './tools/aliases.js';
 import { resolveBookHome } from './book-home.js';
 import { shippedHomeFiles } from './book-home-files.js';
+import { reachesUncPath } from './unc-path.js';
 
 const KNOWN_AGENT_TOOLS = new Set([
   '*',
@@ -142,6 +143,9 @@ export function discoverAgents(workspace: string): SubagentDef[] {
   const byName = new Map<string, SubagentDef>();
 
   for (const dir of userShipped ? [projectDir] : [userDir, projectDir]) {
+    // A `.book` committed as a link to a network share is not listed: listing it would reach the
+    // host (#579), as for project commands. Links inside it are not entries (`markdownFiles`).
+    if (dir === projectDir && reachesUncPath(dir)) continue;
     if (!existsSync(dir)) continue;
     let entries: string[];
     try {

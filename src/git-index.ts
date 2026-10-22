@@ -1,12 +1,20 @@
 import { closeSync, constants, fstatSync, openSync, readdirSync, readSync, statSync } from 'fs';
 import { join, resolve } from 'path';
+import { reachesUncPath } from './unc-path.js';
 
 /**
  * What a git repository tracks, read from its files: the `.git` pointer, `commondir`, `config` and
  * the index. Synchronous, and git is never spawned, so no program the repository configures runs
  * and a synchronous caller (settings resolution) can ask. Every read is bounded and opens without
- * blocking, because the files of a checkout unpacked from an archive are the archive's.
+ * blocking, because the files of a checkout unpacked from an archive are the archive's. Nothing
+ * that is, or reaches through a link, a UNC location on Windows is opened, so no read sends a
+ * request to a host a checkout named (#579): such a path throws instead.
  */
+
+/** Throws for a path that is, or reaches through a link, a UNC location. */
+function refuseUnc(path: string): void {
+  if (reachesUncPath(path)) throw new Error(`${path} is on a network share`);
+}
 
 function errorCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'code' in error
@@ -19,6 +27,7 @@ function errorCode(error: unknown): string | undefined {
  * not one. Opened without blocking, so a FIFO, even one swapped in late, never stalls the read.
  */
 function openRegularFile(path: string): number | undefined {
+  refuseUnc(path);
   let fd: number;
   try {
     fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
@@ -84,6 +93,7 @@ export function readGitPointerFile(path: string): string | undefined {
  */
 export function gitDirOf(root: string): string {
   const dotGit = join(root, '.git');
+  refuseUnc(dotGit);
   if (statSync(dotGit).isDirectory()) return dotGit;
   const pointer = /^gitdir:[ \t]*(\S.*)$/.exec(readGitPointerFile(dotGit) ?? '');
   if (!pointer) throw new Error(`unrecognized .git file: ${dotGit}`);
@@ -280,6 +290,7 @@ export function readGitIndex(
  * index no longer lists, or one the split index deleted), never under-counts.
  */
 export function indexFilesOf(gitDir: string): string[] {
+  refuseUnc(gitDir);
   let names: string[];
   try {
     names = readdirSync(gitDir);

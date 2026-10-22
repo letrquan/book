@@ -158,3 +158,32 @@ describe('the UNC guard memoizes per call (#579)', () => {
     expect(probe.lstat).not.toHaveBeenCalled();
   });
 });
+
+describe('a UNC guard with roots the user chose', () => {
+  it('takes a trusted root as given, on a share or through a link to one', () => {
+    const fileSystem = () =>
+      windows(
+        {
+          'C:\\extra': '\\\\nas\\data',
+          '\\\\nas\\data\\away': '\\\\other\\share',
+          '\\\\nas\\data\\near': '..\\data\\x',
+        },
+        ['C:\\', '\\\\nas\\data\\x'],
+      );
+    const plain = createUncGuard(fileSystem());
+    const probe = fileSystem();
+    const chosen = createUncGuard(probe, { trusted: ['\\\\nas\\data', 'C:\\extra'] });
+
+    expect(plain('\\\\nas\\data\\x')).toBe(true);
+    expect(chosen('\\\\nas\\data\\x')).toBe(false);
+    expect(plain('C:\\extra\\x')).toBe(true);
+    expect(chosen('C:\\extra\\x')).toBe(false);
+    // The root itself and what is above it are not probed.
+    expect(probe.lstat).not.toHaveBeenCalledWith('C:\\extra');
+    // A link below it is followed: to elsewhere on the same root is fine, to another share is not.
+    expect(chosen('\\\\nas\\data\\near')).toBe(false);
+    expect(chosen('\\\\nas\\data\\away\\y')).toBe(true);
+    // Other UNC locations are refused as before.
+    expect(chosen('\\\\other\\share\\y')).toBe(true);
+  });
+});

@@ -17,7 +17,7 @@ import { resolveBookHome } from './book-home.js';
 import { shippedHomeFiles } from './book-home-files.js';
 import { isUserHome, tryRealPath } from './repo-containment.js';
 import type { SkillActivation, SkillExecution } from './settings.js';
-import { createUncGuard, type UncGuard } from './unc-path.js';
+import { createUncGuard, reachesUncPath, type UncGuard } from './unc-path.js';
 
 export const SKILL_ENTRY_FILENAME = 'SKILL.md';
 export const MAX_SKILL_HEADER_BYTES = 64 * 1024;
@@ -158,11 +158,18 @@ function isInside(root: string, candidate: string): boolean {
  * with no repository: a project under the home directory without its own `.git` scans its own
  * directory, not every directory from the home directory down.
  */
-function projectRootFor(workspace: string, home: string | undefined): string {
+function projectRootFor(workspace: string, home: string | undefined, reachesUnc: UncGuard): string {
+  // A workspace that reaches a network share has no project roots (`skillRoots`), so nothing on
+  // the way up is probed; nor is a `.git` that does, which `existsSync` would follow (#579).
+  if (reachesUnc(workspace)) return resolve(workspace);
   let current = resolve(workspace);
   const filesystemRoot = parse(current).root;
   while (true) {
-    if (existsSync(join(current, '.git'))) {
+    const dotGit = join(current, '.git');
+    // A `.git` it may not open is one it cannot read: the workspace is then its own root, as for
+    // memory (`findGitRoot`).
+    if (reachesUnc(dotGit)) return resolve(workspace);
+    if (existsSync(dotGit)) {
       return isUserHome(tryRealPath(current) ?? current, home) ? resolve(workspace) : current;
     }
     if (current === filesystemRoot) return resolve(workspace);
@@ -226,7 +233,7 @@ export function skillRoots(
     );
   }
 
-  const projectRoot = options.projectRoot ?? projectRootFor(workspace, options.homeDir);
+  const projectRoot = options.projectRoot ?? projectRootFor(workspace, options.homeDir, reachesUnc);
   for (const directory of directoriesFromRoot(projectRoot, workspace)) {
     roots.push(
       { path: join(directory, '.claude', 'skills'), source: 'project', kind: 'claude' },
@@ -707,6 +714,10 @@ export function applySkillOverrides(
 
 export function loadSkillBody(skill: Skill): LoadedSkillBody {
   if (!skill.valid) throw new Error(`Skill "${skill.name}" is invalid.`);
+  // Asked again here, not only at discovery: the directory may have become a link since (#579).
+  if (skill.source === 'project' && reachesUncPath(skill.path)) {
+    throw new Error(`Skill "${skill.name}" is on a network (UNC) path and is not loaded.`);
+  }
   const canonicalRoot = realpathSync(skill.rootPath);
   const canonicalEntry = realpathSync(skill.path);
   if (!isInside(canonicalRoot, canonicalEntry)) {

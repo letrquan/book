@@ -2,13 +2,14 @@ import { createHash, randomUUID } from 'crypto';
 import { execFile, spawn } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
-import { dirname, join, resolve } from 'path';
+import { dirname, join, relative, resolve, sep } from 'path';
 import type { AgentApplyResult, AgentRecord, AgentSnapshot, PatchCandidate } from './types.js';
 import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 import { hardenedGitArgs, hardenedGitEnv, HARDENED_DIFF_ARGS } from '../tools/git.js';
 import { readRepositoryProgramPins } from '../tools/git-repository-programs.js';
 import { ignoresHomeRepository } from '../repo-containment.js';
+import { canonicalizePath, isOutside } from '../tools/path-utils.js';
 import {
   signingPinArgs,
   type HardenedRunner,
@@ -721,6 +722,31 @@ export function repositoryHash(repoRoot: string): string {
   return createHash('sha256').update(resolve(repoRoot).toLowerCase()).digest('hex').slice(0, 20);
 }
 
+/**
+ * Book's own home directory (`resolveBookHome()`), relative to `repoRoot` with `/` separators, when
+ * the repository contains it, as it does when the workspace is the home directory (#579); else
+ * `undefined`, as when it is the repository's root. Book writes there for as long as a run lasts
+ * (sessions, agent records and transcripts, jobs, rewind snapshots, memory, and the agent
+ * worktrees themselves), so a snapshot that took it in would copy Book's state into the snapshot
+ * and the worktree, stage the worktrees as embedded repositories, and differ from the fingerprint
+ * taken again at apply, so every apply would report drift. Both sides are canonical paths
+ * (`canonicalizePath`), so a home directory that does not exist yet compares as it will once it
+ * does, and the snapshot and the apply leave out the same directory.
+ */
+function bookHomeInRepository(repoRoot: string): string | undefined {
+  const rootReal = canonicalizePath(repoRoot);
+  const bookHomeReal = canonicalizePath(resolveBookHome());
+  if (isOutside(rootReal, bookHomeReal)) return undefined;
+  const inside = relative(rootReal, bookHomeReal);
+  return inside === '' ? undefined : inside.split(sep).join('/');
+}
+
+/**
+ * The tree a snapshot, or the drift check at apply, takes of `repoRoot`'s working tree, with
+ * Book's own home directory left out when the repository contains it ({@link bookHomeInRepository}):
+ * a file there that the repository tracks keeps its committed content, since the temporary index
+ * starts from `HEAD` and the path is never added again.
+ */
 async function writeWorkspaceTree(
   repoRoot: string,
   includeUntracked: boolean,
@@ -729,17 +755,59 @@ async function writeWorkspaceTree(
   const index = tempIndex();
   try {
     const env = { GIT_INDEX_FILE: index.path };
+    const bookHome = bookHomeInRepository(repoRoot);
+    // `top`, so the path is measured from the root; `literal`, so a name holding a glob character
+    // is matched as written. `--no-literal-pathspecs`, because an exported GIT_LITERAL_PATHSPECS
+    // turns pathspec magic off and the exclusion would then fail the call.
+    const magic = bookHome === undefined ? [] : ['--no-literal-pathspecs'];
+    const exclusion = bookHome === undefined ? [] : [`:(top,literal,exclude)${bookHome}`];
     const head = (await git(repoRoot, ['rev-parse', 'HEAD'], { signal })).stdout.trim();
     await git(repoRoot, ['read-tree', head], { env, signal });
-    await git(repoRoot, includeUntracked ? ['add', '-A', '--', '.'] : ['add', '-u', '--', '.'], {
-      env,
-      signal,
-    });
+    await git(
+      repoRoot,
+      [...magic, 'add', includeUntracked ? '-A' : '-u', '--', '.', ...exclusion],
+      {
+        env,
+        signal,
+      },
+    );
     const tree = (await git(repoRoot, ['write-tree'], { env, signal })).stdout.trim();
-    const status = (
-      await git(repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'], { signal })
-    ).stdout;
-    return { head, tree, status };
+    const status = [
+      (
+        await git(
+          repoRoot,
+          [
+            ...magic,
+            'status',
+            '--porcelain=v1',
+            '--untracked-files=all',
+            ...(bookHome === undefined ? [] : ['--', '.', ...exclusion]),
+          ],
+          { signal },
+        )
+      ).stdout,
+    ];
+    // A tracked file there still counts toward `dirty`: a staged change to one is an index that
+    // differs from `HEAD`, which the cherry-pick route an undirty snapshot takes refuses.
+    if (bookHome !== undefined) {
+      status.push(
+        (
+          await git(
+            repoRoot,
+            [
+              ...magic,
+              'status',
+              '--porcelain=v1',
+              '--untracked-files=no',
+              '--',
+              `:(top,literal)${bookHome}`,
+            ],
+            { signal },
+          )
+        ).stdout,
+      );
+    }
+    return { head, tree, status: status.join('') };
   } finally {
     rmSync(index.dir, { recursive: true, force: true });
   }
