@@ -165,7 +165,8 @@ export function useManagedAgents(
         if (event.type === 'agent_notice') {
           // Only a child of this session, and only one the operator can see the row for: a
           // notice about an agent from another session would name something they cannot open.
-          if (!visibleAgentIds.current.has(event.agentId)) return;
+          // One without an agent is the manager's own line (#579), which names no row.
+          if (event.agentId !== undefined && !visibleAgentIds.current.has(event.agentId)) return;
           setNoticeQueue((queued) => [...queued, event]);
           return;
         }

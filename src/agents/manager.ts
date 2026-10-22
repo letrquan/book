@@ -1,9 +1,9 @@
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
-import { isAbsolute, join, relative, resolve, sep } from 'path';
+import { dirname, join, resolve } from 'path';
 import { resolveBookHome } from '../book-home.js';
-import { tryRealPath } from '../repo-containment.js';
+import { isUserHome, tryRealPath } from '../repo-containment.js';
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import type { Usage } from '../types/messages.js';
 import { createAgentRunContext, type AgentRunContext } from '../types/runs.js';
@@ -267,6 +267,7 @@ export class AgentManager {
   private permissionMode: PermissionMode = 'default';
   private permissionModeOverride?: PermissionMode;
   private readonly subscribers = new Set<(event: AgentRuntimeEvent) => void>();
+  private readonly heldNotices: string[] = [];
   private legacyEventSink?: (event: AgentRuntimeEvent) => void;
   private readonly textBuffers = new Map<string, string>();
   private readonly textTimers = new Map<string, NodeJS.Timeout>();
@@ -300,6 +301,7 @@ export class AgentManager {
   ): void {
     if (sink) this.legacyEventSink = sink;
     if (hookSink) this.hookEventSink = hookSink;
+    this.flushHeldNotices();
   }
 
   updateConfig(config: AgentConfig): void {
@@ -418,6 +420,7 @@ export class AgentManager {
     options: SubscribeOptions = {},
   ): () => void {
     this.subscribers.add(listener);
+    this.flushHeldNotices();
     if (options.snapshot) {
       void this.ensureInitialized().then(() => {
         for (const record of this.agents.values()) {
@@ -733,10 +736,14 @@ export class AgentManager {
       return undefined;
     }
     const homeReal = tryRealPath(home) ?? resolve(home);
-    const workspaceReal = tryRealPath(this.config.workspace) ?? resolve(this.config.workspace);
     // A workspace that is home keeps the home key; only one strictly below it lost the repository.
-    const fromHome = relative(homeReal, workspaceReal);
-    if (!fromHome || isAbsolute(fromHome) || fromHome.split(sep)[0] === '..') return undefined;
+    let ancestor = dirname(tryRealPath(this.config.workspace) ?? resolve(this.config.workspace));
+    for (;;) {
+      if (isUserHome(ancestor, home)) break;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) return undefined;
+      ancestor = parent;
+    }
     return existsSync(join(homeReal, '.git')) ? { home, homeReal } : undefined;
   }
 
@@ -760,21 +767,34 @@ export class AgentManager {
     }
     if (found.length === 0) return;
     const total = found.reduce((sum, entry) => sum + entry.count, 0);
-    const where = found.map((entry) => join(storeRoot, entry.hash)).join(' and ');
+    const where = found.map((entry) => `"${join(storeRoot, entry.hash)}"`).join(' and ');
     const worktrees = found
-      .map((entry) => join(this.options.worktreeRoot ?? defaultWorktreeRoot(), entry.hash))
+      .map((entry) => `"${join(this.options.worktreeRoot ?? defaultWorktreeRoot(), entry.hash)}"`)
       .join(' and ');
-    this.emit({
-      type: 'agent_persistence',
-      state: 'degraded',
-      reason: 'unavailable',
-      message:
-        `Book ignores the dotfiles repository at ${above.home}, so ${total} managed-agent record(s) kept under its key ` +
-        `(possibly made for this project, possibly for ${above.home} itself) are not used. To clear them: git -C ${above.home} worktree list, ` +
+    const quote = (path: string) => `"${path}"`;
+    this.emitManagerNotice(
+      `Book ignores the dotfiles repository at ${above.home}, so ${total} managed-agent record(s) kept under its key ` +
+        `(possibly made for this project, possibly for ${above.home} itself) are not used. To clear them: git -C ${quote(above.home)} worktree list, ` +
         `git worktree remove each one under ${worktrees}, delete the refs/book/snapshots/* refs there, then delete ${where}.`,
-      retrying: false,
-      timestamp: Date.now(),
-    });
+    );
+  }
+
+  /**
+   * The manager's own one-time line for the operator. Held until a host is listening, because the
+   * first initialization can run before the TUI subscribes (or between its resubscribes), and a
+   * notice nobody saw was not reported.
+   */
+  private emitManagerNotice(message: string): void {
+    if (this.subscribers.size === 0 && !this.legacyEventSink) {
+      this.heldNotices.push(message);
+      return;
+    }
+    this.emit({ type: 'agent_notice', message });
+  }
+
+  private flushHeldNotices(): void {
+    if (this.subscribers.size === 0 && !this.legacyEventSink) return;
+    for (const message of this.heldNotices.splice(0)) this.emit({ type: 'agent_notice', message });
   }
 
   private handlePersistenceEvent(

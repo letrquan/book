@@ -1710,7 +1710,13 @@ export function countStoredAgentRecords(root: string, repoHash: string): number 
   for (const name of ['summaries', 'records']) {
     try {
       for (const entry of readdirSync(join(root, repoHash, name), { withFileTypes: true })) {
-        if (entry.isFile() && entry.name.endsWith('.json')) ids.add(entry.name);
+        if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+        try {
+          const id = decodeURIComponent(entry.name.slice(0, -'.json'.length));
+          if (id && encodedName(id) === entry.name) ids.add(entry.name);
+        } catch {
+          // Not a name the store wrote.
+        }
       }
     } catch {
       // Absent, or not readable: nothing to report.

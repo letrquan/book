@@ -4620,6 +4620,7 @@ describe('AgentManager.wait timers (#423)', () => {
 describe('a project below a dotfiles home (#579)', () => {
   /** A home with a `.git`, a project below it, and `n` agent records under the home key. */
   async function dotfilesHome(options: {
+    late?: boolean;
     git?: boolean;
     records?: number;
     at?: 'home' | 'project';
@@ -4658,12 +4659,12 @@ describe('a project below a dotfiles home (#579)', () => {
       createStore: (repoHash, requestedRoot, enabled) =>
         AgentStore.open(repoHash, requestedRoot, enabled, UNCONTENDED),
     });
-    manager.subscribe((event) => events.push(event));
+    if (!options.late) manager.subscribe((event) => events.push(event));
     return { home, project, storeRoot, manager, events };
   }
 
   const notices = (events: AgentRuntimeEvent[]) =>
-    events.filter((event) => event.type === 'agent_persistence');
+    events.filter((event) => event.type === 'agent_notice');
 
   it('reports the old home-keyed state once, and does not load it', async () => {
     const { manager, events, home, storeRoot } = await dotfilesHome({ records: 2 });
@@ -4672,12 +4673,28 @@ describe('a project below a dotfiles home (#579)', () => {
       await manager.list();
       const [notice, ...rest] = notices(events);
       expect(rest).toEqual([]);
-      expect(notice).toMatchObject({ type: 'agent_persistence', state: 'degraded' });
+      expect(notice).toMatchObject({ type: 'agent_notice' });
+      expect(notice).not.toHaveProperty('agentId');
       const message = (notice as { message: string }).message;
       expect(message).toContain('2 managed-agent record(s)');
-      expect(message).toContain(`git -C ${home} worktree list`);
-      expect(message).toContain(join(storeRoot, repositoryHash(home)));
+      expect(message).toContain(`git -C "${home}" worktree list`);
+      expect(message).toContain(`"${join(storeRoot, repositoryHash(home))}"`);
       expect(readdirSync(join(storeRoot, repositoryHash(home), 'summaries'))).toHaveLength(2);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('holds the notice until a host subscribes, then delivers it once', async () => {
+    const { manager, events } = await dotfilesHome({ records: 1, late: true });
+    try {
+      await manager.list();
+      expect(notices(events)).toEqual([]);
+      const unsubscribe = manager.subscribe((event) => events.push(event));
+      expect(notices(events)).toHaveLength(1);
+      unsubscribe();
+      manager.subscribe((event) => events.push(event));
+      expect(notices(events)).toHaveLength(1);
     } finally {
       manager.dispose();
     }
