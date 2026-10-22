@@ -12,11 +12,22 @@ name: Release
 #
 # Publishing is driven by the tag, so a release is `git push origin vX.Y.Z`.
 # `workflow_dispatch` exists to re-run a failed publish without moving a tag.
+#
+# The npm dist-tag is chosen here, because npm 11 refuses to publish a prerelease
+# version (`0.4.0-beta.0`) without an explicit `--tag`. A tag push publishes under
+# `latest`; a manual run takes the `dist-tag` input, which defaults to `latest`.
+# The value is checked before anything is built or published.
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      dist-tag:
+        description: 'npm dist-tag to publish under (letters, digits, - and .; not a version)'
+        required: false
+        default: latest
+        type: string
 
 permissions:
   # `id-token: write` is what mints the OIDC token npm verifies. Nothing here
@@ -29,9 +40,26 @@ jobs:
     name: Publish to npm
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Through the environment, never interpolated into a script: a manual run's input is
+      # user-supplied text. A tag push has no input and always publishes under `latest`.
+      # An empty manual value is not defaulted here, so the check below refuses it.
+      DIST_TAG: ${{ github.event_name == 'push' && 'latest' || inputs.dist-tag }}
 
     steps:
       - uses: actions/checkout@v7
+
+      # First, before any install: a mistyped dist-tag should cost seconds, not a full gate. A
+      # dist-tag is a name, and npm rejects one that parses as a version or range (`1.2`, `v1`,
+      # `x`), so those and anything outside letters, digits, `-` and `.` are refused here.
+      - name: Check the dist-tag
+        shell: bash
+        run: |
+          if [[ ! "$DIST_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] \
+            || [[ "$DIST_TAG" =~ ^[vV]?[0-9] ]] || [[ "$DIST_TAG" =~ ^[xX]$ ]]; then
+            echo "Invalid dist-tag '$DIST_TAG': use letters, digits, '-' and '.', and nothing that looks like a version or range." >&2
+            exit 1
+          fi
 
       - uses: actions/setup-node@v7
         with:
@@ -61,7 +89,7 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match package.json version $manifest." >&2
             exit 1
           fi
-          echo "Publishing $manifest"
+          echo "Publishing $manifest under dist-tag $DIST_TAG"
 
       - run: npm run check
 
@@ -77,5 +105,6 @@ jobs:
       - run: npm run release:check
 
       # No token, no `--otp`: npm exchanges the OIDC token for publish rights
-      # and attaches provenance automatically.
-      - run: npm publish
+      # and attaches provenance automatically. `--tag` is required for a prerelease
+      # version; the value was validated in the first step.
+      - run: npm publish --tag "$DIST_TAG"
