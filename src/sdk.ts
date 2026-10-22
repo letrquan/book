@@ -14,6 +14,7 @@ import {
   collectSkippedProjectFileNotices,
   collectWithheldProjectNotices,
 } from './project-approval-notices.js';
+import { collectNodeSecurityNotices } from './node-advisory.js';
 import { AgentManager } from './agents/manager.js';
 import { SessionStore } from './session/store.js';
 import { discardUntouchedSession, resolveSessionBootstrap } from './session/resolve.js';
@@ -144,6 +145,8 @@ export async function* query(
       // Repository-declared allow rules and hooks are withheld until the user
       // decides on them; an SDK run cannot ask, so it reports and continues.
       for (const notice of [
+        // WebFetch runs in the host's process, so its Node.js is the one exposed.
+        ...collectNodeSecurityNotices(process.versions.node),
         ...collectWithheldProjectNotices({
           workspace: config.workspace,
           settings: config.settings,

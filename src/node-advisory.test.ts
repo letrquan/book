@@ -41,10 +41,21 @@ describe('collectNodeSecurityNotices', () => {
     expect(collectNodeSecurityNotices('27.0.0')).toEqual([]);
   });
 
-  it('accepts the `v` that process.version carries, and a prerelease suffix', () => {
+  it('accepts the `v` that process.version carries', () => {
     expect(collectNodeSecurityNotices('v24.22.1')).toEqual([]);
     expect(collectNodeSecurityNotices('v24.21.0')[0]).toContain('Node.js v24.21.0 has');
-    expect(collectNodeSecurityNotices('24.22.0-nightly2026102136c0a1')).toHaveLength(1);
+  });
+
+  it.each(['24.22.1-rc.1', '26.12.1-nightly20261020a1b2c3d4', '24.22.0-nightly2026102136c0a1'])(
+    'warns on the prerelease %s, which semver orders before the fixed release',
+    (version) => {
+      const [notice] = collectNodeSecurityNotices(version);
+      expect(notice).toContain(`Node.js v${version} has security vulnerabilities`);
+    },
+  );
+
+  it('is silent on a prerelease of a later patch', () => {
+    expect(collectNodeSecurityNotices('24.22.2-rc.1')).toEqual([]);
   });
 
   it.each(['', 'unknown', '24', '24.22', 'node 24.21.0'])(

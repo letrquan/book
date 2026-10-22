@@ -14,6 +14,12 @@ const state = vi.hoisted(() => {
   return { gate, release: () => release?.() };
 });
 
+// The real advisory depends on the Node.js running the suite, and CI runs an unpatched 22.19 leg.
+const nodeAdvisory = vi.hoisted(() => ({ notices: [] as string[] }));
+vi.mock('./node-advisory.js', () => ({
+  collectNodeSecurityNotices: () => nodeAdvisory.notices,
+}));
+
 vi.mock('./mcp.js', () => ({
   connectMcpServers: vi.fn(async () => ({ connections: [], tools: [] })),
   disconnectMcpServers: vi.fn(),
@@ -272,6 +278,33 @@ describe('SDK runtime event bridge', () => {
     expect(report).toContain(
       `\`book trust provider evil --workspace ${shellArgument(sessionFixture.root)}\``,
     );
+  });
+
+  it('reports a Node.js runtime with known vulnerabilities, since WebFetch runs in the host', async () => {
+    sessionFixture = createSessionFixture('book-sdk-node-');
+    const bookHome = join(sessionFixture.root, 'book-home');
+    mkdirSync(bookHome, { recursive: true });
+    process.env.BOOK_HOME = bookHome;
+    nodeAdvisory.notices = ['⚠  Node.js v24.21.0 has security vulnerabilities (test notice)'];
+
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    });
+    try {
+      state.release();
+      for await (const event of query('hello', {
+        workspace: sessionFixture.root,
+        persistSession: false,
+      })) {
+        void event;
+      }
+    } finally {
+      warn.mockRestore();
+      nodeAdvisory.notices = [];
+    }
+
+    expect(warnings).toContain('⚠  Node.js v24.21.0 has security vulnerabilities (test notice)');
   });
 
   // headless.ts writes a run record into the shared <BOOK_HOME>/runs on every query, so

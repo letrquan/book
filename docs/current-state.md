@@ -20,7 +20,9 @@ fresh verification pass.
   is `book`; the package is scoped because the unscoped name was taken.
 - License: PolyForm Small Business 1.0.0 — source-available, commercial use limited to companies
   under 100 people and 1,000,000 USD (2019) revenue. See `LICENSE`.
-- Runtime: Node.js 22.19 or newer; CI exercises Node.js 22 and 24 on Ubuntu and Windows.
+- Runtime: Node.js 22.19 or newer; CI exercises Node.js 22 and 24 on Ubuntu and Windows. A
+  Node.js missing a fix from the newest security release Book knows (`src/node-advisory.ts`, the
+  October 21, 2026 release) gets a `⚠` notice at every launch, from `query()` and in `book doctor`.
 - Build: `tsup` emits ESM CLI, SDK, job-runner and job-supervisor bundles plus declarations into
   `dist/`.
 

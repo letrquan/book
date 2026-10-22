@@ -767,12 +767,13 @@ All notable changes to this project are documented in this file.
   than the first patched release of its line in the October 21, 2026 security release (v22.23.4,
   v24.22.1, v26.12.1) gets a `⚠` notice at launch naming the version to upgrade to and linking the
   advisory; an end-of-life line (v20, v23, v25) is told to move to a supported one. The release
-  fixes CVE-2026-111497, an out-of-bounds write in Node's Brotli decoder, which `WebFetch` reaches:
-  undici's `fetch` decodes a Brotli body with Node's own `zlib`, so a page the model fetches could
-  send one. The TUI shows the notice in the transcript, and the scrollback and print modes write it
-  to stderr (stdout stays clean for `--output-format json`); `book doctor` prints it under `Node:`.
-  The SDK does not, since `query()` runs in the host's process. A Node.js line newer than v26 is
-  not judged.
+  fixes CVE-2026-111497, an out-of-bounds write in Node's Brotli decoder that permits remote code
+  execution, which `WebFetch` reaches: undici's `fetch` decodes a Brotli body with Node's own `zlib`,
+  so a page the model fetches could send one. The TUI shows the notice in the transcript; the
+  scrollback and print modes and the SDK's `query()` write it to stderr with their other `⚠`
+  notices (stdout stays clean for `--output-format json`); `book doctor` prints it under `Node:`. A
+  prerelease of a fixed version (`-rc.1`, a nightly) counts as older than it. A Node.js line newer
+  than v26 is not judged.
 
 - **The sandbox binds the workspace's git directories read-only by default, closing the pointer-file redirect** (issue 373).
   Inside the namespace every git directory of the workspace (`.git`, linked worktree admin directories,

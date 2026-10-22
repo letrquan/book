@@ -7,7 +7,13 @@
  * which only know the minimum Book runs on.
  */
 
-type Version = readonly [number, number, number];
+type Release = readonly [number, number, number];
+
+/** A parsed `process.versions.node`; `prerelease` is set for an `-rc.1` or `-nightly…` build. */
+interface Version {
+  readonly release: Release;
+  readonly prerelease: boolean;
+}
 
 /**
  * The newest Node.js security release Book knows about, and the first patched version on each line
@@ -18,27 +24,32 @@ const SECURITY_RELEASE = {
   date: 'October 21, 2026',
   url: 'https://nodejs.org/en/blog/vulnerability/october-2026-security-releases',
   headline: 'CVE-2026-111497, remote code execution in the Brotli decoder that WebFetch uses',
-  patched: new Map<number, Version>([
-    [22, [22, 23, 4]],
-    [24, [24, 22, 1]],
-    [26, [26, 12, 1]],
-  ]),
+  patched: [
+    [22, 23, 4],
+    [24, 22, 1],
+    [26, 12, 1],
+  ] as readonly Release[],
 };
 
 function parseVersion(version: string): Version | undefined {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(-)?/.exec(version.trim());
   if (!match) return undefined;
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
+  return {
+    release: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease: match[4] !== undefined,
+  };
 }
 
-function isOlder([major, minor, patch]: Version, [major2, minor2, patch2]: Version): boolean {
-  if (major !== major2) return major < major2;
-  if (minor !== minor2) return minor < minor2;
-  return patch < patch2;
+/** Semver order: a prerelease of the fixed version, such as a nightly cut before it, is older. */
+function isOlder({ release: [major, minor, patch], prerelease }: Version, fixed: Release): boolean {
+  if (major !== fixed[0]) return major < fixed[0];
+  if (minor !== fixed[1]) return minor < fixed[1];
+  if (patch !== fixed[2]) return patch < fixed[2];
+  return prerelease;
 }
 
-function formatVersion(version: Version): string {
-  return `v${version.join('.')}`;
+function formatRelease(release: Release): string {
+  return `v${release.join('.')}`;
 }
 
 /**
@@ -49,20 +60,23 @@ function formatVersion(version: Version): string {
 export function collectNodeSecurityNotices(version: string): string[] {
   const parsed = parseVersion(version);
   if (!parsed) return [];
-  const [major] = parsed;
+  const [major] = parsed.release;
+  // As given, so a prerelease of the fixed version keeps the suffix that makes it older.
+  const shown = `v${version.trim().replace(/^v/, '')}`;
   const { date, url, headline, patched } = SECURITY_RELEASE;
-  const fixed = patched.get(major);
+  const fixed = patched.find(([line]) => line === major);
   if (fixed) {
     if (!isOlder(parsed, fixed)) return [];
     return [
-      `⚠  Node.js ${formatVersion(parsed)} has security vulnerabilities fixed in the ${date} ` +
-        `release, including ${headline}. Upgrade to Node.js ${formatVersion(fixed)} or newer: ${url}`,
+      `⚠  Node.js ${shown} has security vulnerabilities fixed in the ` +
+        `${date} release, including ${headline}. Upgrade to Node.js ${formatRelease(fixed)} or ` +
+        `newer: ${url}`,
     ];
   }
-  if (major > Math.max(...patched.keys())) return [];
-  const supported = [...patched.values()].map(formatVersion).join(', ');
+  if (major > Math.max(...patched.map(([line]) => line))) return [];
+  const supported = patched.map(formatRelease).join(', ');
   return [
-    `⚠  Node.js ${formatVersion(parsed)} is end-of-life and did not get the fixes in the ${date} ` +
+    `⚠  Node.js ${shown} is end-of-life and did not get the fixes in the ${date} ` +
       `security release, including ${headline}. Move to a supported line (${supported} or newer): ${url}`,
   ];
 }
