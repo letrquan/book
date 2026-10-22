@@ -6,7 +6,12 @@ import { glob } from 'tinyglobby';
 import { describeInvalidPattern, portablePattern } from './grep-pattern.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { globWalkIgnore, globWalkPlan } from './glob-regex.js';
-import { recordingWalkFs, walkPartialNote, type WalkFailure } from './walk-fs.js';
+import {
+  recordingWalkFs,
+  walkPartialNote,
+  type RecordingWalkFs,
+  type WalkFailure,
+} from './walk-fs.js';
 import { createUncGuard, reachesUncPath, uncGuardedWalkFs } from '../unc-path.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { buildChildEnv } from '../child-env.js';
@@ -1758,6 +1763,11 @@ function globSearchDir(ctx: ToolContext): string[] {
   return [ctx.workspaceRoot];
 }
 
+/** A path the UNC guard kept a walk from opening, recorded as one it could not read. */
+function recordRefusal(recorder: RecordingWalkFs): (path: string) => void {
+  return (path) => recorder.failures.push({ path, code: 'EUNC' });
+}
+
 async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const pattern = args.pattern as string;
   const roots = grepRoots(ctx);
@@ -1795,7 +1805,9 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
         ignore: globWalkIgnore(ctx.gitignorePatterns ?? []),
         expandDirectories: false,
         signal: ctx.signal,
-        fs: uncGuardedWalkFs(cwd, createUncGuard(), recorder.fs) ?? recorder.fs,
+        fs:
+          uncGuardedWalkFs(cwd, createUncGuard(), recorder.fs, recordRefusal(recorder)) ??
+          recorder.fs,
       });
     } catch (error) {
       return toolFailure(
@@ -2103,7 +2115,9 @@ async function grepSearchPortable(
         expandDirectories: false,
         signal: ctx.signal,
         // As a Glob's walk: on Windows, asked of the UNC guard first (`uncGuardedWalkFs`).
-        fs: uncGuardedWalkFs(scope.root, createUncGuard(), recorder.fs) ?? recorder.fs,
+        fs:
+          uncGuardedWalkFs(scope.root, createUncGuard(), recorder.fs, recordRefusal(recorder)) ??
+          recorder.fs,
       });
     } catch (error) {
       return toolFailure(
@@ -2661,6 +2675,11 @@ async function grepSearchWithRipgrep(
   if (!scoped.ok) return { kind: 'success', result: scoped.failure };
   const scope = scoped.scope;
   const roots = grepRoots(ctx);
+  // On Windows ripgrep is not started in a root on a network (UNC) path: the portable walk, which
+  // does not list one, answers instead.
+  if (process.platform === 'win32' && reachesUncPath(scope.root)) {
+    return { kind: 'success', result: await grepSearchPortable(args, ctx) };
+  }
 
   const rgArgs = buildRipgrepArgs({
     pattern,

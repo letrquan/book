@@ -196,6 +196,23 @@ describe('skill discovery and loading on Windows with links to a network path', 
     for (const spy of spies()) expect(touches(spy, ws)).toBe(false);
   });
 
+  it('takes a .git that links to a share for a root it cannot read, not for no root', () => {
+    // An outer repository above the workspace: its skills are not the workspace's to load when the
+    // workspace's own `.git` cannot be read.
+    const outer = join(tmp, 'outer');
+    const ws = join(outer, 'sub', 'ws');
+    mkdirSync(join(outer, '.git'), { recursive: true });
+    writeSkill(join(outer, '.book', 'skills', 'outer'), 'outer');
+    writeSkill(join(ws, '.book', 'skills', 'inner'), 'inner');
+    writeFileSync(join(ws, '.git'), 'gitdir: elsewhere\n');
+    fake.links.set(windows(join(ws, '.git')), '\\\\host\\share\\.git');
+
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+    const names = discoverSkills(ws, {}, { includeUser: false }).map((skill) => skill.name);
+    expect(names).toEqual(['inner']);
+    for (const spy of spies()) expect(touches(spy, join(ws, '.git'))).toBe(false);
+  });
+
   it('loads neither the body nor a resource of a skill whose directory became such a link', () => {
     const ws = join(tmp, 'ws');
     const dir = join(ws, '.book', 'skills', 'good');

@@ -74,6 +74,18 @@ describe('project config files on Windows that link to a network path', () => {
     expect(touches(fs.readFileSync, join(local, '.mcp.json'))).toBe(true);
   });
 
+  it('says nothing of a .mcp.json in a workspace that is itself on a share', () => {
+    links.map.set(windowsSpelling(local), '\\\\host\\share\\local');
+    const diagnostics: McpDiagnostic[] = [];
+    const options = {
+      home: join(tmp, 'home'),
+      onDiagnostic: (d: McpDiagnostic) => diagnostics.push(d),
+    };
+    expect(resolveMcpServerList(local, options)).toEqual([]);
+    expect(diagnostics).toEqual([]);
+    for (const spy of readers()) expect(touches(spy, join(local, '.mcp.json'))).toBe(false);
+  });
+
   it('does not open a .bookrc.json that links to a share', () => {
     expect(parseLegacyConfig(linked)).toBeNull();
     for (const spy of readers()) expect(touches(spy, join(linked, '.bookrc.json'))).toBe(false);

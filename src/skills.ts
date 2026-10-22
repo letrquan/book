@@ -165,7 +165,10 @@ function projectRootFor(workspace: string, home: string | undefined, reachesUnc:
   const filesystemRoot = parse(current).root;
   while (true) {
     const dotGit = join(current, '.git');
-    if (!reachesUnc(dotGit) && existsSync(dotGit)) {
+    // A `.git` it may not open is one it cannot read: the workspace is then its own root, as for
+    // memory (`findGitRoot`).
+    if (reachesUnc(dotGit)) return resolve(workspace);
+    if (existsSync(dotGit)) {
       return isUserHome(tryRealPath(current) ?? current, home) ? resolve(workspace) : current;
     }
     if (current === filesystemRoot) return resolve(workspace);

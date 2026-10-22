@@ -26,7 +26,7 @@ import { writeFileAtomic } from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
 import { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES } from './memory-limits.js';
 import { isUserHome, tryRealPath } from './repo-containment.js';
-import { createUncGuard, reachesUncPath, type UncGuard } from './unc-path.js';
+import { createUncGuard, type UncGuard } from './unc-path.js';
 import type { SessionDriver } from './types/runtime.js';
 
 const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
@@ -242,8 +242,7 @@ function readPointerFile(path: string, reachesUnc: UncGuard): string | undefined
  * which is not opened (#579). A git dir or common dir there is not opened either: `dir` is then
  * its own root, as a checkout with no common dir is.
  */
-function gitRootMarkedBy(dir: string): string | undefined {
-  const reachesUnc = createUncGuard();
+function gitRootMarkedBy(dir: string, reachesUnc: UncGuard): string | undefined {
   const dotGit = join(dir, '.git');
   if (reachesUnc(dotGit)) throw new Error(`.git on a UNC path: ${dotGit}`);
   const st = statIfPresent(dotGit);
@@ -335,12 +334,13 @@ function isListedWorktree(
  */
 export function findGitRoot(workspace: string): string {
   // A workspace that is, or reaches through a link, a UNC location on Windows is neither resolved
-  // nor walked up (#579): it is its own key, as written.
-  if (reachesUncPath(workspace)) return resolve(workspace);
+  // nor walked up (#579): it is its own key, as written. One guard serves the whole walk up.
+  const reachesUnc = createUncGuard();
+  if (reachesUnc(workspace)) return resolve(workspace);
   const resolved = canonicalPath(workspace);
   try {
     for (let dir = resolved; ;) {
-      const root = gitRootMarkedBy(dir);
+      const root = gitRootMarkedBy(dir, reachesUnc);
       if (root !== undefined) {
         return isUserHome(tryRealPath(dir) ?? dir, undefined) ? resolved : root;
       }

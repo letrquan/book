@@ -148,13 +148,15 @@ export type WalkFsBase = Pick<FileSystemAdapter, 'readdir' | 'realpath'>;
  *   the targets of the links it follows.
  *
  * `stat` only ever sees what an approved `realpath` resolved to, so it is not wrapped. Calls that
- * pass go to `base` (a recording adapter, say) or to `fs`. A path the walk hands over relative is
- * taken from `root`.
+ * pass go to `base` (a recording adapter, say) or to `fs`; `onRefused` hears of each one that
+ * did not, so a walk can say its answer is partial. A path the walk hands over relative is taken
+ * from `root`.
  */
 export function uncGuardedWalkFs(
   root: string,
   reachesUnc: UncGuard,
   base: WalkFsBase = {},
+  onRefused?: (path: string) => void,
 ): FileSystemAdapter | undefined {
   if (process.platform !== 'win32') return undefined;
   const keyOf = (path: unknown) => {
@@ -164,6 +166,7 @@ export function uncGuardedWalkFs(
   // The directories this walk listed, and the links it followed: what is under them is local.
   const checked = new Set<string>();
   const refuse = (path: unknown, rest: unknown[]): void => {
+    onRefused?.(String(path));
     const callback = rest[rest.length - 1] as Callback;
     const error = Object.assign(
       new Error(`Not opened, it reaches a UNC location: ${String(path)}`),

@@ -124,7 +124,7 @@ function contextSourceFingerprint(workspace: string): string {
 
   const home = homedir();
   const bookHome = resolveBookHome();
-  for (const root of skillRoots(workspace, { homeDir: home, bookHomeDir: bookHome })) {
+  for (const root of skillRoots(workspace, { homeDir: home, bookHomeDir: bookHome }, reachesUnc)) {
     addTree(root.path, 5, root.source === 'project');
   }
   addTree(join(bookHome, 'commands'), 2, false);

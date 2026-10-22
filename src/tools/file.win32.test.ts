@@ -78,6 +78,8 @@ describe('Glob and Grep walks on Windows with a link to a network path', () => {
     expect(result.status).toBe('success');
     expect(result.content).toContain('app.ts');
     expect(result.content).not.toContain('remote.ts');
+    // Said, so the list is not taken for the whole workspace.
+    expect(result.content).toContain('share (EUNC)');
     expectShareUntouched();
   });
 
@@ -86,6 +88,18 @@ describe('Glob and Grep walks on Windows with a link to a network path', () => {
     expect(result.content).toContain('app.ts');
     expect(result.content).not.toContain('remote.ts');
     expectShareUntouched();
+  });
+
+  it('Grep does not start ripgrep in a root that links to a share', async () => {
+    links.map.set(windowsSpelling(ws), '\\\\host\\share\\ws');
+    const result = await grep.execute(
+      { pattern: 'marker', include: '**/*.ts' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'ripgrep' } },
+    );
+    // The portable backend answered, without listing the root, rather than ripgrep.
+    expect(result.content).not.toContain('rg was not found');
+    expect(result.content).toContain('EUNC');
+    expect(touches(nodeFs.readdir, ws)).toBe(false);
   });
 
   it('Glob and Grep do not list a workspace that links to a share', async () => {
