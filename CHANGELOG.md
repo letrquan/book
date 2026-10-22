@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0-beta.0] - 2026-10-22
+
 ### Added
 
 - **`/memory consolidate [focus]`: tidy the memory store** (PR 3 of the Claude Code memory parity
@@ -156,6 +158,7 @@ All notable changes to this project are documented in this file.
   Directories you configure on a share (`additionalDirectories`, the memory directory) are still
   searched. On Windows, ripgrep takes its ignore rules from the root `.gitignore` alone. The UNC
   check probes each path once per call.
+
 - **Book's own workspace writes only touch regular files.** Book leaves the workspace files it
   manages unchanged when they aren't regular files, and the write stops with a notice. That covers
   `.book/settings.json`, `.book/settings.local.json`, `.book/migrations.json`, a project
