@@ -1,12 +1,16 @@
 import {
+  closeSync,
   constants,
   copyFileSync,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -194,6 +198,41 @@ function statIfPresent(path: string): Stats | null {
   }
 }
 
+/** Git's pointer files (`.git`, `commondir`, `gitdir`) hold one path; a bigger file is none. */
+const MAX_POINTER_FILE_BYTES = 64 * 1024;
+
+/**
+ * The first line of the git pointer file `path`, trimmed; undefined when it is absent or no
+ * regular file. A checkout from an archive controls these files, so the read never blocks or
+ * runs on: it opens without blocking (a FIFO, even one swapped in late), checks the open file,
+ * and reads at most one byte past the limit (a procfs file reports size 0 and never ends).
+ * Throws on one it cannot read or that is too big.
+ */
+function readPointerFile(path: string): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+  } catch (e) {
+    const code = errorCode(e);
+    if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR') return undefined;
+    throw e;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return undefined;
+    const buffer = Buffer.alloc(MAX_POINTER_FILE_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const n = readSync(fd, buffer, length, buffer.length - length, null);
+      if (n === 0) break;
+      length += n;
+    }
+    if (length > MAX_POINTER_FILE_BYTES) throw new Error(`not a git pointer file: ${path}`);
+    return buffer.toString('utf-8', 0, length).split(/\r?\n/, 1)[0].trim();
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** The git root `dir` itself marks with a `.git` entry; undefined when `dir` has none. Throws on a `.git` it cannot read. */
 function gitRootMarkedBy(dir: string): string | undefined {
   const dotGit = join(dir, '.git');
@@ -202,23 +241,63 @@ function gitRootMarkedBy(dir: string): string | undefined {
   if (st.isDirectory()) return dir;
   if (!st.isFile()) return undefined;
 
-  const pointer = /^gitdir:[ \t]*(\S.*?)[ \t]*$/.exec(
-    readFileSync(dotGit, 'utf-8').split(/\r?\n/, 1)[0],
-  );
+  const pointer = /^gitdir:[ \t]*(\S.*)$/.exec(readPointerFile(dotGit) ?? '');
   if (!pointer) throw new Error(`unrecognized .git file: ${dotGit}`);
   // A relative gitdir resolves against the directory holding the `.git` file.
   const gitDir = resolve(dir, pointer[1]);
-  let commonDir: string;
-  try {
-    commonDir = readFileSync(join(gitDir, 'commondir'), 'utf-8').trim();
-  } catch (e) {
-    // A submodule or `--separate-git-dir` checkout has no commondir: it is its own root.
-    if (errorCode(e) === 'ENOENT' || errorCode(e) === 'ENOTDIR') return dir;
-    throw e;
-  }
+  const commonDir = readPointerFile(join(gitDir, 'commondir'));
+  // A submodule or `--separate-git-dir` checkout has no commondir: it is its own root.
+  if (commonDir === undefined) return dir;
   const common = canonicalPath(resolve(gitDir, commonDir));
-  // A linked worktree's common dir is the main checkout's `.git`.
-  return basename(common) === '.git' ? dirname(common) : dir;
+  // A linked worktree's common dir is the main checkout's `.git`, which lists the worktree back.
+  return basename(common) === '.git' && isListedWorktree(dir, gitDir, common)
+    ? dirname(common)
+    : dir;
+}
+
+/**
+ * The real path to compare, links followed and Windows 8.3 short names expanded as git writes
+ * them. Only for comparing: the key itself stays `canonicalPath`'s, so no stored key changes.
+ */
+function comparablePath(path: string): string {
+  return tryRealPath(path) ?? resolve(path);
+}
+
+/** Whether `a` and `b` name one path; `relative`, so case folds where the platform's paths do (Windows). */
+function samePath(a: string, b: string): boolean {
+  return relative(comparablePath(a), comparablePath(b)) === '';
+}
+
+/**
+ * Whether the repository at `common` lists `dir` as one of its linked worktrees, git's own round
+ * trip: the git dir `dir/.git` names must be an entry `<common>/worktrees/<name>`, and that entry's
+ * `gitdir` file must name `dir/.git` back. Without it a `.git` file anywhere (an archive, a shared
+ * directory) could name another project's `.git`, the home directory's included, and take that
+ * project's memory (#575). A worktree moved without `git worktree move` fails it until
+ * `git worktree repair` relinks it.
+ *
+ * Stricter than git's own pointers: `dir/.git` and the entry's `gitdir` must have one owner, as
+ * every `git worktree add`, `move` and `repair` writes both. Another user's `.git` planted where a
+ * removed worktree's still-listed path was (a shared directory, `/tmp`) fails it. Windows reports
+ * uid 0 for every file, so there the owners always match.
+ */
+function isListedWorktree(dir: string, gitDir: string, common: string): boolean {
+  const entry = comparablePath(gitDir);
+  if (!samePath(dirname(entry), join(common, 'worktrees'))) return false;
+  const listing = join(entry, 'gitdir');
+  try {
+    const backPointer = readPointerFile(listing);
+    if (!backPointer) return false;
+    // A relative back-pointer (`worktree.useRelativePaths`) resolves against the entry.
+    const target = resolve(entry, backPointer);
+    // The directories are compared, not the `.git` entries: a `.git` link in another directory to
+    // a real worktree's `.git` file makes that directory no worktree.
+    if (basename(target) !== '.git' || !samePath(dirname(target), dir)) return false;
+    return lstatSync(join(dir, '.git')).uid === statSync(listing).uid;
+  } catch {
+    // An entry it cannot read lists nothing, so every subdirectory keys by this checkout alike.
+    return false;
+  }
 }
 
 /**
@@ -226,6 +305,9 @@ function gitRootMarkedBy(dir: string): string | undefined {
  * subdirectory and every linked worktree of one repository shares one memory. Only reads files
  * (never spawns git). Falls back to the resolved workspace when there is no repository, or when
  * the walk meets anything it cannot read.
+ *
+ * A `.git` file maps to the main checkout only for a linked worktree the main checkout lists
+ * back (`isListedWorktree`); any other is its own root.
  *
  * A `.git` at the user's home directory is a dotfiles repository, not a project
  * (`findRepositoryRoot` in `repo-containment.ts`): the walk stops there with no repository, so

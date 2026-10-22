@@ -5,6 +5,7 @@ import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { loadGitignore } from '../tools/gitignore.js';
 import { globWalkIgnore } from '../tools/glob-regex.js';
 import { isOutside } from '../tools/path-utils.js';
+import { createUncGuard, uncGuardedWalkFs } from '../unc-path.js';
 
 export interface ActiveFileMention {
   start: number;
@@ -120,6 +121,11 @@ export async function getFileMentionCandidates(
   limit = 50,
   signal?: AbortSignal,
 ): Promise<FileMentionCandidate[]> {
+  // On Windows, resolving a path that reaches a network share opens the share, which can send the
+  // user's credentials to the host a repository named (#567, #579). A workspace on one offers no
+  // mentions, as none of its mentions expands, and a link to one is left out of the walk.
+  const reachesUnc = createUncGuard();
+  if (reachesUnc(workspace)) return [];
   const normalizedQuery = normalizeMentionPath(query).toLowerCase();
   const gitignore = loadGitignore(workspace).patterns;
   const ignore = globWalkIgnore([...DEFAULT_IGNORE, ...gitignore]);
@@ -135,6 +141,9 @@ export async function getFileMentionCandidates(
         // A pattern naming a directory returns that directory, not everything inside it — which is
         // the whole point of walking for mentions.
         expandDirectories: false,
+        // The walk follows links: on Windows each one is asked about first, so none to a share is
+        // resolved.
+        fs: uncGuardedWalkFs(workspace, reachesUnc),
         signal,
       }),
     );
