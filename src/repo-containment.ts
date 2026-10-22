@@ -107,11 +107,15 @@ function userHomeReal(home: string | undefined): string | undefined {
   return path ? tryRealPath(path) : undefined;
 }
 
+/** Whether two paths name the same directory, ignoring case where the platform does (Windows). */
+function samePath(left: string, right: string): boolean {
+  return relative(left, right) === '';
+}
+
 /** Whether the real path `real` is that of `home`, the user's home directory when not given. */
 export function isUserHome(real: string, home: string | undefined): boolean {
   const homeReal = userHomeReal(home);
-  // `relative`, so the comparison ignores case where the platform's paths do (Windows).
-  return homeReal !== undefined && relative(homeReal, real) === '';
+  return homeReal !== undefined && samePath(homeReal, real);
 }
 
 /**
@@ -123,17 +127,47 @@ export function isUserHome(real: string, home: string | undefined): boolean {
  * that repository. Both paths are compared as real paths, as `isUserHome` does.
  *
  * This is the rule git applies to Book's own calls through {@link homeGitCeiling}, for the
- * callers that decide without git: the prompt's git line, the TUI status poll, and managed-agent
- * isolation. Containment (`findRepositoryRoot`) asks about every directory a file was found in,
- * the home directory among them, so it keeps its own rule: a `.git` at the home directory is
- * never a repository there.
+ * callers that decide without git: the prompt's git line and the TUI status poll
+ * ({@link isInGitRepository}), and managed-agent isolation. Containment (`findRepositoryRoot`)
+ * asks about every directory a file was found in, the home directory among them, so it keeps its
+ * own rule: a `.git` at the home directory is never a repository there.
  */
 export function ignoresHomeRepository(top: string, workspace: string, home?: string): boolean {
+  return ignoresRealHomeRepository(
+    tryRealPath(top) ?? resolve(top),
+    tryRealPath(workspace) ?? resolve(workspace),
+    home,
+  );
+}
+
+/** {@link ignoresHomeRepository} for paths that are already real. */
+function ignoresRealHomeRepository(topReal: string, workspaceReal: string, home?: string): boolean {
   const homeReal = userHomeReal(home);
-  if (homeReal === undefined) return false;
-  const topReal = tryRealPath(top) ?? resolve(top);
-  const workspaceReal = tryRealPath(workspace) ?? resolve(workspace);
-  return relative(homeReal, topReal) === '' && relative(homeReal, workspaceReal) !== '';
+  return (
+    homeReal !== undefined && samePath(homeReal, topReal) && !samePath(homeReal, workspaceReal)
+  );
+}
+
+/**
+ * Whether `workspace` is in a git repository, for the callers that decide without spawning git:
+ * the prompt's git line (`context.ts`) and the TUI status poll (`useGitStatus.ts`). The nearest
+ * directory with a `.git` entry (a directory, or a file for a linked worktree or a submodule),
+ * walking up the real path of `workspace`, as git does from the working directory it is started
+ * in, so a workspace opened through a link is answered for the repository it is really in; under
+ * the home-directory rule ({@link ignoresHomeRepository}), which Book's git applies too
+ * ({@link homeGitCeiling}). Only stats files. `exists` is the probe, replaceable in tests.
+ */
+export function isInGitRepository(
+  workspace: string,
+  exists: (path: string) => boolean = existsSync,
+  home?: string,
+): boolean {
+  const start = tryRealPath(workspace) ?? resolve(workspace);
+  for (const dir of ancestorsFromRoot(start).reverse()) {
+    // An ancestor of a real path is a real path, so it is compared as it is.
+    if (exists(join(dir, '.git'))) return !ignoresRealHomeRepository(dir, start, home);
+  }
+  return false;
 }
 
 /**

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { homeGitCeiling, ignoresHomeRepository } from '../repo-containment.js';
+import { homeGitCeiling, ignoresHomeRepository, isInGitRepository } from '../repo-containment.js';
 import { resolveReviewTarget } from '../review/target.js';
 import type { ReviewScope } from '../review/types.js';
 import { isInsideWorkTree } from '../tui/hooks/useGitStatus.js';
@@ -142,6 +142,26 @@ describe('a project below a home directory that holds a .git, with none of its o
 
     expect(hardenedGitEnv().GIT_CEILING_DIRECTORIES).toBe(`${exported}${delimiter}${home}`);
   });
+
+  // Git walks up from the real working directory, so the walk that decides without git does too:
+  // a link under the home directory into a repository elsewhere is in that repository, not in the
+  // dotfiles one the path as written passes through.
+  it.skipIf(process.platform === 'win32')(
+    'follows the real path of a workspace linked from under the home directory',
+    async () => {
+      const repo = join(root, 'elsewhere', 'repo');
+      repository(repo);
+      mkdirSync(join(repo, 'sub'));
+      const linked = join(home, 'linked');
+      symlinkSync(join(repo, 'sub'), linked);
+
+      expect(isInGitRepository(linked)).toBe(true);
+      expect(isInsideWorkTree(linked)).toBe(true);
+      const branch = await tool(gitTools, 'GitBranch').execute({}, context(linked));
+      expect(branch.status).toBe('success');
+      expect(branch.content).toContain('main');
+    },
+  );
 
   it.skipIf(process.platform === 'win32')('compares real paths: a home reached by a link', () => {
     symlinkSync(home, join(root, 'home-link'));
