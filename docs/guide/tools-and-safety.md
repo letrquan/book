@@ -509,6 +509,14 @@ asks. A `Grep` with no `path` searches the workspace, and so does a relative `Gl
 `pattern` is anchored to the workspace the same way a relative `Read` path is, and an absolute
 pattern names its own root. A `Glob` that would start walking outside the roots
 (`../**`, `.{.,x}/*`, an absolute path elsewhere) still asks. Other read-only tools (`GitStatus`, `GitDiff`, `WebFetch`, …) still ask.
+On Windows, `Glob` and `Grep` do not search a workspace on a network (UNC) path such as
+`\\host\share` (they answer `path_unreadable`). In a local workspace their walks do not follow a
+link to one, and a `Grep` `path` that reaches one through a link is refused before it is resolved.
+A directory you configured there, an `additionalDirectories` entry or the memory directory, is
+searched as `Read` serves it, except for a link inside it to another network location. `Grep`'s
+ripgrep backend takes its ignore rules from the root `.gitignore` alone, as the portable backend
+does: nested `.gitignore`, `.ignore` and `.rgignore` files, a parent directory's,
+`.git/info/exclude` and your global excludes file do not narrow a search there.
 
 What still asks:
 
