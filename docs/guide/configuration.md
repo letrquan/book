@@ -49,6 +49,24 @@ write. `book config unset <key>` removes a key from a scope (also user-global by
 user-global write that a workspace layer still shadows says so, and names the `unset` that clears
 it.
 
+`book config provider-key <id>` replaces the API key of a provider in your user file, the shell
+twin of `/model`'s `Alt+K`. It reads the key from stdin, never from the command line: hidden input
+on a terminal, and otherwise the piped text with its trailing line ending dropped
+(`printf '%s' "$KEY" | book config provider-key openrouter`). A key passed as an argument is
+refused, without being echoed. The input takes what the add-provider wizard takes, including
+`{env:VAR}` and `{file:path}`. Before saving, the key is tested against that provider's own
+endpoint (its model-list API); on a terminal a failure offers save anyway, retry, a different key,
+or cancel, and otherwise the command exits non-zero having written nothing. `--force` saves despite
+a failed test, and `--no-check` skips the test, for an endpoint without a model-list API. An id
+that is not in `<BOOK_HOME>/settings.json` fails with the ids that are; one only a repository
+declares (`.book/settings.json` or `.book/settings.local.json`) is refused, on the ownership rule
+the picker uses, and `--project`, `--local`, `--settings` and `--no-settings` are refused too: the
+target is always your user file. Like every `config` subcommand it needs no working credential.
+The test is one request with a 20-second limit, so a dead host fails quickly; retry it if the
+endpoint was only briefly unavailable. A relative `{file:path}` is read from the workspace you run
+in, for the test and in every later session, since the user file applies to every workspace; use
+`~/` or an absolute path for a key file kept in one place.
+
 Two groups of keys are refused in every scope. Trust decisions
 (`mcp.projectServers`, `permissions.projectAllowRules`, `hooks.projectEntries`,
 `commands.projectCommands`, `projectDirectories`, `workspaceProviders`) live in
@@ -237,6 +255,13 @@ file, and replaces only the connection keys (`baseURL`, `baseUrl`, `apiKey` and 
 same-named entry in `.book/settings.local.json`, plus the local `model` when the save activates a
 model. Per-model overrides in that entry (`contextWindow`, `maxOutputTokens`, `vision`,
 `editFormat`, `effort`) are kept, so a `contextWindow` you set there survives a refresh.
+
+A key update (`Alt+K` in `/model`, or `book config provider-key`) follows the same rule, narrower
+still: it sets only `apiKey` on your user file's entry, leaving every other byte of it as it was,
+and removes the connection keys of a same-named entry in `.book/settings.local.json`, so a stale
+local key cannot look as though it overrides the new one. It leaves that entry's
+`reportedContextWindow` and the local `model` alone, since no catalog was refreshed and no model
+activated, and it never creates a local entry or file.
 
 ### Prompt caching on OpenAI-compatible providers
 

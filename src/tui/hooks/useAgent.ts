@@ -85,8 +85,10 @@ import type { WorkspaceProviderGate } from '../../provider-approvals.js';
 import {
   providerConfigForSave,
   refreshLiveModelInfo,
+  refreshLiveProviderKey,
   type ProviderSaveRequest,
 } from '../model-options.js';
+import { writeProviderKey } from '../../provider-key.js';
 import type { ProviderRemovalResult } from '../components/ModelPicker.js';
 import { updateEffortLevel } from '../../commands/effort.js';
 import { seedObservationLedger } from '../../tools/file-provenance.js';
@@ -2251,6 +2253,45 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.settingsContext?.noSettings, config.settingsContext?.overridePath, config.workspace],
   );
 
+  // `Alt+K`: replace a user-owned provider's key, leaving its catalog, the active model and every
+  // per-model override as they are (#592). The session sends the new key from its next request.
+  const updateProviderKey = useCallback(
+    (providerId: string, apiKey: string): { ok: boolean; error?: string } => {
+      if (!ownedProvidersRef.current.ids.has(providerId)) {
+        return { ok: false, error: 'Only BYOK providers you added can be changed.' };
+      }
+      const written = writeProviderKey(config.workspace, providerId, apiKey);
+      if (!written.ok) return written;
+      const saved = readUserProvider(providerId);
+      if (!saved) return { ok: true };
+      const liveProvider = liveProviderAfterSave(
+        {
+          workspace: config.workspace,
+          settingsContext: {
+            noSettings: config.settingsContext?.noSettings,
+            overridePath: config.settingsContext?.overridePath,
+          },
+        },
+        providerId,
+        saved,
+      );
+      setLiveConfig((current) =>
+        refreshLiveProviderKey(
+          {
+            ...current,
+            settings: {
+              ...current.settings,
+              provider: { ...current.settings.provider, [providerId]: liveProvider },
+            },
+          },
+          providerId,
+        ),
+      );
+      return { ok: true };
+    },
+    [config.settingsContext?.noSettings, config.settingsContext?.overridePath, config.workspace],
+  );
+
   const removeProvider = useCallback(
     (providerId: string): ProviderRemovalResult => {
       if (!ownedProvidersRef.current.ids.has(providerId)) {
@@ -2656,6 +2697,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     addLocalMessage,
     setModel,
     upsertProviderAndSelect,
+    updateProviderKey,
     removeProvider,
     setEffort,
     setAgentProfileModel,

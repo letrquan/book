@@ -16,6 +16,7 @@ import {
   providerConfigForSave,
   providerConfigFromDraft,
   refreshLiveModelInfo,
+  refreshLiveProviderKey,
   validateBaseUrl,
   validateModelId,
   validateProviderId,
@@ -477,5 +478,36 @@ describe('refreshLiveModelInfo', () => {
     expect(next.modelSelection).toBe('anth/claude-x');
     expect(next.effort).toBe('high');
     expect(next.maxTokens).toBe(12_345);
+  });
+});
+
+describe('refreshLiveProviderKey', () => {
+  const live = (selection: string) =>
+    defaultConfig({
+      apiKey: 'sk-old',
+      model: selection.slice(selection.indexOf('/') + 1),
+      modelSelection: selection,
+      effort: 'high',
+      settings: {
+        ...DEFAULT_SETTINGS,
+        provider: {
+          gw: {
+            type: 'openai',
+            baseURL: 'https://gw.test/v1',
+            apiKey: 'sk-new',
+            models: { m: { contextWindow: 9_000 } },
+          },
+        },
+      },
+    });
+
+  it('sends the saved key from the next request when the selection belongs to the provider', () => {
+    const config = live('gw/m');
+    expect(refreshLiveProviderKey(config, 'gw')).toEqual({ ...config, apiKey: 'sk-new' });
+  });
+
+  it('leaves a selection on another provider exactly as it was', () => {
+    const config = live('other/x');
+    expect(refreshLiveProviderKey(config, 'gw')).toBe(config);
   });
 });

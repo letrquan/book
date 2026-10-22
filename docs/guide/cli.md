@@ -30,6 +30,9 @@ book config set permissions.allow '["Read(*)","Glob(*)","Grep(*)"]'  # user-glob
 book config set --local permissions.allow '["Read(*)"]'              # just this checkout
 book config list --local                                             # what this checkout overrides
 book config unset --local permissions.allow                          # drop the override
+book config provider-key openrouter                                  # new key, typed hidden
+printf '%s' "$KEY" | book config provider-key openrouter             # or piped (tested first)
+printf '%s' "$KEY" | book config provider-key local --no-check       # no model-list API
 
 # Approve or refuse what a repository declared (hooks, rules, commands, directories, providers)
 book trust provider                # list the providers a repository declared that await a decision
