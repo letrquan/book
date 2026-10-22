@@ -2388,8 +2388,14 @@ export function App({
             workspaceRoot: config.workspace,
             env: process.env as Record<string, string>,
           }).then((result) => {
+            // `readOnlyGit` reports empty output as `(no output)`.
+            const diff = result.output.trim();
             addLocalMessage(
-              result.error ? `✕ ${result.error}` : result.output.trim() || '(no changes)',
+              result.error
+                ? `✕ ${result.error}`
+                : diff && diff !== '(no output)'
+                  ? diff
+                  : '(no changes)',
             );
           });
           return;

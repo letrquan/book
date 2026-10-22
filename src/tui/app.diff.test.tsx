@@ -187,4 +187,17 @@ describe('/diff', () => {
     expect(options).toBeUndefined();
     expect(addLocalMessage).toHaveBeenCalledWith('diff --git a/a.txt b/a.txt');
   });
+
+  it('says so when there is nothing to show', async () => {
+    readOnlyGitMock.mockResolvedValueOnce({ success: true, output: '(no output)' });
+    const addLocalMessage = vi.fn();
+    useAgentMock.mockReturnValue(agentState('session-a', addLocalMessage));
+    useTasksMock.mockReturnValue({ tasks: [], refresh: vi.fn() });
+    const view = render(<App config={config()} session={session} />);
+    await settle();
+
+    await submit(view, '/diff');
+
+    expect(addLocalMessage).toHaveBeenCalledWith('(no changes)');
+  });
 });

@@ -5,12 +5,38 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
-/** A commit identity on the command line, so no fixture depends on the runner's git config. */
-const IDENTITY = ['-c', 'user.name=Test', '-c', 'user.email=test@example.com'];
+/**
+ * A commit identity and no signing on the command line, so no fixture depends on the runner's git
+ * config.
+ */
+const IDENTITY = [
+  '-c',
+  'user.name=Test',
+  '-c',
+  'user.email=test@example.com',
+  '-c',
+  'commit.gpgSign=false',
+];
 
-/** Runs git in `cwd` and returns its stdout. */
+/**
+ * The variables that point git at a repository other than the one in `cwd`. A suite run from a
+ * git hook inherits `GIT_DIR`, and the fixtures must not write to that repository.
+ */
+const REPOSITORY_SELECTION = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_COMMON_DIR',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_NAMESPACE',
+];
+
+/** Runs git in `cwd`, on the repository found there, and returns its stdout. */
 export async function gitIn(cwd: string, ...args: string[]): Promise<string> {
-  return (await execFileAsync('git', args, { cwd, encoding: 'utf8' })).stdout;
+  const env = { ...process.env };
+  for (const name of REPOSITORY_SELECTION) delete env[name];
+  return (await execFileAsync('git', args, { cwd, encoding: 'utf8', env })).stdout;
 }
 
 /**

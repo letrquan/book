@@ -241,6 +241,33 @@ describe('useGitStatus argv', () => {
 
     view.unmount();
   });
+
+  it('keeps the branch when the status read fails', async () => {
+    // Real timers: the state update has to render, and the next poll is five seconds away.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-git-status-fail-'));
+    roots.push(workspace);
+    mkdirSync(join(workspace, '.git'));
+    const seen: Array<{ branch: string; status: string }> = [];
+    function Shown() {
+      const status = useGitStatus(workspace);
+      seen.push(status);
+      return null;
+    }
+
+    const view = render(<Shown />);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].callback(null, '');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].args.slice(-3)).toEqual(['rev-parse', '--abbrev-ref', 'HEAD']);
+    calls[1].callback(null, 'main\n');
+    await vi.waitFor(() => expect(calls).toHaveLength(3));
+    expect(calls[2].args).toContain('status');
+    // A partial clone missing an object the status needs, read without fetching.
+    calls[2].callback(new Error('fatal: unable to read tree'), '');
+
+    await vi.waitFor(() => expect(seen.at(-1)).toMatchObject({ branch: 'main', status: '' }));
+    view.unmount();
+  });
 });
 
 // Driven through an injected probe rather than the real filesystem. Whether a

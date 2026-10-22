@@ -86,12 +86,18 @@ export function useGitStatus(workspace: string): GitStatus {
           activeController.signal,
           pins,
         );
+        // A status that fails leaves the branch showing: in a partial clone that is missing an
+        // object the status needs, the read fails rather than fetching it.
         const short = await runGit(
           READ_ONLY_GIT_ARGS.GitStatus,
           workspace,
           activeController.signal,
           pins,
-        );
+        ).catch(() => undefined);
+        if (short === undefined) {
+          if (!cancelled) update({ branch, status: '' });
+          return;
+        }
 
         if (!short) {
           if (!cancelled) update({ branch, status: '\u2713' });
