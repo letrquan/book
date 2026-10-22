@@ -1390,6 +1390,23 @@ describe('session-state git line and a dotfiles ~/.git', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // The rule is for a project below the home directory (#579): a workspace that is the home
+  // directory itself has its git line.
+  it('carries the git line for a workspace that is the home directory', async () => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-git-home-')));
+    try {
+      const home = join(root, 'home');
+      gitRepository(home);
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('USERPROFILE', home);
+
+      const out = await buildMessages(defaultConfig({ workspace: home }), [userMsg('hi')]);
+      expect(out[1].content).toContain('- Git: branch ');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 /** The `- Git:` line of a built turn, if it has one. */

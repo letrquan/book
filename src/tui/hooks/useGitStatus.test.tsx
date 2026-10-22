@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { cleanup, render } from 'ink-testing-library';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const calls = vi.hoisted(
   () =>
@@ -319,5 +319,71 @@ describe('isInsideWorkTree', () => {
     // Deciding this by spawning `git` meant three processes every five seconds
     // in any plain directory, forever; under CI that took the runner with it.
     expect(isInsideWorkTree(join(root, 'plain', 'dir'), tree())).toBe(false);
+  });
+});
+
+// A `.git` at the home directory is a dotfiles repository, not the project, for a project below
+// the home directory without one of its own (#579): the poll spawns nothing there, so the bar
+// shows no branch rather than a git error. Its git carries the home directory as a ceiling
+// (`hardenedGitEnv`), which a workspace that is the home directory itself sees through.
+describe('useGitStatus and a dotfiles home directory', () => {
+  let root: string;
+  let home: string;
+
+  beforeEach(() => {
+    // The long form on Windows, as the ceiling carries it, not the runner's 8.3 temp path.
+    root = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-git-status-home-')));
+    roots.push(root);
+    home = join(root, 'home');
+    mkdirSync(join(home, '.git'), { recursive: true });
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    vi.stubEnv('GIT_CEILING_DIRECTORIES', undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('spawns nothing for a project below it without its own .git', async () => {
+    vi.useFakeTimers();
+    const proj = join(home, 'proj');
+    mkdirSync(proj);
+
+    const view = render(<Harness workspace={proj} />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls).toHaveLength(0);
+    view.unmount();
+  });
+
+  it('polls a workspace that is the home directory, with the home directory as ceiling', async () => {
+    vi.useFakeTimers();
+
+    const view = render(<Harness workspace={home} />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].options.env?.GIT_CEILING_DIRECTORIES).toBe(home);
+    calls[0].callback(null, '');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].args).toEqual(hardenedGitArgs(['rev-parse', '--abbrev-ref', 'HEAD']));
+    expect(calls[1].options.env?.GIT_CEILING_DIRECTORIES).toBe(home);
+    view.unmount();
+  });
+
+  it('adds no ceiling when the home directory holds no .git', async () => {
+    vi.useFakeTimers();
+    rmSync(join(home, '.git'), { recursive: true });
+    const repo = join(root, 'repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+
+    const view = render(<Harness workspace={repo} />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].options.env?.GIT_CEILING_DIRECTORIES).toBeUndefined();
+    view.unmount();
   });
 });

@@ -38,9 +38,12 @@ const MAX_REVIEW_DIFF_BYTES = 20 * 1024 * 1024;
  * `HARDENED_DIFF_ARGS` are the same hardening the read-only Git tools carry — `core.fsmonitor` is
  * a command `git diff` and `git ls-files` execute, `core.pager` a command git runs to page what
  * they print, and `diff.external` one it runs to produce them at all. A pager and a credential
- * prompt it cannot wait on come with it in `hardenedGitEnv`, as in `readOnlyGit`, and none of
- * them fetches (`noFetchGitEnv`): a missing object in a partial clone fails the read with a note
- * on what to do.
+ * prompt it cannot wait on come with it in `hardenedGitEnv`, as in `readOnlyGit`, and so does a
+ * dotfiles home directory as a `GIT_CEILING_DIRECTORIES` entry: a project below it with no `.git`
+ * of its own is in no repository, and the review refuses there as anywhere outside one, while a
+ * workspace that is the home directory reviews its repository (#579).
+ * None of them fetches (`noFetchGitEnv`): a missing object in a partial clone fails the read with
+ * a note on what to do.
  */
 async function git(
   workspace: string,
