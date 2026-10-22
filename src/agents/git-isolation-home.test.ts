@@ -151,6 +151,27 @@ describe('findGitRoot and a dotfiles ~/.git', () => {
       expect(readFileSync(join(bookHome, 'settings.json'), 'utf8')).toBe('{"changed":true}\n');
     });
 
+    it('takes the snapshot when GIT_LITERAL_PATHSPECS is exported', async () => {
+      // Which turns pathspec magic off, the exclusion's with it, unless the call turns it back on.
+      vi.stubEnv('GIT_LITERAL_PATHSPECS', '1');
+
+      const snapshot = await createSyntheticSnapshot(home, true);
+
+      const files = homeGit('ls-tree', '-r', '--name-only', snapshot.commit).split('\n');
+      expect(files.filter((file) => file.startsWith('.book/'))).toEqual(['.book/settings.json']);
+      expect(await currentWorkspaceFingerprint(snapshot.repoRoot, true)).toBe(snapshot.fingerprint);
+    });
+
+    it('counts a staged change to a tracked file there as dirty', async () => {
+      // The index then differs from HEAD, which the cherry-pick an undirty snapshot takes refuses.
+      writeFileSync(join(bookHome, 'settings.json'), '{"staged":true}\n');
+      homeGit('add', '--', '.book/settings.json');
+
+      const snapshot = await createSyntheticSnapshot(home, true);
+
+      expect(snapshot.dirty).toBe(true);
+    });
+
     it('still reports drift outside Book’s home directory', async () => {
       const snapshot = await createSyntheticSnapshot(home, true);
       writeFileSync(join(home, 'notes.txt'), 'changed by hand\n');
