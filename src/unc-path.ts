@@ -65,14 +65,38 @@ export type UncGuard = (path: string) => boolean;
 type Probed =
   { kind: 'missing' } | { kind: 'plain' } | { kind: 'link'; target: string | undefined };
 
+/** What a {@link createUncGuard} takes as given. */
+export interface UncGuardOptions {
+  /**
+   * Roots the user chose, such as an `additionalDirectories` entry or the memory directory. Each
+   * is taken as given, on a share or not, with the directories above it: only what lies below is
+   * walked. A link there to a UNC location outside every such root is judged as any other.
+   */
+  trusted?: readonly string[];
+}
+
+/** Whether `path` is `root` or lies below it, both as Windows reads them. */
+function isWithinWindowsPath(root: string, path: string): boolean {
+  const rel = win32.relative(root, path);
+  return rel === '' || (rel !== '..' && !rel.startsWith('..\\') && !win32.isAbsolute(rel));
+}
+
 /**
  * A {@link reachesUncPath} that remembers what it probed (#579). Paths that share a prefix are
  * walked through the same components, and a link to an absolute target restarts the walk at the
  * volume root, so the same `lstat` was asked again and again; here each path is probed once, with
  * its link read once. The memo lives as long as the guard, so a caller makes one per top-level
  * call (a listing, a walk) and drops it after: a file system that changes later is probed afresh.
+ * With `trusted` roots ({@link UncGuardOptions}) a location inside one of them is not a refusal.
  */
-export function createUncGuard(probe: UncProbe = {}): UncGuard {
+export function createUncGuard(probe: UncProbe = {}, options: UncGuardOptions = {}): UncGuard {
+  const trusted = (options.trusted ?? []).map((root) => win32.resolve(root));
+  // A UNC location the user chose: one inside a trusted root.
+  const chosen = (path: string) => trusted.some((root) => isWithinWindowsPath(root, path));
+  // A trusted root, or a directory above one: taken as given, never probed.
+  const given = (path: string) => trusted.some((root) => isWithinWindowsPath(path, root));
+  const refused = (spelled: string, resolved: string) =>
+    isUncSpelling(spelled) && !chosen(resolved);
   const lstat = probe.lstat ?? ((entry: string) => lstatSync(entry));
   const readlink = probe.readlink ?? ((entry: string) => readlinkSync(entry));
   const probed = new Map<string, Probed>();
@@ -101,11 +125,15 @@ export function createUncGuard(probe: UncProbe = {}): UncGuard {
 
   return (path) => {
     if ((probe.platform ?? process.platform) !== 'win32') return false;
-    if (isUncSpelling(path)) return true;
+    if (refused(path, win32.resolve(path))) return true;
     let { root: current, names } = components(win32.resolve(path));
     let hops = 0;
     while (names.length > 0) {
       const next = win32.join(current, names.shift()!);
+      if (given(next)) {
+        current = next;
+        continue;
+      }
       const entry = look(next);
       if (entry.kind === 'missing') return false;
       if (entry.kind === 'plain') {
@@ -114,11 +142,11 @@ export function createUncGuard(probe: UncProbe = {}): UncGuard {
       }
       if (++hops > MAX_LINK_HOPS) return true;
       const target = entry.target;
-      if (target === undefined || isUncSpelling(target)) return true;
+      if (target === undefined) return true;
       // A relative target is relative to the directory holding the link (a junction's is always
       // absolute), and Windows takes `..` in it by name, as `resolve` does.
       const resolved = win32.resolve(current, target);
-      if (isUncSpelling(resolved)) return true;
+      if (refused(target, resolved) || refused(resolved, resolved)) return true;
       const walk = components(resolved);
       current = walk.root;
       names = [...walk.names, ...names];

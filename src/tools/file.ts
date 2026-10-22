@@ -12,7 +12,7 @@ import {
   type RecordingWalkFs,
   type WalkFailure,
 } from './walk-fs.js';
-import { createUncGuard, reachesUncPath, uncGuardedWalkFs } from '../unc-path.js';
+import { createUncGuard, reachesUncPath, uncGuardedWalkFs, type UncGuard } from '../unc-path.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { buildChildEnv } from '../child-env.js';
 import { markdownContentStart } from '../frontmatter.js';
@@ -22,6 +22,7 @@ import { checkMemoryWrite, noticeMemoryWrite, withMemoryWarnings } from '../memo
 import { redactedSecretAddition, redactedSecretOverwrite } from './redacted-secret-guard.js';
 import {
   isBookLocalSettingsUnderRoots,
+  isOutside,
   memoryReadDisplayPath,
   messagePathFor,
   mutationDisplayPath,
@@ -167,6 +168,34 @@ type GrepScopeResolution = { ok: true; scope: GrepScope } | { ok: false; failure
  * memory directory is the other: `memorySearchRoot` serves the files in it, and none of its
  * dot-entries (`.format`, a backup).
  */
+/**
+ * The UNC guard a Glob or Grep walk and a Grep `path` are asked of (#579). The user's own read
+ * roots (the honored `additionalDirectories`, the memory directory) are taken as given even on a
+ * share, as Read serves them; a link below them, or in the workspace, to a UNC location elsewhere
+ * is not.
+ */
+function walkUncGuard(ctx: ToolContext): UncGuard {
+  const trusted = [...(ctx.additionalRoots ?? [])];
+  if (ctx.memorySearchRoot) trusted.push(ctx.memorySearchRoot);
+  return createUncGuard({}, { trusted });
+}
+
+/**
+ * The one answer to a search of a workspace on a network (UNC) path, on Windows: its files are the
+ * project's, and a workspace there loads none of them (#567). Undefined for any other workspace.
+ */
+function uncWorkspaceFailure(ctx: ToolContext): ToolResult | undefined {
+  if (!reachesUncPath(ctx.workspaceRoot)) return undefined;
+  return toolFailure(
+    `The workspace is on a network (UNC) path and is not searched: ${ctx.workspaceRoot}`,
+    {
+      code: 'path_unreadable',
+      remediation:
+        'Open the workspace through a mapped drive letter, or search a configured directory.',
+    },
+  );
+}
+
 function grepRoots(ctx: ToolContext): PathRoots {
   return {
     workspaceRoot: ctx.workspaceRoot,
@@ -203,6 +232,11 @@ async function resolveGrepScope(
 ): Promise<GrepScopeResolution> {
   const raw = args.path as string | undefined;
   const roots = grepRoots(ctx);
+  const asked = resolvePath(ctx.workspaceRoot, raw && raw !== '.' ? raw : '.');
+  if (!isOutside(ctx.workspaceRoot, asked)) {
+    const failure = uncWorkspaceFailure(ctx);
+    if (failure) return { ok: false, failure };
+  }
   if (!raw || raw === '.') {
     return {
       ok: true,
@@ -215,8 +249,9 @@ async function resolveGrepScope(
     };
   }
   // On Windows a path that is, or reaches through a link, a network (UNC) location is refused
-  // before anything resolves it, as the walk passes one over (`uncGuardedWalkFs`, #579).
-  if (reachesUncPath(resolvePath(ctx.workspaceRoot, raw))) {
+  // before anything resolves it, as the walk passes one over (`uncGuardedWalkFs`, #579), unless
+  // it is in a root the user chose there.
+  if (walkUncGuard(ctx)(asked)) {
     return {
       ok: false,
       failure: toolFailure(`Path is on a network (UNC) path and is not searched: ${raw}`, {
@@ -1776,10 +1811,12 @@ function globSearchDir(ctx: ToolContext): string[] {
 
 /** A path the UNC guard kept a walk from opening, recorded as one it could not read. */
 function recordRefusal(recorder: RecordingWalkFs): (path: string) => void {
-  return (path) => recorder.failures.push({ path, code: 'EUNC' });
+  return (path) => recorder.failures.push({ path, code: 'UNC' });
 }
 
 async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const uncWorkspace = uncWorkspaceFailure(ctx);
+  if (uncWorkspace) return uncWorkspace;
   const pattern = args.pattern as string;
   const roots = grepRoots(ctx);
   const files: string[] = [];
@@ -1817,7 +1854,7 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
         expandDirectories: false,
         signal: ctx.signal,
         fs:
-          uncGuardedWalkFs(cwd, createUncGuard(), recorder.fs, recordRefusal(recorder)) ??
+          uncGuardedWalkFs(cwd, walkUncGuard(ctx), recorder.fs, recordRefusal(recorder)) ??
           recorder.fs,
       });
     } catch (error) {
@@ -2127,7 +2164,7 @@ async function grepSearchPortable(
         signal: ctx.signal,
         // As a Glob's walk: on Windows, asked of the UNC guard first (`uncGuardedWalkFs`).
         fs:
-          uncGuardedWalkFs(scope.root, createUncGuard(), recorder.fs, recordRefusal(recorder)) ??
+          uncGuardedWalkFs(scope.root, walkUncGuard(ctx), recorder.fs, recordRefusal(recorder)) ??
           recorder.fs,
       });
     } catch (error) {
@@ -2655,10 +2692,13 @@ export function buildRipgrepArgs(options: RipgrepArgOptions): string[] {
  * takes the root's rules the way the portable backend does (`loadGitignore`). Undefined elsewhere,
  * where ripgrep finds its own.
  */
-export async function ripgrepIgnoreFile(root: string): Promise<string | null | undefined> {
+export async function ripgrepIgnoreFile(
+  root: string,
+  reachesUnc: UncGuard = reachesUncPath,
+): Promise<string | null | undefined> {
   if (process.platform !== 'win32') return undefined;
   const path = join(root, '.gitignore');
-  if (reachesUncPath(path)) return null;
+  if (reachesUnc(path)) return null;
   try {
     return (await stat(path)).isFile() ? path : null;
   } catch {
@@ -2686,13 +2726,8 @@ async function grepSearchWithRipgrep(
   if (!scoped.ok) return { kind: 'success', result: scoped.failure };
   const scope = scoped.scope;
   const roots = grepRoots(ctx);
-  // On Windows ripgrep is not started in a root on a network (UNC) path: the portable walk, which
-  // does not list one, answers instead.
-  if (process.platform === 'win32' && reachesUncPath(scope.root)) {
-    return { kind: 'success', result: await grepSearchPortable(args, ctx) };
-  }
 
-  const ignoreFile = await ripgrepIgnoreFile(scope.root);
+  const ignoreFile = await ripgrepIgnoreFile(scope.root, walkUncGuard(ctx));
   // That was a turn of the event loop: a cancel that landed during it is answered here, before a
   // process is started that there would be nothing yet to stop.
   throwIfAborted(ctx.signal);

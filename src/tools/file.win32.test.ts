@@ -17,7 +17,13 @@ vi.mock('fs', async (importOriginal) =>
 vi.mock('node:fs', async (importOriginal) =>
   (await import('../test/windows-links.js')).withWindowsLinks(await importOriginal(), links),
 );
+// Spied, so a test can tell whether a ripgrep process was started at all.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
+import { spawn } from 'node:child_process';
 import * as fs from 'fs';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as nodeFs from 'node:fs';
@@ -53,8 +59,12 @@ beforeEach(() => {
   ctx = { workspaceRoot: ws, env: { BOOK_GREP_BACKEND: 'typescript' } };
   clearSpies(fs);
   clearSpies(nodeFs);
+  vi.mocked(spawn).mockClear();
   Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
 });
+
+/** Whether a ripgrep process was started. */
+const startedRipgrep = () => vi.mocked(spawn).mock.calls.some(([command]) => command === 'rg');
 
 afterEach(() => {
   Object.defineProperty(process, 'platform', platform);
@@ -79,7 +89,7 @@ describe('Glob and Grep walks on Windows with a link to a network path', () => {
     expect(result.content).toContain('app.ts');
     expect(result.content).not.toContain('remote.ts');
     // Said, so the list is not taken for the whole workspace.
-    expect(result.content).toContain('share (EUNC)');
+    expect(result.content).toContain('share (UNC)');
     expectShareUntouched();
   });
 
@@ -88,18 +98,6 @@ describe('Glob and Grep walks on Windows with a link to a network path', () => {
     expect(result.content).toContain('app.ts');
     expect(result.content).not.toContain('remote.ts');
     expectShareUntouched();
-  });
-
-  it('Grep does not start ripgrep in a root that links to a share', async () => {
-    links.map.set(windowsSpelling(ws), '\\\\host\\share\\ws');
-    const result = await grep.execute(
-      { pattern: 'marker', include: '**/*.ts' },
-      { ...ctx, env: { BOOK_GREP_BACKEND: 'ripgrep' } },
-    );
-    // The portable backend answered, without listing the root, rather than ripgrep.
-    expect(result.content).not.toContain('rg was not found');
-    expect(result.content).toContain('EUNC');
-    expect(touches(nodeFs.readdir, ws)).toBe(false);
   });
 
   it('Grep refuses a path that links to a share before resolving it', async () => {
@@ -130,13 +128,54 @@ describe('Glob and Grep walks on Windows with a link to a network path', () => {
     ).toBe(true);
   });
 
-  it('Glob and Grep do not list a workspace that links to a share', async () => {
+  it('gives one path_unreadable failure for a workspace that links to a share', async () => {
     links.map.set(windowsSpelling(ws), '\\\\host\\share\\ws');
-    await glob.execute({ pattern: '**/*.ts' }, ctx);
-    await grep.execute({ pattern: 'marker', include: '**/*.ts' }, ctx);
+    const results = [
+      await glob.execute({ pattern: '**/*.ts' }, ctx),
+      await grep.execute({ pattern: 'marker' }, ctx),
+      await grep.execute({ pattern: 'marker', path: 'src' }, ctx),
+      await grep.execute({ pattern: 'marker' }, { ...ctx, env: { BOOK_GREP_BACKEND: 'ripgrep' } }),
+    ];
+    for (const result of results) {
+      expect(result.status).toBe('error');
+      expect(result.structuredError?.code).toBe('path_unreadable');
+    }
     for (const spy of [nodeFs.readdir, fs.readdir, fs.realpath]) {
       expect(touches(spy, ws)).toBe(false);
     }
+    expect(startedRipgrep()).toBe(false);
+  });
+
+  it('searches a root the user configured on a share, but not a link below it to another', async () => {
+    // An additionalDirectories entry and the memory directory, each reached as a share: the user
+    // chose them, as Read serves them.
+    const extra = join(tmp, 'extra');
+    const memory = join(tmp, 'memory');
+    for (const dir of [extra, memory]) {
+      mkdirSync(dir);
+      writeFileSync(join(dir, 'lib.ts'), 'const marker = 3;');
+    }
+    symlinkSync(join(tmp, 'share'), join(extra, 'away'), 'junction');
+    links.map.set(windowsSpelling(extra), '\\\\nas\\data');
+    links.map.set(windowsSpelling(memory), '\\\\nas\\home\\memory');
+    links.map.set(windowsSpelling(join(extra, 'away')), '\\\\other\\share');
+    const configured = { ...ctx, additionalRoots: [extra], memorySearchRoot: memory };
+
+    for (const root of [extra, memory]) {
+      const result = await grep.execute({ pattern: 'marker', path: root }, configured);
+      expect(result.status, root).toBe('success');
+      expect(result.content, root).toContain('lib.ts');
+    }
+    // A link found below the root, and a path the model names through it, lead elsewhere.
+    expect(touches(fs.realpath, join(extra, 'away'))).toBe(false);
+    const through = await grep.execute(
+      { pattern: 'marker', path: join(extra, 'away') },
+      configured,
+    );
+    expect(through.structuredError?.code).toBe('path_unreadable');
+    // And without the configuration, the same root is refused.
+    const unconfigured = await grep.execute({ pattern: 'marker', path: extra }, ctx);
+    expect(unconfigured.status).toBe('error');
   });
 
   // Only Windows' own `path` keeps a UNC pattern as the walk's root; elsewhere it walks from `cwd`.
@@ -199,9 +238,16 @@ describe('the ripgrep backend on Windows', () => {
         ),
       ).rejects.toThrow('grep cancelled');
       expect(controller.signal.aborted).toBe(true);
+      expect(startedRipgrep()).toBe(false);
     } finally {
       lstat.mockImplementation(original);
     }
+    // The control: without a cancel, the same search does start ripgrep.
+    await grep.execute(
+      { pattern: 'marker', include: '**/*.ts' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'ripgrep' } },
+    );
+    expect(startedRipgrep()).toBe(true);
   });
 
   it('finds its own ignore files off Windows', async () => {
