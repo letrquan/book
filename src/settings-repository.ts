@@ -104,7 +104,9 @@ export function projectFileWriteRefusal(path: string): string | undefined {
   }
   try {
     const folder = dirname(target);
-    if (basename(folder) === '.book') {
+    // `<BOOK_HOME>` itself (a workspace at `$HOME`, where `.book` is it) is the user's own folder,
+    // and a dotfiles setup often links it into place.
+    if (basename(folder) === '.book' && folder !== home) {
       const folderStats = lstatSync(folder, { throwIfNoEntry: false });
       if (folderStats && !folderStats.isDirectory()) {
         return 'its .book folder is not a regular directory, so Book left it unchanged';

@@ -122,6 +122,21 @@ links('a project settings file that is a link', () => {
     expectUntouched(localPath(), target);
   });
 
+  it('accepts a BOOK_HOME folder that is a link, for a workspace at that home', () => {
+    const real = join(outside, 'real-home');
+    mkdirSync(real);
+    const home = join(outside, 'home');
+    mkdirSync(home);
+    symlinkSync(real, join(home, '.book'));
+    vi.stubEnv('BOOK_HOME', join(home, '.book'));
+    try {
+      expect(projectFileWriteRefusal(join(home, '.book', 'settings.local.json'))).toBeUndefined();
+      expect(persistUserSettingClearingLocal(home, 'effort', 'high')).toEqual({ ok: true });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('is refused when the .book folder itself is a link', () => {
     const folder = join(outside, 'folder');
     mkdirSync(folder);
