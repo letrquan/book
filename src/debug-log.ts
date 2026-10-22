@@ -35,6 +35,7 @@ import {
   unlinkSync,
 } from 'fs';
 import { dirname, join } from 'path';
+import { projectFileWriteRefusal } from './workspace-files.js';
 
 // Core flag — provider, agent loop, and TUI lifecycle.
 const DEBUG_ENABLED = process.env.BOOK_DEBUG === '1';
@@ -48,6 +49,8 @@ const FLOW_DEBUG_ENABLED = process.env.BOOK_DEBUG_FLOW === '1';
 
 let debugLogPath: string | undefined;
 const debugLogSizes = new Map<string, number>();
+/** Log targets found unwritable: debug logging to them is off for the rest of the session. */
+const refusedDebugLogTargets = new Set<string>();
 const DEFAULT_DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024;
 const MIN_DEBUG_LOG_MAX_BYTES = 4;
 const DEFAULT_DEBUG_LOG_BACKUPS = 3;
@@ -105,6 +108,8 @@ export function cleanupDebugLogs(
   now = Date.now(),
 ): number {
   if (!target) return 0;
+  // The default log's folder is a workspace one, held to the same rule as the log itself.
+  if (target === defaultDebugLogPath() && projectFileWriteRefusal(target)) return 0;
   const cutoff = now - Math.max(1, days) * 86_400_000;
   const directory = dirname(target);
   const prefix = `${target.split(/[\\/]/).pop()}.`;
@@ -124,12 +129,30 @@ export function cleanupDebugLogs(
   return removed;
 }
 
+/**
+ * The default `.book/debug.log` is one of Book's own workspace files, so it is written only while
+ * it is a regular file; otherwise debug logging stops for the session, said once on stderr.
+ * `BOOK_DEBUG_FILE` is the user's own choice, a FIFO or `/dev/stderr` included, and is used as
+ * given.
+ */
+function usableDebugLogTarget(target: string): boolean {
+  if (refusedDebugLogTargets.has(target)) return false;
+  // Checked before every append, not once: a checkout during the session can put something else
+  // at the path.
+  const refusal = target === defaultDebugLogPath() ? projectFileWriteRefusal(target) : undefined;
+  if (!refusal) return true;
+  refusedDebugLogTargets.add(target);
+  process.stderr.write(`Debug logging is off for this session: ${target}: ${refusal}.\n`);
+  return false;
+}
+
 function writeDebugLine(line: string): void {
   const target = debugLogPath ?? (debugLogPath = getDebugLogPath());
   if (!target) {
     process.stderr.write(line);
     return;
   }
+  if (!usableDebugLogTarget(target)) return;
 
   try {
     mkdirSync(dirname(target), { recursive: true });

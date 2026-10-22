@@ -35,6 +35,13 @@ that is valid on its own but would leave a configuration nothing can load is ref
 lands rather than bricking every later command. A configuration that is already broken stays
 writable, since repairing one is what the command is for.
 
+Book's own workspace writes (`.book/settings.json`, `.book/settings.local.json`,
+`.book/migrations.json`, a project `.mcp.json`, `/export`, and the default `.book/debug.log`) only
+touch regular files: each is written only while it is a regular file or does not exist yet.
+Anything else at that path is left as it is, and the write stops with a one-line notice naming the
+file; for the debug log, debug logging stops for the session. `/export` also writes only inside the
+workspace. `<BOOK_HOME>/settings.json` and `<BOOK_HOME>/mcp.json` are written as before.
+
 `book config get` and `book config list` report the _resolved_ merge of all layers by default.
 Given a scope they read that one file verbatim instead, which is how you find the stray value
 overriding you — the local layer resolves last, so anything left there outranks a later global

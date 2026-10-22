@@ -15,6 +15,7 @@ import type { core } from 'zod';
 import { deleteNestedValue, setNestedValue } from './cli/utils.js';
 import { bookSettingsSchema } from './settings.js';
 import { redactSettingValue } from './settings-redaction.js';
+import { projectFileWriteRefusal } from './workspace-files.js';
 
 export type SettingsDocumentReadResult =
   | { status: 'absent'; path: string }
@@ -155,6 +156,10 @@ export class SettingsRepository {
     mutation: (candidate: Record<string, unknown>) => void,
     values: Record<string, unknown>,
   ): SettingsMutationResult {
+    const refusal = projectFileWriteRefusal(this.path);
+    if (refusal) {
+      return { ok: false, path: this.path, diagnostics: [{ path: this.path, message: refusal }] };
+    }
     let lock: number | undefined;
     try {
       lock = this.acquireLock();

@@ -1,10 +1,12 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'fs';
@@ -64,6 +66,98 @@ describe('debug logger output target', () => {
     createDebugLogger('test').debug('hello');
 
     expect(readFileSync(logPath, 'utf8')).toContain('[test] [DEBUG] hello');
+    expect(stderr).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'leaves a default log that is a link unchanged and stops logging, said once',
+    async () => {
+      const workspace = tempDir();
+      const elsewhere = join(tempDir(), 'elsewhere.txt');
+      writeFileSync(elsewhere, 'before\n');
+      mkdirSync(join(workspace, '.book'));
+      const logPath = join(workspace, '.book', 'debug.log');
+      symlinkSync(elsewhere, logPath);
+      vi.stubEnv('BOOK_DEBUG', '1');
+      vi.stubEnv('BOOK_WORKSPACE', workspace);
+      vi.stubEnv('BOOK_DEBUG_STDERR', '');
+      vi.stubEnv('BOOK_DEBUG_FILE', '');
+      setStderrIsTTY(true);
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      const { createDebugLogger } = await import('./debug-log.js');
+      createDebugLogger('test').debug('one');
+      createDebugLogger('test').debug('two');
+
+      expect(readFileSync(elsewhere, 'utf8')).toBe('before\n');
+      expect(lstatSync(logPath).isSymbolicLink()).toBe(true);
+      expect(stderr).toHaveBeenCalledTimes(1);
+      expect(String(stderr.mock.calls[0][0])).toContain('Debug logging is off for this session');
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'stops when the default log stops being a regular file partway through',
+    async () => {
+      const workspace = tempDir();
+      const elsewhere = join(tempDir(), 'elsewhere.txt');
+      writeFileSync(elsewhere, 'before\n');
+      mkdirSync(join(workspace, '.book'));
+      const logPath = join(workspace, '.book', 'debug.log');
+      vi.stubEnv('BOOK_DEBUG', '1');
+      vi.stubEnv('BOOK_WORKSPACE', workspace);
+      vi.stubEnv('BOOK_DEBUG_STDERR', '');
+      vi.stubEnv('BOOK_DEBUG_FILE', '');
+      setStderrIsTTY(true);
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      const { createDebugLogger } = await import('./debug-log.js');
+      createDebugLogger('test').debug('one');
+      rmSync(logPath);
+      symlinkSync(elsewhere, logPath);
+      createDebugLogger('test').debug('two');
+
+      expect(readFileSync(elsewhere, 'utf8')).toBe('before\n');
+      expect(stderr).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'leaves rotated logs alone when the default log folder is a link',
+    async () => {
+      const workspace = tempDir();
+      const folder = tempDir();
+      const rotated = join(folder, 'debug.log.1');
+      writeFileSync(rotated, 'old');
+      utimesSync(rotated, new Date(0), new Date(0));
+      symlinkSync(folder, join(workspace, '.book'));
+      vi.stubEnv('BOOK_WORKSPACE', workspace);
+      vi.stubEnv('BOOK_DEBUG_STDERR', '');
+      vi.stubEnv('BOOK_DEBUG_FILE', '');
+      setStderrIsTTY(true);
+
+      const { cleanupDebugLogs } = await import('./debug-log.js');
+      expect(cleanupDebugLogs(30)).toBe(0);
+      expect(existsSync(rotated)).toBe(true);
+    },
+  );
+
+  it('keeps writing a default log that is a regular file', async () => {
+    const workspace = tempDir();
+    mkdirSync(join(workspace, '.book'));
+    const logPath = join(workspace, '.book', 'debug.log');
+    writeFileSync(logPath, 'earlier\n');
+    vi.stubEnv('BOOK_DEBUG', '1');
+    vi.stubEnv('BOOK_WORKSPACE', workspace);
+    vi.stubEnv('BOOK_DEBUG_STDERR', '');
+    vi.stubEnv('BOOK_DEBUG_FILE', '');
+    setStderrIsTTY(true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const { createDebugLogger } = await import('./debug-log.js');
+    createDebugLogger('test').debug('later');
+
+    expect(readFileSync(logPath, 'utf8')).toMatch(/^earlier\n.*\[test\] \[DEBUG\] later/s);
     expect(stderr).not.toHaveBeenCalled();
   });
 

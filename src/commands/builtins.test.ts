@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -1267,5 +1276,76 @@ describe('/memory consolidate', () => {
     const empty = mkdtempSync(join(tmpdir(), 'book-consolidate-empty-'));
     cleanup.push(empty);
     expect(run('consolidate', { workspace: empty })).toEqual(refusal(/no memory files/));
+  });
+});
+
+describe('/export', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  function temp(prefix: string): string {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    dirs.push(dir);
+    return dir;
+  }
+  const messages = [{ role: 'user' as const, content: 'hello' }];
+  const run = (workspace: string, args = '') =>
+    createBuiltinCommandRegistry().execute(
+      'export',
+      args,
+      context({ workspace, messages: messages as BuiltinCommandContext['messages'] }),
+    );
+
+  it('writes a regular file in the workspace, replacing an earlier export', () => {
+    const workspace = temp('book-export-ws-');
+    writeFileSync(join(workspace, 'conversation.txt'), 'old');
+    expect(run(workspace)).toMatchObject({
+      content: expect.stringContaining('Exported 1 messages'),
+    });
+    expect(readFileSync(join(workspace, 'conversation.txt'), 'utf-8')).toBe('user:\nhello');
+    expect(run(workspace, 'notes/out.txt')).toMatchObject({
+      content: expect.stringContaining('Exported'),
+    });
+    expect(readFileSync(join(workspace, 'notes', 'out.txt'), 'utf-8')).toBe('user:\nhello');
+  });
+
+  it('refuses a target outside the workspace', () => {
+    const workspace = temp('book-export-ws-');
+    const other = temp('book-export-other-');
+    expect(run(workspace, join(other, 'out.txt'))).toMatchObject({
+      content: expect.stringContaining('outside the workspace'),
+    });
+    expect(run(workspace, '../out.txt')).toMatchObject({
+      content: expect.stringContaining('outside the workspace'),
+    });
+    expect(existsSync(join(other, 'out.txt'))).toBe(false);
+  });
+
+  it('refuses a directory in the target’s place', () => {
+    const workspace = temp('book-export-ws-');
+    mkdirSync(join(workspace, 'conversation.txt'));
+    expect(run(workspace)).toMatchObject({
+      content: expect.stringContaining('not a regular file'),
+    });
+  });
+
+  it.skipIf(process.platform === 'win32')('leaves a target that is a link unchanged', () => {
+    const workspace = temp('book-export-ws-');
+    const other = temp('book-export-other-');
+    const elsewhere = join(other, 'elsewhere.txt');
+    writeFileSync(elsewhere, 'before');
+    symlinkSync(elsewhere, join(workspace, 'conversation.txt'));
+    const inside = join(workspace, 'inside.txt');
+    writeFileSync(inside, 'inside before');
+    symlinkSync(inside, join(workspace, 'link-in.txt'));
+
+    expect(run(workspace)).toMatchObject({ content: expect.stringContaining('✕ export failed') });
+    expect(run(workspace, 'link-in.txt')).toMatchObject({
+      content: expect.stringContaining('not a regular file'),
+    });
+    expect(readFileSync(elsewhere, 'utf-8')).toBe('before');
+    expect(readFileSync(inside, 'utf-8')).toBe('inside before');
+    expect(lstatSync(join(workspace, 'conversation.txt')).isSymbolicLink()).toBe(true);
   });
 });

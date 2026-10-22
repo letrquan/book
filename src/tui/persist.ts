@@ -21,6 +21,7 @@ import {
   readSettingsDocument,
   SettingsRepository,
 } from '../settings-repository.js';
+import { projectFileWriteRefusal } from '../workspace-files.js';
 import { resolveBookHome } from '../book-home.js';
 import {
   ADVISOR_OFF_VALUE,
@@ -69,6 +70,15 @@ export type RemoveLocalProviderResult =
       localProviderExisted: boolean;
       error: string;
     };
+
+/**
+ * The refusal for a write that starts by reading the file at `path` itself, checked before that
+ * read. A write through `SettingsRepository` alone needs none: the repository checks first.
+ */
+function refusedWrite(path: string): { ok: false; error: string } | undefined {
+  const reason = projectFileWriteRefusal(path);
+  return reason ? { ok: false, error: `${path}: ${reason}` } : undefined;
+}
 
 /** Read a settings document at `path` as a plain object ({} if absent/invalid). */
 function readSettingsAt(path: string): Record<string, unknown> {
@@ -170,6 +180,10 @@ export function persistUserSettingClearingLocal(
   key: string,
   value: unknown,
 ): { ok: boolean; error?: string } {
+  // Checked before the user file is written: the clear that follows must happen for the write to
+  // take effect, and a refused one would otherwise pass silently.
+  const refused = refusedWrite(localSettingsPath(workspace));
+  if (refused) return refused;
   const result = persistSettingsGlobal({ [key]: value });
   if (!result.ok) return result;
   clearLocalSettings(workspace, [key]);
@@ -181,6 +195,8 @@ export function removeUserSettingClearingLocal(
   workspace: string,
   key: string,
 ): { ok: boolean; error?: string } {
+  const refused = refusedWrite(localSettingsPath(workspace));
+  if (refused) return refused;
   const result = new SettingsRepository(globalSettingsPath()).remove([key]);
   if (!result.ok) return { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
   clearLocalSettings(workspace, [key]);
@@ -324,6 +340,9 @@ export function persistProviderSave(
   provider: ProviderConfig,
   selection?: string,
 ): { ok: boolean; error?: string } {
+  // As in persistUserSettingClearingLocal: the local clear is part of the save.
+  const refused = refusedWrite(localSettingsPath(workspace));
+  if (refused) return refused;
   const result = persistSettingsGlobal({
     [`provider.${providerId}`]: provider,
     ...(selection !== undefined ? { model: selection } : {}),
@@ -399,6 +418,16 @@ function removeProviderAt(
   label: string,
   providerId: string,
 ): RemoveLocalProviderResult {
+  const refused = refusedWrite(path);
+  if (refused) {
+    return {
+      ...refused,
+      providerId,
+      removedModelCount: 0,
+      localDefaultCleared: false,
+      localProviderExisted: false,
+    };
+  }
   if (!existsSync(path)) {
     return {
       ok: false,
@@ -500,6 +529,8 @@ export function persistPermissionRuleLocal(
   list: 'allow' | 'ask' | 'deny',
   rule: string,
 ): { ok: boolean; error?: string } {
+  const refused = refusedWrite(localSettingsPath(workspace));
+  if (refused) return refused;
   const existing = readSettingsLocal(workspace);
   const perms = (existing.permissions ?? {}) as Record<string, unknown[]>;
   const arr = Array.isArray(perms[list]) ? [...(perms[list] as unknown[])] : [];
@@ -525,6 +556,8 @@ export function removePermissionRuleLocal(
   list: 'allow' | 'ask' | 'deny',
   rule: string,
 ): { ok: boolean; error?: string; notLocal?: boolean } {
+  const refused = refusedWrite(localSettingsPath(workspace));
+  if (refused) return refused;
   const existing = readSettingsLocal(workspace);
   const perms = (existing.permissions ?? {}) as Record<string, unknown[]>;
   const arr = Array.isArray(perms[list]) ? [...(perms[list] as unknown[])] : [];

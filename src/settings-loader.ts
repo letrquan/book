@@ -11,6 +11,7 @@ import {
   type ResolvedSettings,
 } from './settings.js';
 import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
+import { projectFileWriteRefusal } from './workspace-files.js';
 import { resolveBookHome } from './book-home.js';
 import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
@@ -857,6 +858,15 @@ export function migrateLegacyPermissions(
   const legacyPath = join(home ? join(home, '.book') : resolveBookHome(), 'permissions.json');
   if (!existsSync(legacyPath)) return false;
   const markerPath = join(workspace, '.book', 'migrations.json');
+  const localPath = join(workspace, '.book', 'settings.local.json');
+  // Before the marker is read: it is one of the files this writes.
+  for (const path of [markerPath, localPath]) {
+    const refusal = projectFileWriteRefusal(path);
+    if (refusal) {
+      console.warn(`⚠  Permission rules not migrated: ${path}: ${refusal}.`);
+      return false;
+    }
+  }
   try {
     const marker = JSON.parse(readFileSync(markerPath, 'utf-8')) as {
       legacyPermissions?: number;
@@ -879,8 +889,6 @@ export function migrateLegacyPermissions(
 
   if (legacyRules.length === 0) return false;
 
-  const localDir = join(workspace, '.book');
-  const localPath = join(localDir, 'settings.local.json');
   const result = new SettingsRepository(localPath).update((existing) => {
     const permissions = (existing.permissions ?? {}) as {
       allow?: string[];
