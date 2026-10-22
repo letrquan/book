@@ -1700,6 +1700,31 @@ export class AgentStore {
   }
 }
 
+/**
+ * How many agent records `<root>/<repoHash>` holds, counted without opening the store: opening
+ * takes a lease and arms a heartbeat, and the one caller only wants to know whether state it never
+ * uses is there. Zero when the directory is absent or unreadable.
+ */
+export function countStoredAgentRecords(root: string, repoHash: string): number {
+  const ids = new Set<string>();
+  for (const name of ['summaries', 'records']) {
+    try {
+      for (const entry of readdirSync(join(root, repoHash, name), { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+        try {
+          const id = decodeURIComponent(entry.name.slice(0, -'.json'.length));
+          if (id && encodedName(id) === entry.name) ids.add(entry.name);
+        } catch {
+          // Not a name the store wrote.
+        }
+      }
+    } catch {
+      // Absent, or not readable: nothing to report.
+    }
+  }
+  return ids.size;
+}
+
 export function cleanupAgentStoreRoot(root: string, olderThanMs: number, now = Date.now()): number {
   if (!existsSync(root)) return 0;
   let removed = 0;

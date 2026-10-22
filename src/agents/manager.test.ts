@@ -1,5 +1,14 @@
 import { permissionResultOf } from '../permissions.js';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -4602,6 +4611,128 @@ describe('AgentManager.wait timers (#423)', () => {
 
       expect(record.status).toBe('interrupted');
       expect(vi.getTimerCount()).toBe(before);
+    } finally {
+      manager.dispose();
+    }
+  });
+});
+
+describe('a project below a dotfiles home (#579)', () => {
+  /** A home with a `.git`, a project below it, and `n` agent records under the home key. */
+  async function dotfilesHome(options: {
+    late?: boolean;
+    git?: boolean;
+    records?: number;
+    at?: 'home' | 'project';
+  }) {
+    const home = realpathSync(tempRoot());
+    if (options.git !== false) mkdirSync(join(home, '.git'));
+    const project = join(home, 'project');
+    mkdirSync(project);
+    const storeRoot = tempRoot();
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    const old = await AgentStore.open(repositoryHash(home), storeRoot, true, UNCONTENDED);
+    for (let index = 0; index < (options.records ?? 0); index++) {
+      old.saveAgent({
+        id: `old-${index}`,
+        name: 'patcher',
+        role: 'patcher',
+        description: 'Patch',
+        status: 'completed',
+        applicationStatus: 'not_applied',
+        prompt: 'old',
+        referencedEvidenceIds: [],
+        transcript: [],
+        pendingMessages: [],
+        createdAt: 1,
+        updatedAt: 1,
+      });
+    }
+    old.dispose();
+    const config = defaultConfig({ workspace: options.at === 'home' ? home : project });
+    config.settings.agents.persist = true;
+    const events: AgentRuntimeEvent[] = [];
+    const manager = new AgentManager(config, [], {
+      storeRoot,
+      findGitRoot: async () => undefined,
+      createStore: (repoHash, requestedRoot, enabled) =>
+        AgentStore.open(repoHash, requestedRoot, enabled, UNCONTENDED),
+    });
+    if (!options.late) manager.subscribe((event) => events.push(event));
+    return { home, project, storeRoot, manager, events };
+  }
+
+  const notices = (events: AgentRuntimeEvent[]) =>
+    events.filter((event) => event.type === 'agent_notice');
+
+  it('reports the old home-keyed state once, and does not load it', async () => {
+    const { manager, events, home, storeRoot } = await dotfilesHome({ records: 2 });
+    try {
+      expect(await manager.list()).toEqual([]);
+      await manager.list();
+      const [notice, ...rest] = notices(events);
+      expect(rest).toEqual([]);
+      expect(notice).toMatchObject({ type: 'agent_notice' });
+      expect(notice).not.toHaveProperty('agentId');
+      const message = (notice as { message: string }).message;
+      expect(message).toContain('2 managed-agent record(s)');
+      expect(message).toContain(`git -C "${home}" worktree list`);
+      expect(message).toContain(`"${join(storeRoot, repositoryHash(home))}"`);
+      expect(readdirSync(join(storeRoot, repositoryHash(home), 'summaries'))).toHaveLength(2);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('holds the notice until a host subscribes, then delivers it once', async () => {
+    const { manager, events } = await dotfilesHome({ records: 1, late: true });
+    try {
+      await manager.list();
+      expect(notices(events)).toEqual([]);
+      const unsubscribe = manager.subscribe((event) => events.push(event));
+      expect(notices(events)).toHaveLength(1);
+      unsubscribe();
+      manager.subscribe((event) => events.push(event));
+      expect(notices(events)).toHaveLength(1);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('says nothing when the workspace is home, there is no home .git, or nothing is stored', async () => {
+    for (const options of [
+      { records: 1, at: 'home' as const },
+      { records: 1, git: false },
+      { records: 0 },
+    ]) {
+      const { manager, events } = await dotfilesHome(options);
+      try {
+        await manager.list();
+        expect(notices(events)).toEqual([]);
+      } finally {
+        manager.dispose();
+      }
+    }
+  });
+
+  it('names the dotfiles repository when a patcher is refused below it', async () => {
+    const { manager } = await dotfilesHome({});
+    try {
+      await expect(manager.spawn({ agent: 'patcher', prompt: 'fix' })).rejects.toThrow(
+        /dotfiles repository.*git init/,
+      );
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('keeps the plain refusal when no home repository is involved', async () => {
+    const { manager } = await dotfilesHome({ git: false });
+    try {
+      await expect(manager.spawn({ agent: 'patcher', prompt: 'fix' })).rejects.toThrow(
+        /Initialize and commit the repository/,
+      );
     } finally {
       manager.dispose();
     }
