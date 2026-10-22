@@ -268,6 +268,28 @@ describe('useGitStatus argv', () => {
     await vi.waitFor(() => expect(seen.at(-1)).toMatchObject({ branch: 'main', status: '' }));
     view.unmount();
   });
+
+  it('reads the branch only in a partial clone, with no status read', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-git-status-partial-'));
+    roots.push(workspace);
+    mkdirSync(join(workspace, '.git'));
+    const seen: Array<{ branch: string; status: string }> = [];
+    function Shown() {
+      const status = useGitStatus(workspace);
+      seen.push(status);
+      return null;
+    }
+
+    const view = render(<Shown />);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].callback(null, 'local\0extensions.partialclone\norigin\0');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    calls[1].callback(null, 'main\n');
+
+    await vi.waitFor(() => expect(seen.at(-1)).toMatchObject({ branch: 'main', status: '' }));
+    expect(calls).toHaveLength(2);
+    view.unmount();
+  });
 });
 
 // Driven through an injected probe rather than the real filesystem. Whether a

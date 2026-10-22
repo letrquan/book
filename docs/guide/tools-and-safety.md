@@ -554,12 +554,15 @@ so your `pre-commit` and `commit-msg` hooks still run. A repository can still co
 smudge filters, and those run on `status` and `diff`; Book does not suppress them, because that
 would mean rewriting the command you asked for.
 
-`GitStatus` passes `--ignore-submodules=dirty`, so changes inside a submodule do not count as
-changed files, while a submodule whose recorded commit moved still shows. The prompt's git line and
-the TUI status line read the status the same way, and neither fetches (`GIT_NO_LAZY_FETCH=1`, which
-git reads from 2.44 and in the 2024 maintenance releases of older lines): in a partial clone that
-is missing an object the status needs, the status is left out. The read-only Git tools keep
-fetching there. `/diff` shows what `GitDiff` does, with the same flags.
+`GitStatus` and `GitDiff` pass `--ignore-submodules=dirty`, as do `/diff`, `/review` and agent
+isolation, so changes inside a submodule are not listed, while a submodule whose recorded commit
+moved still shows; run `git -C <submodule> status` for the rest. None of these reads fetch: they run
+with `GIT_NO_LAZY_FETCH=1` (read by git 2.44 or later, and older releases patched in 2024) and an
+empty `GIT_ALLOW_PROTOCOL`, so in a partial clone that is missing an object the read fails with a
+note on fetching it yourself. The prompt's git line and the TUI status line read the status the
+same way, and in a partial clone (`extensions.partialClone`, or a `remote.<name>.promisor`) they
+show the branch only and skip the status. `/diff` shows what `GitDiff` does, with the same flags. A
+`git` command you run through `Bash` is unchanged.
 
 **Outside every root.** A `Read`, `Glob` or `Grep` whose target is in the workspace, in a read-only
 root, or in an approved `additionalDirectories` entry is served as above. One that is not is

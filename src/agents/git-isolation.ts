@@ -6,7 +6,12 @@ import { dirname, join, resolve } from 'path';
 import type { AgentApplyResult, AgentRecord, AgentSnapshot, PatchCandidate } from './types.js';
 import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
-import { hardenedGitArgs, hardenedGitEnv, HARDENED_DIFF_ARGS } from '../tools/git.js';
+import {
+  hardenedGitArgs,
+  hardenedGitEnv,
+  HARDENED_DIFF_ARGS,
+  noFetchGitEnv,
+} from '../tools/git.js';
 import { readRepositoryProgramPins } from '../tools/git-repository-programs.js';
 import { isUserHome, tryRealPath } from '../repo-containment.js';
 import {
@@ -47,7 +52,8 @@ import {
  *   `GIT_ALLOW_PROTOCOL=`). Nothing in git isolation needs a transport, and a fetch would run
  *   the repository's configured transport (`core.sshCommand`, `credential.helper`) without a
  *   prompt. When missing objects are encountered, calls fail with a clear explanatory message.
- *   Read-only Git tools, `/review` and the TUI poll keep lazy fetch for now by owner decision.
+ *   Every other hardened read (the read-only Git tools, `/diff`, `/review`, the prompt's git line
+ *   and the TUI poll) carries the same pair, `noFetchGitEnv()`.
  * - **`core.fsmonitor=false`** is kept, as #348 decided: git isolation creates temporary
  *   worktrees, and on macOS/Windows a built-in fsmonitor daemon started there outlives the call
  *   and the worktree. Read-only Git tools, `/review`, and the TUI poll allow `core.fsmonitor=true`.
@@ -570,8 +576,7 @@ function internalGitEnv(overrides: NodeJS.ProcessEnv | undefined): NodeJS.Proces
     ...ambient,
     ...overrides,
     ...hardenedGitEnv(),
-    GIT_NO_LAZY_FETCH: '1',
-    GIT_ALLOW_PROTOCOL: '',
+    ...noFetchGitEnv(),
   };
 }
 
@@ -734,7 +739,11 @@ async function writeWorkspaceTree(
     });
     const tree = (await git(repoRoot, ['write-tree'], { env, signal })).stdout.trim();
     const status = (
-      await git(repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'], { signal })
+      await git(
+        repoRoot,
+        ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=dirty'],
+        { signal },
+      )
     ).stdout;
     return { head, tree, status };
   } finally {

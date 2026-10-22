@@ -180,11 +180,9 @@ describe('/diff', () => {
     await submit(view, '/diff');
 
     expect(readOnlyGitMock).toHaveBeenCalledTimes(1);
-    const [args, ctx, options] = readOnlyGitMock.mock.calls[0]!;
+    const [args, ctx] = readOnlyGitMock.mock.calls[0]!;
     expect(args).toEqual(READ_ONLY_GIT_ARGS.GitDiff);
     expect(ctx).toMatchObject({ workspaceRoot: '/tmp/book' });
-    // A command the user typed keeps lazy fetch, as the tool does.
-    expect(options).toBeUndefined();
     expect(addLocalMessage).toHaveBeenCalledWith('diff --git a/a.txt b/a.txt');
   });
 

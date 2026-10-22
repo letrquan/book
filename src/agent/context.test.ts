@@ -28,7 +28,7 @@ import type { Message } from '../types/messages.js';
 import type { ProviderMessage } from '../types/providers.js';
 import { userMsg, assistantMsg, toolCall, toolResult, defaultConfig } from '../test/fixtures.js';
 import { isolateBookHome } from '../test/isolated-book-home.js';
-import { gitIn, partialCloneMissingTree, repositoryWithSubmodule } from '../test/git-fixtures.js';
+import { gitIn, partialClone, repositoryWithSubmodule } from '../test/git-fixtures.js';
 
 const config = defaultConfig();
 
@@ -1509,7 +1509,7 @@ describe('session-state git line with submodules and partial clones', () => {
   it.skipIf(process.platform === 'win32')(
     'reads the line in a partial clone without fetching, down to the branch alone',
     async () => {
-      const fixture = await partialCloneMissingTree(root);
+      const fixture = await partialClone(root);
 
       const out = await buildMessages(defaultConfig({ workspace: fixture.repo }), [userMsg('hi')]);
 
@@ -1519,6 +1519,19 @@ describe('session-state git line with submodules and partial clones', () => {
       // A plain status of the same checkout does fetch it.
       await gitIn(fixture.repo, 'status', '--short');
       expect(fixture.packs()).toBeGreaterThan(0);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'shows the branch alone in a partial clone even when the status could be read',
+    async () => {
+      const fixture = await partialClone(root, { missingTree: false });
+      // A plain status works here: every object is present.
+      expect(await gitIn(fixture.repo, 'status', '--short')).toBe('');
+
+      const out = await buildMessages(defaultConfig({ workspace: fixture.repo }), [userMsg('hi')]);
+
+      expect(gitLine(out[1].content)).toBe('- Git: branch main');
     },
   );
 });

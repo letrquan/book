@@ -10,7 +10,7 @@ import {
   noFetchGitEnv,
   READ_ONLY_GIT_ARGS,
 } from '../../tools/git.js';
-import { readRepositoryProgramPins } from '../../tools/git-repository-programs.js';
+import { readRepositoryGitConfig } from '../../tools/git-repository-programs.js';
 
 /**
  * Whether `dir` sits anywhere inside a working tree, without spawning anything.
@@ -76,7 +76,7 @@ export function useGitStatus(workspace: string): GitStatus {
       activeController = new AbortController();
 
       try {
-        const pins = await readRepositoryProgramPins(workspace, undefined, {
+        const { pins, partialClone } = await readRepositoryGitConfig(workspace, undefined, {
           signal: activeController.signal,
           timeoutMs: 5_000,
         });
@@ -86,14 +86,16 @@ export function useGitStatus(workspace: string): GitStatus {
           activeController.signal,
           pins,
         );
-        // A status that fails leaves the branch showing: in a partial clone that is missing an
-        // object the status needs, the read fails rather than fetching it.
-        const short = await runGit(
-          READ_ONLY_GIT_ARGS.GitStatus,
-          workspace,
-          activeController.signal,
-          pins,
-        ).catch(() => undefined);
+        // In a partial clone the status is not read at all, on any git version; a status that
+        // fails elsewhere leaves the branch showing the same way.
+        const short = partialClone
+          ? undefined
+          : await runGit(
+              READ_ONLY_GIT_ARGS.GitStatus,
+              workspace,
+              activeController.signal,
+              pins,
+            ).catch(() => undefined);
         if (short === undefined) {
           if (!cancelled) update({ branch, status: '' });
           return;

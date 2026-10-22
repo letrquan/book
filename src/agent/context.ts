@@ -23,7 +23,7 @@ import { discoverCommands, generateCommandListing } from '../commands/loader.js'
 import { BUILTIN_COMMANDS } from '../commands/builtins.js';
 import { discoverProjectInstructions, renderProjectInstructions } from '../claude-md.js';
 import { discoverAgents, type SubagentDef } from '../subagent-discovery.js';
-import { READ_ONLY_GIT_ARGS, readOnlyGit } from '../tools/git.js';
+import { openReadOnlyGit, READ_ONLY_GIT_ARGS, type ReadOnlyGitReader } from '../tools/git.js';
 import { isUserHome, tryRealPath } from '../repo-containment.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { resolveBookHome } from '../book-home.js';
@@ -218,9 +218,9 @@ function isInGitWorktree(workspace: string): boolean {
  * (`core.fsmonitor=true`) stays allowed (#574). A configuration the hardening refuses fails the
  * call, so there is no line. The two calls are independent reads, so they run side by side.
  *
- * The status is `GitStatus`'s own, so changes inside a submodule do not count. Nothing asked for
- * this read, so it never fetches: in a partial clone that is missing an object the status needs,
- * the line is the branch alone.
+ * The configuration is read once for both (`openReadOnlyGit`). The status is `GitStatus`'s own,
+ * so changes inside a submodule do not count. In a partial clone the status is not read at all,
+ * on any git version, and the line is the branch alone; a status that fails gives the same.
  */
 async function gitContext(workspace: string, signal?: AbortSignal): Promise<string> {
   if (!isInGitWorktree(workspace)) return '';
@@ -230,15 +230,20 @@ async function gitContext(workspace: string, signal?: AbortSignal): Promise<stri
     env: process.env as Record<string, string>,
     signal,
   };
-  const local = { lazyFetch: false };
+  let git: ReadOnlyGitReader;
+  try {
+    git = await openReadOnlyGit(ctx);
+  } catch {
+    return '';
+  }
   const [branch, status] = await Promise.all([
-    readOnlyGit(['rev-parse', '--abbrev-ref', 'HEAD'], ctx, local),
-    readOnlyGit(READ_ONLY_GIT_ARGS.GitStatus, ctx, local),
+    git.run(['rev-parse', '--abbrev-ref', 'HEAD']),
+    git.partialClone ? undefined : git.run(READ_ONLY_GIT_ARGS.GitStatus),
   ]);
   if (!branch.success) return '';
 
   const branchName = branch.output.trim();
-  if (!status.success) return `branch ${branchName}`;
+  if (!status?.success) return `branch ${branchName}`;
 
   const short = status.output.trim();
   const changed = !short || short === '(no output)' ? 0 : short.split('\n').filter(Boolean).length;

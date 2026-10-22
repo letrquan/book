@@ -18,11 +18,12 @@ import {
   hardenedGitArgs,
   hardenedGitEnv,
   HARDENED_DIFF_ARGS,
+  MISSING_OBJECTS_NOTE,
   READ_ONLY_GIT_ARGS,
   readOnlyGit,
   runGit,
 } from './git.js';
-import { gitIn, partialCloneMissingTree, repositoryWithSubmodule } from '../test/git-fixtures.js';
+import { gitIn, partialClone, repositoryWithSubmodule } from '../test/git-fixtures.js';
 
 const ctx: ToolContext = { workspaceRoot: '/workspace', env: { TEST_ENV: 'yes' } };
 type ExecCallback = (error: Error | null, stdout: string, stderr: string) => void;
@@ -201,7 +202,11 @@ describe('git hardening', () => {
     // names one per file. Both are checkout settings read by a tool whose job is to report. The
     // flags are shared rather than restated per caller, so this asserts the one list every
     // hardened caller that runs `git diff` reaches for.
-    expect([...HARDENED_DIFF_ARGS]).toEqual(['--no-ext-diff', '--no-textconv']);
+    expect([...HARDENED_DIFF_ARGS]).toEqual([
+      '--no-ext-diff',
+      '--no-textconv',
+      '--ignore-submodules=dirty',
+    ]);
     expect(READ_ONLY_GIT_ARGS.GitDiff).toContain('--no-ext-diff');
     expect(READ_ONLY_GIT_ARGS.GitDiff).toContain('--no-textconv');
   });
@@ -540,11 +545,10 @@ describe('hardening against a real git', () => {
 });
 
 /**
- * `GitStatus` reports on this repository: a submodule shows when its recorded commit moved, not
- * for what changed inside it. It keeps fetching a missing object in a partial clone, since the
- * model asked for it; a read that turns lazy fetch off reports without it.
+ * `GitStatus` and `GitDiff` report on this repository: a submodule shows when its recorded commit
+ * moved, not for what changed inside it. Neither fetches a missing object in a partial clone.
  */
-describe('GitStatus with submodules and partial clones', () => {
+describe('GitStatus and GitDiff with submodules and partial clones', () => {
   let root: string;
 
   const toolFor = (name: string) => gitTools.find((tool) => tool.name === name)!;
@@ -577,17 +581,38 @@ describe('GitStatus with submodules and partial clones', () => {
   );
 
   it.skipIf(process.platform === 'win32')(
-    'fetches a missing object for GitStatus, and not for a read that turns lazy fetch off',
+    'shows a submodule that moved in GitDiff, but not what changed inside it',
     async () => {
-      const fixture = await partialCloneMissingTree(root);
+      const fixture = await repositoryWithSubmodule(root);
+      await fixture.movePointer();
+      fixture.touch();
+
+      const result = await toolFor('GitDiff').execute({}, { workspaceRoot: fixture.repo, env: {} });
+
+      expect(result.status).toBe('success');
+      expect(result.content).toContain('diff --git a/sub b/sub');
+      expect(existsSync(fixture.marker)).toBe(false);
+      await gitIn(fixture.repo, 'diff');
+      expect(existsSync(fixture.marker)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'does not fetch a missing object for GitStatus, and says what to do',
+    async () => {
+      const fixture = await partialClone(root);
       const at = { workspaceRoot: fixture.repo, env: {} };
 
-      const local = await readOnlyGit(READ_ONLY_GIT_ARGS.GitStatus, at, { lazyFetch: false });
-      expect(local.success).toBe(false);
-      expect(fixture.packs()).toBe(0);
-
       const result = await toolFor('GitStatus').execute({}, at);
-      expect(result.status).toBe('success');
+
+      expect(result.status).not.toBe('success');
+      expect(JSON.stringify(result)).toContain(MISSING_OBJECTS_NOTE);
+      expect(fixture.packs()).toBe(0);
+      const direct = await readOnlyGit(READ_ONLY_GIT_ARGS.GitStatus, at);
+      expect(direct.success).toBe(false);
+      expect(fixture.packs()).toBe(0);
+      // A plain status of the same checkout does fetch it.
+      await gitIn(fixture.repo, 'status', '--short');
       expect(fixture.packs()).toBeGreaterThan(0);
     },
   );

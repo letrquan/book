@@ -96,12 +96,15 @@ export async function repositoryWithSubmodule(root: string): Promise<{
 }
 
 /**
- * A checkout at `<root>/partial` set up as a partial clone of `<root>/partial-remote`: one tree
- * object is missing locally, and the index is removed, so `git status` needs that tree.
- * `packs()` counts the files in the checkout's pack directory, which a fetch adds to.
+ * A checkout at `<root>/partial` set up as a partial clone of `<root>/partial-remote`
+ * (`extensions.partialClone` and `remote.origin.promisor`). With `missingTree` (the default) one
+ * tree object is missing locally and the index is removed, so `git status` needs that tree;
+ * without it every object is present and a plain `git status` reports a clean tree. `packs()`
+ * counts the files in the checkout's pack directory, which a fetch adds to.
  */
-export async function partialCloneMissingTree(
+export async function partialClone(
   root: string,
+  { missingTree = true }: { missingTree?: boolean } = {},
 ): Promise<{ repo: string; packs(): number }> {
   const repo = join(root, 'partial');
   const remote = join(root, 'partial-remote');
@@ -113,13 +116,15 @@ export async function partialCloneMissingTree(
   await gitIn(repo, ...IDENTITY, 'commit', '-q', '-m', 'init');
   await gitIn(root, 'clone', '-q', '--bare', repo, remote);
 
-  const tree = (await gitIn(repo, 'rev-parse', 'HEAD:d')).trim();
-  rmSync(join(repo, '.git', 'objects', tree.slice(0, 2), tree.slice(2)));
+  if (missingTree) {
+    const tree = (await gitIn(repo, 'rev-parse', 'HEAD:d')).trim();
+    rmSync(join(repo, '.git', 'objects', tree.slice(0, 2), tree.slice(2)));
+    rmSync(join(repo, '.git', 'index'));
+  }
   await gitIn(repo, 'config', 'core.repositoryformatversion', '1');
   await gitIn(repo, 'config', 'extensions.partialClone', 'origin');
   await gitIn(repo, 'config', 'remote.origin.url', remote);
   await gitIn(repo, 'config', 'remote.origin.promisor', 'true');
-  rmSync(join(repo, '.git', 'index'));
 
   return { repo, packs: () => readdirSync(join(repo, '.git', 'objects', 'pack')).length };
 }

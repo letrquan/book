@@ -1,7 +1,12 @@
 import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { ReviewScope } from './types.js';
-import { hardenedGitArgs, HARDENED_DIFF_ARGS } from '../tools/git.js';
+import {
+  describeMissingObjects,
+  hardenedGitArgs,
+  HARDENED_DIFF_ARGS,
+  noFetchGitEnv,
+} from '../tools/git.js';
 import {
   defaultGitRunner,
   readRepositoryProgramPins,
@@ -32,7 +37,9 @@ const MAX_REVIEW_DIFF_BYTES = 20 * 1024 * 1024;
  * `HARDENED_DIFF_ARGS` are the same hardening the read-only Git tools carry — `core.fsmonitor` is
  * a command `git diff` and `git ls-files` execute, `core.pager` a command git runs to page what
  * they print, and `diff.external` one it runs to produce them at all. A pager and a credential
- * prompt it cannot wait on come with it in `hardenedGitEnv`, as in `readOnlyGit`.
+ * prompt it cannot wait on come with it in `hardenedGitEnv`, as in `readOnlyGit`, and none of
+ * them fetches (`noFetchGitEnv`): a missing object in a partial clone fails the read with a note
+ * on what to do.
  */
 async function git(
   workspace: string,
@@ -42,11 +49,18 @@ async function git(
   exec?: RepositoryProgramRunner,
 ): Promise<GitResult> {
   const runner = exec ?? defaultGitRunner;
-  return runner(hardenedGitArgs([...pins, ...args]), {
-    cwd: workspace,
-    allowExitCodes,
-    timeoutMs: 0,
-  });
+  try {
+    return await runner(hardenedGitArgs([...pins, ...args]), {
+      cwd: workspace,
+      allowExitCodes,
+      timeoutMs: 0,
+      env: noFetchGitEnv(),
+    });
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    const message = describeMissingObjects(error.message);
+    throw message === error.message ? error : new Error(message, { cause: error });
+  }
 }
 
 function splitZeroDelimited(value: string): string[] {

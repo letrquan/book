@@ -6,7 +6,7 @@ import {
   GIT_HARDENING_ARGS,
   hardenedGitArgs,
   hardenedGitEnv,
-  readRepositoryProgramPins,
+  readRepositoryGitConfig,
 } from './git-repository-programs.js';
 
 type ExecFile = typeof execFile;
@@ -21,8 +21,16 @@ export { GIT_HARDENING_ARGS };
  * configuration, which is why they are not in {@link GIT_HARDENING_ARGS}, and they are on the
  * command as well as in the config so the guarantee does not rest on the `-c` overrides being
  * consulted for the subcommand.
+ *
+ * `--ignore-submodules=dirty` keeps the diff to this repository: a submodule whose recorded
+ * commit moved still shows, what changed inside one does not. It is a flag rather than
+ * `diff.ignoreSubmodules`, because a repository's own `.gitmodules` outranks that setting.
  */
-export const HARDENED_DIFF_ARGS = ['--no-ext-diff', '--no-textconv'] as const;
+export const HARDENED_DIFF_ARGS = [
+  '--no-ext-diff',
+  '--no-textconv',
+  '--ignore-submodules=dirty',
+] as const;
 
 /** Environment floor for hardened calls; see {@link hardenedGitEnv} in `git-repository-programs.ts`. */
 export { hardenedGitEnv };
@@ -32,25 +40,32 @@ export { hardenedGitArgs };
 
 /**
  * The environment for a git read that stays local. In a partial clone a missing object is
- * reported as missing rather than fetched (`GIT_NO_LAZY_FETCH`, which git reads from 2.44 and
- * from the 2024 maintenance releases of older lines; an older git ignores it), and git's transport
- * allowlist is empty (`GIT_ALLOW_PROTOCOL`). Git isolation sets the same pair.
+ * reported as missing rather than fetched (`GIT_NO_LAZY_FETCH`, which git 2.44 or later reads, and
+ * older releases patched in 2024; an older git ignores it), and git's transport allowlist is empty
+ * (`GIT_ALLOW_PROTOCOL`).
  *
- * The reads Book makes on its own carry it: the prompt's per-turn git line and the TUI status
- * poll, which run with no request behind them and must not reach a remote. The read-only Git
- * tools keep lazy fetch, because the model asked for them and an answer is worth a fetch there.
+ * Every hardened read carries it: the read-only Git tools, `/diff`, `/review`'s target, the
+ * prompt's per-turn git line, the TUI status poll and git isolation. A `git` the user runs through
+ * `Bash` is theirs and does not. The prompt line and the poll go further and skip the status read
+ * in a partial clone altogether (see `ReadOnlyGitReader.partialClone`), so on a git that ignores
+ * `GIT_NO_LAZY_FETCH` they still read nothing a remote would have to supply.
  */
 export function noFetchGitEnv(): Record<string, string> {
   return { GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: '' };
 }
 
-/** Options for {@link readOnlyGit}. */
-export interface ReadOnlyGitOptions {
-  /**
-   * `false` for a read Book makes on its own, with no request behind it: the call carries
-   * {@link noFetchGitEnv}. The read-only tools leave it unset and keep lazy fetch.
-   */
-  lazyFetch?: boolean;
+/**
+ * The note put in front of a failed read whose output shows git needed an object a partial clone
+ * does not have, so the reader learns why and what to do rather than only git's own line.
+ */
+export const MISSING_OBJECTS_NOTE =
+  "This repository is a partial clone, and git needs an object that is not here. Book's git reads do not fetch missing objects: run the same git command yourself, which fetches what it needs, or `git fetch --refetch <remote>` after unsetting `remote.<remote>.partialclonefilter`, then retry.";
+
+/** `message`, with {@link MISSING_OBJECTS_NOTE} in front when it shows a missing object. */
+export function describeMissingObjects(message: string): string {
+  return /lazy fetching disabled|promisor remote|transport '[^']*' not allowed/i.test(message)
+    ? `${MISSING_OBJECTS_NOTE}\n${message}`
+    : message;
 }
 
 /**
@@ -101,8 +116,39 @@ export async function runGit(
   });
 }
 
+/** One repository's read-only git, with its configuration read once for every call. */
+export interface ReadOnlyGitReader {
+  /** Whether the repository is a partial clone (`extensions.partialClone`, a `remote.*.promisor`). */
+  partialClone: boolean;
+  /** One hardened read, as {@link readOnlyGit} runs it. */
+  run(args: readonly string[]): Promise<Awaited<ReturnType<typeof runGit>>>;
+}
+
 /**
- * A read-only report: hardened, and with the pager and credential prompt it cannot wait on.
+ * Read the workspace's git configuration once and return a reader for several read-only calls in
+ * it, each hardened as {@link readOnlyGit} is. Rejects when the configuration cannot be read or
+ * names a program the pins cannot neutralize.
+ */
+export async function openReadOnlyGit(ctx: ToolContext): Promise<ReadOnlyGitReader> {
+  const env = { ...ctx.env, ...hardenedGitEnv(), ...noFetchGitEnv() };
+  const config = await readRepositoryGitConfig(ctx.workspaceRoot, undefined, {
+    signal: ctx.signal,
+    env,
+  });
+  return {
+    partialClone: config.partialClone,
+    run: async (args) => {
+      const result = await runGit(hardenedGitArgs([...config.pins, ...args]), { ...ctx, env });
+      return result.success || !result.error
+        ? result
+        : { ...result, error: describeMissingObjects(result.error) };
+    },
+  };
+}
+
+/**
+ * A read-only report: hardened, with the pager and credential prompt it cannot wait on, and no
+ * fetch (see {@link noFetchGitEnv}).
  *
  * Exported for the prompt's `<session-state>` git line (`gitContext` in `agent/context.ts`), which
  * runs on every turn before any tool call or approval, and so must not start a program the
@@ -110,25 +156,9 @@ export async function runGit(
  *
  * The TUI's `/diff` uses it too, to show what `GitDiff` would.
  */
-export async function readOnlyGit(
-  args: readonly string[],
-  ctx: ToolContext,
-  options: ReadOnlyGitOptions = {},
-) {
+export async function readOnlyGit(args: readonly string[], ctx: ToolContext) {
   try {
-    const env = {
-      ...ctx.env,
-      ...hardenedGitEnv(),
-      ...(options.lazyFetch === false ? noFetchGitEnv() : {}),
-    };
-    const pins = await readRepositoryProgramPins(ctx.workspaceRoot, undefined, {
-      signal: ctx.signal,
-      env,
-    });
-    return await runGit(hardenedGitArgs([...pins, ...args]), {
-      ...ctx,
-      env,
-    });
+    return await (await openReadOnlyGit(ctx)).run(args);
   } catch (error) {
     return {
       success: false,
@@ -200,7 +230,8 @@ export const gitTools: ToolDefinition[] = [
     name: 'GitStatus',
     idempotent: true,
     policy: { concurrency: 'parallel' },
-    description: 'Show the working tree status (git status --short)',
+    description:
+      'Show the working tree status (git status --short). Changes inside submodules are not listed; run `git -C <sub> status` for those.',
     parameters: { type: 'object', properties: {}, required: [] },
     execute: gitStatus,
   },
