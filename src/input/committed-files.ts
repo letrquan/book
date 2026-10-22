@@ -1,8 +1,9 @@
 import {
   defaultGitRunner,
   hardenedGitArgs,
-  readRepositoryProgramPins,
+  readRepositoryGitConfig,
 } from '../tools/git-repository-programs.js';
+import { describeMissingObjects, noFetchGitEnv } from '../tools/git.js';
 
 /**
  * Whether a file holds exactly what the repository committed, for the mentions in a project
@@ -39,6 +40,9 @@ const REPOSITORY_SELECTION: NodeJS.ProcessEnv = {
   GIT_PREFIX: undefined,
 };
 
+/** The environment for these calls: the repository the directory is in, and no fetch. */
+const GIT_ENV: NodeJS.ProcessEnv = { ...REPOSITORY_SELECTION, ...noFetchGitEnv() };
+
 const GIT_TIMEOUT_MS = 10_000;
 
 /** NUL-terminated `<meta>\t<path>` records, as `ls-tree -z` and `ls-files -z --stage` print them. */
@@ -58,8 +62,9 @@ function records(stdout: string): Array<{ fields: string[]; path: string }> {
  * repository's top directory (`findRepositoryRoot`): git runs there, so it never discovers some
  * other repository above it. Each path must name an existing regular file. Git runs hardened
  * (`hardenedGitArgs`, and the repository's own filter and fsmonitor programs pinned off), with
- * literal pathspecs, and asynchronously. Rejects when any git call fails (no git, no commit yet, a
- * timeout); a caller treats that as no file being committed.
+ * literal pathspecs, with no fetch (`noFetchGitEnv`), and asynchronously. Rejects when any git
+ * call fails (no git, no commit yet, a timeout, an object a partial clone lacks); a caller treats
+ * that as no file being committed.
  */
 export async function committedFileStates(
   repoRoot: string,
@@ -68,20 +73,28 @@ export async function committedFileStates(
 ): Promise<Map<string, CommittedState>> {
   const states = new Map<string, CommittedState>();
   if (paths.length === 0) return states;
-  const pins = await readRepositoryProgramPins(repoRoot, undefined, {
+  const { pins, partialClone } = await readRepositoryGitConfig(repoRoot, undefined, {
     signal,
     timeoutMs: GIT_TIMEOUT_MS,
-    env: REPOSITORY_SELECTION,
+    env: GIT_ENV,
   });
-  const git = async (args: string[]) =>
-    (
-      await defaultGitRunner(hardenedGitArgs([...pins, '--literal-pathspecs', ...args]), {
-        cwd: repoRoot,
-        signal,
-        timeoutMs: GIT_TIMEOUT_MS,
-        env: REPOSITORY_SELECTION,
-      })
-    ).stdout;
+  const git = async (args: string[]) => {
+    try {
+      return (
+        await defaultGitRunner(hardenedGitArgs([...pins, '--literal-pathspecs', ...args]), {
+          cwd: repoRoot,
+          signal,
+          timeoutMs: GIT_TIMEOUT_MS,
+          env: GIT_ENV,
+        })
+      ).stdout;
+    } catch (error) {
+      // A partial clone missing an object fails here rather than fetching it, and says so.
+      if (!(error instanceof Error)) throw error;
+      const message = describeMissingObjects(error.message, partialClone);
+      throw message === error.message ? error : new Error(message, { cause: error });
+    }
+  };
   // Settled, not raced: a call that fails first (no commit yet) must not leave the others running
   // in the repository after this returns.
   const settled = await Promise.allSettled([
