@@ -36,6 +36,7 @@ import {
 } from './settings-repository.js';
 import { settingsScopePath } from './settings-scope.js';
 import type { RetryConfig } from './types/runtime.js';
+import { projectFileWriteRefusal } from './workspace-files.js';
 
 /** What the add-provider wizard's key step accepts: a literal key, `{env:VAR}` or `{file:path}`. */
 export function validateApiKey(raw: string): string {
@@ -150,6 +151,11 @@ export function writeProviderKey(
   apiKey: string,
 ): ProviderKeyWriteResult {
   const path = settingsScopePath('user', workspace);
+  // Checked before the user file is written, as a `/model` save does: the local half reads the
+  // local file, and a save that could only do one half stops with the notice instead.
+  const localPath = settingsScopePath('local', workspace);
+  const localRefusal = projectFileWriteRefusal(localPath);
+  if (localRefusal) return { ok: false, error: `${localPath}: ${localRefusal}` };
   const written = new SettingsRepository(path).update((candidate) => {
     const entry = providerEntryOf(candidate, providerId);
     if (!entry) throw new Error(`Provider "${providerId}" is not configured in ${path}.`);
@@ -162,7 +168,6 @@ export function writeProviderKey(
     };
   }
 
-  const localPath = settingsScopePath('local', workspace);
   if (!existsSync(localPath)) return { ok: true, path };
   const local = readSettingsDocument(localPath);
   const localEntry = local.status === 'valid' ? providerEntryOf(local.document, providerId) : null;

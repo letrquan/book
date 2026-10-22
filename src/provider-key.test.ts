@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { isolateBookHome } from './test/isolated-book-home.js';
@@ -186,6 +195,28 @@ describe('writeProviderKey', () => {
     expect(writeProviderKey(workspace, 'gw', NEW_KEY)).toEqual({ ok: true, path: userPath() });
     expect(readFileSync(localPath(), 'utf-8')).toBe(local);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'stops, writing nothing, when the local file is not a regular file',
+    () => {
+      const before = `${JSON.stringify({ provider: { gw: { type: 'openai' } } }, null, 2)}\n`;
+      mkdirSync(bookHome(), { recursive: true });
+      writeFileSync(userPath(), before);
+      const elsewhere = join(workspace, 'elsewhere.json');
+      writeFileSync(elsewhere, '{}\n');
+      mkdirSync(join(workspace, '.book'), { recursive: true });
+      symlinkSync(elsewhere, localPath());
+
+      const result = writeProviderKey(workspace, 'gw', NEW_KEY);
+      expect(result).toEqual({
+        ok: false,
+        error: `${localPath()}: not a regular file, so Book left it unchanged`,
+      });
+      expect(readFileSync(userPath(), 'utf-8')).toBe(before);
+      expect(readFileSync(elsewhere, 'utf-8')).toBe('{}\n');
+      expect(lstatSync(localPath()).isSymbolicLink()).toBe(true);
+    },
+  );
 
   it('refuses an id the user file does not define, writing nothing', () => {
     const before = `${JSON.stringify({ provider: { gw: { type: 'openai' } } }, null, 2)}\n`;
