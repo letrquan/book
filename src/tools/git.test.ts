@@ -209,7 +209,9 @@ describe('git hardening', () => {
     // poll. Asserted as a fresh object per call, since a shared mutable one would let one
     // caller's configuration reach another's.
     const env = hardenedGitEnv();
-    expect(env).toEqual({ GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' });
+    // Matched rather than equal: a home directory holding a `.git` adds a ceiling
+    // (`git-home-ceiling.test.ts`).
+    expect(env).toMatchObject({ GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' });
     expect(hardenedGitEnv()).not.toBe(env);
   });
 
