@@ -179,6 +179,16 @@ describe('the ripgrep backend on Windows', () => {
     expect(argv(null)).not.toContain('--ignore-file');
   });
 
+  it('answers a cancel that lands while it looks for the ignore file, before starting ripgrep', async () => {
+    const controller = new AbortController();
+    const pending = grep.execute(
+      { pattern: 'marker', include: '**/*.ts' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'ripgrep' }, signal: controller.signal },
+    );
+    setTimeout(() => controller.abort(new Error('grep cancelled')), 0);
+    await expect(pending).rejects.toThrow('grep cancelled');
+  });
+
   it('finds its own ignore files off Windows', async () => {
     Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
     writeFileSync(join(ws, '.gitignore'), 'build/\n');

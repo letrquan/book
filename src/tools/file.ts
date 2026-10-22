@@ -2692,6 +2692,10 @@ async function grepSearchWithRipgrep(
     return { kind: 'success', result: await grepSearchPortable(args, ctx) };
   }
 
+  const ignoreFile = await ripgrepIgnoreFile(scope.root);
+  // That was a turn of the event loop: a cancel that landed during it is answered here, before a
+  // process is started that there would be nothing yet to stop.
+  throwIfAborted(ctx.signal);
   const rgArgs = buildRipgrepArgs({
     pattern,
     includePattern,
@@ -2700,7 +2704,7 @@ async function grepSearchWithRipgrep(
     multiline,
     ignoreCase,
     relativePath: scope.relativePath,
-    ignoreFile: await ripgrepIgnoreFile(scope.root),
+    ignoreFile,
   });
 
   return new Promise<RipgrepOutcome>((resolve, reject) => {
