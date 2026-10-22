@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
+import { delimiter } from 'node:path';
 import { buildChildEnv } from '../child-env.js';
+import { homeGitCeiling } from '../repo-containment.js';
 
 /**
  * Base -c overrides the Git tools and the managed-agent subsystem carry, so a checkout's own
@@ -68,12 +70,34 @@ export const GIT_HARDENING_ARGS: readonly string[] = [
  * git isolation's commit identity) spread this into it; the pager and the prompt are the floor,
  * not a replacement.
  *
+ * When the user's home directory holds a `.git` (a dotfiles repository), the home directory is
+ * also a `GIT_CEILING_DIRECTORIES` entry (`homeGitCeiling`), appended to one the operator
+ * exported, which still applies: git then does not climb into the home directory looking for a
+ * repository, so a project below it with no `.git` of its own is in none, while a workspace that
+ * is the home directory still finds it, since git never stops at the directory it starts in
+ * (#579). Only Book's own git carries it: the read-only Git tools, the prompt's git line, `/review`,
+ * the TUI status poll, the committed-file check, and git isolation; `GitCommit` takes the ceiling
+ * alone ({@link homeGitCeilingEnv}). The user's `Bash` keeps the environment the user configured.
+ *
  * The return type is `Record<string, string>` rather than `NodeJS.ProcessEnv`: a caller's
  * environment is `Record<string, string>` too, and spreading a wider one into it would make the
  * whole object `string | undefined` where nothing may be undefined.
  */
 export function hardenedGitEnv(): Record<string, string> {
-  return { GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' };
+  return { GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', ...homeGitCeilingEnv() };
+}
+
+/**
+ * The home directory as a `GIT_CEILING_DIRECTORIES` entry when it holds a `.git`, appended to the
+ * operator's exported list, else nothing; see {@link hardenedGitEnv}. On its own for `GitCommit`,
+ * which otherwise keeps the user's environment so their hooks run as they configured them, but
+ * must not commit into a dotfiles repository the read-only tools report as no repository (#579).
+ */
+export function homeGitCeilingEnv(): Record<string, string> {
+  const ceiling = homeGitCeiling();
+  if (ceiling === undefined) return {};
+  const exported = process.env.GIT_CEILING_DIRECTORIES;
+  return { GIT_CEILING_DIRECTORIES: exported ? `${exported}${delimiter}${ceiling}` : ceiling };
 }
 
 /**

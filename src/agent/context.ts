@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from 'fs';
+import { readdirSync, statSync } from 'fs';
 import { platform, release, homedir } from 'os';
 import { dirname, join, parse, resolve } from 'path';
 import type { AgentConfig, ResolvedShell } from '../types/runtime.js';
@@ -24,7 +24,8 @@ import { BUILTIN_COMMANDS } from '../commands/builtins.js';
 import { discoverProjectInstructions, renderProjectInstructions } from '../claude-md.js';
 import { discoverAgents, type SubagentDef } from '../subagent-discovery.js';
 import { readOnlyGit } from '../tools/git.js';
-import { isUserHome, tryRealPath } from '../repo-containment.js';
+import { isInGitRepository } from '../repo-containment.js';
+import { createUncGuard } from '../unc-path.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { resolveBookHome } from '../book-home.js';
 import { resolveAgentProfile } from '../agents/profile-resolver.js';
@@ -100,14 +101,22 @@ export class AgentContextCache {
 function contextSourceFingerprint(workspace: string): string {
   const hash = createHash('sha256');
   const visited = new Set<string>();
-  const addTree = (path: string, depth: number) => {
+  // A path the project supplies is asked of the UNC guard before it is followed, as discovery
+  // asks (#579): on Windows `statSync` on a link to a network share opens the share. Such a path
+  // counts as one that does not change. The user's own files are followed as they are.
+  const reachesUnc = createUncGuard();
+  const addTree = (path: string, depth: number, project: boolean) => {
     if (visited.has(path)) return;
     visited.add(path);
+    if (project && reachesUnc(path)) {
+      hash.update(`${path}:unc\n`);
+      return;
+    }
     try {
       const info = statSync(path);
       hash.update(`${path}:${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.mode}\n`);
       if (!info.isDirectory() || depth <= 0) return;
-      for (const entry of readdirSync(path).sort()) addTree(join(path, entry), depth - 1);
+      for (const entry of readdirSync(path).sort()) addTree(join(path, entry), depth - 1, project);
     } catch {
       hash.update(`${path}:missing\n`);
     }
@@ -115,24 +124,24 @@ function contextSourceFingerprint(workspace: string): string {
 
   const home = homedir();
   const bookHome = resolveBookHome();
-  for (const root of skillRoots(workspace, { homeDir: home, bookHomeDir: bookHome })) {
-    addTree(root.path, 5);
+  for (const root of skillRoots(workspace, { homeDir: home, bookHomeDir: bookHome }, reachesUnc)) {
+    addTree(root.path, 5, root.source === 'project');
   }
-  addTree(join(bookHome, 'commands'), 2);
-  addTree(join(bookHome, 'agents'), 2);
-  addTree(join(bookHome, 'AGENTS.md'), 0);
-  addTree(join(home, '.claude', 'CLAUDE.md'), 0);
-  addTree(join(workspace, '.book', 'commands'), 2);
-  addTree(join(workspace, '.book', 'agents'), 2);
-  addTree(join(workspace, '.claude'), 3);
-  addTree(join(workspace, 'CLAUDE.local.md'), 0);
+  addTree(join(bookHome, 'commands'), 2, false);
+  addTree(join(bookHome, 'agents'), 2, false);
+  addTree(join(bookHome, 'AGENTS.md'), 0, false);
+  addTree(join(home, '.claude', 'CLAUDE.md'), 0, false);
+  addTree(join(workspace, '.book', 'commands'), 2, true);
+  addTree(join(workspace, '.book', 'agents'), 2, true);
+  addTree(join(workspace, '.claude'), 3, true);
+  addTree(join(workspace, 'CLAUDE.local.md'), 0, true);
 
   let current = resolve(workspace);
   const root = parse(current).root;
   while (true) {
-    addTree(join(current, 'AGENTS.md'), 0);
-    addTree(join(current, 'CLAUDE.md'), 0);
-    addTree(join(current, '.claude', 'CLAUDE.md'), 0);
+    addTree(join(current, 'AGENTS.md'), 0, true);
+    addTree(join(current, 'CLAUDE.md'), 0, true);
+    addTree(join(current, '.claude', 'CLAUDE.md'), 0, true);
     if (current === root) break;
     current = dirname(current);
   }
@@ -193,25 +202,6 @@ function mergeCommands(commands: SlashCommand[]): SlashCommand[] {
 }
 
 /**
- * Whether the workspace is in a git repository: the nearest directory above it with a `.git`
- * entry. A `.git` at the user's home directory is a dotfiles repository, not a project
- * (`findRepositoryRoot` in `repo-containment.ts`), so a project under the home directory without
- * its own `.git` is in none, and its prompt carries no git line about the dotfiles repository.
- * The walk stays on the path as written, as before, so a repository anywhere else is unaffected.
- */
-function isInGitWorktree(workspace: string): boolean {
-  let current = resolve(workspace);
-  const root = parse(current).root;
-  while (true) {
-    if (existsSync(join(current, '.git'))) {
-      return !isUserHome(tryRealPath(current) ?? current, undefined);
-    }
-    if (current === root) return false;
-    current = dirname(current);
-  }
-}
-
-/**
  * The prompt's git line. It runs on every turn with nothing asked first, so both calls take the
  * read-only Git tools' hardening (`readOnlyGit`), exactly as `GitStatus` does: the program a
  * checkout's `core.fsmonitor` names does not run, while git's built-in daemon
@@ -219,7 +209,7 @@ function isInGitWorktree(workspace: string): boolean {
  * call, so there is no line. The two calls are independent reads, so they run side by side.
  */
 async function gitContext(workspace: string, signal?: AbortSignal): Promise<string> {
-  if (!isInGitWorktree(workspace)) return '';
+  if (!isInGitRepository(workspace)) return '';
 
   const ctx: ToolContext = {
     workspaceRoot: workspace,

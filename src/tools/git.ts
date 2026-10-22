@@ -6,6 +6,7 @@ import {
   GIT_HARDENING_ARGS,
   hardenedGitArgs,
   hardenedGitEnv,
+  homeGitCeilingEnv,
   readRepositoryProgramPins,
 } from './git-repository-programs.js';
 
@@ -37,7 +38,9 @@ export { hardenedGitArgs };
  * git call this module makes. `GitCommit` is the operator's own work, and it is the only
  * mutating tool here: it comes through this function with its own argv and the environment the
  * user configured, exactly as it did before the hardening existed, so a `pre-commit` or
- * `commit-msg` hook still runs. Silently not running the user's hook would be a worse failure
+ * `commit-msg` hook still runs. The one addition is the dotfiles home ceiling
+ * (`homeGitCeilingEnv`), so it does not commit into a repository the read-only tools report as no
+ * repository (#579). Silently not running the user's hook would be a worse failure
  * than the one the hardening exists to prevent. The read-only tools and the prompt's per-turn git
  * line go through {@link readOnlyGit}, and a caller whose work is Book's own builds its argv with
  * {@link hardenedGitArgs} directly.
@@ -128,7 +131,10 @@ async function gitLog(_args: Record<string, unknown>, ctx: ToolContext): Promise
 
 async function gitCommit(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const message = args.message as string;
-  const result = await runGit(['commit', '-m', message], ctx);
+  const result = await runGit(['commit', '-m', message], {
+    ...ctx,
+    env: { ...ctx.env, ...homeGitCeilingEnv() },
+  });
   return gitResult(result);
 }
 

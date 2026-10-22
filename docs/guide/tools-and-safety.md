@@ -509,6 +509,14 @@ asks. A `Grep` with no `path` searches the workspace, and so does a relative `Gl
 `pattern` is anchored to the workspace the same way a relative `Read` path is, and an absolute
 pattern names its own root. A `Glob` that would start walking outside the roots
 (`../**`, `.{.,x}/*`, an absolute path elsewhere) still asks. Other read-only tools (`GitStatus`, `GitDiff`, `WebFetch`, …) still ask.
+On Windows, `Glob` and `Grep` do not search a workspace on a network (UNC) path such as
+`\\host\share` (they answer `path_unreadable`). In a local workspace their walks do not follow a
+link to one, and a `Grep` `path` that reaches one through a link is refused before it is resolved.
+A directory you configured there, an `additionalDirectories` entry or the memory directory, is
+searched as `Read` serves it, except for a link inside it to another network location. `Grep`'s
+ripgrep backend takes its ignore rules from the root `.gitignore` alone, as the portable backend
+does: nested `.gitignore`, `.ignore` and `.rgignore` files, a parent directory's,
+`.git/info/exclude` and your global excludes file do not narrow a search there.
 
 What still asks:
 
@@ -549,10 +557,24 @@ signature switches matter because `log.showSignature` makes `git log` verify eve
 prints, and verification runs `gpg.program` — a program the repository names. The branch and
 status in each turn's `<session-state>` git line are read the same way, since that runs before any
 tool call. Among the tools, the hardening covers
-**these four only**: `GitCommit` runs with your own `argv` and environment, exactly as before,
+**these four only**: `GitCommit` runs with your own `argv` and environment, as before (plus the
+dotfiles home ceiling below),
 so your `pre-commit` and `commit-msg` hooks still run. A repository can still configure clean and
 smudge filters, and those run on `status` and `diff`; Book does not suppress them, because that
 would mean rewriting the command you asked for.
+
+**A dotfiles home.** When your home directory itself holds a `.git` (a dotfiles repository), that
+repository is not the repository of a project below your home that has no `.git` of its own. Book's
+own git (the four tools above, `GitCommit`, the `<session-state>` git line, `/review`, the TUI
+status bar and managed-agent isolation) runs with your home directory as a `GIT_CEILING_DIRECTORIES`
+entry, appended to one you exported, so in such a project `GitStatus` and `GitCommit` report that
+it is not a git repository, the status bar shows no branch, the prompt carries no git line,
+`/review` refuses as it does outside a repository, and patchers and validators refuse. A project
+with its own `.git` is unaffected, and so is a workspace that is your home directory itself: git
+never stops at the directory it starts in, so all of them see the home repository there. With no
+`.git` in your home directory nothing is added, and a repository above your home is found as
+before. `Bash` keeps your own environment, so `git status` run through `Bash` in such a project
+still reports the home repository.
 
 **Outside every root.** A `Read`, `Glob` or `Grep` whose target is in the workspace, in a read-only
 root, or in an approved `additionalDirectories` entry is served as above. One that is not is

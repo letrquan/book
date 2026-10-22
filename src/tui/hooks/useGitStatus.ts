@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
 import { isTranscriptScrollActive } from '../scroll-activity.js';
 import { buildChildEnv } from '../../child-env.js';
+import { isInGitRepository } from '../../repo-containment.js';
 import { hardenedGitArgs, hardenedGitEnv } from '../../tools/git.js';
 import { readRepositoryProgramPins } from '../../tools/git-repository-programs.js';
 
@@ -17,18 +16,17 @@ import { readRepositoryProgramPins } from '../../tools/git-repository-programs.j
  * directory. Walking up for the entry costs a handful of `stat` calls and gets
  * the subdirectory case right. A worktree or submodule stores `.git` as a file
  * rather than a directory, so the entry is what is checked, not its type.
+ *
+ * The walk itself is `isInGitRepository`, shared with the prompt's git line: it
+ * follows the real path, as git does from its working directory, and ignores a
+ * `.git` at the user's home directory for a project below it without its own
+ * (a dotfiles repository), so such a project shows no branch and spawns
+ * nothing, where git, which Book runs with the home directory as a ceiling
+ * (`hardenedGitEnv`), would only fail. A workspace that is the home directory
+ * shows its branch (#579).
  */
-export function isInsideWorkTree(
-  dir: string,
-  exists: (path: string) => boolean = existsSync,
-): boolean {
-  let current = resolve(dir);
-  for (;;) {
-    if (exists(join(current, '.git'))) return true;
-    const parent = dirname(current);
-    if (parent === current) return false;
-    current = parent;
-  }
+export function isInsideWorkTree(dir: string, exists?: (path: string) => boolean): boolean {
+  return isInGitRepository(dir, exists);
 }
 
 export interface GitStatus {

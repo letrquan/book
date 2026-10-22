@@ -1,5 +1,4 @@
-import { writeFileSync } from 'fs';
-import { join } from 'path';
+import { resolve } from 'path';
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import type { CommandContext } from '../types/commands.js';
 import type { LocalCommandDisplay, Message, Usage } from '../types/messages.js';
@@ -19,7 +18,10 @@ import { CommandRegistry, type CommandAlias, type CommandDefinition } from './re
 import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
 import { EFFORT_USAGE, isEffortLevel, type EffortLevel } from './effort.js';
 import { redactSettingValue } from '../settings-redaction.js';
-import { formatSettingsKeyHelp } from '../settings-repository.js';
+import { formatSettingsKeyHelp, writeFileAtomic } from '../settings-repository.js';
+import { projectFileWriteRefusal } from '../workspace-files.js';
+import { resolveWorkspacePath } from '../tools/path-utils.js';
+import { reachesUncPath } from '../unc-path.js';
 import { buildMemoryReport } from '../memory-display.js';
 import {
   deleteMemoryEntry,
@@ -1067,11 +1069,35 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     execute: ({ rawArguments }, context) => {
       const filename = rawArguments || 'conversation.txt';
       try {
+        // Inside the workspace, as the file tools hold a write, and only ever a regular file:
+        // written to a temporary file and renamed into place, never through what is there.
+        // Asked before resolving: resolving follows links, and one to a network share would
+        // already reach it.
+        if (reachesUncPath(resolve(context.workspace, filename))) {
+          return {
+            type: 'local-message',
+            content: `✕ export failed: ${filename} is a network path.`,
+          };
+        }
+        const resolved = resolveWorkspacePath(context.workspace, filename);
+        if (!resolved) {
+          return {
+            type: 'local-message',
+            content: `✕ export failed: ${filename} is outside the workspace.`,
+          };
+        }
+        const destination = resolved.filePath;
+        const refusal = projectFileWriteRefusal(destination);
+        if (refusal) {
+          return {
+            type: 'local-message',
+            content: `✕ export failed: ${destination}: ${refusal}.`,
+          };
+        }
         const text = context.messages
           .map((message) => `${message.role}:\n${message.content}`)
           .join('\n\n---\n\n');
-        const destination = join(context.workspace, filename);
-        writeFileSync(destination, text, 'utf-8');
+        writeFileAtomic(destination, text);
         return {
           type: 'local-message',
           content: `Exported ${context.messages.length} messages to ${destination}`,

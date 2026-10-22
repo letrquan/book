@@ -42,7 +42,7 @@ npm run eval:edit    # Edit reliability evaluation (configured provider)
 npm run eval:compact # Compaction paired evaluation (configured provider)
 npm run eval:skills  # Skill activation evaluation
 npm run verify:ink     # Installed Ink matches the release the TUI was verified against
-npm run release:check # Version, audit, and package smoke checks
+npm run release:check # Version, audit, and package smoke checks (the audit retries registry errors, never findings)
 ```
 
 Main-branch runtime work also follows the [stabilization gate](../stabilization.md): three

@@ -1,4 +1,9 @@
 import { randomUUID } from 'crypto';
+import { existsSync } from 'fs';
+import { homedir } from 'os';
+import { dirname, join, resolve } from 'path';
+import { resolveBookHome } from '../book-home.js';
+import { isUserHome, tryRealPath } from '../repo-containment.js';
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import type { Usage } from '../types/messages.js';
 import { createAgentRunContext, type AgentRunContext } from '../types/runs.js';
@@ -53,7 +58,12 @@ import {
   unrunFollowUps,
 } from './spawner-claim.js';
 import { projectToolResultForDisplay, redactToolCallForDisplay } from './activity.js';
-import { AgentStore, type AgentStoreOptions, type AgentStoreWriteResult } from './store.js';
+import {
+  AgentStore,
+  countStoredAgentRecords,
+  type AgentStoreOptions,
+  type AgentStoreWriteResult,
+} from './store.js';
 import { permissionRuleForToolCall } from '../permissions.js';
 import { createDebugLogger } from '../debug-log.js';
 import { createRunAmbientSnapshot } from '../session/run-ambient.js';
@@ -257,6 +267,7 @@ export class AgentManager {
   private permissionMode: PermissionMode = 'default';
   private permissionModeOverride?: PermissionMode;
   private readonly subscribers = new Set<(event: AgentRuntimeEvent) => void>();
+  private readonly heldNotices: string[] = [];
   private legacyEventSink?: (event: AgentRuntimeEvent) => void;
   private readonly textBuffers = new Map<string, string>();
   private readonly textTimers = new Map<string, NodeJS.Timeout>();
@@ -290,6 +301,7 @@ export class AgentManager {
   ): void {
     if (sink) this.legacyEventSink = sink;
     if (hookSink) this.hookEventSink = hookSink;
+    this.flushHeldNotices();
   }
 
   updateConfig(config: AgentConfig): void {
@@ -408,6 +420,7 @@ export class AgentManager {
     options: SubscribeOptions = {},
   ): () => void {
     this.subscribers.add(listener);
+    this.flushHeldNotices();
     if (options.snapshot) {
       void this.ensureInitialized().then(() => {
         for (const record of this.agents.values()) {
@@ -459,6 +472,7 @@ export class AgentManager {
       // A manager disposed while it waited has nothing to initialize: opening a store now would
       // take a lease and arm a heartbeat that nothing is left to release.
       if (this.disposed) return;
+      this.reportOrphanedHomeState();
       const hash = repositoryHash(this.repoRoot ?? this.config.workspace);
       // The managers this session disposed own nothing, even when a lease outlived its dispose.
       const sessionOptions = {
@@ -707,6 +721,80 @@ export class AgentManager {
 
   getPersistenceState(): 'healthy' | 'degraded_busy' | 'degraded_unavailable' {
     return this.persistenceState;
+  }
+
+  /**
+   * The user's home directory when this workspace is strictly below it, has no repository of its
+   * own, and home holds a `.git`: the dotfiles repository Book has ignored since #572.
+   */
+  private homeDotfilesAbove(): { home: string; homeReal: string } | undefined {
+    if (this.repoRoot) return undefined;
+    let home: string;
+    try {
+      home = homedir();
+    } catch {
+      return undefined;
+    }
+    const homeReal = tryRealPath(home) ?? resolve(home);
+    // A workspace that is home keeps the home key; only one strictly below it lost the repository.
+    let ancestor = dirname(tryRealPath(this.config.workspace) ?? resolve(this.config.workspace));
+    for (;;) {
+      if (isUserHome(ancestor, home)) break;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) return undefined;
+      ancestor = parent;
+    }
+    return existsSync(join(homeReal, '.git')) ? { home, homeReal } : undefined;
+  }
+
+  /**
+   * A project below the user's home with no repository of its own used to resolve to the home
+   * directory's, so its records, worktrees and snapshot refs were keyed by it (#579). Since #572
+   * that `.git` is a dotfiles repository Book ignores, and that state is no longer found. Say so
+   * once, with the way to clear it; never read it back, and never move or delete it. Records carry
+   * no workspace, so every record under the home key is counted, the home repository's own
+   * included.
+   */
+  private reportOrphanedHomeState(): void {
+    if (!this.config.settings.agents.persist) return;
+    const above = this.homeDotfilesAbove();
+    if (!above) return;
+    const storeRoot = this.options.storeRoot ?? join(resolveBookHome(), 'agents');
+    const found: Array<{ hash: string; count: number }> = [];
+    for (const hash of new Set([repositoryHash(above.homeReal), repositoryHash(above.home)])) {
+      const count = countStoredAgentRecords(storeRoot, hash);
+      if (count > 0) found.push({ hash, count });
+    }
+    if (found.length === 0) return;
+    const total = found.reduce((sum, entry) => sum + entry.count, 0);
+    const where = found.map((entry) => `"${join(storeRoot, entry.hash)}"`).join(' and ');
+    const worktrees = found
+      .map((entry) => `"${join(this.options.worktreeRoot ?? defaultWorktreeRoot(), entry.hash)}"`)
+      .join(' and ');
+    const quote = (path: string) => `"${path}"`;
+    this.emitManagerNotice(
+      `Book ignores the dotfiles repository at ${above.home}, so ${total} managed-agent record(s) kept under its key ` +
+        `(possibly made for this project, possibly for ${above.home} itself) are not used. To clear them: git -C ${quote(above.home)} worktree list, ` +
+        `git worktree remove each one under ${worktrees}, delete the refs/book/snapshots/* refs there, then delete ${where}.`,
+    );
+  }
+
+  /**
+   * The manager's own one-time line for the operator. Held until a host is listening, because the
+   * first initialization can run before the TUI subscribes (or between its resubscribes), and a
+   * notice nobody saw was not reported.
+   */
+  private emitManagerNotice(message: string): void {
+    if (this.subscribers.size === 0 && !this.legacyEventSink) {
+      this.heldNotices.push(message);
+      return;
+    }
+    this.emit({ type: 'agent_notice', message });
+  }
+
+  private flushHeldNotices(): void {
+    if (this.subscribers.size === 0 && !this.legacyEventSink) return;
+    for (const message of this.heldNotices.splice(0)) this.emit({ type: 'agent_notice', message });
   }
 
   private handlePersistenceEvent(
@@ -964,7 +1052,11 @@ export class AgentManager {
     }
     if (definition.isolation === 'worktree' && !this.repoRoot) {
       throw new Error(
-        `${definition.name} requires Git worktree isolation. Initialize and commit the repository, or use the explorer profile for read-only discovery.`,
+        `${definition.name} requires Git worktree isolation. ${
+          this.homeDotfilesAbove()
+            ? 'Book ignores the dotfiles repository at your home directory, so this project needs its own: run `git init` and commit here, or use the explorer profile for read-only discovery.'
+            : 'Initialize and commit the repository, or use the explorer profile for read-only discovery.'
+        }`,
       );
     }
     const outstanding = Array.from(this.agents.values()).filter(
