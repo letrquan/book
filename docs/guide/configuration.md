@@ -22,9 +22,10 @@ checkout, or `BOOK_HOME` names a directory in one. A file that repository tracks
 repository's, not yours. A tracked `settings.json` is read only as the project layer, and only when
 it is the workspace's own `.book/settings.json`. A tracked `trust.json` holds no decisions and is
 never written to. The other tracked files there are not read as yours: `mcp.json`,
-`permissions.json`, `AGENTS.md`, and anything in `commands/`, `agents/`, `skills/` or the memory
-tree. Untracked files, such as the sessions and decisions Book wrote there, are read as before, so
-a dotfiles repository that does not track `~/.book` changes nothing. Book says so once at startup;
+`permissions.json` and `AGENTS.md`, and the `commands/`, `agents/` and `skills/` directories and
+the memory tree, each taken whole when the repository tracks anything in it. Other untracked
+files, such as the sessions and decisions Book wrote there, are read as before, so a dotfiles
+repository that does not track `~/.book` changes nothing. Book says so once at startup;
 set `BOOK_HOME` to a directory outside the repository to keep your own settings and decisions.
 
 One family is not "later wins". `sandbox.*` is a boundary between a command and your machine, so

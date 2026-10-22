@@ -307,7 +307,7 @@ export function getProjectMemoryDir(workspace: string, opts?: MemoryStoreOptions
  * Whether the workspace's repository ships files in the memory tree under Book's home
  * (`book-home-files.ts`): memory there is the repository's, so none of it is loaded or migrated.
  */
-function isShippedMemoryTree(workspace: string, opts?: MemoryStoreOptions): boolean {
+export function isShippedMemoryTree(workspace: string, opts?: MemoryStoreOptions): boolean {
   const root = bookRoot(opts);
   return shippedHomeFiles(workspace, root)?.shipsAnyUnder(join(root, 'projects')) ?? false;
 }
@@ -1078,6 +1078,20 @@ function cutIndex(raw: string, maxLines: number): IndexLoad {
     wasLineTruncated,
     wasByteTruncated,
   };
+}
+
+/**
+ * The memory a session runs with: none when memory is off, and none when the workspace's
+ * repository ships files in the memory tree under Book's home ({@link isShippedMemoryTree}), so the
+ * session is given no memory directory there to read or to write without asking.
+ */
+export function sessionMemoryContext(
+  workspace: string,
+  enabled: boolean,
+  opts?: MemoryStoreOptions,
+): LoadedMemoryContext | undefined {
+  if (!enabled || isShippedMemoryTree(workspace, opts)) return undefined;
+  return loadMemoryContext(workspace, opts);
 }
 
 export function loadMemoryContext(

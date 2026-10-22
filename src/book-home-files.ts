@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from 'fs';
-import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'path';
+import { basename, dirname, join, parse, relative, resolve, sep } from 'path';
 import { resolveBookHome } from './book-home.js';
 import {
   commonDirOf,
@@ -9,6 +9,7 @@ import {
   readGitIndex,
   type GitIndexEntry,
 } from './git-index.js';
+import { isOutside } from './tools/path-utils.js';
 import { reachesUncPath } from './unc-path.js';
 
 /**
@@ -20,8 +21,10 @@ import { reachesUncPath } from './unc-path.js';
  * `/app`), or `BOOK_HOME` names a directory in one. A file that repository tracks there is the
  * repository's content, not the user's, so each reader of the home takes it as such: the settings
  * file only as the project layer (and only when it is the workspace's own project file), and every
- * other file not at all. Untracked files there, which Book or the user wrote, are read as before;
- * a dotfiles repository at `~` that does not track `~/.book` changes nothing.
+ * other file not at all. A reader of a directory (`commands/`, `agents/`, `skills/`, the memory
+ * tree, the managed-agents store) takes one the repository ships anything in as the repository's
+ * whole. Other untracked files there, which Book or the user wrote, are read as before; a dotfiles
+ * repository at `~` that does not track `~/.book` changes nothing.
  *
  * "Ships" is decided by the repository the workspace belongs to (the nearest `.git` at or above
  * it, the home directory's own included), from its index: a file is shipped when the index lists
@@ -46,7 +49,11 @@ export interface ShippedHomeFiles {
   shipsAnyUnder(dir: string): boolean;
 }
 
-/** Real path of `path`, or `undefined`; never resolved through a UNC location. */
+/**
+ * Real path of `path`, or `undefined`; never resolved through a UNC location. `tryRealPath` in
+ * `repo-containment.ts` does the same, but importing it would close an import cycle
+ * (`repo-containment` → `hook-approvals` → `workspace-trust` → here).
+ */
 function realPathOf(path: string): string | undefined {
   if (reachesUncPath(path)) return undefined;
   try {
@@ -89,9 +96,7 @@ function repositoryRootOf(dir: string): string | undefined {
 
 /** `child` relative to `root`, `/`-separated; `undefined` when it is not inside it. */
 function inside(root: string, child: string): string | undefined {
-  const rel = relative(root, child);
-  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return undefined;
-  return rel.split(sep).join('/');
+  return isOutside(root, child) ? undefined : relative(root, child).split(sep).join('/');
 }
 
 /** Paths fold case where the file system usually does (Windows, macOS); ASCII letters only. */

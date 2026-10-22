@@ -12,7 +12,7 @@ import { inspectCommands } from './commands/loader.js';
 import { readGitIndex } from './git-index.js';
 import { hookFingerprint } from './hook-approvals.js';
 import { resolveMcpServerList } from './mcp-config.js';
-import { loadMemoryContext, getProjectMemoryDir } from './memory-store.js';
+import { getProjectMemoryDir, loadMemoryContext, sessionMemoryContext } from './memory-store.js';
 import { collectShippedHomeNotices } from './project-approval-notices.js';
 import {
   isShippedUserSettingsFile,
@@ -337,6 +337,8 @@ describe('a Book home the workspace repository ships files in', () => {
       ),
     ).toEqual([{ path: join(home, '.book', 'skills'), source: 'project', kind: 'book' }]);
     expect(loadMemoryContext(home, { bookRoot: join(home, '.book') }).indexLoaded).toBe(false);
+    // No memory directory there for the session to read or write.
+    expect(sessionMemoryContext(home, true, { bookRoot: join(home, '.book') })).toBeUndefined();
   });
 
   it('keeps managed agents in memory when the repository tracks records for them', async () => {
