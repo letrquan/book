@@ -76,21 +76,28 @@ export const GIT_HARDENING_ARGS: readonly string[] = [
  * repository, so a project below it with no `.git` of its own is in none, while a workspace that
  * is the home directory still finds it, since git never stops at the directory it starts in
  * (#579). Only Book's own git carries it: the read-only Git tools, the prompt's git line, `/review`,
- * the TUI status poll, the committed-file check, and git isolation. The user's `Bash` and
- * `GitCommit` keep the environment the user configured.
+ * the TUI status poll, the committed-file check, and git isolation; `GitCommit` takes the ceiling
+ * alone ({@link homeGitCeilingEnv}). The user's `Bash` keeps the environment the user configured.
  *
  * The return type is `Record<string, string>` rather than `NodeJS.ProcessEnv`: a caller's
  * environment is `Record<string, string>` too, and spreading a wider one into it would make the
  * whole object `string | undefined` where nothing may be undefined.
  */
 export function hardenedGitEnv(): Record<string, string> {
-  const env: Record<string, string> = { GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' };
+  return { GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', ...homeGitCeilingEnv() };
+}
+
+/**
+ * The home directory as a `GIT_CEILING_DIRECTORIES` entry when it holds a `.git`, appended to the
+ * operator's exported list, else nothing; see {@link hardenedGitEnv}. On its own for `GitCommit`,
+ * which otherwise keeps the user's environment so their hooks run as they configured them, but
+ * must not commit into a dotfiles repository the read-only tools report as no repository (#579).
+ */
+export function homeGitCeilingEnv(): Record<string, string> {
   const ceiling = homeGitCeiling();
-  if (ceiling !== undefined) {
-    const exported = process.env.GIT_CEILING_DIRECTORIES;
-    env.GIT_CEILING_DIRECTORIES = exported ? `${exported}${delimiter}${ceiling}` : ceiling;
-  }
-  return env;
+  if (ceiling === undefined) return {};
+  const exported = process.env.GIT_CEILING_DIRECTORIES;
+  return { GIT_CEILING_DIRECTORIES: exported ? `${exported}${delimiter}${ceiling}` : ceiling };
 }
 
 /**

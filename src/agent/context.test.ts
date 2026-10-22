@@ -1391,7 +1391,7 @@ describe('session-state git line and a dotfiles ~/.git', () => {
   });
 
   // The rule is for a project below the home directory (#579): a workspace that is the home
-  // directory (a container with HOME=/app and the repository cloned at /app) has its git line.
+  // directory itself has its git line.
   it('carries the git line for a workspace that is the home directory', async () => {
     const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-git-home-')));
     try {

@@ -46,6 +46,21 @@ function repository(at: string): void {
   );
 }
 
+/** How many commits `HEAD` has in the repository at `at`. */
+function commits(at: string): number {
+  return Number(
+    execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: at }).toString().trim(),
+  );
+}
+
+/** A commit identity for `GitCommit`, which runs with Book's environment and no config of its own. */
+function stubIdentity(): void {
+  vi.stubEnv('GIT_AUTHOR_NAME', 'Test');
+  vi.stubEnv('GIT_AUTHOR_EMAIL', 'test@example.com');
+  vi.stubEnv('GIT_COMMITTER_NAME', 'Test');
+  vi.stubEnv('GIT_COMMITTER_EMAIL', 'test@example.com');
+}
+
 function tool(definitions: ToolDefinition[], name: string): ToolDefinition {
   const found = definitions.find((definition) => definition.name === name);
   if (!found) throw new Error(`Missing tool ${name}`);
@@ -106,6 +121,17 @@ describe('a project below a home directory that holds a .git, with none of its o
     }
     // The ceiling is the calls' own: Book's environment is unchanged.
     expect(process.env.GIT_CEILING_DIRECTORIES).toBeUndefined();
+  });
+
+  it('is in no repository for GitCommit, which commits nothing to the home repository', async () => {
+    stubIdentity();
+    execFileSync('git', ['add', '--', join('proj', 'a.txt')], { cwd: home, stdio: 'ignore' });
+
+    const result = await tool(gitTools, 'GitCommit').execute({ message: 'x' }, context(proj));
+
+    expect(result.status).toBe('error');
+    expect(failure(result)).toMatch(/not a git repository/i);
+    expect(commits(home)).toBe(1);
   });
 
   it('is in no repository for the /review target', async () => {
@@ -192,6 +218,16 @@ describe('a workspace that is the home directory, which holds a .git', () => {
     const target = await resolveReviewTarget(home, SCOPE);
     expect(target.kind).toBe('working-tree');
     expect(target.changedFiles).toContain('notes.txt');
+  });
+
+  it('is in the home repository for GitCommit', async () => {
+    stubIdentity();
+    execFileSync('git', ['add', '--', 'notes.txt'], { cwd: home, stdio: 'ignore' });
+
+    const result = await tool(gitTools, 'GitCommit').execute({ message: 'notes' }, context(home));
+
+    expect(result.status).toBe('success');
+    expect(commits(home)).toBe(2);
   });
 });
 
