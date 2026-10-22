@@ -180,6 +180,10 @@ export function persistUserSettingClearingLocal(
   key: string,
   value: unknown,
 ): { ok: boolean; error?: string } {
+  // Checked before the user file is written: the clear that follows must happen for the write to
+  // take effect, and a refused one would otherwise pass silently.
+  const refused = refusedWrite(localSettingsPath(workspace));
+  if (refused) return refused;
   const result = persistSettingsGlobal({ [key]: value });
   if (!result.ok) return result;
   clearLocalSettings(workspace, [key]);
@@ -191,6 +195,8 @@ export function removeUserSettingClearingLocal(
   workspace: string,
   key: string,
 ): { ok: boolean; error?: string } {
+  const refused = refusedWrite(localSettingsPath(workspace));
+  if (refused) return refused;
   const result = new SettingsRepository(globalSettingsPath()).remove([key]);
   if (!result.ok) return { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
   clearLocalSettings(workspace, [key]);
@@ -334,6 +340,9 @@ export function persistProviderSave(
   provider: ProviderConfig,
   selection?: string,
 ): { ok: boolean; error?: string } {
+  // As in persistUserSettingClearingLocal: the local clear is part of the save.
+  const refused = refusedWrite(localSettingsPath(workspace));
+  if (refused) return refused;
   const result = persistSettingsGlobal({
     [`provider.${providerId}`]: provider,
     ...(selection !== undefined ? { model: selection } : {}),

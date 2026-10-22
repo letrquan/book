@@ -11,7 +11,7 @@ import {
   unlinkSync,
   writeSync,
 } from 'fs';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import type { core } from 'zod';
 import { resolveBookHome } from './book-home.js';
 import { deleteNestedValue, setNestedValue } from './cli/utils.js';
@@ -85,19 +85,32 @@ export function readSettingsDocument(path: string): SettingsDocumentReadResult {
  * `.book/settings.local.json`, `.book/migrations.json`, a project `.mcp.json`), including the read
  * a write starts from.
  *
- * Such a file is written only while it is a regular file or does not exist yet. Anything else (a
- * link, a FIFO, a device, a directory) is left exactly as it is: not read for the write, not
- * written through, and not replaced. The answer is the reason, without the path or a full stop,
- * for the caller's one-line notice: `<path>: <reason>`.
+ * Such a file is written only while it is a regular file or does not exist yet, in a `.book`
+ * folder that is a real directory or does not exist yet. Anything else (a link, a FIFO, a device,
+ * a directory in the file's place) is left exactly as it is: not read for the write, not written
+ * through, and not replaced. The answer is the reason, without the path or a full stop, for the
+ * caller's one-line notice: `<path>: <reason>`.
  *
- * Files under `<BOOK_HOME>` keep their behaviour: they are the user's own, and a user-global
- * settings file kept elsewhere and linked into place is a setup this must not break.
+ * The user-global files (`<BOOK_HOME>/settings.json` and `<BOOK_HOME>/mcp.json`) keep their
+ * behaviour: they are the user's own, and one kept elsewhere and linked into place is a setup this
+ * must not break. Only those two paths are exempt, not the rest of `<BOOK_HOME>`, which also holds
+ * checkouts of other repositories.
  */
 export function projectFileWriteRefusal(path: string): string | undefined {
-  const fromHome = relative(resolve(resolveBookHome()), resolve(path));
-  if (fromHome === '' || (!fromHome.startsWith('..') && !isAbsolute(fromHome))) return undefined;
+  const target = resolve(path);
+  const home = resolve(resolveBookHome());
+  if (target === join(home, 'settings.json') || target === join(home, 'mcp.json')) {
+    return undefined;
+  }
   try {
-    const stats = lstatSync(path, { throwIfNoEntry: false });
+    const folder = dirname(target);
+    if (basename(folder) === '.book') {
+      const folderStats = lstatSync(folder, { throwIfNoEntry: false });
+      if (folderStats && !folderStats.isDirectory()) {
+        return 'its .book folder is not a regular directory, so Book left it unchanged';
+      }
+    }
+    const stats = lstatSync(target, { throwIfNoEntry: false });
     if (!stats || stats.isFile()) return undefined;
   } catch (error) {
     return `could not be inspected (${safeMessage(error)}), so Book left it unchanged`;

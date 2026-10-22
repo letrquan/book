@@ -20,6 +20,7 @@ import {
   persistProviderSave,
   persistSettingsGlobal,
   persistSettingsLocal,
+  persistUserSettingClearingLocal,
   removePermissionRuleLocal,
   removeProviderLocal,
 } from './tui/persist.js';
@@ -78,10 +79,16 @@ describe('projectFileWriteRefusal', () => {
     expect(lstatSync(localPath()).isDirectory()).toBe(true);
   });
 
-  it('keeps the behaviour of files under BOOK_HOME', () => {
-    mkdirSync(bookHome(), { recursive: true });
-    mkdirSync(join(bookHome(), 'settings.json'));
+  it('keeps the behaviour of the user-global files only', () => {
+    mkdirSync(join(bookHome(), 'settings.json'), { recursive: true });
+    mkdirSync(join(bookHome(), 'mcp.json'), { recursive: true });
     expect(projectFileWriteRefusal(join(bookHome(), 'settings.json'))).toBeUndefined();
+    expect(projectFileWriteRefusal(join(bookHome(), 'mcp.json'))).toBeUndefined();
+    // The rest of BOOK_HOME holds checkouts of other repositories, and is checked like any
+    // workspace.
+    const checkout = join(bookHome(), 'worktrees', 'one', '.book', 'settings.local.json');
+    mkdirSync(checkout, { recursive: true });
+    expect(projectFileWriteRefusal(checkout)).toContain('not a regular file');
   });
 });
 
@@ -103,16 +110,31 @@ links('a project settings file that is a link', () => {
     expectUntouched(localPath(), target);
   });
 
-  it('is left unchanged by a provider save, which still writes the user file', () => {
+  it('stops a user-global save whose local clear it would refuse, with the notice', () => {
     const target = linkTo(localPath());
     expect(persistProviderSave(workspace, 'gw', { type: 'openai', models: {} }, 'gw/m')).toEqual({
-      ok: true,
+      ok: false,
+      error: `${localPath()}: not a regular file, so Book left it unchanged`,
     });
-    expect(JSON.parse(readFileSync(join(bookHome(), 'settings.json'), 'utf-8'))).toMatchObject({
-      model: 'gw/m',
-      provider: { gw: { type: 'openai' } },
-    });
+    expect(persistUserSettingClearingLocal(workspace, 'effort', 'high').ok).toBe(false);
+    // Neither save half-happened: the user file was not written either.
+    expect(() => lstatSync(join(bookHome(), 'settings.json'))).toThrow();
     expectUntouched(localPath(), target);
+  });
+
+  it('is refused when the .book folder itself is a link', () => {
+    const folder = join(outside, 'folder');
+    mkdirSync(folder);
+    writeFileSync(join(folder, 'settings.local.json'), ORIGINAL);
+    rmSync(join(workspace, '.book'), { recursive: true });
+    symlinkSync(folder, join(workspace, '.book'));
+    const result = persistSettingsLocal(workspace, { effort: 'high' });
+    expect(result.error).toContain('its .book folder is not a regular directory');
+    expect(readFileSync(join(folder, 'settings.local.json'), 'utf-8')).toBe(ORIGINAL);
+    expect(applySettingWrite({ workspace, key: 'effort', value: 'x', scope: 'project' }).ok).toBe(
+      false,
+    );
+    expect(() => lstatSync(join(folder, 'settings.json'))).toThrow();
   });
 
   it('is refused before it is read by permission rule edits and provider removal', () => {
@@ -129,9 +151,13 @@ links('a project settings file that is a link', () => {
     expectUntouched(localPath(), target);
   });
 
-  it('is reported by a scoped read and refused by book config set and unset', () => {
+  it('is read for display as the loader reads it, and refused by book config set', () => {
     const target = linkTo(localPath());
     expect(readScopeDocument('local', workspace)).toMatchObject({
+      status: 'present',
+      document: { model: 'kept' },
+    });
+    expect(readScopeDocument('local', workspace, { forWrite: true })).toMatchObject({
       status: 'unreadable',
       error: 'not a regular file, so Book left it unchanged',
     });
@@ -161,8 +187,8 @@ links('a project settings file that is a link', () => {
     expectUntouched(mcpPath, target);
   });
 
-  it('stops the legacy permission migration, with a notice', () => {
-    const target = linkTo(localPath());
+  it('stops the legacy permission migration, with a notice, before reading its marker', () => {
+    const target = linkTo(join(workspace, '.book', 'migrations.json'));
     const home = mkdtempSync(join(tmpdir(), 'book-regular-file-legacy-'));
     try {
       mkdirSync(join(home, '.book'), { recursive: true });
@@ -173,7 +199,8 @@ links('a project settings file that is a link', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       expect(migrateLegacyPermissions(workspace, home)).toBe(false);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('not a regular file'));
-      expectUntouched(localPath(), target);
+      expectUntouched(join(workspace, '.book', 'migrations.json'), target);
+      expect(() => lstatSync(localPath())).toThrow();
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

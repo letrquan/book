@@ -167,7 +167,7 @@ export async function runConfigCommand(
     // reach for it is almost always a stray value in a layer that outranks the
     // global one, and that layer has to be named explicitly anyway.
     const scope = settingsOptions.scope ?? 'user';
-    const layer = readScopeDocument(scope, workspace);
+    const layer = readScopeDocument(scope, workspace, { forWrite: true });
     if (layer.status === 'unreadable') {
       console.error(
         `Could not read ${settingsScopeLabel(scope)} settings (${layer.path}): ` +

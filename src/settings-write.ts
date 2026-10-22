@@ -69,10 +69,18 @@ export interface ScopeDocument {
   document: Record<string, unknown>;
 }
 
-export function readScopeDocument(scope: SettingsScope, workspace: string): ScopeDocument {
+/**
+ * `forWrite`: the read a write starts from, which answers the way the write will
+ * (`projectFileWriteRefusal`) before reading anything. A read for display reports the file the way
+ * the loader reads it, since that is the layer in force.
+ */
+export function readScopeDocument(
+  scope: SettingsScope,
+  workspace: string,
+  { forWrite = false }: { forWrite?: boolean } = {},
+): ScopeDocument {
   const path = settingsScopePath(scope, workspace);
-  // Read for a write as often as for display, so it answers the way the write would.
-  const refusal = projectFileWriteRefusal(path);
+  const refusal = forWrite ? projectFileWriteRefusal(path) : undefined;
   if (refusal) return { scope, path, status: 'unreadable', error: refusal, document: {} };
   const result = readSettingsDocument(path);
   if (result.status === 'valid') {
@@ -146,7 +154,7 @@ function describeEffectiveBreak(options: SettingWriteOptions): string | undefine
   // aimed at a file this invocation is deliberately not reading.
   if (options.noSettings) return undefined;
 
-  const layer = readScopeDocument(options.scope, options.workspace);
+  const layer = readScopeDocument(options.scope, options.workspace, { forWrite: true });
   // An unreadable layer is about to be reported by the write itself, and a
   // candidate built on a document we could not read would be a guess.
   if (layer.status === 'unreadable') return undefined;
