@@ -32,9 +32,9 @@ export { hardenedGitArgs };
 
 /**
  * The environment for a git read that stays local. In a partial clone a missing object is
- * reported as missing rather than fetched (`GIT_NO_LAZY_FETCH`), and no transport is allowed at
- * all (an empty `GIT_ALLOW_PROTOCOL`), so a git that predates the first still cannot fetch. Git
- * isolation sets the same pair.
+ * reported as missing rather than fetched (`GIT_NO_LAZY_FETCH`, which git reads from 2.44 and
+ * from the 2024 maintenance releases of older lines; an older git ignores it), and git's transport
+ * allowlist is empty (`GIT_ALLOW_PROTOCOL`). Git isolation sets the same pair.
  *
  * The reads Book makes on its own carry it: the prompt's per-turn git line and the TUI status
  * poll, which run with no request behind them and must not reach a remote. The read-only Git
