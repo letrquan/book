@@ -28,6 +28,7 @@ import type { Message } from '../types/messages.js';
 import type { ProviderMessage } from '../types/providers.js';
 import { userMsg, assistantMsg, toolCall, toolResult, defaultConfig } from '../test/fixtures.js';
 import { isolateBookHome } from '../test/isolated-book-home.js';
+import { gitIn, partialCloneMissingTree, repositoryWithSubmodule } from '../test/git-fixtures.js';
 
 const config = defaultConfig();
 
@@ -1391,6 +1392,13 @@ describe('session-state git line and a dotfiles ~/.git', () => {
   });
 });
 
+/** The `- Git:` line of a built turn, if it has one. */
+function gitLine(content: unknown): string | undefined {
+  return String(content)
+    .split('\n')
+    .find((line) => line.startsWith('- Git:'));
+}
+
 // The git line is read on every turn, before any tool call or approval, so it is Book's own work
 // and takes the read-only Git tools' hardening (#574). A checkout's `.git/config` arrives with an
 // archive or a shared directory, and `git status` executes the program its `core.fsmonitor` names.
@@ -1399,12 +1407,6 @@ describe('session-state git line and repository-configured programs', () => {
   let repo: string;
 
   const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
-
-  function gitLine(content: unknown): string | undefined {
-    return String(content)
-      .split('\n')
-      .find((line) => line.startsWith('- Git:'));
-  }
 
   beforeEach(() => {
     // The long form on Windows, as git reports it, not the runner's 8.3 temp path.
@@ -1473,4 +1475,50 @@ describe('session-state git line and repository-configured programs', () => {
 
     expect(gitLine(out[1].content)).toBe('- Git: branch main, clean');
   });
+});
+
+// The git line reports on this repository: a submodule counts when its recorded commit moved, not
+// for what changed inside it. Nothing asked for the line, so it never fetches.
+describe('session-state git line with submodules and partial clones', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-git-line-')));
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  // The fixtures need a POSIX shell.
+  it.skipIf(process.platform === 'win32')(
+    'counts a submodule whose recorded commit moved, but not what changed inside it',
+    async () => {
+      const fixture = await repositoryWithSubmodule(root);
+      await fixture.movePointer();
+      fixture.touch();
+
+      const out = await buildMessages(defaultConfig({ workspace: fixture.repo }), [userMsg('hi')]);
+
+      expect(gitLine(out[1].content)).toBe('- Git: branch main, 1 changed file');
+      expect(existsSync(fixture.marker)).toBe(false);
+      // A plain status of the same checkout does read inside the submodule.
+      await gitIn(fixture.repo, 'status', '--short');
+      expect(existsSync(fixture.marker)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'reads the line in a partial clone without fetching, down to the branch alone',
+    async () => {
+      const fixture = await partialCloneMissingTree(root);
+
+      const out = await buildMessages(defaultConfig({ workspace: fixture.repo }), [userMsg('hi')]);
+
+      // The status needs the missing tree, so only the branch is reported.
+      expect(gitLine(out[1].content)).toBe('- Git: branch main');
+      expect(fixture.packs()).toBe(0);
+      // A plain status of the same checkout does fetch it.
+      await gitIn(fixture.repo, 'status', '--short');
+      expect(fixture.packs()).toBeGreaterThan(0);
+    },
+  );
 });

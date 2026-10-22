@@ -23,7 +23,7 @@ import { discoverCommands, generateCommandListing } from '../commands/loader.js'
 import { BUILTIN_COMMANDS } from '../commands/builtins.js';
 import { discoverProjectInstructions, renderProjectInstructions } from '../claude-md.js';
 import { discoverAgents, type SubagentDef } from '../subagent-discovery.js';
-import { readOnlyGit } from '../tools/git.js';
+import { READ_ONLY_GIT_ARGS, readOnlyGit } from '../tools/git.js';
 import { isUserHome, tryRealPath } from '../repo-containment.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { resolveBookHome } from '../book-home.js';
@@ -217,6 +217,10 @@ function isInGitWorktree(workspace: string): boolean {
  * checkout's `core.fsmonitor` names does not run, while git's built-in daemon
  * (`core.fsmonitor=true`) stays allowed (#574). A configuration the hardening refuses fails the
  * call, so there is no line. The two calls are independent reads, so they run side by side.
+ *
+ * The status is `GitStatus`'s own, so changes inside a submodule do not count. Nothing asked for
+ * this read, so it never fetches: in a partial clone that is missing an object the status needs,
+ * the line is the branch alone.
  */
 async function gitContext(workspace: string, signal?: AbortSignal): Promise<string> {
   if (!isInGitWorktree(workspace)) return '';
@@ -226,9 +230,10 @@ async function gitContext(workspace: string, signal?: AbortSignal): Promise<stri
     env: process.env as Record<string, string>,
     signal,
   };
+  const local = { lazyFetch: false };
   const [branch, status] = await Promise.all([
-    readOnlyGit(['rev-parse', '--abbrev-ref', 'HEAD'], ctx),
-    readOnlyGit(['status', '--short'], ctx),
+    readOnlyGit(['rev-parse', '--abbrev-ref', 'HEAD'], ctx, local),
+    readOnlyGit(READ_ONLY_GIT_ARGS.GitStatus, ctx, local),
   ]);
   if (!branch.success) return '';
 

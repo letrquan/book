@@ -31,6 +31,29 @@ export { hardenedGitEnv };
 export { hardenedGitArgs };
 
 /**
+ * The environment for a git read that stays local. In a partial clone a missing object is
+ * reported as missing rather than fetched (`GIT_NO_LAZY_FETCH`), and no transport is allowed at
+ * all (an empty `GIT_ALLOW_PROTOCOL`), so a git that predates the first still cannot fetch. Git
+ * isolation sets the same pair.
+ *
+ * The reads Book makes on its own carry it: the prompt's per-turn git line and the TUI status
+ * poll, which run with no request behind them and must not reach a remote. The read-only Git
+ * tools keep lazy fetch, because the model asked for them and an answer is worth a fetch there.
+ */
+export function noFetchGitEnv(): Record<string, string> {
+  return { GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: '' };
+}
+
+/** Options for {@link readOnlyGit}. */
+export interface ReadOnlyGitOptions {
+  /**
+   * `false` for a read Book makes on its own, with no request behind it: the call carries
+   * {@link noFetchGitEnv}. The read-only tools leave it unset and keep lazy fetch.
+   */
+  lazyFetch?: boolean;
+}
+
+/**
  * `runGit` runs a caller's arguments as given, and the caller chooses.
  *
  * The hardening is a property of the calls that are *not* the operator's own work, not of every
@@ -84,10 +107,20 @@ export async function runGit(
  * Exported for the prompt's `<session-state>` git line (`gitContext` in `agent/context.ts`), which
  * runs on every turn before any tool call or approval, and so must not start a program the
  * checkout's `.git/config` names any more than `GitStatus` may (#574).
+ *
+ * The TUI's `/diff` uses it too, to show what `GitDiff` would.
  */
-export async function readOnlyGit(args: readonly string[], ctx: ToolContext) {
+export async function readOnlyGit(
+  args: readonly string[],
+  ctx: ToolContext,
+  options: ReadOnlyGitOptions = {},
+) {
   try {
-    const env = { ...ctx.env, ...hardenedGitEnv() };
+    const env = {
+      ...ctx.env,
+      ...hardenedGitEnv(),
+      ...(options.lazyFetch === false ? noFetchGitEnv() : {}),
+    };
     const pins = await readRepositoryProgramPins(ctx.workspaceRoot, undefined, {
       signal: ctx.signal,
       env,
@@ -147,14 +180,16 @@ async function gitBranch(_args: Record<string, unknown>, ctx: ToolContext): Prom
  *
  * `GitDiff` carries {@link HARDENED_DIFF_ARGS}, which close the two remaining routes a checkout
  * owns: `diff.external` names a program to produce the diff, and a `.gitattributes` `textconv`
- * line names one per file. `GitLog` carries `--no-show-signature` for the same reason
- * `log.showSignature=false` is in the hardening: verifying a signature runs `gpg.program`. The flag
+ * line names one per file. `GitStatus` carries `--ignore-submodules=dirty`: a submodule whose
+ * recorded commit moved still shows, but what changed inside one does not count, so the status
+ * stays a report on this repository alone. `GitLog` carries `--no-show-signature` for the same
+ * reason `log.showSignature=false` is in the hardening: verifying a signature runs `gpg.program`. The flag
  * is on the command as well as in the config so the guarantee does not rest on the `-c` override
  * being consulted for this subcommand. `GitCommit` is deliberately not here — it is a mutation,
  * still asks, and runs with the user's own hooks (see {@link runGit}).
  */
 export const READ_ONLY_GIT_ARGS = {
-  GitStatus: ['status', '--short'],
+  GitStatus: ['status', '--short', '--ignore-submodules=dirty'],
   GitDiff: ['diff', ...HARDENED_DIFF_ARGS],
   GitLog: ['log', '--oneline', '-20', '--no-show-signature'],
   GitBranch: ['branch', '-a'],

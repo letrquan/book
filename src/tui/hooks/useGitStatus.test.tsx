@@ -159,7 +159,7 @@ describe('useGitStatus argv', () => {
           REPOSITORY_PROGRAM_CONFIG_PATTERN,
         ]),
         hardenedGitArgs(['rev-parse', '--abbrev-ref', 'HEAD']),
-        hardenedGitArgs(['status', '--short']),
+        hardenedGitArgs(['status', '--short', '--ignore-submodules=dirty']),
       ]).toContainEqual(call.args);
       expect(call.options.env?.GIT_PAGER).toBe('cat');
       expect(call.options.env?.GIT_TERMINAL_PROMPT).toBe('0');
@@ -229,8 +229,15 @@ describe('useGitStatus argv', () => {
         'filter.cleaner.required=false',
         'status',
         '--short',
+        '--ignore-submodules=dirty',
       ]),
     );
+
+    // Neither of the poll's own reads fetches.
+    for (const call of [calls[1], calls[2]]) {
+      expect(call.options.env?.GIT_NO_LAZY_FETCH).toBe('1');
+      expect(call.options.env?.GIT_ALLOW_PROTOCOL).toBe('');
+    }
 
     view.unmount();
   });

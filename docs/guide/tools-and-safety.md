@@ -554,6 +554,12 @@ so your `pre-commit` and `commit-msg` hooks still run. A repository can still co
 smudge filters, and those run on `status` and `diff`; Book does not suppress them, because that
 would mean rewriting the command you asked for.
 
+`GitStatus` passes `--ignore-submodules=dirty`, so changes inside a submodule do not count as
+changed files, while a submodule whose recorded commit moved still shows. The prompt's git line and
+the TUI status line read the status the same way, and neither fetches: in a partial clone that is
+missing an object the status needs, the status is left out. The read-only Git tools keep fetching
+there. `/diff` shows what `GitDiff` does, with the same flags.
+
 **Outside every root.** A `Read`, `Glob` or `Grep` whose target is in the workspace, in a read-only
 root, or in an approved `additionalDirectories` entry is served as above. One that is not is
 _refused_, not prompted for: no permission rule and no permission mode makes the file tools serve
