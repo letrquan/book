@@ -75,7 +75,10 @@ export function ancestorsFromRoot(workspace: string): string[] {
  * A `.git` at the real path of `home` (the user's home directory by default, read on every call)
  * is a dotfiles repository, not a project: it is no repository (`undefined`, and the walk stops),
  * so a project under the home directory without its own `.git` is measured as one in no
- * repository, not from the whole home directory.
+ * repository, not from the whole home directory. Unlike the git consumers'
+ * {@link ignoresHomeRepository}, this holds for `dir` being the home directory too: a file found
+ * in the home directory while the workspace is in a repository of its own is the user's, not
+ * checked against the home directory (`claude-md.ts`).
  */
 export function findRepositoryRoot(dir: string, home?: string): string | undefined {
   // Its ancestors are probed for `.git` below, which would reach the share as well.
@@ -88,19 +91,63 @@ export function findRepositoryRoot(dir: string, home?: string): string | undefin
   return undefined;
 }
 
-/** Whether the real path `real` is that of `home`, the user's home directory when not given. */
-export function isUserHome(real: string, home: string | undefined): boolean {
+/**
+ * The real path of `home`, the user's home directory when not given (read on every call, from
+ * `USERPROFILE` on Windows), or `undefined` when there is none or it does not resolve.
+ */
+function userHomeReal(home: string | undefined): string | undefined {
   let path = home;
   if (path === undefined) {
     try {
       path = homedir();
     } catch {
-      return false;
+      return undefined;
     }
   }
-  const homeReal = path ? tryRealPath(path) : undefined;
+  return path ? tryRealPath(path) : undefined;
+}
+
+/** Whether the real path `real` is that of `home`, the user's home directory when not given. */
+export function isUserHome(real: string, home: string | undefined): boolean {
+  const homeReal = userHomeReal(home);
   // `relative`, so the comparison ignores case where the platform's paths do (Windows).
   return homeReal !== undefined && relative(homeReal, real) === '';
+}
+
+/**
+ * The home-directory rule for the repository a workspace is in (#567, #579): whether the
+ * repository whose top directory git or a `.git` walk found at `top`, starting from `workspace`,
+ * is a dotfiles repository to ignore. It is when `top` is the user's home directory (`home` when
+ * given) and `workspace` is not, which is a project below the home directory with no `.git` of its
+ * own (the walk would have stopped there). A workspace that is the home directory itself is in
+ * that repository. Both paths are compared as real paths, as `isUserHome` does.
+ *
+ * This is the rule git applies to Book's own calls through {@link homeGitCeiling}, for the
+ * callers that decide without git: the prompt's git line, the TUI status poll, and managed-agent
+ * isolation. Containment (`findRepositoryRoot`) asks about every directory a file was found in,
+ * the home directory among them, so it keeps its own rule: a `.git` at the home directory is
+ * never a repository there.
+ */
+export function ignoresHomeRepository(top: string, workspace: string, home?: string): boolean {
+  const homeReal = userHomeReal(home);
+  if (homeReal === undefined) return false;
+  const topReal = tryRealPath(top) ?? resolve(top);
+  const workspaceReal = tryRealPath(workspace) ?? resolve(workspace);
+  return relative(homeReal, topReal) === '' && relative(homeReal, workspaceReal) !== '';
+}
+
+/**
+ * The `GIT_CEILING_DIRECTORIES` entry Book's own git calls carry (`hardenedGitEnv`): the real path
+ * of the user's home directory (`home` when given) when it holds a `.git`, else `undefined`, so a
+ * repository above a home directory without one is still found. Git never stops at the directory
+ * it starts in, so a workspace that is the home directory still finds its repository, while a
+ * project below it with no `.git` of its own finds none: {@link ignoresHomeRepository}, applied
+ * by git. A real path, so the entry matches whether or not the list starts with the empty entry
+ * that turns off git's own resolution of the entries after it.
+ */
+export function homeGitCeiling(home?: string): string | undefined {
+  const homeReal = userHomeReal(home);
+  return homeReal !== undefined && existsSync(join(homeReal, '.git')) ? homeReal : undefined;
 }
 
 /** The directory project files are measured from: the repository root, else the workspace. */

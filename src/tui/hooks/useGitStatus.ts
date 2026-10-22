@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isTranscriptScrollActive } from '../scroll-activity.js';
 import { buildChildEnv } from '../../child-env.js';
+import { ignoresHomeRepository } from '../../repo-containment.js';
 import { hardenedGitArgs, hardenedGitEnv } from '../../tools/git.js';
 import { readRepositoryProgramPins } from '../../tools/git-repository-programs.js';
 
@@ -17,6 +18,13 @@ import { readRepositoryProgramPins } from '../../tools/git-repository-programs.j
  * directory. Walking up for the entry costs a handful of `stat` calls and gets
  * the subdirectory case right. A worktree or submodule stores `.git` as a file
  * rather than a directory, so the entry is what is checked, not its type.
+ *
+ * A `.git` at the user's home directory is a dotfiles repository, not the
+ * project, for a project below the home directory without its own `.git`
+ * (`ignoresHomeRepository`): that is no working tree, so the bar shows no
+ * branch and nothing is spawned, where git, which Book runs with the home
+ * directory as a ceiling (`hardenedGitEnv`), would only fail. A workspace that
+ * is the home directory shows its branch (#579).
  */
 export function isInsideWorkTree(
   dir: string,
@@ -24,7 +32,7 @@ export function isInsideWorkTree(
 ): boolean {
   let current = resolve(dir);
   for (;;) {
-    if (exists(join(current, '.git'))) return true;
+    if (exists(join(current, '.git'))) return !ignoresHomeRepository(current, dir);
     const parent = dirname(current);
     if (parent === current) return false;
     current = parent;
