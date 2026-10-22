@@ -364,8 +364,15 @@ program
   .option('-g, --global', 'Act on user-global settings (<BOOK_HOME>/settings.json) [default]')
   .option('--project', 'Act on checked-in project settings (.book/settings.json)')
   .option('--local', 'Act on gitignored project-local settings (.book/settings.local.json)')
-  .argument('[action]', 'get <key>, set <key> <value>, unset <key>, or list')
-  .argument('[key]', 'Dot-separated key path (e.g. permissions.deny)')
+  // provider-key only. `--no-check` for an endpoint without a model-list API; `--force` for a
+  // script that wants the key saved whatever the endpoint answers, as `mcp add --force` replaces.
+  .option('--no-check', 'provider-key: save without testing the key against the endpoint')
+  .option('--force', 'provider-key: save even when the endpoint rejects the key')
+  .argument(
+    '[action]',
+    'get <key>, set <key> <value>, unset <key>, list, or provider-key <id> (key read from stdin)',
+  )
+  .argument('[key]', 'Dot-separated key path (e.g. permissions.deny), or the provider id')
   .argument('[value]', 'Value to set (JSON-parsed)')
   .addHelpText('after', `\n${formatSettingsKeyHelp()}`)
   .action(
@@ -379,6 +386,8 @@ program
         global?: boolean;
         project?: boolean;
         local?: boolean;
+        check?: boolean;
+        force?: boolean;
       },
     ) => {
       const rootSettings = program.opts().settings as string | false | undefined;
@@ -401,6 +410,7 @@ program
         settingsOverridePath: typeof settings === 'string' ? settings : undefined,
         noSettings: settings === false,
         scope: selected[0]?.[0],
+        providerKey: { check: options.check, force: options.force },
       });
     },
   );

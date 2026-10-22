@@ -13,7 +13,7 @@ function state(overrides: Partial<ModelPickerHintState> = {}): ModelPickerHintSt
 }
 
 /** Every chord the picker binds, and the state that makes it fire. */
-const CHORDS = ['Alt+S', 'Alt+E', 'Alt+A', 'Alt+D', 'Alt+R', 'Alt+M'] as const;
+const CHORDS = ['Alt+S', 'Alt+E', 'Alt+A', 'Alt+D', 'Alt+R', 'Alt+M', 'Alt+K'] as const;
 
 describe('modelPickerHints', () => {
   it('advertises every chord that is live, in the fullest state', () => {
@@ -42,11 +42,16 @@ describe('modelPickerHints', () => {
   it('never advertises a chord that would not fire', () => {
     const plain = modelPickerHints(state({ allowProviderManagement: false })).join(' ');
     expect(plain).toContain('Alt+S');
-    for (const key of ['Alt+A', 'Alt+D', 'Alt+R', 'Alt+M']) expect(plain).not.toContain(key);
+    for (const key of ['Alt+A', 'Alt+D', 'Alt+R', 'Alt+M', 'Alt+K']) {
+      expect(plain).not.toContain(key);
+    }
 
+    // Alt+K, like Alt+R and Alt+M, acts on the selected provider, so it is offered only on a row
+    // of one the user owns.
     const noRow = modelPickerHints(state({ editableProviderId: undefined })).join(' ');
     expect(noRow).not.toContain('Alt+R');
     expect(noRow).not.toContain('Alt+M');
+    expect(noRow).not.toContain('Alt+K');
   });
 
   it('advertises Alt+S only where it is bound', () => {
@@ -67,7 +72,9 @@ describe('modelPickerHints', () => {
       const text = modelPickerHints({ ...full, compact }).join(' ');
       expect(text).not.toContain('Alt+S');
       // Dropping one chord takes no other with it.
-      for (const key of ['Alt+E', 'Alt+A', 'Alt+D', 'Alt+R', 'Alt+M']) expect(text).toContain(key);
+      for (const key of ['Alt+E', 'Alt+A', 'Alt+D', 'Alt+R', 'Alt+M', 'Alt+K']) {
+        expect(text).toContain(key);
+      }
       expect(text).toContain('Enter save');
       expect(text).toContain('Esc cancel');
     }
@@ -94,6 +101,9 @@ describe('modelPickerHints', () => {
   it('keeps every line inside the width the old footer fit in', () => {
     // A wrapped footer is the defect being fixed, so the budget is the widest
     // line the picker shipped with before (81 columns), in the worst state.
+    // Alt+K made the managing group longer than that on a provider row, so the
+    // budget is now kept by the width the picker always passes, not by the
+    // labels alone: the group breaks between chords instead.
     const worst = {
       allowProviderManagement: true,
       hasRemovableProviders: true,
@@ -102,11 +112,21 @@ describe('modelPickerHints', () => {
       filterable: true,
     };
 
-    for (const line of modelPickerHints({ ...worst, compact: false })) {
-      expect(line.length).toBeLessThanOrEqual(81);
+    for (const [compact, width] of [
+      [false, 81],
+      [true, 66],
+    ] as const) {
+      const lines = modelPickerHints({ ...worst, compact, width });
+      for (const line of lines) expect(line.length).toBeLessThanOrEqual(width);
+      for (const key of CHORDS) expect(lines.join(' ')).toContain(key);
     }
-    for (const line of modelPickerHints({ ...worst, compact: true })) {
-      expect(line.length).toBeLessThanOrEqual(66);
+    // Off a provider row the old budget still holds without any width.
+    for (const line of modelPickerHints({
+      ...worst,
+      editableProviderId: undefined,
+      compact: false,
+    })) {
+      expect(line.length).toBeLessThanOrEqual(81);
     }
   });
 
@@ -124,5 +144,6 @@ describe('modelPickerHints', () => {
     // No chord is cut in two: each one survives whole on some line.
     expect(lines.some((line) => line.includes('Alt+M add model'))).toBe(true);
     expect(lines.some((line) => line.includes('Alt+R refresh gateway'))).toBe(true);
+    expect(lines.some((line) => line.includes('Alt+K update key'))).toBe(true);
   });
 });

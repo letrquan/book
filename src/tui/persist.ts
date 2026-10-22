@@ -29,7 +29,7 @@ import {
   type SkillActivation,
   type SkillExecution,
 } from '../settings.js';
-import { PROVIDER_CONNECTION_KEYS } from '../provider-approvals.js';
+import { deleteProviderConnectionKeys } from '../provider-key.js';
 import { resolveSettings } from '../settings-loader.js';
 import { deleteNestedValue } from '../cli/utils.js';
 import { blockedWorkspaceSettingWrite } from '../settings-scope.js';
@@ -354,9 +354,7 @@ function clearSupersededLocalProviderKeys(
       typeof entry === 'object' && entry !== null && !Array.isArray(entry)
         ? (entry as Record<string, unknown>).models
         : undefined;
-    for (const key of PROVIDER_CONNECTION_KEYS) {
-      deleteNestedValue(candidate, ['provider', providerId, key]);
-    }
+    deleteProviderConnectionKeys(candidate, providerId);
     if (typeof models === 'object' && models !== null && !Array.isArray(models)) {
       for (const modelId of Object.keys(models)) {
         deleteNestedValue(candidate, [

@@ -10,6 +10,7 @@ import {
 } from '../settings-loader.js';
 import { settingsScopeLabel, type SettingsScope } from '../settings-scope.js';
 import { applySettingWrite, describeSettingShadow, readScopeDocument } from '../settings-write.js';
+import { runProviderKeyCommand, type ProviderKeyCommandOptions } from './provider-key-cmd.js';
 
 export interface ConfigCommandSettingsOptions {
   settingsOverridePath?: string;
@@ -21,6 +22,8 @@ export interface ConfigCommandSettingsOptions {
    * that one file, which is how a user finds the stray value overriding them.
    */
   scope?: SettingsScope;
+  /** `provider-key` only: `--no-check`, `--force`, and the streams tests stand in for. */
+  providerKey?: ProviderKeyCommandOptions;
 }
 
 export async function runConfigCommand(
@@ -47,6 +50,18 @@ export async function runConfigCommand(
         ? structuredClone(DEFAULT_SETTINGS)
         : resolveSettings(workspace, settingsOptions.settingsOverridePath),
     );
+
+  if (action === 'provider-key') {
+    await runProviderKeyCommand(workspace, key, value, {
+      ...settingsOptions.providerKey,
+      scope: settingsOptions.scope,
+    });
+    return;
+  }
+  if (settingsOptions.providerKey?.force || settingsOptions.providerKey?.check === false) {
+    console.error('--force and --no-check apply to provider-key only.');
+    exit(1);
+  }
 
   // A scope narrows a read to one file. Without it a read reports the merge,
   // which is the right default but cannot answer "why is this not what I set" —
@@ -191,7 +206,9 @@ export async function runConfigCommand(
   }
 
   console.error(
-    'Unknown action: ' + action + '. Use: get <key>, set <key> <value>, unset <key>, or list',
+    'Unknown action: ' +
+      action +
+      '. Use: get <key>, set <key> <value>, unset <key>, list, or provider-key <id>',
   );
   exit(1);
 }

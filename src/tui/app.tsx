@@ -403,6 +403,7 @@ export function App({
     addLocalMessage,
     setModel,
     upsertProviderAndSelect,
+    updateProviderKey,
     removeProvider,
     setEffort,
     setAgentProfileModel,
@@ -3375,6 +3376,7 @@ export function App({
                 allowProviderManagement={pickingMainModel}
                 allowSessionOnly={pickingMainModel}
                 onSaveProvider={upsertProviderAndSelect}
+                onUpdateProviderKey={updateProviderKey}
                 removableProviderIds={removableProviderIds}
                 removableProviderModelCounts={removableProviderModelCounts}
                 onRemoveProvider={(providerId) => {

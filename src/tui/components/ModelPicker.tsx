@@ -15,6 +15,7 @@ import {
 } from '../model-options.js';
 import { EFFORT_LEVELS, type EffortLevel, type EffortResult } from '../../commands/effort.js';
 import { ByokWizard } from './ByokWizard.js';
+import { ProviderKeySheet } from './ProviderKeySheet.js';
 import { modelPickerHints } from './model-picker-hints.js';
 import { useDensityMetrics } from '../density.js';
 import { stripSgrMouseSequences } from '../mouse.js';
@@ -57,6 +58,11 @@ interface ModelPickerProps {
   removableProviderIds: ReadonlySet<string>;
   removableProviderModelCounts?: ReadonlyMap<string, number>;
   onRemoveProvider: (providerId: string) => ProviderRemovalResult;
+  /**
+   * `Alt+K`: replace the API key of a provider the user owns, as typed (a literal or a reference).
+   * Called once the key sheet has tested it, or the user chose to save it untested.
+   */
+  onUpdateProviderKey: (providerId: string, apiKey: string) => { ok: boolean; error?: string };
   onProviderSaved?: (request: ProviderSaveRequest) => void;
   allowProviderManagement?: boolean;
   /**
@@ -104,6 +110,7 @@ export function ModelPicker({
   removableProviderIds = EMPTY_PROVIDER_IDS,
   removableProviderModelCounts,
   onRemoveProvider,
+  onUpdateProviderKey,
   onProviderSaved,
   allowProviderManagement = true,
   allowSessionOnly = true,
@@ -127,6 +134,9 @@ export function ModelPicker({
   const [showWizard, setShowWizard] = useState(false);
   const [refreshing, setRefreshing] = useState<string>();
   const [manualEntry, setManualEntry] = useState<{ providerId: string; value: string }>();
+  // Batch-safe, like `removal`: a key typed straight after Alt+K can be handled before the sheet
+  // has rendered, and it must not land in the picker's filter, where a pasted key would show.
+  const [keySheet, setKeySheet, currentKeySheet] = useKeyState<string | undefined>(undefined);
   const [removal, setRemoval, currentRemoval] = useKeyState<
     { providerId: string; modelCount: number; active: boolean } | undefined
   >(undefined);
@@ -296,7 +306,9 @@ export function ModelPicker({
 
   useInput(
     (input, key) => {
-      if (showWizard) return;
+      // The sheet owns every key while it is open. A provider removed underneath it closes it.
+      const sheet = currentKeySheet();
+      if (showWizard || (sheet && providers[sheet])) return;
       // The text field owns every other key while it is open.
       if (manualEntry) {
         if (key.escape) {
@@ -432,6 +444,22 @@ export function ModelPicker({
         setNotice(undefined);
         return;
       }
+      if (allowProviderManagement && key.meta && input === 'k' && currentSelected() !== addIndex) {
+        const providerId = filteredOptions[currentSelected()]?.providerId;
+        if (!providerId) {
+          setError('Only BYOK providers you added have a key to change here.');
+          return;
+        }
+        if (refreshing || !ownsProvider(providerId)) return;
+        if (!providers[providerId]) {
+          setError(`${providerId} is no longer configured.`);
+          return;
+        }
+        setKeySheet(providerId);
+        setError(undefined);
+        setNotice(undefined);
+        return;
+      }
       if (allowProviderManagement && key.meta && input === 'd' && currentSelected() !== addIndex) {
         const option = filteredOptions[currentSelected()];
         const providerId = option?.providerId;
@@ -474,6 +502,31 @@ export function ModelPicker({
           if (result.ok) onProviderSaved?.(request);
           return result;
         }}
+      />
+    );
+  }
+
+  const keyProvider = keySheet ? providers[keySheet] : undefined;
+  if (keySheet && keyProvider) {
+    return (
+      <ProviderKeySheet
+        providerId={keySheet}
+        provider={keyProvider}
+        workspace={workspace}
+        retry={retry}
+        compact={compact}
+        terminalWidth={terminalWidth}
+        discover={discover}
+        onSave={(apiKey) => onUpdateProviderKey(keySheet, apiKey)}
+        onSaved={(checked) => {
+          setKeySheet(undefined);
+          setNotice(
+            checked
+              ? `${keySheet}: API key checked and saved.`
+              : `${keySheet}: API key saved without a check.`,
+          );
+        }}
+        onCancel={() => setKeySheet(undefined)}
       />
     );
   }

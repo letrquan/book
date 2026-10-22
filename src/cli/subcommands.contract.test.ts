@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { Readable } from 'stream';
 import { runDoctorCommand } from './doctor.js';
 import { runConfigCommand } from './config-cmd.js';
 import { runMcpListCommand } from './mcp.js';
@@ -71,6 +72,25 @@ describe('non-interactive subcommands without credentials', () => {
     ['book doctor', () => runDoctorCommand(workspace)],
     ['book config list', () => runConfigCommand(workspace, 'list', undefined, undefined)],
     ['book config get model', () => runConfigCommand(workspace, 'get', 'model', undefined)],
+    // Replacing a dead key is the reason provider-key exists, so it must never need a live one:
+    // the check asks the endpoint with the new key, not with BOOK_API_KEY.
+    [
+      'book config provider-key gw',
+      () => {
+        writeFileSync(
+          join(bookHome, 'settings.json'),
+          JSON.stringify({
+            provider: { gw: { type: 'openai', baseURL: 'https://gw.test/v1', models: {} } },
+          }),
+        );
+        return runConfigCommand(workspace, 'provider-key', 'gw', undefined, {
+          providerKey: {
+            stdin: Readable.from(['sk-new\n']),
+            discover: async () => [{ id: 'model' }],
+          },
+        });
+      },
+    ],
     ['book mcp list', () => runMcpListCommand({ workspace, home: bookHome })],
     ['book tool-stats', () => runToolStatsCommand({ workspace })],
     // Reading what a long run is doing and what it has spent is exactly what
