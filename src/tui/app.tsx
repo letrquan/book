@@ -82,7 +82,7 @@ import {
 import { advisorModelRefusal, configuredAdvisorModel } from '../config.js';
 import { describeAdvisorChange } from '../tools/advisor.js';
 import { discoverSkills, type Skill } from '../skills.js';
-import { runGit } from '../tools/git.js';
+import { READ_ONLY_GIT_ARGS, readOnlyGit } from '../tools/git.js';
 import { getMemoryIndex } from '../memory-display.js';
 import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
@@ -2384,12 +2384,19 @@ export function App({
           return;
         }
         if (effect?.type === 'show-diff') {
-          void runGit(['diff'], {
+          // What `GitDiff` shows, read the same way.
+          void readOnlyGit(READ_ONLY_GIT_ARGS.GitDiff, {
             workspaceRoot: config.workspace,
             env: process.env as Record<string, string>,
           }).then((result) => {
+            // `readOnlyGit` reports empty output as `(no output)`.
+            const diff = result.output.trim();
             addLocalMessage(
-              result.error ? `✕ ${result.error}` : result.output.trim() || '(no changes)',
+              result.error
+                ? `✕ ${result.error}`
+                : diff && diff !== '(no output)'
+                  ? diff
+                  : '(no changes)',
             );
           });
           return;

@@ -563,6 +563,16 @@ so your `pre-commit` and `commit-msg` hooks still run. A repository can still co
 smudge filters, and those run on `status` and `diff`; Book does not suppress them, because that
 would mean rewriting the command you asked for.
 
+`GitStatus` and `GitDiff` pass `--ignore-submodules=dirty`, as do `/diff`, `/review` and agent
+isolation, so changes inside a submodule are not listed, while a submodule whose recorded commit
+moved still shows; run `git -C <submodule> status` for the rest. None of these reads fetch: they run
+with `GIT_NO_LAZY_FETCH=1` (read by git 2.44 or later, and older releases patched in 2024) and an
+empty `GIT_ALLOW_PROTOCOL`, so in a partial clone that is missing an object the read fails with a
+note on fetching it yourself. The prompt's git line and the TUI status line read the status the
+same way, and in a partial clone (`extensions.partialClone`, a `remote.<name>.promisor`, or a
+`remote.<name>.partialCloneFilter`) they show the branch only and skip the status. `/diff` shows what `GitDiff` does, with the same flags. A
+`git` command you run through `Bash` is unchanged.
+
 **A dotfiles home.** When your home directory itself holds a `.git` (a dotfiles repository), that
 repository is not the repository of a project below your home that has no `.git` of its own. Book's
 own git (the four tools above, `GitCommit`, the `<session-state>` git line, `/review`, the TUI

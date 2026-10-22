@@ -152,11 +152,13 @@ export type RepositoryProgramRunner = (
 ) => Promise<{ stdout: string; stderr: string; code: number }>;
 
 /**
- * The config pattern that matches all repository-level programs: fsmonitor, filters, and merge drivers.
+ * The config pattern that matches all repository-level programs: fsmonitor, filters, and merge
+ * drivers; and the keys that make a repository a partial clone, `extensions.partialClone`,
+ * `remote.<name>.promisor` and `remote.<name>.partialCloneFilter` (see {@link isPartialClone}).
  * Note: subsection name matching uses `.*` rather than `.+` to match empty subsection names (e.g. `[filter ""]`).
  */
 export const REPOSITORY_PROGRAM_CONFIG_PATTERN =
-  '^(core\\.fsmonitor|filter\\..*\\.(clean|smudge|process|required)|merge\\..*\\.driver)$';
+  '^(core\\.fsmonitor|filter\\..*\\.(clean|smudge|process|required)|merge\\..*\\.driver|extensions\\.partialclone|remote\\..*\\.(promisor|partialclonefilter))$';
 
 const OPERATOR_SCOPES: ReadonlySet<string> = new Set(['system', 'global', 'command']);
 const REPOSITORY_SCOPES: ReadonlySet<string> = new Set(['local', 'worktree']);
@@ -406,6 +408,33 @@ export interface ReadPinsOptions {
 }
 
 /**
+ * Whether the configuration makes the repository a partial clone, in any scope:
+ * `extensions.partialClone` names a remote (any non-empty value, spaces included, as git takes it
+ * literally), a `remote.<name>.promisor` is true, or a `remote.<name>.partialCloneFilter` is set,
+ * which git also treats as a promisor remote. A promisor value git would not read as false counts,
+ * so an unusual spelling errs towards a partial clone.
+ */
+export function isPartialClone(entries: readonly GitConfigEntry[]): boolean {
+  return entries.some((entry) => {
+    if (entry.key === 'extensions.partialclone') return entry.value !== '';
+    if (!entry.key.startsWith('remote.')) return false;
+    if (entry.key.endsWith('.partialclonefilter')) return true;
+    if (entry.key.endsWith('.promisor')) {
+      return !['false', 'no', 'off', '0', ''].includes(entry.value.trim().toLowerCase());
+    }
+    return false;
+  });
+}
+
+/** What one read of a directory's git configuration says. */
+export interface RepositoryGitConfig {
+  /** The `-c` pins for its repository-level programs; see {@link repositoryProgramPins}. */
+  pins: string[];
+  /** Whether it is a partial clone; see {@link isPartialClone}. */
+  partialClone: boolean;
+}
+
+/**
  * Read repository program pins for a directory by inspecting git config.
  */
 export async function readRepositoryProgramPins(
@@ -413,6 +442,18 @@ export async function readRepositoryProgramPins(
   exec?: RepositoryProgramRunner,
   options?: ReadPinsOptions,
 ): Promise<string[]> {
+  return (await readRepositoryGitConfig(cwd, exec, options)).pins;
+}
+
+/**
+ * Read a directory's git configuration once, for the repository program pins and for whether the
+ * repository is a partial clone.
+ */
+export async function readRepositoryGitConfig(
+  cwd: string,
+  exec?: RepositoryProgramRunner,
+  options?: ReadPinsOptions,
+): Promise<RepositoryGitConfig> {
   const runner = exec ?? defaultGitRunner;
   const timeoutMs = options?.timeoutMs === 0 ? 0 : (options?.timeoutMs ?? 30_000);
   const signal = options?.signal;
@@ -453,11 +494,14 @@ export async function readRepositoryProgramPins(
   if (!isUnknownOption && showScopeResult) {
     if (showScopeResult.code === 0) {
       const entries = parseGitConfig(showScopeResult.stdout);
-      return repositoryProgramPins(entries, { allowFsmonitor });
+      return {
+        pins: repositoryProgramPins(entries, { allowFsmonitor }),
+        partialClone: isPartialClone(entries),
+      };
     }
 
     if (showScopeResult.code === 1) {
-      return [];
+      return { pins: [], partialClone: false };
     }
 
     throw new Error(
@@ -566,5 +610,8 @@ export async function readRepositoryProgramPins(
     // Worktree config not supported or absent; ignore when that fails
   }
 
-  return repositoryProgramPins(entries, { allowFsmonitor: false });
+  return {
+    pins: repositoryProgramPins(entries, { allowFsmonitor: false }),
+    partialClone: isPartialClone(entries),
+  };
 }

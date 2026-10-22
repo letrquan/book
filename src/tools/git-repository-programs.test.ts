@@ -6,7 +6,9 @@ import { describe, expect, it } from 'vitest';
 import {
   canonicalConfigKey,
   defaultGitRunner,
+  isPartialClone,
   parseGitConfig,
+  readRepositoryGitConfig,
   readRepositoryProgramPins,
   repositoryProgramPins,
   type GitConfigEntry,
@@ -258,6 +260,61 @@ describe('repositoryProgramPins (pure)', () => {
   it('does not pin core.fsmonitor when allowFsmonitor is false (Fix 5)', () => {
     const entries: GitConfigEntry[] = [{ scope: 'local', key: 'core.fsmonitor', value: 'true' }];
     expect(repositoryProgramPins(entries, { allowFsmonitor: false })).toEqual([]);
+  });
+});
+
+describe('isPartialClone', () => {
+  const entry = (key: string, value: string, scope = 'local'): GitConfigEntry => ({
+    scope,
+    key,
+    value,
+  });
+
+  it('reads extensions.partialClone and a true remote promisor as a partial clone', () => {
+    expect(isPartialClone([entry('extensions.partialclone', 'origin')])).toBe(true);
+    expect(isPartialClone([entry('remote.origin.promisor', 'true')])).toBe(true);
+    expect(isPartialClone([entry('remote.up.promisor', 'yes', 'global')])).toBe(true);
+    // A key written without a value is `true` to git.
+    expect(isPartialClone(parseGitConfig('local\0remote.origin.promisor\0'))).toBe(true);
+    // A filter alone makes a promisor remote too, and git takes a remote name of spaces as is.
+    expect(isPartialClone([entry('remote.origin.partialclonefilter', 'blob:none')])).toBe(true);
+    expect(isPartialClone([entry('extensions.partialclone', '  ')])).toBe(true);
+  });
+
+  it('does not for a false promisor, an empty extension, or other keys', () => {
+    expect(isPartialClone([])).toBe(false);
+    expect(isPartialClone([entry('remote.origin.promisor', 'false')])).toBe(false);
+    expect(isPartialClone([entry('remote.origin.promisor', '0')])).toBe(false);
+    expect(isPartialClone([entry('extensions.partialclone', '')])).toBe(false);
+    expect(isPartialClone([entry('filter.x.clean', 'cat')])).toBe(false);
+  });
+});
+
+describe('readRepositoryGitConfig', () => {
+  it('reports a partial clone from the same read as the pins', async () => {
+    const calls: string[][] = [];
+    const runner: RepositoryProgramRunner = async (args) => {
+      calls.push(args);
+      return {
+        stdout: 'local\0extensions.partialclone\norigin\0local\0filter.x.clean\n/tmp/x.sh\0',
+        stderr: '',
+        code: 0,
+      };
+    };
+
+    const config = await readRepositoryGitConfig('/tmp/repo', runner);
+
+    expect(calls).toHaveLength(1);
+    expect(config.partialClone).toBe(true);
+    expect(config.pins).toContain('filter.x.clean=');
+  });
+
+  it('reports no partial clone when nothing matches', async () => {
+    const runner: RepositoryProgramRunner = async () => ({ stdout: '', stderr: '', code: 1 });
+    expect(await readRepositoryGitConfig('/tmp/repo', runner)).toEqual({
+      pins: [],
+      partialClone: false,
+    });
   });
 });
 

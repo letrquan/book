@@ -3,8 +3,13 @@ import { execFile } from 'node:child_process';
 import { isTranscriptScrollActive } from '../scroll-activity.js';
 import { buildChildEnv } from '../../child-env.js';
 import { isInGitRepository } from '../../repo-containment.js';
-import { hardenedGitArgs, hardenedGitEnv } from '../../tools/git.js';
-import { readRepositoryProgramPins } from '../../tools/git-repository-programs.js';
+import {
+  hardenedGitArgs,
+  hardenedGitEnv,
+  noFetchGitEnv,
+  READ_ONLY_GIT_ARGS,
+} from '../../tools/git.js';
+import { readRepositoryGitConfig } from '../../tools/git-repository-programs.js';
 
 /**
  * Whether `dir` sits anywhere inside a working tree, without spawning anything.
@@ -69,7 +74,7 @@ export function useGitStatus(workspace: string): GitStatus {
       activeController = new AbortController();
 
       try {
-        const pins = await readRepositoryProgramPins(workspace, undefined, {
+        const { pins, partialClone } = await readRepositoryGitConfig(workspace, undefined, {
           signal: activeController.signal,
           timeoutMs: 5_000,
         });
@@ -79,7 +84,20 @@ export function useGitStatus(workspace: string): GitStatus {
           activeController.signal,
           pins,
         );
-        const short = await runGit(['status', '--short'], workspace, activeController.signal, pins);
+        // In a partial clone the status is not read at all, on any git version; a status that
+        // fails elsewhere leaves the branch showing the same way.
+        const short = partialClone
+          ? undefined
+          : await runGit(
+              READ_ONLY_GIT_ARGS.GitStatus,
+              workspace,
+              activeController.signal,
+              pins,
+            ).catch(() => undefined);
+        if (short === undefined) {
+          if (!cancelled) update({ branch, status: '' });
+          return;
+        }
 
         if (!short) {
           if (!cancelled) update({ branch, status: '\u2713' });
@@ -130,10 +148,11 @@ export function useGitStatus(workspace: string): GitStatus {
  * it, and `core.fsmonitor` there names a program `git status` executes — so without
  * `hardenedGitArgs` a checkout that sets it runs that program as soon as Book opens it. Every
  * call here is read-only, so the read-only hardening is the right one; the pager and the
- * credential prompt it cannot wait on come with it, as in `readOnlyGit`.
+ * credential prompt it cannot wait on come with it, as in `readOnlyGit`. The status is
+ * `GitStatus`'s own, and no call fetches (`noFetchGitEnv`): a poll has no request behind it.
  */
 async function runGit(
-  args: string[],
+  args: readonly string[],
   cwd: string,
   signal: AbortSignal,
   pins: readonly string[] = [],
@@ -148,7 +167,7 @@ async function runGit(
         encoding: 'utf8',
         windowsHide: true,
         signal,
-        env: buildChildEnv(process.env, hardenedGitEnv()),
+        env: buildChildEnv(process.env, { ...hardenedGitEnv(), ...noFetchGitEnv() }),
       },
       (error, stdout) => (error ? reject(error) : resolve(stdout.trim())),
     );

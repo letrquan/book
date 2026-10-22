@@ -18,9 +18,12 @@ import {
   hardenedGitArgs,
   hardenedGitEnv,
   HARDENED_DIFF_ARGS,
+  MISSING_OBJECTS_NOTE,
   READ_ONLY_GIT_ARGS,
+  readOnlyGit,
   runGit,
 } from './git.js';
+import { gitIn, partialClone, repositoryWithSubmodule } from '../test/git-fixtures.js';
 
 const ctx: ToolContext = { workspaceRoot: '/workspace', env: { TEST_ENV: 'yes' } };
 type ExecCallback = (error: Error | null, stdout: string, stderr: string) => void;
@@ -70,12 +73,13 @@ describe('runGit', () => {
   });
 
   it('puts the hardening in front of the read-only tools own arguments', () => {
-    // `readOnlyGit` is module-private, so what is asserted is what it builds with: the flags,
-    // then the tool's own arguments, in that order. The real-git block below checks the effect.
+    // What is asserted is what `readOnlyGit` builds with: the flags, then the tool's own
+    // arguments, in that order. The real-git block below checks the effect.
     expect(hardenedGitArgs(READ_ONLY_GIT_ARGS.GitStatus)).toEqual([
       ...hardenedGitArgs([]),
       'status',
       '--short',
+      '--ignore-submodules=dirty',
     ]);
     for (const args of Object.values(READ_ONLY_GIT_ARGS)) {
       expect(hardenedGitArgs(args)).toEqual([...hardenedGitArgs([]), ...args]);
@@ -198,7 +202,12 @@ describe('git hardening', () => {
     // names one per file. Both are checkout settings read by a tool whose job is to report. The
     // flags are shared rather than restated per caller, so this asserts the one list every
     // hardened caller that runs `git diff` reaches for.
-    expect([...HARDENED_DIFF_ARGS]).toEqual(['--no-ext-diff', '--no-textconv']);
+    expect([...HARDENED_DIFF_ARGS]).toEqual([
+      '--no-ext-diff',
+      '--no-textconv',
+      '--ignore-submodules=dirty',
+      '--submodule=short',
+    ]);
     expect(READ_ONLY_GIT_ARGS.GitDiff).toContain('--no-ext-diff');
     expect(READ_ONLY_GIT_ARGS.GitDiff).toContain('--no-textconv');
   });
@@ -536,4 +545,101 @@ describe('hardening against a real git', () => {
     expect(existsSync(opMarker)).toBe(true);
     expect(existsSync(repoMarker)).toBe(false);
   });
+});
+
+/**
+ * `GitStatus` and `GitDiff` report on this repository: a submodule shows when its recorded commit
+ * moved, not for what changed inside it. Neither fetches a missing object in a partial clone.
+ */
+describe('GitStatus and GitDiff with submodules and partial clones', () => {
+  let root: string;
+
+  const toolFor = (name: string) => gitTools.find((tool) => tool.name === name)!;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'book-git-status-'));
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  // The fixtures need a POSIX shell.
+  it.skipIf(process.platform === 'win32')(
+    'shows a submodule that moved in GitStatus, but not what changed inside it',
+    async () => {
+      const fixture = await repositoryWithSubmodule(root);
+      await fixture.movePointer();
+      fixture.touch();
+
+      const result = await toolFor('GitStatus').execute(
+        {},
+        { workspaceRoot: fixture.repo, env: {} },
+      );
+
+      expect(result.status).toBe('success');
+      expect(result.content.trim()).toBe('M sub');
+      expect(existsSync(fixture.marker)).toBe(false);
+      await gitIn(fixture.repo, 'status', '--short');
+      expect(existsSync(fixture.marker)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'shows a submodule that moved in GitDiff, but not what changed inside it',
+    async () => {
+      const fixture = await repositoryWithSubmodule(root);
+      await fixture.movePointer();
+      fixture.touch();
+
+      const result = await toolFor('GitDiff').execute({}, { workspaceRoot: fixture.repo, env: {} });
+
+      expect(result.status).toBe('success');
+      expect(result.content).toContain('diff --git a/sub b/sub');
+      expect(existsSync(fixture.marker)).toBe(false);
+      await gitIn(fixture.repo, 'diff');
+      expect(existsSync(fixture.marker)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'shows a moved submodule as its two commits in GitDiff, whatever diff.submodule says',
+    async () => {
+      const fixture = await repositoryWithSubmodule(root);
+      await fixture.commitChange();
+      const ran = join(root, 'DIFF_RAN');
+      const program = join(root, 'diff.sh');
+      writeFileSync(program, `#!/bin/sh\necho ran >> '${ran}'\n`);
+      chmodSync(program, 0o755);
+      await gitIn(fixture.repo, 'config', 'diff.submodule', 'diff');
+      await gitIn(join(fixture.repo, 'sub'), 'config', 'diff.external', program);
+
+      const result = await toolFor('GitDiff').execute({}, { workspaceRoot: fixture.repo, env: {} });
+
+      expect(result.status).toBe('success');
+      expect(result.content).toContain('Subproject commit');
+      expect(existsSync(ran)).toBe(false);
+      // A plain diff of the same checkout does diff inside the submodule.
+      await gitIn(fixture.repo, 'diff');
+      expect(existsSync(ran)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'does not fetch a missing object for GitStatus, and says what to do',
+    async () => {
+      const fixture = await partialClone(root);
+      const at = { workspaceRoot: fixture.repo, env: {} };
+
+      const result = await toolFor('GitStatus').execute({}, at);
+
+      expect(result.status).not.toBe('success');
+      expect(JSON.stringify(result)).toContain(MISSING_OBJECTS_NOTE);
+      expect(fixture.packs()).toBe(0);
+      const direct = await readOnlyGit(READ_ONLY_GIT_ARGS.GitStatus, at);
+      expect(direct.success).toBe(false);
+      expect(fixture.packs()).toBe(0);
+      // A plain status of the same checkout does fetch it.
+      await gitIn(fixture.repo, 'status', '--short');
+      expect(fixture.packs()).toBeGreaterThan(0);
+    },
+  );
 });

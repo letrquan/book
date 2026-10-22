@@ -159,7 +159,7 @@ describe('useGitStatus argv', () => {
           REPOSITORY_PROGRAM_CONFIG_PATTERN,
         ]),
         hardenedGitArgs(['rev-parse', '--abbrev-ref', 'HEAD']),
-        hardenedGitArgs(['status', '--short']),
+        hardenedGitArgs(['status', '--short', '--ignore-submodules=dirty']),
       ]).toContainEqual(call.args);
       expect(call.options.env?.GIT_PAGER).toBe('cat');
       expect(call.options.env?.GIT_TERMINAL_PROMPT).toBe('0');
@@ -229,9 +229,65 @@ describe('useGitStatus argv', () => {
         'filter.cleaner.required=false',
         'status',
         '--short',
+        '--ignore-submodules=dirty',
       ]),
     );
 
+    // Neither of the poll's own reads fetches.
+    for (const call of [calls[1], calls[2]]) {
+      expect(call.options.env?.GIT_NO_LAZY_FETCH).toBe('1');
+      expect(call.options.env?.GIT_ALLOW_PROTOCOL).toBe('');
+    }
+
+    view.unmount();
+  });
+
+  it('keeps the branch when the status read fails', async () => {
+    // Real timers: the state update has to render, and the next poll is five seconds away.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-git-status-fail-'));
+    roots.push(workspace);
+    mkdirSync(join(workspace, '.git'));
+    const seen: Array<{ branch: string; status: string }> = [];
+    function Shown() {
+      const status = useGitStatus(workspace);
+      seen.push(status);
+      return null;
+    }
+
+    const view = render(<Shown />);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].callback(null, '');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].args.slice(-3)).toEqual(['rev-parse', '--abbrev-ref', 'HEAD']);
+    calls[1].callback(null, 'main\n');
+    await vi.waitFor(() => expect(calls).toHaveLength(3));
+    expect(calls[2].args).toContain('status');
+    // A partial clone missing an object the status needs, read without fetching.
+    calls[2].callback(new Error('fatal: unable to read tree'), '');
+
+    await vi.waitFor(() => expect(seen.at(-1)).toMatchObject({ branch: 'main', status: '' }));
+    view.unmount();
+  });
+
+  it('reads the branch only in a partial clone, with no status read', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-git-status-partial-'));
+    roots.push(workspace);
+    mkdirSync(join(workspace, '.git'));
+    const seen: Array<{ branch: string; status: string }> = [];
+    function Shown() {
+      const status = useGitStatus(workspace);
+      seen.push(status);
+      return null;
+    }
+
+    const view = render(<Shown />);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].callback(null, 'local\0extensions.partialclone\norigin\0');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    calls[1].callback(null, 'main\n');
+
+    await vi.waitFor(() => expect(seen.at(-1)).toMatchObject({ branch: 'main', status: '' }));
+    expect(calls).toHaveLength(2);
     view.unmount();
   });
 });

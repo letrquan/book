@@ -1,9 +1,15 @@
 import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { ReviewScope } from './types.js';
-import { hardenedGitArgs, HARDENED_DIFF_ARGS } from '../tools/git.js';
+import {
+  describeMissingObjects,
+  hardenedGitArgs,
+  HARDENED_DIFF_ARGS,
+  noFetchGitEnv,
+} from '../tools/git.js';
 import {
   defaultGitRunner,
+  readRepositoryGitConfig,
   readRepositoryProgramPins,
   type RepositoryProgramRunner,
 } from '../tools/git-repository-programs.js';
@@ -36,6 +42,8 @@ const MAX_REVIEW_DIFF_BYTES = 20 * 1024 * 1024;
  * dotfiles home directory as a `GIT_CEILING_DIRECTORIES` entry: a project below it with no `.git`
  * of its own is in no repository, and the review refuses there as anywhere outside one, while a
  * workspace that is the home directory reviews its repository (#579).
+ * None of them fetches (`noFetchGitEnv`): a missing object in a partial clone fails the read with
+ * a note on what to do.
  */
 async function git(
   workspace: string,
@@ -45,11 +53,23 @@ async function git(
   exec?: RepositoryProgramRunner,
 ): Promise<GitResult> {
   const runner = exec ?? defaultGitRunner;
-  return runner(hardenedGitArgs([...pins, ...args]), {
-    cwd: workspace,
-    allowExitCodes,
-    timeoutMs: 0,
-  });
+  try {
+    return await runner(hardenedGitArgs([...pins, ...args]), {
+      cwd: workspace,
+      allowExitCodes,
+      timeoutMs: 0,
+      env: noFetchGitEnv(),
+    });
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    // Only a failed read pays for asking whether the repository is a partial clone.
+    const partialClone = await readRepositoryGitConfig(workspace, exec, { timeoutMs: 0 }).then(
+      (config) => config.partialClone,
+      () => false,
+    );
+    const message = describeMissingObjects(error.message, partialClone);
+    throw message === error.message ? error : new Error(message, { cause: error });
+  }
 }
 
 function splitZeroDelimited(value: string): string[] {
