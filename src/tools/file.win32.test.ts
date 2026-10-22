@@ -181,12 +181,27 @@ describe('the ripgrep backend on Windows', () => {
 
   it('answers a cancel that lands while it looks for the ignore file, before starting ripgrep', async () => {
     const controller = new AbortController();
-    const pending = grep.execute(
-      { pattern: 'marker', include: '**/*.ts' },
-      { ...ctx, env: { BOOK_GREP_BACKEND: 'ripgrep' }, signal: controller.signal },
-    );
-    setTimeout(() => controller.abort(new Error('grep cancelled')), 0);
-    await expect(pending).rejects.toThrow('grep cancelled');
+    // The cancel lands while the root's .gitignore is being looked up, which is what the guard's
+    // own lstat of it marks: no timer race decides which comes first.
+    const lstat = vi.mocked(fs.lstatSync);
+    const original = lstat.getMockImplementation()!;
+    lstat.mockImplementation(((path: string, ...rest: unknown[]) => {
+      if (windowsSpelling(path) === windowsSpelling(join(ws, '.gitignore'))) {
+        controller.abort(new Error('grep cancelled'));
+      }
+      return (original as (...args: unknown[]) => unknown)(path, ...rest);
+    }) as typeof original);
+    try {
+      await expect(
+        grep.execute(
+          { pattern: 'marker', include: '**/*.ts' },
+          { ...ctx, env: { BOOK_GREP_BACKEND: 'ripgrep' }, signal: controller.signal },
+        ),
+      ).rejects.toThrow('grep cancelled');
+      expect(controller.signal.aborted).toBe(true);
+    } finally {
+      lstat.mockImplementation(original);
+    }
   });
 
   it('finds its own ignore files off Windows', async () => {
