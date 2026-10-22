@@ -363,12 +363,28 @@ export function getProjectMemoryDir(workspace: string, opts?: MemoryStoreOptions
 }
 
 /**
- * Whether the workspace's repository ships files in the memory tree under Book's home
- * (`book-home-files.ts`): memory there is the repository's, so none of it is loaded or migrated.
+ * Which of the workspace's memory directories under Book's home its repository ships files in
+ * (`book-home-files.ts`): the current one ({@link getProjectMemoryDir}) and the legacy one
+ * `migrateLegacyMemoryDir` would move. Memory there is the repository's: a shipped current
+ * directory is not loaded, and neither is migrated while either is shipped. Other workspaces'
+ * memory is not affected.
  */
-export function isShippedMemoryTree(workspace: string, opts?: MemoryStoreOptions): boolean {
+function shippedMemoryDirs(
+  workspace: string,
+  opts?: MemoryStoreOptions,
+): { current: boolean; legacy: boolean } {
   const root = bookRoot(opts);
-  return shippedHomeFiles(workspace, root)?.shipsAnyUnder(join(root, 'projects')) ?? false;
+  const shipped = shippedHomeFiles(workspace, root);
+  if (!shipped) return { current: false, legacy: false };
+  return {
+    current: shipped.shipsAnyUnder(getProjectMemoryDir(workspace, opts)),
+    legacy: shipped.shipsAnyUnder(memoryDirIn(root, workspace)),
+  };
+}
+
+/** Whether the workspace's memory directory is one its repository ships files in. */
+export function isShippedMemoryDir(workspace: string, opts?: MemoryStoreOptions): boolean {
+  return shippedMemoryDirs(workspace, opts).current;
 }
 
 /** Link `src` to `dst` without replacing `dst`, then drop `src`. A race lost to another process is not an error. */
@@ -1050,7 +1066,7 @@ function summarizeMemoryFile(path: string, name = basename(path)): MemoryFileSum
 
 export function listMemoryFiles(workspace: string, opts?: MemoryStoreOptions): MemoryFileSummary[] {
   const dir = getProjectMemoryDir(workspace, opts);
-  if (!existsSync(dir) || isShippedMemoryTree(workspace, opts)) return [];
+  if (!existsSync(dir) || isShippedMemoryDir(workspace, opts)) return [];
   const files: MemoryFileSummary[] = [];
   try {
     for (const entry of readdirSync(dir).sort()) {
@@ -1141,15 +1157,15 @@ function cutIndex(raw: string, maxLines: number): IndexLoad {
 
 /**
  * The memory a session runs with: none when memory is off, and none when the workspace's
- * repository ships files in the memory tree under Book's home ({@link isShippedMemoryTree}), so the
- * session is given no memory directory there to read or to write without asking.
+ * repository ships files in its memory directory under Book's home ({@link isShippedMemoryDir}),
+ * so the session is given no memory directory there to read or to write without asking.
  */
 export function sessionMemoryContext(
   workspace: string,
   enabled: boolean,
   opts?: MemoryStoreOptions,
 ): LoadedMemoryContext | undefined {
-  if (!enabled || isShippedMemoryTree(workspace, opts)) return undefined;
+  if (!enabled || isShippedMemoryDir(workspace, opts)) return undefined;
   return loadMemoryContext(workspace, opts);
 }
 
@@ -1157,12 +1173,12 @@ export function loadMemoryContext(
   workspace: string,
   opts?: MemoryStoreOptions,
 ): LoadedMemoryContext {
-  const shipped = isShippedMemoryTree(workspace, opts);
+  const shipped = shippedMemoryDirs(workspace, opts);
   // Before anything is read: a directory keyed the old way moves to the git-root key first,
   // and then the files in it are brought to the current layout.
-  if (!shipped) migrateLegacyMemoryDir(workspace, opts);
+  if (!shipped.current && !shipped.legacy) migrateLegacyMemoryDir(workspace, opts);
   const dir = getProjectMemoryDir(workspace, opts);
-  if (!shipped) migrateLegacyMemoryFormat(dir);
+  if (!shipped.current) migrateLegacyMemoryFormat(dir);
   const maxIndexLines = opts?.maxIndexLines ?? DEFAULT_MAX_INDEX_LINES;
   const result: LoadedMemoryContext = {
     dir,
@@ -1177,7 +1193,7 @@ export function loadMemoryContext(
     files: [],
   };
 
-  if (shipped || !existsSync(dir)) return result;
+  if (shipped.current || !existsSync(dir)) return result;
 
   const indexFile = join(dir, INDEX_FILE);
   if (existsSync(indexFile)) {

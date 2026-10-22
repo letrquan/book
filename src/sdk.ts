@@ -25,6 +25,7 @@ import {
 } from './debug-log.js';
 import { resolvePermissionMode } from './permission-mode.js';
 import { resolveBookHome } from './book-home.js';
+import { shippedHomeFiles } from './book-home-files.js';
 import { cleanupRunStatus } from './run-status.js';
 import { resolveSessionDriver } from './session-driver.js';
 
@@ -116,9 +117,15 @@ export async function* query(
   if (options.signal?.aborted) abortFromCaller();
   else options.signal?.addEventListener('abort', abortFromCaller, { once: true });
 
-  const persistSession = options.persistSession !== false;
+  const sessionRoot = join(resolveBookHome(), 'sessions');
+  // A store the workspace's repository ships files in under Book's home is not this user's to
+  // resume (`book-home-files.ts`): the run is then not persisted, unless the caller gave a store.
+  const persistSession =
+    options.persistSession !== false &&
+    (options.sessionStore !== undefined ||
+      !shippedHomeFiles(config.workspace)?.shipsAnyUnder(sessionRoot));
   const sessionStore = persistSession
-    ? (options.sessionStore ?? new SessionStore(join(resolveBookHome(), 'sessions')))
+    ? (options.sessionStore ?? new SessionStore(sessionRoot))
     : undefined;
   const bootstrap = resolveSessionBootstrap(sessionStore, {
     cwd: config.workspace,

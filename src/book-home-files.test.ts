@@ -10,6 +10,8 @@ import { shippedHomeFiles } from './book-home-files.js';
 import { inspectProjectInstructions } from './claude-md.js';
 import { inspectCommands } from './commands/loader.js';
 import { readGitIndex } from './git-index.js';
+import { persistentJobPaths } from './jobs/persistent-store.js';
+import { ShellJobManager } from './jobs/shell-manager.js';
 import { hookFingerprint } from './hook-approvals.js';
 import { resolveMcpServerList } from './mcp-config.js';
 import { getProjectMemoryDir, loadMemoryContext, sessionMemoryContext } from './memory-store.js';
@@ -361,6 +363,42 @@ describe('a Book home the workspace repository ships files in', () => {
         false,
         expect.anything(),
       );
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('keeps the memory of a workspace whose own memory directory the repository does not track', () => {
+    const home = checkoutAtHome({ '.book/projects/other/memory/MEMORY.md': '- other' });
+    const bookRoot = join(home, '.book');
+    const dir = getProjectMemoryDir(home, { bookRoot });
+    write(home, join(dir, 'MEMORY.md').slice(home.length + 1), '- [x](x.md) — mine');
+    expect(loadMemoryContext(home, { bookRoot }).indexLoaded).toBe(true);
+    expect(sessionMemoryContext(home, true, { bookRoot })?.dir).toBe(dir);
+  });
+
+  it('does not read background job records the repository tracks', async () => {
+    const home = checkoutAtHome();
+    vi.stubEnv('BOOK_HOME', join(home, '.book'));
+    const record = join(persistentJobPaths(home).records, 'shell_1.json').slice(home.length + 1);
+    write(home, record, '{}');
+    git(home, ['add', '--', record]);
+    const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+    try {
+      manager.configureWorkspace(home);
+      expect(manager.list()).toEqual([]);
+      await expect(
+        manager.start({
+          command: 'echo',
+          effectiveCommand: 'echo',
+          workdir: home,
+          env: process.env,
+          envOverrides: {},
+          sandboxed: false,
+          lifetime: 'persistent',
+          workspace: home,
+        }),
+      ).rejects.toThrow(/storage is unavailable/);
     } finally {
       manager.dispose();
     }

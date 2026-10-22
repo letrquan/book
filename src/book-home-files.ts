@@ -21,10 +21,11 @@ import { reachesUncPath } from './unc-path.js';
  * `/app`), or `BOOK_HOME` names a directory in one. A file that repository tracks there is the
  * repository's content, not the user's, so each reader of the home takes it as such: the settings
  * file only as the project layer (and only when it is the workspace's own project file), and every
- * other file not at all. A reader of a directory (`commands/`, `agents/`, `skills/`, the memory
- * tree, the managed-agents store) takes one the repository ships anything in as the repository's
- * whole. Other untracked files there, which Book or the user wrote, are read as before; a dotfiles
- * repository at `~` that does not track `~/.book` changes nothing.
+ * other file not at all. A reader of a directory (`commands/`, `agents/`, `skills/`, the
+ * workspace's memory directory, the session, background-job and managed-agent stores) takes one
+ * the repository ships anything in as the repository's whole. Other untracked files there, which
+ * Book or the user wrote, are read as before; a dotfiles repository at `~` that does not track
+ * `~/.book` changes nothing.
  *
  * "Ships" is decided by the repository the workspace belongs to (the nearest `.git` at or above
  * it, the home directory's own included), from its index: a file is shipped when the index lists

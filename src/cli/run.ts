@@ -49,12 +49,23 @@ import { resolvePermissionMode } from '../permission-mode.js';
 import { spawn } from 'node:child_process';
 import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
+import { shippedHomeFiles } from '../book-home-files.js';
 import { isReaderGoneError } from '../reader-gone.js';
 import { cleanupRunStatus } from '../run-status.js';
 
 /** Read at each use, so a BOOK_HOME set after this module loads is honoured. */
 function sessionRoot(): string {
   return join(resolveBookHome(), 'sessions');
+}
+
+/**
+ * The session store for `workspace`, when sessions persist. None, as with
+ * `--no-session-persistence`, when the workspace's repository ships files in the store under Book's
+ * home (`book-home-files.ts`): sessions there are not this user's to resume.
+ */
+function launchSessionStore(workspace: string, persist: boolean): SessionStore | undefined {
+  if (!persist || shippedHomeFiles(workspace)?.shipsAnyUnder(sessionRoot())) return undefined;
+  return new SessionStore(sessionRoot());
 }
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
 const EXIT_ALT_SCREEN = '\x1b[?1049l';
@@ -304,9 +315,10 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
 
         const mode = resolvePermissionMode(config.settings, options.permissionMode);
 
-        const sessionStore = (options.sessionPersistence as boolean)
-          ? new SessionStore(sessionRoot())
-          : undefined;
+        const sessionStore = launchSessionStore(
+          config.workspace,
+          options.sessionPersistence as boolean,
+        );
         const bootstrap = resolveSessionBootstrap(sessionStore, {
           cwd: config.workspace,
           resume: options.resume as string | undefined,
@@ -359,7 +371,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           sessionName: bootstrap.sessionName,
           forkSession: false,
           sessionCreated: bootstrap.created,
-          persistSession: options.sessionPersistence as boolean | undefined,
+          persistSession: sessionStore !== undefined,
           includeHookEvents: options.includeHookEvents as boolean | undefined,
           includePartialMessages: options.includePartialMessages as boolean | undefined,
           includeResultMessages: options.includeResultMessages as boolean | undefined,
@@ -392,9 +404,10 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       return;
     }
 
-    const sessionStore = (options.sessionPersistence as boolean)
-      ? new SessionStore(sessionRoot())
-      : undefined;
+    const sessionStore = launchSessionStore(
+      config.workspace,
+      options.sessionPersistence as boolean,
+    );
     const ephemeralRewind = sessionStore
       ? undefined
       : createEphemeralRewindEnvironment(config.workspace);
