@@ -2,6 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { shellArgument } from '../trust-command.js';
+import { setExitCodeFn } from './exit.js';
+import { createRepeatingScriptedProvider, sseResponse } from '../test/scripted-provider.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -36,6 +38,14 @@ vi.mock('./frame-buffer.js', () => ({ installFrameCapture: async () => {} }));
 vi.mock('./ink-frame-throttle.js', () => ({ installInkFrameThrottle: async () => true }));
 vi.mock('./ink-output-cache.js', () => ({ installInkOutputCache: async () => true }));
 vi.mock('./ink-render-cull.js', () => ({ installInkRenderCull: async () => true }));
+// The real advisory depends on the Node.js running the suite, and CI runs an unpatched 22.19 leg.
+const nodeAdvisory = vi.hoisted(() => ({ notices: [] as string[], versions: [] as string[] }));
+vi.mock('../node-advisory.js', () => ({
+  collectNodeSecurityNotices: (version: string) => {
+    nodeAdvisory.versions.push(version);
+    return nodeAdvisory.notices;
+  },
+}));
 const scrollback = vi.hoisted(() => ({ runs: 0 }));
 vi.mock('./scrollback.js', () => ({
   runScrollbackSession: async () => {
@@ -91,6 +101,12 @@ function captureStderr(): string[] {
 afterEach(() => {
   rendered.props = undefined;
   scrollback.runs = 0;
+  nodeAdvisory.notices = [];
+  nodeAdvisory.versions = [];
+  setExitCodeFn((code: number) => {
+    process.exitCode = code;
+  });
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   for (const [name, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[name];
@@ -181,5 +197,79 @@ describe('runMainAction — withheld-provider notices on the interactive launch 
       `\`book trust provider evil --workspace ${shellArgument(workspace)}\``,
     );
     expect(rendered.props).toBeUndefined();
+  });
+});
+
+describe('runMainAction — a Node.js runtime with known vulnerabilities', () => {
+  const NODE_NOTICE = '⚠  Node.js v24.21.0 has security vulnerabilities (test notice)';
+
+  function cleanWorkspace(): string {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-run-notices-node-'));
+    const home = mkdtempSync(join(tmpdir(), 'book-run-notices-home-'));
+    tempDirs.push(workspace, home);
+    stashEnv('BOOK_HOME', home);
+    stashEnv('BOOK_API_KEY', 'test-key');
+    return workspace;
+  }
+
+  it('judges the Node.js that runs Book', async () => {
+    captureStderr();
+
+    await runMainAction(interactiveOptions(cleanWorkspace()));
+
+    expect(nodeAdvisory.versions).toEqual([process.versions.node]);
+  });
+
+  it('hands the warning to the TUI first, and writes none to stderr', async () => {
+    nodeAdvisory.notices = [NODE_NOTICE];
+    const workspace = workspaceWithWithheldProvider();
+    const stderr = captureStderr();
+
+    await runMainAction(interactiveOptions(workspace));
+
+    const notices = rendered.props?.startupNotices as string[] | undefined;
+    expect(notices?.[0]).toBe(NODE_NOTICE);
+    expect(notices?.join('\n')).toContain('book trust provider evil');
+    expect(stderr.join('\n')).not.toContain(NODE_NOTICE);
+  });
+
+  it('prints it in the scrollback mode', async () => {
+    nodeAdvisory.notices = [NODE_NOTICE];
+    const stderr = captureStderr();
+
+    await runMainAction(interactiveOptions(cleanWorkspace(), { scrollback: true }));
+
+    expect(scrollback.runs).toBe(1);
+    expect(stderr.join('\n')).toContain(NODE_NOTICE);
+  });
+
+  it('prints it to stderr in print mode, leaving stdout to the result', async () => {
+    nodeAdvisory.notices = [NODE_NOTICE];
+    const workspace = cleanWorkspace();
+    const provider = createRepeatingScriptedProvider(() =>
+      sseResponse([JSON.stringify({ choices: [{ delta: { content: 'all done' } }] })]),
+    );
+    vi.stubGlobal('fetch', provider.fetch);
+    setExitCodeFn(() => {});
+    const stdout: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      stdout.push(String(chunk));
+      return true;
+    });
+    const stderr = captureStderr();
+
+    await runMainAction({
+      print: 'say hi',
+      workspace,
+      settings: false,
+      inputFormat: 'text',
+      outputFormat: 'json',
+      sessionPersistence: false,
+      maxTurns: '1',
+    });
+
+    expect(stderr.join('\n')).toContain(NODE_NOTICE);
+    expect(stdout.join('')).not.toContain(NODE_NOTICE);
+    expect(stdout.join('')).toContain('all done');
   });
 });

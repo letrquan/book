@@ -29,7 +29,8 @@ in front of all of them.
 
 ## Install
 
-You need **Node.js 22.19 or newer**.
+You need **Node.js 22.19 or newer**. Keep it on the latest patch release of its line: Book warns at
+launch when the Node.js it runs on is missing a published security fix.
 
 ```bash
 npm install -g @letrquan/book

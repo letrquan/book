@@ -12,6 +12,7 @@ import {
   collectWithheldProjectNotices,
   collectWithheldProviderNotices,
 } from '../project-approval-notices.js';
+import { collectNodeSecurityNotices } from '../node-advisory.js';
 import { isExiting, setExitCode } from './exit.js';
 import { installPrintInterrupt, printExitCode, type PrintInterrupt } from './print-interrupt.js';
 import { parseNumericFlag } from './utils.js';
@@ -224,6 +225,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     }) as AgentConfig;
     // Stderr, so it cannot corrupt --output-format json on stdout.
     if (config.modelProviderWarning) console.warn('⚠  ' + config.modelProviderWarning);
+    // A runtime with a published, patched vulnerability. Every launch mode reports it the way it
+    // reports the notices below.
+    const nodeNotices = collectNodeSecurityNotices(process.versions.node);
     // Print mode reports these with the other withheld declarations below. The interactive modes
     // have no prompt for a provider, and one the workspace declared that is not in effect would
     // otherwise be silent: the model it names just never appears. The full-screen TUI clears the
@@ -238,7 +242,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     // layers are.
     const instructionNotices = collectSkippedProjectFileNotices(config.workspace);
     if (options.scrollback) {
-      for (const notice of [...providerNotices, ...instructionNotices]) console.warn(notice);
+      for (const notice of [...nodeNotices, ...providerNotices, ...instructionNotices]) {
+        console.warn(notice);
+      }
     }
     const interactiveMaxTurns = parseNumericFlag(options.maxTurns, '--max-turns', {
       integer: true,
@@ -275,6 +281,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       // decides on them; a non-interactive host cannot ask, so it reports and
       // continues.
       for (const notice of [
+        ...nodeNotices,
         ...collectWithheldProjectNotices({
           workspace: config.workspace,
           settings: config.settings,
@@ -488,7 +495,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
             snapshotStore,
             createdSessions,
           },
-          startupNotices: [...providerNotices, ...instructionNotices],
+          startupNotices: [...nodeNotices, ...providerNotices, ...instructionNotices],
         }),
         {
           exitOnCtrlC: false,

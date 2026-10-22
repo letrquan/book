@@ -2,6 +2,7 @@ import { loadConfig } from '../config.js';
 import { renderUntrustedText } from '../hook-approvals.js';
 import { providerTrustCommand, trustCommandText } from '../trust-command.js';
 import { getPackageVersion } from '../version-info.js';
+import { collectNodeSecurityNotices } from '../node-advisory.js';
 import { collectAgentDiagnostics } from '../agents/diagnostics.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { discoverAgents } from '../subagent-discovery.js';
@@ -118,6 +119,9 @@ async function reportUnloadableConfig(workspace: string, error: unknown): Promis
   console.log();
   console.log('Version:', getPackageVersion());
   console.log('Node:', process.version);
+  for (const notice of collectNodeSecurityNotices(process.versions.node)) {
+    console.log('  ' + notice);
+  }
   console.log('Platform:', process.platform, process.arch);
   console.log('Workspace:', resolve(workspace));
   console.log();
@@ -169,6 +173,9 @@ export async function runDoctorCommand(
   console.log();
   console.log('Version:', getPackageVersion());
   console.log('Node:', process.version);
+  for (const notice of collectNodeSecurityNotices(process.versions.node)) {
+    console.log('  ' + notice);
+  }
   console.log('Platform:', process.platform, process.arch);
   console.log('Workspace:', config.workspace);
   console.log('Model:', config.model, '(' + config.baseUrl + ')');
