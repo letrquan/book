@@ -866,6 +866,18 @@ describe('MarkdownBlock prose with tabs (#565)', () => {
   });
 });
 
+describe('MarkdownBlock prose with tabs and no width (#578)', () => {
+  it.each([
+    ['a paragraph', 'ab\tcd\tef'],
+    ['a list item', '- ab\tcd\tef'],
+  ])('draws no raw tab in %s', (_name, content) => {
+    const view = render(withTheme(React.createElement(MarkdownBlock, { content })));
+    const output = frame(view.lastFrame);
+    expect(output).not.toContain('\t');
+    expect(output).toContain('ab      cd      ef');
+  });
+});
+
 describe('useThrottledValue', () => {
   // The trailing-emit / within-window cadence is the contract's non-trivial
   // half, but fake-timer tests are flaky under ink-testing-library (React

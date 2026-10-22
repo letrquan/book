@@ -165,27 +165,87 @@ describe('an expanded row keeps a long line whole (#550)', () => {
       success: true,
       showAllToolOutput: true,
       terminalWidth: WIDTH,
-      wrapLongLines: false,
+      longLines: 'whole',
     });
     expect(display.lines[0]).toBe(LONG);
   });
 
   it('keeps an ANSI colour sequence whole and free of width when it wraps', () => {
     const line = `\u001b[31m${'x'.repeat(20)}\u001b[0m`;
-    const display = prepareToolOutputDisplay(line, { maxLines: 10, maxLineWidth: 8, wrap: true });
+    const display = prepareToolOutputDisplay(line, {
+      maxLines: 10,
+      maxLineWidth: 8,
+      longLines: 'wrap',
+    });
     expect(display.lines.map((row) => displayWidth(row))).toEqual([8, 8, 4]);
     expect(display.lines.join('').replace(/\u001b\[[0-9;]*m/g, '')).toBe('x'.repeat(20));
     expect(display.lines.join('')).toBe(line);
   });
 
-  it('bounds the wrapped rows and counts the line the bound reaches as hidden', () => {
+  it('bounds the wrapped rows and counts a line the bound cuts into as shown, not hidden (#578)', () => {
     const display = prepareToolOutputDisplay(`${LONG}\n${LONG}\n${LONG}`, {
       maxLines: 5,
       maxLineWidth: WIDTH,
-      wrap: true,
+      longLines: 'wrap',
     });
     expect(display.lines).toHaveLength(5);
-    expect(display.hiddenLines).toBe(2);
+    // The second line is on screen for two of its three rows: only the third is fully hidden.
+    expect(display.hiddenLines).toBe(1);
+    expect(display.truncatedLines).toBe(1);
+    expect(display.footer).toBe('… +1 line, 1 long line shortened');
+  });
+
+  it('names nothing as hidden when the bound cuts into the last line only (#578)', () => {
+    const display = prepareToolOutputDisplay(`short\n${LONG}`, {
+      maxLines: 3,
+      maxLineWidth: WIDTH,
+      longLines: 'wrap',
+    });
+    expect(display.hiddenLines).toBe(0);
+    expect(display.truncatedLines).toBe(1);
+    expect(display.footer).toBe('… 1 long line shortened');
+  });
+
+  it('slices rows back out of their source lines at wide characters and colour escapes', () => {
+    const output = `\u001b[31m${'語'.repeat(9)}🙂🙂🙂\u001b[0m${'x'.repeat(9)}\nplain`;
+    const display = prepareToolOutputDisplay(output, {
+      maxLines: 10,
+      maxLineWidth: 7,
+      longLines: 'wrap',
+    });
+    expect(display.lines.length).toBeGreaterThan(3);
+    for (const row of display.lines) expect(displayWidth(row)).toBeLessThanOrEqual(7);
+    expect(display.lines.join('')).toBe(`${display.sourceLines?.[0]}plain`);
+    for (const [i, row] of (display.rowSources ?? []).entries()) {
+      expect(display.sourceLines?.[row.line]?.slice(row.start, row.end)).toBe(display.lines[i]);
+    }
+  });
+
+  it('leaves a line whole and uncut in whole mode, whatever the width', () => {
+    const display = prepareToolOutputDisplay(`${LONG}\nb`, {
+      maxLines: 10,
+      maxLineWidth: 8,
+      longLines: 'whole',
+    });
+    expect(display.lines).toEqual([LONG, 'b']);
+    expect(display.truncated).toBe(false);
+  });
+
+  it('records where each wrapped row came from, tabs expanded', () => {
+    const display = prepareToolOutputDisplay('a\tbcdefghij\nz', {
+      maxLines: 10,
+      maxLineWidth: 10,
+      longLines: 'wrap',
+    });
+    expect(display.sourceLines).toEqual([`a${' '.repeat(7)}bcdefghij`, 'z']);
+    expect(display.rowSources).toEqual([
+      { line: 0, start: 0, end: 10 },
+      { line: 0, start: 10, end: 17 },
+      { line: 1, start: 0, end: 1 },
+    ]);
+    for (const [i, row] of (display.rowSources ?? []).entries()) {
+      expect(display.sourceLines?.[row.line]?.slice(row.start, row.end)).toBe(display.lines[i]);
+    }
   });
 });
 

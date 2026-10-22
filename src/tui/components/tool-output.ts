@@ -6,14 +6,31 @@ export interface ToolOutputDisplayOptions {
   maxLineWidth: number;
   /** Optional hint appended to the footer when output is hidden. */
   hint?: string;
-  /** Select initial lines, final lines, or a balanced initial/final preview. */
-  strategy?: 'head' | 'tail' | 'head-tail';
   /**
-   * Continue a line wider than `maxLineWidth` on the rows after it instead of cutting it, so no
-   * line is shortened. `maxLines` then bounds the rows (a line the bound cuts into keeps its first
-   * rows and counts as hidden).
+   * Select initial lines, final lines, or a balanced initial/final preview. Read in `cut` mode
+   * only: a `wrap` display is always the head of the output.
    */
-  wrap?: boolean;
+  strategy?: 'head' | 'tail' | 'head-tail';
+  /** What becomes of a line wider than `maxLineWidth`; see {@link LongLineMode}. Default `cut`. */
+  longLines?: LongLineMode;
+}
+
+/**
+ * What a display does with a line wider than `maxLineWidth`:
+ * - `cut`: shorten it to the width (the row counts as a shortened line); `maxLines` bounds lines.
+ * - `wrap`: continue it on the rows after it, so no line is shortened; `maxLines` then bounds the
+ *   rows, and a line the bound cuts into keeps its first rows and counts as shortened, not hidden.
+ * - `whole`: leave it as it is, for a caller that wraps the text itself (Markdown).
+ */
+export type LongLineMode = 'cut' | 'wrap' | 'whole';
+
+/** Where one row of a `wrap` display came from: columns `start` to `end` of a source line. */
+export interface WrappedRowSource {
+  /** Index into {@link ToolOutputDisplay.sourceLines}. */
+  line: number;
+  /** UTF-16 offsets into that line, tabs expanded. */
+  start: number;
+  end: number;
 }
 
 export interface ToolOutputDisplay {
@@ -24,6 +41,12 @@ export interface ToolOutputDisplay {
   truncatedLines: number;
   truncated: boolean;
   footer?: string;
+  /**
+   * `wrap` mode only: the tab-expanded lines the rows were cut from, whole, and for each row where
+   * it came from, so a caller can style the whole line (a highlighter needs it) and slice it.
+   */
+  sourceLines?: string[];
+  rowSources?: WrappedRowSource[];
 }
 
 /**
@@ -89,12 +112,13 @@ export function countOutputLines(output: string): number {
  */
 export function prepareToolOutputDisplay(
   output: string,
-  { maxLines, maxLineWidth, hint, strategy = 'head', wrap = false }: ToolOutputDisplayOptions,
+  { maxLines, maxLineWidth, hint, strategy = 'head', longLines = 'cut' }: ToolOutputDisplayOptions,
 ): ToolOutputDisplay {
-  if (wrap) return wrappedToolOutputDisplay(output, maxLines, maxLineWidth, hint);
+  if (longLines === 'wrap') return wrappedToolOutputDisplay(output, maxLines, maxLineWidth, hint);
   const rawLines = splitOutputLines(output);
   const lineLimit = Math.max(0, Math.floor(maxLines));
-  const widthLimit = Math.max(0, Math.floor(maxLineWidth));
+  const widthLimit =
+    longLines === 'whole' ? Number.MAX_SAFE_INTEGER : Math.max(0, Math.floor(maxLineWidth));
   const visibleIndices = selectVisibleLineIndices(rawLines.length, lineLimit, strategy);
   const visibleRawLines = visibleIndices.map((index) => rawLines[index] ?? '');
   let truncatedLines = 0;
@@ -124,14 +148,22 @@ export function prepareToolOutputDisplay(
 
 const SGR = /\u001b\[[0-9;]*m/y;
 
+/** One row of {@link wrapRows}: its text, and the offsets in the line it was cut from. */
+interface WrappedRow {
+  text: string;
+  start: number;
+  end: number;
+}
+
 /**
  * `line` wrapped at display width `width` into at most `maxRows` rows (it stops once it has them,
  * so a huge line costs only the rows kept). An ANSI SGR sequence stays whole and takes no width.
  */
-function wrapRows(line: string, width: number, maxRows: number): string[] {
-  const rows: string[] = [];
+function wrapRows(line: string, width: number, maxRows: number): WrappedRow[] {
+  const rows: WrappedRow[] = [];
   let current = '';
   let currentWidth = 0;
+  let start = 0;
   for (let i = 0; i < line.length && rows.length < maxRows;) {
     SGR.lastIndex = i;
     const sgr = SGR.exec(line);
@@ -141,24 +173,27 @@ function wrapRows(line: string, width: number, maxRows: number): string[] {
       continue;
     }
     const ch = String.fromCodePoint(line.codePointAt(i)!);
-    i += ch.length;
     const chWidth = displayWidth(ch);
     if (currentWidth > 0 && currentWidth + chWidth > width) {
-      rows.push(current);
+      rows.push({ text: current, start, end: i });
       current = '';
       currentWidth = 0;
+      start = i;
       if (rows.length >= maxRows) return rows;
     }
+    i += ch.length;
     current += ch;
     currentWidth += chWidth;
   }
-  if (rows.length < maxRows) rows.push(current);
+  if (rows.length < maxRows) rows.push({ text: current, start, end: line.length });
   return rows;
 }
 
 /**
  * The head of `output` with each line wrapped at display width `maxLineWidth`, at most `maxLines`
- * rows. Nothing is shortened: a line the row bound reaches keeps its first rows and is hidden.
+ * rows. Nothing is shortened except by the row bound: a line it cuts into keeps its first rows,
+ * counts as shortened (some of it is on screen), and is not counted as hidden; only the lines
+ * after it are.
  */
 function wrappedToolOutputDisplay(
   output: string,
@@ -170,26 +205,42 @@ function wrappedToolOutputDisplay(
   const rowLimit = Math.max(0, Math.floor(maxLines));
   const width = Math.max(1, Math.floor(maxLineWidth));
   const lines: string[] = [];
+  const sourceLines: string[] = [];
+  const rowSources: WrappedRowSource[] = [];
   let shownLines = 0;
+  let truncatedLines = 0;
   for (const rawLine of rawLines) {
     if (lines.length >= rowLimit) break;
     const room = rowLimit - lines.length;
-    const rows = wrapRows(expandTabs(rawLine), width, room + 1);
-    lines.push(...rows.slice(0, room));
-    if (rows.length > room) break;
+    const line = expandTabs(rawLine);
+    const rows = wrapRows(line, width, room + 1);
+    const kept = rows.slice(0, room);
+    for (const row of kept) {
+      lines.push(row.text);
+      rowSources.push({ line: sourceLines.length, start: row.start, end: row.end });
+    }
+    sourceLines.push(line);
     shownLines++;
+    if (rows.length > room) {
+      truncatedLines = 1;
+      break;
+    }
   }
   const hiddenLines = rawLines.length - shownLines;
-  const footer =
-    hiddenLines > 0 ? formatToolOutputFooter({ hiddenLines, truncatedLines: 0, hint }) : undefined;
+  const truncated = hiddenLines > 0 || truncatedLines > 0;
+  const footer = truncated
+    ? formatToolOutputFooter({ hiddenLines, truncatedLines, hint })
+    : undefined;
   return {
     lines,
     totalLines: rawLines.length,
     totalChars: output.length,
     hiddenLines,
-    truncatedLines: 0,
-    truncated: hiddenLines > 0,
+    truncatedLines,
+    truncated,
     footer,
+    sourceLines,
+    rowSources,
   };
 }
 
