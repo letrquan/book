@@ -52,6 +52,27 @@ describe('classifyAudit', () => {
     ).toBe('transient');
   });
 
+  it('does not read a port or an address as an HTTP status', () => {
+    expect(
+      classifyAudit({ status: 1, stdout: '', stderr: 'connect ETIMEDOUT 104.16.1.35:443' }).kind,
+    ).toBe('transient');
+  });
+
+  it('retries a 429 and a 408', () => {
+    for (const code of ['429 Too Many Requests', '408 Request Timeout']) {
+      expect(classifyAudit({ status: 1, stdout: '', stderr: code }).kind).toBe('transient');
+    }
+  });
+
+  it('reads the report error, not unrelated stderr warnings', () => {
+    expect(
+      classifyAudit({
+        ...registry503,
+        stderr: 'npm warn 404 Not Found - GET https://registry.npmjs.org/optional-thing',
+      }).kind,
+    ).toBe('transient');
+  });
+
   it('calls a connection error transient', () => {
     expect(classifyAudit({ status: 1, stdout: '', stderr: 'request failed: ETIMEDOUT' }).kind).toBe(
       'transient',

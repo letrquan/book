@@ -35,10 +35,13 @@ interface AuditJson {
 }
 
 /** An answer the registry will give again: retrying cannot change it. */
-const PERMANENT = /\b4\d\d\b|being retired|invalid package tree|ENOLOCK|ELOCKVERIFY|lockfile/i;
+// A 4xx other than 408 and 429, which are the registry asking for a retry. Not preceded by `:` or
+// `.`, so a port (`:443`) or an address (`104.16.1.35`) is not read as a status.
+const PERMANENT =
+  /(?<![\d:.])(?:400|401|403|404|405|410|422)(?![\d.])|being retired|invalid package tree|ENOLOCK|ELOCKVERIFY|lockfile/i;
 /** A failure of the request, not of what was asked. */
 const TRANSIENT =
-  /\b5\d\d\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|EAI_AGAIN|ENOTFOUND|EPIPE|ESOCKETTIMEDOUT|socket hang up|timed? ?out|network|audit endpoint returned an error/i;
+  /(?<![\d:.])(?:5\d\d|408|429)(?![\d.])|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|EAI_AGAIN|ENOTFOUND|EPIPE|ESOCKETTIMEDOUT|socket hang up|timed? ?out|network|audit endpoint returned an error/i;
 
 function parse(stdout: string): AuditJson | undefined {
   try {
@@ -65,29 +68,45 @@ export function classifyAudit(run: AuditRun): AuditOutcome {
   }
   if (!json?.error && run.status === 0) return { kind: 'ok' };
 
-  const detail = [json?.error?.code, json?.error?.summary, json?.error?.detail, run.stderr]
+  // npm's own error wins; stderr is only read when there is none, because its warnings (a 404 for
+  // an optional package, a deprecation) say nothing about why the audit failed.
+  const fromReport = [json?.error?.code, json?.error?.summary, json?.error?.detail]
     .filter(Boolean)
     .join(' ')
     .trim();
-  const message = detail || `npm audit exited with ${String(run.status)} and no report`;
+  const detail = fromReport || run.stderr.trim();
+  const message =
+    detail ||
+    `npm audit exited with ${String(run.status)} and no error; report: ${run.stdout.trim().slice(0, 300) || '(empty)'}`;
   if (PERMANENT.test(message)) return { kind: 'fatal', message };
   if (TRANSIENT.test(message)) return { kind: 'transient', message };
   return { kind: 'fatal', message };
 }
 
+/** Longest one `npm audit` may take: a connection that hangs is a failed attempt, not a stall. */
+const ATTEMPT_TIMEOUT_MS = 5 * 60_000;
+
 function runAudit(args: string[]): Promise<AuditRun> {
   return new Promise((done) => {
-    const child = spawn('npm', ['audit', '--json', '--audit-level=high', ...args], {
-      // npm is npm.cmd on Windows, which only a shell can start.
-      shell: process.platform === 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const flags = ['audit', '--json', '--audit-level=high', ...args];
+    // npm is npm.cmd on Windows, which only a shell can start; there the whole command is one
+    // string, which newer Node requires of a shell spawn.
+    const child =
+      process.platform === 'win32'
+        ? spawn(['npm', ...flags].join(' '), { shell: true, timeout: ATTEMPT_TIMEOUT_MS })
+        : spawn('npm', flags, { timeout: ATTEMPT_TIMEOUT_MS });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+    child.stdout?.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
+    child.stderr?.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
     child.on('error', (error) => done({ status: null, stdout, stderr: error.message }));
-    child.on('close', (status) => done({ status, stdout, stderr }));
+    child.on('close', (status, signal) =>
+      done({
+        status,
+        stdout,
+        stderr: signal ? `${stderr}\nnpm audit timed out (${signal})` : stderr,
+      }),
+    );
   });
 }
 
