@@ -49,8 +49,8 @@ const FLOW_DEBUG_ENABLED = process.env.BOOK_DEBUG_FLOW === '1';
 
 let debugLogPath: string | undefined;
 const debugLogSizes = new Map<string, number>();
-/** Whether each log target may be written, decided once per session. */
-const debugLogTargetUsable = new Map<string, boolean>();
+/** Log targets found unwritable: debug logging to them is off for the rest of the session. */
+const refusedDebugLogTargets = new Set<string>();
 const DEFAULT_DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024;
 const MIN_DEBUG_LOG_MAX_BYTES = 4;
 const DEFAULT_DEBUG_LOG_BACKUPS = 3;
@@ -108,6 +108,8 @@ export function cleanupDebugLogs(
   now = Date.now(),
 ): number {
   if (!target) return 0;
+  // The default log's folder is a workspace one, held to the same rule as the log itself.
+  if (target === defaultDebugLogPath() && projectFileWriteRefusal(target)) return 0;
   const cutoff = now - Math.max(1, days) * 86_400_000;
   const directory = dirname(target);
   const prefix = `${target.split(/[\\/]/).pop()}.`;
@@ -134,13 +136,14 @@ export function cleanupDebugLogs(
  * given.
  */
 function usableDebugLogTarget(target: string): boolean {
-  const known = debugLogTargetUsable.get(target);
-  if (known !== undefined) return known;
+  if (refusedDebugLogTargets.has(target)) return false;
+  // Checked before every append, not once: a checkout during the session can put something else
+  // at the path.
   const refusal = target === defaultDebugLogPath() ? projectFileWriteRefusal(target) : undefined;
-  debugLogTargetUsable.set(target, !refusal);
-  if (refusal)
-    process.stderr.write(`Debug logging is off for this session: ${target}: ${refusal}.\n`);
-  return !refusal;
+  if (!refusal) return true;
+  refusedDebugLogTargets.add(target);
+  process.stderr.write(`Debug logging is off for this session: ${target}: ${refusal}.\n`);
+  return false;
 }
 
 function writeDebugLine(line: string): void {

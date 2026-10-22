@@ -1,3 +1,4 @@
+import { resolve } from 'path';
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import type { CommandContext } from '../types/commands.js';
 import type { LocalCommandDisplay, Message, Usage } from '../types/messages.js';
@@ -20,6 +21,7 @@ import { redactSettingValue } from '../settings-redaction.js';
 import { formatSettingsKeyHelp, writeFileAtomic } from '../settings-repository.js';
 import { projectFileWriteRefusal } from '../workspace-files.js';
 import { resolveWorkspacePath } from '../tools/path-utils.js';
+import { reachesUncPath } from '../unc-path.js';
 import { buildMemoryReport } from '../memory-display.js';
 import {
   deleteMemoryEntry,
@@ -1069,6 +1071,14 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
       try {
         // Inside the workspace, as the file tools hold a write, and only ever a regular file:
         // written to a temporary file and renamed into place, never through what is there.
+        // Asked before resolving: resolving follows links, and one to a network share would
+        // already reach it.
+        if (reachesUncPath(resolve(context.workspace, filename))) {
+          return {
+            type: 'local-message',
+            content: `✕ export failed: ${filename} is a network path.`,
+          };
+        }
         const resolved = resolveWorkspacePath(context.workspace, filename);
         if (!resolved) {
           return {
