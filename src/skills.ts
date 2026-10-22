@@ -16,6 +16,7 @@ import { parseFrontmatter } from './frontmatter.js';
 import { resolveBookHome } from './book-home.js';
 import { isUserHome, tryRealPath } from './repo-containment.js';
 import type { SkillActivation, SkillExecution } from './settings.js';
+import { createUncGuard, type UncGuard } from './unc-path.js';
 
 export const SKILL_ENTRY_FILENAME = 'SKILL.md';
 export const MAX_SKILL_HEADER_BYTES = 64 * 1024;
@@ -182,8 +183,20 @@ function directoriesFromRoot(root: string, workspace: string): string[] {
   return directories.reverse();
 }
 
-/** Roots are ordered from lowest to highest precedence. */
-export function skillRoots(workspace: string, options: DiscoverSkillsOptions = {}): SkillRoot[] {
+/**
+ * Roots are ordered from lowest to highest precedence.
+ *
+ * A project root is a path a repository can commit as a link, and on Windows resolving a link to
+ * a network share opens the share, which can send the user's credentials to the host it names
+ * (#567, #579). A project root that reaches one is therefore not a root at all, so nothing that
+ * takes its roots from here resolves it. The user's own roots are theirs to keep on a share.
+ * `reachesUnc` is the UNC guard of the discovery this is part of, so the two share what it probed.
+ */
+export function skillRoots(
+  workspace: string,
+  options: DiscoverSkillsOptions = {},
+  reachesUnc: UncGuard = createUncGuard(),
+): SkillRoot[] {
   const roots: SkillRoot[] = [];
   if (options.includeUser !== false) {
     const home = options.homeDir ?? homedir();
@@ -238,6 +251,7 @@ export function skillRoots(workspace: string, options: DiscoverSkillsOptions = {
     // user roots: a project skill asks before the model may run it, and the user's own
     // skills must not start asking because of where Book was launched (#429).
     if (byPath.get(key)?.source === 'user') continue;
+    if (root.source === 'project' && reachesUnc(root.path)) continue;
     // The same, when the home is reached through a link, so the project spelling of the path
     // differs (#449). Only a project root is ever folded into a user root, never the reverse.
     if (root.source === 'project' && userRealPaths.size > 0) {
@@ -596,7 +610,15 @@ function descriptorFromEntry(
   };
 }
 
-function skillsUnderRoot(root: SkillRoot): Skill[] {
+/**
+ * The skills in one root. In a project root, each skill directory and SKILL.md is a path a
+ * repository can commit as a link to a network share, as the root itself can (see
+ * {@link skillRoots}, which drops such a root): each is asked of `reachesUnc` before anything
+ * follows it, and one that reaches a share is not listed. A resource link is never followed
+ * (`collectResources`).
+ */
+function skillsUnderRoot(root: SkillRoot, reachesUnc: UncGuard): Skill[] {
+  const refused = (path: string) => root.source === 'project' && reachesUnc(path);
   if (!existsSync(root.path)) return [];
   let entries: string[];
   try {
@@ -616,6 +638,7 @@ function skillsUnderRoot(root: SkillRoot): Skill[] {
     }
     let directory = info.isDirectory();
     if (info.isSymbolicLink()) {
+      if (refused(fullPath)) continue;
       try {
         directory = statSync(fullPath).isDirectory();
       } catch {
@@ -624,7 +647,7 @@ function skillsUnderRoot(root: SkillRoot): Skill[] {
     }
     if (directory) {
       const entryPath = join(fullPath, SKILL_ENTRY_FILENAME);
-      if (existsSync(entryPath) && statSync(entryPath).isFile()) {
+      if (!refused(entryPath) && existsSync(entryPath) && statSync(entryPath).isFile()) {
         skills.push(descriptorFromEntry(entryPath, root, entry));
       }
     } else if (info.isFile() && entry.endsWith('.skill.md')) {
@@ -640,8 +663,9 @@ export function discoverSkills(
   options: DiscoverSkillsOptions = {},
 ): Skill[] {
   const byName = new Map<string, Skill>();
-  for (const root of skillRoots(workspace, options)) {
-    for (const skill of skillsUnderRoot(root)) {
+  const reachesUnc = createUncGuard();
+  for (const root of skillRoots(workspace, options, reachesUnc)) {
+    for (const skill of skillsUnderRoot(root, reachesUnc)) {
       const previous = byName.get(skill.name);
       if (previous) {
         skill.shadowed = [

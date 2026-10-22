@@ -1,5 +1,6 @@
-import { lstatSync, readlinkSync } from 'fs';
-import { win32 } from 'path';
+import { lstatSync, readlinkSync, realpath } from 'fs';
+import { isAbsolute, resolve, win32 } from 'path';
+import type { FileSystemAdapter } from 'tinyglobby';
 
 /**
  * The UNC guard every containment check asks before it resolves a path (#567).
@@ -49,42 +50,112 @@ function components(path: string): { root: string; names: string[] } {
  * link that cannot be read and for a chain longer than any file needs, so a caller that refuses on
  * `true` fails closed. A component that does not exist ends the walk: nothing past it can be
  * resolved, so nothing past it is reached. Always `false` off Windows.
+ *
+ * Each call probes a path at most once (see {@link createUncGuard}); a caller asking about many
+ * paths makes one guard and asks it instead.
  */
 export function reachesUncPath(path: string, probe: UncProbe = {}): boolean {
-  if ((probe.platform ?? process.platform) !== 'win32') return false;
-  if (isUncSpelling(path)) return true;
+  return createUncGuard(probe)(path);
+}
+
+/** {@link reachesUncPath} for one top-level call, answering from what it already probed. */
+export type UncGuard = (path: string) => boolean;
+
+/** What probing one path found: a link carries its target, `undefined` when it cannot be read. */
+type Probed =
+  { kind: 'missing' } | { kind: 'plain' } | { kind: 'link'; target: string | undefined };
+
+/**
+ * A {@link reachesUncPath} that remembers what it probed (#579). Paths that share a prefix are
+ * walked through the same components, and a link to an absolute target restarts the walk at the
+ * volume root, so the same `lstat` was asked again and again; here each path is probed once, with
+ * its link read once. The memo lives as long as the guard, so a caller makes one per top-level
+ * call (a listing, a walk) and drops it after: a file system that changes later is probed afresh.
+ */
+export function createUncGuard(probe: UncProbe = {}): UncGuard {
   const lstat = probe.lstat ?? ((entry: string) => lstatSync(entry));
   const readlink = probe.readlink ?? ((entry: string) => readlinkSync(entry));
+  const probed = new Map<string, Probed>();
+  const look = (entry: string): Probed => {
+    const known = probed.get(entry);
+    if (known) return known;
+    let found: Probed;
+    try {
+      if (lstat(entry).isSymbolicLink()) {
+        let target: string | undefined;
+        try {
+          target = readlink(entry);
+        } catch {
+          target = undefined;
+        }
+        found = { kind: 'link', target };
+      } else {
+        found = { kind: 'plain' };
+      }
+    } catch {
+      found = { kind: 'missing' };
+    }
+    probed.set(entry, found);
+    return found;
+  };
 
-  let { root: current, names } = components(win32.resolve(path));
-  let hops = 0;
-  while (names.length > 0) {
-    const next = win32.join(current, names.shift()!);
-    let isLink: boolean;
-    try {
-      isLink = lstat(next).isSymbolicLink();
-    } catch {
-      return false;
+  return (path) => {
+    if ((probe.platform ?? process.platform) !== 'win32') return false;
+    if (isUncSpelling(path)) return true;
+    let { root: current, names } = components(win32.resolve(path));
+    let hops = 0;
+    while (names.length > 0) {
+      const next = win32.join(current, names.shift()!);
+      const entry = look(next);
+      if (entry.kind === 'missing') return false;
+      if (entry.kind === 'plain') {
+        current = next;
+        continue;
+      }
+      if (++hops > MAX_LINK_HOPS) return true;
+      const target = entry.target;
+      if (target === undefined || isUncSpelling(target)) return true;
+      // A relative target is relative to the directory holding the link (a junction's is always
+      // absolute), and Windows takes `..` in it by name, as `resolve` does.
+      const resolved = win32.resolve(current, target);
+      if (isUncSpelling(resolved)) return true;
+      const walk = components(resolved);
+      current = walk.root;
+      names = [...walk.names, ...names];
     }
-    if (!isLink) {
-      current = next;
-      continue;
+    return false;
+  };
+}
+
+type Callback = (error: NodeJS.ErrnoException | null, ...results: unknown[]) => void;
+
+/**
+ * The `fs` a tinyglobby walk under `root` is handed on Windows so that it never opens a UNC
+ * location (#579), or `undefined` elsewhere, where the guard is always `false`. tinyglobby follows
+ * links: fdir `realpath`s each link entry, then `stat`s and lists what that resolved to, so a
+ * committed link to `\\host\share` had the walk open the share. `realpath` asks `reachesUnc`
+ * first and, when the answer is yes, fails the way an unreadable link does, so fdir drops the
+ * entry. That is the one call to guard: a directory entry is never a link (Windows reports every
+ * reparse point as one), the walk's root is the caller's to check, and what a guarded `realpath`
+ * resolves to is local. A path the walk hands over relative is taken from `root`.
+ */
+export function uncGuardedWalkFs(
+  root: string,
+  reachesUnc: UncGuard,
+): FileSystemAdapter | undefined {
+  if (process.platform !== 'win32') return undefined;
+  const realpathGuarded = ((path: unknown, ...rest: unknown[]): void => {
+    const asked = String(path);
+    if (reachesUnc(isAbsolute(asked) ? asked : resolve(root, asked))) {
+      const callback = rest[rest.length - 1] as Callback;
+      const error = Object.assign(new Error(`Not resolved, it reaches a UNC location: ${asked}`), {
+        code: 'EUNC',
+      });
+      // Asynchronously, as `fs` answers: the walk counts its pending calls around this one.
+      process.nextTick(callback, error);
+      return;
     }
-    if (++hops > MAX_LINK_HOPS) return true;
-    let target: string;
-    try {
-      target = readlink(next);
-    } catch {
-      return true;
-    }
-    if (isUncSpelling(target)) return true;
-    // A relative target is relative to the directory holding the link (a junction's is always
-    // absolute), and Windows takes `..` in it by name, as `resolve` does.
-    const resolved = win32.resolve(current, target);
-    if (isUncSpelling(resolved)) return true;
-    const walk = components(resolved);
-    current = walk.root;
-    names = [...walk.names, ...names];
-  }
-  return false;
+    (realpath as (...args: unknown[]) => void)(path, ...rest);
+  }) as typeof realpath;
+  return { realpath: realpathGuarded };
 }
