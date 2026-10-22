@@ -1,16 +1,12 @@
 import {
-  closeSync,
   constants,
   copyFileSync,
   existsSync,
-  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
-  openSync,
   readdirSync,
   readFileSync,
-  readSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -24,6 +20,8 @@ import { createDebugLogger } from './debug-log.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { writeFileAtomic } from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
+import { shippedHomeFiles } from './book-home-files.js';
+import { readGitPointerFile as readPointerFile } from './git-index.js';
 import { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES } from './memory-limits.js';
 import { isUserHome, tryRealPath } from './repo-containment.js';
 import type { SessionDriver } from './types/runtime.js';
@@ -198,41 +196,6 @@ function statIfPresent(path: string): Stats | null {
   }
 }
 
-/** Git's pointer files (`.git`, `commondir`, `gitdir`) hold one path; a bigger file is none. */
-const MAX_POINTER_FILE_BYTES = 64 * 1024;
-
-/**
- * The first line of the git pointer file `path`, trimmed; undefined when it is absent or no
- * regular file. A checkout from an archive controls these files, so the read never blocks or
- * runs on: it opens without blocking (a FIFO, even one swapped in late), checks the open file,
- * and reads at most one byte past the limit (a procfs file reports size 0 and never ends).
- * Throws on one it cannot read or that is too big.
- */
-function readPointerFile(path: string): string | undefined {
-  let fd: number;
-  try {
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
-  } catch (e) {
-    const code = errorCode(e);
-    if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR') return undefined;
-    throw e;
-  }
-  try {
-    if (!fstatSync(fd).isFile()) return undefined;
-    const buffer = Buffer.alloc(MAX_POINTER_FILE_BYTES + 1);
-    let length = 0;
-    while (length < buffer.length) {
-      const n = readSync(fd, buffer, length, buffer.length - length, null);
-      if (n === 0) break;
-      length += n;
-    }
-    if (length > MAX_POINTER_FILE_BYTES) throw new Error(`not a git pointer file: ${path}`);
-    return buffer.toString('utf-8', 0, length).split(/\r?\n/, 1)[0].trim();
-  } finally {
-    closeSync(fd);
-  }
-}
-
 /** The git root `dir` itself marks with a `.git` entry; undefined when `dir` has none. Throws on a `.git` it cannot read. */
 function gitRootMarkedBy(dir: string): string | undefined {
   const dotGit = join(dir, '.git');
@@ -338,6 +301,15 @@ function memoryDirIn(root: string, workspaceKey: string): string {
 
 export function getProjectMemoryDir(workspace: string, opts?: MemoryStoreOptions): string {
   return memoryDirIn(bookRoot(opts), findGitRoot(workspace));
+}
+
+/**
+ * Whether the workspace's repository ships files in the memory tree under Book's home
+ * (`book-home-files.ts`): memory there is the repository's, so none of it is loaded or migrated.
+ */
+function isShippedMemoryTree(workspace: string, opts?: MemoryStoreOptions): boolean {
+  const root = bookRoot(opts);
+  return shippedHomeFiles(workspace, root)?.shipsAnyUnder(join(root, 'projects')) ?? false;
 }
 
 /** Link `src` to `dst` without replacing `dst`, then drop `src`. A race lost to another process is not an error. */
@@ -1019,7 +991,7 @@ function summarizeMemoryFile(path: string, name = basename(path)): MemoryFileSum
 
 export function listMemoryFiles(workspace: string, opts?: MemoryStoreOptions): MemoryFileSummary[] {
   const dir = getProjectMemoryDir(workspace, opts);
-  if (!existsSync(dir)) return [];
+  if (!existsSync(dir) || isShippedMemoryTree(workspace, opts)) return [];
   const files: MemoryFileSummary[] = [];
   try {
     for (const entry of readdirSync(dir).sort()) {
@@ -1112,11 +1084,12 @@ export function loadMemoryContext(
   workspace: string,
   opts?: MemoryStoreOptions,
 ): LoadedMemoryContext {
+  const shipped = isShippedMemoryTree(workspace, opts);
   // Before anything is read: a directory keyed the old way moves to the git-root key first,
   // and then the files in it are brought to the current layout.
-  migrateLegacyMemoryDir(workspace, opts);
+  if (!shipped) migrateLegacyMemoryDir(workspace, opts);
   const dir = getProjectMemoryDir(workspace, opts);
-  migrateLegacyMemoryFormat(dir);
+  if (!shipped) migrateLegacyMemoryFormat(dir);
   const maxIndexLines = opts?.maxIndexLines ?? DEFAULT_MAX_INDEX_LINES;
   const result: LoadedMemoryContext = {
     dir,
@@ -1131,7 +1104,7 @@ export function loadMemoryContext(
     files: [],
   };
 
-  if (!existsSync(dir)) return result;
+  if (shipped || !existsSync(dir)) return result;
 
   const indexFile = join(dir, INDEX_FILE);
   if (existsSync(indexFile)) {

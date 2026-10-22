@@ -17,6 +17,16 @@ it is held back as a repository declaration. Instruction files are compared by r
 home reached through a symlink still counts its own files once, as the user's, and a project skill
 folder is folded into a user one only when their real paths match.
 
+Book's home can also be inside the workspace's repository: the home directory is itself a
+checkout, or `BOOK_HOME` names a directory in one. A file that repository tracks there is the
+repository's, not yours. A tracked `settings.json` is read only as the project layer, and only when
+it is the workspace's own `.book/settings.json`. A tracked `trust.json` holds no decisions and is
+never written to. The other tracked files there are not read as yours: `mcp.json`,
+`permissions.json`, `AGENTS.md`, and anything in `commands/`, `agents/`, `skills/` or the memory
+tree. Untracked files, such as the sessions and decisions Book wrote there, are read as before, so
+a dotfiles repository that does not track `~/.book` changes nothing. Book says so once at startup;
+set `BOOK_HOME` to a directory outside the repository to keep your own settings and decisions.
+
 One family is not "later wins". `sandbox.*` is a boundary between a command and your machine, so
 a **workspace layer may only tighten it** — see [The sandbox](#the-sandbox).
 

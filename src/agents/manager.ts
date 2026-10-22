@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { resolveBookHome } from '../book-home.js';
+import { shippedHomeFiles } from '../book-home-files.js';
 import { isUserHome, tryRealPath } from '../repo-containment.js';
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import type { Usage } from '../types/messages.js';
@@ -478,14 +479,15 @@ export class AgentManager {
       const sessionOptions = {
         disposedInstanceIds: this.options.runtime?.disposedAgentInstanceIds,
       };
+      // Records the workspace's repository ships under Book's home are not this user's agents
+      // (`book-home-files.ts`): the store then runs in memory only.
+      const storeRoot = this.options.storeRoot ?? join(resolveBookHome(), 'agents');
+      const persist =
+        this.config.settings.agents.persist &&
+        !(shippedHomeFiles(this.config.workspace)?.shipsAnyUnder(join(storeRoot, hash)) ?? false);
       const store = await (this.options.createStore
-        ? this.options.createStore(
-            hash,
-            this.options.storeRoot,
-            this.config.settings.agents.persist,
-            sessionOptions,
-          )
-        : AgentStore.open(hash, this.options.storeRoot, this.config.settings.agents.persist, {
+        ? this.options.createStore(hash, this.options.storeRoot, persist, sessionOptions)
+        : AgentStore.open(hash, this.options.storeRoot, persist, {
             ...sessionOptions,
             eventSink: (event) => this.handlePersistenceEvent(event),
           }));

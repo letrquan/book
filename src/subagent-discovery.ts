@@ -3,6 +3,7 @@ import { join, extname, relative } from 'path';
 import { parseFrontmatter } from './frontmatter.js';
 import { canonicalToolName } from './tools/aliases.js';
 import { resolveBookHome } from './book-home.js';
+import { shippedHomeFiles } from './book-home-files.js';
 
 const KNOWN_AGENT_TOOLS = new Set([
   '*',
@@ -129,14 +130,18 @@ function markdownFiles(root: string): string[] {
  * Search order (project wins on name collision):
  *   1. ~/.book/agents/*.md  (user)
  *   2. .book/agents/*.md    (project)
+ *
+ * A user directory the workspace's repository ships files in (`book-home-files.ts`) is the
+ * repository's: it is not read as the user's, only as the project directory when it is that.
  */
 export function discoverAgents(workspace: string): SubagentDef[] {
   const userDir = join(resolveBookHome(), 'agents');
   const projectDir = join(workspace, '.book', 'agents');
+  const userShipped = shippedHomeFiles(workspace)?.shipsAnyUnder(userDir) ?? false;
 
   const byName = new Map<string, SubagentDef>();
 
-  for (const dir of [userDir, projectDir]) {
+  for (const dir of userShipped ? [projectDir] : [userDir, projectDir]) {
     if (!existsSync(dir)) continue;
     let entries: string[];
     try {
@@ -152,7 +157,7 @@ export function discoverAgents(workspace: string): SubagentDef[] {
         continue;
       }
       if (!stat.isFile()) continue;
-      const source = dir === userDir ? 'user' : 'project';
+      const source = dir === userDir && !userShipped ? 'user' : 'project';
       const agent = loadAgentFile(fullPath, source);
       if (agent) byName.set(agent.name, agent);
     }
