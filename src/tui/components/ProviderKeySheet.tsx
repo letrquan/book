@@ -7,8 +7,8 @@ import { checkProviderKey, validateApiKey } from '../../provider-key.js';
 import type { DiscoveredModel, ModelDiscoveryOptions } from '../../provider/model-discovery.js';
 import { useDensityMetrics } from '../density.js';
 import { useTheme } from '../theme.js';
-import { DecisionSheet } from './chrome.js';
-import { LABEL_COLUMN_WIDTH, panelGrid } from '../layout.js';
+import { DecisionSheet, KeyValueList } from './chrome.js';
+import { panelGrid, sheetContentWidth } from '../layout.js';
 
 export interface ProviderKeySheetProps {
   providerId: string;
@@ -160,8 +160,13 @@ export function ProviderKeySheet({
 
   return (
     <DecisionSheet label="Update API key" tone={theme.brand} meta={providerId} width={sheetWidth}>
-      <Row label="Provider" value={providerId} />
-      <Row label="Endpoint" value={endpoint ?? '(no base URL configured)'} />
+      <KeyValueList
+        width={sheetContentWidth(sheetWidth)}
+        rows={[
+          { key: 'Provider', value: providerId },
+          { key: 'Endpoint', value: endpoint ?? '(no base URL configured)' },
+        ]}
+      />
       <Box marginTop={1} flexDirection="column">
         {step === 'entry' && (
           <>
@@ -177,7 +182,7 @@ export function ProviderKeySheet({
             </Box>
             {showOptionalHelp && (
               <Text color={theme.subtle} dimColor>
-                Tested against the endpoint, then saved to ~/.book/settings.json. {'{env:VAR}'} and{' '}
+                Tested against the endpoint, then saved to your user settings. {'{env:VAR}'} and{' '}
                 {'{file:path}'} work too.
               </Text>
             )}
@@ -200,17 +205,5 @@ export function ProviderKeySheet({
             : 'Ctrl+C cancel'}
       </Text>
     </DecisionSheet>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  const theme = useTheme();
-  return (
-    <Box>
-      <Box width={LABEL_COLUMN_WIDTH + 2}>
-        <Text color={theme.subtle}>{label}</Text>
-      </Box>
-      <Text>{value}</Text>
-    </Box>
   );
 }

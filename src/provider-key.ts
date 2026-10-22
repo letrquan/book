@@ -21,6 +21,7 @@ import { existsSync } from 'fs';
 import { resolveSecret } from './config.js';
 import { deleteNestedValue } from './cli/utils.js';
 import { PROVIDER_CONNECTION_KEYS } from './provider-approvals.js';
+import { redactSecrets } from './provider-secrets.js';
 import {
   discoverModels,
   type DiscoveredModel,
@@ -58,15 +59,6 @@ function providerEntryOf(
   return isPlainObject(entry) ? entry : undefined;
 }
 
-/** Every message that leaves this module goes through here, whatever produced it. */
-function withoutSecrets(message: string, secrets: ReadonlyArray<string | undefined>): string {
-  let scrubbed = message;
-  for (const secret of secrets) {
-    if (secret) scrubbed = scrubbed.split(secret).join('[redacted]');
-  }
-  return scrubbed;
-}
-
 export type ProviderKeyTarget =
   /** The user file defines it: its key may be replaced. */
   | { kind: 'owned'; providerId: string; path: string; provider: ProviderConfig }
@@ -90,7 +82,12 @@ export function providerKeyTarget(workspace: string, providerId: string): Provid
   }
   const document = user.status === 'valid' ? user.document : {};
   if (isPlainObject(document.provider) && Object.hasOwn(document.provider, providerId)) {
-    const parsed = providerConfigSchema.safeParse(document.provider[providerId]);
+    // The key itself is left out: a broken `apiKey` (empty, null, a number) is exactly what this
+    // update repairs, so it must not stop the update. Only the endpoint and protocol are read here.
+    const entry = document.provider[providerId];
+    const parsed = providerConfigSchema.safeParse(
+      isPlainObject(entry) ? { ...entry, apiKey: undefined } : entry,
+    );
     if (!parsed.success) {
       return {
         kind: 'unreadable',
@@ -161,7 +158,7 @@ export function writeProviderKey(
   if (!written.ok) {
     return {
       ok: false,
-      error: withoutSecrets(formatSettingsDiagnostics(written.diagnostics), [apiKey]),
+      error: redactSecrets(formatSettingsDiagnostics(written.diagnostics), [apiKey]),
     };
   }
 
@@ -180,13 +177,17 @@ export function writeProviderKey(
     : {
         ok: true,
         path,
-        localError: withoutSecrets(formatSettingsDiagnostics(cleared.diagnostics), [apiKey]),
+        localError: redactSecrets(formatSettingsDiagnostics(cleared.diagnostics), [apiKey]),
       };
 }
 
-/** Attempts and per-request time for the check: a wrong host must fail in seconds, not minutes. */
-const CHECK_MAX_RETRIES = 1;
-const CHECK_REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * One attempt, and a short per-request limit: a wrong or dead host must fail in seconds, not after
+ * the session's ten retries. `maxAttempts` counts retries after the first request, so 0 is one
+ * request; a transient refusal is what the sheet's retry and the CLI's `r` are for.
+ */
+const CHECK_RETRIES = 0;
+const CHECK_REQUEST_TIMEOUT_MS = 20_000;
 
 export interface ProviderKeyCheckOptions {
   /** The provider whose endpoint is asked. Its own `apiKey` is not used. */
@@ -239,7 +240,7 @@ export async function checkProviderKey(
       apiKey: resolved,
       retry: {
         ...options.retry,
-        maxAttempts: Math.min(options.retry.maxAttempts, CHECK_MAX_RETRIES),
+        maxAttempts: Math.min(options.retry.maxAttempts, CHECK_RETRIES),
         requestTimeoutMs: Math.min(options.retry.requestTimeoutMs, CHECK_REQUEST_TIMEOUT_MS),
       },
       signal: options.signal,
@@ -250,6 +251,6 @@ export async function checkProviderKey(
     return { ok: true, modelCount: models.length };
   } catch (caught) {
     const message = caught instanceof Error ? caught.message : 'The key check failed.';
-    return { ok: false, error: withoutSecrets(message, [options.apiKey, resolved]) };
+    return { ok: false, error: redactSecrets(message, [options.apiKey, resolved]) };
   }
 }

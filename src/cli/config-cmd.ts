@@ -55,6 +55,9 @@ export async function runConfigCommand(
     await runProviderKeyCommand(workspace, key, value, {
       ...settingsOptions.providerKey,
       scope: settingsOptions.scope,
+      ignoresSettingsFlags: Boolean(
+        settingsOptions.settingsOverridePath || settingsOptions.noSettings,
+      ),
     });
     return;
   }

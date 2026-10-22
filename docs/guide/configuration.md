@@ -53,8 +53,12 @@ or cancel, and otherwise the command exits non-zero having written nothing. `--f
 a failed test, and `--no-check` skips the test, for an endpoint without a model-list API. An id
 that is not in `<BOOK_HOME>/settings.json` fails with the ids that are; one only a repository
 declares (`.book/settings.json` or `.book/settings.local.json`) is refused, on the ownership rule
-the picker uses, and `--project` / `--local` are refused too. Like every `config` subcommand it
-needs no working credential.
+the picker uses, and `--project`, `--local`, `--settings` and `--no-settings` are refused too: the
+target is always your user file. Like every `config` subcommand it needs no working credential.
+The test is one request with a 20-second limit, so a dead host fails quickly; retry it if the
+endpoint was only briefly unavailable. A relative `{file:path}` is read from the workspace you run
+in, for the test and in every later session, since the user file applies to every workspace; use
+`~/` or an absolute path for a key file kept in one place.
 
 Two groups of keys are refused in every scope. Trust decisions
 (`mcp.projectServers`, `permissions.projectAllowRules`, `hooks.projectEntries`,

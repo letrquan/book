@@ -31,6 +31,8 @@ export interface ProviderKeyCommandOptions {
   force?: boolean;
   /** `-g` / `--project` / `--local`. Only the user layer holds providers this edits. */
   scope?: SettingsScope;
+  /** `--settings <path>` or `--no-settings` was passed: refused, since neither changes the target. */
+  ignoresSettingsFlags?: boolean;
   stdin?: ProviderKeyInput;
   /** Where prompts go; stdout stays for the result. */
   stderr?: NodeJS.WritableStream;
@@ -133,6 +135,13 @@ export async function runProviderKeyCommand(
     console.error(USAGE);
     return exit(1);
   }
+  if (options.ignoresSettingsFlags) {
+    console.error(
+      'provider-key edits your user settings (<BOOK_HOME>/settings.json) whatever the settings ' +
+        'layers in use; --settings and --no-settings do not apply to it.',
+    );
+    return exit(1);
+  }
   if (options.scope && options.scope !== 'user') {
     console.error(
       `provider-key changes providers in your user settings only, not ${settingsScopeLabel(options.scope)} settings.`,
@@ -154,7 +163,9 @@ export async function runProviderKeyCommand(
   }
   if (target.kind === 'unknown') {
     console.error(
-      `No provider "${providerId}" in user settings (${target.path}). ` +
+      // The id is not repeated: one that names no provider is as likely to be a key typed in
+      // its place, and the command promises never to echo a key.
+      `No provider with that id in user settings (${target.path}). ` +
         (target.configured.length > 0
           ? `Configured: ${target.configured.join(', ')}.`
           : 'No providers are configured there yet; add one with /providers in the TUI.'),

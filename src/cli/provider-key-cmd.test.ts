@@ -150,8 +150,28 @@ describe('book config provider-key', () => {
   it('fails on an unknown id', async () => {
     seedUser();
     expect(await run('nope', { stdin: piped(NEW_KEY), check: false })).toBe('exit 1');
-    expect(err.join('\n')).toContain('No provider "nope"');
+    expect(err.join('\n')).toContain('No provider with that id');
     expect(err.join('\n')).toContain('gw');
+  });
+
+  it('does not echo a key typed in place of the id', async () => {
+    seedUser();
+    expect(await run(NEW_KEY, { stdin: piped(''), check: false })).toBe('exit 1');
+    expect([...out, ...err].join('\n')).not.toContain(NEW_KEY);
+  });
+
+  it('refuses --settings and --no-settings', async () => {
+    const before = seedUser();
+    for (const flags of [{ settingsOverridePath: '/tmp/alt.json' }, { noSettings: true }]) {
+      await expect(
+        runConfigCommand(workspace, 'provider-key', 'gw', undefined, {
+          ...flags,
+          providerKey: { stdin: piped(NEW_KEY), check: false, stderr: new PassThrough() },
+        }),
+      ).rejects.toThrow('exit 1');
+    }
+    expect(err.join('\n')).toContain('--settings and --no-settings do not apply');
+    expect(readFileSync(userPath(), 'utf-8')).toBe(before);
   });
 
   it('refuses a provider only the repository declares', async () => {

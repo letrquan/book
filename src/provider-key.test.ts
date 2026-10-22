@@ -91,6 +91,17 @@ describe('providerKeyTarget', () => {
     expect(providerKeyTarget(workspace, 'constructor').kind).toBe('unknown');
   });
 
+  it('accepts an entry whose only fault is the key being replaced', () => {
+    writeJson(userPath(), {
+      provider: { gw: { type: 'openai', baseURL: 'https://gw.test/v1', apiKey: '' } },
+    });
+    expect(providerKeyTarget(workspace, 'gw').kind).toBe('owned');
+    expect(writeProviderKey(workspace, 'gw', NEW_KEY).ok).toBe(true);
+    expect(readJson(userPath())).toEqual({
+      provider: { gw: { type: 'openai', baseURL: 'https://gw.test/v1', apiKey: NEW_KEY } },
+    });
+  });
+
   it('reports a user file that is not settings', () => {
     mkdirSync(bookHome(), { recursive: true });
     writeFileSync(userPath(), '{ "provider": ');
@@ -220,8 +231,9 @@ describe('checkProviderKey', () => {
       baseUrl: 'https://gw.test/v1',
       apiKey: NEW_KEY,
     });
-    expect((options.retry as typeof retry).maxAttempts).toBeLessThanOrEqual(1);
-    expect((options.retry as typeof retry).requestTimeoutMs).toBeLessThanOrEqual(30_000);
+    // One request: `maxAttempts` counts retries after the first.
+    expect((options.retry as typeof retry).maxAttempts).toBe(0);
+    expect((options.retry as typeof retry).requestTimeoutMs).toBeLessThanOrEqual(20_000);
   });
 
   it('sends nothing for a provider without a base URL', async () => {
@@ -265,7 +277,7 @@ describe('checkProviderKey', () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toBe('rejected [redacted] for this route');
+      expect(result.error).toBe('rejected [redacted: provider key] for this route');
       expect(result.error).not.toContain(NEW_KEY);
     }
   });
