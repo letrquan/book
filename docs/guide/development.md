@@ -88,7 +88,9 @@ the integration tier, and `npm run release:check` — which packs the tarball, i
 the installed CLI and SDK — before publishing. Provenance is attached automatically. It publishes
 under the npm dist-tag `latest` for a tag push; a manual run takes a `dist-tag` input (letters,
 digits, `-` and `.`, nothing that looks like a version), because npm refuses to publish a
-prerelease version such as `0.4.0-beta.0` without an explicit tag.
+prerelease version such as `0.4.0-beta.0` without an explicit tag. A prerelease tag push also lands
+on `latest`, so a re-run through `workflow_dispatch` should pass the same `dist-tag` the tag push
+used.
 
 Cutting a release is therefore:
 
