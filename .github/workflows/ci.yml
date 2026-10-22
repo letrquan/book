@@ -45,6 +45,11 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
 
+      # npm 10 (Node 22) retries a failed bulk audit against the retired `audits/quick` endpoint
+      # and reports that endpoint's 400, hiding a transient error as a permanent one; npm 11 does
+      # not (#598). Every leg audits with the same npm.
+      - run: npm install -g npm@11.20.0
+
       - run: npm ci
 
       - run: npm run check
