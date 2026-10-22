@@ -2,6 +2,7 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -10,8 +11,9 @@ import {
   unlinkSync,
   writeSync,
 } from 'fs';
-import { basename, dirname, join } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import type { core } from 'zod';
+import { resolveBookHome } from './book-home.js';
 import { deleteNestedValue, setNestedValue } from './cli/utils.js';
 import { bookSettingsSchema } from './settings.js';
 import { redactSettingValue } from './settings-redaction.js';
@@ -75,6 +77,32 @@ export function readSettingsDocument(path: string): SettingsDocumentReadResult {
   }
 
   return { status: 'valid', path, document: parsed as Record<string, unknown> };
+}
+
+/**
+ * Why Book will not write the workspace file at `path`, or undefined when it may: the one check
+ * every write of a project-layer file Book manages goes through (`.book/settings.json`,
+ * `.book/settings.local.json`, `.book/migrations.json`, a project `.mcp.json`), including the read
+ * a write starts from.
+ *
+ * Such a file is written only while it is a regular file or does not exist yet. Anything else (a
+ * link, a FIFO, a device, a directory) is left exactly as it is: not read for the write, not
+ * written through, and not replaced. The answer is the reason, without the path or a full stop,
+ * for the caller's one-line notice: `<path>: <reason>`.
+ *
+ * Files under `<BOOK_HOME>` keep their behaviour: they are the user's own, and a user-global
+ * settings file kept elsewhere and linked into place is a setup this must not break.
+ */
+export function projectFileWriteRefusal(path: string): string | undefined {
+  const fromHome = relative(resolve(resolveBookHome()), resolve(path));
+  if (fromHome === '' || (!fromHome.startsWith('..') && !isAbsolute(fromHome))) return undefined;
+  try {
+    const stats = lstatSync(path, { throwIfNoEntry: false });
+    if (!stats || stats.isFile()) return undefined;
+  } catch (error) {
+    return `could not be inspected (${safeMessage(error)}), so Book left it unchanged`;
+  }
+  return 'not a regular file, so Book left it unchanged';
 }
 
 export function writeFileAtomic(path: string, contents: string): void {
@@ -155,6 +183,10 @@ export class SettingsRepository {
     mutation: (candidate: Record<string, unknown>) => void,
     values: Record<string, unknown>,
   ): SettingsMutationResult {
+    const refusal = projectFileWriteRefusal(this.path);
+    if (refusal) {
+      return { ok: false, path: this.path, diagnostics: [{ path: this.path, message: refusal }] };
+    }
     let lock: number | undefined;
     try {
       lock = this.acquireLock();

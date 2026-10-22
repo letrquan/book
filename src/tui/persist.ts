@@ -18,6 +18,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import {
   formatSettingsDiagnostics,
+  projectFileWriteRefusal,
   readSettingsDocument,
   SettingsRepository,
 } from '../settings-repository.js';
@@ -69,6 +70,15 @@ export type RemoveLocalProviderResult =
       localProviderExisted: boolean;
       error: string;
     };
+
+/**
+ * The refusal for a write that starts by reading the file at `path` itself, checked before that
+ * read. A write through `SettingsRepository` alone needs none: the repository checks first.
+ */
+function refusedWrite(path: string): { ok: false; error: string } | undefined {
+  const reason = projectFileWriteRefusal(path);
+  return reason ? { ok: false, error: `${path}: ${reason}` } : undefined;
+}
 
 /** Read a settings document at `path` as a plain object ({} if absent/invalid). */
 function readSettingsAt(path: string): Record<string, unknown> {
@@ -399,6 +409,16 @@ function removeProviderAt(
   label: string,
   providerId: string,
 ): RemoveLocalProviderResult {
+  const refused = refusedWrite(path);
+  if (refused) {
+    return {
+      ...refused,
+      providerId,
+      removedModelCount: 0,
+      localDefaultCleared: false,
+      localProviderExisted: false,
+    };
+  }
   if (!existsSync(path)) {
     return {
       ok: false,
@@ -500,6 +520,8 @@ export function persistPermissionRuleLocal(
   list: 'allow' | 'ask' | 'deny',
   rule: string,
 ): { ok: boolean; error?: string } {
+  const refused = refusedWrite(localSettingsPath(workspace));
+  if (refused) return refused;
   const existing = readSettingsLocal(workspace);
   const perms = (existing.permissions ?? {}) as Record<string, unknown[]>;
   const arr = Array.isArray(perms[list]) ? [...(perms[list] as unknown[])] : [];
@@ -525,6 +547,8 @@ export function removePermissionRuleLocal(
   list: 'allow' | 'ask' | 'deny',
   rule: string,
 ): { ok: boolean; error?: string; notLocal?: boolean } {
+  const refused = refusedWrite(localSettingsPath(workspace));
+  if (refused) return refused;
   const existing = readSettingsLocal(workspace);
   const perms = (existing.permissions ?? {}) as Record<string, unknown[]>;
   const arr = Array.isArray(perms[list]) ? [...(perms[list] as unknown[])] : [];

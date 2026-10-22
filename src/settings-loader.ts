@@ -10,7 +10,11 @@ import {
   type HookEvent,
   type ResolvedSettings,
 } from './settings.js';
-import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
+import {
+  projectFileWriteRefusal,
+  SettingsRepository,
+  writeFileAtomic,
+} from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
 import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
@@ -881,6 +885,13 @@ export function migrateLegacyPermissions(
 
   const localDir = join(workspace, '.book');
   const localPath = join(localDir, 'settings.local.json');
+  for (const path of [localPath, markerPath]) {
+    const refusal = projectFileWriteRefusal(path);
+    if (refusal) {
+      console.warn(`⚠  Permission rules not migrated: ${path}: ${refusal}.`);
+      return false;
+    }
+  }
   const result = new SettingsRepository(localPath).update((existing) => {
     const permissions = (existing.permissions ?? {}) as {
       allow?: string[];

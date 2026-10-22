@@ -20,6 +20,7 @@ import { getNestedValue, setNestedValue } from './cli/utils.js';
 import { resolveSettings, settingsLayerPaths } from './settings-loader.js';
 import {
   formatSettingsDiagnostics,
+  projectFileWriteRefusal,
   readSettingsDocument,
   SETTINGS_TOP_LEVEL_KEYS,
   SettingsRepository,
@@ -70,6 +71,9 @@ export interface ScopeDocument {
 
 export function readScopeDocument(scope: SettingsScope, workspace: string): ScopeDocument {
   const path = settingsScopePath(scope, workspace);
+  // Read for a write as often as for display, so it answers the way the write would.
+  const refusal = projectFileWriteRefusal(path);
+  if (refusal) return { scope, path, status: 'unreadable', error: refusal, document: {} };
   const result = readSettingsDocument(path);
   if (result.status === 'valid') {
     return { scope, path, status: 'present', document: result.document };
