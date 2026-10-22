@@ -18,10 +18,10 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import {
   formatSettingsDiagnostics,
-  projectFileWriteRefusal,
   readSettingsDocument,
   SettingsRepository,
 } from '../settings-repository.js';
+import { projectFileWriteRefusal } from '../workspace-files.js';
 import { resolveBookHome } from '../book-home.js';
 import {
   ADVISOR_OFF_VALUE,

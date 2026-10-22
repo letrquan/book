@@ -11,7 +11,8 @@ import {
   type McpTransportType,
 } from '../mcp-config.js';
 import { resolveSettings } from '../settings-loader.js';
-import { projectFileWriteRefusal, writeFileAtomic } from '../settings-repository.js';
+import { writeFileAtomic } from '../settings-repository.js';
+import { projectFileWriteRefusal } from '../workspace-files.js';
 
 export type McpConfigScope = 'user' | 'project';
 

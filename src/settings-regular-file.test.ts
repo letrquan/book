@@ -11,7 +11,8 @@ import {
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { isolateBookHome } from './test/isolated-book-home.js';
-import { projectFileWriteRefusal, SettingsRepository } from './settings-repository.js';
+import { SettingsRepository } from './settings-repository.js';
+import { projectFileWriteRefusal } from './workspace-files.js';
 import { applySettingWrite, readScopeDocument } from './settings-write.js';
 import { migrateLegacyPermissions } from './settings-loader.js';
 import { runMcpAddCommand } from './cli/mcp.js';

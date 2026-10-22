@@ -35,6 +35,7 @@ import {
   unlinkSync,
 } from 'fs';
 import { dirname, join } from 'path';
+import { projectFileWriteRefusal } from './workspace-files.js';
 
 // Core flag — provider, agent loop, and TUI lifecycle.
 const DEBUG_ENABLED = process.env.BOOK_DEBUG === '1';
@@ -48,6 +49,8 @@ const FLOW_DEBUG_ENABLED = process.env.BOOK_DEBUG_FLOW === '1';
 
 let debugLogPath: string | undefined;
 const debugLogSizes = new Map<string, number>();
+/** Whether each log target may be written, decided once per session. */
+const debugLogTargetUsable = new Map<string, boolean>();
 const DEFAULT_DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024;
 const MIN_DEBUG_LOG_MAX_BYTES = 4;
 const DEFAULT_DEBUG_LOG_BACKUPS = 3;
@@ -124,12 +127,29 @@ export function cleanupDebugLogs(
   return removed;
 }
 
+/**
+ * The default `.book/debug.log` is one of Book's own workspace files, so it is written only while
+ * it is a regular file; otherwise debug logging stops for the session, said once on stderr.
+ * `BOOK_DEBUG_FILE` is the user's own choice, a FIFO or `/dev/stderr` included, and is used as
+ * given.
+ */
+function usableDebugLogTarget(target: string): boolean {
+  const known = debugLogTargetUsable.get(target);
+  if (known !== undefined) return known;
+  const refusal = target === defaultDebugLogPath() ? projectFileWriteRefusal(target) : undefined;
+  debugLogTargetUsable.set(target, !refusal);
+  if (refusal)
+    process.stderr.write(`Debug logging is off for this session: ${target}: ${refusal}.\n`);
+  return !refusal;
+}
+
 function writeDebugLine(line: string): void {
   const target = debugLogPath ?? (debugLogPath = getDebugLogPath());
   if (!target) {
     process.stderr.write(line);
     return;
   }
+  if (!usableDebugLogTarget(target)) return;
 
   try {
     mkdirSync(dirname(target), { recursive: true });

@@ -2,7 +2,6 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
-  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -11,12 +10,12 @@ import {
   unlinkSync,
   writeSync,
 } from 'fs';
-import { basename, dirname, join, resolve } from 'path';
+import { basename, dirname, join } from 'path';
 import type { core } from 'zod';
-import { resolveBookHome } from './book-home.js';
 import { deleteNestedValue, setNestedValue } from './cli/utils.js';
 import { bookSettingsSchema } from './settings.js';
 import { redactSettingValue } from './settings-redaction.js';
+import { projectFileWriteRefusal } from './workspace-files.js';
 
 export type SettingsDocumentReadResult =
   | { status: 'absent'; path: string }
@@ -77,47 +76,6 @@ export function readSettingsDocument(path: string): SettingsDocumentReadResult {
   }
 
   return { status: 'valid', path, document: parsed as Record<string, unknown> };
-}
-
-/**
- * Why Book will not write the workspace file at `path`, or undefined when it may: the one check
- * every write of a project-layer file Book manages goes through (`.book/settings.json`,
- * `.book/settings.local.json`, `.book/migrations.json`, a project `.mcp.json`), including the read
- * a write starts from.
- *
- * Such a file is written only while it is a regular file or does not exist yet, in a `.book`
- * folder that is a real directory or does not exist yet. Anything else (a link, a FIFO, a device,
- * a directory in the file's place) is left exactly as it is: not read for the write, not written
- * through, and not replaced. The answer is the reason, without the path or a full stop, for the
- * caller's one-line notice: `<path>: <reason>`.
- *
- * The user-global files (`<BOOK_HOME>/settings.json` and `<BOOK_HOME>/mcp.json`) keep their
- * behaviour: they are the user's own, and one kept elsewhere and linked into place is a setup this
- * must not break. Only those two paths are exempt, not the rest of `<BOOK_HOME>`, which also holds
- * checkouts of other repositories.
- */
-export function projectFileWriteRefusal(path: string): string | undefined {
-  const target = resolve(path);
-  const home = resolve(resolveBookHome());
-  if (target === join(home, 'settings.json') || target === join(home, 'mcp.json')) {
-    return undefined;
-  }
-  try {
-    const folder = dirname(target);
-    // `<BOOK_HOME>` itself (a workspace at `$HOME`, where `.book` is it) is the user's own folder,
-    // and a dotfiles setup often links it into place.
-    if (basename(folder) === '.book' && folder !== home) {
-      const folderStats = lstatSync(folder, { throwIfNoEntry: false });
-      if (folderStats && !folderStats.isDirectory()) {
-        return 'its .book folder is not a regular directory, so Book left it unchanged';
-      }
-    }
-    const stats = lstatSync(target, { throwIfNoEntry: false });
-    if (!stats || stats.isFile()) return undefined;
-  } catch (error) {
-    return `could not be inspected (${safeMessage(error)}), so Book left it unchanged`;
-  }
-  return 'not a regular file, so Book left it unchanged';
 }
 
 export function writeFileAtomic(path: string, contents: string): void {

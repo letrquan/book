@@ -10,11 +10,8 @@ import {
   type HookEvent,
   type ResolvedSettings,
 } from './settings.js';
-import {
-  projectFileWriteRefusal,
-  SettingsRepository,
-  writeFileAtomic,
-} from './settings-repository.js';
+import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
+import { projectFileWriteRefusal } from './workspace-files.js';
 import { resolveBookHome } from './book-home.js';
 import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';

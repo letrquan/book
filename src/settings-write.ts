@@ -20,11 +20,11 @@ import { getNestedValue, setNestedValue } from './cli/utils.js';
 import { resolveSettings, settingsLayerPaths } from './settings-loader.js';
 import {
   formatSettingsDiagnostics,
-  projectFileWriteRefusal,
   readSettingsDocument,
   SETTINGS_TOP_LEVEL_KEYS,
   SettingsRepository,
 } from './settings-repository.js';
+import { projectFileWriteRefusal } from './workspace-files.js';
 import {
   blockedConfigWritePath,
   settingsScopeLabel,
