@@ -7,6 +7,7 @@ import { describeInvalidPattern, portablePattern } from './grep-pattern.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { globWalkIgnore, globWalkPlan } from './glob-regex.js';
 import { recordingWalkFs, walkPartialNote, type WalkFailure } from './walk-fs.js';
+import { createUncGuard, uncGuardedWalkFs } from '../unc-path.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { buildChildEnv } from '../child-env.js';
 import { markdownContentStart } from '../frontmatter.js';
@@ -1782,7 +1783,9 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
     // for directories too, is the one that gets it.
     //
     // The `fs` adapter records what the walk could not read, which tinyglobby otherwise swallows: an
-    // unreadable directory is reported below rather than passed off as the whole workspace.
+    // unreadable directory is reported below rather than passed off as the whole workspace. On
+    // Windows the walk also asks the UNC guard before it lists a directory it starts from or
+    // follows a link (`uncGuardedWalkFs`).
     const recorder = recordingWalkFs();
     let found: string[];
     try {
@@ -1792,7 +1795,7 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
         ignore: globWalkIgnore(ctx.gitignorePatterns ?? []),
         expandDirectories: false,
         signal: ctx.signal,
-        fs: recorder.fs,
+        fs: uncGuardedWalkFs(cwd, createUncGuard(), recorder.fs) ?? recorder.fs,
       });
     } catch (error) {
       return toolFailure(
@@ -2099,7 +2102,8 @@ async function grepSearchPortable(
         ignore: globWalkIgnore([...GREP_DEFAULT_IGNORES, ...(ctx.gitignorePatterns ?? [])]),
         expandDirectories: false,
         signal: ctx.signal,
-        fs: recorder.fs,
+        // As a Glob's walk: on Windows, asked of the UNC guard first (`uncGuardedWalkFs`).
+        fs: uncGuardedWalkFs(scope.root, createUncGuard(), recorder.fs) ?? recorder.fs,
       });
     } catch (error) {
       return toolFailure(

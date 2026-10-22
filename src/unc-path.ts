@@ -1,4 +1,4 @@
-import { lstatSync, readlinkSync, realpath } from 'fs';
+import { lstatSync, readdir, readlinkSync, realpath } from 'fs';
 import { isAbsolute, resolve, win32 } from 'path';
 import type { FileSystemAdapter } from 'tinyglobby';
 
@@ -129,33 +129,71 @@ export function createUncGuard(probe: UncProbe = {}): UncGuard {
 
 type Callback = (error: NodeJS.ErrnoException | null, ...results: unknown[]) => void;
 
+/** The calls {@link uncGuardedWalkFs} wraps; each defaults to `fs`'s own. */
+export type WalkFsBase = Pick<FileSystemAdapter, 'readdir' | 'realpath'>;
+
 /**
  * The `fs` a tinyglobby walk under `root` is handed on Windows so that it never opens a UNC
- * location (#579), or `undefined` elsewhere, where the guard is always `false`. tinyglobby follows
- * links: fdir `realpath`s each link entry, then `stat`s and lists what that resolved to, so a
- * committed link to `\\host\share` had the walk open the share. `realpath` asks `reachesUnc`
- * first and, when the answer is yes, fails the way an unreadable link does, so fdir drops the
- * entry. That is the one call to guard: a directory entry is never a link (Windows reports every
- * reparse point as one), the walk's root is the caller's to check, and what a guarded `realpath`
- * resolves to is local. A path the walk hands over relative is taken from `root`.
+ * location (#579), or `undefined` elsewhere, where the guard is always `false`.
+ *
+ * tinyglobby follows links: fdir `realpath`s each link entry, then `stat`s and lists what that
+ * resolved to. It also picks where to start from the pattern, so a pattern can name a share as
+ * the directory to list. Two calls therefore ask `reachesUnc` first and, when the answer is yes,
+ * fail the way an unreadable entry does, which fdir passes over:
+ *
+ * - `realpath`, for every link entry;
+ * - `readdir`, for a directory the walk did not reach by listing its parent. A directory entry is
+ *   never a link (Windows reports every reparse point as one), so a directory listed from a
+ *   checked one is local and needs no probe. What is left to check is where the walk starts and
+ *   the targets of the links it follows.
+ *
+ * `stat` only ever sees what an approved `realpath` resolved to, so it is not wrapped. Calls that
+ * pass go to `base` (a recording adapter, say) or to `fs`. A path the walk hands over relative is
+ * taken from `root`.
  */
 export function uncGuardedWalkFs(
   root: string,
   reachesUnc: UncGuard,
+  base: WalkFsBase = {},
 ): FileSystemAdapter | undefined {
   if (process.platform !== 'win32') return undefined;
-  const realpathGuarded = ((path: unknown, ...rest: unknown[]): void => {
+  const keyOf = (path: unknown) => {
     const asked = String(path);
-    if (reachesUnc(isAbsolute(asked) ? asked : resolve(root, asked))) {
-      const callback = rest[rest.length - 1] as Callback;
-      const error = Object.assign(new Error(`Not resolved, it reaches a UNC location: ${asked}`), {
+    return win32.resolve(isAbsolute(asked) ? asked : resolve(root, asked));
+  };
+  // The directories this walk listed, and the links it followed: what is under them is local.
+  const checked = new Set<string>();
+  const refuse = (path: unknown, rest: unknown[]): void => {
+    const callback = rest[rest.length - 1] as Callback;
+    const error = Object.assign(
+      new Error(`Not opened, it reaches a UNC location: ${String(path)}`),
+      {
         code: 'EUNC',
-      });
-      // Asynchronously, as `fs` answers: the walk counts its pending calls around this one.
-      process.nextTick(callback, error);
+      },
+    );
+    // Asynchronously, as `fs` answers: the walk counts its pending calls around this one.
+    process.nextTick(callback, error);
+  };
+  const readdirBase = (base.readdir ?? readdir) as (...args: unknown[]) => void;
+  const realpathBase = (base.realpath ?? realpath) as (...args: unknown[]) => void;
+  const readdirGuarded = ((path: unknown, ...rest: unknown[]): void => {
+    const key = keyOf(path);
+    if (!checked.has(win32.dirname(key)) && !checked.has(key) && reachesUnc(key)) {
+      refuse(path, rest);
       return;
     }
-    (realpath as (...args: unknown[]) => void)(path, ...rest);
+    checked.add(key);
+    readdirBase(path, ...rest);
+  }) as typeof readdir;
+  const realpathGuarded = ((path: unknown, ...rest: unknown[]): void => {
+    const key = keyOf(path);
+    if (reachesUnc(key)) {
+      refuse(path, rest);
+      return;
+    }
+    // fdir lists a linked directory's entries under the link's own spelling.
+    checked.add(key);
+    realpathBase(path, ...rest);
   }) as typeof realpath;
-  return { realpath: realpathGuarded };
+  return { readdir: readdirGuarded, realpath: realpathGuarded };
 }

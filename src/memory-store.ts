@@ -26,6 +26,7 @@ import { writeFileAtomic } from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
 import { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES } from './memory-limits.js';
 import { isUserHome, tryRealPath } from './repo-containment.js';
+import { createUncGuard, type UncGuard } from './unc-path.js';
 import type { SessionDriver } from './types/runtime.js';
 
 const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
@@ -206,9 +207,11 @@ const MAX_POINTER_FILE_BYTES = 64 * 1024;
  * regular file. A checkout from an archive controls these files, so the read never blocks or
  * runs on: it opens without blocking (a FIFO, even one swapped in late), checks the open file,
  * and reads at most one byte past the limit (a procfs file reports size 0 and never ends).
- * Throws on one it cannot read or that is too big.
+ * Throws on one it cannot read or that is too big. Undefined, unopened, for one that is, or
+ * reaches through a link, a UNC location on Windows (`reachesUnc`, #579).
  */
-function readPointerFile(path: string): string | undefined {
+function readPointerFile(path: string, reachesUnc: UncGuard): string | undefined {
+  if (reachesUnc(path)) return undefined;
   let fd: number;
   try {
     fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
@@ -233,24 +236,34 @@ function readPointerFile(path: string): string | undefined {
   }
 }
 
-/** The git root `dir` itself marks with a `.git` entry; undefined when `dir` has none. Throws on a `.git` it cannot read. */
+/**
+ * The git root `dir` itself marks with a `.git` entry; undefined when `dir` has none. Throws on a
+ * `.git` it cannot read, and on one that is, or reaches through a link, a UNC location on Windows,
+ * which is not opened (#579). A git dir or common dir there is not opened either: `dir` is then
+ * its own root, as a checkout with no common dir is.
+ */
 function gitRootMarkedBy(dir: string): string | undefined {
+  const reachesUnc = createUncGuard();
   const dotGit = join(dir, '.git');
+  if (reachesUnc(dotGit)) throw new Error(`.git on a UNC path: ${dotGit}`);
   const st = statIfPresent(dotGit);
   if (!st) return undefined;
   if (st.isDirectory()) return dir;
   if (!st.isFile()) return undefined;
 
-  const pointer = /^gitdir:[ \t]*(\S.*)$/.exec(readPointerFile(dotGit) ?? '');
+  const pointer = /^gitdir:[ \t]*(\S.*)$/.exec(readPointerFile(dotGit, reachesUnc) ?? '');
   if (!pointer) throw new Error(`unrecognized .git file: ${dotGit}`);
   // A relative gitdir resolves against the directory holding the `.git` file.
   const gitDir = resolve(dir, pointer[1]);
-  const commonDir = readPointerFile(join(gitDir, 'commondir'));
+  if (reachesUnc(gitDir)) return dir;
+  const commonDir = readPointerFile(join(gitDir, 'commondir'), reachesUnc);
   // A submodule or `--separate-git-dir` checkout has no commondir: it is its own root.
   if (commonDir === undefined) return dir;
-  const common = canonicalPath(resolve(gitDir, commonDir));
+  const commonPath = resolve(gitDir, commonDir);
+  if (reachesUnc(commonPath)) return dir;
+  const common = canonicalPath(commonPath);
   // A linked worktree's common dir is the main checkout's `.git`, which lists the worktree back.
-  return basename(common) === '.git' && isListedWorktree(dir, gitDir, common)
+  return basename(common) === '.git' && isListedWorktree(dir, gitDir, common, reachesUnc)
     ? dirname(common)
     : dir;
 }
@@ -281,12 +294,17 @@ function samePath(a: string, b: string): boolean {
  * removed worktree's still-listed path was (a shared directory, `/tmp`) fails it. Windows reports
  * uid 0 for every file, so there the owners always match.
  */
-function isListedWorktree(dir: string, gitDir: string, common: string): boolean {
+function isListedWorktree(
+  dir: string,
+  gitDir: string,
+  common: string,
+  reachesUnc: UncGuard,
+): boolean {
   const entry = comparablePath(gitDir);
   if (!samePath(dirname(entry), join(common, 'worktrees'))) return false;
   const listing = join(entry, 'gitdir');
   try {
-    const backPointer = readPointerFile(listing);
+    const backPointer = readPointerFile(listing, reachesUnc);
     if (!backPointer) return false;
     // A relative back-pointer (`worktree.useRelativePaths`) resolves against the entry.
     const target = resolve(entry, backPointer);

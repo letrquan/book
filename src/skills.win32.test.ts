@@ -58,7 +58,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { existsSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { tmpdir } from 'os';
 import { join, win32 } from 'path';
-import { discoverSkills, skillRoots } from './skills.js';
+import { SkillRegistry } from './skill-registry.js';
+import { discoverSkills, loadSkillBody, skillRoots } from './skills.js';
 
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 const windows = (path: string) => win32.resolve(path);
@@ -69,6 +70,7 @@ const spies = () => [
   readdirSync,
   openSync,
   readFileSync,
+  realpathSync,
   realpathSync.native,
 ];
 
@@ -180,5 +182,43 @@ describe('skill discovery on Windows with UNC links (#579)', () => {
     for (const spy of spies()) {
       expect(calledWith(spy).filter((path) => path.includes('attacker'))).toEqual([]);
     }
+  });
+});
+
+describe('skill discovery and loading on Windows with links to a network path', () => {
+  it('finds the project root without probing a workspace reached through a link to a share', () => {
+    const ws = join(tmp, 'ws');
+    writeSkill(join(ws, '.book', 'skills', 'remote'), 'remote');
+    fake.links.set(windows(ws), '\\\\host\\share\\proj');
+
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+    expect(discoverSkills(ws, {}, { includeUser: false })).toEqual([]);
+    for (const spy of spies()) expect(touches(spy, ws)).toBe(false);
+  });
+
+  it('loads neither the body nor a resource of a skill whose directory became such a link', () => {
+    const ws = join(tmp, 'ws');
+    const dir = join(ws, '.book', 'skills', 'good');
+    writeSkill(dir, 'good');
+    writeFileSync(join(dir, 'notes.md'), 'notes');
+
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+    const options = { includeUser: false, projectRoot: ws };
+    const registry = new SkillRegistry(
+      ws,
+      { enabled: true, overrides: {}, execution: {} },
+      options,
+    );
+    // The controls: both load while the directory is local.
+    registry.activate('good', 'user', 0);
+    expect(registry.readResource('good', 'notes.md').content).toBe('notes');
+    const [skill] = discoverSkills(ws, {}, options);
+    expect(loadSkillBody(skill).body).toBe('Body');
+
+    fake.links.set(windows(dir), '\\\\host\\share\\good');
+    for (const spy of spies()) vi.mocked(spy).mockClear();
+    expect(() => loadSkillBody(skill)).toThrow(/network/);
+    expect(() => registry.readResource('good', 'notes.md')).toThrow(/network/);
+    for (const spy of spies()) expect(touches(spy, dir)).toBe(false);
   });
 });

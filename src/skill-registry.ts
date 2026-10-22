@@ -14,6 +14,7 @@ import {
   type SkillListingResult,
   skillListingBudgetChars,
 } from './skills.js';
+import { reachesUncPath } from './unc-path.js';
 
 export type SkillActivationReason = 'model' | 'user' | 'workflow' | 'subagent-preload';
 export type SkillLifecycleEventType =
@@ -507,6 +508,13 @@ export class SkillRegistry {
     if (!skill) throw new SkillRegistryError('skill_not_found', `Skill not found: "${name}".`);
     let root: string;
     let canonical: string;
+    // Asked again here, not only at discovery: the directory may have become a link since (#579).
+    if (skill.source === 'project' && reachesUncPath(skill.rootPath)) {
+      throw new SkillRegistryError(
+        'skill_resource_unreadable',
+        `Skill resource is on a network (UNC) path and is not read: ${normalized}`,
+      );
+    }
     try {
       root = realpathSync(skill.rootPath);
       const candidate = resolve(root, normalized);
