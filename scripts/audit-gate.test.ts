@@ -102,7 +102,7 @@ describe('classifyAudit', () => {
 describe('auditGate', () => {
   const opts = (runs: AuditRun[]) => {
     const run = vi.fn(async () => runs.shift() ?? clean);
-    const sleep = vi.fn(async () => {});
+    const sleep = vi.fn(async (_ms: number) => {});
     return { run, sleep, log: () => {}, delaysMs: [10_000, 30_000] };
   };
 
