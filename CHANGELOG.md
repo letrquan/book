@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0-beta.1] - 2026-10-24
+
 ### Fixed
 
 - **A model whose catalog entry says `effort: false` no longer gets `reasoning_effort` on the
