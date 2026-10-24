@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { systemClock, type Clock } from '../clock.js';
+import { shippedHomeFiles } from '../book-home-files.js';
 import { buildChildEnv } from '../child-env.js';
 import { createDebugLogger } from '../debug-log.js';
 import { existsSync, readFileSync } from 'node:fs';
@@ -232,6 +233,15 @@ export class ShellJobManager {
       return;
     this.workspace = workspace;
     this.persistentPaths = persistentJobPaths(workspace, this.options.persistentRoot);
+    // Job records the workspace's repository ships under Book's home are not this user's jobs
+    // (`book-home-files.ts`): persistent storage is then unavailable rather than read.
+    if (shippedHomeFiles(workspace)?.shipsAnyUnder(this.persistentPaths.root)) {
+      this.persistentStorageError = new Error(
+        `${this.persistentPaths.root} holds files the workspace's repository tracks; set BOOK_HOME ` +
+          'to a directory outside the repository',
+      );
+      return;
+    }
     try {
       ensurePersistentJobPaths(this.persistentPaths);
       this.persistentStorageError = undefined;

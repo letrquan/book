@@ -13,6 +13,7 @@ import {
 import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
 import { projectFileWriteRefusal } from './workspace-files.js';
 import { resolveBookHome } from './book-home.js';
+import { shippedHomeFiles } from './book-home-files.js';
 import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
 import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
@@ -515,7 +516,7 @@ export function settingsLayerPaths(
   const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');
   const layers = [
     userPath,
-    ...(sameFile(projectPath, userPath) ? [] : [projectPath]),
+    ...(isUserSettingsFile(projectPath, workspace, paths) ? [] : [projectPath]),
     paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json'),
   ];
   if (overridePath) layers.push(overridePath);
@@ -523,11 +524,25 @@ export function settingsLayerPaths(
 }
 
 function userSettingsPath(paths: SettingsResolutionPaths): string {
+  return paths.userSettingsPath ?? join(settingsBookHome(paths), 'settings.json');
+}
+
+function settingsBookHome(paths: SettingsResolutionPaths): string {
+  return paths.home ? join(paths.home, '.book') : resolveBookHome();
+}
+
+/**
+ * Whether the user settings file is one the workspace's repository ships under Book's home
+ * (`book-home-files.ts`): a checkout at the home directory that tracks `.book/settings.json`. It
+ * is then no user layer. It is read as the project layer when it is the workspace's own project
+ * file, and not at all otherwise.
+ */
+export function isShippedUserSettingsFile(
+  workspace: string,
+  paths: SettingsResolutionPaths = {},
+): boolean {
   return (
-    paths.userSettingsPath ??
-    (paths.home
-      ? join(paths.home, '.book', 'settings.json')
-      : join(resolveBookHome(), 'settings.json'))
+    shippedHomeFiles(workspace, settingsBookHome(paths))?.ships(userSettingsPath(paths)) ?? false
   );
 }
 
@@ -546,17 +561,22 @@ function sameFile(left: string, right: string): boolean {
 }
 
 /**
- * Whether `path` is the user settings file.
+ * Whether `path` is the user settings file, read as the user layer for `workspace`.
  *
  * A workspace at `$HOME` (with `BOOK_HOME` unset) has `~/.book/settings.json` as
  * its project settings file too. Read a second time as the repository layer, the
  * user's own file would add every accumulating rule twice, and its hooks, allow
  * rules and directories would be withheld as if a repository had declared them,
  * then registered twice once approved (#429). Every reader of the project layer
- * skips a file this returns true for.
+ * skips a file this returns true for. A file the workspace's repository ships
+ * ({@link isShippedUserSettingsFile}) is the project layer instead.
  */
-export function isUserSettingsFile(path: string, paths: SettingsResolutionPaths = {}): boolean {
-  return sameFile(path, userSettingsPath(paths));
+export function isUserSettingsFile(
+  path: string,
+  workspace: string,
+  paths: SettingsResolutionPaths = {},
+): boolean {
+  return sameFile(path, userSettingsPath(paths)) && !isShippedUserSettingsFile(workspace, paths);
 }
 
 export type { WorkspaceProviderGate };
@@ -603,10 +623,14 @@ export function resolveSettingsWithProviderGate(
   // The read order is unchanged (user, project, local, `--settings`) and nothing merged between
   // two reads can throw, so the first broken file still names the error, as before.
   const userPath = userSettingsPath(paths);
-  const user = loadSettingsFile(userPath);
+  // A user file the workspace's repository ships is no user layer (`book-home-files.ts`).
+  const userShipped = isShippedUserSettingsFile(workspace, paths);
+  const user = userShipped ? null : loadSettingsFile(userPath);
   const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');
-  // Skipped when it is the user file itself, as it is for a workspace at `$HOME` (#429).
-  const project = sameFile(projectPath, userPath) ? null : loadSettingsFile(projectPath);
+  // Skipped when it is the user file itself, as it is for a workspace at `$HOME` (#429), unless
+  // the repository ships that file: it is then read here, as the project layer.
+  const project =
+    sameFile(projectPath, userPath) && !userShipped ? null : loadSettingsFile(projectPath);
   const localPath = paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json');
   const local = withoutStaleAdvisorOff(loadSettingsFile(localPath), project);
   const override = overridePath ? loadSettingsFile(overridePath) : null;
@@ -855,8 +879,11 @@ export function migrateLegacyPermissions(
     resolveSettings(workspace, undefined, home ? { home } : undefined);
   }
 
-  const legacyPath = join(home ? join(home, '.book') : resolveBookHome(), 'permissions.json');
+  const bookHome = home ? join(home, '.book') : resolveBookHome();
+  const legacyPath = join(bookHome, 'permissions.json');
   if (!existsSync(legacyPath)) return false;
+  // Rules a repository ships under Book's home are not the user's to migrate.
+  if (shippedHomeFiles(workspace, bookHome)?.ships(legacyPath)) return false;
   const markerPath = join(workspace, '.book', 'migrations.json');
   const localPath = join(workspace, '.book', 'settings.local.json');
   // Before the marker is read: it is one of the files this writes.

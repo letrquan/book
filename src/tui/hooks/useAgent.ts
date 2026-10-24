@@ -53,7 +53,7 @@ import {
   type StreamOutput,
 } from './streaming-state.js';
 import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-log.js';
-import { loadMemoryContext } from '../../memory-store.js';
+import { sessionMemoryContext } from '../../memory-store.js';
 import {
   readSettingsGlobal,
   readUserProvider,
@@ -698,9 +698,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setAgentPlanCurrent(false);
       setLiveConfig((current) => ({
         ...current,
-        memoryContext: current.settings.memory.enabled
-          ? loadMemoryContext(current.workspace)
-          : undefined,
+        memoryContext: sessionMemoryContext(current.workspace, current.settings.memory.enabled),
       }));
     },
     [agentSession, projectAgentPlan, syncGoal],
@@ -2715,7 +2713,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     refreshMemoryContext: () => {
       setLiveConfig((c) => ({
         ...c,
-        memoryContext: c.settings.memory.enabled ? loadMemoryContext(config.workspace) : undefined,
+        memoryContext: sessionMemoryContext(config.workspace, c.settings.memory.enabled),
       }));
     },
 

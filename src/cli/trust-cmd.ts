@@ -122,7 +122,9 @@ export async function runTrustCommand(
   // Only the checked-in layer is gated, so only its declarations are decidable. At `$HOME`
   // that path is the user's own file, which is trusted and has nothing to decide (#429).
   const projectPath = join(workspace, '.book', 'settings.json');
-  const projectSettings = isUserSettingsFile(projectPath) ? null : loadSettingsFile(projectPath);
+  const projectSettings = isUserSettingsFile(projectPath, workspace)
+    ? null
+    : loadSettingsFile(projectPath);
 
   // A command decision carries the fingerprint of the shell it was made
   // against, so the body cannot change under an approval already on file.

@@ -498,13 +498,13 @@ describe('resolveSettings — layered merging', () => {
 
       expect(result.hooks.PreToolUse.map((hook) => hook.command)).toEqual(['user-hook']);
       expect(settingsLayerPaths(linked, undefined, { home: userDir })).toHaveLength(2);
-      expect(isUserSettingsFile(join(linked, '.book', 'settings.json'), { home: userDir })).toBe(
-        true,
-      );
+      expect(
+        isUserSettingsFile(join(linked, '.book', 'settings.json'), linked, { home: userDir }),
+      ).toBe(true);
     });
 
     it('still reads a project file that is not the user file', () => {
-      expect(isUserSettingsFile(join(dir, '.book', 'settings.json'), { home: userDir })).toBe(
+      expect(isUserSettingsFile(join(dir, '.book', 'settings.json'), dir, { home: userDir })).toBe(
         false,
       );
       expect(settingsLayerPaths(dir, undefined, { home: userDir })).toHaveLength(3);
@@ -528,7 +528,7 @@ describe('resolveSettings — layered merging', () => {
           }),
         );
 
-        expect(isUserSettingsFile(join(dir, '.book', 'settings.json'))).toBe(false);
+        expect(isUserSettingsFile(join(dir, '.book', 'settings.json'), dir)).toBe(false);
         expect(settingsLayerPaths(dir)).toEqual([
           join(elsewhere, 'settings.json'),
           join(dir, '.book', 'settings.json'),
@@ -593,7 +593,7 @@ describe('resolveSettings — layered merging', () => {
         join(userDir, '.book', 'settings.json'),
         join(repo, '.book', 'settings.local.json'),
       ]);
-      expect(isUserSettingsFile(join(repo, '.book', 'settings.json'))).toBe(true);
+      expect(isUserSettingsFile(join(repo, '.book', 'settings.json'), repo)).toBe(true);
       expect(
         collectWithheldProjectNotices({
           workspace: repo,

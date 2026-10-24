@@ -27,7 +27,7 @@ import {
   type CompactStrategy,
   type ResolvedSettings,
 } from './settings.js';
-import { loadMemoryContext } from './memory-store.js';
+import { sessionMemoryContext } from './memory-store.js';
 import { EFFORT_LEVELS, getAvailableEffortLevels, isEffortLevel } from './commands/effort.js';
 import { createModelWindowStore, type ModelWindowStore } from './model-window-store.js';
 import { resolveShell } from './shell-selection.js';
@@ -159,7 +159,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
       settings.retry?.outputCapContinuations ?? DEFAULT_SETTINGS.retry.outputCapContinuations,
   };
 
-  const memoryContext = settings.memory.enabled ? loadMemoryContext(resolvedWorkspace) : undefined;
+  const memoryContext = sessionMemoryContext(resolvedWorkspace, settings.memory.enabled);
 
   const envMaxTokens = parsePositiveInt(process.env.BOOK_MAX_TOKENS, 'BOOK_MAX_TOKENS');
   const maxTokensExplicit =

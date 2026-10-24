@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'fs';
 import { createUncGuard } from './unc-path.js';
 import { join } from 'path';
 import { resolveBookHome } from './book-home.js';
+import { shippedHomeFiles } from './book-home-files.js';
 
 export type McpTransportType = 'stdio' | 'http' | 'sse';
 
@@ -202,7 +203,8 @@ function normalizeServerConfig(
  * Sources, later wins on a name collision: <BOOK_HOME>/.book/mcp.json (user),
  * then <workspace>/.mcp.json (project). A project entry that overrides a
  * user-global name keeps `source: 'project'` so it cannot inherit the trust of
- * the name it shadows.
+ * the name it shadows. A user file the workspace's repository ships under Book's
+ * home (`book-home-files.ts`) is not read.
  */
 export function resolveMcpServerList(
   workspace: string,
@@ -211,8 +213,10 @@ export function resolveMcpServerList(
   const onDiagnostic = options.onDiagnostic ?? consoleMcpDiagnosticSink;
   const env = options.env ?? process.env;
   const bookHome = options.home ? join(options.home, '.book') : resolveBookHome();
+  const userPath = join(bookHome, 'mcp.json');
+  const userShipped = shippedHomeFiles(workspace, bookHome)?.ships(userPath) ?? false;
   const sources: Array<{ path: string; source: McpServerSource }> = [
-    { path: join(bookHome, 'mcp.json'), source: 'user' },
+    ...(userShipped ? [] : [{ path: userPath, source: 'user' as const }]),
     { path: join(workspace, '.mcp.json'), source: 'project' },
   ];
   const servers = new Map<string, ResolvedMcpServer>();
