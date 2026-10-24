@@ -4,6 +4,41 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0-beta.1] - 2026-10-24
+
+### Fixed
+
+- **A model whose catalog entry says `effort: false` no longer gets `reasoning_effort` on the
+  OpenAI-compatible path** (#610). With `effort` set in settings, every OpenAI-compatible request
+  carried `reasoning_effort`, even for a model whose `provider.<id>.models.<model>.effort` is
+  `false`. Ollama answers that, for a model that can't think, with a 400 that isn't retried
+  (`"fast" does not support thinking`), so a non-reasoning local model could not be used at all
+  while `effort` was set, and no settings layer can unset `effort`. The request now leaves the
+  field out for such a model, as the Anthropic path already did. Models with no entry, or with an
+  effort range, are unchanged.
+
+### Security
+
+- **Dependencies clear the high npm audit advisories** (#609). zod moves to 4.6.7, still an exact
+  pin (4.6.5 could exhaust memory validating an oversized constrained collection,
+  GHSA-mrhx-c7xc-m3w5); undici to 8.12.2, with the range floor raised to `^8.12.2` so a fresh
+  install can't resolve a vulnerable one (GHSA-4qv8-2p9j-2685, GHSA-f72v-6w45-q472,
+  GHSA-xjj6-f33q-929c); and body-parser to 2.4.0 (GHSA-27r3-jxmh-p828). fast-uri 3.1.9 and
+  ip-address 10.7.4 clear two moderate advisories. With zod's new size check, an
+  `AskUserQuestion` call with more than 4 questions or options reports only that size error.
+- **Book warns when the Node.js it runs on is missing a fix from the newest Node.js security
+  release this Book version knows about** (#600). A Node.js older than the first patched release
+  of its line in the October 21, 2026 security release (v22.23.4, v24.22.1, v26.12.1) gets a `⚠`
+  notice at launch naming the version to upgrade to and linking the advisory; an end-of-life line
+  (v20, v23, v25) is told to move to a supported one. The release fixes CVE-2026-111497, an
+  out-of-bounds write in Node's Brotli decoder that permits remote code execution, which
+  `WebFetch` reaches: undici's `fetch` decodes a Brotli body with Node's own `zlib`, so a page the
+  model fetches could send one. The TUI shows the notice in the transcript; the scrollback and
+  print modes and the SDK's `query()` write it to stderr with their other `⚠` notices (stdout stays
+  clean for `--output-format json`); `book doctor` prints it under `Node:`. A prerelease of a fixed
+  version (`-rc.1`, a nightly) counts as older than it. A Node.js line newer than v26 is not
+  judged.
+
 ## [0.4.0-beta.0] - 2026-10-22
 
 ### Added
