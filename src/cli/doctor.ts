@@ -2,6 +2,7 @@ import { loadConfig } from '../config.js';
 import { renderUntrustedText } from '../hook-approvals.js';
 import { providerTrustCommand, trustCommandText } from '../trust-command.js';
 import { getPackageVersion } from '../version-info.js';
+import { collectNodeSecurityNotices } from '../node-advisory.js';
 import { collectAgentDiagnostics } from '../agents/diagnostics.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { discoverAgents } from '../subagent-discovery.js';
@@ -109,16 +110,27 @@ async function attributeFailingLayer(workspace: string): Promise<string | undefi
  * loadConfig as an unhandled stack trace. A broken settings file is precisely
  * what doctor exists to diagnose, so it is a finding to render, not a reason to die.
  */
-async function reportUnloadableConfig(workspace: string, error: unknown): Promise<void> {
-  const { existsSync } = await import('fs');
-  const { resolve } = await import('path');
-
+/**
+ * The header both reports open with. The `Node:` line carries any security notice for the
+ * running Node.js, the same one every launch shows.
+ */
+function printHeader(): void {
   console.log('Book Doctor');
   console.log('===========');
   console.log();
   console.log('Version:', getPackageVersion());
   console.log('Node:', process.version);
+  for (const notice of collectNodeSecurityNotices(process.versions.node)) {
+    console.log('  ' + notice);
+  }
   console.log('Platform:', process.platform, process.arch);
+}
+
+async function reportUnloadableConfig(workspace: string, error: unknown): Promise<void> {
+  const { existsSync } = await import('fs');
+  const { resolve } = await import('path');
+
+  printHeader();
   console.log('Workspace:', resolve(workspace));
   console.log();
   console.log('Configuration: FAILED TO LOAD');
@@ -164,12 +176,7 @@ export async function runDoctorCommand(
   }
   const settings = config.settings;
 
-  console.log('Book Doctor');
-  console.log('===========');
-  console.log();
-  console.log('Version:', getPackageVersion());
-  console.log('Node:', process.version);
-  console.log('Platform:', process.platform, process.arch);
+  printHeader();
   console.log('Workspace:', config.workspace);
   console.log('Model:', config.model, '(' + config.baseUrl + ')');
   // Printed before Credentials on purpose: an unresolved provider prefix makes
