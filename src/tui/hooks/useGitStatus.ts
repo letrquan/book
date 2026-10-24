@@ -1,11 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
 import { isTranscriptScrollActive } from '../scroll-activity.js';
 import { buildChildEnv } from '../../child-env.js';
-import { hardenedGitArgs, hardenedGitEnv } from '../../tools/git.js';
-import { readRepositoryProgramPins } from '../../tools/git-repository-programs.js';
+import { isInGitRepository } from '../../repo-containment.js';
+import {
+  hardenedGitArgs,
+  hardenedGitEnv,
+  noFetchGitEnv,
+  READ_ONLY_GIT_ARGS,
+} from '../../tools/git.js';
+import { readRepositoryGitConfig } from '../../tools/git-repository-programs.js';
 
 /**
  * Whether `dir` sits anywhere inside a working tree, without spawning anything.
@@ -17,18 +21,17 @@ import { readRepositoryProgramPins } from '../../tools/git-repository-programs.j
  * directory. Walking up for the entry costs a handful of `stat` calls and gets
  * the subdirectory case right. A worktree or submodule stores `.git` as a file
  * rather than a directory, so the entry is what is checked, not its type.
+ *
+ * The walk itself is `isInGitRepository`, shared with the prompt's git line: it
+ * follows the real path, as git does from its working directory, and ignores a
+ * `.git` at the user's home directory for a project below it without its own
+ * (a dotfiles repository), so such a project shows no branch and spawns
+ * nothing, where git, which Book runs with the home directory as a ceiling
+ * (`hardenedGitEnv`), would only fail. A workspace that is the home directory
+ * shows its branch (#579).
  */
-export function isInsideWorkTree(
-  dir: string,
-  exists: (path: string) => boolean = existsSync,
-): boolean {
-  let current = resolve(dir);
-  for (;;) {
-    if (exists(join(current, '.git'))) return true;
-    const parent = dirname(current);
-    if (parent === current) return false;
-    current = parent;
-  }
+export function isInsideWorkTree(dir: string, exists?: (path: string) => boolean): boolean {
+  return isInGitRepository(dir, exists);
 }
 
 export interface GitStatus {
@@ -71,7 +74,7 @@ export function useGitStatus(workspace: string): GitStatus {
       activeController = new AbortController();
 
       try {
-        const pins = await readRepositoryProgramPins(workspace, undefined, {
+        const { pins, partialClone } = await readRepositoryGitConfig(workspace, undefined, {
           signal: activeController.signal,
           timeoutMs: 5_000,
         });
@@ -81,7 +84,20 @@ export function useGitStatus(workspace: string): GitStatus {
           activeController.signal,
           pins,
         );
-        const short = await runGit(['status', '--short'], workspace, activeController.signal, pins);
+        // In a partial clone the status is not read at all, on any git version; a status that
+        // fails elsewhere leaves the branch showing the same way.
+        const short = partialClone
+          ? undefined
+          : await runGit(
+              READ_ONLY_GIT_ARGS.GitStatus,
+              workspace,
+              activeController.signal,
+              pins,
+            ).catch(() => undefined);
+        if (short === undefined) {
+          if (!cancelled) update({ branch, status: '' });
+          return;
+        }
 
         if (!short) {
           if (!cancelled) update({ branch, status: '\u2713' });
@@ -132,10 +148,11 @@ export function useGitStatus(workspace: string): GitStatus {
  * it, and `core.fsmonitor` there names a program `git status` executes — so without
  * `hardenedGitArgs` a checkout that sets it runs that program as soon as Book opens it. Every
  * call here is read-only, so the read-only hardening is the right one; the pager and the
- * credential prompt it cannot wait on come with it, as in `readOnlyGit`.
+ * credential prompt it cannot wait on come with it, as in `readOnlyGit`. The status is
+ * `GitStatus`'s own, and no call fetches (`noFetchGitEnv`): a poll has no request behind it.
  */
 async function runGit(
-  args: string[],
+  args: readonly string[],
   cwd: string,
   signal: AbortSignal,
   pins: readonly string[] = [],
@@ -150,7 +167,7 @@ async function runGit(
         encoding: 'utf8',
         windowsHide: true,
         signal,
-        env: buildChildEnv(process.env, hardenedGitEnv()),
+        env: buildChildEnv(process.env, { ...hardenedGitEnv(), ...noFetchGitEnv() }),
       },
       (error, stdout) => (error ? reject(error) : resolve(stdout.trim())),
     );

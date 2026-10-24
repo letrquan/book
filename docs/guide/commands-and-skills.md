@@ -175,6 +175,19 @@ only for the `[BYOK]` providers you added, on the same ownership rule as `Alt+D`
 written to `~/.book/settings.json`, so applying one to a provider inherited from a project layer
 would copy that provider's credential into a second file.
 
+`Alt+K` on the same rows replaces the provider's API key, for one that was rotated or has expired,
+without removing the provider and running the wizard again. It opens an `Update API key` sheet that
+names the provider and the endpoint, with a masked field (`•` per character) that takes whatever the
+wizard's key step takes, including `{env:VAR}` and `{file:path}` references. Enter tests the key
+against that endpoint's model-list API, and only that endpoint's; a provider with no base URL is
+not asked at all. When the endpoint accepts it, the key is saved. When it refuses, or does not
+answer, the sheet shows the error and offers `s` to save anyway (some endpoints have no model-list
+API), `r` to retry the test, and `Esc` to edit the key; `Esc` on the field, or `Ctrl+C` anywhere,
+cancels with nothing saved. Only `apiKey` changes: the catalog, the active model and every
+per-model override stay, and the running session sends the new key from its next request. From the
+shell, `book config provider-key <id>` does the same (see
+[Configuration](configuration.md#scopes)).
+
 **Slash commands in print mode.** `book -p "/name args"` resolves the command through the same
 registries, the same `$1..$9` / named-argument / `${BOOK_*}` variable / shell substitution, and the
 same `allowed-tools` and `model` frontmatter enforcement as the TUI — it is never forwarded to the

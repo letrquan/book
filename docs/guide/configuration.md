@@ -35,12 +35,37 @@ that is valid on its own but would leave a configuration nothing can load is ref
 lands rather than bricking every later command. A configuration that is already broken stays
 writable, since repairing one is what the command is for.
 
+Book's own workspace writes (`.book/settings.json`, `.book/settings.local.json`,
+`.book/migrations.json`, a project `.mcp.json`, `/export`, and the default `.book/debug.log`) only
+touch regular files: each is written only while it is a regular file or does not exist yet.
+Anything else at that path is left as it is, and the write stops with a one-line notice naming the
+file; for the debug log, debug logging stops for the session. `/export` also writes only inside the
+workspace. `<BOOK_HOME>/settings.json` and `<BOOK_HOME>/mcp.json` are written as before.
+
 `book config get` and `book config list` report the _resolved_ merge of all layers by default.
 Given a scope they read that one file verbatim instead, which is how you find the stray value
 overriding you — the local layer resolves last, so anything left there outranks a later global
 write. `book config unset <key>` removes a key from a scope (also user-global by default). A
 user-global write that a workspace layer still shadows says so, and names the `unset` that clears
 it.
+
+`book config provider-key <id>` replaces the API key of a provider in your user file, the shell
+twin of `/model`'s `Alt+K`. It reads the key from stdin, never from the command line: hidden input
+on a terminal, and otherwise the piped text with its trailing line ending dropped
+(`printf '%s' "$KEY" | book config provider-key openrouter`). A key passed as an argument is
+refused, without being echoed. The input takes what the add-provider wizard takes, including
+`{env:VAR}` and `{file:path}`. Before saving, the key is tested against that provider's own
+endpoint (its model-list API); on a terminal a failure offers save anyway, retry, a different key,
+or cancel, and otherwise the command exits non-zero having written nothing. `--force` saves despite
+a failed test, and `--no-check` skips the test, for an endpoint without a model-list API. An id
+that is not in `<BOOK_HOME>/settings.json` fails with the ids that are; one only a repository
+declares (`.book/settings.json` or `.book/settings.local.json`) is refused, on the ownership rule
+the picker uses, and `--project`, `--local`, `--settings` and `--no-settings` are refused too: the
+target is always your user file. Like every `config` subcommand it needs no working credential.
+The test is one request with a 20-second limit, so a dead host fails quickly; retry it if the
+endpoint was only briefly unavailable. A relative `{file:path}` is read from the workspace you run
+in, for the test and in every later session, since the user file applies to every workspace; use
+`~/` or an absolute path for a key file kept in one place.
 
 Two groups of keys are refused in every scope. Trust decisions
 (`mcp.projectServers`, `permissions.projectAllowRules`, `hooks.projectEntries`,
@@ -230,6 +255,13 @@ file, and replaces only the connection keys (`baseURL`, `baseUrl`, `apiKey` and 
 same-named entry in `.book/settings.local.json`, plus the local `model` when the save activates a
 model. Per-model overrides in that entry (`contextWindow`, `maxOutputTokens`, `vision`,
 `editFormat`, `effort`) are kept, so a `contextWindow` you set there survives a refresh.
+
+A key update (`Alt+K` in `/model`, or `book config provider-key`) follows the same rule, narrower
+still: it sets only `apiKey` on your user file's entry, leaving every other byte of it as it was,
+and removes the connection keys of a same-named entry in `.book/settings.local.json`, so a stale
+local key cannot look as though it overrides the new one. It leaves that entry's
+`reportedContextWindow` and the local `model` alone, since no catalog was refreshed and no model
+activated, and it never creates a local entry or file.
 
 ### Prompt caching on OpenAI-compatible providers
 
@@ -464,7 +496,7 @@ output.
 }
 ```
 
-Memory lives in `<BOOK_HOME>/projects/<slug>/memory/` (`~/.book/projects/<slug>/memory/` by default), where `<slug>` is the path of the git repository root with path separators and any character other than letters, digits, `.`, `_` and `-` turned into `-`. A linked worktree uses its main checkout's root, and a workspace outside a repository uses its own path, so subdirectories and worktrees of one repository share one memory. A `.git` file counts as a linked worktree only when the main checkout lists it back, as `git worktree add` leaves it: its pointer names `<main>/.git/worktrees/<name>`, whose `gitdir` file names this `.git`; any other `.git` file (one copied from an archive, say) keys its directory by itself, as does a worktree moved without `git worktree move` until `git worktree repair` relinks it. A `.git` in your home directory itself (a dotfiles repository) does not count as a repository, so a project under your home without its own `.git` keeps its own memory; memory saved earlier under the home directory's key stays there and is not moved. A directory under the old, workspace-path key is moved there on first run. `memory.enabled` controls loading and reading the project memory index at session start (the first 200 lines or 25,000 bytes of `MEMORY.md`, with a warning line when it is cut); `memory.autoSave` controls whether the model may write memory: the model writes it with `Write`/`Edit`/`MultiEdit`/`ApplyPatch`, and with `autoSave` off those tools are refused in the memory directory ("memory is read-only in this session"), the prompt drops the save instructions, and the index still loads. A `deny` rule that covers a write to a memory file does the same to the prompt, for that rule's tools. Those are the only two memory keys.
+Memory lives in `<BOOK_HOME>/projects/<slug>/memory/` (`~/.book/projects/<slug>/memory/` by default), where `<slug>` is the path of the git repository root with path separators and any character other than letters, digits, `.`, `_` and `-` turned into `-`. A linked worktree uses its main checkout's root, and a workspace outside a repository uses its own path, so subdirectories and worktrees of one repository share one memory. A `.git` file counts as a linked worktree only when the main checkout lists it back, as `git worktree add` leaves it: its pointer names `<main>/.git/worktrees/<name>`, whose `gitdir` file names this `.git`; any other `.git` file (one copied from an archive, say) keys its directory by itself, as does a worktree moved without `git worktree move` until `git worktree repair` relinks it. On Windows nothing on a network (UNC) path is opened for this: a workspace on one keys by itself, as written; a `.git` that links to one keys the workspace by itself; and a `.git` whose git dir, `commondir` or worktree back-pointer is on one keys its own directory. A `.git` in your home directory itself (a dotfiles repository) does not count as a repository, so a project under your home without its own `.git` keeps its own memory; memory saved earlier under the home directory's key stays there and is not moved. A directory under the old, workspace-path key is moved there on first run. `memory.enabled` controls loading and reading the project memory index at session start (the first 200 lines or 25,000 bytes of `MEMORY.md`, with a warning line when it is cut); `memory.autoSave` controls whether the model may write memory: the model writes it with `Write`/`Edit`/`MultiEdit`/`ApplyPatch`, and with `autoSave` off those tools are refused in the memory directory ("memory is read-only in this session"), the prompt drops the save instructions, and the index still loads. A `deny` rule that covers a write to a memory file does the same to the prompt, for that rule's tools. Those are the only two memory keys.
 
 Three memory keys were removed with the approval inbox, the external-content quarantine and background extraction: `memory.requireApproval`, `memory.quarantineExternal` and the `memory.extraction` block. They are no longer read. A settings file that still carries one loads without error, and `book doctor` names the key and what to do about it. A permission rule that names the retired `MemorySave` tool (`MemorySave`, `MemorySave(*)`) matches nothing now and is reported the same way; to restrict memory writes, write a rule on `Write`, `Edit`, `MultiEdit` or `ApplyPatch` for the memory directory, or set `memory.autoSave` to `false`. An `.inbox/` directory an old version left in the memory directory is not read or deleted.
 

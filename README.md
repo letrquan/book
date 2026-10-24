@@ -48,7 +48,9 @@ The command is `book` (the package is scoped because the plain name was taken on
 **The easy way: from inside Book.** Run `book`, type `/model`, and press **Alt+A**. A short wizard
 asks for a name, the protocol (OpenAI-compatible or Anthropic), the base URL, and your API key,
 then fetches the endpoint's model list so you can pick (or you type the model IDs yourself). It
-is saved to `~/.book/settings.json`, so every project can use it.
+is saved to `~/.book/settings.json`, so every project can use it. When its key is rotated or
+expires, select one of its models in `/model` and press **Alt+K**, or pipe the new key to
+`book config provider-key <name>`: the models you picked stay.
 
 ![The add-provider wizard's review step: provider name, protocol, base URL, a masked API key, and the chosen models](docs/media/add-provider.png)
 

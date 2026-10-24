@@ -741,7 +741,9 @@ export function resolveReducerModelConfig(config: AgentConfig): AgentConfig {
  * has accepted (#418). The audit of every caller: `resolveModelProviderConfig` reads
  * `settings.provider`, which holds trusted-layer providers and approved workspace ones only (a
  * pending or rejected one is absent and its model id throws first); and the model picker's
- * refresh reads the same resolved map. Nothing else resolves a reference: project MCP servers
+ * refresh reads the same resolved map; and `checkProviderKey` (`provider-key.ts`) resolves only the
+ * key the user just typed into `/model`'s key sheet or `book config provider-key`'s stdin, never
+ * one read from a file. Nothing else resolves a reference: project MCP servers
  * expand their own `${VAR}` syntax behind `mcp-approvals.ts`, and hook `env` values are literals
  * behind `hook-approvals.ts`.
  */

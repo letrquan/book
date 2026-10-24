@@ -9,6 +9,10 @@ import {
   type ProviderProtocol,
 } from '../provider/model-discovery.js';
 
+// The CLI's `book config provider-key` accepts what the wizard's key step does, so the validator
+// lives outside `tui/` now.
+export { validateApiKey } from '../provider-key.js';
+
 export interface ModelPickerOption {
   id: string;
   label: string;
@@ -133,12 +137,6 @@ export function validateDisplayLabel(raw: string): string | undefined {
   return value;
 }
 
-export function validateApiKey(raw: string): string {
-  if (!raw.trim()) throw new Error('API key is required.');
-  if (/[\r\n\x00]/.test(raw)) throw new Error('API key cannot contain line breaks.');
-  return raw;
-}
-
 export function validateBaseUrl(type: ProviderProtocol, raw: string): string {
   return normalizeProviderBaseUrl(type, raw);
 }
@@ -225,4 +223,18 @@ export function refreshLiveModelInfo(config: AgentConfig, providerId: string): A
   if (providerPrefixOf(selection) !== providerId) return config;
   const { modelInfo } = resolveModelProviderConfig(config, selection, { trustedSelection: true });
   return { ...config, modelInfo };
+}
+
+/**
+ * A key update (`Alt+K`) changes `settings.provider[providerId].apiKey`, but the live request key is
+ * `config.apiKey`, resolved when the model was selected. When the live selection belongs to
+ * `providerId`, re-resolve just that key from the provider `config.settings` now holds, so the next
+ * request carries the new one; everything else stays. Any other selection returns `config` itself:
+ * the compact, advisor and subagent models resolve their key from `settings.provider` when they run.
+ */
+export function refreshLiveProviderKey(config: AgentConfig, providerId: string): AgentConfig {
+  const selection = (config.modelSelection ?? config.model).trim();
+  if (providerPrefixOf(selection) !== providerId) return config;
+  const { apiKey } = resolveModelProviderConfig(config, selection, { trustedSelection: true });
+  return { ...config, apiKey };
 }

@@ -12,6 +12,7 @@ import {
 } from '../mcp-config.js';
 import { resolveSettings } from '../settings-loader.js';
 import { writeFileAtomic } from '../settings-repository.js';
+import { projectFileWriteRefusal } from '../workspace-files.js';
 
 export type McpConfigScope = 'user' | 'project';
 
@@ -66,7 +67,10 @@ function validScope(scope: string | undefined): McpConfigScope {
   return normalized;
 }
 
+/** The document a write to `path` starts from. */
 function readConfigDocument(path: string): McpConfigDocument {
+  const refusal = projectFileWriteRefusal(path);
+  if (refusal) throw new Error(`Cannot update ${path}: ${refusal}.`);
   if (!existsSync(path)) return {};
   let parsed: unknown;
   try {

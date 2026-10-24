@@ -291,9 +291,10 @@ export type AgentRuntimeEvent =
   /**
    * A line the child's own run raised for the operator, such as a read it was refused (#305
    * item 4). A child's transcript is summarised into a handoff, so a refusal inside it is
-   * otherwise invisible to whoever delegated it.
+   * otherwise invisible to whoever delegated it. Without an `agentId` it is the manager's own
+   * one-time line (#579).
    */
-  | { type: 'agent_notice'; agentId: string; message: string }
+  | { type: 'agent_notice'; agentId?: string; message: string }
   | {
       type: 'agent_persistence';
       state: 'degraded' | 'recovered';

@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0-beta.0] - 2026-10-22
+
 ### Added
 
 - **`/memory consolidate [focus]`: tidy the memory store** (PR 3 of the Claude Code memory parity
@@ -87,6 +89,19 @@ All notable changes to this project are documented in this file.
   out of view, and `Alt+S session` is offered only where it applies (the main model).
 - **`book trust provider [id]`** approves or rejects a provider a repository declares (#418), with
   `-w`/`--workspace`, `--all-pending` and `--reject`; with no id it lists what awaits a decision.
+- **Update a provider's API key without re-adding it** (#592). In `/model` and `/providers`,
+  `Alt+K` on a model of a provider from your user file opens a masked "Update API key" sheet.
+  - It tests the new key against that provider's own endpoint with one model-list call, and saves
+    on success.
+  - On failure, `s` saves anyway, `r` retries and `Esc` goes back to the key.
+  - `book config provider-key <id>` does the same from the shell. It reads the key from stdin
+    (hidden on a terminal, piped otherwise) and refuses a key given as an argument. `--force` saves
+    despite a failed test, and `--no-check` skips the test. Like the other `config` subcommands, it
+    needs no working credentials.
+  - Only `apiKey` changes: the model catalog, the active model and per-model overrides stay. A
+    same-named entry in `.book/settings.local.json` loses its connection keys, so it can't shadow
+    the update. A provider only a repository declares is refused.
+  - The running session sends the new key from its next request.
 
 ### Fixed
 
@@ -131,13 +146,39 @@ All notable changes to this project are documented in this file.
   way, so the end of a long path, JSON blob or table row never showed. An expanded row (Ctrl+E, or
   Ctrl+O then Ctrl+E) now wraps each long line onto the rows below; a collapsed row still shortens
   it, and Ctrl+E also picks a row whose only loss is a shortened line.
+  - A wrapped highlighted line keeps its token colours across the break (#578).
+  - A Markdown paragraph or list item drawn without a width expands tabs.
+  - A line the row bound cuts into counts as `1 long line shortened`, not as a hidden line.
+- **Windows: Book's directory walks and file loads don't follow a link to a network (UNC) path**
+  (#579). This covers:
+  - the `@` file picker, skill and subagent loading, Glob, Grep (both backends, and its `path`)
+    and `.gitignore` loading;
+  - a project `.mcp.json` or `.bookrc.json`, rewind snapshots, context refresh and memory keying.
+
+  Directories you configure on a share (`additionalDirectories`, the memory directory) are still
+  searched. On Windows, ripgrep takes its ignore rules from the root `.gitignore` alone. The UNC
+  check probes each path once per call.
+
+- **Book's own workspace writes only touch regular files.** Book leaves the workspace files it
+  manages unchanged when they aren't regular files, and the write stops with a notice. That covers
+  `.book/settings.json`, `.book/settings.local.json`, `.book/migrations.json`, a project
+  `.mcp.json`, `/export` output and `.book/debug.log`. `/export` writes only inside the workspace.
 - **A dotfiles `.git` in your home directory is no longer the repository of every project under
   it** (#567). For a project under your home directory without its own `.git`, Book took the home
   directory as the project's repository: project skills were looked for in every directory from
   home down, the prompt's git line showed the dotfiles branch, and managed agents snapshotted the
-  whole home directory, untracked files included. Memory, project skill discovery, the prompt's
-  git line and managed-agent isolation now treat such a project as in no repository, so patcher and
-  validator agents refuse as they do without one. A project with its own `.git` is unchanged.
+  whole home directory, untracked files included.
+  - **What sees no repository:** memory, project skill discovery, the prompt's git line,
+    managed-agent isolation, the TUI status bar, `/review` and the Git tools (GitStatus, GitDiff,
+    GitLog, GitBranch and GitCommit) all treat such a project as in no repository (#579). Book's own
+    git calls carry a `GIT_CEILING_DIRECTORIES` entry for the home directory. Patcher and validator
+    agents refuse there, and their refusal now names the ignored dotfiles repository.
+  - **Workspace at home:** a workspace that is the home directory itself still sees its repository
+    in all of these, and isolation snapshots then leave out Book's own home directory
+    (`BOOK_HOME`).
+  - **Old agent state:** managed-agent state an older Book kept under the home key is not used. It
+    is reported once, with a cleanup command.
+  - **Unchanged:** your own `Bash`, and a project with its own `.git`.
 - **A spent-limit or rate-limit message states the reset time once, and a WebFetch same-origin
   redirect refusal names the URL the model asked for** (#513, #246). A provider message that gave
   its own reset time had it repeated by Book's text, including when the wait was too long to retry;
@@ -623,6 +664,14 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Book's git reads leave out changes inside submodules and never fetch in a partial clone.**
+  - **Submodules:** `GitStatus`, `GitDiff`, `/diff`, `/review` and agent isolation show a moved
+    submodule as its two commits, but not edits inside it. `GitStatus`'s description says so, so
+    the system prompt is now v6, and the first request after upgrading misses the cache.
+  - **Partial clones:** no Book git read fetches; a read that needs a missing object fails with a
+    note on how to fetch. The prompt's git line and the TUI status line show only the branch.
+  - **`/diff`** uses `GitDiff`'s flags. Your own `Bash` `git` is unchanged.
+
 - **Only text you type runs a `!` line or invokes a skill by `$name`.** Expanded text (a command's
   body, the review guidance `/security-review` reads from `REVIEW.md`, a file inlined by a
   mention, a delegated task) no longer counts as typed: its `!` lines stay as text, and a `$name`
@@ -763,17 +812,20 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
-- **Book warns when the Node.js it runs on is missing a published security fix.** A Node.js older
-  than the first patched release of its line in the October 21, 2026 security release (v22.23.4,
-  v24.22.1, v26.12.1) gets a `⚠` notice at launch naming the version to upgrade to and linking the
-  advisory; an end-of-life line (v20, v23, v25) is told to move to a supported one. The release
-  fixes CVE-2026-111497, an out-of-bounds write in Node's Brotli decoder that permits remote code
-  execution, which `WebFetch` reaches: undici's `fetch` decodes a Brotli body with Node's own `zlib`,
-  so a page the model fetches could send one. The TUI shows the notice in the transcript; the
-  scrollback and print modes and the SDK's `query()` write it to stderr with their other `⚠`
-  notices (stdout stays clean for `--output-format json`); `book doctor` prints it under `Node:`. A
-  prerelease of a fixed version (`-rc.1`, a nightly) counts as older than it. A Node.js line newer
-  than v26 is not judged.
+- **The prompt's git line no longer runs a repository's `core.fsmonitor` program** (#574). Every
+  turn, the `<session-state>` git line ran `git status` without the hardening the read-only Git
+  tools use, so a checkout whose `.git/config` named a program in `core.fsmonitor` ran it on every
+  turn, with no prompt. Both calls now go through `readOnlyGit`. The built-in daemon
+  (`core.fsmonitor=true`) is still allowed.
+- **A crafted `.git` file can't pick another project's memory** (#575). Memory keying followed a
+  `.git` file's `gitdir` and its `commondir` to any path ending in `.git`. A `.git` file now maps to
+  its main checkout only when git's round trip holds:
+  - the gitdir is `<common>/worktrees/<name>`;
+  - that entry's `gitdir` names this directory's `.git`;
+  - both files have the same owner.
+
+  Anything else is keyed by its own directory, and pointer files are read as bounded regular files.
+  A worktree moved by hand now keys by itself until `git worktree repair` fixes the link.
 
 - **The sandbox binds the workspace's git directories read-only by default, closing the pointer-file redirect** (issue 373).
   Inside the namespace every git directory of the workspace (`.git`, linked worktree admin directories,

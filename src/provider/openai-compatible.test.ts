@@ -143,6 +143,16 @@ describe('chatCompletionStream request body', () => {
     await drain(stream);
     expect(capturedBody.reasoning_effort).toBe('low');
   });
+
+  it('sends no reasoning effort to a model whose entry says effort false, even when chosen', async () => {
+    const stream = chatCompletionStream(
+      { ...config, effort: 'max', effortExplicit: true, modelInfo: { effort: false } },
+      [{ role: 'user', content: 'hi' }],
+      [],
+    );
+    await drain(stream);
+    expect(capturedBody).not.toHaveProperty('reasoning_effort');
+  });
 });
 
 // Helper: create a readable stream that yields text events then [DONE].

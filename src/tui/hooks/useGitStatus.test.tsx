@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { cleanup, render } from 'ink-testing-library';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const calls = vi.hoisted(
   () =>
@@ -159,7 +159,7 @@ describe('useGitStatus argv', () => {
           REPOSITORY_PROGRAM_CONFIG_PATTERN,
         ]),
         hardenedGitArgs(['rev-parse', '--abbrev-ref', 'HEAD']),
-        hardenedGitArgs(['status', '--short']),
+        hardenedGitArgs(['status', '--short', '--ignore-submodules=dirty']),
       ]).toContainEqual(call.args);
       expect(call.options.env?.GIT_PAGER).toBe('cat');
       expect(call.options.env?.GIT_TERMINAL_PROMPT).toBe('0');
@@ -229,9 +229,65 @@ describe('useGitStatus argv', () => {
         'filter.cleaner.required=false',
         'status',
         '--short',
+        '--ignore-submodules=dirty',
       ]),
     );
 
+    // Neither of the poll's own reads fetches.
+    for (const call of [calls[1], calls[2]]) {
+      expect(call.options.env?.GIT_NO_LAZY_FETCH).toBe('1');
+      expect(call.options.env?.GIT_ALLOW_PROTOCOL).toBe('');
+    }
+
+    view.unmount();
+  });
+
+  it('keeps the branch when the status read fails', async () => {
+    // Real timers: the state update has to render, and the next poll is five seconds away.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-git-status-fail-'));
+    roots.push(workspace);
+    mkdirSync(join(workspace, '.git'));
+    const seen: Array<{ branch: string; status: string }> = [];
+    function Shown() {
+      const status = useGitStatus(workspace);
+      seen.push(status);
+      return null;
+    }
+
+    const view = render(<Shown />);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].callback(null, '');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].args.slice(-3)).toEqual(['rev-parse', '--abbrev-ref', 'HEAD']);
+    calls[1].callback(null, 'main\n');
+    await vi.waitFor(() => expect(calls).toHaveLength(3));
+    expect(calls[2].args).toContain('status');
+    // A partial clone missing an object the status needs, read without fetching.
+    calls[2].callback(new Error('fatal: unable to read tree'), '');
+
+    await vi.waitFor(() => expect(seen.at(-1)).toMatchObject({ branch: 'main', status: '' }));
+    view.unmount();
+  });
+
+  it('reads the branch only in a partial clone, with no status read', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-git-status-partial-'));
+    roots.push(workspace);
+    mkdirSync(join(workspace, '.git'));
+    const seen: Array<{ branch: string; status: string }> = [];
+    function Shown() {
+      const status = useGitStatus(workspace);
+      seen.push(status);
+      return null;
+    }
+
+    const view = render(<Shown />);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].callback(null, 'local\0extensions.partialclone\norigin\0');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    calls[1].callback(null, 'main\n');
+
+    await vi.waitFor(() => expect(seen.at(-1)).toMatchObject({ branch: 'main', status: '' }));
+    expect(calls).toHaveLength(2);
     view.unmount();
   });
 });
@@ -263,5 +319,71 @@ describe('isInsideWorkTree', () => {
     // Deciding this by spawning `git` meant three processes every five seconds
     // in any plain directory, forever; under CI that took the runner with it.
     expect(isInsideWorkTree(join(root, 'plain', 'dir'), tree())).toBe(false);
+  });
+});
+
+// A `.git` at the home directory is a dotfiles repository, not the project, for a project below
+// the home directory without one of its own (#579): the poll spawns nothing there, so the bar
+// shows no branch rather than a git error. Its git carries the home directory as a ceiling
+// (`hardenedGitEnv`), which a workspace that is the home directory itself sees through.
+describe('useGitStatus and a dotfiles home directory', () => {
+  let root: string;
+  let home: string;
+
+  beforeEach(() => {
+    // The long form on Windows, as the ceiling carries it, not the runner's 8.3 temp path.
+    root = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-git-status-home-')));
+    roots.push(root);
+    home = join(root, 'home');
+    mkdirSync(join(home, '.git'), { recursive: true });
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    vi.stubEnv('GIT_CEILING_DIRECTORIES', undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('spawns nothing for a project below it without its own .git', async () => {
+    vi.useFakeTimers();
+    const proj = join(home, 'proj');
+    mkdirSync(proj);
+
+    const view = render(<Harness workspace={proj} />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls).toHaveLength(0);
+    view.unmount();
+  });
+
+  it('polls a workspace that is the home directory, with the home directory as ceiling', async () => {
+    vi.useFakeTimers();
+
+    const view = render(<Harness workspace={home} />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].options.env?.GIT_CEILING_DIRECTORIES).toBe(home);
+    calls[0].callback(null, '');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].args).toEqual(hardenedGitArgs(['rev-parse', '--abbrev-ref', 'HEAD']));
+    expect(calls[1].options.env?.GIT_CEILING_DIRECTORIES).toBe(home);
+    view.unmount();
+  });
+
+  it('adds no ceiling when the home directory holds no .git', async () => {
+    vi.useFakeTimers();
+    rmSync(join(home, '.git'), { recursive: true });
+    const repo = join(root, 'repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+
+    const view = render(<Harness workspace={repo} />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].options.env?.GIT_CEILING_DIRECTORIES).toBeUndefined();
+    view.unmount();
   });
 });

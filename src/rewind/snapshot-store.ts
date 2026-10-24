@@ -25,6 +25,7 @@ import type {
 } from '../types/sessions.js';
 import { resolveBookHome } from '../book-home.js';
 import { pathExists as pathExistsAsync } from '../fs-utils.js';
+import { createUncGuard, reachesUncPath, type UncGuard } from '../unc-path.js';
 
 export const REWIND_MAX_ENTRIES = 20_000;
 export const REWIND_MAX_FILE_BYTES = 16 * 1024 * 1024;
@@ -146,7 +147,8 @@ export function createRewindSnapshotStore(
 
 function readCustomIgnorePatterns(workspace: string): string[] {
   const path = join(workspace, '.book', 'rewindignore');
-  if (!existsSync(path)) return [];
+  // On a network (UNC) path it is not opened (#579): it counts as absent.
+  if (reachesUncPath(path) || !existsSync(path)) return [];
   return readFileSync(path, 'utf-8')
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -155,6 +157,7 @@ function readCustomIgnorePatterns(workspace: string): string[] {
 
 async function readCustomIgnorePatternsAsync(workspace: string): Promise<string[]> {
   const path = join(workspace, '.book', 'rewindignore');
+  if (reachesUncPath(path)) return [];
   try {
     return (await readFile(path, 'utf-8'))
       .split(/\r?\n/)
@@ -180,7 +183,13 @@ function expandNegatedParents(patterns: string[]): string[] {
   return expanded;
 }
 
-function readOptionalText(path: string): string | undefined {
+/**
+ * A git file's text, trimmed; undefined when it cannot be read, and, unopened, when it is, or
+ * reaches through a link, a UNC location on Windows (`reachesUnc`, #579): a checkout controls
+ * these files and the pointers between them.
+ */
+function readOptionalText(path: string, reachesUnc: UncGuard): string | undefined {
+  if (reachesUnc(path)) return undefined;
   try {
     return readFileSync(path, 'utf-8').trim();
   } catch {
@@ -188,21 +197,26 @@ function readOptionalText(path: string): string | undefined {
   }
 }
 
-function resolveGitDirectory(workspace: string): string | undefined {
+function resolveGitDirectory(workspace: string, reachesUnc: UncGuard): string | undefined {
   const dotGit = join(workspace, '.git');
+  if (reachesUnc(dotGit)) return undefined;
   try {
     if (lstatSync(dotGit).isDirectory()) return dotGit;
   } catch {
     return undefined;
   }
 
-  const match = /^gitdir:\s*(.+)$/i.exec(readOptionalText(dotGit) ?? '');
-  return match ? resolve(dirname(dotGit), match[1]) : undefined;
+  const match = /^gitdir:\s*(.+)$/i.exec(readOptionalText(dotGit, reachesUnc) ?? '');
+  if (!match) return undefined;
+  const gitDirectory = resolve(dirname(dotGit), match[1]);
+  return reachesUnc(gitDirectory) ? undefined : gitDirectory;
 }
 
-function resolveCommonGitDirectory(gitDirectory: string): string {
-  const commonDirectory = readOptionalText(join(gitDirectory, 'commondir'));
-  return commonDirectory ? resolve(gitDirectory, commonDirectory) : gitDirectory;
+function resolveCommonGitDirectory(gitDirectory: string, reachesUnc: UncGuard): string {
+  const commonDirectory = readOptionalText(join(gitDirectory, 'commondir'), reachesUnc);
+  if (!commonDirectory) return gitDirectory;
+  const common = resolve(gitDirectory, commonDirectory);
+  return reachesUnc(common) ? gitDirectory : common;
 }
 
 function parseGitHash(value: string | undefined): string | undefined {
@@ -210,8 +224,8 @@ function parseGitHash(value: string | undefined): string | undefined {
   return hash && /^[0-9a-f]{40,64}$/i.test(hash) ? hash : undefined;
 }
 
-function readPackedRef(directory: string, ref: string): string | undefined {
-  const packedRefs = readOptionalText(join(directory, 'packed-refs'));
+function readPackedRef(directory: string, ref: string, reachesUnc: UncGuard): string | undefined {
+  const packedRefs = readOptionalText(join(directory, 'packed-refs'), reachesUnc);
   if (!packedRefs) return undefined;
   for (const line of packedRefs.split(/\r?\n/)) {
     if (!line || line.startsWith('#') || line.startsWith('^')) continue;
@@ -227,6 +241,7 @@ function resolveGitRef(
   gitDirectory: string,
   commonDirectory: string,
   ref: string,
+  reachesUnc: UncGuard,
   depth = 0,
 ): string | undefined {
   if (
@@ -240,7 +255,7 @@ function resolveGitRef(
   }
 
   for (const directory of new Set([gitDirectory, commonDirectory])) {
-    const value = readOptionalText(join(directory, ...ref.split('/')));
+    const value = readOptionalText(join(directory, ...ref.split('/')), reachesUnc);
     const hash = parseGitHash(value);
     if (hash) return hash;
     if (value?.startsWith('ref:')) {
@@ -248,6 +263,7 @@ function resolveGitRef(
         gitDirectory,
         commonDirectory,
         value.slice('ref:'.length).trim(),
+        reachesUnc,
         depth + 1,
       );
       if (resolved) return resolved;
@@ -255,22 +271,25 @@ function resolveGitRef(
   }
 
   return (
-    readPackedRef(gitDirectory, ref) ??
-    (commonDirectory === gitDirectory ? undefined : readPackedRef(commonDirectory, ref))
+    readPackedRef(gitDirectory, ref, reachesUnc) ??
+    (commonDirectory === gitDirectory ? undefined : readPackedRef(commonDirectory, ref, reachesUnc))
   );
 }
 
 function gitHead(workspace: string): string | undefined {
-  const gitDirectory = resolveGitDirectory(workspace);
+  // One guard for the whole lookup: the pointers it follows share their prefixes.
+  const reachesUnc = createUncGuard();
+  const gitDirectory = resolveGitDirectory(workspace, reachesUnc);
   if (!gitDirectory) return undefined;
-  const head = readOptionalText(join(gitDirectory, 'HEAD'));
+  const head = readOptionalText(join(gitDirectory, 'HEAD'), reachesUnc);
   const directHash = parseGitHash(head);
   if (directHash) return directHash;
   if (!head?.startsWith('ref:')) return undefined;
   return resolveGitRef(
     gitDirectory,
-    resolveCommonGitDirectory(gitDirectory),
+    resolveCommonGitDirectory(gitDirectory, reachesUnc),
     head.slice('ref:'.length).trim(),
+    reachesUnc,
   );
 }
 

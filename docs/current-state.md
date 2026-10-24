@@ -15,7 +15,7 @@ fresh verification pass.
 
 ## Release Identity
 
-- Package version: `0.3.0`, published as `@letrquan/book`.
+- Package version: `0.4.0-beta.0`, published as `@letrquan/book`.
 - Distribution: `npm install -g @letrquan/book`, a source checkout, or a GitHub tag. The command
   is `book`; the package is scoped because the unscoped name was taken.
 - License: PolyForm Small Business 1.0.0 — source-available, commercial use limited to companies
@@ -80,7 +80,7 @@ fresh verification pass.
   a run proceeds.
 - Anthropic Messages and OpenAI-compatible providers, provider auto-detection, model discovery,
   BYOK providers, configurable effort, retries, timeouts, and token/cost accounting.
-- System prompt v5 (`book-system-prompt-v5`): content split by volatility across a cached static
+- System prompt v6 (`book-system-prompt-v6`): content split by volatility across a cached static
   prefix, an uncached activation-class suffix, and a per-turn `<session-state>` block on the newest
   user turn; project instructions fenced and trust-labeled; three Anthropic cache breakpoints
   (last tool, system, moving last message) so the conversation itself is cached.

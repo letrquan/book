@@ -42,7 +42,7 @@ npm run eval:edit    # Edit reliability evaluation (configured provider)
 npm run eval:compact # Compaction paired evaluation (configured provider)
 npm run eval:skills  # Skill activation evaluation
 npm run verify:ink     # Installed Ink matches the release the TUI was verified against
-npm run release:check # Version, audit, and package smoke checks
+npm run release:check # Version, audit, and package smoke checks (the audit retries registry errors, never findings)
 ```
 
 Main-branch runtime work also follows the [stabilization gate](../stabilization.md): three
@@ -85,7 +85,12 @@ daily at 01:00 UTC and on every pull request:
 Actions proves the workflow's identity to the registry over OIDC, so no npm token exists to leak or
 expire. The workflow refuses a tag that disagrees with `package.json`, then runs `npm run check`,
 the integration tier, and `npm run release:check` — which packs the tarball, installs it, and runs
-the installed CLI and SDK — before publishing. Provenance is attached automatically.
+the installed CLI and SDK — before publishing. Provenance is attached automatically. It publishes
+under the npm dist-tag `latest` for a tag push; a manual run takes a `dist-tag` input (letters,
+digits, `-` and `.`, nothing that looks like a version), because npm refuses to publish a
+prerelease version such as `0.4.0-beta.0` without an explicit tag. A prerelease tag push also lands
+on `latest`, so a re-run through `workflow_dispatch` should pass the same `dist-tag` the tag push
+used.
 
 Cutting a release is therefore:
 

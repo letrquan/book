@@ -227,7 +227,12 @@ export async function* chatCompletionStream(
   if (options?.maxOutputTokens || config.maxTokensExplicit || config.modelInfo?.maxOutputTokens) {
     body.max_tokens = options?.maxOutputTokens ?? config.maxTokens;
   }
-  if (config.effortExplicit && config.effort) body.reasoning_effort = config.effort;
+  // A catalog entry of `effort: false` outranks a chosen level, as on the Anthropic path: a
+  // settings-wide `effort` would otherwise reach a model that does not reason, and an endpoint
+  // such as Ollama answers that with a 400 that is not retried ("does not support thinking").
+  if (config.effortExplicit && config.effort && config.modelInfo?.effort !== false) {
+    body.reasoning_effort = config.effort;
+  }
 
   // Whether this request expects the model to reason before answering: either we
   // asked it to, or the model's catalog entry declares an effort range. An entry

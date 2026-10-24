@@ -3,7 +3,7 @@ import { displayWidth } from './word-wrap.js';
 /**
  * What `/model` tells you it can do.
  *
- * The picker binds six Alt-chords. The footer used to be four hand-written
+ * The picker binds seven Alt-chords. The footer used to be four hand-written
  * strings chosen by two booleans, and between them they left holes:
  *
  * - **`Alt+E` was advertised nowhere at all.** Setting a model's effort was
@@ -20,6 +20,9 @@ import { displayWidth } from './word-wrap.js';
  * Two lines, split by what they act on: choosing a model, and managing the
  * catalog. That split is the reason it fits — six chords and the navigation keys
  * do not fit on one 80-column line, and a wrapped footer is what this replaces.
+ * On a row of a provider the user owns the managing group carries five chords,
+ * more than one 80-column line holds, so the picker passes its width and the
+ * group breaks between two chords.
  */
 export interface ModelPickerHintState {
   /** BYOK management is offered at all. */
@@ -28,7 +31,7 @@ export interface ModelPickerHintState {
   hasRemovableProviders: boolean;
   /** The selected row is a model that carries per-model effort. */
   canSetEffort: boolean;
-  /** The selected row belongs to a provider the user owns. */
+  /** The selected row belongs to a provider the user owns: `Alt+R`, `Alt+M` and `Alt+K` act on it. */
   editableProviderId?: string;
   /** Drop the descriptions, keep every chord. */
   compact: boolean;
@@ -77,6 +80,7 @@ export function modelPickerHints(state: ModelPickerHintState): string[] {
             : `Alt+R refresh ${state.editableProviderId}`
           : undefined,
         state.editableProviderId ? 'Alt+M add model' : undefined,
+        state.editableProviderId ? (compact ? 'Alt+K key' : 'Alt+K update key') : undefined,
       ].filter(Boolean) as string[])
     : [];
 

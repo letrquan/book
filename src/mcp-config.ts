@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'fs';
+import { createUncGuard } from './unc-path.js';
 import { join } from 'path';
 import { resolveBookHome } from './book-home.js';
 
@@ -215,8 +216,17 @@ export function resolveMcpServerList(
     { path: join(workspace, '.mcp.json'), source: 'project' },
   ];
   const servers = new Map<string, ResolvedMcpServer>();
+  const reachesUnc = createUncGuard();
 
   for (const { path, source } of sources) {
+    // A project file on a network (UNC) path is not opened (#579): it counts as absent. Said
+    // only of a link out of a local workspace: one on a share loads no project file at all.
+    if (source === 'project' && reachesUnc(path)) {
+      if (!reachesUnc(workspace)) {
+        onDiagnostic({ level: 'warn', message: `Skipped MCP config on a network path: ${path}` });
+      }
+      continue;
+    }
     if (!existsSync(path)) continue;
     let parsed: McpConfigDocument;
     try {

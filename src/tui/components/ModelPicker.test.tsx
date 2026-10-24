@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { defaultConfig } from '../../test/fixtures.js';
+import { ModelDiscoveryError } from '../../provider/model-discovery.js';
 import { ModelPicker } from './ModelPicker.js';
 
 function withTheme(children: React.ReactElement): React.ReactElement {
@@ -41,6 +42,7 @@ function pickerProps(
     onSaveProvider: vi.fn(() => ({ ok: true })),
     removableProviderIds: new Set(['gateway']),
     onRemoveProvider: vi.fn(),
+    onUpdateProviderKey: vi.fn(() => ({ ok: true })),
     onCancel: vi.fn(),
     ...overrides,
   };
@@ -425,6 +427,163 @@ describe('ModelPicker', () => {
 
     const compact = renderPicker({ compact: true });
     expect(compact.view.lastFrame()).toContain('Alt+D remove BYOK');
+  });
+
+  describe('Alt+K key sheet', () => {
+    const NEW_KEY = 'sk-rotated-0123456789';
+
+    async function openSheet(overrides: Partial<React.ComponentProps<typeof ModelPicker>> = {}) {
+      const onUpdateProviderKey = vi.fn((_providerId: string, _apiKey: string) => ({ ok: true }));
+      const rendered = renderPicker({ onUpdateProviderKey, ...overrides });
+      await write(rendered.view, '\x1b[B');
+      await write(rendered.view, '\x1bk');
+      await vi.waitFor(() => expect(rendered.view.lastFrame()).toContain('Update API key'));
+      return { ...rendered, onUpdateProviderKey };
+    }
+
+    it('is advertised on a row of a provider the user owns', async () => {
+      const { view } = renderPicker();
+      expect(view.lastFrame()).not.toContain('Alt+K');
+      await write(view, '\x1b[B');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('Alt+K update key'));
+    });
+
+    it('masks the key and names the endpoint it is tested against', async () => {
+      const { view } = await openSheet();
+      expect(view.lastFrame()).toContain('gateway');
+      expect(view.lastFrame()).toContain('https://gateway.test/v1');
+      await write(view, NEW_KEY);
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('•'.repeat(NEW_KEY.length)));
+      expect(view.lastFrame()).not.toContain(NEW_KEY);
+      // Typing reaches the sheet's field, never the picker's filter behind it.
+      expect(view.lastFrame()).not.toContain('> sk-');
+    });
+
+    it('tests the key against the endpoint, then saves it', async () => {
+      const discover = vi.fn(async () => [{ id: 'custom' }]);
+      const { view, onUpdateProviderKey, onSaveProvider, onPick } = await openSheet({ discover });
+      await write(view, NEW_KEY);
+      await write(view, '\r');
+      await vi.waitFor(() =>
+        expect(view.lastFrame()).toContain('gateway: API key checked and saved.'),
+      );
+
+      expect(discover).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'openai',
+          baseUrl: 'https://gateway.test/v1',
+          apiKey: NEW_KEY,
+        }),
+      );
+      expect(onUpdateProviderKey).toHaveBeenCalledWith('gateway', NEW_KEY);
+      // Only the key changes: no catalog save and no model switch.
+      expect(onSaveProvider).not.toHaveBeenCalled();
+      expect(onPick).not.toHaveBeenCalled();
+      expect(view.lastFrame()).toContain('§ Models');
+      expect(view.lastFrame()).not.toContain(NEW_KEY);
+    });
+
+    it('offers save anyway when the endpoint refuses the key', async () => {
+      const discover = vi.fn(async () => {
+        throw new ModelDiscoveryError(
+          'Model discovery was not authorized. Check the API key and endpoint permissions.',
+          'auth',
+        );
+      });
+      const { view, onUpdateProviderKey } = await openSheet({ discover });
+      await write(view, NEW_KEY);
+      await write(view, '\r');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('s save anyway'));
+      expect(view.lastFrame()).toContain('Model discovery was not authorized.');
+      expect(onUpdateProviderKey).not.toHaveBeenCalled();
+
+      await write(view, 's');
+      await vi.waitFor(() =>
+        expect(view.lastFrame()).toContain('gateway: API key saved without a check.'),
+      );
+      expect(onUpdateProviderKey).toHaveBeenCalledTimes(1);
+      expect(onUpdateProviderKey).toHaveBeenCalledWith('gateway', NEW_KEY);
+    });
+
+    it('retries the check with the same key', async () => {
+      const discover = vi
+        .fn()
+        .mockRejectedValueOnce(new ModelDiscoveryError('Could not reach it.', 'network'))
+        .mockResolvedValueOnce([{ id: 'custom' }]);
+      const { view, onUpdateProviderKey } = await openSheet({ discover });
+      await write(view, NEW_KEY);
+      await write(view, '\r');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('Could not reach it.'));
+
+      await write(view, 'r');
+      await vi.waitFor(() =>
+        expect(view.lastFrame()).toContain('gateway: API key checked and saved.'),
+      );
+      expect(discover).toHaveBeenCalledTimes(2);
+      expect(discover.mock.calls[1][0]).toMatchObject({ apiKey: NEW_KEY });
+      expect(onUpdateProviderKey).toHaveBeenCalledWith('gateway', NEW_KEY);
+    });
+
+    it('goes back to the field, key kept, with Esc after a failure', async () => {
+      const discover = vi.fn(async () => {
+        throw new ModelDiscoveryError('Not authorized.', 'auth');
+      });
+      const { view, onUpdateProviderKey } = await openSheet({ discover });
+      await write(view, NEW_KEY);
+      await write(view, '\r');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('s save anyway'));
+      await write(view, '\x1b', 60);
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('New API key'));
+      expect(view.lastFrame()).toContain('•'.repeat(NEW_KEY.length));
+      expect(onUpdateProviderKey).not.toHaveBeenCalled();
+    });
+
+    it('cancels with Esc and saves nothing', async () => {
+      const discover = vi.fn(async () => [{ id: 'custom' }]);
+      const { view, onUpdateProviderKey } = await openSheet({ discover });
+      await write(view, NEW_KEY);
+      await write(view, '\x1b', 60);
+      await vi.waitFor(() => expect(view.lastFrame()).not.toContain('Update API key'));
+
+      expect(view.lastFrame()).toContain('§ Models');
+      expect(view.lastFrame()).toContain('type to filter');
+      expect(discover).not.toHaveBeenCalled();
+      expect(onUpdateProviderKey).not.toHaveBeenCalled();
+    });
+
+    it('keeps the sheet open with the save error', async () => {
+      const discover = vi.fn(async () => [{ id: 'custom' }]);
+      const { view } = await openSheet({
+        discover,
+        onUpdateProviderKey: vi.fn(() => ({ ok: false, error: 'Settings are read-only.' })),
+      });
+      await write(view, NEW_KEY);
+      await write(view, '\r');
+      await vi.waitFor(() => expect(view.lastFrame()).toContain('Settings are read-only.'));
+      expect(view.lastFrame()).toContain('Update API key');
+    });
+
+    it('refuses an inherited provider and a built-in model', async () => {
+      const inherited = renderPicker({ removableProviderIds: new Set() });
+      await write(inherited.view, '\x1b[B');
+      await write(inherited.view, '\x1bk');
+      await vi.waitFor(() =>
+        expect(inherited.view.lastFrame()).toContain(
+          'Only BYOK providers you added can be changed.',
+        ),
+      );
+      expect(inherited.view.lastFrame()).not.toContain('Update API key');
+      cleanup();
+
+      const builtIn = renderPicker();
+      await write(builtIn.view, '\x1bk');
+      await vi.waitFor(() =>
+        expect(builtIn.view.lastFrame()).toContain(
+          'Only BYOK providers you added have a key to change here.',
+        ),
+      );
+      expect(builtIn.view.lastFrame()).not.toContain('Update API key');
+    });
   });
 
   describe('initial cursor', () => {

@@ -8,6 +8,7 @@
  */
 import { z } from 'zod';
 import { existsSync, readFileSync } from 'fs';
+import { reachesUncPath } from './unc-path.js';
 import { join } from 'path';
 import { unboundedInt } from './settings.js';
 
@@ -55,7 +56,8 @@ export function legacyConfigPath(workspace: string): string {
  */
 export function parseLegacyConfig(workspace: string): LegacyConfig | null {
   const path = legacyConfigPath(workspace);
-  if (!existsSync(path)) return null;
+  // On a network (UNC) path it is not opened (#579): it counts as absent.
+  if (reachesUncPath(path) || !existsSync(path)) return null;
   try {
     return legacyConfigSchema.parse(JSON.parse(readFileSync(path, 'utf-8')));
   } catch (e) {
