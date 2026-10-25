@@ -14,12 +14,13 @@ Book is a proprietary, provider-agnostic alternative to Claude Code. It provides
 
 ```
 src/
-  index.ts              CLI entry (Commander.js) — flags + doctor/config/tool-stats subcommands
+  index.ts              CLI entry (Commander.js) — flags + doctor/status/config/mcp/trust/tool-stats subcommands
   sdk.ts                Programmatic SDK (`query()` async generator)
   job-runner.ts         Detached runner for persistent background shell jobs
   job-supervisor.ts     Supervisor between a persistent job's runner and its command
   cli/                  run.ts (interactive/headless wiring), doctor.ts, config-cmd.ts,
-                        trust-cmd.ts (`book trust hook|rule`), scrollback.ts,
+                        trust-cmd.ts (`book trust hook|rule|command|dir|provider`), mcp.ts (`book mcp add|list|get|remove`),
+                        status-cmd.ts (`book status`), provider-key-cmd.ts, scrollback.ts,
                         exit.ts (process.exit abstraction), utils.ts
   types/                Shared domain types (no runtime imports). NOTE: a top-level
                         src/types.ts hub is FORBIDDEN by the architecture check.
@@ -34,6 +35,8 @@ src/
                         repository can force-add .book/settings.local.json into a clone.
   hook-approvals.ts     Project-declared hook gate (fingerprint, partition, disclosure)
   permission-approvals.ts  Project-declared permissions.allow gate
+  command-approvals.ts / provider-approvals.ts  Project command (`!` shell) and workspace-provider gates
+  node-advisory.ts      Launch notice for a Node.js missing the newest security fix
   mcp-approvals.ts      Project-declared MCP server gate
   project-approval-notices.ts  Withheld-declaration warnings shared by print mode and the SDK
   frontmatter.ts        Shared YAML frontmatter parser
@@ -46,7 +49,9 @@ src/
   skill-watcher.ts      Debounced safe-boundary skill reload
   subagent.ts           Subagent runner
   subagent-discovery.ts Subagent discovery from .book/agents/
-  mcp.ts                MCP client (stdio transport)
+  mcp.ts                MCP client (stdio, Streamable HTTP, legacy SSE transports; dynamic tool lists)
+  mcp-config.ts / mcp-host.ts / mcp-elicitation.ts / mcp-report.ts  MCP declarations (`book mcp`), session
+                        host, form elicitation, `/mcp` + doctor reporting
   headless.ts           Headless/print mode runner
   stream-json.ts        Stream-JSON event helpers
   models.ts             Model id / effort helpers
@@ -63,6 +68,7 @@ src/
     loop.ts             Core agent loop (runAgentLoop)
     context.ts          System prompt builder (cached kernel/session-context zones),
                         message formatter
+    goal.ts / continuation.ts  `/goal` condition tracking and unattended continuation
     session-state.ts    Per-turn <session-state> block + checkpoint freshness deltas
     prompt-determinism.ts  SYSTEM_PROMPT_VERSION, frozen date, evaluation path masking
     compact.ts          Context compaction (summarizer handoff, carried turns, tail)
@@ -83,7 +89,7 @@ src/
                         fix.ts (--fix through patcher/validator evidence), config.ts (REVIEW.md),
                         evaluation.ts (precision/recall harness), types.ts
   rewind/               /rewind snapshots: snapshot-store.ts, environment.ts
-  input/                file-mentions.ts (@file), input-expansion.ts
+  input/                file-mentions.ts (@file), skill-mentions.ts ($skill), clipboard-image.ts, input-expansion.ts
   commands/
     builtins.ts         Built-in slash command catalog
     builtins-prompts.ts Prompt bodies for agent-backed commands (/init, /review, …)
@@ -104,6 +110,7 @@ src/
   tools/
     registry.ts / registry-core.ts  Tool registry (createRegistry, createDefaultRegistry)
     catalog.ts          Provider-neutral capability catalog
+    advisor.ts          Advisor tool (`/advisor <model>`)
     tool-search.ts      ToolSearch (activate authorized tools on next turn)
     capability-rules.ts Capability intersection (command/skill/agent/mode/state)
     tool-capabilities.ts  Read-only / mutating / plan-mode capability flags
@@ -112,7 +119,7 @@ src/
     primary-arg.ts / path-utils.ts / glob-regex.ts / gitignore.ts / schema.ts  helpers
     file.ts             Read/Write/Edit/MultiEdit/Glob/Grep
     patch.ts            ApplyPatch (preferred source-mutation tool; Codex-style envelope)
-    mutation.ts / patch-rollback  Mutation orchestration + rollback
+    mutation.ts / mutation-preview.ts  Mutation orchestration + rollback, permission-prompt diff preview
     file-provenance.ts  File freshness tracking for compaction reuse
     shell.ts            Bash / BashOutput / KillShell (+ run_in_background)
     git.ts              Git tools
@@ -169,7 +176,7 @@ Other conventions:
 - **Cache breakpoints**: exactly three per Anthropic request — last tool, cached system
   block, last message (moving). The limit is four; `countCacheBreakpoints` guards it.
 - **`process.exit()` goes through the `cli/exit.ts` abstraction** (allows test injection); this is enforced by the architecture check, not just convention.
-- **Non-interactive subcommands run without credentials**: `doctor`, `config`, `mcp`, and `tool-stats` exist to help a user whose provider is not working, so they must never require one. `src/cli/subcommands.contract.test.ts` enforces this.
+- **Non-interactive subcommands run without credentials**: `doctor`, `status`, `config`, `mcp`, `trust`, and `tool-stats` exist to help a user whose provider is not working, so they must never require one. `src/cli/subcommands.contract.test.ts` enforces this.
 
 ## Testing
 
@@ -239,7 +246,7 @@ prompt, or the add-provider wizard looks also means regenerating the README medi
 - Built-in slash commands in `src/commands/builtins.ts` (+ dispatch in `src/tui/app.tsx`)
 - Default tool set in `src/tools/registry.ts` `createDefaultRegistry()`
 - Permission modes: `PermissionMode` in `src/types/runtime.ts`
-- Memory paths and approval flow in `src/memory-store.ts` / `src/tools/memory-save.ts`
+- Memory paths and approval flow in `src/memory-store.ts` / `src/memory-write-guard.ts`
 - Managed-agent behavior in `src/agents/` ("Managed agents" in `docs/guide/agents-and-review.md` is the detailed spec)
 - `/review` pipeline behavior in `src/review/` ("Code review" in `docs/guide/agents-and-review.md` is the detailed spec). The
   review target is resolved by the host, never by the reviewer — reviewer agents have no diff tool,

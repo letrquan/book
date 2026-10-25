@@ -1,17 +1,20 @@
 # Book Current State
 
-This is the implementation-backed product snapshot for Book as of 2026-09-07. Update this file when
-a user-facing surface changes; the README and [docs/guide/](guide/README.md) are the usage guide and
-this page is the status reference for roadmap and design documents.
+This is the implementation-backed product snapshot for Book as of 2026-10-25 (`0.4.0-beta.1` plus the
+unreleased changes). Update this file when a user-facing surface changes; the README and
+[docs/guide/](guide/README.md) are the usage guide and this page is the status reference for roadmap
+and design documents.
 
-The last independent surface re-verification was 2026-08-26 and covered the interactive transcript
-and terminal interaction path, reasoning/retry propagation, and headless/stream-JSON framing only
-(surfaces not re-verified that run: project-declaration trust gates, providers, MCP, other
-settings and sandbox behavior, managed agents, `/review`, background jobs, and skills). Sections
-written since then were
-authored alongside the implementation they describe and merged with it -- the residual compaction
-tail (PR #192) and the permission-prompt preview (PR #188) -- and carry that evidence rather than a
-fresh verification pass.
+Re-verified on 2026-10-25, by reading `src/` on main and the `CHANGELOG.md` entries since
+2026-09-07 (nothing was run): release identity and the package version, the built-in slash command
+catalog (`src/commands/builtins.ts`), the CLI subcommands and flags (`src/index.ts`), the
+trust-store shape (`src/workspace-trust.ts`), the system prompt version, the memory model, the
+`/goal` and `/advisor` command registrations, and the transcript layout module's importers. MCP
+transports and the reasoning/fold behavior are taken from the CHANGELOG, not re-read. Not re-verified this time: the sandbox and
+subscription-auth/provider lines (being rewritten by the s23 sandbox and ChatGPT PRs), compaction
+internals, managed agents, `/review` internals, background-job internals, and skills beyond what
+the CHANGELOG states. The earlier independent surface re-verification was 2026-08-26 (transcript
+and terminal interaction, reasoning/retry propagation, headless/stream-JSON framing).
 
 ## Release Identity
 
@@ -49,7 +52,7 @@ fresh verification pass.
   open on the same mark (`●`), and a call's result hangs under its name after a `⎿` connector
   (`RESULT_INDENT`, `resultGrid`), so what a call did reads as belonging to the call. The grid
   narrows by exactly what it shifts, so every row keeps the same right edge and right-aligned
-  metadata still lines up down the transcript. Sixteen non-test modules across the transcript path
+  metadata still lines up down the transcript. About thirty non-test modules, overlays and pickers included,
   resolve through it. A few components outside that path — diff cards, subagent and
   background-shell rows, the command panel — still carry their own `marginLeft` and width
   arithmetic rather than deriving it from the grid, and are not covered by that guarantee.
@@ -68,7 +71,8 @@ fresh verification pass.
 - Provider-native reasoning and inline `<think>`, `<thinking>`, `<reasoning>`, and
   `<reasoning_context>` blocks are kept separate from answer prose: the TUI streams active
   thinking, collapses the thought of a final answer to a counted row in compact mode (the thought
-  behind a tool call is not drawn there at all, #470), and reopens every thought in detailed mode,
+  behind a tool call is not drawn there at all, #470; read-only shell and git commands fold into the
+  quiet-run summary, #459, and an edit's diff previews as its first 20 rows), and reopens every thought in detailed mode,
   while fenced-code examples remain ordinary answer content. Shared reasoning-tag
   helpers let the agent loop recognize closed reasoning-only completions, retry an empty turn once,
   and emit `reasoning`/`attempt_discarded` events so session and headless hosts preserve the
@@ -100,22 +104,24 @@ fresh verification pass.
   bind in every permission mode, project-declared `permissions.allow` rules and hook entries held
   until the user approves them (`ask`/`deny` apply immediately; `book doctor` reports what is
   withheld and how to grant it, disclosing each withheld hook's command, matcher, and environment,
-  and `book trust hook|rule|command` records the decision), all four trust-decision keys ignored
+  and `book trust hook|rule|command|dir|provider` records the decision), the trust-decision keys ignored
   from both workspace layers and read instead from `~/.book/trust.json`, keyed by workspace path,
-  so nothing a repository ships can approve its own MCP servers, allow rules, hook entries, or
-  shell-substituting slash commands — a force-added `.book/settings.local.json` reaches a clone the
-  same way a checked-in file does, and `book config set` refuses those four paths rather than
+  so nothing a repository ships can approve its own MCP servers, allow rules, hook entries,
+  shell-substituting slash commands, additional directories, or workspace providers — a force-added `.book/settings.local.json` reaches a clone the
+  same way a checked-in file does, and `book config set` refuses those paths rather than
   writing a value nothing reads. Experimental capability opt-ins are
   likewise ignored from both workspace layers and must come from the user-global file, an explicit
   `--settings` document, or the process environment; all three writers (`book config set`, the
   `/config` slash command, and the TUI's local persistence) refuse them through one shared list. Other settings include hooks, the optional bubblewrap sandbox, themes,
-  auto-memory (the model writes one Markdown file per fact with the file tools, owns `MEMORY.md`, and a guard checks each write; no save tool, inbox, quarantine, supersede history or extraction), rewind snapshots, telemetry, and diagnostics. Every declared sandbox key is now read
+  auto-memory (the model writes one Markdown file per fact with the file tools, owns `MEMORY.md`, and a guard checks each write; no save tool, inbox, quarantine, supersede history or extraction; the store is keyed by the git repository root so linked worktrees share it, and `/memory consolidate [focus]` tidies it), rewind snapshots, telemetry, and diagnostics. Every declared sandbox key is now read
   by an execution or permission path: `sandbox.allowUnsandboxedCommands` can refuse any command that
   would leave the
   namespace, and `sandbox.autoAllowBashIfSandboxed` can replace the default ask for a command that
   genuinely stays inside it. `book doctor` reports each MCP server with its resolved trust state,
   the sandbox policy actually being enforced — including the effective, not merely configured,
   state of those two keys — and managed-agent diagnostics.
+- `/goal <condition>` keeps the agent working until a condition holds, and `/advisor <model>` lets
+  it consult a stronger model through the `Advisor` tool.
 - Managed explorer, reviewer, patcher, and validator agents with isolated worktrees where Git is
   available, read-only non-Git exploration, evidence publication/review, completion delivery,
   persistence, ownership checks, and recovery from interrupted storage writes. The built-in
@@ -244,14 +250,15 @@ Work aimed at running an objective unattended for days rather than hours. All of
 
 ## Known Boundaries
 
-- Four classes of repository-controlled input carry an explicit trust boundary, each
+- Six classes of repository-controlled input carry an explicit trust boundary, each
   fingerprinted and requiring a one-time approval: project MCP declarations, project-declared
-  allow rules, project-declared hook entries, and shell substitution in a project
-  `.book/commands/*.md` body. All four now share one store — recorded per workspace in
+  allow rules, project-declared hook entries, shell substitution in a project
+  `.book/commands/*.md` body, project `additionalDirectories` entries, and workspace-declared
+  providers (next bullet). All six share one store — recorded per workspace in
   `~/.book/trust.json` and stripped from **both** workspace settings layers, so no file inside the
   working tree can answer for any of them, and a repository that force-adds
-  `.book/settings.local.json` supplies nothing. `book trust hook|rule|command` records a decision
-  one at a time; `book config set` refuses all four paths — plus `shell` —
+  `.book/settings.local.json` supplies nothing. `book trust hook|rule|command|dir|provider` records a decision
+  one at a time; `book config set` refuses these paths — plus `shell` —
   rather than writing a value nothing reads. Command decisions are keyed by command name and validated by a fingerprint over the
   shell the body runs rather than its prose, so editing what runs re-asks under the same name.
 - Provider origins, key inheritance and secret references declared by a workspace are gated
@@ -502,7 +509,7 @@ Use `npm test` for the full build plus unit, contract, and integration tiers. Re
 `npm run release:check`; the stabilization policy is `npm run stabilization:check` with the GitHub
 Actions environment variables described in [stabilization.md](stabilization.md).
 
-Local verification for the previous snapshot (2026-08-25; tests were not re-run during this
-refresh): `npm run check` (230 unit files, 2640 tests, 5 skipped; 7 contract files, 59 tests),
-`npm run build`, and `npm run test:integration` (7 files, 97 tests, 10 skipped) all pass on Windows.
-The counts above are carried forward from that run, not advanced here.
+Local verification for the last recorded run (2026-08-25, on Windows; tests were not re-run for
+this refresh and the suite has grown a great deal since, so treat the counts as history):
+`npm run check` (230 unit files, 2640 tests, 5 skipped; 7 contract files, 59 tests), `npm run build`,
+and `npm run test:integration` (7 files, 97 tests, 10 skipped) all passed.
