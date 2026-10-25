@@ -323,6 +323,21 @@ description words — and falls back to fuzzy matching for a misspelled name. It
 deferred discovery exists, including eager mode, where it names the matching tools that are already
 active instead of being refused.
 
+When tools are deferred, the system prompt's `Deferred tool catalog` section lists every authorized
+deferred tool by name, grouped by category, with a hint of eight words or fewer — about 1,800
+characters for the 25 deferred tools of the default registry. MCP tools are listed by name only (a
+server writes its own descriptions), and a namespace of more than 12 of them is summarised as a count
+with a pointer to the `namespace` filter. The list names a tool whether or
+not it is loaded, so loading or evicting one never changes the text; it changes only when
+authorization does (the permission mode, an agent role, or a skill or command restriction).
+
+`ToolSearch` with `query: "select:WebFetch,WebSearch"` loads exactly those tools, skipping the
+scoring. Names are canonical names or aliases, in any letter case, separated by commas or spaces; two tools that differ only by case need the exact name. Authorization is the same as for
+a search: a name that no tool has, or that the role, mode or capability rules exclude, gets a line
+naming it, a tool that is already active says so, and the loaded-tool and schema budgets still
+apply. `category`, `namespace` and `limit` are ignored with `select:`. Loaded tools are callable on
+the next model turn.
+
 ## Permission rules and modes
 
 `permissions.allow`, `permissions.ask`, and `permissions.deny` are matched against every tool call.
