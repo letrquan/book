@@ -10,10 +10,11 @@ import type {
   ToolDiscoveryState,
   ToolEffect,
   ToolSearchMatch,
+  ToolSelection,
 } from '../types/tools.js';
 import { estimateTokens } from '../context-report.js';
 import { resolveContextLimit } from '../models.js';
-import { canonicalToolName, TOOL_ALIASES } from './aliases.js';
+import { canonicalToolName, TOOL_ALIASES, unwrapProviderPrefix } from './aliases.js';
 import {
   isToolCallAllowed,
   isToolDefinitionAllowed,
@@ -146,6 +147,33 @@ function summaryFor(definition: ToolDefinition): string {
   const first = definition.description.split(/(?<=[.!?])\s+/)[0]?.trim();
   return first || definition.name;
 }
+
+const HINT_WORDS = 8;
+
+/**
+ * Eight words or fewer of a tool's summary, for the deferred-tool list: its first clause when that
+ * is at least three words, else whole words of the first sentence; parentheticals dropped, no
+ * trailing punctuation, and a `…` when the sentence was cut mid-clause.
+ */
+function hintFor(definition: ToolDefinition): string {
+  // Parentheticals go first: cut at a word limit they would be left open, and they hold the
+  // detail (`(last 20, oneline)`) a hint can do without.
+  const summary = (definition.catalog?.summary ?? summaryFor(definition))
+    .replace(/\s*\([^)]*\)?/g, '')
+    .trim();
+  const clause = summary.split(/[,;\u2014]|:\s|\s-\s/)[0] ?? summary;
+  const text = clause.split(/\s+/).filter(Boolean).length >= 3 ? clause : summary;
+  const words = text.split(/\s+/).filter(Boolean);
+  const hint = words
+    .slice(0, HINT_WORDS)
+    .join(' ')
+    .replace(/[\s.,;:!-]+$/, '');
+  if (!hint) return '';
+  return words.length > HINT_WORDS ? `${hint}…` : hint;
+}
+
+/** More deferred tools than this in one MCP namespace are summarised as a count, not listed. */
+const MCP_NAMESPACE_LIST_LIMIT = 12;
 
 export function normalizeToolDefinition(definition: ToolDefinition): ToolDefinition {
   const name = canonicalToolName(definition.name);
@@ -603,6 +631,54 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     );
   };
 
+  /** A tool's canonical name from a model-written one: aliases, provider prefixes, any case. */
+  const resolveName = (raw: string): string | undefined => {
+    const name = canonicalToolName(unwrapProviderPrefix(raw.trim()));
+    if (byName.has(name)) return name;
+    const lower = name.toLowerCase();
+    for (const candidate of byName.keys()) if (candidate.toLowerCase() === lower) return candidate;
+    const alias = Object.entries(TOOL_ALIASES).find(([key]) => key.toLowerCase() === lower);
+    return alias && byName.has(alias[1]) ? alias[1] : undefined;
+  };
+
+  /**
+   * Load exact tools by name (`select:A,B`), bypassing scoring. Authorization, roles, capability
+   * rules and the loaded-tool and schema budgets are the same as for a search: `activate` is the
+   * only way in.
+   */
+  const select = (names: string[]): ToolSelection[] => {
+    const active = new Set(
+      activeDefinitions().map((definition) => canonicalToolName(definition.name)),
+    );
+    const allowed = new Set(authorized().map((definition) => canonicalToolName(definition.name)));
+    const outcomes: ToolSelection[] = [];
+    const requested: string[] = [];
+    for (const raw of names.map((name) => name.trim()).filter(Boolean)) {
+      const name = resolveName(raw);
+      if (!name) outcomes.push({ requested: raw, status: 'unknown' });
+      else if (outcomes.some((outcome) => outcome.name === name)) continue;
+      else if (!allowed.has(name)) outcomes.push({ requested: raw, name, status: 'unauthorized' });
+      else if (active.has(name) || name === 'ToolSearch')
+        outcomes.push({ requested: raw, name, status: 'active' });
+      else {
+        outcomes.push({ requested: raw, name, status: 'budget' });
+        requested.push(name);
+      }
+    }
+    const loaded = new Set(activate(requested));
+    return outcomes.map((outcome) => {
+      if (outcome.status !== 'budget' || !outcome.name) return outcome;
+      const definition = byName.get(outcome.name)!;
+      return {
+        ...outcome,
+        status: loaded.has(outcome.name) ? 'loaded' : 'budget',
+        category: definition.catalog?.category ?? 'other',
+        namespace: definition.catalog?.namespace,
+        summary: definition.catalog?.summary ?? summaryFor(definition),
+      };
+    });
+  };
+
   const pushRestriction = (rawRules: string[]): (() => void) => {
     const id = nextRuleSetId++;
     ruleSets.set(id, parseCapabilityRules(rawRules));
@@ -663,38 +739,49 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     return true;
   };
 
+  /**
+   * The deferred tools the model can ask for, by canonical name. It lists every authorized tool
+   * the core set leaves out, active or not, so loading and evicting a tool never changes the text
+   * (it sits in the uncached suffix, but a stable list is one the model can rely on); it changes
+   * only when authorization does: the mode, a role, or a capability rule set. MCP tools are
+   * grouped by namespace and a namespace of more than `MCP_NAMESPACE_LIST_LIMIT` tools is a count.
+   */
   const catalogSummary = (): string => {
     if (!deferredMode()) return '';
-    const active = new Set(
-      activeDefinitions().map((definition) => canonicalToolName(definition.name)),
-    );
-    const deferred = authorized().filter(
-      (definition) =>
-        definition.name !== 'ToolSearch' && !active.has(canonicalToolName(definition.name)),
-    );
+    const deferred = authorized()
+      .filter((definition) => definition.name !== 'ToolSearch' && !isCore(definition))
+      .sort((a, b) => a.name.localeCompare(b.name));
     if (deferred.length === 0) return '';
-    const categories = new Map<string, number>();
-    const namespaces = new Map<string, number>();
+    const groups = new Map<string, ToolDefinition[]>();
     for (const definition of deferred) {
-      const category = definition.catalog?.category ?? 'other';
-      categories.set(category, (categories.get(category) ?? 0) + 1);
       const namespace = definition.catalog?.namespace;
-      if (namespace) namespaces.set(namespace, (namespaces.get(namespace) ?? 0) + 1);
+      const key = namespace ? `mcp:${namespace}` : (definition.catalog?.category ?? 'other');
+      groups.set(key, [...(groups.get(key) ?? []), definition]);
     }
-    const categoryText = [...categories.entries()]
+    const lines = [...groups.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([name, count]) => `${name} (${count})`)
-      .join(', ');
-    const namespaceText = namespaces.size
-      ? ` MCP namespaces: ${[...namespaces.entries()].map(([name, count]) => `${name} (${count})`).join(', ')}.`
-      : '';
-    return `${deferred.length} authorized tools are deferred: ${categoryText}.${namespaceText} Call ToolSearch when the active tools do not cover the task.`;
+      .map(([key, members]) => {
+        if (key.startsWith('mcp:') && members.length > MCP_NAMESPACE_LIST_LIMIT) {
+          return `${key} (${members.length} tools, not listed): search with ToolSearch namespace "${key.slice(4)}".`;
+        }
+        const entries = members.map((definition) => {
+          const hint = hintFor(definition);
+          return hint ? `${definition.name} (${hint})` : definition.name;
+        });
+        return `${key}: ${entries.join('; ')}`;
+      });
+    return [
+      `${deferred.length} authorized tools are deferred: their schemas are not loaded yet. Load tools with ToolSearch: query "select:Name1,Name2" loads those exact tools (aliases and any letter case are accepted), and any other query searches by capability. Loaded tools are callable on the next turn.`,
+      ...lines,
+      'Call ToolSearch when the active tools do not cover the task.',
+    ].join('\n');
   };
 
   return {
     search,
     activeMatches,
     activate,
+    select,
     restrict,
     pushRestriction,
     previewRestriction,

@@ -459,6 +459,23 @@ export interface ToolSearchMatch {
   loaded: boolean;
 }
 
+/** What `select:` did with one requested name. */
+export interface ToolSelection {
+  /** The name as the model wrote it. */
+  requested: string;
+  /** The canonical name; absent when no tool has this name. */
+  name?: string;
+  /**
+   * `loaded`: activated for the next turn. `active`: already callable. `unknown`: no such tool.
+   * `unauthorized`: the role, mode or a capability rule excludes it. `budget`: authorized, but it
+   * does not fit the loaded-tool or schema budget.
+   */
+  status: 'loaded' | 'active' | 'unknown' | 'unauthorized' | 'budget';
+  category?: ToolCategory;
+  namespace?: string;
+  summary?: string;
+}
+
 export interface ToolDiscoveryContext {
   /** Return authorized catalog matches without exposing their full schemas. */
   search(
@@ -478,6 +495,12 @@ export interface ToolDiscoveryContext {
   ): string[];
   /** Activate selected definitions for the next provider request. */
   activate(names: string[]): string[];
+  /**
+   * Activate exact tools by name (`select:A,B`) instead of ranking a query, reporting each name's
+   * outcome. Optional so a discovery object built without it keeps working; ToolSearch then
+   * cannot honour `select:`.
+   */
+  select?(names: string[]): ToolSelection[];
   /** Intersect the current surface with an additional command/skill capability policy. */
   restrict(rules: string[]): void;
   /** Add a scoped capability intersection and return a disposer that restores the parent surface. */

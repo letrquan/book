@@ -1,18 +1,84 @@
-import type { ToolCategory, ToolDefinition, ToolResult } from '../types/tools.js';
+import type {
+  ToolCategory,
+  ToolDefinition,
+  ToolDiscoveryContext,
+  ToolResult,
+  ToolSelection,
+} from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
+
+function selectionLine(selection: ToolSelection): string {
+  switch (selection.status) {
+    case 'loaded':
+      return `${selection.name} [${selection.category}${selection.namespace ? `:${selection.namespace}` : ''}] - ${selection.summary}`;
+    case 'active':
+      return `Already active this turn: ${selection.name}. Call it directly.`;
+    case 'unknown':
+      return `${selection.requested}: no tool has this name. Use the names in the deferred tool list, or search by capability.`;
+    case 'unauthorized':
+      return `${selection.name}: not authorized in this context (role, mode or capability rules), so it cannot be loaded.`;
+    case 'budget':
+      return `${selection.name}: does not fit within the configured loaded-tool and schema budgets.`;
+  }
+}
+
+function selectTools(list: string, discovery: ToolDiscoveryContext): ToolResult {
+  const names = list
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean);
+  if (names.length === 0 || !discovery.select) {
+    return names.length === 0
+      ? toolFailure(
+          'select: needs at least one tool name, for example select:WebFetch,WebSearch.',
+          {
+            code: 'invalid_arguments',
+            remediation: 'Pass tool names after select:, separated by commas.',
+          },
+        )
+      : toolFailure('Tool discovery is unavailable in this execution context.', {
+          code: 'discovery_unavailable',
+        });
+  }
+  const selections = discovery.select(names);
+  const loaded = selections.filter((selection) => selection.status === 'loaded');
+  const content = selections.map(selectionLine).join('\n');
+  const data = { query: `select:${names.join(',')}`, selections };
+  if (loaded.length === 0 && !selections.some((selection) => selection.status === 'active')) {
+    const budget = selections.some((selection) => selection.status === 'budget');
+    return toolFailure(content, {
+      code: budget ? 'tool_discovery_budget_exceeded' : 'tool_not_found',
+      remediation: budget
+        ? 'Select fewer or smaller tools, or ask the host to increase the tool discovery budget.'
+        : 'Use the names in the deferred tool list, or search by capability.',
+      data,
+    });
+  }
+  return toolSuccess(content, {
+    data,
+    presentation: {
+      kind: 'search',
+      summary:
+        loaded.length > 0
+          ? `Loaded ${loaded.length} tool${loaded.length === 1 ? '' : 's'} for the next turn`
+          : 'Already active',
+      metadata: loaded.length > 0 ? [`${loaded.length} loaded`] : undefined,
+    },
+  });
+}
 
 export const toolSearchTools: ToolDefinition[] = [
   {
     name: 'ToolSearch',
     description:
-      'Search the authorized deferred tool catalog when the active tools do not cover the task. Matching tool definitions become available on the next model turn. Search by capability, product, server, or action; returns at most five concise matches and has no external side effects.',
+      'Load deferred tools when the active tools do not cover the task; they become available on the next model turn. Pass "select:Name1,Name2" to load exact tools by the names the deferred tool list gives (aliases and any letter case work), or describe a capability, product, server, or action to search: a search returns at most five concise matches. Has no external side effects.',
     parameters: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
           description:
-            'Specific capability to find, such as "git commit", "search Slack", or "read session history".',
+            'Exact tools as "select:WebFetch,WebSearch", or a specific capability to find, such as "git commit", "search Slack", or "read session history". With select:, category, namespace and limit are ignored.',
           minLength: 1,
         },
         category: {
@@ -70,6 +136,8 @@ export const toolSearchTools: ToolDefinition[] = [
           code: 'discovery_unavailable',
         });
       }
+      const selected = /^select:/i.exec(query);
+      if (selected) return selectTools(query.slice(selected[0].length), context.toolDiscovery);
       const matches = context.toolDiscovery.search(
         query,
         args.category as ToolCategory | undefined,
