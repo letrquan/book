@@ -91,6 +91,7 @@ export async function recordChatGptProvider(
   options: ChatGptRequestOptions = {},
 ): Promise<ChatGptProviderSetup> {
   const models = await listChatGptPlanModels(options);
+  if (models.length === 0) return { models, note: 'Your ChatGPT plan lists no models for Book.' };
   const { path, providerId, note } = chatGptProviderTarget(workspace);
   if (!providerId) return { models, note };
   const written = new SettingsRepository(path).update((candidate) => {

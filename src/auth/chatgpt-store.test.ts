@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -96,9 +104,26 @@ describe('the Sign in with ChatGPT record', () => {
       ),
     ]);
     expect(order).toEqual(['a-in', 'a-out', 'b-in']);
+  });
 
-    writeFileSync(`${path}.lock`, `99999 ${Date.now() - 60_000}\n`);
+  it('reclaims a lock its holder left behind, even an empty one, by its age', async () => {
+    const path = chatGptSigninPath(home);
+    const lock = `${path}.lock`;
+    writeFileSync(lock, '');
+    const old = new Date(Date.now() - 5 * 60_000);
+    utimesSync(lock, old, old);
     await expect(withChatGptSigninLock(path, async () => 'ran')).resolves.toBe('ran');
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('never removes a lock another holder took over', async () => {
+    const path = chatGptSigninPath(home);
+    const lock = `${path}.lock`;
+    await withChatGptSigninLock(path, async () => {
+      // As if this holder's lock had been reclaimed as stale and taken by another process.
+      writeFileSync(lock, '4242 someone-else\n');
+    });
+    expect(readFileSync(lock, 'utf8')).toBe('4242 someone-else\n');
   });
 });
 

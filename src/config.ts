@@ -525,6 +525,14 @@ export function resolveModelProviderConfig(
           `"${providerId}": {"type": "chatgpt"} under "provider" in ~/.book/settings.json.`,
       );
     }
+    // A model id a workspace controls (an agent definition, a model-chosen spawn) may not bill
+    // the user's plan: only the user's own choices select a plan model.
+    if (!options.trustedSelection) {
+      throw new Error(
+        `"${selection}" is a ChatGPT plan model, which only your own settings, --model or ` +
+          '/model may choose; an agent definition or a delegated model id cannot.',
+      );
+    }
     // The endpoint, API and credential are fixed. `apiKey` stays empty: the token is read per
     // request (`src/provider/chatgpt.ts`), so no key is inherited in either direction.
     return {

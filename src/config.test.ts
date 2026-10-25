@@ -654,6 +654,42 @@ describe('loadConfig provider registry', () => {
       expect(loadConfig(workspace).providerAuth).toBe('chatgpt');
     });
 
+    it("lets no workspace layer or agent definition choose a plan model, only the user's own settings", () => {
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({ ...settings, model: 'gpt-4o', advisorModel: 'plan/gpt-plan' }),
+      );
+      mkdirSync(join(workspace, '.book'), { recursive: true });
+      writeFileSync(
+        join(workspace, '.book', 'settings.json'),
+        JSON.stringify({ model: 'plan/gpt-plan', compactModel: 'plan/gpt-plan' }),
+      );
+      signIn();
+      const config = loadConfig(workspace);
+      expect(config.model).toBe('gpt-4o');
+      expect(config.providerAuth).toBeUndefined();
+      expect(config.settings.compactModel).toBeUndefined();
+      // The user's own advisor choice stands.
+      expect(config.settings.advisorModel).toBe('plan/gpt-plan');
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([
+        expect.objectContaining({
+          key: 'model',
+          value: 'plan/gpt-plan',
+          reason: 'plan',
+          fallback: 'gpt-4o',
+        }),
+        expect.objectContaining({ key: 'compactModel', reason: 'plan', fallback: undefined }),
+      ]);
+      // An id a workspace controls (an agent definition) is refused at resolution.
+      expect(() => resolveModelProviderConfig(config, 'plan/gpt-plan')).toThrow(
+        /ChatGPT plan model/,
+      );
+      expect(
+        resolveModelProviderConfig(config, 'plan/gpt-plan', { trustedSelection: true })
+          .providerAuth,
+      ).toBe('chatgpt');
+    });
+
     it('is refused when only a workspace declares it, approved or not', () => {
       const config = defaultConfig({
         workspaceProviderGate: { declared: ['team'], withheld: [] } as unknown as NonNullable<

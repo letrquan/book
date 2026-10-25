@@ -26,6 +26,10 @@ export interface ChatGptOAuthFixtureOptions {
   refreshError?: string;
   /** Access-token lifetime, in seconds. */
   expiresIn?: number;
+  /** What `GET /v1/models` lists; defaults to one listed and one hidden model. */
+  models?: Array<Record<string, unknown>>;
+  /** Rewrite the OpenID configuration (to name a remote jwks_uri, say). */
+  tamperDiscovery?: (document: Record<string, unknown>) => void;
 }
 
 export interface ChatGptOAuthFixture {
@@ -42,6 +46,8 @@ export interface ChatGptOAuthFixture {
   refuse: Set<string>;
   /** The current access and refresh tokens. */
   current(): { accessToken: string; refreshToken: string };
+  /** Rewrite the claims of every ID token issued from now on (refreshes included). */
+  tamperIdTokens(tamper: ((claims: Record<string, unknown>) => void) | undefined): void;
   close(): Promise<void>;
 }
 
@@ -81,6 +87,8 @@ export async function createChatGptOAuthFixture(
   const log: ChatGptOAuthFixture['log'] = { authorize: [], token: [], revoke: [], responses: [] };
   const refuse = new Set<string>();
   let generation = 0;
+  let registrations = 0;
+  let tamper = options.tamperIdToken;
   let accessToken = '';
   let refreshToken = '';
   let issuer = '';
@@ -99,7 +107,7 @@ export async function createChatGptOAuthFixture(
       exp: now + 3600,
       ...(nonce ? { nonce } : {}),
     };
-    options.tamperIdToken?.(claims);
+    tamper?.(claims);
     return {
       access_token: accessToken,
       refresh_token: refreshToken,
@@ -114,13 +122,15 @@ export async function createChatGptOAuthFixture(
     void (async () => {
       const url = new URL(req.url ?? '/', issuer || 'http://127.0.0.1');
       if (req.method === 'GET' && url.pathname === '/.well-known/openid-configuration') {
-        json(res, 200, {
+        const document: Record<string, unknown> = {
           issuer,
           authorization_endpoint: `${issuer}/api/accounts/authorize`,
           token_endpoint: `${issuer}/api/accounts/oauth/token`,
           jwks_uri: `${issuer}/jwks`,
           revocation_endpoint: `${issuer}/oauth/revoke`,
-        });
+        };
+        options.tamperDiscovery?.(document);
+        json(res, 200, document);
         return;
       }
       if (req.method === 'GET' && url.pathname === '/jwks') {
@@ -141,7 +151,14 @@ export async function createChatGptOAuthFixture(
         } else {
           const code = `fixture-code-${codes.size + 1}`;
           const requested = params.get('client_id') ?? '';
-          const issued = requested === 'dynamic_agent_client' ? clientId : requested;
+          // Each registration issues a new client, as OpenAI's does.
+          if (requested === 'dynamic_agent_client') registrations += 1;
+          const issued =
+            requested === 'dynamic_agent_client'
+              ? registrations === 1
+                ? clientId
+                : `${clientId}_${registrations}`
+              : requested;
           codes.set(code, {
             challenge: params.get('code_challenge') ?? '',
             nonce: params.get('nonce') ?? '',
@@ -203,7 +220,7 @@ export async function createChatGptOAuthFixture(
           return;
         }
         json(res, 200, {
-          models: [
+          models: options.models ?? [
             { slug: 'gpt-fixture', display_name: 'GPT Fixture', visibility: 'list' },
             { slug: 'gpt-fixture-hidden', display_name: 'Hidden', visibility: 'hide' },
           ],
@@ -253,6 +270,9 @@ export async function createChatGptOAuthFixture(
     log,
     refuse,
     current: () => ({ accessToken, refreshToken }),
+    tamperIdTokens: (next) => {
+      tamper = next;
+    },
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => resolve());

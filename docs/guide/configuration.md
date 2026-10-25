@@ -316,7 +316,8 @@ book auth logout                # revoke the sign-in and delete its tokens
 
 `book auth login` opens your browser, where you continue with ChatGPT and allow Book to use your
 plan. It prints the sign-in URL too, so it also works over SSH: use `--no-browser`, or set
-`$BROWSER` to choose the program. When it finishes, it records the models your plan lists as a
+`$BROWSER` to choose the program. `$BROWSER` is read the way Python reads it: commands with
+arguments, separated by `:` (`;` on Windows), where `%s` stands for the URL. When it finishes, it records the models your plan lists as a
 provider entry in your user file (`<BOOK_HOME>/settings.json`), under `chatgpt` unless you
 already have an entry of this type:
 
@@ -334,9 +335,15 @@ list, run `book auth login` again. Some things differ from an API-key provider:
   `BOOK_API_KEY` either. Book uses your sign-in only for an entry in your own settings: an entry
   that only a repository declares (`.book/settings.json`) is refused, even after
   `book trust provider` approves it.
+- **Only you choose a plan model.** A `model`, `compactModel`, `advisorModel` or agent-profile
+  `model` that a workspace layer sets to one of your chatgpt models is ignored, with a notice at
+  launch and in `book doctor`. Your own value applies instead. An agent definition or a delegated
+  model id that names one is refused. Your own settings, `--model`, `BOOK_MODEL` and `/model`
+  choose plan models as usual.
 - **The plan route has its own request shape.** Every request sends `"store": false` and
-  `"stream": true`, groups Book's tools in one namespace, and sends no `max_output_tokens`, so an
-  output cap you set does not apply on this route.
+  `"stream": true`, groups Book's tools in one namespace, and sends no `max_output_tokens`. So no
+  output cap applies on this route: not one you set, and not the caps compaction and the advisor
+  ask for.
 - **No sign-in fails the request; Book never opens a browser for one.** Print mode and the SDK stop
   at startup with an error naming `book auth login`. The TUI starts, and each turn reports the same.
 - **A plan limit stops the run** with "Usage limit reached", plus a link to ChatGPT's usage
@@ -356,14 +363,15 @@ Under the hood:
   login wrote, which `book doctor` still reports as a leftover to delete.
 - **Refresh.** Access tokens last an hour, and Book refreshes them before expiry, or once when a
   request is refused with a 401. Refresh tokens rotate, so concurrent sessions refresh one at a
-  time under a lock file. A refresh token OpenAI reports as spent clears the tokens, and you sign
-  in again.
+  time under a lock file, and a rotated pair is saved as soon as it arrives, even if the turn that
+  asked for it is cancelled. A refresh token OpenAI reports as spent clears the tokens, and you
+  sign in again.
 - **Sign-out.** `book auth logout` revokes the refresh token with OpenAI and deletes the tokens. It
   keeps the registration, so the next sign-in skips registration. If OpenAI doesn't confirm the
   revocation, disconnect Book in ChatGPT Settings → Security and login → Sign in with ChatGPT.
 - **Another account.** `book auth login --new-account` registers the machine again, to sign in
-  with a different ChatGPT account. A plain `book auth login` as a different account is refused
-  instead of replacing the saved one.
+  with a different ChatGPT account, and revokes the account it replaces. A plain
+  `book auth login` as a different account is refused instead of replacing the saved one.
 - **Redaction.** The tokens are redacted from tool output like a provider key.
 - **Doctor.** `book doctor` reports the sign-in on a machine that uses or configured it.
 - **Testing.** `BOOK_CHATGPT_ISSUER` and `BOOK_CHATGPT_API_BASE` point the flow at a local test

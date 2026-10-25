@@ -2561,6 +2561,12 @@ export async function runAgentLoop(
        * is the hold that costs nothing when the reader has caught up.
        */
       if (toolCalls.length > 0) await callbacks.beforeToolExecution?.();
+      // A Sign in with ChatGPT request may have just refreshed the plan tokens, which rotate: the
+      // redaction set is read again before this turn's tools, so a rotated token is redacted too.
+      // An API key cannot change within a run, and is read once above.
+      if (toolCalls.length > 0 && config.providerAuth === 'chatgpt') {
+        toolContext.providerSecrets = collectProviderSecrets(config);
+      }
 
       // Deferred compaction starts here, not at the boundary after the tools:
       // the response has just reported the pressure, the tools have not run,

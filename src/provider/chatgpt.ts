@@ -21,6 +21,7 @@ import {
   CHATGPT_USAGE_URL,
   ChatGptSignInRequiredError,
   chatGptAccessToken,
+  chatGptEndpoints,
 } from '../auth/chatgpt-oauth.js';
 import { responsesStream, type ResponsesRoute } from './openai-responses.js';
 
@@ -71,7 +72,8 @@ export async function* chatGptStream(
     let delivered = false;
     let refused = false;
     for await (const event of responsesStream(
-      { ...config, apiKey: token },
+      // Re-pinned here too: the plan token goes to OpenAI's API, whatever config reached this.
+      { ...config, apiKey: token, baseUrl: chatGptEndpoints().apiBase },
       messages,
       tools,
       options,

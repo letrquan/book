@@ -72,6 +72,23 @@ describe('chatGptStream', () => {
     expect(config.apiKey).toBe('');
   });
 
+  it("sends the token only to OpenAI's API, whatever base URL the config carries", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        urls.push(url);
+        return new Response(
+          `data: ${JSON.stringify({ type: 'response.completed', response: {} })}\n\n`,
+          { status: 200 },
+        );
+      }),
+    );
+    await collect();
+    expect(config.baseUrl).toBe('http://127.0.0.1:9/v1');
+    expect(urls).toEqual(['https://api.openai.com/v1/responses']);
+  });
+
   it("words a plan limit the way OpenAI asks, with ChatGPT's usage page", async () => {
     vi.stubGlobal(
       'fetch',

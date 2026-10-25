@@ -181,6 +181,21 @@ interface Discovery {
   revocationEndpoint?: string;
 }
 
+function discoveredUrlAllowed(raw: string, overridden: boolean): boolean {
+  try {
+    const url = new URL(raw);
+    if (overridden) {
+      return (
+        (url.protocol === 'http:' || url.protocol === 'https:') &&
+        ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+      );
+    }
+    return url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 async function discover(
   endpoints: ChatGptEndpoints,
   options: ChatGptRequestOptions,
@@ -191,6 +206,17 @@ async function discover(
   }
   if (typeof document.jwks_uri !== 'string') {
     throw new Error('The OpenID configuration names no jwks_uri.');
+  }
+  // The keys and the revocation endpoint (which is sent the refresh token) are held to the same
+  // rule as the issuer: https from OpenAI, and loopback only under a test override.
+  const overridden = endpoints.issuer !== CHATGPT_ISSUER;
+  for (const [name, value] of [
+    ['jwks_uri', document.jwks_uri],
+    ['revocation_endpoint', document.revocation_endpoint],
+  ] as const) {
+    if (typeof value === 'string' && !discoveredUrlAllowed(value, overridden)) {
+      throw new Error(`The OpenID configuration's ${name} is not an address Book will use.`);
+    }
   }
   return {
     jwksUri: document.jwks_uri,
@@ -310,7 +336,11 @@ function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
-async function startLoopback(timeoutMs: number, signal?: AbortSignal): Promise<LoopbackCallback> {
+async function startLoopback(
+  expectedState: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<LoopbackCallback> {
   let pending: ServerResponse | undefined;
   let resolveReceived!: (params: URLSearchParams) => void;
   let rejectReceived!: (error: Error) => void;
@@ -324,6 +354,15 @@ async function startLoopback(timeoutMs: number, signal?: AbortSignal): Promise<L
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     if (req.method !== 'GET' || url.pathname !== CALLBACK_PATH || pending) {
       res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found');
+      return;
+    }
+    // Only this attempt's redirect answers it. Anything else that reaches the port (a stale tab,
+    // a prefetch, another local process) is refused and ignored, so it can neither end the
+    // sign-in nor make the real redirect land on a 404.
+    if (url.searchParams.get('state') !== expectedState) {
+      res
+        .writeHead(400, { 'Content-Type': 'text/plain' })
+        .end('This is not the sign-in Book is waiting for.');
       return;
     }
     pending = res;
@@ -380,6 +419,8 @@ export interface ChatGptLoginResult {
   /** True the first time plan usage is enabled on this host: show the plan-usage notice. */
   firstSignIn: boolean;
   newRegistration: boolean;
+  /** Set when `--new-account` replaced a signed-in account: whether its revocation was confirmed. */
+  previousRevoked?: boolean;
 }
 
 /** Run the browser sign-in once. Throws, saving nothing, on any failed check. */
@@ -396,6 +437,7 @@ export async function signInWithChatGpt(
   const nonce = randomToken();
   const pkce = pkcePair();
   const loopback = await startLoopback(
+    state,
     options.timeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS,
     options.signal,
   );
@@ -485,8 +527,13 @@ export async function signInWithChatGpt(
     const subject = claims.sub as string;
     const email = typeof claims.email === 'string' ? claims.email : undefined;
     const firstSignIn = record.welcomed !== true;
+    let replaced: { clientId: string; refreshToken: string } | undefined;
     await withChatGptSigninLock(path, async () => {
       const latest = readChatGptSignin(path) ?? record;
+      const previous = latest.account;
+      if (previous?.tokens?.refreshToken && previous.clientId !== clientId) {
+        replaced = { clientId: previous.clientId, refreshToken: previous.tokens.refreshToken };
+      }
       writeChatGptSignin(path, {
         ...latest,
         account: { clientId, subject, ...(email ? { email } : {}), tokens },
@@ -494,6 +541,11 @@ export async function signInWithChatGpt(
       });
     });
     loopback.finish(true, 'Book is signed in with ChatGPT. You can close this tab.');
+    // `--new-account` replaced a signed-in account: its grant would otherwise stay live at OpenAI
+    // with nothing on this machine able to revoke it.
+    const previousRevoked = replaced
+      ? await revokeRefreshToken(endpoints, replaced.clientId, replaced.refreshToken, options)
+      : undefined;
     return {
       clientId,
       subject,
@@ -501,6 +553,7 @@ export async function signInWithChatGpt(
       expiresAt: tokens.expiresAt,
       firstSignIn,
       newRegistration: requestedClientId === CHATGPT_DYNAMIC_CLIENT_ID,
+      ...(previousRevoked !== undefined ? { previousRevoked } : {}),
     };
   } catch (error) {
     loopback.finish(
@@ -543,6 +596,8 @@ export async function refreshChatGptTokens(
     if (!tokens.refreshToken) {
       throw new ChatGptSignInRequiredError('The ChatGPT sign-in has expired.');
     }
+    // Not tied to the turn's signal: once OpenAI has rotated the refresh token, an abort that
+    // dropped its answer would leave only the spent one on disk.
     const answer = await postForm(
       endpoints.token,
       {
@@ -551,7 +606,7 @@ export async function refreshChatGptTokens(
         refresh_token: tokens.refreshToken,
         resource: endpoints.apiBase,
       },
-      options,
+      { ...options, signal: undefined },
     );
     if (answer.status !== 200) {
       const code = typeof answer.body.error === 'string' ? answer.body.error : '';
@@ -568,15 +623,26 @@ export async function refreshChatGptTokens(
       );
     }
     const renewed = tokensFromResponse(answer.body, now(), tokens);
-    if (typeof answer.body.id_token === 'string') {
-      await verifiedIdTokenClaims(
-        renewed.idToken,
-        { audience: account.clientId, subject: account.subject },
-        endpoints,
-        options,
-      );
-    }
+    // Saved before anything else can fail: the old refresh token is already spent.
     writeChatGptSignin(path, { ...record, account: { ...account, tokens: renewed } });
+    if (typeof answer.body.id_token === 'string') {
+      // A token endpoint answer is authenticated by TLS (OpenID Connect Core 3.1.3.7), so its ID
+      // token's claims are checked here without another network round trip: still this client,
+      // still this account.
+      try {
+        validateIdTokenClaims(decodeJwt(renewed.idToken).payload, {
+          issuer: endpoints.issuer,
+          audience: account.clientId,
+          subject: account.subject,
+          now: now(),
+        });
+      } catch (error) {
+        writeChatGptSignin(path, { ...record, account: { ...account, tokens: undefined } });
+        throw new ChatGptSignInRequiredError(
+          `The renewed ChatGPT sign-in did not check out (${error instanceof Error ? error.message : String(error)}).`,
+        );
+      }
+    }
     return renewed;
   });
 }
@@ -610,6 +676,40 @@ export function hasChatGptTokens(path: string = chatGptSigninPath()): boolean {
   }
 }
 
+/**
+ * Revoke one refresh token at the issuer's `revocation_endpoint`. True only when OpenAI confirmed
+ * it (an empty 200); a server error or a network failure is tried again, a 4xx is not.
+ */
+async function revokeRefreshToken(
+  endpoints: ChatGptEndpoints,
+  clientId: string,
+  refreshToken: string,
+  options: ChatGptRequestOptions,
+): Promise<boolean> {
+  let revocationEndpoint: string | undefined;
+  try {
+    revocationEndpoint = (await discover(endpoints, options)).revocationEndpoint;
+  } catch {
+    return false;
+  }
+  if (!revocationEndpoint) return false;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt > 0) await delay(500 * attempt, options.signal);
+    try {
+      const answer = await postForm(
+        revocationEndpoint,
+        { token: refreshToken, token_type_hint: 'refresh_token', client_id: clientId },
+        options,
+      );
+      if (answer.status === 200) return true;
+      if (answer.status < 500) return false;
+    } catch {
+      // A network failure: try again while attempts remain.
+    }
+  }
+  return false;
+}
+
 export interface ChatGptSignOutResult {
   /** Whether there were tokens to sign out of. */
   signedIn: boolean;
@@ -631,33 +731,9 @@ export async function signOutOfChatGpt(
   const account = record?.account;
   const tokens = account?.tokens;
   if (!record || !account || !tokens) return { signedIn: false, revoked: false };
-  let revoked = false;
-  if (tokens.refreshToken) {
-    try {
-      const { revocationEndpoint } = await discover(endpoints, options);
-      for (let attempt = 0; revocationEndpoint && attempt < 3 && !revoked; attempt += 1) {
-        if (attempt > 0) await delay(500 * attempt, options.signal);
-        try {
-          const answer = await postForm(
-            revocationEndpoint,
-            {
-              token: tokens.refreshToken,
-              token_type_hint: 'refresh_token',
-              client_id: account.clientId,
-            },
-            options,
-          );
-          revoked = answer.status === 200;
-          // A 4xx will not change on a retry; only a server error or a network failure might.
-          if (!revoked && answer.status < 500) break;
-        } catch {
-          // A network failure: try again while attempts remain.
-        }
-      }
-    } catch {
-      // No discovery: the revocation stays unconfirmed.
-    }
-  }
+  const revoked = tokens.refreshToken
+    ? await revokeRefreshToken(endpoints, account.clientId, tokens.refreshToken, options)
+    : false;
   await withChatGptSigninLock(path, async () => {
     const latest = readChatGptSignin(path) ?? record;
     if (latest.account) {

@@ -240,13 +240,62 @@ describe('Sign in with ChatGPT (fixture issuer)', () => {
     expect(readChatGptSignin(path)?.account?.tokens?.accessToken).toBe('fixture-access-1');
   });
 
+  it('saves a rotated pair even when the turn that asked for it was aborted', async () => {
+    await start({ expiresIn: 60 });
+    await login();
+    const path = chatGptSigninPath(home);
+    const aborted = AbortSignal.abort();
+    expect(await chatGptAccessToken({ path, signal: aborted })).toBe('fixture-access-2');
+    expect(readChatGptSignin(path)?.account?.tokens?.refreshToken).toBe('fixture-refresh-2');
+  });
+
+  it('clears a refresh whose ID token names another account, after saving nothing it trusts', async () => {
+    const server = await start();
+    await login();
+    server.tamperIdTokens((claims) => (claims.sub = 'someone-else'));
+    const path = chatGptSigninPath(home);
+    await expect(
+      refreshChatGptTokens({ path, staleAccessToken: 'fixture-access-1' }),
+    ).rejects.toThrow(/did not check out/);
+    expect(readChatGptSignin(path)?.account?.tokens).toBeUndefined();
+  });
+
+  it('revokes the replaced account when --new-account signs in as another', async () => {
+    const server = await start();
+    await login();
+    const { result } = await login({ newRegistration: true });
+    expect(result).toMatchObject({ clientId: 'oaiapp_fixture_2', previousRevoked: true });
+    expect(server.log.revoke).toHaveLength(1);
+    expect(server.log.revoke[0].get('token')).toBe('fixture-refresh-1');
+    expect(server.log.revoke[0].get('client_id')).toBe('oaiapp_fixture');
+    expect(readChatGptSignin(chatGptSigninPath(home))?.account?.clientId).toBe('oaiapp_fixture_2');
+  });
+
+  it('ignores a callback for another attempt and keeps waiting for its own', async () => {
+    await start({ tamperCallback: (p) => p.set('state', 'forged') });
+    await expect(login({ timeoutMs: 1_500 })).rejects.toThrow(/Timed out/);
+    expect(fixture!.log.token).toHaveLength(0);
+    expect(readChatGptSignin(chatGptSigninPath(home))?.account).toBeUndefined();
+  });
+
+  it('refuses keys or a revocation endpoint the issuer names outside its own trust', async () => {
+    await start({
+      tamperDiscovery: (document) => (document.jwks_uri = 'https://keys.example/jwks'),
+    });
+    await expect(login()).rejects.toThrow(/jwks_uri is not an address Book will use/);
+    expect(readChatGptSignin(chatGptSigninPath(home))?.account).toBeUndefined();
+  });
+
+  it('writes no provider entry when the plan lists no models, and says so', async () => {
+    await start({ models: [{ slug: 'hidden', visibility: 'hide' }] });
+    await login();
+    const setup = await recordChatGptProvider(home);
+    expect(setup).toMatchObject({ models: [], note: expect.stringMatching(/lists no models/) });
+    expect(existsSync(join(home, 'settings.json'))).toBe(false);
+  });
+
   describe('refuses, saving no tokens', () => {
     const cases: Array<[string, ChatGptOAuthFixtureOptions, RegExp]> = [
-      [
-        'a callback for another attempt (state)',
-        { tamperCallback: (p) => p.set('state', 'forged') },
-        /state mismatch/,
-      ],
       ['a declined consent', { deny: true }, /declined/],
       [
         'a registration with no issued client id',

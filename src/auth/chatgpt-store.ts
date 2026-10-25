@@ -11,7 +11,15 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { delay } from '../async.js';
 import { resolveBookHome } from '../book-home.js';
@@ -150,34 +158,56 @@ export function chatGptTokenSecrets(path: string): string[] {
   }
 }
 
-/** A lock older than this was left by a process that died holding it. */
-const STALE_LOCK_MS = 30_000;
-const LOCK_WAIT_MS = 15_000;
+/**
+ * A lock older than this was left by a process that died holding it. A holder makes one token
+ * request (20 s at most) and one write, so two minutes is never a live holder; the age is the
+ * file's mtime, so an empty lock (a crash between creating and writing it) is reclaimed too.
+ */
+const STALE_LOCK_MS = 2 * 60_000;
+/** How long a waiter waits: past a live holder's longest request, short of a stale lock. */
+const LOCK_WAIT_MS = 60_000;
 const LOCK_POLL_MS = 50;
+
+function lockIsStale(lockPath: string): boolean {
+  try {
+    return Date.now() - statSync(lockPath).mtimeMs > STALE_LOCK_MS;
+  } catch {
+    // Removed meanwhile: not stale, and the next attempt takes it.
+    return false;
+  }
+}
 
 /**
  * Run `fn` holding the record's lock file, across processes. Refresh tokens rotate, so two
  * sessions refreshing at once would each spend the token the other needs; the one that waits
- * re-reads the record inside the lock and finds the tokens already renewed.
+ * re-reads the record inside the lock and finds the tokens already renewed. The lock holds a
+ * random token, and is removed only while it still holds this holder's, so a holder whose lock
+ * was reclaimed as stale never removes the next holder's.
  */
 export async function withChatGptSigninLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const lockPath = `${path}.lock`;
+  const owner = `${process.pid} ${randomUUID()}\n`;
   const deadline = Date.now() + LOCK_WAIT_MS;
-  let descriptor: number | undefined;
-  while (descriptor === undefined) {
+  for (;;) {
+    let descriptor: number | undefined;
     try {
       descriptor = openSync(lockPath, 'wx', 0o600);
-      writeSync(descriptor, `${process.pid} ${Date.now()}\n`);
+      writeSync(descriptor, owner);
+      closeSync(descriptor);
+      break;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      let stale = false;
-      try {
-        const [, since] = readFileSync(lockPath, 'utf8').trim().split(' ');
-        stale = Date.now() - Number(since) > STALE_LOCK_MS;
-      } catch {
-        // A lock being written or removed right now: wait for it.
+      if (descriptor !== undefined) {
+        // Created but not written: remove it rather than leave a lock nobody owns.
+        closeSync(descriptor);
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          // Already gone.
+        }
+        throw error;
       }
-      if (stale) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if (lockIsStale(lockPath)) {
         try {
           unlinkSync(lockPath);
         } catch {
@@ -196,11 +226,10 @@ export async function withChatGptSigninLock<T>(path: string, fn: () => Promise<T
   try {
     return await fn();
   } finally {
-    closeSync(descriptor);
     try {
-      unlinkSync(lockPath);
+      if (readFileSync(lockPath, 'utf8') === owner) unlinkSync(lockPath);
     } catch {
-      // Already gone.
+      // Already gone, or reclaimed by another holder.
     }
   }
 }
