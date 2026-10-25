@@ -1,10 +1,11 @@
 /**
  * Trust decisions the user makes about repository-controlled input.
  *
- * Book gates four kinds of repository-declared configuration behind a one-time
+ * Book gates these kinds of repository-declared configuration behind a one-time
  * per-workspace decision: `permissions.allow` rules, MCP servers, hook entries,
- * and shell substitution in a project `.book/commands/*.md` body. Each gate is
- * only as strong as the store its decisions live in.
+ * shell substitution in a project `.book/commands/*.md` body, `additionalDirectories`
+ * entries, and workspace-declared providers. Each gate is only as strong as the
+ * store its decisions live in.
  *
  * That store used to be `<workspace>/.book/settings.local.json`, on the
  * reasoning that the file is gitignored and only Book writes it. `.gitignore`
