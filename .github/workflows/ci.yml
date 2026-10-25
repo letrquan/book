@@ -152,4 +152,4 @@ jobs:
           .filter((a) => a.ancestorTitles.includes('the Seatbelt sandbox on a real Mac'));
           const passed = t.filter((a) => a.status === 'passed').length;
           console.log('Seatbelt tests passed on this Mac:', passed, 'of', t.length);
-          if (t.length < 10 || passed !== t.length) process.exit(1);"
+          if (t.length < 20 || passed !== t.length) process.exit(1);"

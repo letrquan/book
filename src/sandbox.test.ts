@@ -3950,12 +3950,16 @@ describe('withGitConfigReadOnlyNotice under Seatbelt', () => {
     expect(text).toBe(EPERM_INDEX_ERROR);
   });
 
-  it('still needs a git command or a .git path on macOS', () => {
-    const error = 'touch: /Users/book/x: Operation not permitted';
+  it('needs a .git path on macOS, where every refused path is EPERM', () => {
+    const error = 'cat: /Users/book/.npmrc: Operation not permitted';
 
     expect(withGitConfigReadOnlyNotice(error, error, true, 'touch ~/x', true, 'darwin')).toBe(
       error,
     );
+    // A git command alone is not enough: the EPERM came from the home directory.
+    expect(
+      withGitConfigReadOnlyNotice(error, error, true, 'git log -1 && cat ~/.npmrc', true, 'darwin'),
+    ).toBe(error);
   });
 });
 

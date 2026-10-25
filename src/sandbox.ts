@@ -13,6 +13,7 @@ import {
 } from 'fs';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { homedir, platform, tmpdir } from 'os';
+import { resolveBookHome } from './book-home.js';
 import type { ResolvedSettings } from './settings.js';
 import {
   SANDBOX_EXEC_PATH,
@@ -1429,9 +1430,15 @@ function ancestorsOf(path: string, host: SandboxHost): string[] {
  * (`BOOK_TEMP_PREFIXES`).
  */
 export function seatbeltTempRoots(host: SandboxHost = realSandboxHost): string[] {
+  // A temp root is only ever a scratch directory. One that is, or holds, the home
+  // directory (`TMPDIR=$HOME`, `TMPDIR=/`) would hand the command the whole home,
+  // so it is dropped — and the temp writes with it, which fails closed. A
+  // `BOOK_HOME` inside a temp root needs no such drop: `buildSeatbeltPolicy`
+  // denies it by path after the temp roots.
+  const home = canonicalPath(host.homedir(), host);
   const roots = [tmpdir(), '/tmp']
     .map((root) => host.realpath(root))
-    .filter((root): root is string => root !== null && root !== host.path.resolve('/'));
+    .filter((root): root is string => root !== null && isOutside(root, home, host.path));
   return [...new Set(roots)];
 }
 
@@ -1469,8 +1476,19 @@ export function buildSeatbeltPolicy(
   host: SandboxHost = realSandboxHost,
   protectedPaths?: ProtectedWorkspacePaths,
   tempRoots: string[] = [],
+  bookHome?: string,
 ): SeatbeltPolicy {
-  const canon = (path: string): string => canonicalPath(path, host);
+  // One command canonicalises the same mount paths many times over; each is a
+  // walk of realpath calls, so they are computed once per policy.
+  const canonical = new Map<string, string>();
+  const canon = (path: string): string => {
+    let resolved = canonical.get(path);
+    if (resolved === undefined) {
+      resolved = canonicalPath(path, host);
+      canonical.set(path, resolved);
+    }
+    return resolved;
+  };
   const subpath = (path: string): SeatbeltPathFilter => ({ match: 'subpath', path });
   const literal = (path: string): SeatbeltPathFilter => ({ match: 'literal', path });
   const READ_WRITE = ['file-read*', 'file-write*'] as const;
@@ -1484,10 +1502,8 @@ export function buildSeatbeltPolicy(
       ),
     });
   const isProtectedArea = (path: string): boolean => {
-    const canonical = canonicalPath(expandPath(path, host), host);
-    return paths.mounts.some(
-      (mount) => !isOutside(canonicalPath(mount.path, host), canonical, host.path),
-    );
+    const target = canon(expandPath(path, host));
+    return paths.mounts.some((mount) => !isOutside(canon(mount.path), target, host.path));
   };
   /** A configured entry's canonical path, or null when nothing is there (bwrap skips it too). */
   const present = (path: string): string | null => {
@@ -1498,6 +1514,12 @@ export function buildSeatbeltPolicy(
     entries.map(present).filter((path): path is string => path !== null);
 
   const workspace = host.exists(workspaceRoot) ? canon(workspaceRoot) : null;
+  // Book's own home holds the provider key and every session. It is unreadable
+  // here mostly because it sits in the home directory; this states it outright,
+  // for a `BOOK_HOME` anywhere else.
+  const bookHomePath = bookHome ? canon(bookHome) : null;
+  const workspaceInBookHome =
+    workspace !== null && bookHomePath !== null && !isOutside(bookHomePath, workspace, host.path);
   const allowWrite = presentAll(settings.filesystem.allowWrite.filter((p) => !isProtectedArea(p)));
   const optIns = presentAll(settings.filesystem.allowWrite.filter(isProtectedArea));
   const denyWrite = presentAll(settings.filesystem.denyWrite);
@@ -1550,9 +1572,17 @@ export function buildSeatbeltPolicy(
     filters: tempRoots.map(subpath),
     bookTempEntries: true,
   });
+  // A managed agent's worktree is a workspace inside Book's home: deny the home
+  // first so the workspace allow reopens it. Otherwise the deny comes after the
+  // workspace, so a `BOOK_HOME` inside the workspace stays unreadable.
+  const bookHomeRule: SeatbeltRule | null = bookHomePath
+    ? { action: 'deny', operations: READ_WRITE, filters: [subpath(bookHomePath)] }
+    : null;
+  if (bookHomeRule && workspaceInBookHome) rules.push(bookHomeRule);
   // After the temp roots, so a workspace inside one is writable whatever it is called.
   if (workspace)
     rules.push({ action: 'allow', operations: READ_WRITE, filters: [subpath(workspace)] });
+  if (bookHomeRule && !workspaceInBookHome) rules.push(bookHomeRule);
   rules.push({ action: 'allow', operations: READ_WRITE, filters: allowWrite.map(subpath) });
   for (const mount of paths.mounts) {
     const rule = protectedRule(mount);
@@ -1579,6 +1609,13 @@ export function buildSeatbeltPolicy(
   // `denyWrite` is a read-only bind under bwrap: readable, even outside the workspace.
   rules.push({ action: 'allow', operations: ['file-read*'], filters: denyWrite.map(subpath) });
   rules.push({ action: 'deny', operations: ['file-write*'], filters: denyWrite.map(subpath) });
+  // That read allow would reopen a mask below it — `denyWrite: ["<ws>/.book"]`
+  // reading the credential back — so the masks and Book's home follow it again.
+  for (const mount of hiddenFiles) {
+    const rule = protectedRule(mount);
+    if (rule) rules.push(rule);
+  }
+  if (bookHomeRule && denyWrite.length > 0 && !workspaceInBookHome) rules.push(bookHomeRule);
   rules.push({
     action: 'deny',
     operations: READ_WRITE,
@@ -1597,11 +1634,16 @@ export function buildSeatbeltPolicy(
   const hiddenPaths = [
     ...hiddenFiles.map((mount) => canon(mount.path)),
     ...denyReadEntries.map((entry) => entry.path),
+    ...(bookHomePath && !workspaceInBookHome ? [bookHomePath] : []),
   ];
+  // In place: the workspace root and every directory above it (a workspace
+  // under a temp root or an `allowWrite` root could otherwise be moved, taking
+  // its protected paths with it to a path no rule names), the directories
+  // bubblewrap pins, and the directories above every hidden or read-only path.
   const keptInPlace = new Set([
-    ...(workspace ? [workspace] : []),
+    ...(workspace ? [workspace, ...ancestorsOf(workspace, host)] : []),
     ...paths.pinnedDirectories.map(canon),
-    ...hiddenPaths.flatMap((path) => ancestorsOf(path, host)),
+    ...[...hiddenPaths, ...denyWrite].flatMap((path) => ancestorsOf(path, host)),
   ]);
   const notCreatable = new Set(
     [...(workspace ? [workspace] : []), ...deniedPaths].flatMap((path) => ancestorsOf(path, host)),
@@ -1640,10 +1682,11 @@ export function buildSeatbeltExecution(
   host: SandboxHost = realSandboxHost,
   protectedPaths?: ProtectedWorkspacePaths,
   tempRoots: string[] = [],
+  bookHome?: string,
 ): CommandExecution {
   return seatbeltExecution(
     sandboxExecPath,
-    buildSeatbeltPolicy(workspaceRoot, settings, host, protectedPaths, tempRoots),
+    buildSeatbeltPolicy(workspaceRoot, settings, host, protectedPaths, tempRoots, bookHome),
     command,
   );
 }
@@ -1818,18 +1861,21 @@ export function withGitConfigReadOnlyNotice(
   }
 
   if (gitDirReadOnly) {
-    // bubblewrap's read-only binds fail with EROFS; Seatbelt's denies fail with
-    // EPERM, which is matched only where Seatbelt is the backend.
-    const readOnly =
-      sandboxBackendFor(os) === 'seatbelt'
-        ? /\b(?:Read-only file system|Operation not permitted)\b/i
-        : /\bRead-only file system\b/i;
-    const linesWithRo = output.split('\n').filter((line) => readOnly.test(line));
+    // bubblewrap's read-only binds fail with EROFS. Seatbelt's denies fail with
+    // EPERM, which is also what every other refused path there reports — the
+    // unreadable home directory, a file outside the workspace — so an EPERM line
+    // counts only where Seatbelt is the backend, and only when it names a `.git`
+    // path.
+    const dotGit = /(?:^|[/\s'"`])\.git(?=[/\\s'":`]|[\r\n]|$)/;
+    const lines = output.split('\n');
+    const linesWithRo = lines.filter((line) => /\bRead-only file system\b/i.test(line));
     const runsGit = /(?:^|[;&|(\s])git\b/.test(command);
-    const hasDotGitSegment = linesWithRo.some((line) =>
-      /(?:^|[/\s'"`])\.git(?=[/\\s'":`]|[\r\n]|$)/.test(line),
-    );
-    const roFailure = linesWithRo.length > 0 && (runsGit || hasDotGitSegment);
+    const hasDotGitSegment = linesWithRo.some((line) => dotGit.test(line));
+    const seatbeltGitDenial =
+      sandboxBackendFor(os) === 'seatbelt' &&
+      lines.some((line) => /\bOperation not permitted\b/i.test(line) && dotGit.test(line));
+    const roFailure =
+      (linesWithRo.length > 0 && (runsGit || hasDotGitSegment)) || seatbeltGitDenial;
 
     if (roFailure) {
       return withReadOnlyGitDirNote(text);
@@ -1915,7 +1961,8 @@ function createSeatbeltSandbox(settings: ResolvedSettings['sandbox']): Sandbox |
     return null;
   }
   const unbindable = warnUnenforceablePolicy(settings, 'sandbox-exec (Seatbelt)');
-  const tempRoots = seatbeltTempRoots();
+  const bookHome = resolveBookHome();
+  const tempRoots = seatbeltTempRoots(realSandboxHost);
   return {
     wrap(command, workspaceRoot, protectedPaths): CommandExecution {
       return buildSeatbeltExecution(
@@ -1926,6 +1973,7 @@ function createSeatbeltSandbox(settings: ResolvedSettings['sandbox']): Sandbox |
         realSandboxHost,
         protectedPaths,
         tempRoots,
+        bookHome,
       );
     },
     describe(): string {

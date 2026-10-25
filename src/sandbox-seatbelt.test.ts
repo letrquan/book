@@ -51,7 +51,14 @@ function sandboxSettings(overrides: SandboxTestOverrides = {}): ResolvedSettings
   };
 }
 
-type MemoryNode = 'file' | 'dir' | { link: string };
+type MemoryNode = 'file' | 'dir' | { link: string } | { text: string };
+
+const isLink = (node: MemoryNode | undefined): node is { link: string } =>
+  typeof node === 'object' && 'link' in node;
+const isFile = (node: MemoryNode | undefined): boolean =>
+  node === 'file' || (typeof node === 'object' && 'text' in node);
+const textOf = (node: MemoryNode | undefined): string =>
+  typeof node === 'object' && 'text' in node ? node.text : '';
 
 /**
  * An in-memory POSIX filesystem, so the policy is pinned on every OS — the
@@ -74,7 +81,7 @@ function memoryHost(tree: Record<string, MemoryNode>, home = '/Users/book'): San
       const next = posix.join(current, part);
       const node = nodes.get(next);
       if (node === undefined) return null;
-      if (typeof node === 'object') {
+      if (isLink(node)) {
         const resolved = realpath(posix.resolve(current, node.link));
         if (resolved === null) return null;
         current = resolved;
@@ -98,8 +105,8 @@ function memoryHost(tree: Record<string, MemoryNode>, home = '/Users/book'): San
     path: posix,
     exists: (path) => realpath(path) !== null,
     isDirectory: (path) => kind(path) === 'dir',
-    readFile: (path) => (own(path) === 'file' ? '' : null),
-    fileSize: (path) => (own(path) === 'file' ? 0 : null),
+    readFile: (path) => (isFile(own(path)) ? textOf(own(path)) : null),
+    fileSize: (path) => (isFile(own(path)) ? textOf(own(path)).length : null),
     readDir: (path) => {
       const real = realpath(path);
       if (real === null || nodes.get(real) !== 'dir') return [];
@@ -110,12 +117,12 @@ function memoryHost(tree: Record<string, MemoryNode>, home = '/Users/book'): San
     entryKind: (path) => {
       const node = own(path);
       if (node === undefined) return null;
-      if (typeof node === 'object') return 'symlink';
+      if (isLink(node)) return 'symlink';
       return node === 'dir' ? 'directory' : 'file';
     },
     linkTarget: (path) => {
       const node = own(path);
-      return typeof node === 'object' ? node.link : null;
+      return isLink(node) ? node.link : null;
     },
     realpath,
     homedir: () => home,
@@ -298,6 +305,27 @@ describe('buildSeatbeltPolicy', () => {
     expect(canWrite(policy, `${workspace}/a`)).toBe(true);
   });
 
+  it('keeps settings.local.json masked under a denyWrite entry for .book', () => {
+    const policy = policyFor({ filesystem: { denyWrite: [`${WS}/.book`, WS] } });
+
+    expect(canRead(policy, `${WS}/.book/settings.json`)).toBe(true);
+    expect(canRead(policy, `${WS}/.book/settings.local.json`)).toBe(false);
+  });
+
+  it("keeps Book's home unreadable under a denyWrite entry above it", () => {
+    const policy = buildSeatbeltPolicy(
+      WS,
+      sandboxSettings({ filesystem: { denyWrite: ['~'] } }),
+      memoryHost(repoTree()),
+      undefined,
+      TEMP_ROOTS,
+      `${HOME}/.book`,
+    );
+
+    expect(canRead(policy, `${HOME}/.ssh/id_ed25519`)).toBe(true);
+    expect(canRead(policy, `${HOME}/.book/settings.json`)).toBe(false);
+  });
+
   it('applies denyWrite as a readable, read-only path and denyRead as an unreadable one', () => {
     const tree = repoTree({
       [`${HOME}/.cargo/bin/rg`]: 'file',
@@ -316,19 +344,47 @@ describe('buildSeatbeltPolicy', () => {
     expect(canRemove(policy, `${WS}/conf`)).toBe(false);
   });
 
-  it('pins the workspace root, and keeps a moved ancestor from coming back', () => {
+  it('pins the workspace root and every directory above it', () => {
+    const workspace = `${USER_TEMP}/projects/ws`;
+    const policy = policyFor({}, repoTree({ [`${workspace}/a`]: 'file' }), workspace);
+
+    expect(canRemove(policy, workspace)).toBe(false);
+    expect(canCreate(policy, workspace)).toBe(false);
+    // Inside a writable temp root, moving the parent would move the workspace.
+    expect(canRemove(policy, `${USER_TEMP}/projects`)).toBe(false);
+    expect(canRemove(policy, `${workspace}/a`)).toBe(true);
+  });
+
+  it('keeps the directories above a read-only path in place', () => {
     const tree = repoTree({ [`${WS}/a/b/c/file`]: 'file' });
     const policy = policyFor({ filesystem: { denyWrite: [`${WS}/a/b/c`] } }, tree);
 
-    expect(canRemove(policy, WS)).toBe(false);
-    expect(canCreate(policy, WS)).toBe(false);
-    // An ancestor of a read-only path may be moved, but nothing may take its place.
-    expect(canRemove(policy, `${WS}/a/b`)).toBe(true);
-    expect(canCreate(policy, `${WS}/a/b`)).toBe(false);
-    expect(canCreate(policy, `${WS}/a`)).toBe(false);
+    expect(canRemove(policy, `${WS}/a/b`)).toBe(false);
+    expect(canRemove(policy, `${WS}/a`)).toBe(false);
     // Ordinary files beside it are unaffected.
     expect(canCreate(policy, `${WS}/a/b/other`)).toBe(true);
     expect(canRemove(policy, `${WS}/src/index.ts`)).toBe(true);
+  });
+
+  it('lets a work tree be removed with allowGitWrites, but nothing take its place', () => {
+    // A submodule work tree: its `.git` is a pointer file into the parent's git dir.
+    const tree = repoTree({
+      [`${WS}/sub/.git`]: { text: 'gitdir: ../.git/modules/sub\n' },
+      [`${WS}/sub/a.ts`]: 'file',
+      [`${WS}/.git/modules/sub/HEAD`]: 'file',
+      [`${WS}/.git/modules/sub/objects`]: 'dir',
+    });
+    const readOnly = policyFor({}, tree);
+    const writable = policyFor({ filesystem: { allowGitWrites: true } }, tree);
+
+    expect(canWrite(readOnly, `${WS}/sub/.git`)).toBe(false);
+    expect(canWrite(writable, `${WS}/sub/.git`)).toBe(false);
+    // Read-only mode pins the work tree, as bubblewrap does.
+    expect(canRemove(readOnly, `${WS}/sub`)).toBe(false);
+    // allowGitWrites leaves it removable, as bubblewrap does for `git worktree
+    // remove`, but a removed one cannot come back as a symlink to another tree.
+    expect(canRemove(writable, `${WS}/sub`)).toBe(true);
+    expect(canCreate(writable, `${WS}/sub`)).toBe(false);
   });
 
   it('names every path canonically, as Seatbelt matches the resolved one', () => {
@@ -340,6 +396,56 @@ describe('buildSeatbeltPolicy', () => {
     expect(paths).toContain(`${USER_TEMP}/ws`);
     expect(paths.some((path) => path.startsWith('/var/'))).toBe(false);
     expect(canWrite(policy, `${USER_TEMP}/ws/a`)).toBe(true);
+  });
+
+  describe("Book's own home", () => {
+    const bookHomePolicy = (
+      bookHome: string,
+      tree: Record<string, MemoryNode>,
+      workspace = WS,
+    ): SeatbeltPolicy =>
+      buildSeatbeltPolicy(
+        workspace,
+        sandboxSettings(),
+        memoryHost(tree),
+        undefined,
+        TEMP_ROOTS,
+        bookHome,
+      );
+
+    it('is unreadable and unwritable even inside a writable temp root', () => {
+      const bookHome = `${USER_TEMP}/tmp.bookhome`;
+      const policy = bookHomePolicy(bookHome, repoTree({ [`${bookHome}/settings.json`]: 'file' }));
+
+      expect(canRead(policy, `${bookHome}/settings.json`)).toBe(false);
+      expect(canWrite(policy, `${bookHome}/settings.json`)).toBe(false);
+      expect(canRemove(policy, bookHome)).toBe(false);
+      expect(canWrite(policy, `${USER_TEMP}/tmp.other`)).toBe(true);
+    });
+
+    it("leaves a managed agent's worktree inside it writable, and the rest of it denied", () => {
+      const bookHome = `${HOME}/.book`;
+      const worktree = `${bookHome}/worktrees/a1`;
+      const policy = bookHomePolicy(
+        bookHome,
+        repoTree({ [`${worktree}/src/a.ts`]: 'file' }),
+        worktree,
+      );
+
+      expect(canWrite(policy, `${worktree}/src/a.ts`)).toBe(true);
+      expect(canRead(policy, `${bookHome}/settings.json`)).toBe(false);
+      expect(canWrite(policy, `${bookHome}/worktrees/other/x`)).toBe(false);
+    });
+
+    it('stays unreadable when it sits inside the workspace', () => {
+      const bookHome = `${WS}/state/.bookhome`;
+      const policy = bookHomePolicy(bookHome, repoTree({ [`${bookHome}/settings.json`]: 'file' }));
+
+      expect(canRead(policy, `${bookHome}/settings.json`)).toBe(false);
+      expect(canWrite(policy, `${bookHome}/settings.json`)).toBe(false);
+      // Moving its parent would carry it out from under the deny.
+      expect(canRemove(policy, `${WS}/state`)).toBe(false);
+    });
   });
 
   it('shares the host network with no domain rule, and fails closed to none with one', () => {
@@ -484,13 +590,14 @@ describe('BOOK_TEMP_PREFIXES', () => {
       if (!/\.tsx?$/.test(file) || /\.test\.tsx?$/.test(file)) continue;
       if (file.startsWith('test/') || file.includes('__benchmarks__/')) continue;
       const text = readFileSync(join(sourceRoot, entry), 'utf8');
-      for (const match of text.matchAll(/mkdtemp(?:Sync)?\(\s*join\(\s*tmpdir\(\),\s*'([^']+)'/g)) {
+      // Whatever the root expression is (`tmpdir()`, a `temporaryRoot` defaulting to
+      // it): a `book-` prefix handed to mkdtemp is one this list has to name.
+      for (const match of text.matchAll(/mkdtemp(?:Sync)?\(\s*join\([^']*'(book-[^']*)'/g)) {
         prefixes.add(match[1]);
       }
     }
 
-    expect(prefixes.size).toBeGreaterThan(0);
-    for (const prefix of prefixes) expect(BOOK_TEMP_PREFIXES).toContain(prefix);
+    expect([...prefixes].sort()).toEqual([...BOOK_TEMP_PREFIXES].sort());
   });
 });
 
@@ -555,6 +662,17 @@ describe('sandbox backend selection', () => {
     expect(describeSandboxBackend('darwin')).toContain('/usr/bin/sandbox-exec');
     expect(describeSandboxBackend('linux')).toBe('bubblewrap (bwrap)');
     expect(describeSandboxBackend('win32')).toMatch(/^none/);
+  });
+
+  it('drops a temp root that is or holds the home directory', () => {
+    const roots = seatbeltTempRoots(
+      memoryHost(
+        { '/private/tmp/u/x': 'file', '/tmp': { link: '/private/tmp' } },
+        '/private/tmp/u',
+      ),
+    );
+
+    expect(roots).not.toContain('/private/tmp');
   });
 
   it('canonicalises the temp roots and drops a duplicate', () => {
@@ -702,6 +820,207 @@ describe.skipIf(process.platform !== 'darwin')('the Seatbelt sandbox on a real M
     expect(read.status).not.toBe('success');
     expect(write.status).not.toBe('success');
     expect(readFileSync(join(entry, 'snapshot'), 'utf8')).toBe('host\n');
+  });
+
+  it('denies a case variant of a protected path, as APFS resolves it to the same one', async () => {
+    const hook = join(workspace, '.git', 'hooks', 'pre-commit');
+    rmSync(join(workspace, '.book'), { recursive: true, force: true });
+    const existing = await sandboxedBash(`printf evil >> .GIT/HOOKS/pre-commit`);
+    const absent = await sandboxedBash(`mkdir .BOOK && printf '{}' > .BOOK/settings.local.json`);
+
+    expect(existing.status).not.toBe('success');
+    expect(readFileSync(hook, 'utf8')).toBe('#!/bin/sh\nexit 0\n');
+    expect(absent.status).not.toBe('success');
+    expect(existsSync(join(workspace, '.book'))).toBe(false);
+  });
+
+  it('keeps a core.hooksPath directory read-only, present or not yet created', async () => {
+    execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: workspace });
+    const absent = await sandboxedBash(`mkdir -p .githooks && printf evil > .githooks/pre-commit`);
+    mkdirSync(join(workspace, '.husky'));
+    execFileSync('git', ['config', 'core.hooksPath', '.husky'], { cwd: workspace });
+    const present = await sandboxedBash(`printf evil > .husky/pre-commit`);
+
+    expect(absent.status).not.toBe('success');
+    expect(existsSync(join(workspace, '.githooks'))).toBe(false);
+    expect(present.status).not.toBe('success');
+    expect(existsSync(join(workspace, '.husky', 'pre-commit'))).toBe(false);
+  });
+
+  it('lets git write with allowGitWrites, keeping hooks and config read-only', async () => {
+    writeFileSync(join(workspace, 'a.txt'), 'a\n');
+    const overrides = { filesystem: { allowGitWrites: true } };
+    const commit = await sandboxedBash(
+      'git add a.txt && git -c user.name=book -c user.email=book@example.test commit -qm a && echo committed',
+      overrides,
+    );
+    const hook = await sandboxedBash('printf evil >> .git/hooks/pre-commit', overrides);
+    const config = await sandboxedBash('git config core.hooksPath /tmp/evil', overrides);
+    const moved = await sandboxedBash('mv .git .git-old', overrides);
+
+    expect(commit.status).toBe('success');
+    expect(commit.content).toContain('committed');
+    expect(hook.status).not.toBe('success');
+    expect(config.status).not.toBe('success');
+    expect(
+      execFileSync('git', ['config', '--get', 'core.hooksPath'], {
+        cwd: workspace,
+        encoding: 'utf8',
+      }).trim(),
+    ).toBe('');
+    expect(moved.status).not.toBe('success');
+  });
+
+  it('reopens what an allowWrite opt-in names, and keeps the local settings hidden', async () => {
+    const overrides = { filesystem: { allowWrite: [join(workspace, '.book')] } };
+    const write = await sandboxedBash(`printf '{"a":1}' > .book/settings.json`, overrides);
+    const read = await sandboxedBash('cat .book/settings.local.json', overrides);
+    const move = await sandboxedBash('mv .book .book-moved', overrides);
+
+    expect(write.status).toBe('success');
+    expect(readFileSync(join(workspace, '.book', 'settings.json'), 'utf8')).toBe('{"a":1}');
+    expect(read.status).not.toBe('success');
+    expect(read.content).not.toContain('secret');
+    expect(move.status).not.toBe('success');
+  });
+
+  it('keeps the local settings hidden under a denyWrite entry for .book', async () => {
+    const result = await sandboxedBash('cat .book/settings.local.json', {
+      filesystem: { denyWrite: [join(workspace, '.book')] },
+    });
+
+    expect(result.status).not.toBe('success');
+    expect(result.content).not.toContain('secret');
+  });
+
+  it('applies denyWrite and denyRead, and keeps a denied path from being moved out', async () => {
+    mkdirSync(join(workspace, 'vendor'));
+    writeFileSync(join(workspace, 'vendor', 'lib.js'), 'lib\n');
+    mkdirSync(join(workspace, 'conf', 'secrets'), { recursive: true });
+    writeFileSync(join(workspace, 'conf', 'secrets', 'key'), 'denied-key\n');
+    const overrides = {
+      filesystem: {
+        denyWrite: [join(workspace, 'vendor')],
+        denyRead: [join(workspace, 'conf', 'secrets')],
+      },
+    };
+    const readVendor = await sandboxedBash('cat vendor/lib.js', overrides);
+    const writeVendor = await sandboxedBash('printf x > vendor/lib.js', overrides);
+    const readKey = await sandboxedBash('cat conf/secrets/key', overrides);
+    const moveOut = await sandboxedBash(
+      'mv conf conf-moved && cat conf-moved/secrets/key',
+      overrides,
+    );
+
+    expect(readVendor.content).toContain('lib');
+    expect(writeVendor.status).not.toBe('success');
+    expect(readFileSync(join(workspace, 'vendor', 'lib.js'), 'utf8')).toBe('lib\n');
+    expect(readKey.content).not.toContain('denied-key');
+    expect(moveOut.content).not.toContain('denied-key');
+    expect(existsSync(join(workspace, 'conf', 'secrets', 'key'))).toBe(true);
+  });
+
+  it("keeps a linked worktree's .git pointer read-only", async () => {
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=b',
+        '-c',
+        'user.email=b@example.test',
+        'commit',
+        '-q',
+        '--allow-empty',
+        '-m',
+        'init',
+      ],
+      {
+        cwd: workspace,
+      },
+    );
+    execFileSync('git', ['worktree', 'add', '-q', join(workspace, 'wt')], { cwd: workspace });
+    const pointer = join(workspace, 'wt', '.git');
+    const before = readFileSync(pointer, 'utf8');
+    const result = await sandboxedBash(`printf 'gitdir: /tmp/evil\n' > wt/.git`);
+
+    expect(result.status).not.toBe('success');
+    expect(readFileSync(pointer, 'utf8')).toBe(before);
+  });
+
+  it('cannot move the directory that holds the workspace', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'book-seatbelt-parent-'));
+    cleanup.push(parent, `${parent}-moved`);
+    const nested = join(parent, 'ws');
+    mkdirSync(nested);
+    execFileSync('git', ['init', '--quiet'], { cwd: nested });
+    const result = await sandboxedBash(`mv '${parent}' '${parent}-moved'`, {}, nested);
+
+    expect(result.status).not.toBe('success');
+    expect(existsSync(join(nested, '.git'))).toBe(true);
+  });
+
+  it('works in a workspace under the home directory, the usual Mac layout', async () => {
+    const home = mkdtempSync(join(homedir(), '.book-seatbelt-ws-'));
+    cleanup.push(home);
+    execFileSync('git', ['init', '--quiet'], { cwd: home });
+    mkdirSync(join(home, 'sub', 'deeper'), { recursive: true });
+    const sibling = homePath('sibling');
+    writeFileSync(sibling, 'sibling\n');
+
+    const result = await sandboxedBash(
+      `cd sub/deeper && pwd -P && git rev-parse --show-toplevel && git status --short && printf ok > ../../w.txt && cat '${sibling}'`,
+      {},
+      home,
+    );
+
+    expect(result.content).toContain(join('sub', 'deeper'));
+    expect(result.content).toMatch(/Operation not permitted/);
+    expect(result.content).not.toContain('sibling\n');
+    expect(readFileSync(join(home, 'w.txt'), 'utf8')).toBe('ok');
+  });
+
+  it('cannot have launchd run a command outside the sandbox', async () => {
+    const marker = homePath('launchd');
+    const label = `book.seatbelt.test.${process.pid}`;
+    try {
+      await sandboxedBash(`/bin/launchctl submit -l ${label} -- /usr/bin/touch '${marker}'`);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      spawnSync('/bin/launchctl', ['remove', label]);
+    }
+  });
+
+  it('cannot reach the keychain, even through a keychain file it can read', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-seatbelt-keychain-'));
+    cleanup.push(dir);
+    const keychain = join(dir, 'probe.keychain-db');
+    const service = `book-seatbelt-${process.pid}`;
+    execFileSync('/usr/bin/security', ['create-keychain', '-p', 'pw', keychain]);
+    try {
+      execFileSync('/usr/bin/security', ['unlock-keychain', '-p', 'pw', keychain]);
+      // -A: any application may read it, so only the sandbox stands in the way.
+      execFileSync('/usr/bin/security', [
+        'add-generic-password',
+        '-s',
+        service,
+        '-a',
+        'book',
+        '-w',
+        'keychain-secret',
+        '-A',
+        keychain,
+      ]);
+
+      const result = await sandboxedBash(
+        `/usr/bin/security find-generic-password -s ${service} -w '${keychain}'`,
+      );
+
+      expect(result.content).not.toContain('keychain-secret');
+    } finally {
+      spawnSync('/usr/bin/security', ['delete-keychain', keychain]);
+    }
   });
 
   it('runs mktemp and /tmp writes, which macOS tools need', async () => {

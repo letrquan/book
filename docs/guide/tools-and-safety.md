@@ -1134,14 +1134,16 @@ system`; the read-only git directory note is appended for it all the same.
 - **Temp directories** are the host's own, not a private `/tmp`: macOS tools write to the per-user
   temp directory whatever `TMPDIR` says (`mktemp`, and the `xcrun` shim behind `/usr/bin/git`), so a
   private one breaks them. `os.tmpdir()` and `/tmp` are therefore readable and writable, except
-  for Book's own entries in them (`book-rewind-*`, `book-index-*`, `book-config-preflight-*`).
+  for Book's own entries in them (`book-rewind-*`, `book-index-*`, `book-config-preflight-*`) and a
+  `BOOK_HOME` placed there. Book's home is denied by path wherever it is, and a temp directory that
+  is or contains the home directory is not used at all.
 - **Network** is the host's unless a domain rule is declared, in which case every socket is denied
   (below). Even when it is shared, a command can connect only to unix-domain sockets inside the
   workspace or a declared path, plus the system DNS resolver: the ssh-agent, Docker and other
   local sockets are not reachable, as they are not mounted under bubblewrap.
 - **Processes.** Signals and process inspection are limited to the sandbox, and the profile allows
   only a short list of system services, so `launchctl submit`, `open` and Apple Events cannot have
-  an unsandboxed process run a command. Process, IPC and sysctl rules follow Anthropic's
+  an unsandboxed process run a command, and the keychain daemons are not among them. Process, IPC and sysctl rules follow Anthropic's
   [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime).
 
 No path is ever written into the profile text: each is passed as a `-D` parameter, so a workspace

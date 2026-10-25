@@ -39,9 +39,12 @@ export interface SeatbeltRule {
   operations: readonly SeatbeltOperation[];
   filters: readonly SeatbeltPathFilter[];
   /**
-   * Narrow every filter to Book's own temporary entries directly below it
-   * (`book-rewind-*`, `book-index-*`, `book-config-preflight-*`). Used for the
-   * temp roots, which are writable here but private under bubblewrap.
+   * Narrow every filter to Book's own temporary entries below it: any path with
+   * a component named `book-rewind-*`, `book-index-*` or `book-config-preflight-*`.
+   * Used for the temp roots, which are writable here but private under
+   * bubblewrap. The match is not anchored to the root, since the root is a
+   * parameter and a regex cannot name one, so a deeper directory with such a
+   * name is denied too — over-denial, which fails closed.
    */
   bookTempEntries?: boolean;
 }
@@ -116,7 +119,11 @@ export const SEATBELT_SYSTEM_READ_ROOTS = [
  * run them on real workloads. Signals and process inspection are limited to the
  * sandbox itself, as a PID namespace limits them under bubblewrap. Mach lookups
  * are a short allowlist: launchd, LaunchServices `open` and Apple Events are
- * all ways to have an unsandboxed process run a command.
+ * all ways to have an unsandboxed process run a command. The security daemons
+ * sandbox-runtime allows (`com.apple.SecurityServer`, `com.apple.securityd.xpc`)
+ * are left out: with them a keychain file the command can read — one in a temp
+ * directory — hands over its items, and curl, git, python and node all verify
+ * TLS without them (macOS 26, #616).
  */
 const PREAMBLE = [
   '(version 1)',
@@ -139,8 +146,6 @@ const PREAMBLE = [
   '  (global-name "com.apple.system.opendirectoryd.libinfo")',
   '  (global-name "com.apple.system.opendirectoryd.membership")',
   '  (global-name "com.apple.bsd.dirhelper")',
-  '  (global-name "com.apple.securityd.xpc")',
-  '  (global-name "com.apple.SecurityServer")',
   '  (global-name "com.apple.coreservices.launchservicesd"))',
   '(allow ipc-posix-shm)',
   '(allow ipc-posix-sem)',
