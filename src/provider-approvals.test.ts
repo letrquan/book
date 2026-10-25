@@ -341,6 +341,16 @@ describe('describeWorkspaceProvider', () => {
     expect(rest).toEqual([]);
   });
 
+  it('shows a declared `api`, which the fingerprint covers, and nothing when it is unset', () => {
+    const [line] = describeWorkspaceProvider(
+      entry({ baseURL: 'https://team.example/v1', apiKey: '{env:K}', api: 'responses' }),
+      '/ws',
+    );
+    expect(line).toBe(
+      'meta-llama  https://team.example  key: environment variable K  api: responses',
+    );
+  });
+
   // Finding 4(b)
   it("warns that approving it also routes the user's own selections with that prefix", () => {
     const lines = describeWorkspaceProvider(entry({ baseURL: 'https://team.example/v1' }), '/ws', [

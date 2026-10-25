@@ -22,10 +22,11 @@ import type { ToolDefinition } from '../types/tools.js';
 import type { Usage } from '../types/messages.js';
 import { createDebugLogger } from '../debug-log.js';
 import {
-  isSystemPromptZones,
   parseCompatibleUsage,
+  providerMessageText,
   streamStallCeilings,
   streamedToolCallEvent,
+  withReplayedReasoning,
   type StreamedToolCallPart,
 } from './openai-compatible.js';
 import {
@@ -42,18 +43,6 @@ type InputItem = Record<string, unknown>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function textOf(content: ProviderMessage['content']): string {
-  if (content === null) return '';
-  if (typeof content === 'string') return content;
-  if (isSystemPromptZones(content)) {
-    return [content.cachedPrefix, content.dynamicSuffix].filter(Boolean).join('\n\n');
-  }
-  return content
-    .filter((part) => part.type === 'text')
-    .map((part) => part.text)
-    .join('\n');
 }
 
 function inputParts(parts: ProviderContentPart[]): InputItem[] {
@@ -86,7 +75,7 @@ export function toResponsesInput(messages: ProviderMessage[]): {
   for (const message of messages) {
     switch (message.role) {
       case 'system': {
-        const text = textOf(message.content);
+        const text = providerMessageText(message.content);
         if (input.length === 0) {
           if (text) instructions.push(text);
         } else {
@@ -95,12 +84,8 @@ export function toResponsesInput(messages: ProviderMessage[]): {
         break;
       }
       case 'assistant': {
-        const text = textOf(message.content);
-        const content = message.reasoningContent
-          ? ['<reasoning_context>', message.reasoningContent, '</reasoning_context>', text]
-              .filter(Boolean)
-              .join('\n')
-          : text;
+        const text = providerMessageText(message.content);
+        const content = withReplayedReasoning(text, message.reasoningContent);
         if (content) input.push({ role: 'assistant', content });
         for (const call of message.tool_calls ?? []) {
           input.push({
@@ -118,7 +103,7 @@ export function toResponsesInput(messages: ProviderMessage[]): {
           call_id: message.tool_call_id ?? '',
           output: Array.isArray(message.content)
             ? inputParts(message.content)
-            : textOf(message.content),
+            : providerMessageText(message.content),
         });
         break;
       default:
@@ -126,7 +111,7 @@ export function toResponsesInput(messages: ProviderMessage[]): {
           role: 'user',
           content: Array.isArray(message.content)
             ? inputParts(message.content)
-            : [{ type: 'input_text', text: textOf(message.content) }],
+            : [{ type: 'input_text', text: providerMessageText(message.content) }],
         });
     }
   }
@@ -169,6 +154,10 @@ export function parseResponsesUsage(raw: unknown): Usage | null {
   });
 }
 
+/** `ResponseError` codes, and plan-billing refusals, that reject the request as sent. */
+const REJECTED_REQUEST_CODES =
+  /^(?:invalid_prompt|data_residency_mismatch|bio_policy|misalignment_policy_violation|invalid_image\w*|invalid_base64_image|image_\w+|unsupported_image_media_type|empty_image_file|failed_to_download_image|subscription_sharing_unsupported_capability|subscription_sharing_user_not_eligible|subscription_sharing_route_not_supported|chatpass_v2_\w+)$/;
+
 /**
  * The error code for a `response.failed` or `error` event. Codes that name a verdict the loop
  * already handles are mapped onto the codes it reads, as the Anthropic client does for its
@@ -195,10 +184,13 @@ export function responsesErrorCode(code: string | null | undefined): string {
       return 'auth';
     case 'model_not_found':
       return 'model_unavailable';
-    case 'invalid_prompt':
-    case 'subscription_sharing_unsupported_capability':
-      return 'bad_request';
+    case 'vector_store_timeout':
+      return 'timeout';
     default:
+      // The rest of OpenAI's documented `ResponseError` codes, and the plan-billing refusals, are
+      // verdicts on the request itself (its prompt, an image, a policy): the same request fails
+      // the same way, so none of them may be re-sent.
+      if (code && REJECTED_REQUEST_CODES.test(code)) return 'bad_request';
       return code || 'provider_error';
   }
 }
@@ -217,12 +209,29 @@ function streamErrorEvent(error: unknown): ProviderStreamEvent {
   };
 }
 
-/** The finish reason of an incomplete response, in the spellings the loop already reads. */
+/**
+ * The finish reason of an incomplete response, in the spellings the loop already reads. Only a
+ * content filter says something other than "stopped at a limit": any other reason, an unknown or
+ * a missing one included, is read as truncation, so the reply is continued rather than taken as
+ * finished.
+ */
 function incompleteFinishReason(response: Record<string, unknown>): string {
   const details = isRecord(response.incomplete_details) ? response.incomplete_details : {};
-  const reason = typeof details.reason === 'string' ? details.reason : undefined;
-  if (reason === 'max_output_tokens') return 'length';
-  return reason ?? 'incomplete';
+  return details.reason === 'content_filter' ? 'content_filter' : 'length';
+}
+
+/** Book's `max` has no Responses spelling; the API's highest level is `xhigh`. */
+function responsesEffort(effort: NonNullable<AgentConfig['effort']>): string {
+  return effort === 'max' ? 'xhigh' : effort;
+}
+
+/**
+ * Whether a refused request was refused for its `reasoning.summary`: an organization OpenAI has
+ * not verified for summaries, or a Responses-compatible server without them. Such a request is
+ * sent once more without the summary rather than failing every turn that has an effort.
+ */
+function refusesReasoningSummary(status: number, body: string): boolean {
+  return (status === 400 || status === 403 || status === 422) && /summar/i.test(body);
 }
 
 export async function* responsesStream(
@@ -249,7 +258,7 @@ export async function* responsesStream(
   // The Chat Completions client's rule: a level is sent only when chosen, and never to a model
   // whose catalog entry says it does not reason. Without a summary the API streams no reasoning.
   if (config.effortExplicit && config.effort && config.modelInfo?.effort !== false) {
-    body.reasoning = { effort: config.effort, summary: 'auto' };
+    body.reasoning = { effort: responsesEffort(config.effort), summary: 'auto' };
   }
   const reasoningEnabled =
     body.reasoning !== undefined || typeof config.modelInfo?.effort === 'object';
@@ -261,9 +270,8 @@ export async function* responsesStream(
     toolCount: tools.length,
   });
 
-  let response: Response;
-  try {
-    response = await fetchWithRetry(
+  const post = (requestBody: Record<string, unknown>): Promise<Response> =>
+    fetchWithRetry(
       url,
       {
         method: 'POST',
@@ -271,13 +279,28 @@ export async function* responsesStream(
           'Content-Type': 'application/json',
           Authorization: `Bearer ${config.apiKey}`,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(requestBody),
       },
       retry,
       signal,
       options?.onRetry,
       log,
     );
+
+  let response: Response;
+  // The body of a refusal already read to decide on the resend below, when there was none.
+  let refusal: Awaited<ReturnType<typeof readErrorBody>> | undefined;
+  try {
+    response = await post(body);
+    if (!response.ok && isRecord(body.reasoning) && body.reasoning.summary !== undefined) {
+      refusal = await readErrorBody(response, signal);
+      if (refusesReasoningSummary(response.status, refusal.text)) {
+        log.warn('reasoning summary refused; resending without it', { status: response.status });
+        body.reasoning = { effort: body.reasoning.effort };
+        refusal = undefined;
+        response = await post(body);
+      }
+    }
   } catch (e) {
     if (signal?.aborted) return;
     log.warn('fetchWithRetry failed', e instanceof Error ? e.message : String(e));
@@ -295,7 +318,7 @@ export async function* responsesStream(
   }
 
   if (!response.ok) {
-    const errorBody = await readErrorBody(response, signal);
+    const errorBody = refusal ?? (await readErrorBody(response, signal));
     yield statedWaitErrorEvent(response, errorBody.text, {
       url,
       model: config.model,
@@ -322,6 +345,7 @@ export async function* responsesStream(
   let responseModel: string | undefined;
   let responseId: string | undefined;
   let lastReasoningPart: string | undefined;
+  let lastTextItem: string | undefined;
 
   const ceilings = streamStallCeilings(retry, reasoningEnabled, config.modelInfo?.effort === false);
   let stallTimeoutMs = ceilings.opening;
@@ -335,7 +359,11 @@ export async function* responsesStream(
 
   const done = function* (finishReason: string, usageRaw: unknown): Generator<ProviderStreamEvent> {
     const ordered = [...calls.values()].sort((a, b) => a.index - b.index);
-    for (const call of ordered) yield streamedToolCallEvent({ ...call, id: call.callId }, log);
+    for (const call of ordered) {
+      // As on Chat Completions: a call with neither an id nor a name is nothing to run.
+      if (!call.callId && !call.name) continue;
+      yield streamedToolCallEvent({ ...call, id: call.callId }, log);
+    }
     const usage = parseResponsesUsage(usageRaw);
     log.info('stream done', {
       finishReason,
@@ -423,12 +451,17 @@ export async function* responsesStream(
       }
 
       case 'response.output_text.delta':
-      case 'response.refusal.delta':
+      case 'response.refusal.delta': {
         stallTimeoutMs = ceilings.answer;
-        if (typeof event.delta === 'string' && event.delta) {
-          yield { type: 'text', content: event.delta };
-        }
+        if (typeof event.delta !== 'string' || !event.delta) return false;
+        // A response can carry more than one message item (a preamble, then the answer): keep
+        // them apart as paragraphs instead of running one into the next mid-sentence.
+        const item = String(event.item_id ?? event.output_index);
+        const separator = lastTextItem !== undefined && lastTextItem !== item ? '\n\n' : '';
+        lastTextItem = item;
+        yield { type: 'text', content: separator + event.delta };
         return false;
+      }
 
       case 'response.reasoning_summary_text.delta':
       case 'response.reasoning_text.delta': {

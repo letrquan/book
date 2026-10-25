@@ -17,7 +17,9 @@
  *        (function_call) / response.function_call_arguments.delta / response.completed
  *        (or response.incomplete for a `length` or `content_filter` finish)
  *
- * Both routes answer from the same script, so a scenario runs unchanged on either API.
+ * Both routes answer from the same script. Only the `length` and `content_filter` finish reasons
+ * have a Responses spelling (`response.incomplete`); any other `finishReason` is a Chat
+ * Completions shape, and on the Responses route the turn completes normally.
  *
  * It replies with a scripted sequence of turns. Turn N is used for the Nth
  * request, and the last turn repeats forever after that.

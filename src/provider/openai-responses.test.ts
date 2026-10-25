@@ -153,6 +153,79 @@ describe('responsesStream request body', () => {
     expect(capturedBody.reasoning).toEqual({ effort: 'high', summary: 'auto' });
   });
 
+  it("sends Book's max effort as the API's highest level, xhigh", async () => {
+    await collect(
+      responsesStream(
+        { ...config, effort: 'max', effortExplicit: true },
+        [{ role: 'user', content: 'hi' }],
+        [],
+      ),
+    );
+    expect(capturedBody.reasoning).toEqual({ effort: 'xhigh', summary: 'auto' });
+  });
+
+  it('resends once without the summary when the endpoint refuses reasoning summaries', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        return bodies.length === 1
+          ? new Response(
+              JSON.stringify({
+                error: {
+                  message: 'Your organization must be verified to generate reasoning summaries.',
+                  param: 'reasoning.summary',
+                  code: 'unsupported_value',
+                },
+              }),
+              { status: 400 },
+            )
+          : sse([completed()]);
+      }),
+    );
+    const events = await collect(
+      responsesStream(
+        { ...config, effort: 'high', effortExplicit: true },
+        [{ role: 'user', content: 'hi' }],
+        [],
+      ),
+    );
+    expect(bodies.map((b) => b.reasoning)).toEqual([
+      { effort: 'high', summary: 'auto' },
+      { effort: 'high' },
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: 'done' });
+  });
+
+  it('reports any other refusal of a reasoning request once, without resending', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ error: { message: 'Unknown parameter: tools.0' } }), {
+          status: 400,
+        });
+      }),
+    );
+    const events = await collect(
+      responsesStream(
+        { ...config, effort: 'high', effortExplicit: true },
+        [{ role: 'user', content: 'hi' }],
+        [],
+      ),
+    );
+    expect(calls).toBe(1);
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'error',
+        errorCode: 'bad_request',
+        error: expect.stringContaining('Unknown parameter'),
+      }),
+    ]);
+  });
+
   it('sends no reasoning to a model whose catalog entry says effort false, even when chosen', async () => {
     await collect(
       responsesStream(
@@ -453,6 +526,46 @@ describe('responsesStream events', () => {
     });
   });
 
+  it('reads an incomplete response with a missing or unknown reason as truncated, not finished', async () => {
+    for (const incomplete_details of [undefined, { reason: 'max_messages' }]) {
+      stubFetch(() =>
+        sse([
+          { type: 'response.incomplete', response: { status: 'incomplete', incomplete_details } },
+        ]),
+      );
+      const events = await collect(responsesStream(config, [{ role: 'user', content: 'hi' }], []));
+      expect(events.at(-1)).toMatchObject({ type: 'done', finishReasons: ['length'] });
+    }
+  });
+
+  it('keeps the text of separate message items apart as paragraphs', async () => {
+    stubFetch(() =>
+      sse([
+        { type: 'response.output_text.delta', item_id: 'msg_1', delta: "I'll check." },
+        { type: 'response.output_text.delta', item_id: 'msg_2', delta: 'Here it is' },
+        { type: 'response.output_text.delta', item_id: 'msg_2', delta: '.' },
+        completed(),
+      ]),
+    );
+    const events = await collect(responsesStream(config, [{ role: 'user', content: 'hi' }], []));
+    expect(events.filter((e) => e.type === 'text').map((e) => e.content)).toEqual([
+      "I'll check.",
+      '\n\nHere it is',
+      '.',
+    ]);
+  });
+
+  it('drops a function call that has neither a call id nor a name', async () => {
+    stubFetch(() =>
+      sse([
+        { type: 'response.output_item.added', output_index: 0, item: { type: 'function_call' } },
+        completed(),
+      ]),
+    );
+    const events = await collect(responsesStream(config, [{ role: 'user', content: 'hi' }], []));
+    expect(events.some((e) => e.type === 'tool_call')).toBe(false);
+  });
+
   it('reports a content-filtered incomplete response with the content_filter finish reason', async () => {
     stubFetch(() =>
       sse([
@@ -649,7 +762,25 @@ describe('responses helpers', () => {
     expect(responsesErrorCode('subscription_sharing_invalid_user')).toBe('auth');
     expect(responsesErrorCode('subscription_sharing_unsupported_capability')).toBe('bad_request');
     expect(responsesErrorCode('model_not_found')).toBe('model_unavailable');
+    expect(responsesErrorCode('vector_store_timeout')).toBe('timeout');
     expect(responsesErrorCode(undefined)).toBe('provider_error');
+  });
+
+  it('never lets a verdict on the request itself be re-sent', () => {
+    for (const code of [
+      'invalid_prompt',
+      'invalid_image_format',
+      'invalid_base64_image',
+      'image_too_large',
+      'image_content_policy_violation',
+      'unsupported_image_media_type',
+      'failed_to_download_image',
+      'bio_policy',
+      'subscription_sharing_user_not_eligible',
+      'chatpass_v2_scope_not_authorized',
+    ]) {
+      expect(responsesErrorCode(code)).toBe('bad_request');
+    }
   });
 
   it('convertResponsesTools prefers inputSchema like the chat client', () => {

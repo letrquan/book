@@ -18,7 +18,7 @@ import {
 
 const log = createDebugLogger('provider');
 
-export function parseToolArguments(raw: string): {
+function parseToolArguments(raw: string): {
   arguments: Record<string, unknown>;
   unparsedArguments?: { raw: string; error: string };
 } {
@@ -58,15 +58,39 @@ function parseReasoningDelta(delta: Record<string, unknown>): string | undefined
   return text || undefined;
 }
 
-export function isSystemPromptZones(
-  content: ProviderMessage['content'],
-): content is SystemPromptZones {
+function isSystemPromptZones(content: ProviderMessage['content']): content is SystemPromptZones {
   return (
     !!content &&
     typeof content === 'object' &&
     'cachedPrefix' in content &&
     'dynamicSuffix' in content
   );
+}
+
+/** The system prompt's zones as the one text an OpenAI-family request sends. */
+export function systemPromptText(zones: SystemPromptZones): string {
+  return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
+}
+
+/**
+ * A turn's text with its replayed reasoning in front, delimited: how every OpenAI-family request
+ * sends prior reasoning, which neither API has a field for.
+ */
+export function withReplayedReasoning(text: string, reasoning: string | undefined): string {
+  return reasoning
+    ? ['<reasoning_context>', reasoning, '</reasoning_context>', text].filter(Boolean).join('\n')
+    : text;
+}
+
+/** A message's content as plain text: the system zones joined, text parts joined by newlines. */
+export function providerMessageText(content: ProviderMessage['content']): string {
+  if (content === null) return '';
+  if (typeof content === 'string') return content;
+  if (isSystemPromptZones(content)) return systemPromptText(content);
+  return content
+    .filter((part) => part.type === 'text')
+    .map((part) => part.text)
+    .join('\n');
 }
 
 function flattenMessages(messages: ProviderMessage[]): Array<{
@@ -81,7 +105,7 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
   return messages.map(({ providerMetadata: _providerMetadata, reasoningContent, ...msg }) => ({
     ...msg,
     content: isSystemPromptZones(msg.content)
-      ? [msg.content.cachedPrefix, msg.content.dynamicSuffix].filter(Boolean).join('\n\n')
+      ? systemPromptText(msg.content)
       : Array.isArray(msg.content)
         ? msg.content.map((part) =>
             part.type === 'text'
@@ -92,9 +116,7 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
                 },
           )
         : reasoningContent
-          ? ['<reasoning_context>', reasoningContent, '</reasoning_context>', msg.content ?? '']
-              .filter(Boolean)
-              .join('\n')
+          ? withReplayedReasoning(msg.content ?? '', reasoningContent)
           : msg.content,
   }));
 }

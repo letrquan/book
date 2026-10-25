@@ -578,9 +578,12 @@ export function describeWorkspaceProvider(
   routed: readonly UnaffectedModelSelection[] = [],
 ): string[] {
   const origin = entry.declaration.baseURL ?? entry.declaration.baseUrl;
+  // `api` is shown only when declared, as the fingerprint digests it only then.
+  const api = entry.declaration.api;
   const lines = [
     `${renderUntrustedText(entry.id, 64)}  ${describeOrigin(origin)}  ` +
-      `key: ${describeApiKeyDeclaration(entry.declaration.apiKey, workspace)}`,
+      `key: ${describeApiKeyDeclaration(entry.declaration.apiKey, workspace)}` +
+      (api !== undefined ? `  api: ${renderUntrustedText(String(api), 32)}` : ''),
   ];
   if (routed.length > 0) {
     const named = routed

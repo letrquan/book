@@ -291,6 +291,9 @@ conversation each turn and never refers to an earlier response, so OpenAI keeps 
 prompt goes in `instructions`, and a chosen `effort` is sent as
 `"reasoning": {"effort": <level>, "summary": "auto"}`, which is what makes the model's reasoning
 summary stream into the transcript; no effort sends no `reasoning` object, as on Chat Completions.
+`max` is sent as `xhigh`, the API's highest level. An endpoint that refuses the summary (an
+organization OpenAI has not verified for reasoning summaries, or a compatible server without them)
+gets the same request once more without it, so the reply arrives with no reasoning row.
 Reasoning is replayed as text, the way the Chat Completions path does it, not as OpenAI's encrypted
 reasoning items. An Anthropic entry ignores `api`.
 
