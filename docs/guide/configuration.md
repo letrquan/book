@@ -297,6 +297,90 @@ gets the same request once more without it, so the reply arrives with no reasoni
 Reasoning is replayed as text, the way the Chat Completions path does it, not as OpenAI's encrypted
 reasoning items. An Anthropic entry ignores `api`.
 
+### Sign in with ChatGPT (experimental)
+
+Someone with a ChatGPT Plus or Pro plan can bill Book's requests to that plan instead of an API
+account. The route is OpenAI's self-serve
+[Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source) for
+open-source and locally hosted apps. It is **experimental** and **opt-in**: it is never
+auto-detected, never a default, and nothing changes for a provider that uses an API key. Usage is
+subject to OpenAI's terms and counts toward your plan's limits. You manage it, including a per-app
+weekly cap, at [ChatGPT settings → Usage](https://chatgpt.com/settings/usage).
+
+```bash
+book auth login                 # sign in in the browser; records the plan's models
+book --model chatgpt/<model>    # or choose a "ChatGPT plan (experimental)" row in /model
+book auth status                # the sign-in on this machine; no network, no credential needed
+book auth logout                # revoke the sign-in and delete its tokens
+```
+
+`book auth login` opens your browser, where you continue with ChatGPT and allow Book to use your
+plan. It prints the sign-in URL too, so it also works over SSH: use `--no-browser`, or set
+`$BROWSER` to choose the program. `$BROWSER` is read the way Python reads it: commands with
+arguments, separated by `:` (`;` on Windows), where `%s` stands for the URL. When it finishes, it records the models your plan lists as a
+provider entry in your user file (`<BOOK_HOME>/settings.json`), under `chatgpt` unless you
+already have an entry of this type:
+
+```json
+{ "provider": { "chatgpt": { "type": "chatgpt", "models": { "<model>": { "label": "…" } } } } }
+```
+
+It never sets `model`. Only a session whose model is one of these entries (`chatgpt/<model>`) is
+billed to the plan. A `type: "chatgpt"` entry always sends to `https://api.openai.com/v1` with the
+Responses API and your sign-in, so it ignores `baseURL`, `apiKey` and `api`. To refresh the model
+list, run `book auth login` again. Some things differ from an API-key provider:
+
+- **Tokens never travel as keys.** The access token is read for each request and sent only on it,
+  so no other provider or bare model id can inherit it. A chatgpt request never sends
+  `BOOK_API_KEY` either. Book uses your sign-in only for an entry in your own settings: an entry
+  that only a repository declares (`.book/settings.json`) is refused, even after
+  `book trust provider` approves it.
+- **Only you choose a plan model.** A `model`, `compactModel`, `advisorModel` or agent-profile
+  `model` that a workspace layer sets to one of your chatgpt models is ignored, with a notice at
+  launch and in `book doctor`. Your own value applies instead. An agent definition or a delegated
+  model id that names one is refused. Your own settings, `--model`, `BOOK_MODEL` and `/model`
+  choose plan models as usual.
+- **The plan route has its own request shape.** Every request sends `"store": false` and
+  `"stream": true`, groups Book's tools in one namespace, and sends no `max_output_tokens`. So no
+  output cap applies on this route: not one you set, and not the caps compaction and the advisor
+  ask for.
+- **No sign-in fails the request; Book never opens a browser for one.** Print mode and the SDK stop
+  at startup with an error naming `book auth login`. The TUI starts, and each turn reports the same.
+- **A plan limit stops the run** with "Usage limit reached", plus a link to ChatGPT's usage
+  settings. Book doesn't retry it, and it never switches to your API key.
+
+Under the hood:
+
+- **Sign-in.** The first sign-in registers Book with OpenAI for this machine (dynamic client
+  registration), and every later sign-in reuses that registration. Each attempt uses a fresh
+  state, nonce and PKCE (S256) value, and the browser returns to a one-time listener on
+  `http://127.0.0.1:<port>/auth/callback`. Book verifies the ID token against OpenAI's published
+  keys (issuer, audience, expiry, nonce), and requires the plan scope `chatgpt.tokens.use.direct`.
+  OpenAI identifies the machine by an opaque random host id (`urn:uuid:…`), never your email or
+  account id.
+- **Storage.** The registration, host id and tokens are kept in `<BOOK_HOME>/chatgpt-signin.json`,
+  mode 0600, never in a workspace file. That is not the `auth.json` the removed 0.3 subscription
+  login wrote, which `book doctor` still reports as a leftover to delete.
+- **Refresh.** Access tokens last an hour, and Book refreshes them before expiry, or once when a
+  request is refused with a 401. Refresh tokens rotate, so concurrent sessions refresh one at a
+  time under a lock file, and a rotated pair is saved as soon as it arrives, even if the turn that
+  asked for it is cancelled. A refresh token OpenAI reports as spent clears the tokens, and you
+  sign in again.
+- **Sign-out.** `book auth logout` revokes the refresh token with OpenAI and deletes the tokens. It
+  keeps the registration, so the next sign-in skips registration. If OpenAI doesn't confirm the
+  revocation, disconnect Book in ChatGPT Settings → Security and login → Sign in with ChatGPT.
+- **Another account.** `book auth login --new-account` registers the machine again, to sign in
+  with a different ChatGPT account, and revokes the account it replaces. A plain
+  `book auth login` as a different account is refused instead of replacing the saved one.
+- **Redaction.** The tokens are redacted from tool output like a provider key.
+- **Doctor.** `book doctor` reports the sign-in on a machine that uses or configured it.
+- **Testing.** `BOOK_CHATGPT_ISSUER` and `BOOK_CHATGPT_API_BASE` point the flow at a local test
+  server, for tests only. Book accepts them only for a loopback address.
+
+**There is no Anthropic sign-in, and there will not be.** Anthropic's
+[terms](https://code.claude.com/docs/en/legal-and-compliance) forbid third-party apps from using
+Claude Free, Pro or Max plan credentials, so Anthropic models in Book always use an API key.
+
 ### Prompt caching on OpenAI-compatible providers
 
 On the Anthropic Messages API, Book places its own cache breakpoints: the last tool, the cached

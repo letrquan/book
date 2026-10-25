@@ -321,6 +321,11 @@ export interface WithheldModelSelection {
   path: string;
   /** What applies instead: the trusted layers' own value, or `undefined` when they set none. */
   fallback: string | undefined;
+  /**
+   * `plan`: the provider is the user's own Sign in with ChatGPT provider, which a workspace may
+   * not select, approved or not. Absent: the provider is a withheld workspace declaration.
+   */
+  reason?: 'plan';
 }
 
 /**
@@ -657,6 +662,13 @@ export function describeWithheldSelection(selection: WithheldModelSelection): st
     selection.fallback === undefined
       ? 'the trusted settings set none, so the default applies'
       : `"${renderUntrustedText(selection.fallback)}" is used instead`;
+  if (selection.reason === 'plan') {
+    return (
+      `${selection.key} "${renderUntrustedText(selection.value)}" from ` +
+      `${renderUntrustedText(selection.path)} ignored: "${id}" bills your ChatGPT plan, and only ` +
+      `your own settings, --model or /model may choose it; ${instead}.`
+    );
+  }
   return (
     `${selection.key} "${renderUntrustedText(selection.value)}" from ` +
     `${renderUntrustedText(selection.path)} ignored: it names the workspace provider "${id}", ` +

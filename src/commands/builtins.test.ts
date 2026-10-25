@@ -167,6 +167,24 @@ describe('built-in command contract', () => {
     });
     expect(registry.execute('diff', '', context())).toEqual({ type: 'show-diff' });
     expect(registry.execute('reload-skills', '', context())).toEqual({ type: 'reload-assets' });
+    expect(registry.execute('login', '', context())).toEqual({
+      type: 'chatgpt-auth',
+      action: 'login',
+      newAccount: false,
+    });
+    expect(registry.execute('login', '--new-account', context())).toEqual({
+      type: 'chatgpt-auth',
+      action: 'login',
+      newAccount: true,
+    });
+    expect(registry.execute('login', 'someone', context())).toMatchObject({
+      type: 'local-message',
+      isError: true,
+    });
+    expect(registry.execute('logout', '', context())).toEqual({
+      type: 'chatgpt-auth',
+      action: 'logout',
+    });
     expect(registry.execute('usage', '', context())).toEqual(
       expect.objectContaining({
         type: 'local-message',

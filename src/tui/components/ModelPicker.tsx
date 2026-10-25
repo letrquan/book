@@ -220,6 +220,13 @@ export function ModelPicker({
     async (providerId: string) => {
       const provider = providers[providerId];
       if (!provider) return;
+      if (provider.type === 'chatgpt') {
+        // Its catalog comes with the sign-in, through the plan token, never an API key.
+        setError(
+          `${providerId} lists the models of your ChatGPT plan: run \`book auth login\` to refresh them.`,
+        );
+        return;
+      }
       const apiKey = resolveSecret(provider.apiKey, workspace);
       if (!apiKey) {
         setError(`No usable API key is configured for ${providerId}.`);

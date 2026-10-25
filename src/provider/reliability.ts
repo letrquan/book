@@ -168,14 +168,26 @@ function splitSentences(text: string): string[] {
 /** `error.code` or `error.type` values that name a spent quota outright (#400). */
 const INSUFFICIENT_QUOTA_ERROR_NAMES: ReadonlySet<string> = new Set(['insufficient_quota']);
 
+/**
+ * `error.code` values that name a spent ChatGPT plan limit: OpenAI's code for a plan-billed
+ * request (Sign in with ChatGPT) whose plan or per-app limit is reached. OpenAI asks clients to
+ * pause, not to infer a reset, so it stops the retries like any spent plan.
+ */
+const PLAN_USAGE_LIMIT_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'subscription_sharing_usage_limit_exceeded',
+]);
+
+/** True when an error body's code or type is one of `names` (#400). */
+function hasErrorName(body: string, names: ReadonlySet<string>): boolean {
+  if (!body) return false;
+  const parts = errorBodyParts(body);
+  if (parts.names.some((name) => names.has(name.toLowerCase()))) return true;
+  return parts.raw !== undefined && hasErrorName(parts.raw, names);
+}
+
 /** True when an error body's code or type names `insufficient_quota` (#400). */
 function hasInsufficientQuotaName(body: string): boolean {
-  if (!body) return false;
-  const { names, raw } = errorBodyParts(body);
-  if (names.some((name) => INSUFFICIENT_QUOTA_ERROR_NAMES.has(name.toLowerCase()))) {
-    return true;
-  }
-  return raw !== undefined && hasInsufficientQuotaName(raw);
+  return hasErrorName(body, INSUFFICIENT_QUOTA_ERROR_NAMES);
 }
 
 /**
@@ -434,6 +446,7 @@ export function classifyApiError(
     // The split `formatApiError` has always made: `insufficient_quota` is about credits, a
     // long-window plan limit is about a reset.
     if (hasInsufficientQuotaName(body)) return 'quota';
+    if (hasErrorName(body, PLAN_USAGE_LIMIT_ERROR_NAMES)) return 'usage_limit';
     if (statesSpentUsageLimit(body)) return 'usage_limit';
   }
   const code = classifyHttpStatus(effective).code;

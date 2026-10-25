@@ -13,6 +13,7 @@
  * set, and a `/model` switch or an edited key file takes effect on the next run.
  */
 import { isWithheldWorkspaceProvider, resolveSecret } from './config.js';
+import { chatGptSigninPath, chatGptTokenSecrets } from './auth/chatgpt-store.js';
 import type { AgentConfig } from './types/runtime.js';
 import type { ToolResult } from './types/tools.js';
 
@@ -52,7 +53,13 @@ export const PLACEHOLDER_PROVIDER_KEYS: readonly string[] = [
  * leaves a withheld provider out of `settings.provider`, so this loop never normally meets one.
  */
 export function collectProviderSecrets(config: AgentConfig): string[] {
-  const candidates: Array<string | undefined> = [config.apiKey, process.env.BOOK_API_KEY];
+  const candidates: Array<string | undefined> = [
+    config.apiKey,
+    process.env.BOOK_API_KEY,
+    // The Sign in with ChatGPT tokens are as much the agent's credentials as a key, and
+    // `$BOOK_HOME/chatgpt-signin.json` is as easy for a command to print.
+    ...chatGptTokenSecrets(chatGptSigninPath()),
+  ];
   for (const [id, provider] of Object.entries(config.settings.provider ?? {})) {
     if (isWithheldWorkspaceProvider(config, id)) continue;
     candidates.push(resolveSecret(provider.apiKey, config.workspace));

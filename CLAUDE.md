@@ -20,6 +20,7 @@ src/
   job-supervisor.ts     Supervisor between a persistent job's runner and its command
   cli/                  run.ts (interactive/headless wiring), doctor.ts, config-cmd.ts,
                         trust-cmd.ts (`book trust hook|rule|command|dir|provider`), mcp.ts (`book mcp add|list|get|remove`),
+                        auth-cmd.ts (`book auth login|logout|status`),
                         status-cmd.ts (`book status`), provider-key-cmd.ts, scrollback.ts,
                         exit.ts (process.exit abstraction), utils.ts
   types/                Shared domain types (no runtime imports). NOTE: a top-level
@@ -29,6 +30,9 @@ src/
                         redaction, CLI-safe configuration access, and settings-removed.ts
                         (keys a removed feature left behind: reported, never fatal)
   book-home.ts          BOOK_HOME resolution for user-global state
+  auth/                 Experimental Sign in with ChatGPT: chatgpt-oauth.ts (registration, loopback
+                        PKCE flow, refresh, revoke), chatgpt-store.ts (<BOOK_HOME>/chatgpt-signin.json),
+                        chatgpt-setup.ts (records the plan's models), jwt.ts, browser.ts
   workspace-trust.ts    User-global trust store (<BOOK_HOME>/trust.json, keyed by workspace
                         path) holding every decision about repository-controlled input.
                         NOTE: these decisions must never be read from a workspace file — a
@@ -104,6 +108,7 @@ src/
     anthropic.ts        Anthropic Messages SSE client (caching, thinking, effort)
     openai-compatible.ts  OpenAI-compatible streaming client (SSE, retry, abort)
     openai-responses.ts   OpenAI Responses API streaming client (`provider.<id>.api: "responses"`)
+    chatgpt.ts          Experimental `type: "chatgpt"` provider: plan-billed Responses requests
     model-discovery.ts  Model listing for pickers / BYOK
   session/
     store.ts            JSONL session persistence

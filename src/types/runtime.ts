@@ -298,6 +298,11 @@ export interface AgentConfig {
    * Anthropic entry or a bare model id on the default endpoint.
    */
   providerApi?: 'chat' | 'responses';
+  /**
+   * Set for a `type: "chatgpt"` provider entry in the user's own settings: requests carry the
+   * Sign in with ChatGPT access token, read per request, and `apiKey` stays empty.
+   */
+  providerAuth?: 'chatgpt';
   /** Metadata from settings.provider.<id>.models.<model>, if selected. */
   modelInfo?: ProviderModelConfig;
   /** Approved memory snapshot loaded once at session start. */

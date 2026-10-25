@@ -596,6 +596,113 @@ describe('loadConfig provider registry', () => {
     expect(resolveModelProviderConfig(withDefault, 'lab/model').apiKey).toBe('default-key');
   });
 
+  describe('a Sign in with ChatGPT provider (type "chatgpt")', () => {
+    const settings = {
+      model: 'plan/gpt-plan',
+      provider: {
+        // Its baseURL, apiKey and api are ignored: the route is fixed.
+        plan: { type: 'chatgpt', baseURL: 'https://elsewhere.example/v1', apiKey: 'ignored-key' },
+      },
+    };
+    const signIn = (): void =>
+      writeFileSync(
+        join(isolatedHome, 'chatgpt-signin.json'),
+        JSON.stringify({
+          version: 1,
+          hostId: 'urn:uuid:test',
+          account: {
+            clientId: 'oaiapp_1',
+            subject: 's',
+            tokens: {
+              accessToken: 'plan-access-token',
+              idToken: 'id',
+              expiresAt: Date.now() + 3_600_000,
+              scopes: ['chatgpt.tokens.use.direct'],
+              savedAt: 0,
+            },
+          },
+        }),
+      );
+
+    it('resolves to the fixed OpenAI route with no key, even with BOOK_API_KEY set', () => {
+      process.env.BOOK_API_KEY = 'api-account-key';
+      writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify(settings));
+      signIn();
+      const config = loadConfig(workspace);
+      expect(config).toMatchObject({
+        apiKey: '',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-plan',
+        provider: 'openai',
+        providerApi: 'responses',
+        providerAuth: 'chatgpt',
+      });
+      // A bare id afterwards is an ordinary API request: the key it gets is BOOK_API_KEY, never
+      // the plan token, and it is no longer a chatgpt request.
+      const plain = resolveModelProviderConfig(config, 'gpt-4o');
+      expect(plain).toMatchObject({ apiKey: 'api-account-key', providerAuth: undefined });
+      delete process.env.BOOK_API_KEY;
+      expect(resolveModelProviderConfig(loadConfig(workspace), 'gpt-4o').apiKey).toBe('');
+    });
+
+    it('stops print mode and the SDK without a sign-in, naming the login command; the TUI starts', () => {
+      delete process.env.BOOK_API_KEY;
+      writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify(settings));
+      expect(() => loadConfig(workspace)).toThrow(/not signed in\. Run `book auth login`/);
+      expect(loadConfig(workspace, { allowMissingApiKey: true }).providerAuth).toBe('chatgpt');
+      signIn();
+      expect(loadConfig(workspace).providerAuth).toBe('chatgpt');
+    });
+
+    it("lets no workspace layer or agent definition choose a plan model, only the user's own settings", () => {
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({ ...settings, model: 'gpt-4o', advisorModel: 'plan/gpt-plan' }),
+      );
+      mkdirSync(join(workspace, '.book'), { recursive: true });
+      writeFileSync(
+        join(workspace, '.book', 'settings.json'),
+        JSON.stringify({ model: 'plan/gpt-plan', compactModel: 'plan/gpt-plan' }),
+      );
+      signIn();
+      const config = loadConfig(workspace);
+      expect(config.model).toBe('gpt-4o');
+      expect(config.providerAuth).toBeUndefined();
+      expect(config.settings.compactModel).toBeUndefined();
+      // The user's own advisor choice stands.
+      expect(config.settings.advisorModel).toBe('plan/gpt-plan');
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([
+        expect.objectContaining({
+          key: 'model',
+          value: 'plan/gpt-plan',
+          reason: 'plan',
+          fallback: 'gpt-4o',
+        }),
+        expect.objectContaining({ key: 'compactModel', reason: 'plan', fallback: undefined }),
+      ]);
+      // An id a workspace controls (an agent definition) is refused at resolution.
+      expect(() => resolveModelProviderConfig(config, 'plan/gpt-plan')).toThrow(
+        /ChatGPT plan model/,
+      );
+      expect(
+        resolveModelProviderConfig(config, 'plan/gpt-plan', { trustedSelection: true })
+          .providerAuth,
+      ).toBe('chatgpt');
+    });
+
+    it('is refused when only a workspace declares it, approved or not', () => {
+      const config = defaultConfig({
+        workspaceProviderGate: { declared: ['team'], withheld: [] } as unknown as NonNullable<
+          ReturnType<typeof defaultConfig>['workspaceProviderGate']
+        >,
+      });
+      config.settings.provider.team = { type: 'chatgpt', models: {} };
+      expect(() => resolveModelProviderConfig(config, 'team/gpt-plan')).toThrow(
+        /only this workspace declares/,
+      );
+    });
+  });
+
   it("carries a provider's `api` to the request config, and no further", () => {
     writeFileSync(
       join(isolatedHome, 'settings.json'),

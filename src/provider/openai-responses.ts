@@ -66,7 +66,22 @@ function inputParts(parts: ProviderContentPart[]): InputItem[] {
  * `function_call` item per call, and a tool result is a `function_call_output` paired by
  * `call_id`. No item carries an `id`: with `store: false` OpenAI keeps no items to refer to.
  */
-export function toResponsesInput(messages: ProviderMessage[]): {
+/**
+ * How one Responses endpoint differs from the plain API. The ChatGPT plan route
+ * (https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) refuses
+ * `max_output_tokens` and wants function tools grouped in a namespace.
+ */
+export interface ResponsesRoute {
+  /** Leave `max_output_tokens` out of every request, whatever caps the output. */
+  omitMaxOutputTokens?: boolean;
+  /** Send the tools as one namespace of this name, and name it on every replayed call. */
+  toolNamespace?: string;
+}
+
+export function toResponsesInput(
+  messages: ProviderMessage[],
+  route: ResponsesRoute = {},
+): {
   instructions?: string;
   input: InputItem[];
 } {
@@ -93,6 +108,7 @@ export function toResponsesInput(messages: ProviderMessage[]): {
             call_id: call.id,
             name: call.function.name,
             arguments: call.function.arguments,
+            ...(route.toolNamespace ? { namespace: route.toolNamespace } : {}),
           });
         }
         break;
@@ -239,11 +255,12 @@ export async function* responsesStream(
   messages: ProviderMessage[],
   tools: ToolDefinition[],
   options?: ProviderStreamOptions,
+  route: ResponsesRoute = {},
 ): AsyncGenerator<ProviderStreamEvent> {
   const retry = config.retry;
   const signal = options?.signal;
   const url = `${config.baseUrl}/responses`;
-  const { instructions, input } = toResponsesInput(messages);
+  const { instructions, input } = toResponsesInput(messages, route);
 
   const body: Record<string, unknown> = {
     model: config.model,
@@ -252,7 +269,10 @@ export async function* responsesStream(
     stream: true,
     store: false,
   };
-  if (options?.maxOutputTokens || config.maxTokensExplicit || config.modelInfo?.maxOutputTokens) {
+  if (
+    !route.omitMaxOutputTokens &&
+    (options?.maxOutputTokens || config.maxTokensExplicit || config.modelInfo?.maxOutputTokens)
+  ) {
     body.max_output_tokens = options?.maxOutputTokens ?? config.maxTokens;
   }
   // The Chat Completions client's rule: a level is sent only when chosen, and never to a model
@@ -262,7 +282,18 @@ export async function* responsesStream(
   }
   const reasoningEnabled =
     body.reasoning !== undefined || typeof config.modelInfo?.effort === 'object';
-  if (tools.length > 0) body.tools = convertResponsesTools(tools);
+  if (tools.length > 0) {
+    body.tools = route.toolNamespace
+      ? [
+          {
+            type: 'namespace',
+            name: route.toolNamespace,
+            description: 'The tools Book runs on this machine.',
+            tools: convertResponsesTools(tools),
+          },
+        ]
+      : convertResponsesTools(tools);
+  }
 
   log.debug('responsesStream request', {
     model: config.model,
