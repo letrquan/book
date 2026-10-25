@@ -862,12 +862,10 @@ describe.skipIf(process.platform !== 'darwin')('the Seatbelt sandbox on a real M
     expect(commit.content).toContain('committed');
     expect(hook.status).not.toBe('success');
     expect(config.status).not.toBe('success');
-    expect(
-      execFileSync('git', ['config', '--get', 'core.hooksPath'], {
-        cwd: workspace,
-        encoding: 'utf8',
-      }).trim(),
-    ).toBe('');
+    // `git config --get` exits 1 for a key that is not set: the write never landed.
+    expect(spawnSync('git', ['config', '--get', 'core.hooksPath'], { cwd: workspace }).status).toBe(
+      1,
+    );
     expect(moved.status).not.toBe('success');
   });
 
