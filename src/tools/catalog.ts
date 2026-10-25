@@ -175,6 +175,11 @@ function hintFor(definition: ToolDefinition): string {
 /** More deferred tools than this in one MCP namespace are summarised as a count, not listed. */
 const MCP_NAMESPACE_LIST_LIMIT = 12;
 
+/** Code-point order: the same on every machine, unlike `localeCompare`, which follows the locale. */
+function compareCodePoints(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 export function normalizeToolDefinition(definition: ToolDefinition): ToolDefinition {
   const name = canonicalToolName(definition.name);
   const inferredRoles: Array<'root' | 'child'> = CHILD_ONLY.has(name)
@@ -631,14 +636,24 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     );
   };
 
-  /** A tool's canonical name from a model-written one: aliases, provider prefixes, any case. */
-  const resolveName = (raw: string): string | undefined => {
-    const name = canonicalToolName(unwrapProviderPrefix(raw.trim()));
-    if (byName.has(name)) return name;
-    const lower = name.toLowerCase();
-    for (const candidate of byName.keys()) if (candidate.toLowerCase() === lower) return candidate;
-    const alias = Object.entries(TOOL_ALIASES).find(([key]) => key.toLowerCase() === lower);
-    return alias && byName.has(alias[1]) ? alias[1] : undefined;
+  /**
+   * A tool's canonical name from a model-written one: exact first, then aliases, a provider prefix,
+   * and letter case. A case-insensitive match must be unique; two tools that differ only by case
+   * are `ambiguous` rather than resolved to whichever registered first.
+   */
+  const resolveName = (raw: string): { name?: string; ambiguous?: boolean } => {
+    for (const written of new Set([raw, unwrapProviderPrefix(raw)])) {
+      const name = canonicalToolName(written);
+      if (byName.has(name)) return { name };
+    }
+    const lower = unwrapProviderPrefix(raw).toLowerCase();
+    const found = new Set<string>();
+    for (const candidate of byName.keys())
+      if (candidate.toLowerCase() === lower) found.add(candidate);
+    for (const [alias, target] of Object.entries(TOOL_ALIASES)) {
+      if (alias.toLowerCase() === lower && byName.has(target)) found.add(target);
+    }
+    return found.size === 1 ? { name: [...found][0] } : found.size > 1 ? { ambiguous: true } : {};
   };
 
   /**
@@ -654,20 +669,28 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     const outcomes: ToolSelection[] = [];
     const requested: string[] = [];
     for (const raw of names.map((name) => name.trim()).filter(Boolean)) {
-      const name = resolveName(raw);
-      if (!name) outcomes.push({ requested: raw, status: 'unknown' });
+      const { name, ambiguous } = resolveName(raw);
+      if (ambiguous) outcomes.push({ requested: raw, status: 'ambiguous' });
+      else if (!name) outcomes.push({ requested: raw, status: 'unknown' });
       else if (outcomes.some((outcome) => outcome.name === name)) continue;
       else if (!allowed.has(name)) outcomes.push({ requested: raw, name, status: 'unauthorized' });
-      else if (active.has(name) || name === 'ToolSearch')
-        outcomes.push({ requested: raw, name, status: 'active' });
+      else if (name === 'ToolSearch') outcomes.push({ requested: raw, name, status: 'active' });
       else {
-        outcomes.push({ requested: raw, name, status: 'budget' });
-        requested.push(name);
+        outcomes.push({ requested: raw, name, status: active.has(name) ? 'active' : 'budget' });
+        // A tool that is loaded is requested again so its recency is refreshed: loading the
+        // others in this call must not evict one this call reports as callable.
+        if (!active.has(name) || state.loaded.has(name)) requested.push(name);
       }
     }
     const loaded = new Set(activate(requested));
+    const nowActive = new Set(
+      activeDefinitions().map((definition) => canonicalToolName(definition.name)),
+    );
     return outcomes.map((outcome) => {
-      if (outcome.status !== 'budget' || !outcome.name) return outcome;
+      if (!outcome.name) return outcome;
+      if (outcome.status === 'active')
+        return nowActive.has(outcome.name) ? outcome : { ...outcome, status: 'budget' };
+      if (outcome.status !== 'budget') return outcome;
       const definition = byName.get(outcome.name)!;
       return {
         ...outcome,
@@ -750,7 +773,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     if (!deferredMode()) return '';
     const deferred = authorized()
       .filter((definition) => definition.name !== 'ToolSearch' && !isCore(definition))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => compareCodePoints(a.name, b.name));
     if (deferred.length === 0) return '';
     const groups = new Map<string, ToolDefinition[]>();
     for (const definition of deferred) {
@@ -759,19 +782,21 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       groups.set(key, [...(groups.get(key) ?? []), definition]);
     }
     const lines = [...groups.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
+      .sort((a, b) => compareCodePoints(a[0], b[0]))
       .map(([key, members]) => {
         if (key.startsWith('mcp:') && members.length > MCP_NAMESPACE_LIST_LIMIT) {
-          return `${key} (${members.length} tools, not listed): search with ToolSearch namespace "${key.slice(4)}".`;
+          return `${key} (${members.length} tools, not listed): search them with ToolSearch: namespace "${key.slice(4)}" plus a query naming the capability.`;
         }
         const entries = members.map((definition) => {
-          const hint = hintFor(definition);
+          // An MCP server writes its own descriptions, and this text is system-prompt text: its
+          // tools are listed by name only.
+          const hint = key.startsWith('mcp:') ? '' : hintFor(definition);
           return hint ? `${definition.name} (${hint})` : definition.name;
         });
         return `${key}: ${entries.join('; ')}`;
       });
     return [
-      `${deferred.length} authorized tools are deferred: their schemas are not loaded yet. Load tools with ToolSearch: query "select:Name1,Name2" loads those exact tools (aliases and any letter case are accepted), and any other query searches by capability. Loaded tools are callable on the next turn.`,
+      `${deferred.length} authorized tools are deferred: a tool's schema is loaded only once you select or search for it, and one already loaded is callable now. Load tools with ToolSearch: query "select:Name1,Name2" loads those exact tools (aliases and any letter case are accepted), and any other query searches by capability. Loaded tools are callable on the next turn.`,
       ...lines,
       'Call ToolSearch when the active tools do not cover the task.',
     ].join('\n');

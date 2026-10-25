@@ -466,11 +466,11 @@ export interface ToolSelection {
   /** The canonical name; absent when no tool has this name. */
   name?: string;
   /**
-   * `loaded`: activated for the next turn. `active`: already callable. `unknown`: no such tool.
+   * `loaded`: activated for the next turn. `active`: already callable. `unknown`: no such tool. `ambiguous`: several tools match the written name's case-folded form.
    * `unauthorized`: the role, mode or a capability rule excludes it. `budget`: authorized, but it
    * does not fit the loaded-tool or schema budget.
    */
-  status: 'loaded' | 'active' | 'unknown' | 'unauthorized' | 'budget';
+  status: 'loaded' | 'active' | 'unknown' | 'ambiguous' | 'unauthorized' | 'budget';
   category?: ToolCategory;
   namespace?: string;
   summary?: string;

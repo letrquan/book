@@ -15,6 +15,8 @@ function selectionLine(selection: ToolSelection): string {
       return `Already active this turn: ${selection.name}. Call it directly.`;
     case 'unknown':
       return `${selection.requested}: no tool has this name. Use the names in the deferred tool list, or search by capability.`;
+    case 'ambiguous':
+      return `${selection.requested}: matches more than one tool when letter case is ignored. Write the exact name.`;
     case 'unauthorized':
       return `${selection.name}: not authorized in this context (role, mode or capability rules), so it cannot be loaded.`;
     case 'budget':
@@ -23,22 +25,20 @@ function selectionLine(selection: ToolSelection): string {
 }
 
 function selectTools(list: string, discovery: ToolDiscoveryContext): ToolResult {
-  const names = list
-    .split(',')
-    .map((name) => name.trim())
-    .filter(Boolean);
-  if (names.length === 0 || !discovery.select) {
-    return names.length === 0
-      ? toolFailure(
-          'select: needs at least one tool name, for example select:WebFetch,WebSearch.',
-          {
-            code: 'invalid_arguments',
-            remediation: 'Pass tool names after select:, separated by commas.',
-          },
-        )
-      : toolFailure('Tool discovery is unavailable in this execution context.', {
-          code: 'discovery_unavailable',
-        });
+  const names = list.split(/[,\s]+/).filter(Boolean);
+  if (names.length === 0) {
+    return toolFailure(
+      'select: needs at least one tool name, for example select:WebFetch,WebSearch.',
+      {
+        code: 'invalid_arguments',
+        remediation: 'Pass tool names after select:, separated by commas.',
+      },
+    );
+  }
+  if (!discovery.select) {
+    return toolFailure('Tool discovery is unavailable in this execution context.', {
+      code: 'discovery_unavailable',
+    });
   }
   const selections = discovery.select(names);
   const loaded = selections.filter((selection) => selection.status === 'loaded');
