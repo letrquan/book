@@ -11,12 +11,13 @@
  * Two rules close that, in the shapes the other repository-input gates already use:
  *
  * - A provider id a **trusted** layer (the user file, a `--settings` file) defines keeps the
- *   trusted layer's origin, key and protocol. A workspace layer's `baseURL`, `baseUrl`, `apiKey`
- *   and `type` for that id are dropped before merging (`type` decides how the key is sent: as a
- *   bearer token, or as `x-api-key` to `/v1/messages`); only its `models` entries still merge.
+ *   trusted layer's origin, key and protocol. A workspace layer's `baseURL`, `baseUrl`, `apiKey`,
+ *   `type` and `api` for that id are dropped before merging (`type` decides how the key is sent:
+ *   as a bearer token, or as `x-api-key` to `/v1/messages`; `api` which OpenAI path receives
+ *   it); only its `models` entries still merge.
  * - A provider id **only workspace layers define** is held back until the user approves it in the
  *   user-global trust store (`workspace-trust.ts`), against a fingerprint of its declared type,
- *   origin and key reference. Changing any of those re-withholds it. An approved one is merged in,
+ *   API, origin and key reference. Changing any of those re-withholds it. An approved one is merged in,
  *   but it never inherits a key: only its own `apiKey` is sent (see `resolveModelProviderConfig`).
  *
  * Everything here is pure except {@link persistWorkspaceProviderChoice}: the loader and the
@@ -48,7 +49,7 @@ export const LEGACY_BASE_URL_ID = '.bookrc.json';
  * them from a workspace layer, and a `/model` save clears them from the local layer: one list, so
  * the two cannot drift.
  */
-export const PROVIDER_CONNECTION_KEYS = ['baseURL', 'baseUrl', 'apiKey', 'type'] as const;
+export const PROVIDER_CONNECTION_KEYS = ['baseURL', 'baseUrl', 'apiKey', 'type', 'api'] as const;
 
 /** `__proto__` parses as an ordinary own key but assigning it would reach the prototype setter. */
 function usableId(id: string): boolean {
@@ -61,15 +62,17 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * Digest of everything the user is asked to trust about a workspace-declared provider: the
- * declared `type`, the origin (`baseURL ?? baseUrl`, as written) and the `apiKey` exactly as
- * written. A reference is fingerprinted as text, never resolved, so computing one reads nothing.
- * `models` stays out: a catalog entry sends nothing anywhere.
+ * declared `type` and `api`, the origin (`baseURL ?? baseUrl`, as written) and the `apiKey`
+ * exactly as written. A reference is fingerprinted as text, never resolved, so computing one
+ * reads nothing. `models` stays out: a catalog entry sends nothing anywhere. `api` is digested
+ * only when set, so a decision recorded before the key existed still matches its entry.
  */
 export function workspaceProviderFingerprint(entry: ProviderDeclaration): string {
   const canonical = JSON.stringify({
     type: entry.type ?? 'openai',
     origin: entry.baseURL ?? entry.baseUrl ?? null,
     apiKey: entry.apiKey ?? null,
+    ...(entry.api !== undefined ? { api: entry.api } : {}),
   });
   return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 }
@@ -121,7 +124,7 @@ export function providerIdsOf(layers: readonly Pick<ProviderLayer, 'providers'>[
 export interface DroppedProviderOverride {
   path: string;
   providerId: string;
-  /** Which of `baseURL`, `baseUrl`, `apiKey` and `type` the layer wrote. */
+  /** Which of `baseURL`, `baseUrl`, `apiKey`, `type` and `api` the layer wrote. */
   keys: string[];
 }
 
@@ -575,9 +578,12 @@ export function describeWorkspaceProvider(
   routed: readonly UnaffectedModelSelection[] = [],
 ): string[] {
   const origin = entry.declaration.baseURL ?? entry.declaration.baseUrl;
+  // `api` is shown only when declared, as the fingerprint digests it only then.
+  const api = entry.declaration.api;
   const lines = [
     `${renderUntrustedText(entry.id, 64)}  ${describeOrigin(origin)}  ` +
-      `key: ${describeApiKeyDeclaration(entry.declaration.apiKey, workspace)}`,
+      `key: ${describeApiKeyDeclaration(entry.declaration.apiKey, workspace)}` +
+      (api !== undefined ? `  api: ${renderUntrustedText(String(api), 32)}` : ''),
   ];
   if (routed.length > 0) {
     const named = routed

@@ -82,8 +82,9 @@ and terminal interaction, reasoning/retry propagation, headless/stream-JSON fram
   with human and machine projections. The input parser accepts fragmented chunks and CRLF line
   endings, bounds each record, and reports invalid JSON, invalid shapes, and oversized lines before
   a run proceeds.
-- Anthropic Messages and OpenAI-compatible providers, provider auto-detection, model discovery,
-  BYOK providers, configurable effort, retries, timeouts, and token/cost accounting.
+- Anthropic Messages and OpenAI-compatible providers (Chat Completions, or the Responses API with
+  `provider.<id>.api: "responses"`), provider auto-detection, model discovery, BYOK providers,
+  configurable effort, retries, timeouts, and token/cost accounting.
 - System prompt v6 (`book-system-prompt-v6`): content split by volatility across a cached static
   prefix, an uncached activation-class suffix, and a per-turn `<session-state>` block on the newest
   user turn; project instructions fenced and trust-labeled; three Anthropic cache breakpoints

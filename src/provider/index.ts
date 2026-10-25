@@ -5,7 +5,8 @@
  * 1. Explicit `--provider` flag / `BOOK_PROVIDER` env var (anthropic | openai)
  * 2. baseUrl contains 'anthropic.com' → Anthropic
  * 3. model name starts with 'claude-' → Anthropic (catches OpenRouter/LiteLLM proxies)
- * 4. Default → OpenAI-compatible
+ * 4. Default → OpenAI-compatible: Chat Completions, or the Responses API for a provider entry
+ *    with `api: "responses"` (`AgentConfig.providerApi`)
  */
 
 import type { AgentConfig } from '../types/runtime.js';

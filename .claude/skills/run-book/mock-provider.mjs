@@ -12,6 +12,15 @@
  *     -> data: {choices:[{finish_reason}], usage:{...}}
  *     -> data: [DONE]
  *
+ *   POST <base>/responses  { stream: true, store: false }  (a provider with `api: "responses"`)
+ *     -> event: response.created / response.output_text.delta / response.output_item.added
+ *        (function_call) / response.function_call_arguments.delta / response.completed
+ *        (or response.incomplete for a `length` or `content_filter` finish)
+ *
+ * Both routes answer from the same script. Only the `length` and `content_filter` finish reasons
+ * have a Responses spelling (`response.incomplete`); any other `finishReason` is a Chat
+ * Completions shape, and on the Responses route the turn completes normally.
+ *
  * It replies with a scripted sequence of turns. Turn N is used for the Nth
  * request, and the last turn repeats forever after that.
  *
@@ -338,24 +347,31 @@ function pause(res, ms) {
   });
 }
 
-/** The text of the request's last message when it is a user turn; '' for any other role. */
+/**
+ * The text of the request's last message when it is a user turn; '' for any other role. A
+ * Responses request keeps its turns in `input`, where a tool result is a `function_call_output`
+ * item with no role.
+ */
 function lastUserMessageText(parsed) {
-  const last = parsed.messages?.at(-1);
+  const last = Array.isArray(parsed.input) ? parsed.input.at(-1) : parsed.messages?.at(-1);
   if (last?.role !== 'user') return '';
   const content = last.content;
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
-      .filter((part) => part?.type === 'text')
+      .filter((part) => part?.type === 'text' || part?.type === 'input_text')
       .map((part) => part.text)
       .join('\n');
   }
   return '';
 }
 
-/** Rough size of a chat request, the same chars/4 rule Book's own estimator uses. */
+/** Rough size of a request, the same chars/4 rule Book's own estimator uses. */
 function estimateRequestTokens(parsed) {
-  return Math.ceil(JSON.stringify(parsed.messages ?? []).length / 4);
+  const turns = Array.isArray(parsed.input)
+    ? [parsed.instructions ?? '', parsed.input]
+    : (parsed.messages ?? []);
+  return Math.ceil(JSON.stringify(turns).length / 4);
 }
 
 /** A short Markdown handoff under the headings the v3 summarizer asks for. */
@@ -500,6 +516,130 @@ async function streamTurn(res, turn, model, id, prompt = '', estimatedTokens = 1
   }
 }
 
+/** A scenario's chat-shaped `usage` override in the Responses API's names. */
+function responsesUsage(usage) {
+  if (usage.input_tokens !== undefined || usage.output_tokens !== undefined) return usage;
+  return {
+    input_tokens: usage.prompt_tokens ?? 0,
+    output_tokens: usage.completion_tokens ?? 0,
+    total_tokens: usage.total_tokens ?? 0,
+  };
+}
+
+/**
+ * `streamTurn` for the Responses API: the same turn fields (`text`, `tool`/`tools`, `thinkMs`,
+ * `holdMs`, `chunkDelayMs`, `finishReason`, `usage`), sent as Responses events.
+ */
+async function streamResponsesTurn(res, turn, model, id, prompt = '', estimatedTokens = 100) {
+  const delayMs = typeof turn.chunkDelayMs === 'number' ? turn.chunkDelayMs : chunkDelayMs;
+  let sent = 0;
+  const send = (event) => {
+    if (res.destroyed) throw new ClientGone();
+    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    sent += 1;
+  };
+  const wait = async (ms) => {
+    await pause(res, ms);
+    if (res.destroyed) throw new ClientGone();
+  };
+
+  try {
+    send({ type: 'response.created', response: { id, model, status: 'in_progress' } });
+    if (turn.thinkMs) await wait(turn.thinkMs);
+
+    const turnTools = Array.isArray(turn.tools) ? turn.tools : turn.tool ? [turn.tool] : [];
+    // A tool turn streams only the text it was given; a text turn falls back to the reply.
+    const text =
+      turnTools.length > 0 ? (turn.text ?? '') : substituteEvents(turn.text ?? replyText, prompt);
+    let outputIndex = 0;
+    if (text) {
+      const itemId = `msg_${id}`;
+      send({
+        type: 'response.output_item.added',
+        output_index: outputIndex,
+        item: { type: 'message', id: itemId, role: 'assistant', content: [] },
+      });
+      for (const piece of text.match(/.{1,12}/gs) ?? [text]) {
+        if (delayMs > 0) await wait(delayMs);
+        send({
+          type: 'response.output_text.delta',
+          item_id: itemId,
+          output_index: outputIndex,
+          content_index: 0,
+          delta: piece,
+        });
+      }
+      outputIndex += 1;
+    }
+    if (turn.holdMs) await wait(turn.holdMs);
+    for (const [index, tool] of turnTools.entries()) {
+      if (delayMs > 0) await wait(delayMs);
+      const item = {
+        type: 'function_call',
+        id: `fc_${id}_${index}`,
+        call_id: `call_mock_${id}_${index}`,
+        name: tool.name,
+      };
+      const args =
+        typeof tool.rawArguments === 'string'
+          ? tool.rawArguments
+          : JSON.stringify(tool.arguments ?? {});
+      send({
+        type: 'response.output_item.added',
+        output_index: outputIndex,
+        item: { ...item, arguments: '' },
+      });
+      send({
+        type: 'response.function_call_arguments.delta',
+        item_id: item.id,
+        output_index: outputIndex,
+        delta: args,
+      });
+      send({
+        type: 'response.output_item.done',
+        output_index: outputIndex,
+        item: { ...item, arguments: args },
+      });
+      outputIndex += 1;
+    }
+
+    const usage = responsesUsage(
+      turn.usage ??
+        (usageFromEstimate
+          ? {
+              prompt_tokens: estimatedTokens,
+              completion_tokens: 20,
+              total_tokens: estimatedTokens + 20,
+            }
+          : { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }),
+    );
+    const incomplete =
+      turn.finishReason === 'length'
+        ? 'max_output_tokens'
+        : turn.finishReason === 'content_filter'
+          ? 'content_filter'
+          : undefined;
+    send(
+      incomplete
+        ? {
+            type: 'response.incomplete',
+            response: {
+              id,
+              model,
+              status: 'incomplete',
+              incomplete_details: { reason: incomplete },
+              usage,
+            },
+          }
+        : { type: 'response.completed', response: { id, model, status: 'completed', usage } },
+    );
+    res.end();
+  } catch (error) {
+    if (!(error instanceof ClientGone)) throw error;
+    console.error(`mock-provider: ${id} closed by the client after ${sent} events; stopped`);
+  }
+}
+
 const server = createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
@@ -522,7 +662,8 @@ function serve(req, res, body) {
       res.end(JSON.stringify({ data: [{ id: 'mock-model', object: 'model' }] }));
       return;
     }
-    if (!req.url?.endsWith('/chat/completions')) {
+    const responsesRoute = req.url?.endsWith('/responses') === true;
+    if (!responsesRoute && !req.url?.endsWith('/chat/completions')) {
       res.writeHead(404).end('not found');
       return;
     }
@@ -562,7 +703,7 @@ function serve(req, res, body) {
       sequencePosition += 1;
       which = `${sequenceIndex}`;
     }
-    const id = `chatcmpl-mock-${matched ? 'matched-' : ''}${n}`;
+    const id = `${responsesRoute ? 'resp' : 'chatcmpl'}-mock-${matched ? 'matched-' : ''}${n}`;
     try {
       if (requestLogFd !== null) {
         writeSync(
@@ -623,8 +764,9 @@ function serve(req, res, body) {
     });
     // `.catch` and not `void`: a promise nobody handles that rejects takes the whole
     // process with it, and a failure after these headers can only end the response.
-    streamTurn(res, turn, parsed.model ?? 'mock-model', id, prompt, estimatedTokens).catch(
-      (error) => requestFailed(res, n, which, error),
+    const stream = responsesRoute ? streamResponsesTurn : streamTurn;
+    stream(res, turn, parsed.model ?? 'mock-model', id, prompt, estimatedTokens).catch((error) =>
+      requestFailed(res, n, which, error),
     );
   } catch (error) {
     // Nothing a request throws on reaches the process: an uncaught exception ends
