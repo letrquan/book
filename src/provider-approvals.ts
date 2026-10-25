@@ -51,6 +51,17 @@ export const LEGACY_BASE_URL_ID = '.bookrc.json';
  */
 export const PROVIDER_CONNECTION_KEYS = ['baseURL', 'baseUrl', 'apiKey', 'type', 'api'] as const;
 
+/**
+ * The ids of the Sign in with ChatGPT providers in a registry: the ones a workspace selection may
+ * never choose, since a model there bills the user's ChatGPT plan (#615). The one predicate both
+ * gates use, the settings layers' and the legacy `.bookrc.json`'s, so they cannot disagree.
+ */
+export function chatGptProviderIds(
+  registry: Readonly<Record<string, { type?: string } | undefined>>,
+): Set<string> {
+  return new Set(Object.keys(registry).filter((id) => registry[id]?.type === 'chatgpt'));
+}
+
 /** `__proto__` parses as an ordinary own key but assigning it would reach the prototype setter. */
 function usableId(id: string): boolean {
   return id !== '__proto__';

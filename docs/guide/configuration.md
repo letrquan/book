@@ -337,9 +337,10 @@ list, run `book auth login` again. Some things differ from an API-key provider:
   `book trust provider` approves it.
 - **Only you choose a plan model.** A `model`, `compactModel`, `advisorModel` or agent-profile
   `model` that a workspace layer (or a legacy `.bookrc.json`) sets to one of your chatgpt models
-  is ignored, with a notice at launch and in `book doctor`. Your own value applies instead. An agent definition or a delegated
-  model id that names one is refused. Your own settings, `--model`, `BOOK_MODEL` and `/model`
-  choose plan models as usual.
+  is ignored, with a notice at launch and in `book doctor`. Your own value applies instead, or the
+  default (`gpt-4o`) when you set none. If that leaves a run with no API key, the error names the
+  ignored model. An agent definition or a delegated model id that names one is refused. Your own
+  settings, `--model`, `BOOK_MODEL` and `/model` choose plan models as usual.
 - **The plan route has its own request shape.** Every request sends `"store": false` and
   `"stream": true`, groups Book's tools in one namespace, and sends no `max_output_tokens`. So no
   output cap applies on this route: not one you set, and not the caps compaction and the advisor
