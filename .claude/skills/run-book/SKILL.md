@@ -148,6 +148,23 @@ it after the run, pass `--request-log <file>` to the mock, or
 `--mock-request-log <file>` to the driver: that keeps the log wherever you put it, and a symbolic
 link at that path is refused, so the log cannot be pointed at a file you did not name.
 
+It also serves `POST <base>/responses`, the Responses API that `src/provider/openai-responses.ts`
+speaks, from the same script. To drive that path, pass a provider entry with `api: "responses"`
+through `--settings` (a workspace `.book/settings.json` provider is withheld until trusted) and
+select it with `BOOK_MODEL`:
+
+```bash
+printf '{"provider":{"mock":{"type":"openai","baseURL":"http://127.0.0.1:8919/v1","apiKey":"mock-key","api":"responses"}}}' > responses.json
+BOOK_MODEL=mock/mock-model node .claude/skills/run-book/driver.mjs --mock --mock-port 8919 \
+  -- --settings responses.json <<'EOF'
+wait Ask me anything
+send hello
+wait MOCK-OK
+shot responses-reply
+quit
+EOF
+```
+
 `--port 0` takes any free port, and the READY line names the one actually bound — how a script
 avoids a port race when several runs share a machine.
 

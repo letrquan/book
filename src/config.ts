@@ -369,6 +369,7 @@ function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
     modelSelection: model,
     modelInfo: undefined,
     provider: config.defaultProvider ?? config.provider,
+    providerApi: undefined,
   };
 }
 
@@ -515,6 +516,7 @@ export function resolveModelProviderConfig(
     modelSelection: selection,
     modelInfo: provider.models[model],
     provider: provider.type,
+    providerApi: provider.type === 'openai' ? provider.api : undefined,
   };
 }
 

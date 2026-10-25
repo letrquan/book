@@ -3,6 +3,7 @@ import type { ProviderMessage, ProviderStreamEvent } from '../types/providers.js
 import type { ToolDefinition } from '../types/tools.js';
 import { chatCompletionStream as openaiStream } from './openai-compatible.js';
 import { chatCompletionStream as anthropicStream, isAnthropicUrl } from './anthropic.js';
+import { responsesStream } from './openai-responses.js';
 
 export interface ProviderStreamOptions {
   signal?: AbortSignal;
@@ -35,6 +36,13 @@ export function createProvider(config: AgentConfig): Provider {
       id: 'anthropic',
       stream: (currentConfig, messages, tools, options) =>
         anthropicStream(currentConfig, messages, tools, options),
+    };
+  }
+  if (config.providerApi === 'responses') {
+    return {
+      id: 'openai-responses',
+      stream: (currentConfig, messages, tools, options) =>
+        responsesStream(currentConfig, messages, tools, options),
     };
   }
   return {

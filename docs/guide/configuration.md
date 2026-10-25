@@ -106,7 +106,7 @@ with an error naming the redirect target (scheme, host and path only), and nothi
 so your key and prompt never reach a URL you did not configure. The usual causes are `http` where
 the endpoint wants `https`, a missing or extra path segment such as `/v1`, or a host that has moved.
 If the host the error names is the endpoint you meant, set the provider's base URL to that address
-without the endpoint path Book adds (`/messages`, `/chat/completions` or `/models`): for example,
+without the endpoint path Book adds (`/messages`, `/chat/completions`, `/responses` or `/models`): for example,
 `https://gw.example/v1/chat/completions` becomes the base URL `https://gw.example/v1`.
 
 **The advisor fails closed.** `advisorModel` (and `BOOK_ADVISOR_MODEL`, and `/advisor`) is a
@@ -143,17 +143,17 @@ file under `~` or any environment variable, plus the transcript, to an endpoint 
 layers (`~/.book/settings.json`, `--settings`) are trusted and unchanged.
 
 - **A provider you define keeps your origin, key and type.** A workspace layer cannot change
-  `baseURL`, `baseUrl`, `apiKey` or `type` on a provider your own settings (the user file or
-  `--settings`) define. `type` decides how the key is sent (a bearer token to `/chat/completions`,
-  or `x-api-key` to `/v1/messages`), so changing it would re-route your key without moving the
-  origin. The override is dropped and reported, at launch and in `book doctor`. Only its `models`
+  `baseURL`, `baseUrl`, `apiKey`, `type` or `api` on a provider your own settings (the user file or
+  `--settings`) define. `type` and `api` decide how the key is sent (a bearer token to
+  `/chat/completions` or `/responses`, or `x-api-key` to `/v1/messages`), so changing them would
+  re-route your key without moving the origin. The override is dropped and reported, at launch and in `book doctor`. Only its `models`
   still merge, so a repository can still add a model to your provider. The model picker's refresh
   and hand-typed models write only what your own file holds, never a value a workspace layer
   merged in.
 - **A provider only a repository declares is withheld.** It is not in effect until
   `book trust provider <id>` approves it. The decision is recorded in `~/.book/trust.json`, which
   nothing a repository ships can write, and it is keyed by a fingerprint of the declaration's
-  `type`, origin and `apiKey` text. Changing the `baseURL` or the key reference needs a new
+  `type`, origin and `apiKey` text, and its `api` when it sets one. Changing the `baseURL` or the key reference needs a new
   approval; editing its `models` does not. `book trust provider` shows what a request would
   actually reach, in full: the parsed protocol, host and port of the origin (a URL with userinfo
   before the host, or one that does not parse, is flagged), the variable an `{env:…}` reference
@@ -251,7 +251,7 @@ the family table; then the default. A reported window is not a declaration, so a
 lower it by learning a ceiling, and `/context` shows its source as `reported`.
 
 A save from `/model` (a new provider, a model added by hand, or a catalog refresh) writes your user
-file, and replaces only the connection keys (`baseURL`, `baseUrl`, `apiKey` and `type`) of a
+file, and replaces only the connection keys (`baseURL`, `baseUrl`, `apiKey`, `type` and `api`) of a
 same-named entry in `.book/settings.local.json`, plus the local `model` when the save activates a
 model. Per-model overrides in that entry (`contextWindow`, `maxOutputTokens`, `vision`,
 `editFormat`, `effort`) are kept, so a `contextWindow` you set there survives a refresh.
@@ -262,6 +262,37 @@ and removes the connection keys of a same-named entry in `.book/settings.local.j
 local key cannot look as though it overrides the new one. It leaves that entry's
 `reportedContextWindow` and the local `model` alone, since no catalog was refreshed and no model
 activated, and it never creates a local entry or file.
+
+### The OpenAI Responses API
+
+A `type: "openai"` provider speaks Chat Completions (`POST <baseURL>/chat/completions`) unless its
+entry sets `"api": "responses"`, which switches it to OpenAI's Responses API
+(`POST <baseURL>/responses`). Nothing else changes: the same key, model catalog, effort levels,
+retry, redirect and stall policy, and the same tool calls, reasoning display and `/cost` figures.
+Without the key, or with `"api": "chat"`, an entry behaves exactly as before, and a bare model id
+on the default endpoint always uses Chat Completions.
+
+```json
+{
+  "model": "openai/gpt-5",
+  "provider": {
+    "openai": {
+      "type": "openai",
+      "baseURL": "https://api.openai.com/v1",
+      "apiKey": "{env:OPENAI_API_KEY}",
+      "api": "responses"
+    }
+  }
+}
+```
+
+Every Responses request sends `"stream": true` and `"store": false`: Book sends the whole
+conversation each turn and never refers to an earlier response, so OpenAI keeps nothing. The system
+prompt goes in `instructions`, and a chosen `effort` is sent as
+`"reasoning": {"effort": <level>, "summary": "auto"}`, which is what makes the model's reasoning
+summary stream into the transcript; no effort sends no `reasoning` object, as on Chat Completions.
+Reasoning is replayed as text, the way the Chat Completions path does it, not as OpenAI's encrypted
+reasoning items. An Anthropic entry ignores `api`.
 
 ### Prompt caching on OpenAI-compatible providers
 

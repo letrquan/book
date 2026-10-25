@@ -102,6 +102,7 @@ src/
     index.ts            Provider auto-detect (anthropic vs openai-compatible)
     anthropic.ts        Anthropic Messages SSE client (caching, thinking, effort)
     openai-compatible.ts  OpenAI-compatible streaming client (SSE, retry, abort)
+    openai-responses.ts   OpenAI Responses API streaming client (`provider.<id>.api: "responses"`)
     model-discovery.ts  Model listing for pickers / BYOK
   session/
     store.ts            JSONL session persistence

@@ -1,4 +1,4 @@
-import type { AgentConfig } from '../types/runtime.js';
+import type { AgentConfig, RetryConfig } from '../types/runtime.js';
 import type {
   ProviderMessage,
   ProviderStreamEvent,
@@ -18,7 +18,7 @@ import {
 
 const log = createDebugLogger('provider');
 
-function parseToolArguments(raw: string): {
+export function parseToolArguments(raw: string): {
   arguments: Record<string, unknown>;
   unparsedArguments?: { raw: string; error: string };
 } {
@@ -58,7 +58,9 @@ function parseReasoningDelta(delta: Record<string, unknown>): string | undefined
   return text || undefined;
 }
 
-function isSystemPromptZones(content: ProviderMessage['content']): content is SystemPromptZones {
+export function isSystemPromptZones(
+  content: ProviderMessage['content'],
+): content is SystemPromptZones {
   return (
     !!content &&
     typeof content === 'object' &&
@@ -201,6 +203,84 @@ export function convertTools(tools: ToolDefinition[]): Array<{
   }));
 }
 
+/** One tool call as it was assembled from a stream: an OpenAI-family wire format, either API. */
+export interface StreamedToolCallPart {
+  index: number;
+  id: string;
+  name: string;
+  arguments: string;
+  /** Deltas that carried an arguments fragment: a wire format that sends one, vs many. */
+  fragments: number;
+}
+
+/**
+ * The `tool_call` event for one assembled call, shared by the Chat Completions and Responses
+ * clients so both read an empty or unparsable argument text the same way.
+ */
+export function streamedToolCallEvent(
+  part: StreamedToolCallPart,
+  logger: ReturnType<typeof createDebugLogger>,
+): ProviderStreamEvent {
+  const { arguments: arguments_, unparsedArguments } = parseToolArguments(part.arguments);
+  // Nothing at all after the name and id: kept apart from a literal `{}` so the registry can
+  // blame the route, not the model, for a required argument that is missing (#403).
+  const emptyOnWire = !part.arguments.trim();
+  if (emptyOnWire) {
+    logger.warn('tool call arrived with empty arguments', {
+      index: part.index,
+      id: part.id,
+      name: escapeInvisibleCharacters(part.name),
+      fragments: part.fragments,
+    });
+  }
+  if (unparsedArguments) {
+    // The head, not the whole text: enough to see whether the call arrived with its
+    // first fragment missing (#260), which is a route's wire format, not the model's JSON.
+    logger.warn('tool call arguments are not valid JSON', {
+      index: part.index,
+      id: part.id,
+      name: escapeInvisibleCharacters(part.name),
+      fragments: part.fragments,
+      length: part.arguments.length,
+      head: escapeInvisibleCharacters(part.arguments.slice(0, 120)),
+    });
+  }
+  return {
+    type: 'tool_call',
+    toolCall: {
+      id: part.id || `tool-${part.index}`,
+      name: part.name,
+      arguments: arguments_,
+      ...(unparsedArguments ? { unparsedArguments } : {}),
+      ...(emptyOnWire ? { emptyOnWire: true as const } : {}),
+    },
+  };
+}
+
+/**
+ * The stall ceilings an OpenAI-family stream moves between (#379); `chatCompletionStream`
+ * explains each phase. `answer` bounds the answer phase, `thinking` a phase with reasoning
+ * evidence, and `opening` the wait for the first meaningful delta.
+ */
+export function streamStallCeilings(
+  retry: RetryConfig,
+  reasoningEnabled: boolean,
+  effortDisabled: boolean,
+): { answer: number; thinking: number; opening: number } {
+  const answer =
+    reasoningEnabled && retry.thinkingStallTimeoutMs
+      ? Math.max(retry.streamStallTimeoutMs, retry.thinkingStallTimeoutMs)
+      : retry.streamStallTimeoutMs;
+  const thinking = retry.thinkingStallTimeoutMs
+    ? Math.max(answer, retry.thinkingStallTimeoutMs)
+    : answer;
+  const opening =
+    !reasoningEnabled && !effortDisabled
+      ? Math.max(answer, retry.firstDeltaStallTimeoutMs ?? 0)
+      : answer;
+  return { answer, thinking, opening };
+}
+
 export async function* chatCompletionStream(
   config: AgentConfig,
   messages: ProviderMessage[],
@@ -305,14 +385,7 @@ export async function* chatCompletionStream(
 
   const decoder = new TextDecoder();
   let buffer = '';
-  const toolCallParts: Array<{
-    index: number;
-    id: string;
-    name: string;
-    arguments: string;
-    /** Deltas that carried an arguments fragment: a wire format that sends one, vs many. */
-    fragments: number;
-  }> = [];
+  const toolCallParts: StreamedToolCallPart[] = [];
   let currentUsage: Usage | null = null;
   let responseModel: string | undefined;
   let responseId: string | undefined;
@@ -321,40 +394,7 @@ export async function* chatCompletionStream(
   const emitToolCalls = function* (): Generator<ProviderStreamEvent> {
     for (const part of [...toolCallParts].sort((a, b) => a.index - b.index)) {
       if (!part.id && !part.name) continue;
-      const { arguments: arguments_, unparsedArguments } = parseToolArguments(part.arguments);
-      // Nothing at all after the name and id: kept apart from a literal `{}` so the registry can
-      // blame the route, not the model, for a required argument that is missing (#403).
-      const emptyOnWire = !part.arguments.trim();
-      if (emptyOnWire) {
-        log.warn('tool call arrived with empty arguments', {
-          index: part.index,
-          id: part.id,
-          name: escapeInvisibleCharacters(part.name),
-          fragments: part.fragments,
-        });
-      }
-      if (unparsedArguments) {
-        // The head, not the whole text: enough to see whether the call arrived with its
-        // first fragment missing (#260), which is a route's wire format, not the model's JSON.
-        log.warn('tool call arguments are not valid JSON', {
-          index: part.index,
-          id: part.id,
-          name: escapeInvisibleCharacters(part.name),
-          fragments: part.fragments,
-          length: part.arguments.length,
-          head: escapeInvisibleCharacters(part.arguments.slice(0, 120)),
-        });
-      }
-      yield {
-        type: 'tool_call',
-        toolCall: {
-          id: part.id || `tool-${part.index}`,
-          name: part.name,
-          arguments: arguments_,
-          ...(unparsedArguments ? { unparsedArguments } : {}),
-          ...(emptyOnWire ? { emptyOnWire: true as const } : {}),
-        },
-      };
+      yield streamedToolCallEvent(part, log);
     }
   };
 
@@ -417,9 +457,7 @@ export async function* chatCompletionStream(
       if (reasoning) {
         // The model is reasoning, whatever the request could not say (#379), so
         // this phase waits out the thinking ceiling. Only this phase does.
-        stallTimeoutMs = retry.thinkingStallTimeoutMs
-          ? Math.max(startingStallTimeoutMs, retry.thinkingStallTimeoutMs)
-          : startingStallTimeoutMs;
+        stallTimeoutMs = thinkingStallTimeoutMs;
         log.debug('stream reasoning', { len: reasoning.length });
         yield { type: 'reasoning', reasoning };
       }
@@ -515,14 +553,12 @@ export async function* chatCompletionStream(
   // that resumes mid-answer promotes the ceiling again. A stream that never
   // reasons keeps the chat ceiling throughout, and a request with an explicit
   // effort or a catalogued one is unchanged.
-  const startingStallTimeoutMs =
-    reasoningEnabled && retry.thinkingStallTimeoutMs
-      ? Math.max(retry.streamStallTimeoutMs, retry.thinkingStallTimeoutMs)
-      : retry.streamStallTimeoutMs;
-  const firstDeltaApplies = !reasoningEnabled && config.modelInfo?.effort !== false;
-  let stallTimeoutMs = firstDeltaApplies
-    ? Math.max(startingStallTimeoutMs, retry.firstDeltaStallTimeoutMs ?? 0)
-    : startingStallTimeoutMs;
+  const {
+    answer: startingStallTimeoutMs,
+    thinking: thinkingStallTimeoutMs,
+    opening,
+  } = streamStallCeilings(retry, reasoningEnabled, config.modelInfo?.effort === false);
+  let stallTimeoutMs = opening;
 
   try {
     while (true) {

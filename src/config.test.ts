@@ -596,6 +596,29 @@ describe('loadConfig provider registry', () => {
     expect(resolveModelProviderConfig(withDefault, 'lab/model').apiKey).toBe('default-key');
   });
 
+  it("carries a provider's `api` to the request config, and no further", () => {
+    writeFileSync(
+      join(isolatedHome, 'settings.json'),
+      JSON.stringify({
+        model: 'resp/gpt-5',
+        provider: {
+          resp: { type: 'openai', baseURL: 'http://localhost:9/v1', api: 'responses' },
+          chat: { type: 'openai', baseURL: 'http://localhost:8/v1' },
+          claude: { type: 'anthropic', baseURL: 'https://api.anthropic.com', api: 'responses' },
+        },
+      }),
+    );
+    const config = loadConfig(workspace);
+    expect(config.providerApi).toBe('responses');
+    expect(resolveModelProviderConfig(config, 'chat/gpt-4o').providerApi).toBeUndefined();
+    // A bare id goes to the default endpoint, which speaks Chat Completions.
+    expect(resolveModelProviderConfig(config, 'gpt-4o').providerApi).toBeUndefined();
+    // `api` is an OpenAI setting; an Anthropic entry ignores it.
+    expect(
+      resolveModelProviderConfig(config, 'claude/claude-opus-5-5').providerApi,
+    ).toBeUndefined();
+  });
+
   it('inherits the session key across endpoints that differ only by a trailing slash', () => {
     delete process.env.BOOK_API_KEY;
     const write = (labBaseUrl: string) =>

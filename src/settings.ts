@@ -263,6 +263,12 @@ export const providerConfigSchema = z.object({
   baseURL: z.string().min(1).optional(),
   baseUrl: z.string().min(1).optional(),
   apiKey: z.string().min(1).optional(),
+  /**
+   * The OpenAI API a `type: "openai"` entry speaks: `chat` (Chat Completions, the default when
+   * unset) or `responses` (the Responses API). No default, so an entry that does not set it
+   * parses, merges and fingerprints exactly as before. An Anthropic entry ignores it.
+   */
+  api: z.enum(['chat', 'responses']).optional(),
   models: z.record(z.string(), providerModelSchema).default({}),
 });
 
