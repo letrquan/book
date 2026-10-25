@@ -31,6 +31,7 @@ import {
   type ModelSelectionLayer,
   type ProviderLayer,
   type WorkspaceProviderGate,
+  chatGptProviderIds,
 } from './provider-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { normalizeRemovedSettings } from './settings-removed.js';
@@ -722,9 +723,7 @@ export function resolveSettingsWithProviderGate(
   // A workspace layer's selection of a Sign in with ChatGPT provider would bill the user's plan
   // for a choice the repository made: it gives way exactly as one naming a withheld provider does.
   // Only the user's own settings, `--model` and `/model` choose a plan model (#615).
-  const planProviders = new Set(
-    Object.keys(resolved.provider).filter((id) => resolved.provider[id]?.type === 'chatgpt'),
-  );
+  const planProviders = chatGptProviderIds(resolved.provider);
   const withheldSelections = [
     ...withheldModelSelections(selectionLayers, withheldProviders),
     ...withheldModelSelections(selectionLayers, planProviders).map((selection) => ({

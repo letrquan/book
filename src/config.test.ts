@@ -16,6 +16,7 @@ import {
 import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { defaultConfig } from './test/fixtures.js';
+import { collectWithheldProviderNotices } from './project-approval-notices.js';
 import { tmpdir } from 'os';
 import {
   legacyBaseUrlFingerprint,
@@ -688,6 +689,60 @@ describe('loadConfig provider registry', () => {
         resolveModelProviderConfig(config, 'plan/gpt-plan', { trustedSelection: true })
           .providerAuth,
       ).toBe('chatgpt');
+    });
+
+    it('keeps a legacy .bookrc.json model naming another of your providers next to a plan one', () => {
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({
+          provider: {
+            ...settings.provider,
+            lab: { type: 'openai', baseURL: 'http://localhost:9/v1' },
+          },
+        }),
+      );
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'lab/m' }));
+      const config = loadConfig(workspace, { allowMissingApiKey: true });
+      expect(config.modelSelection).toBe('lab/m');
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([]);
+    });
+
+    it('names the ignored plan model when the fallback leaves print mode without a key', () => {
+      delete process.env.BOOK_API_KEY;
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({ provider: settings.provider }),
+      );
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'plan/gpt-plan' }));
+      signIn();
+      expect(() => loadConfig(workspace)).toThrow(
+        /BOOK_API_KEY or provider\.<id>\.apiKey not set[\s\S]*"plan\/gpt-plan" from .*\.bookrc\.json ignored: "plan" bills your ChatGPT plan[\s\S]*--model plan\/gpt-plan/,
+      );
+    });
+
+    it('ignores a plan model a repository ships in a legacy .bookrc.json', () => {
+      delete process.env.BOOK_API_KEY;
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({ provider: settings.provider }),
+      );
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'plan/gpt-plan' }));
+      signIn();
+      const config = loadConfig(workspace, { allowMissingApiKey: true });
+      expect(config.model).toBe('gpt-4o');
+      expect(config.providerAuth).toBeUndefined();
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([
+        expect.objectContaining({
+          key: 'model',
+          value: 'plan/gpt-plan',
+          reason: 'plan',
+          path: join(workspace, '.bookrc.json'),
+        }),
+      ]);
+      // Launch says so, without suggesting an approval that does not exist.
+      const notices = collectWithheldProviderNotices(config.workspaceProviderGate!, workspace);
+      expect(notices).toEqual([expect.stringMatching(/"plan" bills your ChatGPT plan/)]);
+      expect(notices.join('\n')).not.toMatch(/book trust provider/);
     });
 
     it('is refused when only a workspace declares it, approved or not', () => {
