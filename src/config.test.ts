@@ -690,6 +690,27 @@ describe('loadConfig provider registry', () => {
       ).toBe('chatgpt');
     });
 
+    it('ignores a plan model a repository ships in a legacy .bookrc.json', () => {
+      delete process.env.BOOK_API_KEY;
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({ provider: settings.provider }),
+      );
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'plan/gpt-plan' }));
+      signIn();
+      const config = loadConfig(workspace, { allowMissingApiKey: true });
+      expect(config.model).toBe('gpt-4o');
+      expect(config.providerAuth).toBeUndefined();
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([
+        expect.objectContaining({
+          key: 'model',
+          value: 'plan/gpt-plan',
+          reason: 'plan',
+          path: join(workspace, '.bookrc.json'),
+        }),
+      ]);
+    });
+
     it('is refused when only a workspace declares it, approved or not', () => {
       const config = defaultConfig({
         workspaceProviderGate: { declared: ['team'], withheld: [] } as unknown as NonNullable<

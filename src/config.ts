@@ -183,14 +183,23 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const selectedModel = options?.modelOverride || process.env.BOOK_MODEL || settings.model;
   const legacyPrefix =
     selectedModel || legacy?.model === undefined ? undefined : providerPrefixOf(legacy.model);
+  // Nor may it name the user's own Sign in with ChatGPT provider: a repository can ship the file,
+  // and only the user chooses a model billed to their ChatGPT plan (#615).
+  const legacyNamesPlan =
+    legacyPrefix !== undefined &&
+    Object.hasOwn(settings.provider, legacyPrefix) &&
+    settings.provider[legacyPrefix].type === 'chatgpt';
   const withheldLegacyModel: WithheldModelSelection | undefined =
-    legacy?.model !== undefined && legacyPrefix !== undefined && withheldIds.has(legacyPrefix)
+    legacy?.model !== undefined &&
+    legacyPrefix !== undefined &&
+    (withheldIds.has(legacyPrefix) || legacyNamesPlan)
       ? {
           key: 'model',
           value: legacy.model,
           providerId: legacyPrefix,
           path: legacyConfigPath(resolvedWorkspace),
           fallback: undefined,
+          ...(legacyNamesPlan ? { reason: 'plan' as const } : {}),
         }
       : undefined;
   const rawModel = selectedModel || (withheldLegacyModel ? undefined : legacy?.model) || 'gpt-4o';

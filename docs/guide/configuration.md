@@ -336,8 +336,8 @@ list, run `book auth login` again. Some things differ from an API-key provider:
   that only a repository declares (`.book/settings.json`) is refused, even after
   `book trust provider` approves it.
 - **Only you choose a plan model.** A `model`, `compactModel`, `advisorModel` or agent-profile
-  `model` that a workspace layer sets to one of your chatgpt models is ignored, with a notice at
-  launch and in `book doctor`. Your own value applies instead. An agent definition or a delegated
+  `model` that a workspace layer (or a legacy `.bookrc.json`) sets to one of your chatgpt models
+  is ignored, with a notice at launch and in `book doctor`. Your own value applies instead. An agent definition or a delegated
   model id that names one is refused. Your own settings, `--model`, `BOOK_MODEL` and `/model`
   choose plan models as usual.
 - **The plan route has its own request shape.** Every request sends `"store": false` and
