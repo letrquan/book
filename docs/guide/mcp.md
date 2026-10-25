@@ -65,10 +65,11 @@ file is checked in and controlled by whoever wrote the repository:
   apply immediately — they only ever restrict. `book doctor` lists withheld rules and prints the
   `book trust rule ...` command that grants them.
 - Keys recording a trust decision — `mcp.projectServers`, `permissions.projectAllowRules`,
-  `hooks.projectEntries`, and `commands.projectCommands` — are ignored from **both** workspace
+  `hooks.projectEntries`, `commands.projectCommands`, `projectDirectories`, and
+  `workspaceProviders` — are ignored from **both** workspace
   layers, so a repository cannot approve itself. They are not settings you write: decisions live
   in `~/.book/trust.json`, keyed by workspace path, and `book trust` is what records them.
-  `book config set` refuses these four paths outright rather than writing a value nothing reads.
+  `book config set` refuses these six paths outright rather than writing a value nothing reads.
   Putting them in the gitignored `.book/settings.local.json` was not enough — `.gitignore` does
   not stop a force-added file from reaching a clone, so a repository could ship approvals for the
   hooks, servers, and commands it also shipped. A store outside the workspace is one nothing the
