@@ -5,6 +5,28 @@ import type { Message } from '../types/messages.js';
 import type { ToolDefinition } from '../types/tools.js';
 import { toolSuccess } from '../tools/result.js';
 import { createInteractiveAgentSession } from './interactive-session.js';
+import type { LiveSessionReporter, LiveSessionState } from '../messaging/writer.js';
+
+/** A reporter that remembers what it was told, in order. */
+function recordingReporter(): LiveSessionReporter & {
+  states: LiveSessionState[];
+  sessionIds: string[];
+  last(): LiveSessionState | undefined;
+} {
+  const states: LiveSessionState[] = [];
+  const sessionIds: string[] = [];
+  return {
+    states,
+    sessionIds,
+    setState: (state) => states.push(state),
+    setSessionId: (sessionId) => sessionIds.push(sessionId),
+    last: () => states.at(-1),
+  };
+}
+
+function userMessage(id: string): Message {
+  return { id, role: 'user', content: 'hello', includeInContext: true, timestamp: 1 };
+}
 
 describe('createInteractiveAgentSession', () => {
   it('composes the interactive registry outside the React host', async () => {
@@ -98,5 +120,89 @@ describe('createInteractiveAgentSession', () => {
     } finally {
       fixture.cleanup();
     }
+  });
+
+  describe('the live-session record (#620)', () => {
+    it('reports busy during a turn, waiting at a prompt, and idle however the turn ends', async () => {
+      const fixture = createSessionFixture('book-interactive-live-');
+      try {
+        const sessionId = fixture.store.create({ cwd: process.cwd() });
+        const reporter = recordingReporter();
+        const seen: Array<LiveSessionState | undefined> = [];
+        let fail = false;
+        const session = createInteractiveAgentSession({
+          liveSession: reporter,
+          runLoop: async (_config, _registry, _message, _history, callbacks) => {
+            seen.push(reporter.last());
+            const permission = callbacks.onPermissionRequired({
+              id: 'call-1',
+              name: 'Bash',
+              arguments: { command: 'true' },
+            });
+            seen.push(reporter.last());
+            session.interactions.settlePermission('allow', 'test');
+            await permission;
+            seen.push(reporter.last());
+            if (fail) throw new Error('provider down');
+            return [];
+          },
+        });
+        const send = (id: string) =>
+          session.send({
+            config: defaultConfig(),
+            displayMessage: 'hello',
+            createUserMessage: () => userMessage(id),
+            history: [],
+            sessionId,
+            timelineStore: fixture.store,
+            registryStore: fixture.store,
+            callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+          });
+
+        await send('user-1');
+        expect(seen).toEqual([
+          { status: 'busy' },
+          { status: 'waiting', waitingFor: 'permission prompt' },
+          { status: 'busy' },
+        ]);
+        expect(reporter.last()).toEqual({ status: 'idle' });
+
+        fail = true;
+        const failed = await send('user-2');
+        expect(failed.status).toBe('failed');
+        expect(reporter.last()).toEqual({ status: 'idle' });
+      } finally {
+        fixture.cleanup();
+      }
+    });
+
+    it('reports a question for the user as input needed', async () => {
+      const reporter = recordingReporter();
+      const session = createInteractiveAgentSession({ liveSession: reporter });
+      const answer = session.interactions.requestUserQuestion({
+        id: 'q-1',
+        questions: [],
+        source: { kind: 'root' },
+      });
+      expect(reporter.last()).toEqual({ status: 'waiting', waitingFor: 'input needed' });
+      session.interactions.cancelAll('test');
+      await answer;
+      expect(reporter.last()).toEqual({ status: 'idle' });
+    });
+
+    it('follows the session id into every session the TUI starts', async () => {
+      const reporter = recordingReporter();
+      const started: string[] = [];
+      const session = createInteractiveAgentSession({
+        liveSession: reporter,
+        sessionStartRunner: async (_config, sessionId) => {
+          started.push(sessionId);
+        },
+      });
+      await session.startLifecycle(defaultConfig(), 'session-a', 'startup');
+      await session.startLifecycle(defaultConfig(), 'session-b', 'clear');
+      expect(reporter.sessionIds).toEqual(['session-a', 'session-b']);
+      expect(started).toEqual(['session-a', 'session-b']);
+    });
   });
 });

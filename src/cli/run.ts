@@ -52,6 +52,8 @@ import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 import { isReaderGoneError } from '../reader-gone.js';
 import { cleanupRunStatus } from '../run-status.js';
+import { LiveSessionWriter } from '../messaging/writer.js';
+import { getPackageVersion } from '../version-info.js';
 
 /** Read at each use, so a BOOK_HOME set after this module loads is honoured. */
 function sessionRoot(): string {
@@ -463,6 +465,15 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     const restoreScreen = config.accessibility.screenReader
       ? () => {}
       : enterInteractiveScreen(process.stdout);
+    // This process's entry in the live-session registry (#620): discovery only, kept while the
+    // TUI runs and removed when it ends. It starts in the background, so a registry Book cannot
+    // write neither delays the first frame nor fails the launch.
+    const liveSession = new LiveSessionWriter({
+      cwd: config.workspace,
+      sessionId: bootstrap.sessionId,
+      version: getPackageVersion(),
+    });
+    void liveSession.start();
     try {
       const rendererMode = resolveTuiRendererMode(process.env.BOOK_TUI_RENDERER, {
         isTTY: process.stdout.isTTY === true,
@@ -494,6 +505,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
             timelineStore,
             snapshotStore,
             createdSessions,
+            liveSession,
           },
           startupNotices: [...nodeNotices, ...providerNotices, ...instructionNotices],
         }),
@@ -513,6 +525,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     } finally {
       app?.cleanup();
       restoreScreen();
+      await liveSession.close();
       await mcpHost.dispose();
       ephemeralRewind?.dispose();
     }

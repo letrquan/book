@@ -63,6 +63,7 @@ import { resolvePermissionMode } from '../permission-mode.js';
 import type { ImageAttachment } from '../types/messages.js';
 import type { CommandContext } from '../types/commands.js';
 import type { RewindSnapshotStoreInterface, SessionStoreInterface } from '../types/sessions.js';
+import type { LiveSessionReporter } from '../messaging/writer.js';
 import type { SessionBootstrap } from '../session/resolve.js';
 import type { InkFlushSync } from '../cli/ink-renderer.js';
 import { displaySessionName } from '../session/name.js';
@@ -279,6 +280,8 @@ interface AppProps {
     snapshotStore?: RewindSnapshotStoreInterface;
     /** Collects the sessions `/new` and `/clear` create, for the exit cleanup in `cli/run.ts`. */
     createdSessions?: Set<string>;
+    /** This process's live-session record (#620), written and removed by `cli/run.ts`. */
+    liveSession?: LiveSessionReporter;
   };
   redrawViewport?: () => void;
   /**

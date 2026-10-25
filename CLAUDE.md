@@ -64,6 +64,7 @@ src/
   memory-*.ts           memory-store.ts (file store + MEMORY.md index + provenance),
                         memory-display.ts (/memory)
   jobs/                 Background shell manager, persistent state, and restart recovery
+  messaging/            Live-session registry (<BOOK_HOME>/live-sessions/<pid>.json; TUI-only writer.ts)
   agent/
     loop.ts             Core agent loop (runAgentLoop)
     context.ts          System prompt builder (cached kernel/session-context zones),
