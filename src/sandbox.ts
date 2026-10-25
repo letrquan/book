@@ -12,8 +12,15 @@ import {
   statSync,
 } from 'fs';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
-import { homedir, platform } from 'os';
+import { homedir, platform, tmpdir } from 'os';
 import type { ResolvedSettings } from './settings.js';
+import {
+  SANDBOX_EXEC_PATH,
+  seatbeltExecution,
+  type SeatbeltPathFilter,
+  type SeatbeltPolicy,
+  type SeatbeltRule,
+} from './sandbox-seatbelt.js';
 import { isOutside, resolveWorkspacePath, type PathComparison } from './tools/path-utils.js';
 import type { CommandExecution } from './types/runtime.js';
 import { globToRegex } from './tools/glob-regex.js';
@@ -55,6 +62,30 @@ function isExecutableFile(path: string): boolean {
   }
 }
 
+/**
+ * The Seatbelt runner, which macOS ships at one fixed, SIP-protected path. It is
+ * not searched for on PATH: a `sandbox-exec` earlier on PATH is not the system's.
+ */
+function detectSandboxExec(): string | null {
+  return isExecutableFile(SANDBOX_EXEC_PATH) ? SANDBOX_EXEC_PATH : null;
+}
+
+/** Which backend confines a command on a platform: Seatbelt on macOS, bubblewrap elsewhere. */
+export type SandboxBackendKind = 'bubblewrap' | 'seatbelt';
+
+export function sandboxBackendFor(os: NodeJS.Platform = platform()): SandboxBackendKind | null {
+  if (os === 'win32') return null;
+  return os === 'darwin' ? 'seatbelt' : 'bubblewrap';
+}
+
+/** The backend this platform uses, named for `book doctor`. */
+export function describeSandboxBackend(os: NodeJS.Platform = platform()): string {
+  const backend = sandboxBackendFor(os);
+  if (backend === 'seatbelt') return `Seatbelt (macOS sandbox-exec, ${SANDBOX_EXEC_PATH})`;
+  if (backend === 'bubblewrap') return 'bubblewrap (bwrap)';
+  return 'none (no sandbox backend on Windows)';
+}
+
 function detectBwrap(): string | null {
   const candidates = [
     ...(process.env.PATH ?? '')
@@ -79,7 +110,7 @@ function detectBwrap(): string | null {
 export type SandboxSkipReason = 'disabled' | 'excluded' | 'unavailable';
 
 export interface SandboxCoverage {
-  /** True only when this exact command will execute inside a bubblewrap namespace. */
+  /** True only when this exact command will execute inside the sandbox backend. */
   sandboxed: boolean;
   /** Set whenever `sandboxed` is false. */
   reason?: SandboxSkipReason;
@@ -97,11 +128,15 @@ export function matchesExcludedCommand(command: string, patterns: string[] = [])
 }
 
 /**
- * Is the bubblewrap backend usable on this machine at all? Independent of
- * settings, so callers can distinguish "turned off" from "cannot be turned on".
+ * Is this platform's sandbox backend usable on this machine at all? Independent
+ * of settings, so callers can distinguish "turned off" from "cannot be turned
+ * on". The permission path (`sandboxCoverage`) and `createSandbox` both decide
+ * from the same detectors, so they cannot disagree about a host.
  */
 export function sandboxBackendAvailable(): boolean {
-  return platform() !== 'win32' && detectBwrap() !== null;
+  const backend = sandboxBackendFor();
+  if (backend === 'seatbelt') return detectSandboxExec() !== null;
+  return backend === 'bubblewrap' && detectBwrap() !== null;
 }
 
 /**
@@ -142,6 +177,10 @@ const SKIP_REASON_REMEDY: Record<SandboxSkipReason, string> = {
   unavailable: 'Install bubblewrap (bwrap)',
 };
 
+/** The macOS wording of the one reason that names the backend. */
+const SEATBELT_UNAVAILABLE_DETAIL = `the macOS Seatbelt sandbox backend is unavailable: ${SANDBOX_EXEC_PATH} is missing`;
+const SEATBELT_UNAVAILABLE_REMEDY = `${SANDBOX_EXEC_PATH} ships with macOS; restore it to enable sandboxing.`;
+
 /**
  * Where a `sandbox.*` key has to be written to be honoured.
  *
@@ -166,15 +205,20 @@ const SANDBOX_SETTINGS_LOCATION = 'in ~/.book/settings.json, or with a --setting
  * bubblewrap, and telling a user to edit `~/.book/settings.json` about it sends
  * them to look for a package name that is not in the file.
  */
-export function unsandboxedRefusalMessage(reason: SandboxSkipReason): string {
-  const remedy =
-    reason === 'unavailable'
+export function unsandboxedRefusalMessage(
+  reason: SandboxSkipReason,
+  os: NodeJS.Platform = platform(),
+): string {
+  const seatbelt = reason === 'unavailable' && sandboxBackendFor(os) === 'seatbelt';
+  const remedy = seatbelt
+    ? SEATBELT_UNAVAILABLE_REMEDY
+    : reason === 'unavailable'
       ? 'Install bubblewrap (bwrap) to enable sandboxing.'
       : `${SKIP_REASON_REMEDY[reason]} ${SANDBOX_SETTINGS_LOCATION}, or set ` +
         'sandbox.allowUnsandboxedCommands to true there to allow this command to run unsandboxed.';
   return [
     'Refused to run this command outside the sandbox:',
-    `${SKIP_REASON_DETAIL[reason]}.`,
+    `${seatbelt ? SEATBELT_UNAVAILABLE_DETAIL : SKIP_REASON_DETAIL[reason]}.`,
     'sandbox.allowUnsandboxedCommands is false, so unsandboxed commands are not permitted.',
     remedy,
   ].join(' ');
@@ -1360,6 +1404,250 @@ export function buildSandboxExecution(
   return { file: bwrapPath, args };
 }
 
+/** Every directory above `path`, nearest first, ending at the root. */
+function ancestorsOf(path: string, host: SandboxHost): string[] {
+  const ancestors: string[] = [];
+  let current = path;
+  for (;;) {
+    const parent = host.path.dirname(current);
+    if (parent === current) return ancestors;
+    ancestors.push(parent);
+    current = parent;
+  }
+}
+
+/**
+ * The temp directories a sandboxed command on macOS can use: `os.tmpdir()`
+ * (the per-user `/var/folders/…/T`) and `/tmp`, canonicalised, because Seatbelt
+ * matches the resolved path and both are reached through symlinks (`/var`,
+ * `/tmp` → `/private/…`).
+ *
+ * They are the host's own, not private ones as under bubblewrap: macOS tools
+ * write to the per-user temp directory whatever `TMPDIR` says — `mktemp` and the
+ * `xcrun` shim behind `/usr/bin/git` among them — so a private directory breaks
+ * them instead of isolating them. Book's own entries in them stay out of reach
+ * (`BOOK_TEMP_PREFIXES`).
+ */
+export function seatbeltTempRoots(host: SandboxHost = realSandboxHost): string[] {
+  const roots = [tmpdir(), '/tmp']
+    .map((root) => host.realpath(root))
+    .filter((root): root is string => root !== null && root !== host.path.resolve('/'));
+  return [...new Set(roots)];
+}
+
+/**
+ * The Seatbelt policy for one workspace, from the same inputs and in the same
+ * order as {@link buildSandboxExecution}: the workspace, then `allowWrite`, then
+ * the protected control paths, then the opt-ins that reopen them, then the
+ * masks again, then `denyWrite` / `denyRead`. Seatbelt applies the last rule
+ * that matches, which is the same precedence bubblewrap's mount order gives.
+ *
+ * What bubblewrap gets from mounting and Seatbelt has to state:
+ *
+ * - **Reads.** bubblewrap shows the command the system directories, the
+ *   workspace and the declared paths, and nothing else — the home directory is
+ *   not there. The profile reads the same set (`SEATBELT_SYSTEM_READ_ROOTS`
+ *   plus the paths below), and directory *metadata* only of their ancestors, so
+ *   a path can be resolved without its parents being listed.
+ * - **Pins.** A bind mount is a mount point, so renaming it fails with `EBUSY`;
+ *   Seatbelt rules are by path, so a renamed directory takes its contents out
+ *   from under them. The workspace root and the directories bubblewrap pins are
+ *   kept from being renamed or removed; every directory above a protected path
+ *   is kept from being *created*, so one moved away cannot come back as a
+ *   symlink to a tree the command built; and the directories above a hidden or
+ *   `denyRead` path are kept in place, since moving one would carry the hidden
+ *   file to a path nothing hides. The pins are specific-operation denies, which
+ *   no later wildcard allow reopens.
+ *
+ * Paths are canonical, because Seatbelt matches the path a lookup resolves to.
+ * Exported for testing; with an injected `host` its output depends on its
+ * arguments only.
+ */
+export function buildSeatbeltPolicy(
+  workspaceRoot: string,
+  settings: ResolvedSettings['sandbox'],
+  host: SandboxHost = realSandboxHost,
+  protectedPaths?: ProtectedWorkspacePaths,
+  tempRoots: string[] = [],
+): SeatbeltPolicy {
+  const canon = (path: string): string => canonicalPath(path, host);
+  const subpath = (path: string): SeatbeltPathFilter => ({ match: 'subpath', path });
+  const literal = (path: string): SeatbeltPathFilter => ({ match: 'literal', path });
+  const READ_WRITE = ['file-read*', 'file-write*'] as const;
+
+  const paths =
+    protectedPaths ??
+    protectedWorkspacePaths(workspaceRoot, host, {
+      allowGitWrites: settings.filesystem.allowGitWrites,
+      denyDirectories: [...settings.filesystem.denyWrite, ...settings.filesystem.denyRead].map(
+        (p) => expandPath(p, host),
+      ),
+    });
+  const isProtectedArea = (path: string): boolean => {
+    const canonical = canonicalPath(expandPath(path, host), host);
+    return paths.mounts.some(
+      (mount) => !isOutside(canonicalPath(mount.path, host), canonical, host.path),
+    );
+  };
+  /** A configured entry's canonical path, or null when nothing is there (bwrap skips it too). */
+  const present = (path: string): string | null => {
+    const target = expandPath(path, host);
+    return host.exists(target) ? canon(target) : null;
+  };
+  const presentAll = (entries: string[]): string[] =>
+    entries.map(present).filter((path): path is string => path !== null);
+
+  const workspace = host.exists(workspaceRoot) ? canon(workspaceRoot) : null;
+  const allowWrite = presentAll(settings.filesystem.allowWrite.filter((p) => !isProtectedArea(p)));
+  const optIns = presentAll(settings.filesystem.allowWrite.filter(isProtectedArea));
+  const denyWrite = presentAll(settings.filesystem.denyWrite);
+  const denyReadEntries = settings.filesystem.denyRead
+    .map((path) => expandPath(path, host))
+    .filter((target) => host.exists(target))
+    .map((target) => ({ path: canon(target), directory: host.isDirectory(target) }));
+
+  /** The rule one protected control path needs: the mount bwrap would emit, as a deny. */
+  const protectedRule = (mount: ProtectedMount): SeatbeltRule | null => {
+    const path = canon(mount.path);
+    if (mount.kind === 'hidden-file') {
+      return mount.present
+        ? { action: 'deny', operations: READ_WRITE, filters: [literal(path)] }
+        : null;
+    }
+    if (mount.kind === 'file') {
+      return mount.present
+        ? { action: 'deny', operations: ['file-write*'], filters: [literal(path)] }
+        : null;
+    }
+    // A directory, present or not: an absent one is denied by path, so the
+    // command cannot create it — where bwrap has to mount over it, and leaves the
+    // empty directory on the host as a side effect.
+    return { action: 'deny', operations: ['file-write*'], filters: [subpath(path)] };
+  };
+  const hiddenFiles = paths.mounts.filter((mount) => mount.kind === 'hidden-file' && mount.present);
+
+  const readableRoots = [
+    ...tempRoots,
+    ...(workspace ? [workspace] : []),
+    ...allowWrite,
+    ...optIns,
+    ...denyWrite,
+  ];
+  const rules: SeatbeltRule[] = [];
+
+  // Directory metadata above every readable root, so a path inside one resolves
+  // (`realpath`, `pwd -P`, git's own discovery) without its parents being listed.
+  // First, so every deny below still wins over it.
+  rules.push({
+    action: 'allow',
+    operations: ['file-read-metadata'],
+    filters: [...new Set(readableRoots.flatMap((root) => ancestorsOf(root, host)))].map(literal),
+  });
+  rules.push({ action: 'allow', operations: READ_WRITE, filters: tempRoots.map(subpath) });
+  rules.push({
+    action: 'deny',
+    operations: READ_WRITE,
+    filters: tempRoots.map(subpath),
+    bookTempEntries: true,
+  });
+  // After the temp roots, so a workspace inside one is writable whatever it is called.
+  if (workspace)
+    rules.push({ action: 'allow', operations: READ_WRITE, filters: [subpath(workspace)] });
+  rules.push({ action: 'allow', operations: READ_WRITE, filters: allowWrite.map(subpath) });
+  for (const mount of paths.mounts) {
+    const rule = protectedRule(mount);
+    if (rule) rules.push(rule);
+  }
+  rules.push({ action: 'allow', operations: READ_WRITE, filters: optIns.map(subpath) });
+  // As in bwrap: an opt-in on a git dir reopens what it names, not the control
+  // paths strictly below it, unless an entry names that control path itself.
+  for (const mount of paths.gitDirControlMounts) {
+    const mountCanonical = canon(mount.path);
+    const strictlyBelowOptIn = optIns.some(
+      (optIn) => !isOutside(optIn, mountCanonical, host.path) && optIn !== mountCanonical,
+    );
+    if (strictlyBelowOptIn && !optIns.includes(mountCanonical)) {
+      const rule = protectedRule(mount);
+      if (rule) rules.push(rule);
+    }
+  }
+  // The masks once more, after every opt-in that could name their directory.
+  for (const mount of hiddenFiles) {
+    const rule = protectedRule(mount);
+    if (rule) rules.push(rule);
+  }
+  // `denyWrite` is a read-only bind under bwrap: readable, even outside the workspace.
+  rules.push({ action: 'allow', operations: ['file-read*'], filters: denyWrite.map(subpath) });
+  rules.push({ action: 'deny', operations: ['file-write*'], filters: denyWrite.map(subpath) });
+  rules.push({
+    action: 'deny',
+    operations: READ_WRITE,
+    filters: denyReadEntries.map((entry) =>
+      entry.directory ? subpath(entry.path) : literal(entry.path),
+    ),
+  });
+
+  // Pins, last: specific-operation denies no wildcard allow above can reopen.
+  const deniedPaths = [
+    ...paths.mounts.map((mount) => canon(mount.path)),
+    ...paths.gitDirControlMounts.map((mount) => canon(mount.path)),
+    ...denyWrite,
+    ...denyReadEntries.map((entry) => entry.path),
+  ];
+  const hiddenPaths = [
+    ...hiddenFiles.map((mount) => canon(mount.path)),
+    ...denyReadEntries.map((entry) => entry.path),
+  ];
+  const keptInPlace = new Set([
+    ...(workspace ? [workspace] : []),
+    ...paths.pinnedDirectories.map(canon),
+    ...hiddenPaths.flatMap((path) => ancestorsOf(path, host)),
+  ]);
+  const notCreatable = new Set(
+    [...(workspace ? [workspace] : []), ...deniedPaths].flatMap((path) => ancestorsOf(path, host)),
+  );
+  for (const path of keptInPlace) notCreatable.delete(path);
+  rules.push({
+    action: 'deny',
+    operations: ['file-write-unlink', 'file-write-create'],
+    filters: [...keptInPlace].map(literal),
+  });
+  rules.push({
+    action: 'deny',
+    operations: ['file-write-create'],
+    filters: [...notCreatable].map(literal),
+  });
+
+  return {
+    rules,
+    // Seatbelt has no per-domain filtering either, so a domain policy fails
+    // closed to no network rather than to the whole host network.
+    network: hasDomainPolicy(settings) ? 'none' : 'host',
+    unixSocketRoots: [...(workspace ? [workspace] : []), ...allowWrite, ...optIns, ...denyWrite],
+    unixSocketDenied: denyReadEntries.map((entry) => entry.path),
+  };
+}
+
+/**
+ * The `sandbox-exec` argv for one command: {@link buildSeatbeltPolicy} rendered
+ * by `sandbox-seatbelt.ts`. Exported for testing, like {@link buildSandboxExecution}.
+ */
+export function buildSeatbeltExecution(
+  sandboxExecPath: string,
+  command: string,
+  workspaceRoot: string,
+  settings: ResolvedSettings['sandbox'],
+  host: SandboxHost = realSandboxHost,
+  protectedPaths?: ProtectedWorkspacePaths,
+  tempRoots: string[] = [],
+): CommandExecution {
+  return seatbeltExecution(
+    sandboxExecPath,
+    buildSeatbeltPolicy(workspaceRoot, settings, host, protectedPaths, tempRoots),
+    command,
+  );
+}
+
 /**
  * The context facts the sandbox decision reads. Structural rather than
  * `ToolContext` so this stays free of the tool layer: `Bash` and the `Check`
@@ -1468,7 +1756,14 @@ export function decideSandboxExecution(
     const refusal = protectedPaths.refusals[0];
     if (refusal) return { sandboxed: false, error: describeControlPathRefusal(refusal) };
   }
-  const exec = sandbox?.wrap(command, ctx.workspaceRoot, protectedPaths);
+  // A wrap that cannot build its policy refuses the command rather than
+  // returning null, which would read as "no sandbox" and could run it outside.
+  let exec: CommandExecution | null | undefined;
+  try {
+    exec = sandbox?.wrap(command, ctx.workspaceRoot, protectedPaths);
+  } catch (error) {
+    return { sandboxed: false, error: error instanceof Error ? error.message : String(error) };
+  }
   if (exec) {
     return {
       sandboxed: true,
@@ -1512,6 +1807,7 @@ export function withGitConfigReadOnlyNotice(
   sandboxed: boolean,
   command = '',
   gitDirReadOnly?: boolean,
+  os: NodeJS.Platform = platform(),
 ): string {
   if (!sandboxed) return text;
 
@@ -1522,9 +1818,13 @@ export function withGitConfigReadOnlyNotice(
   }
 
   if (gitDirReadOnly) {
-    const linesWithRo = output
-      .split('\n')
-      .filter((line) => /\bRead-only file system\b/i.test(line));
+    // bubblewrap's read-only binds fail with EROFS; Seatbelt's denies fail with
+    // EPERM, which is matched only where Seatbelt is the backend.
+    const readOnly =
+      sandboxBackendFor(os) === 'seatbelt'
+        ? /\b(?:Read-only file system|Operation not permitted)\b/i
+        : /\bRead-only file system\b/i;
+    const linesWithRo = output.split('\n').filter((line) => readOnly.test(line));
     const runsGit = /(?:^|[;&|(\s])git\b/.test(command);
     const hasDotGitSegment = linesWithRo.some((line) =>
       /(?:^|[/\s'"`])\.git(?=[/\\s'":`]|[\r\n]|$)/.test(line),
@@ -1565,9 +1865,86 @@ function writesAGlobalConfig(command: string): boolean {
   return /(?:^|[;&|(\s])git\s+[^|;&]*\bconfig\b[^|;&]*\s--(?:global|system)\b/.test(command);
 }
 
+/** The one-line policy summary both backends share after their own first part. */
+function describePolicy(settings: ResolvedSettings['sandbox'], unbindable: string[]): string[] {
+  return [
+    settings.filesystem.allowGitWrites
+      ? 'git directories writable (hooks, config and pointer files read-only)'
+      : 'git directories read-only',
+    `${settings.filesystem.allowWrite.length} extra writable path(s)`,
+    `${settings.filesystem.denyWrite.length} read-only path(s)`,
+    `${settings.filesystem.denyRead.length} masked path(s)`,
+    unbindable.length > 0 ? `${unbindable.length} skipped (missing)` : 'all paths resolved',
+  ];
+}
+
+/** Warn once about declared policy the backend cannot apply as written. */
+function warnUnenforceablePolicy(settings: ResolvedSettings['sandbox'], backend: string): string[] {
+  if (hasDomainPolicy(settings)) {
+    console.warn(
+      `⚠  sandbox.network domain rules cannot be enforced by ${backend}, which has no per-domain filtering. Network access is disabled entirely for sandboxed commands.`,
+    );
+  }
+  const unbindable = unbindablePaths(settings);
+  if (unbindable.length > 0) {
+    console.warn(
+      `⚠  sandbox.filesystem rules skipped — nothing exists at: ${unbindable.join(', ')}. These paths are not protected.`,
+    );
+  }
+  return unbindable;
+}
+
 /**
- * Create a sandbox wrapper if bwrap is available on this platform.
- * On Windows, returns null with a warning (sandbox not supported).
+ * The macOS sandbox: `sandbox-exec` with a Seatbelt profile generated per
+ * command from the same resolved policy the bubblewrap argv is built from.
+ * A missing `sandbox-exec` follows `failIfUnavailable` exactly as a missing
+ * `bwrap` does; a profile `sandbox-exec` rejects fails the command without
+ * running it, never falls back to running it unsandboxed.
+ */
+function createSeatbeltSandbox(settings: ResolvedSettings['sandbox']): Sandbox | null {
+  const sandboxExec = detectSandboxExec();
+  if (!sandboxExec) {
+    if (settings.failIfUnavailable) {
+      throw new Error(
+        `sandbox-exec (Seatbelt) not found at ${SANDBOX_EXEC_PATH}. It ships with macOS; restore it to enable bash sandboxing, or set failIfUnavailable to false.`,
+      );
+    }
+    console.warn(
+      `⚠  sandbox-exec (Seatbelt) not found at ${SANDBOX_EXEC_PATH}. Commands will run unsandboxed.`,
+    );
+    return null;
+  }
+  const unbindable = warnUnenforceablePolicy(settings, 'sandbox-exec (Seatbelt)');
+  const tempRoots = seatbeltTempRoots();
+  return {
+    wrap(command, workspaceRoot, protectedPaths): CommandExecution {
+      return buildSeatbeltExecution(
+        sandboxExec,
+        command,
+        workspaceRoot,
+        settings,
+        realSandboxHost,
+        protectedPaths,
+        tempRoots,
+      );
+    },
+    describe(): string {
+      return [
+        `Seatbelt (${sandboxExec})`,
+        hasDomainPolicy(settings)
+          ? 'network disabled'
+          : 'host network shared (unix sockets outside the workspace refused)',
+        `home directory unreadable; host temp directories writable (${tempRoots.join(', ')})`,
+        ...describePolicy(settings, unbindable),
+      ].join('; ');
+    },
+  };
+}
+
+/**
+ * Create the sandbox wrapper for this platform: Seatbelt (`sandbox-exec`) on
+ * macOS, bubblewrap elsewhere. On Windows, returns null with a warning (sandbox
+ * not supported).
  *
  * @param settings - Resolved sandbox settings
  * @returns Sandbox instance or null
@@ -1576,6 +1953,7 @@ export function createSandbox(settings: ResolvedSettings['sandbox']): Sandbox | 
   if (!settings.enabled) return null;
 
   const os = platform();
+  if (os === 'darwin') return createSeatbeltSandbox(settings);
   if (os === 'win32') {
     if (settings.failIfUnavailable) {
       throw new Error(
@@ -1602,17 +1980,7 @@ export function createSandbox(settings: ResolvedSettings['sandbox']): Sandbox | 
   // Diagnostics belong to whoever builds the sandbox, and callers are expected
   // to build it once per session — `createSandbox` runs per Bash call would
   // repeat these on every command.
-  if (hasDomainPolicy(settings)) {
-    console.warn(
-      '⚠  sandbox.network domain rules cannot be enforced by bubblewrap, which has no per-domain filtering. Network access is disabled entirely for sandboxed commands.',
-    );
-  }
-  const unbindable = unbindablePaths(settings);
-  if (unbindable.length > 0) {
-    console.warn(
-      `⚠  sandbox.filesystem rules skipped — nothing exists at: ${unbindable.join(', ')}. These paths are not protected.`,
-    );
-  }
+  const unbindable = warnUnenforceablePolicy(settings, 'bubblewrap');
 
   return {
     wrap(
@@ -1633,13 +2001,7 @@ export function createSandbox(settings: ResolvedSettings['sandbox']): Sandbox | 
       return [
         `bubblewrap (${bwrap})`,
         hasDomainPolicy(settings) ? 'network disabled' : 'host network shared',
-        settings.filesystem.allowGitWrites
-          ? 'git directories writable (hooks, config and pointer files read-only)'
-          : 'git directories read-only',
-        `${settings.filesystem.allowWrite.length} extra writable path(s)`,
-        `${settings.filesystem.denyWrite.length} read-only path(s)`,
-        `${settings.filesystem.denyRead.length} masked path(s)`,
-        unbindable.length > 0 ? `${unbindable.length} skipped (missing)` : 'all paths resolved',
+        ...describePolicy(settings, unbindable),
       ].join('; ');
     },
   };

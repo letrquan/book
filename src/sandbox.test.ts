@@ -2366,7 +2366,12 @@ describe('Bash tool integration with sandbox', () => {
     // The escape this guards against: when the wrapper is joined into one
     // string and spawned with `shell: true`, the host shell splits on `;` and
     // runs the second command outside bwrap entirely.
-    const escapeTarget = join(tmpdir(), `book-sandbox-escape-${process.pid}.txt`);
+    //
+    // The target is somewhere the sandbox cannot write: /tmp under bubblewrap
+    // (a private tmpfs), the home directory under Seatbelt, where the host temp
+    // directories stay writable.
+    const escapeDir = process.platform === 'darwin' ? homedir() : tmpdir();
+    const escapeTarget = join(escapeDir, `.book-sandbox-escape-${process.pid}.txt`);
     rmSync(escapeTarget, { force: true });
     const inside = join(dir, 'inside.txt');
 
@@ -2381,7 +2386,9 @@ describe('Bash tool integration with sandbox', () => {
     );
 
     try {
-      expect(result.status).toBe('success');
+      // Under bubblewrap the second write lands in the private /tmp and succeeds;
+      // under Seatbelt it is refused, so the command exits non-zero.
+      expect(result.status).toBe(process.platform === 'darwin' ? 'error' : 'success');
       // The workspace bind is real: the in-workspace write reaches the host.
       expect(existsSync(inside)).toBe(true);
       // /tmp is a tmpfs inside the sandbox, so the second write never lands.
@@ -2397,7 +2404,9 @@ describe('Bash tool integration with sandbox', () => {
  * path here is one the host acts on *after* the sandboxed command exits, which
  * is what makes a write to it an escape rather than a nuisance.
  */
-describe.skipIf(!sandboxBackendAvailable())(
+// bubblewrap only: the Seatbelt backend has its own real-sandbox suite in
+// sandbox-seatbelt.test.ts, and fails a denied write with EPERM, not EROFS.
+describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
   'workspace control files are read-only in a real sandbox',
   () => {
     /**
@@ -3910,6 +3919,77 @@ describe('withGitConfigReadOnlyNotice', () => {
   });
 });
 
+describe('withGitConfigReadOnlyNotice under Seatbelt', () => {
+  const EPERM_INDEX_ERROR =
+    "fatal: Unable to create '/private/var/folders/x/T/ws/.git/index.lock': Operation not permitted";
+
+  it('reads EPERM as the read-only git directory on macOS', () => {
+    const text = withGitConfigReadOnlyNotice(
+      EPERM_INDEX_ERROR,
+      EPERM_INDEX_ERROR,
+      true,
+      'git commit -m msg',
+      true,
+      'darwin',
+    );
+
+    expect(text).toContain("the repository's git directory is read-only inside the sandbox");
+    expect(text.match(/read-only inside the sandbox/g)).toHaveLength(1);
+  });
+
+  it('does not read EPERM as one under bubblewrap, where a read-only bind is EROFS', () => {
+    const text = withGitConfigReadOnlyNotice(
+      EPERM_INDEX_ERROR,
+      EPERM_INDEX_ERROR,
+      true,
+      'git commit -m msg',
+      true,
+      'linux',
+    );
+
+    expect(text).toBe(EPERM_INDEX_ERROR);
+  });
+
+  it('still needs a git command or a .git path on macOS', () => {
+    const error = 'touch: /Users/book/x: Operation not permitted';
+
+    expect(withGitConfigReadOnlyNotice(error, error, true, 'touch ~/x', true, 'darwin')).toBe(
+      error,
+    );
+  });
+});
+
+describe('decideSandboxExecution when the sandbox cannot build a policy', () => {
+  it('refuses the command instead of running it unsandboxed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-sbx-throw-'));
+    try {
+      const decision = decideSandboxExecution(
+        {
+          workspaceRoot: dir,
+          sandbox: sandboxSettings({ allowUnsandboxedCommands: true }),
+          runtime: {
+            sandbox: () => ({
+              wrap: () => {
+                throw new Error('Seatbelt profile path is not absolute: "x"');
+              },
+              describe: () => 'stub',
+            }),
+          },
+        },
+        'echo hi',
+        dir,
+      );
+
+      expect(decision.sandboxed).toBe(false);
+      expect(decision.exec).toBeUndefined();
+      expect(decision.reason).toBeUndefined();
+      expect(decision.error).toMatch(/not absolute/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('unsandboxedRefusalMessage', () => {
   it.each([
     ['disabled' as const, 'sandbox.enabled is false'],
@@ -3933,12 +4013,31 @@ describe('unsandboxedRefusalMessage', () => {
    * not a key in the file.
    */
   it('tells an unavailable backend to install bubblewrap, not to edit settings', () => {
-    const message = unsandboxedRefusalMessage('unavailable');
+    const message = unsandboxedRefusalMessage('unavailable', 'linux');
 
     expect(message).toContain('bubblewrap');
     expect(message).toMatch(/Install bubblewrap/);
     expect(message).not.toContain('~/.book/settings.json');
     expect(message).not.toContain('--settings');
+  });
+});
+
+describe('unsandboxedRefusalMessage on macOS', () => {
+  it('names sandbox-exec, which ships with macOS, rather than bubblewrap', () => {
+    const message = unsandboxedRefusalMessage('unavailable', 'darwin');
+
+    expect(message).toContain('/usr/bin/sandbox-exec');
+    expect(message).toContain('Seatbelt');
+    expect(message).not.toContain('bubblewrap');
+    expect(message).not.toContain('~/.book/settings.json');
+  });
+
+  it('keeps the settings-based reasons identical on every platform', () => {
+    for (const reason of ['disabled', 'excluded'] as const) {
+      expect(unsandboxedRefusalMessage(reason, 'darwin')).toBe(
+        unsandboxedRefusalMessage(reason, 'linux'),
+      );
+    }
   });
 });
 

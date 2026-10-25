@@ -43,6 +43,7 @@ src/
   permissions.ts        Permission rule parsing/evaluation
   hooks.ts              Lifecycle hook runner (JSON-over-stdio contract)
   sandbox.ts            Bash sandbox via bubblewrap
+  sandbox-seatbelt.ts   macOS backend: Seatbelt (sandbox-exec) profile renderer, paths as -D params
   claude-md.ts          CLAUDE.md / AGENTS.md / rules tree-walk loader
   skills.ts             Multi-root SKILL.md discovery/validation and prompt catalog
   skill-registry.ts     Lazy bodies/resources, activation frames, consent, and diagnostics

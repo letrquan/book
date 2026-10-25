@@ -120,3 +120,36 @@ jobs:
           STABILIZATION_WORKFLOW: ci.yml
           STABILIZATION_BRANCH: main
           STABILIZATION_REGRESSION_LABELS: regression:lifecycle,regression:accounting
+
+  # The macOS sandbox backend (Seatbelt) is proven only here: the darwin suite in
+  # src/sandbox-seatbelt.test.ts spawns a real sandbox-exec. A job of its own rather
+  # than a matrix leg, so an unrelated macOS failure cannot turn the Stability policy
+  # red, and it runs the sandbox test files only.
+  sandbox-macos:
+    name: Sandbox (macOS Seatbelt)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - run: npm ci
+
+      - run: >-
+          npx vitest run --config vitest.unit.config.ts
+          --reporter=default --reporter=json --outputFile.json=sandbox-results.json
+          src/sandbox-seatbelt.test.ts src/sandbox.test.ts
+
+      # A darwin test that was skipped is not proof. Fail unless the real-sandbox
+      # suite ran and every test in it passed.
+      - run: >-
+          node -e "const r = require('./sandbox-results.json');
+          const t = r.testResults.flatMap((f) => f.assertionResults)
+          .filter((a) => a.ancestorTitles.includes('the Seatbelt sandbox on a real Mac'));
+          const passed = t.filter((a) => a.status === 'passed').length;
+          console.log('Seatbelt tests passed on this Mac:', passed, 'of', t.length);
+          if (t.length < 10 || passed !== t.length) process.exit(1);"
