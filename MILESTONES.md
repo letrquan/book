@@ -105,8 +105,10 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
 - [x] Rebuild shell sandbox execution around structured argv instead of a wrapped command string.
 - [x] Enforce declared filesystem sandbox policy, and fail closed on network domain rules that
       bubblewrap cannot express.
-- [ ] Add a macOS (`sandbox-exec`) and Windows sandbox backend, and define fail-closed behavior on
-      platforms that still have none.
+- [x] Add a macOS sandbox backend: `sandbox-exec` (Seatbelt), generated from the same resolved
+      policy as bubblewrap and proven by a `macos-latest` CI job (#616).
+- [ ] Add a Windows sandbox backend, and define fail-closed behavior on platforms that still have
+      none.
 - [ ] Require independent approval for the `excludedCommands` escape path instead of letting a
       matching command silently skip the sandbox. `sandbox.allowUnsandboxedCommands` is now enforced
       rather than dead, so an operator can refuse every unsandboxed command outright and `book doctor`

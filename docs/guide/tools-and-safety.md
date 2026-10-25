@@ -994,9 +994,9 @@ final):`, which is what says the output after it is not finished. A successful r
 
 ## Bash sandbox
 
-`sandbox.enabled` runs `Bash` commands inside [bubblewrap](https://github.com/containers/bubblewrap), which must be installed and is Linux-oriented; the sandbox is unavailable on Windows. When it cannot be created, `sandbox.failIfUnavailable` decides whether the command fails or runs unsandboxed. `sandbox.excludedCommands` skips the sandbox for matching commands, and sandboxed output is prefixed with `[sandboxed]`.
+`sandbox.enabled` runs `Bash` commands inside a sandbox backend: [bubblewrap](https://github.com/containers/bubblewrap) on Linux, which must be installed, and `sandbox-exec` (Seatbelt) on macOS, which ships with the system at `/usr/bin/sandbox-exec`. There is no backend on Windows. When the backend is missing, `sandbox.failIfUnavailable` decides whether the command fails or runs unsandboxed; `book doctor` names the backend in its `Sandbox` section. `sandbox.excludedCommands` skips the sandbox for matching commands, and sandboxed output is prefixed with `[sandboxed]`.
 
-The sandbox gives the command fresh PID/IPC/UTS namespaces, a private `/tmp`, read-only system directories, all capabilities dropped, and a lifetime tied to the spawning process. Commands are spawned as a direct argument vector — never as a shell string — so the command text is parsed only by the shell running _inside_ the sandbox. Ordinary shell syntax (pipes, `&&`, redirection, substitution) works normally there.
+Under bubblewrap the sandbox gives the command fresh PID/IPC/UTS namespaces, a private `/tmp`, read-only system directories, all capabilities dropped, and a lifetime tied to the spawning process. The macOS backend enforces the same policy with a Seatbelt profile; see [macOS (Seatbelt)](#macos-seatbelt) for how it maps and where it differs. Commands are spawned as a direct argument vector — never as a shell string — so the command text is parsed only by the shell running _inside_ the sandbox. Ordinary shell syntax (pipes, `&&`, redirection, substitution) works normally there.
 
 **The workspace root is the only directory bound writable by default**, and it is bound regardless of the `workdir` argument. A sandboxed `Bash` call whose `workdir` falls outside the workspace is rejected rather than granted a wider mount; use `sandbox.filesystem.allowWrite` to add directories deliberately.
 
@@ -1108,6 +1108,49 @@ The permission layer already asked before any file tool touched `.book/`, but a 
 one approval the user can be talked into — and a shell command is not a file tool, so the sandbox
 now makes it a failure rather than a question.
 
+### macOS (Seatbelt)
+
+On macOS each sandboxed command runs as `sandbox-exec -D … -p <profile> -- /usr/bin/env
+GIT_CONFIG_GLOBAL=/dev/null /bin/bash -c <command>`. The profile is generated per command from the
+same resolved policy the bubblewrap argv is built from — the workspace, the protected control paths
+above, and `sandbox.filesystem` — and starts from `(deny default)`:
+
+- **Writes** reach the workspace, the `allowWrite` entries, and the temp directories (see below).
+  The control files in the table above are read-only in both modes, `.book/settings.local.json` is
+  unreadable as well, and an `allowWrite` opt-in reopens what it names exactly as it does under
+  bubblewrap. A denied write fails with `Operation not permitted` rather than `Read-only file
+system`; the read-only git directory note is appended for it all the same.
+- **Reads** cover what bubblewrap mounts: the system directories (`/usr`, `/bin`, `/sbin`, `/opt`,
+  `/System`, `/Library`, `/Applications`, `/private/etc`), the workspace, and the declared paths.
+  The home directory is not readable, as it is not mounted under bubblewrap — `~/.book`, `~/.ssh`
+  and the rest stay out of reach. Git is run with `GIT_CONFIG_GLOBAL=/dev/null`, because git dies on
+  an unreadable `~/.gitconfig` where it skips a missing one.
+- **Renames.** A bind mount cannot be renamed; a Seatbelt rule names a path, so the profile keeps
+  the workspace root and the directories bubblewrap pins from being renamed or removed, keeps every
+  directory above a protected path from being created again once moved, and keeps the directories
+  above `.book/settings.local.json` and every `denyRead` path in place. A consequence: a protected
+  directory that does not exist yet (`.book/`, a `core.hooksPath` target) cannot be created by a
+  sandboxed command, and nothing is created on your disk to mask it.
+- **Temp directories** are the host's own, not a private `/tmp`: macOS tools write to the per-user
+  temp directory whatever `TMPDIR` says (`mktemp`, and the `xcrun` shim behind `/usr/bin/git`), so a
+  private one breaks them. `os.tmpdir()` and `/tmp` are therefore readable and writable, except
+  for Book's own entries in them (`book-rewind-*`, `book-index-*`, `book-config-preflight-*`) and a
+  `BOOK_HOME` placed there. Book's home is denied by path wherever it is, and a temp directory that
+  is or contains the home directory is not used at all.
+- **Network** is the host's unless a domain rule is declared, in which case every socket is denied
+  (below). Even when it is shared, a command can connect only to unix-domain sockets inside the
+  workspace or a declared path, plus the system DNS resolver: the ssh-agent, Docker and other
+  local sockets are not reachable, as they are not mounted under bubblewrap.
+- **Processes.** Signals and process inspection are limited to the sandbox, and the profile allows
+  only a short list of system services, so `launchctl submit`, `open` and Apple Events cannot have
+  an unsandboxed process run a command, and the keychain daemons are not among them. Process, IPC and sysctl rules follow Anthropic's
+  [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime).
+
+No path is ever written into the profile text: each is passed as a `-D` parameter, so a workspace
+path that contains `"` or `)` stays a path. A profile `sandbox-exec` rejects fails the command
+without running it. The macOS behaviour is proven by the `Sandbox (macOS Seatbelt)` CI job, which
+runs a real `sandbox-exec`.
+
 ### A workspace settings layer may only tighten the sandbox
 
 `.book/settings.json` is repository input, and so is a `settings.local.json` a clone was
@@ -1145,9 +1188,9 @@ sandbox at all, so a session that refused unsandboxed commands still ran its che
 | `denyWrite`  | Bind the path read-only                                                |
 | `denyRead`   | Mask the path — an empty tmpfs for a directory, `/dev/null` for a file |
 
-Entries may start with `~`. Paths that do not exist are skipped — bubblewrap rejects a bind with a missing source — and the skipped entries are reported once at startup and by `book doctor`, since a skipped rule is policy you might otherwise believe is active.
+Entries may start with `~`. Paths that do not exist are skipped — bubblewrap rejects a bind with a missing source — and the skipped entries are reported once at startup and by `book doctor`, since a skipped rule is policy you might otherwise believe is active. On macOS the same entries become Seatbelt rules: `denyWrite` readable but not writable, `denyRead` neither readable nor writable, and missing paths are skipped the same way.
 
-`sandbox.network` **fails closed**. Bubblewrap has no DNS or per-domain filtering, so it can only share or unshare the network as a whole. If `allowedDomains` or `deniedDomains` contains anything, Book cannot honour the rule as written and disables network access entirely for sandboxed commands, with a warning. Leave both empty to share the host network.
+`sandbox.network` **fails closed**. Neither bubblewrap nor Seatbelt has DNS or per-domain filtering, so each can only share or deny the network as a whole. If `allowedDomains` or `deniedDomains` contains anything, Book cannot honour the rule as written and disables network access entirely for sandboxed commands, with a warning. Leave both empty to share the host network.
 
 Two further keys decide what happens _around_ that boundary. Both are consulted on every `Bash`
 call, and both answer the same question — will this exact command really execute inside a
@@ -1159,7 +1202,7 @@ namespace? — from one shared predicate, so they can never disagree about a com
 | `sandbox.autoAllowBashIfSandboxed` | `true`  | Run a genuinely sandboxed `Bash` command without a permission prompt        |
 
 `allowUnsandboxedCommands: false` covers all three ways a command escapes: sandboxing is turned
-off, the command matched an `excludedCommands` pattern, or bubblewrap is missing on this platform.
+off, the command matched an `excludedCommands` pattern, or the backend (bubblewrap, or `sandbox-exec` on macOS) is missing on this platform.
 The refusal names the setting _and_ the specific reason, so it is actionable rather than a bare
 denial. Note that with `sandbox.enabled` at its default `false`, nothing is sandboxed and this key
 therefore refuses **every** `Bash` command — it is meant to be paired with `sandbox.enabled: true`.

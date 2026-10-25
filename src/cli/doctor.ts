@@ -506,7 +506,8 @@ export async function runDoctorCommand(
   console.log();
 
   // Sandbox.
-  const { createSandbox, sandboxPolicySummary } = await import('../sandbox.js');
+  const { createSandbox, describeSandboxBackend, sandboxPolicySummary } =
+    await import('../sandbox.js');
   const { hasAdjudicationPolicy } = await import('../permissions.js');
   const sandbox = createSandbox(settings.sandbox);
   const policy = sandboxPolicySummary(settings.sandbox, {
@@ -515,6 +516,7 @@ export async function runDoctorCommand(
   });
   console.log('Sandbox:');
   console.log('  Enabled: ' + settings.sandbox.enabled);
+  console.log('  Backend: ' + describeSandboxBackend());
   console.log('  Available: ' + (sandbox !== null));
   if (sandbox) console.log('  Enforcing: ' + sandbox.describe());
   console.log('  Excluded commands: ' + settings.sandbox.excludedCommands.length);

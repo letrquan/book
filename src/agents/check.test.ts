@@ -284,8 +284,9 @@ describe('Check and the sandbox', () => {
         const result = await run(ctx, 'escaping');
 
         expect(result.status).not.toBe('success');
+        // EROFS under bubblewrap, EPERM under Seatbelt.
         expect(`${result.structuredError?.message ?? ''}`.toLowerCase()).toMatch(
-          /read-only file system/,
+          process.platform === 'darwin' ? /operation not permitted/ : /read-only file system/,
         );
         expect(existsSync(join(dir, '.book', 'x'))).toBe(false);
       } finally {
