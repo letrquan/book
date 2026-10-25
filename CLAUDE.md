@@ -49,7 +49,7 @@ src/
   skill-watcher.ts      Debounced safe-boundary skill reload
   subagent.ts           Subagent runner
   subagent-discovery.ts Subagent discovery from .book/agents/
-  mcp.ts                MCP client (stdio, Streamable HTTP, legacy SSE; elicitation, dynamic tools)
+  mcp.ts                MCP client (stdio, Streamable HTTP, legacy SSE transports; dynamic tool lists)
   mcp-config.ts / mcp-host.ts / mcp-elicitation.ts / mcp-report.ts  MCP declarations (`book mcp`), session
                         host, form elicitation, `/mcp` + doctor reporting
   headless.ts           Headless/print mode runner
@@ -176,7 +176,7 @@ Other conventions:
 - **Cache breakpoints**: exactly three per Anthropic request — last tool, cached system
   block, last message (moving). The limit is four; `countCacheBreakpoints` guards it.
 - **`process.exit()` goes through the `cli/exit.ts` abstraction** (allows test injection); this is enforced by the architecture check, not just convention.
-- **Non-interactive subcommands run without credentials**: `doctor`, `config`, `mcp`, and `tool-stats` exist to help a user whose provider is not working, so they must never require one. `src/cli/subcommands.contract.test.ts` enforces this.
+- **Non-interactive subcommands run without credentials**: `doctor`, `status`, `config`, `mcp`, `trust`, and `tool-stats` exist to help a user whose provider is not working, so they must never require one. `src/cli/subcommands.contract.test.ts` enforces this.
 
 ## Testing
 
@@ -246,7 +246,7 @@ prompt, or the add-provider wizard looks also means regenerating the README medi
 - Built-in slash commands in `src/commands/builtins.ts` (+ dispatch in `src/tui/app.tsx`)
 - Default tool set in `src/tools/registry.ts` `createDefaultRegistry()`
 - Permission modes: `PermissionMode` in `src/types/runtime.ts`
-- Memory paths and approval flow in `src/memory-store.ts` / `src/tools/memory-save.ts`
+- Memory paths and approval flow in `src/memory-store.ts` / `src/memory-write-guard.ts`
 - Managed-agent behavior in `src/agents/` ("Managed agents" in `docs/guide/agents-and-review.md` is the detailed spec)
 - `/review` pipeline behavior in `src/review/` ("Code review" in `docs/guide/agents-and-review.md` is the detailed spec). The
   review target is resolved by the host, never by the reviewer — reviewer agents have no diff tool,

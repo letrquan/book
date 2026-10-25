@@ -1,15 +1,16 @@
 # Book Current State
 
-This is the implementation-backed product snapshot for Book as of 2026-10-25 (main at `791ceab4`,
-`0.4.0-beta.1`). Update this file when a user-facing surface changes; the README and
+This is the implementation-backed product snapshot for Book as of 2026-10-25 (`0.4.0-beta.1` plus the
+unreleased changes). Update this file when a user-facing surface changes; the README and
 [docs/guide/](guide/README.md) are the usage guide and this page is the status reference for roadmap
 and design documents.
 
 Re-verified on 2026-10-25, by reading `src/` on main and the `CHANGELOG.md` entries since
 2026-09-07 (nothing was run): release identity and the package version, the built-in slash command
 catalog (`src/commands/builtins.ts`), the CLI subcommands and flags (`src/index.ts`), the
-trust-store shape (`src/workspace-trust.ts`), the system prompt version, the memory model, and
-the transcript layout module's importers. Not re-verified this time: the sandbox and
+trust-store shape (`src/workspace-trust.ts`), the system prompt version, the memory model, the
+`/goal` and `/advisor` command registrations, and the transcript layout module's importers. MCP
+transports and the reasoning/fold behavior are taken from the CHANGELOG, not re-read. Not re-verified this time: the sandbox and
 subscription-auth/provider lines (being rewritten by the s23 sandbox and ChatGPT PRs), compaction
 internals, managed agents, `/review` internals, background-job internals, and skills beyond what
 the CHANGELOG states. The earlier independent surface re-verification was 2026-08-26 (transcript
@@ -51,7 +52,7 @@ and terminal interaction, reasoning/retry propagation, headless/stream-JSON fram
   open on the same mark (`●`), and a call's result hangs under its name after a `⎿` connector
   (`RESULT_INDENT`, `resultGrid`), so what a call did reads as belonging to the call. The grid
   narrows by exactly what it shifts, so every row keeps the same right edge and right-aligned
-  metadata still lines up down the transcript. Roughly thirty non-test modules across the transcript path
+  metadata still lines up down the transcript. About thirty non-test modules, overlays and pickers included,
   resolve through it. A few components outside that path — diff cards, subagent and
   background-shell rows, the command panel — still carry their own `marginLeft` and width
   arithmetic rather than deriving it from the grid, and are not covered by that guarantee.
@@ -105,8 +106,8 @@ and terminal interaction, reasoning/retry propagation, headless/stream-JSON fram
   withheld and how to grant it, disclosing each withheld hook's command, matcher, and environment,
   and `book trust hook|rule|command|dir|provider` records the decision), the trust-decision keys ignored
   from both workspace layers and read instead from `~/.book/trust.json`, keyed by workspace path,
-  so nothing a repository ships can approve its own MCP servers, allow rules, hook entries, or
-  shell-substituting slash commands — a force-added `.book/settings.local.json` reaches a clone the
+  so nothing a repository ships can approve its own MCP servers, allow rules, hook entries,
+  shell-substituting slash commands, additional directories, or workspace providers — a force-added `.book/settings.local.json` reaches a clone the
   same way a checked-in file does, and `book config set` refuses those paths rather than
   writing a value nothing reads. Experimental capability opt-ins are
   likewise ignored from both workspace layers and must come from the user-global file, an explicit
