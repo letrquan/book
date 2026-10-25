@@ -83,6 +83,7 @@ import { advisorModelRefusal, configuredAdvisorModel } from '../config.js';
 import { describeAdvisorChange } from '../tools/advisor.js';
 import { discoverSkills, type Skill } from '../skills.js';
 import { READ_ONLY_GIT_ARGS, readOnlyGit } from '../tools/git.js';
+import { loginWithChatGptInTui, logoutOfChatGptInTui } from './chatgpt-auth.js';
 import { getMemoryIndex } from '../memory-display.js';
 import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
@@ -2401,6 +2402,17 @@ export function App({
           });
           return;
         }
+        if (effect?.type === 'chatgpt-auth') {
+          const host = {
+            workspace: config.workspace,
+            note: addLocalMessage,
+            saveProvider: upsertProviderAndSelect,
+          };
+          void (effect.action === 'login'
+            ? loginWithChatGptInTui(host, { newAccount: effect.newAccount })
+            : logoutOfChatGptInTui(host));
+          return;
+        }
         if (effect?.type === 'reload-assets') {
           setCommands(discoverCommands(config.workspace));
           const refreshedSkills = runtime?.reloadSkills(
@@ -2603,6 +2615,7 @@ export function App({
       endQueuedEdit,
       enqueueFollowUp,
       replaceQueuedInputs,
+      upsertProviderAndSelect,
     ],
   );
 
