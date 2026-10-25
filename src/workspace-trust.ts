@@ -1,7 +1,7 @@
 /**
  * Trust decisions the user makes about repository-controlled input.
  *
- * Book gates six kinds of repository-declared configuration behind a one-time
+ * Book gates these kinds of repository-declared configuration behind a one-time
  * per-workspace decision: `permissions.allow` rules, MCP servers, hook entries,
  * shell substitution in a project `.book/commands/*.md` body, `additionalDirectories`
  * entries, and workspace-declared providers. Each gate is only as strong as the

@@ -68,11 +68,11 @@ file is checked in and controlled by whoever wrote the repository:
   `hooks.projectEntries`, `commands.projectCommands`, `projectDirectories`, and
   `workspaceProviders` — are ignored from **both** workspace
   layers, so a repository cannot approve itself. They are not settings you write: decisions live
-  in `~/.book/trust.json`, keyed by workspace path, and `book trust` is what records them.
+  in `~/.book/trust.json`, keyed by workspace path, and `book trust` records five of them (MCP servers are approved at the prompt).
   `book config set` refuses these six paths outright rather than writing a value nothing reads.
   Putting them in the gitignored `.book/settings.local.json` was not enough — `.gitignore` does
   not stop a force-added file from reaching a clone, so a repository could ship approvals for the
-  hooks, servers, and commands it also shipped. A store outside the workspace is one nothing the
+  hooks, servers, commands, directories, and providers it also shipped. A store outside the workspace is one nothing the
   repository ships can reach. An unreadable store records no decisions, which withholds the gated
   input rather than releasing it.
 
