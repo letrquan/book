@@ -54,3 +54,20 @@ export interface LiveSessionRecord {
   /** Epoch milliseconds of the last write of any field. */
   updatedAt: number;
 }
+
+/**
+ * A record as a reader takes it. Only the essentials are required: the pid, the session id, the
+ * name and when it started. Every other field is kept as written and typed loosely, because a
+ * later version may write values this one does not know (`kind: 'headless'`, a new status) — and
+ * such a record must still count as a session for liveness, sweeping and name collisions.
+ */
+export interface ReadLiveSessionRecord {
+  pid: number;
+  sessionId: string;
+  name: string;
+  startedAt: number;
+  procStart?: string;
+  pidDomain?: string;
+  updatedAt?: number;
+  [field: string]: unknown;
+}

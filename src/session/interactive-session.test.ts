@@ -176,6 +176,43 @@ describe('createInteractiveAgentSession', () => {
       }
     });
 
+    it('reports busy while a compaction or a send that has not reached the loop holds the session', async () => {
+      const fixture = createSessionFixture('book-interactive-live-prepare-');
+      try {
+        const sessionId = fixture.store.create({ cwd: process.cwd() });
+        const reporter = recordingReporter();
+        const session = createInteractiveAgentSession({
+          liveSession: reporter,
+          runLoop: async () => [],
+        });
+
+        const compaction = session.operations.tryStart('compact', true);
+        expect(reporter.last()).toEqual({ status: 'busy' });
+        compaction?.release();
+        expect(reporter.last()).toEqual({ status: 'idle' });
+
+        let duringPrepare: LiveSessionState | undefined;
+        await session.send({
+          config: defaultConfig(),
+          displayMessage: 'hello',
+          createUserMessage: () => userMessage('user-prepare'),
+          history: [],
+          sessionId,
+          timelineStore: fixture.store,
+          registryStore: fixture.store,
+          // Auto-compaction, mention expansion and the checkpoint all run here, before the loop.
+          beforePrepare: async () => {
+            duringPrepare = reporter.last();
+          },
+          callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+        });
+        expect(duringPrepare).toEqual({ status: 'busy' });
+        expect(reporter.last()).toEqual({ status: 'idle' });
+      } finally {
+        fixture.cleanup();
+      }
+    });
+
     it('reports a question for the user as input needed', async () => {
       const reporter = recordingReporter();
       const session = createInteractiveAgentSession({ liveSession: reporter });

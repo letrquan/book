@@ -59,17 +59,29 @@ async function linuxStartToken(pid: number): Promise<string | undefined> {
   return stat === undefined ? undefined : parseProcStatStartTime(stat);
 }
 
-/** `ps -o lstart=` prints the start time to the second; `LC_ALL=C` keeps its format fixed. */
-function darwinStartToken(pid: number): Promise<string | undefined> {
+/**
+ * The `ps` call that reads a process's start time on macOS. `lstart` is printed in the local time
+ * zone and the locale's words, so both are pinned: a session started under another `TZ` must read
+ * the same token for the same process, or it would sweep that session's live record.
+ */
+export function darwinStartTokenCommand(
+  pid: number,
+  env: NodeJS.ProcessEnv,
+): { file: string; args: string[]; env: NodeJS.ProcessEnv } {
+  return {
+    file: '/bin/ps',
+    args: ['-o', 'lstart=', '-p', String(pid)],
+    env: buildChildEnv(env, { LC_ALL: 'C', TZ: 'UTC' }),
+  };
+}
+
+function darwinStartToken(pid: number, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  const command = darwinStartTokenCommand(pid, env);
   return new Promise((resolve) => {
     execFile(
-      '/bin/ps',
-      ['-o', 'lstart=', '-p', String(pid)],
-      {
-        env: buildChildEnv(process.env, { LC_ALL: 'C' }),
-        timeout: PS_TIMEOUT_MS,
-        windowsHide: true,
-      },
+      command.file,
+      command.args,
+      { env: command.env, timeout: PS_TIMEOUT_MS, windowsHide: true },
       (error, stdout) => {
         const token = String(stdout).trim();
         resolve(error || !token ? undefined : token);
@@ -103,7 +115,10 @@ async function linuxPidDomain(): Promise<string | undefined> {
  * record there is live while its pid is (D6). The pid domain is read once per probe: it is fixed
  * for the life of the process.
  */
-export function createLivenessProbe(platform: NodeJS.Platform = process.platform): LivenessProbe {
+export function createLivenessProbe(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): LivenessProbe {
   let domain: Promise<string | undefined> | undefined;
   return {
     isAlive: (pid) => isProcessAlive(pid),
@@ -111,7 +126,7 @@ export function createLivenessProbe(platform: NodeJS.Platform = process.platform
       platform === 'linux'
         ? linuxStartToken(pid)
         : platform === 'darwin'
-          ? darwinStartToken(pid)
+          ? darwinStartToken(pid, env)
           : Promise.resolve(undefined),
     pidDomain: () => {
       domain ??= platform === 'linux' ? linuxPidDomain() : Promise.resolve(undefined);

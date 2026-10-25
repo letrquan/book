@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
   createLivenessProbe,
+  darwinStartTokenCommand,
   isRecordProcessLive,
   parseProcStatStartTime,
   type LivenessProbe,
@@ -54,11 +55,30 @@ describe.skipIf(process.platform !== 'linux')('the Linux probe', () => {
   });
 });
 
+describe('the macOS start-token command', () => {
+  it('pins the time zone and locale, so every session reads the same token for a process', () => {
+    for (const TZ of ['Asia/Ho_Chi_Minh', 'America/Los_Angeles', undefined]) {
+      const command = darwinStartTokenCommand(4242, { PATH: '/usr/bin', TZ, LC_ALL: 'vi_VN' });
+      expect(command.file).toBe('/bin/ps');
+      expect(command.args).toEqual(['-o', 'lstart=', '-p', '4242']);
+      expect(command.env.TZ).toBe('UTC');
+      expect(command.env.LC_ALL).toBe('C');
+      expect(command.env.PATH).toBe('/usr/bin');
+    }
+  });
+});
+
 describe.skipIf(process.platform !== 'darwin')('the macOS probe', () => {
   it("reads this process's start time from ps", async () => {
     const probe = createLivenessProbe('darwin');
     expect(await probe.startToken(process.pid)).toMatch(/\d{4}$/);
     expect(await probe.startToken(2 ** 30)).toBeUndefined();
+  });
+
+  it('reads the same token whatever time zone the reading session runs in', async () => {
+    const east = createLivenessProbe('darwin', { ...process.env, TZ: 'Asia/Ho_Chi_Minh' });
+    const west = createLivenessProbe('darwin', { ...process.env, TZ: 'America/Los_Angeles' });
+    expect(await east.startToken(process.pid)).toBe(await west.startToken(process.pid));
   });
 });
 

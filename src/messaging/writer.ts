@@ -6,9 +6,12 @@
  * not module state, and outlives `/clear` and `/resume` — those change the record's `sessionId`,
  * not the process it describes.
  *
- * Writes are best-effort, serialized, and coalesced to the latest state, and a write happens only
- * when a field changes. Nothing here may fail the session: a registry Book cannot write is a
- * registry without this session in it, which `book doctor` reports.
+ * Writes are serialized and coalesced to the latest state, and a change of state is written only
+ * when a field changes. Two timers keep the record honest when nothing changes: a heartbeat
+ * rewrites it every ten minutes or so (putting it back if something removed it, and keeping its
+ * `updatedAt` fresh for readers in other pid domains), and a failed write is retried with backoff.
+ * Nothing here may fail the session: a registry Book cannot write is a registry without this
+ * session in it, which `book doctor` reports.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -34,6 +37,13 @@ import {
 } from './registry.js';
 
 const log = createDebugLogger('messaging:registry');
+
+/** The heartbeat's period; each beat lands within ±10% of it, so sessions do not beat in step. */
+const HEARTBEAT_MS = 10 * 60 * 1000;
+const HEARTBEAT_JITTER = 0.2;
+/** The first retry of a failed write, doubled on each failure after it up to the cap. */
+const RETRY_BASE_MS = 1_000;
+const RETRY_MAX_MS = 60_000;
 
 export interface LiveSessionState {
   status: LiveSessionStatus;
@@ -73,6 +83,8 @@ export interface LiveSessionWriterOptions {
   probe?: LivenessProbe;
   now?: () => number;
   randomByte?: () => number;
+  /** A number in [0, 1) for the heartbeat's jitter. */
+  random?: () => number;
   atomicWriter?: Pick<AtomicJsonWriter, 'writeAsync'>;
   /** Where the exit backstop is registered; a test passes an emitter of its own. */
   processEvents?: Pick<NodeJS.Process, 'once' | 'off'>;
@@ -85,7 +97,8 @@ type RecordBase = Omit<
 
 interface DesiredFields extends LiveSessionState {
   sessionId: string;
-  statusUpdatedAt: number;
+  /** When the session's status last changed, whether or not that change was ever written. */
+  statusChangedAt: number;
 }
 
 function keyOf(fields: DesiredFields): string {
@@ -94,7 +107,6 @@ function keyOf(fields: DesiredFields): string {
 
 export class LiveSessionWriter implements LiveSessionReporter {
   readonly dir: string;
-  readonly path: string;
   private readonly pid: number;
   private readonly cwd: string;
   private readonly version: string;
@@ -103,17 +115,27 @@ export class LiveSessionWriter implements LiveSessionReporter {
   private readonly probe: LivenessProbe;
   private readonly now: () => number;
   private readonly randomByte?: () => number;
+  private readonly random: () => number;
+  private readonly instanceId = randomUUID();
   private readonly atomicWriter: Pick<AtomicJsonWriter, 'writeAsync'>;
   private readonly processEvents: Pick<NodeJS.Process, 'once' | 'off'>;
   /** When the session was created, which is also when its first status took effect. */
   private readonly startedAt: number;
+  /** Cancels a start still listing the registry when the session closes. */
+  private readonly startAbort = new AbortController();
+  private recordPath?: string;
   private desired: DesiredFields;
   private base?: RecordBase;
   private written?: LiveSessionRecord;
   private writtenKey?: string;
   private chain: Promise<void> = Promise.resolve();
   private queued = false;
-  /** Set once the directory is vetted: from then on `<pid>.json` there is this session's to remove. */
+  /** The next write goes ahead even when nothing changed: a heartbeat, or a retry. */
+  private forced = false;
+  private failures = 0;
+  private heartbeat?: NodeJS.Timeout;
+  private retry?: NodeJS.Timeout;
+  /** Set once the record's path is known: from then on that file is this session's to remove. */
   private owned = false;
   private closed = false;
   private starting?: Promise<void>;
@@ -123,23 +145,37 @@ export class LiveSessionWriter implements LiveSessionReporter {
     this.env = options.env ?? process.env;
     this.dir = liveSessionsDir(options.home ?? resolveBookHome(this.env));
     this.pid = options.pid ?? process.pid;
-    this.path = liveSessionRecordPath(this.dir, this.pid);
     this.cwd = options.cwd;
     this.version = options.version;
     this.platform = options.platform ?? process.platform;
-    this.probe = options.probe ?? createLivenessProbe(this.platform);
+    this.probe = options.probe ?? createLivenessProbe(this.platform, this.env);
     this.now = options.now ?? Date.now;
     this.randomByte = options.randomByte;
+    this.random = options.random ?? Math.random;
     this.atomicWriter =
       options.atomicWriter ??
-      new AtomicJsonWriter({ instanceId: randomUUID(), pid: this.pid, hostname: hostname() });
+      new AtomicJsonWriter({
+        instanceId: this.instanceId,
+        pid: this.pid,
+        hostname: hostname(),
+        // A lock a live process holds is a write or a sweep under way. One this writer's pid holds
+        // under another instance was left by an earlier process the pid belonged to.
+        isLockOwnerAlive: (owner) =>
+          owner.instanceId === this.instanceId ||
+          (owner.pid !== this.pid && this.probe.isAlive(owner.pid)),
+      });
     this.processEvents = options.processEvents ?? process;
     this.startedAt = this.now();
     this.desired = {
       sessionId: options.sessionId,
       status: 'idle',
-      statusUpdatedAt: this.startedAt,
+      statusChangedAt: this.startedAt,
     };
+  }
+
+  /** The record's file, once the writer knows its pid domain (the domain is in the name). */
+  get path(): string | undefined {
+    return this.recordPath;
   }
 
   /** The record as last written, if one has been. */
@@ -164,7 +200,7 @@ export class LiveSessionWriter implements LiveSessionReporter {
       ...this.desired,
       status: state.status,
       waitingFor: state.waitingFor,
-      statusUpdatedAt: this.now(),
+      statusChangedAt: this.now(),
     };
     this.schedule();
   }
@@ -175,15 +211,16 @@ export class LiveSessionWriter implements LiveSessionReporter {
     this.schedule();
   }
 
-  /** Settles once every write queued so far has landed or been dropped. */
+  /** Settles once the start and every write queued so far have landed or been dropped. */
   async flushed(): Promise<void> {
     await this.starting;
     await this.chain;
   }
 
   /**
-   * Stop writing and remove the record. A write still in flight is withdrawn before its rename, so
-   * it cannot put back the file this removes.
+   * Stop writing and remove the record. A start still under way is abandoned rather than awaited,
+   * and a write still in flight is withdrawn before its rename, so neither can put back the file
+   * this removes.
    */
   close(): Promise<void> {
     this.closing ??= this.end();
@@ -196,17 +233,31 @@ export class LiveSessionWriter implements LiveSessionReporter {
     this.processEvents.once('exit', this.removeOnExit);
     try {
       await ensureLiveSessionsDir(this.dir, this.platform);
-      this.owned = true;
-      const [pidDomain, procStart, live] = await Promise.all([
+      if (this.closed) return;
+      const [pidDomain, procStart] = await Promise.all([
         this.probe.pidDomain(),
         this.probe.startToken(this.pid),
-        listLiveSessions({ dir: this.dir, probe: this.probe, ownPid: this.pid }),
       ]);
+      if (this.closed) return;
+      this.recordPath = liveSessionRecordPath(this.dir, this.pid, pidDomain);
+      this.owned = true;
+      const live = await listLiveSessions({
+        dir: this.dir,
+        probe: this.probe,
+        ownPid: this.pid,
+        now: this.now,
+        signal: this.startAbort.signal,
+      });
+      if (this.closed) return;
       const { name, nameSource } = deriveLiveSessionName({
         cwd: this.cwd,
         env: this.env,
         randomByte: this.randomByte,
-        liveNames: new Set(live.filter((record) => record.pid !== this.pid).map((r) => r.name)),
+        liveNames: new Set(
+          live
+            .filter((record) => record.pid !== this.pid || record.pidDomain !== pidDomain)
+            .map((record) => record.name),
+        ),
       });
       this.base = {
         pid: this.pid,
@@ -230,55 +281,97 @@ export class LiveSessionWriter implements LiveSessionReporter {
     }
     this.schedule();
     await this.chain;
+    this.armHeartbeat();
   }
 
-  private schedule(): void {
+  private schedule(force = false): void {
+    if (force) this.forced = true;
     if (this.closed || this.queued || !this.base) return;
     this.queued = true;
     this.chain = this.chain.then(() => this.writeDesired());
   }
 
-  /** Never rejects: a failed write leaves the chain usable for the next change. */
+  /** Never rejects: a failed write leaves the chain usable, and schedules its own retry. */
   private async writeDesired(): Promise<void> {
     this.queued = false;
+    const force = this.forced;
+    this.forced = false;
     const base = this.base;
-    if (this.closed || !base) return;
+    const path = this.recordPath;
+    if (this.closed || !base || !path) return;
     const desired = this.desired;
     const key = keyOf(desired);
-    if (key === this.writtenKey) return;
+    if (key === this.writtenKey && !force) return;
+    const written = this.written;
+    // A flip that was coalesced away is not a change: the status a reader saw is still the one
+    // it has been since it was written.
+    const statusUpdatedAt =
+      written && written.status === desired.status && written.waitingFor === desired.waitingFor
+        ? written.statusUpdatedAt
+        : desired.statusChangedAt;
     const record: LiveSessionRecord = {
       ...base,
       sessionId: desired.sessionId,
       status: desired.status,
       ...(desired.waitingFor !== undefined ? { waitingFor: desired.waitingFor } : {}),
-      statusUpdatedAt: desired.statusUpdatedAt,
+      statusUpdatedAt,
       updatedAt: this.now(),
     };
+    let landed = false;
     try {
-      const result = await this.atomicWriter.writeAsync(this.path, record, {
+      const result = await this.atomicWriter.writeAsync(path, record, {
         canCommit: () => !this.closed,
       });
-      if (result.status === 'ok') {
-        this.written = record;
-        this.writtenKey = key;
-      } else if (result.status !== 'cancelled') {
-        log.warn('live-session record write failed', { status: result.status });
-      }
+      if (result.status === 'cancelled') return;
+      landed = result.status === 'ok';
+      if (!landed) log.warn('live-session record write failed', { status: result.status });
     } catch (error) {
       log.warn('live-session record write failed', {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    if (landed) {
+      this.written = record;
+      this.writtenKey = key;
+      this.failures = 0;
+      return;
+    }
+    this.failures++;
+    this.scheduleRetry();
+  }
+
+  private scheduleRetry(): void {
+    if (this.closed || this.retry) return;
+    const delay = Math.min(RETRY_BASE_MS * 2 ** (this.failures - 1), RETRY_MAX_MS);
+    this.retry = setTimeout(() => {
+      this.retry = undefined;
+      this.schedule(true);
+    }, delay);
+    this.retry.unref?.();
+  }
+
+  private armHeartbeat(): void {
+    if (this.closed) return;
+    const spread = 1 - HEARTBEAT_JITTER / 2 + HEARTBEAT_JITTER * this.random();
+    this.heartbeat = setTimeout(() => {
+      this.heartbeat = undefined;
+      this.schedule(true);
+      this.armHeartbeat();
+    }, HEARTBEAT_MS * spread);
+    this.heartbeat.unref?.();
   }
 
   private async end(): Promise<void> {
     this.closed = true;
-    await this.starting;
+    this.startAbort.abort();
+    if (this.heartbeat) clearTimeout(this.heartbeat);
+    if (this.retry) clearTimeout(this.retry);
+    this.heartbeat = this.retry = undefined;
     await this.chain;
     this.processEvents.off('exit', this.removeOnExit);
-    if (!this.owned) return;
+    if (!this.owned || !this.recordPath) return;
     try {
-      await unlink(this.path);
+      await unlink(this.recordPath);
     } catch {
       // Already gone: a sweep, or the exit backstop, got there first.
     }
@@ -290,9 +383,11 @@ export class LiveSessionWriter implements LiveSessionReporter {
    */
   private readonly removeOnExit = (): void => {
     this.closed = true;
-    if (!this.owned) return;
+    if (this.heartbeat) clearTimeout(this.heartbeat);
+    if (this.retry) clearTimeout(this.retry);
+    if (!this.owned || !this.recordPath) return;
     try {
-      unlinkSync(this.path);
+      unlinkSync(this.recordPath);
     } catch {
       // Already gone.
     }

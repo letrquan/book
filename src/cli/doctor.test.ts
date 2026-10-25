@@ -1100,6 +1100,7 @@ describe('runDoctorCommand live sessions (#620)', () => {
 
   it('counts the live records and leaves the dead ones for a sweep', async () => {
     const { createLivenessProbe } = await import('../messaging/liveness.js');
+    const { liveSessionRecordName } = await import('../messaging/registry.js');
     const probe = createLivenessProbe();
     const dir = join(bookHome(), 'live-sessions');
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -1118,7 +1119,7 @@ describe('runDoctorCommand live sessions (#620)', () => {
     };
     const ownStart = await probe.startToken(process.pid);
     writeFileSync(
-      join(dir, `${process.pid}.json`),
+      join(dir, liveSessionRecordName(process.pid, base.pidDomain)),
       JSON.stringify({
         ...base,
         pid: process.pid,
@@ -1129,14 +1130,14 @@ describe('runDoctorCommand live sessions (#620)', () => {
     );
     const deadPid = 2 ** 30;
     writeFileSync(
-      join(dir, `${deadPid}.json`),
+      join(dir, liveSessionRecordName(deadPid, base.pidDomain)),
       JSON.stringify({ ...base, pid: deadPid, sessionId: 's2', name: 'a-02' }),
     );
 
     const output = await doctorOutput();
 
     expect(output).toContain(`Live sessions: 1 live in ${dir}`);
-    expect(existsSync(join(dir, `${deadPid}.json`))).toBe(true);
+    expect(existsSync(join(dir, liveSessionRecordName(deadPid, base.pidDomain)))).toBe(true);
   });
 
   it.skipIf(process.platform === 'win32')('flags a symlinked registry directory', async () => {

@@ -1,12 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { AtomicJsonWriter } from '../agents/atomic-json.js';
 import { isolateBookHome } from '../test/isolated-book-home.js';
 import type { LiveSessionRecord } from '../types/messaging.js';
 import type { LivenessProbe } from './liveness.js';
-import { listLiveSessions, liveSessionsDir, readLiveSessionEntries } from './registry.js';
+import {
+  listLiveSessions,
+  liveSessionRecordName,
+  liveSessionsDir,
+  readLiveSessionEntries,
+} from './registry.js';
 import { liveSessionStateOf, LiveSessionWriter, type LiveSessionWriterOptions } from './writer.js';
 
 const bookHome = isolateBookHome('book-live-writer-');
@@ -59,6 +73,18 @@ function readRecord(path: string): LiveSessionRecord {
   return JSON.parse(readFileSync(path, 'utf8')) as LiveSessionRecord;
 }
 
+/** The record's path, which a writer knows once it has learned its pid domain. */
+function pathOf(writer: LiveSessionWriter): string {
+  if (!writer.path) throw new Error('the writer has no record path yet');
+  return writer.path;
+}
+
+const MINUTE = 60_000;
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('liveSessionStateOf', () => {
   it('puts a pending prompt above a running turn, and names what it waits for', () => {
     expect(
@@ -81,8 +107,8 @@ describe('LiveSessionWriter', () => {
     const { writer } = createWriter();
     await writer.start();
 
-    expect(writer.path).toBe(join(liveSessionsDir(bookHome()), `${PID}.json`));
-    expect(readRecord(writer.path)).toEqual({
+    expect(writer.path).toBe(join(liveSessionsDir(bookHome()), liveSessionRecordName(PID, DOMAIN)));
+    expect(readRecord(pathOf(writer))).toEqual({
       pid: PID,
       sessionId: 'session-1',
       cwd: join('work', 'Book Repo'),
@@ -103,7 +129,7 @@ describe('LiveSessionWriter', () => {
     // The first status took effect when the session started, not before.
     expect(writer.current()?.statusUpdatedAt).toBe(writer.current()?.startedAt);
     if (process.platform !== 'win32') {
-      expect(statSync(writer.path).mode & 0o777).toBe(0o600);
+      expect(statSync(pathOf(writer)).mode & 0o777).toBe(0o600);
       expect(statSync(writer.dir).mode & 0o777).toBe(0o700);
     }
     await writer.close();
@@ -166,8 +192,8 @@ describe('LiveSessionWriter', () => {
       ['waiting', 'input needed', 'session-1'],
       ['idle', undefined, 'session-2'],
     ]);
-    expect(readRecord(writer.path)).toMatchObject({ status: 'idle', sessionId: 'session-2' });
-    expect(readRecord(writer.path)).not.toHaveProperty('waitingFor');
+    expect(readRecord(pathOf(writer))).toMatchObject({ status: 'idle', sessionId: 'session-2' });
+    expect(readRecord(pathOf(writer))).not.toHaveProperty('waitingFor');
     await writer.close();
   });
 
@@ -227,16 +253,16 @@ describe('LiveSessionWriter', () => {
     writer.setState({ status: 'idle' });
     writer.setState({ status: 'busy' });
     await writer.flushed();
-    expect(readRecord(writer.path).status).toBe('busy');
+    expect(readRecord(pathOf(writer)).status).toBe('busy');
     await writer.close();
   });
 
   it('removes the record on close', async () => {
     const { writer } = createWriter();
     await writer.start();
-    expect(existsSync(writer.path)).toBe(true);
+    expect(existsSync(pathOf(writer))).toBe(true);
     await writer.close();
-    expect(existsSync(writer.path)).toBe(false);
+    expect(existsSync(pathOf(writer))).toBe(false);
     writer.setState({ status: 'busy' });
     await writer.flushed();
     expect(readdirSync(writer.dir)).toEqual([]);
@@ -265,7 +291,7 @@ describe('LiveSessionWriter', () => {
     const closed = writer.close();
     release();
     await closed;
-    expect(existsSync(writer.path)).toBe(false);
+    expect(existsSync(pathOf(writer))).toBe(false);
     expect(readdirSync(writer.dir)).toEqual([]);
   });
 
@@ -274,10 +300,10 @@ describe('LiveSessionWriter', () => {
     await writer.start();
     expect(events.listenerCount('exit')).toBe(1);
     events.emit('exit', 0);
-    expect(existsSync(writer.path)).toBe(false);
+    expect(existsSync(pathOf(writer))).toBe(false);
     writer.setState({ status: 'busy' });
     await writer.flushed();
-    expect(existsSync(writer.path)).toBe(false);
+    expect(existsSync(pathOf(writer))).toBe(false);
   });
 
   it('drops its exit listener on close', async () => {
@@ -304,4 +330,186 @@ describe('LiveSessionWriter', () => {
       expect(readdirSync(target)).toEqual([]);
     },
   );
+
+  it('keeps one record per pid domain when two namespaces share a home and a pid', async () => {
+    const container = createWriter({
+      probe: { ...probe(), pidDomain: async () => 'linux:test-machine:pid:[4026532999]' },
+    });
+    const host = createWriter();
+    await container.writer.start();
+    await host.writer.start();
+    expect(pathOf(container.writer)).not.toBe(pathOf(host.writer));
+    expect(readdirSync(host.writer.dir)).toHaveLength(2);
+
+    await container.writer.close();
+    expect(existsSync(pathOf(container.writer))).toBe(false);
+    expect(readRecord(pathOf(host.writer)).pidDomain).toBe(DOMAIN);
+    container.events.emit('exit', 0);
+    expect(existsSync(pathOf(host.writer))).toBe(true);
+    await host.writer.close();
+  });
+
+  it('does not take the record lock a live sweeper holds', async () => {
+    // The writer's own atomic writer, which is the one that decides whether a lock is stale.
+    const { writer } = createWriter({
+      atomicWriter: undefined,
+      probe: probe(new Map([[77, 'sweeper-start']])),
+    });
+    await writer.start();
+    const lock = `${pathOf(writer)}.lock`;
+    writeFileSync(
+      lock,
+      JSON.stringify({
+        schemaVersion: 1,
+        instanceId: 'sweeper',
+        pid: 77,
+        hostname: 'test',
+        createdAt: Date.now(),
+      }),
+    );
+    writer.setState({ status: 'busy' });
+    await writer.flushed();
+    expect(readRecord(pathOf(writer)).status).toBe('idle');
+
+    rmSync(lock);
+    writer.setState({ status: 'waiting', waitingFor: 'input needed' });
+    await writer.flushed();
+    expect(readRecord(pathOf(writer)).status).toBe('waiting');
+    await writer.close();
+  });
+
+  it('puts its record back on the heartbeat after something removed it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { writer, writes } = createWriter({ random: () => 0.5 });
+    await writer.start();
+    const first = readRecord(pathOf(writer));
+    rmSync(pathOf(writer));
+
+    await vi.advanceTimersByTimeAsync(9 * MINUTE);
+    await writer.flushed();
+    expect(existsSync(pathOf(writer))).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1 * MINUTE);
+    await writer.flushed();
+    const restored = readRecord(pathOf(writer));
+    expect(restored).toMatchObject({ name: first.name, status: 'idle' });
+    expect(restored.updatedAt).toBeGreaterThan(first.updatedAt);
+    expect(restored.statusUpdatedAt).toBe(first.statusUpdatedAt);
+
+    // And again on the next beat: the heartbeat keeps the record fresh while nothing changes.
+    await vi.advanceTimersByTimeAsync(10 * MINUTE);
+    await writer.flushed();
+    expect(writes).toHaveLength(3);
+    await writer.close();
+  });
+
+  it('retries a failed write with backoff until it lands', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const real = countingWriter();
+    let failures = 2;
+    const flaky = {
+      writeAsync: (async (target: string, value: unknown, options?: object) => {
+        if (failures-- > 0) {
+          return {
+            status: 'unavailable',
+            target,
+            operation: 'write',
+            message: 'disk gone',
+            attempts: 1,
+            elapsedMs: 0,
+          };
+        }
+        return real.writeAsync(target, value, options);
+      }) as AtomicJsonWriter['writeAsync'],
+    };
+    const { writer } = createWriter({ atomicWriter: flaky, random: () => 0.5 });
+    await writer.start();
+    expect(existsSync(pathOf(writer))).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await writer.flushed();
+    expect(existsSync(pathOf(writer))).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    await writer.flushed();
+    expect(readRecord(pathOf(writer)).status).toBe('idle');
+    await writer.close();
+  });
+
+  it('leaves no timer running after close', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { writer } = createWriter();
+    await writer.start();
+    await writer.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('closes without waiting for a start that has not finished, and writes nothing after', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const slow: LivenessProbe = {
+      ...probe(),
+      startToken: async (pid) => {
+        await held;
+        return pid === PID ? 'own-start' : undefined;
+      },
+    };
+    const { writer, writes } = createWriter({ probe: slow });
+    const started = writer.start();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const outcome = await Promise.race([
+      writer.close().then(() => 'closed'),
+      new Promise((resolve) => setTimeout(() => resolve('still waiting'), 1_000)),
+    ]);
+    expect(outcome).toBe('closed');
+    release();
+    await started;
+    expect(writes).toEqual([]);
+    expect(readdirSync(writer.dir)).toEqual([]);
+  });
+
+  it('keeps the time the status last changed when a flip is coalesced away', async () => {
+    const { writer, writes } = createWriter();
+    await writer.start();
+    writer.setState({ status: 'busy' });
+    await writer.flushed();
+    const busySince = writes.at(-1)!.statusUpdatedAt;
+
+    // A prompt flashes and closes before its write runs; then only the session id changes.
+    writer.setState({ status: 'waiting', waitingFor: 'permission prompt' });
+    writer.setState({ status: 'busy' });
+    writer.setSessionId('session-2');
+    await writer.flushed();
+
+    expect(writes.at(-1)).toMatchObject({ status: 'busy', sessionId: 'session-2' });
+    expect(writes.at(-1)!.statusUpdatedAt).toBe(busySince);
+    await writer.close();
+  });
+
+  it("counts a later version's live record when it picks a name", async () => {
+    const dir = liveSessionsDir(bookHome());
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, liveSessionRecordName(77, DOMAIN)),
+      JSON.stringify({
+        pid: 77,
+        sessionId: 'future',
+        startedAt: 1,
+        procStart: 'other-start',
+        pidDomain: DOMAIN,
+        kind: 'headless',
+        status: 'compacting',
+        name: 'book-repo-3f',
+        nameSource: 'rename',
+      }),
+    );
+    const bytes = [0x3f, 0x40];
+    const { writer } = createWriter({
+      probe: probe(new Map([[77, 'other-start']])),
+      randomByte: () => bytes.shift() ?? 0,
+    });
+    await writer.start();
+    expect(writer.current()).toMatchObject({ name: 'book-repo-40', nameSource: 'collision' });
+    await writer.close();
+  });
 });

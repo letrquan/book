@@ -441,7 +441,10 @@ The feature is live on this account: the tools are in this session.
   peer pid. Book cannot, so the token is the only proof beyond filesystem permissions. Because the
   sender's pid can't be verified, there is **no self-sent fast path** and **no `childToken`** in v1.
 - **Paths**:
-  - the registry lives in `<BOOK_HOME>/live-sessions/<pid>.json` and `<pid>.<sha256(sock)>.key`;
+  - the registry lives in `<BOOK_HOME>/live-sessions/<pid>.<domain tag>.json`, where the tag is the
+    first 12 hex digits of `sha256(pidDomain)` (plain `<pid>.json` where there is no pid domain, as
+    on Windows), so pid namespaces sharing a home never write over or remove each other's records;
+    the key sits beside it as `<pid>.<sha256(sock)>.key`;
   - sockets live in `$XDG_RUNTIME_DIR/book-socks/<pid>.sock`, falling back to
     `<os.tmpdir()>/book-socks-<uid>/<pid>.sock` when the path is over 103 bytes;
   - directories are `0700` and vetted, the socket `0600`, the key `0600`.
@@ -491,18 +494,37 @@ Each PR is built by Book in print mode (`run-book` skill), watched in the real T
 `docs/guide/` (a "Cross-session messaging" section in `features.md`, the setting in
 `configuration.md`, the tool rules in `tools-and-safety.md`), `CHANGELOG.md` and `MILESTONES.md`.
 
-**PR 1: live-session registry (no messaging).** New `src/messaging/` module:
+**PR 1: live-session registry (no messaging).** New `src/messaging/` module (PR #628):
 
-- `registry.ts` (read, write, sweep), `liveness.ts`, `names.ts`.
-- The writer is owned by `session/lifecycle.ts` (interactive only) and writes atomically through
-  `atomic-json.ts`.
-- `status` is `busy | waiting | idle`, with `waitingFor`, and is written only on a change.
-- The record is removed on exit through the `cli/exit.ts` path. Stale records (dead pid or
-  mismatched start token) are swept on read.
+- `registry.ts` (read, list-live, sweep), `writer.ts`, `liveness.ts`, `names.ts`; the shared slug
+  helper is `src/slug.ts`.
+- The writer is created only by `cli/run.ts`'s interactive branch and reaches the session through
+  `createInteractiveAgentSession`. It is not on `SessionRuntime` or in `session/lifecycle.ts`: the
+  TUI's runtime is replaced on `/clear` and `/resume`, and print mode shares the lifecycle. It
+  writes atomically through `atomic-json.ts`.
+- Records are named `<pid>.<domain tag>.json` (see §4.2).
+- `status` is `busy | waiting | idle`, with `waitingFor`. `busy` covers a running turn and any
+  operation holding the session: a send from the moment it is accepted, a `/compact`, a `/rewind`.
+  Status is written only on a change; a coalesced flip moves neither the status nor
+  `statusUpdatedAt`.
+- A heartbeat rewrites the record about every 10 minutes (jittered, unref'd), which puts back a
+  record something removed and keeps `updatedAt` fresh. A failed write is retried with backoff.
+- The record is removed on close, with an `exit`-event backstop for the `cli/exit.ts` path. A
+  close does not wait for a start that has not finished.
+- Sweep on read, under the record's own write lock:
+  - a record of this pid domain goes when its pid is dead or its start token mismatches, never by
+    age;
+  - a record of another domain goes after 24 hours without a refresh;
+  - writer lock and temp files go after an hour.
+- Readers parse leniently. Only `pid`, `sessionId`, `name` and `startedAt` are required, and
+  unknown values and fields are kept, so a later version's record still counts for liveness,
+  sweeping and name collisions.
+- Liveness checks run in parallel, a few at a time. On macOS the `ps` token is read with `TZ=UTC`
+  and `LC_ALL=C`.
 - The derived name `<slug(basename cwd)>-<2hex>` is collision-checked against live records.
-  `/rename` sets `nameSource: 'user'`.
-- `book doctor` gains a line for the registry and the socket directory.
-- Unit tests.
+  `BOOK_SESSION_NAME` sets `nameSource: 'user'`; Book has no `/rename`.
+- `book doctor` gains a line for the registry. The socket directory's line comes with PR 2.
+- Unit tests, plus a real child process that turns live and is swept once it exits.
 
 **PR 2: inbox transport.**
 

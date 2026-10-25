@@ -61,6 +61,11 @@ export function createInteractiveAgentSession(
 /**
  * Follow the session's state into its record. The snapshot changes on every streamed event, so
  * the reporter is told the derived state each time and writes only when that changes.
+ *
+ * Busy is a running turn or any operation holding the session: a send from the moment it is
+ * accepted (its prepare phase — auto-compaction, mention expansion, the checkpoint — emits no
+ * event), a `/compact`, a `/rewind`. Each operation's start and end is reported as it happens, so
+ * the record cannot stay busy after the lease is released.
  */
 function reportLiveSessionState(session: AgentSession, liveSession: LiveSessionReporter): void {
   const report = () => {
@@ -68,7 +73,7 @@ function reportLiveSessionState(session: AgentSession, liveSession: LiveSessionR
     const pending = session.interactions.getSnapshot();
     liveSession.setState(
       liveSessionStateOf({
-        running: snapshot.status === 'running',
+        running: snapshot.status === 'running' || session.operations.activeKind !== null,
         permissionPending:
           pending.pendingPermission !== null || pending.pendingPlanApproval !== null,
         inputPending:
@@ -80,4 +85,5 @@ function reportLiveSessionState(session: AgentSession, liveSession: LiveSessionR
   };
   session.subscribe(report);
   session.interactions.subscribe(report);
+  session.operations.subscribe(report);
 }

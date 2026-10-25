@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -9,6 +10,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,11 +22,14 @@ import {
   inspectLiveSessionsDir,
   listLiveSessions,
   LiveSessionsDirRefusedError,
+  liveSessionRecordName,
   liveSessionsDir,
   readLiveSessionEntries,
 } from './registry.js';
 
 const DOMAIN = 'linux:test-machine:pid:[4026531836]';
+const OTHER_DOMAIN = 'linux:other-machine:pid:[4026532000]';
+const HOUR = 60 * 60 * 1000;
 
 let root: string;
 let dir: string;
@@ -59,9 +64,25 @@ function record(pid: number, overrides: Partial<LiveSessionRecord> = {}): LiveSe
   };
 }
 
-function writeRecord(value: LiveSessionRecord, pid = value.pid): void {
+/** Write a record body under the file name its own pid and domain give it, or under `name`. */
+function writeRecord<T extends { pid: number; pidDomain?: string }>(
+  value: T,
+  name?: string,
+): string {
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${pid}.json`), JSON.stringify(value));
+  const fileName = name ?? liveSessionRecordName(value.pid, value.pidDomain);
+  writeFileSync(join(dir, fileName), JSON.stringify(value));
+  return fileName;
+}
+
+/** A copy of `value` without `keys`. */
+function without<T extends object>(
+  value: T,
+  ...keys: Array<keyof T>
+): Partial<T> & { pid: number } {
+  const copy: Partial<T> = { ...value };
+  for (const key of keys) delete copy[key];
+  return copy as Partial<T> & { pid: number };
 }
 
 /** A probe where `processes` maps each live pid to its start token. */
@@ -117,17 +138,34 @@ describe('ensureLiveSessionsDir', () => {
   });
 });
 
+describe('liveSessionRecordName', () => {
+  it('tags the file with its pid domain, so pid namespaces sharing a home never share a file', () => {
+    const tag = createHash('sha256').update(DOMAIN).digest('hex').slice(0, 12);
+    expect(liveSessionRecordName(23, DOMAIN)).toBe(`23.${tag}.json`);
+    expect(liveSessionRecordName(23, OTHER_DOMAIN)).not.toBe(liveSessionRecordName(23, DOMAIN));
+  });
+
+  it('is the bare pid where the platform has no pid domain', () => {
+    expect(liveSessionRecordName(23)).toBe('23.json');
+  });
+});
+
 describe('readLiveSessionEntries', () => {
   it('is empty when the directory does not exist', async () => {
     expect(await readLiveSessionEntries(dir)).toEqual([]);
   });
 
-  it('reads only <pid>.json files, and leaves a torn or mismatched one unparsed', async () => {
-    writeRecord(record(101));
-    writeFileSync(join(dir, '102.json'), '{"pid": 102, "sessionId": "torn');
-    writeRecord(record(999), 103);
-    writeFileSync(join(dir, '101.json.lock'), '{}');
-    writeFileSync(join(dir, '101.json.101.abc.tmp'), '{');
+  it('reads only record files, and leaves a torn or mismatched one unparsed', async () => {
+    const live = writeRecord(record(101));
+    writeFileSync(join(dir, liveSessionRecordName(102, DOMAIN)), '{"pid": 102, "sessionId": "torn');
+    // A body naming another pid than its file.
+    writeRecord(record(999), liveSessionRecordName(103, DOMAIN));
+    // A body naming another domain than its file's tag.
+    writeRecord(record(104, { pidDomain: OTHER_DOMAIN }), liveSessionRecordName(104, DOMAIN));
+    // A body with a domain in a file without a tag.
+    writeRecord(record(105), '105.json');
+    writeFileSync(join(dir, `${live}.lock`), '{}');
+    writeFileSync(join(dir, `${live}.101.abc.tmp`), '{');
     writeFileSync(join(dir, 'notes.json'), '{}');
 
     const entries = await readLiveSessionEntries(dir);
@@ -135,13 +173,41 @@ describe('readLiveSessionEntries', () => {
       [101, 'book-101'],
       [102, undefined],
       [103, undefined],
+      [104, undefined],
+      [105, undefined],
     ]);
   });
 
-  it('keeps fields a later version adds', async () => {
-    writeRecord({ ...record(101), messagingSocketPath: '/run/x.sock' } as LiveSessionRecord);
+  it('parses a record a later version writes: new values and new fields are kept', async () => {
+    writeRecord({
+      ...record(106),
+      kind: 'headless',
+      status: 'compacting',
+      waitingFor: 'a review',
+      nameSource: 'rename',
+      messagingSocketPath: '/run/x.sock',
+    });
     const [entry] = await readLiveSessionEntries(dir);
-    expect(entry?.record).toMatchObject({ messagingSocketPath: '/run/x.sock' });
+    expect(entry?.record).toMatchObject({
+      pid: 106,
+      kind: 'headless',
+      status: 'compacting',
+      waitingFor: 'a review',
+      nameSource: 'rename',
+      messagingSocketPath: '/run/x.sock',
+    });
+  });
+
+  it('counts a record as torn only when an essential field is missing', async () => {
+    writeRecord(without(record(107), 'name'));
+    writeRecord(without(record(108), 'startedAt'));
+    writeRecord({ ...without(record(109), 'version', 'features', 'cwd'), status: 42 });
+    const entries = await readLiveSessionEntries(dir);
+    expect(entries.map((entry) => [entry.pid, entry.record?.name])).toEqual([
+      [107, undefined],
+      [108, undefined],
+      [109, 'book-109'],
+    ]);
   });
 });
 
@@ -174,43 +240,90 @@ describe('listLiveSessions', () => {
     expect(files()).toEqual([]);
   });
 
-  it('ignores a record from another pid domain and never deletes it', async () => {
-    writeRecord(record(303, { pidDomain: 'linux:other-machine:pid:[4026532000]' }));
-    writeRecord(record(304, { pidDomain: undefined }));
-    // Neither pid is alive here, which is exactly what says nothing about another domain.
-    expect(await listLiveSessions({ dir, probe: fakeProbe(new Map()) })).toEqual([]);
-    expect(files()).toEqual(['303.json', '304.json']);
+  it('keeps a fresh record from another pid domain, whatever its pid looks like here', async () => {
+    const now = 100 * HOUR;
+    const foreign = writeRecord(record(303, { pidDomain: OTHER_DOMAIN, updatedAt: now - HOUR }));
+    const unscoped = writeRecord(record(304, { pidDomain: undefined, updatedAt: now - HOUR }));
+    // Neither pid is alive here, which says nothing about another domain.
+    expect(await listLiveSessions({ dir, probe: fakeProbe(new Map()), now: () => now })).toEqual(
+      [],
+    );
+    expect(files()).toEqual([foreign, unscoped].sort());
+  });
+
+  it('sweeps a record from another pid domain once nothing has refreshed it for a day', async () => {
+    const now = 100 * HOUR;
+    writeRecord(record(305, { pidDomain: OTHER_DOMAIN, updatedAt: now - 25 * HOUR }));
+    writeRecord(record(306, { pidDomain: undefined, updatedAt: now - 25 * HOUR }));
+    expect(await listLiveSessions({ dir, probe: fakeProbe(new Map()), now: () => now })).toEqual(
+      [],
+    );
+    expect(files()).toEqual([]);
+  });
+
+  it('judges a record of this domain by its process alone, never by its age', async () => {
+    const now = 100 * HOUR;
+    writeRecord(record(307, { updatedAt: now - 90 * HOUR }));
+    const live = await listLiveSessions({
+      dir,
+      probe: fakeProbe(new Map([[307, 'start-307']])),
+      now: () => now,
+    });
+    expect(live.map((entry) => entry.pid)).toEqual([307]);
   });
 
   it('keeps a torn record, whose domain nothing can tell', async () => {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, '305.json'), '{"pid": 305, "sessi');
+    writeFileSync(join(dir, '308.json'), '{"pid": 308, "sessi');
     expect(await listLiveSessions({ dir, probe: fakeProbe(new Map()) })).toEqual([]);
-    expect(files()).toEqual(['305.json']);
+    expect(files()).toEqual(['308.json']);
+  });
+
+  it('sweeps lock and temp files a crashed writer left over an hour ago, and no younger ones', async () => {
+    mkdirSync(dir, { recursive: true });
+    const stem = liveSessionRecordName(309, DOMAIN);
+    const old = [`${stem}.lock`, `${stem}.309.abc.def.tmp`, '310.json.lock'];
+    const young = [`${liveSessionRecordName(311, DOMAIN)}.lock`, '312.json.312.a.b.tmp'];
+    const unrelated = ['notes.txt.lock', 'README.tmp'];
+    const now = Date.now();
+    for (const name of [...old, ...young, ...unrelated]) writeFileSync(join(dir, name), '{}');
+    for (const name of [...old, ...unrelated]) {
+      const then = new Date(now - 2 * HOUR);
+      utimesSync(join(dir, name), then, then);
+    }
+    await listLiveSessions({ dir, probe: fakeProbe(new Map()), now: () => now });
+    expect(files()).toEqual([...young, ...unrelated].sort());
   });
 
   it("never sweeps this process's own file", async () => {
-    writeRecord(record(306, { procStart: 'start-old' }));
+    writeRecord(record(313, { procStart: 'start-old' }));
     const live = await listLiveSessions({
       dir,
-      probe: fakeProbe(new Map([[306, 'start-new']])),
-      ownPid: 306,
+      probe: fakeProbe(new Map([[313, 'start-new']])),
+      ownPid: 313,
     });
     expect(live).toEqual([]);
-    expect(files()).toEqual(['306.json']);
+    expect(files()).toEqual([liveSessionRecordName(313, DOMAIN)]);
   });
 
   it('reports without deleting when sweep is off', async () => {
-    writeRecord(record(307));
-    expect(await listLiveSessions({ dir, probe: fakeProbe(new Map()), sweep: false })).toEqual([]);
-    expect(files()).toEqual(['307.json']);
+    const now = 100 * HOUR;
+    const dead = writeRecord(record(314));
+    const stale = writeRecord(record(315, { pidDomain: OTHER_DOMAIN, updatedAt: 0 }));
+    const lock = `${dead}.lock`;
+    writeFileSync(join(dir, lock), '{}');
+    utimesSync(join(dir, lock), new Date(0), new Date(0));
+    expect(
+      await listLiveSessions({ dir, probe: fakeProbe(new Map()), sweep: false, now: () => now }),
+    ).toEqual([]);
+    expect(files()).toEqual([dead, lock, stale].sort());
   });
 
   it("does not sweep a file its pid's new owner rewrote after it was read", async () => {
-    writeRecord(record(308, { procStart: 'start-old' }));
-    const fresh = record(308, { procStart: 'start-new', sessionId: 'fresh' });
+    writeRecord(record(316, { procStart: 'start-old' }));
+    const fresh = record(316, { procStart: 'start-new', sessionId: 'fresh' });
     const probe: LivenessProbe = {
-      ...fakeProbe(new Map([[308, 'start-new']])),
+      ...fakeProbe(new Map([[316, 'start-new']])),
       // The new owner registers between the read and the sweep.
       startToken: async () => {
         writeRecord(fresh);
@@ -220,6 +333,56 @@ describe('listLiveSessions', () => {
     expect(await listLiveSessions({ dir, probe })).toEqual([]);
     const [entry] = await readLiveSessionEntries(dir);
     expect(entry?.record?.sessionId).toBe('fresh');
+  });
+
+  it('leaves a dead record alone while a writer holds its lock', async () => {
+    const name = writeRecord(record(317));
+    writeFileSync(join(dir, `${name}.lock`), '{}');
+    expect(await listLiveSessions({ dir, probe: fakeProbe(new Map()) })).toEqual([]);
+    expect(files()).toEqual([name, `${name}.lock`]);
+    rmSync(join(dir, `${name}.lock`));
+    await listLiveSessions({ dir, probe: fakeProbe(new Map()) });
+    expect(files()).toEqual([]);
+  });
+
+  it('counts, sweeps and lists a record a later version wrote', async () => {
+    writeRecord({ ...record(318), kind: 'headless', status: 'compacting' });
+    writeRecord({ ...record(319), kind: 'headless', status: 'compacting' });
+    const live = await listLiveSessions({ dir, probe: fakeProbe(new Map([[318, 'start-318']])) });
+    expect(live.map((entry) => [entry.pid, entry.name])).toEqual([[318, 'book-318']]);
+    expect(files()).toEqual([liveSessionRecordName(318, DOMAIN)]);
+  });
+
+  it('checks records in parallel, a few at a time', async () => {
+    const pids = Array.from({ length: 20 }, (_, index) => 400 + index);
+    for (const pid of pids) writeRecord(record(pid));
+    let inFlight = 0;
+    let most = 0;
+    const probe: LivenessProbe = {
+      isAlive: () => true,
+      startToken: async (pid) => {
+        inFlight++;
+        most = Math.max(most, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight--;
+        return `start-${pid}`;
+      },
+      pidDomain: async () => DOMAIN,
+    };
+    const live = await listLiveSessions({ dir, probe });
+    expect(live).toHaveLength(pids.length);
+    expect(most).toBeGreaterThan(1);
+    expect(most).toBeLessThanOrEqual(8);
+  });
+
+  it('stops early when its signal is aborted', async () => {
+    for (const pid of [501, 502, 503]) writeRecord(record(pid));
+    const controller = new AbortController();
+    controller.abort();
+    expect(
+      await listLiveSessions({ dir, probe: fakeProbe(new Map()), signal: controller.signal }),
+    ).toEqual([]);
+    expect(files()).toHaveLength(3);
   });
 });
 

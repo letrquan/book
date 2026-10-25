@@ -8,6 +8,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
+import { kebabSlug } from '../slug.js';
 import type { LiveSessionNameSource } from '../types/messaging.js';
 
 /** The stem used when the workspace's name has nothing a slug can keep (`/`, `C:\`, `日本`). */
@@ -19,14 +20,7 @@ const SUFFIX_ATTEMPTS = 32;
 
 /** Lowercase ASCII letters, digits and single hyphens; empty when nothing survives. */
 export function slugifySessionName(text: string): string {
-  return text
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, MAX_SLUG_LENGTH)
-    .replace(/-+$/, '');
+  return kebabSlug(text, MAX_SLUG_LENGTH);
 }
 
 export interface DeriveLiveSessionNameOptions {
