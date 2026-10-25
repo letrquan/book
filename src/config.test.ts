@@ -596,6 +596,77 @@ describe('loadConfig provider registry', () => {
     expect(resolveModelProviderConfig(withDefault, 'lab/model').apiKey).toBe('default-key');
   });
 
+  describe('a Sign in with ChatGPT provider (type "chatgpt")', () => {
+    const settings = {
+      model: 'plan/gpt-plan',
+      provider: {
+        // Its baseURL, apiKey and api are ignored: the route is fixed.
+        plan: { type: 'chatgpt', baseURL: 'https://elsewhere.example/v1', apiKey: 'ignored-key' },
+      },
+    };
+    const signIn = (): void =>
+      writeFileSync(
+        join(isolatedHome, 'chatgpt-signin.json'),
+        JSON.stringify({
+          version: 1,
+          hostId: 'urn:uuid:test',
+          account: {
+            clientId: 'oaiapp_1',
+            subject: 's',
+            tokens: {
+              accessToken: 'plan-access-token',
+              idToken: 'id',
+              expiresAt: Date.now() + 3_600_000,
+              scopes: ['chatgpt.tokens.use.direct'],
+              savedAt: 0,
+            },
+          },
+        }),
+      );
+
+    it('resolves to the fixed OpenAI route with no key, even with BOOK_API_KEY set', () => {
+      process.env.BOOK_API_KEY = 'api-account-key';
+      writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify(settings));
+      signIn();
+      const config = loadConfig(workspace);
+      expect(config).toMatchObject({
+        apiKey: '',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-plan',
+        provider: 'openai',
+        providerApi: 'responses',
+        providerAuth: 'chatgpt',
+      });
+      // A bare id afterwards is an ordinary API request: the key it gets is BOOK_API_KEY, never
+      // the plan token, and it is no longer a chatgpt request.
+      const plain = resolveModelProviderConfig(config, 'gpt-4o');
+      expect(plain).toMatchObject({ apiKey: 'api-account-key', providerAuth: undefined });
+      delete process.env.BOOK_API_KEY;
+      expect(resolveModelProviderConfig(loadConfig(workspace), 'gpt-4o').apiKey).toBe('');
+    });
+
+    it('stops print mode and the SDK without a sign-in, naming the login command; the TUI starts', () => {
+      delete process.env.BOOK_API_KEY;
+      writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify(settings));
+      expect(() => loadConfig(workspace)).toThrow(/not signed in\. Run `book auth login`/);
+      expect(loadConfig(workspace, { allowMissingApiKey: true }).providerAuth).toBe('chatgpt');
+      signIn();
+      expect(loadConfig(workspace).providerAuth).toBe('chatgpt');
+    });
+
+    it('is refused when only a workspace declares it, approved or not', () => {
+      const config = defaultConfig({
+        workspaceProviderGate: { declared: ['team'], withheld: [] } as unknown as NonNullable<
+          ReturnType<typeof defaultConfig>['workspaceProviderGate']
+        >,
+      });
+      config.settings.provider.team = { type: 'chatgpt', models: {} };
+      expect(() => resolveModelProviderConfig(config, 'team/gpt-plan')).toThrow(
+        /only this workspace declares/,
+      );
+    });
+  });
+
   it("carries a provider's `api` to the request config, and no further", () => {
     writeFileSync(
       join(isolatedHome, 'settings.json'),

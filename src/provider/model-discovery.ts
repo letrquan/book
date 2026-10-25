@@ -237,6 +237,58 @@ function parseModels(payload: unknown, type: ProviderProtocol): DiscoveredModel[
   return models;
 }
 
+/**
+ * The model list Sign in with ChatGPT documents for a plan: a `models` array whose entries name a
+ * `slug` and a `display_name`, of which only `visibility: "list"` are offered, in the server's
+ * order (https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
+ */
+export function parseChatGptModels(payload: unknown): DiscoveredModel[] {
+  const list =
+    payload && typeof payload === 'object' ? (payload as { models?: unknown }).models : undefined;
+  if (!Array.isArray(list)) {
+    throw new ModelDiscoveryError(
+      'The ChatGPT model list is not the documented `models` array.',
+      'invalid_response',
+    );
+  }
+  const models: DiscoveredModel[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    if (record.visibility !== 'list') continue;
+    const id = typeof record.slug === 'string' ? record.slug.trim() : '';
+    if (!id || /[\x00-\x1f\x7f/]/.test(id) || models.some((model) => model.id === id)) continue;
+    const label =
+      typeof record.display_name === 'string' && record.display_name.trim()
+        ? record.display_name.trim()
+        : undefined;
+    models.push({ id, ...(label ? { label } : {}) });
+  }
+  return models;
+}
+
+/** The signed-in plan's models, asked once with the access token. */
+export async function discoverChatGptModels(options: {
+  apiBase: string;
+  accessToken: string;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<DiscoveredModel[]> {
+  const response = await (options.fetchImpl ?? fetch)(`${options.apiBase}/models`, {
+    headers: { Authorization: `Bearer ${options.accessToken}` },
+    redirect: 'error',
+    signal: options.signal,
+  });
+  if (!response.ok) throw safeStatusError(response.status);
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new ModelDiscoveryError('The ChatGPT model list is not JSON.', 'invalid_response');
+  }
+  return parseChatGptModels(payload);
+}
+
 export async function discoverModels(options: ModelDiscoveryOptions): Promise<DiscoveredModel[]> {
   const headers: Record<string, string> =
     options.type === 'anthropic'

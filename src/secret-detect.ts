@@ -12,6 +12,9 @@ export const SECRET_PATTERNS = [
   /https?:\/\/[^\s/]+:[^\s/]+@/i,
   /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
   /\bsk-[A-Za-z0-9_-]{20,}\b/,
+  // A JWT (an OAuth access or ID token, such as Sign in with ChatGPT's): three base64url parts,
+  // the first an encoded JSON header (`eyJ` is `{"`).
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
 ];
 
 /**

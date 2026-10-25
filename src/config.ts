@@ -20,6 +20,7 @@ import {
 } from './provider-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { hadRemovedAuthConfiguration } from './settings-removed.js';
+import { CHATGPT_LOGIN_COMMAND, chatGptEndpoints, hasChatGptTokens } from './auth/chatgpt-oauth.js';
 import type { SettingsResolutionPaths } from './settings-loader.js';
 import {
   ADVISOR_OFF_VALUE,
@@ -297,7 +298,16 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
       ? undefined
       : describeUnresolvedProviderPrefix(settings.provider, rawModel.trim());
 
-  if (!config.apiKey && !options?.allowMissingApiKey) {
+  if (config.providerAuth === 'chatgpt') {
+    // Checked on disk only: print mode and the SDK never open a browser, so a run with no
+    // sign-in stops here with the command that makes one. The TUI starts, and says so per turn.
+    if (!options?.allowMissingApiKey && !hasChatGptTokens()) {
+      throw new Error(
+        `Model "${config.modelSelection}" uses Sign in with ChatGPT, and this machine is not ` +
+          `signed in. Run \`${CHATGPT_LOGIN_COMMAND}\` first.`,
+      );
+    }
+  } else if (!config.apiKey && !options?.allowMissingApiKey) {
     // Someone whose only credential was a subscription profile arrives here
     // after their `auth` block was silently discarded by validation. Telling
     // them to set a key they never had describes a user who configured
@@ -311,9 +321,11 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
             : settingsLayerPaths(resolvedWorkspace, settingsOverridePath, options?.settingsPaths),
           process.env,
         )
-          ? '\n\nSubscription authentication (`book auth login`) was removed in this version, ' +
-            'and Book authenticates with API keys only. The auth configuration still on this ' +
-            'machine is no longer read; `book doctor` lists it and what to delete.'
+          ? '\n\nThe 0.3 subscription profiles (the `auth` block, BOOK_AUTH_* variables and ' +
+            'auth.json) were removed, and nothing reads them any more; `book doctor` lists what ' +
+            'is still on this machine and what to delete. Book authenticates with API keys, or, ' +
+            'experimentally, with Sign in with ChatGPT (`book auth login` and a provider entry ' +
+            'of type "chatgpt").'
           : ''),
     );
   }
@@ -370,6 +382,7 @@ function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
     modelInfo: undefined,
     provider: config.defaultProvider ?? config.provider,
     providerApi: undefined,
+    providerAuth: undefined,
   };
 }
 
@@ -502,6 +515,31 @@ export function resolveModelProviderConfig(
   }
   const provider = config.settings.provider[providerId];
 
+  if (provider.type === 'chatgpt') {
+    // The plan token is the user's credential: a provider only a workspace declares never gets
+    // it, approved or not, exactly as it never inherits a key (#418).
+    if (config.workspaceProviderGate?.declared.includes(providerId)) {
+      throw new Error(
+        `provider.${providerId} is a ChatGPT sign-in provider that only this workspace declares. ` +
+          'Book uses your ChatGPT sign-in only for a provider your own settings define: add ' +
+          `"${providerId}": {"type": "chatgpt"} under "provider" in ~/.book/settings.json.`,
+      );
+    }
+    // The endpoint, API and credential are fixed. `apiKey` stays empty: the token is read per
+    // request (`src/provider/chatgpt.ts`), so no key is inherited in either direction.
+    return {
+      ...config,
+      apiKey: '',
+      baseUrl: chatGptEndpoints().apiBase,
+      model,
+      modelSelection: selection,
+      modelInfo: provider.models[model],
+      provider: 'openai',
+      providerApi: 'responses',
+      providerAuth: 'chatgpt',
+    };
+  }
+
   const baseUrl = provider.baseURL ?? provider.baseUrl ?? config.defaultBaseUrl ?? config.baseUrl;
   // A provider only the workspace declares sends its own key or none: the user's key does not
   // follow an origin the repository named, however the user came to approve the entry (#418).
@@ -517,6 +555,7 @@ export function resolveModelProviderConfig(
     modelInfo: provider.models[model],
     provider: provider.type,
     providerApi: provider.type === 'openai' ? provider.api : undefined,
+    providerAuth: undefined,
   };
 }
 

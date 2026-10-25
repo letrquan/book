@@ -85,6 +85,11 @@ and terminal interaction, reasoning/retry propagation, headless/stream-JSON fram
 - Anthropic Messages and OpenAI-compatible providers (Chat Completions, or the Responses API with
   `provider.<id>.api: "responses"`), provider auto-detection, model discovery, BYOK providers,
   configurable effort, retries, timeouts, and token/cost accounting.
+- Experimental, opt-in Sign in with ChatGPT (`book auth login | logout | status`): a provider of
+  `type: "chatgpt"` in the user's own settings sends Responses API requests billed to the user's
+  ChatGPT plan, with the OAuth tokens in `<BOOK_HOME>/chatgpt-signin.json` (0600). It is never
+  auto-detected or a default. Anthropic stays API-key only: its terms forbid third-party apps from
+  using Claude plan credentials.
 - System prompt v6 (`book-system-prompt-v6`): content split by volatility across a cached static
   prefix, an uncached activation-class suffix, and a per-turn `<session-state>` block on the newest
   user turn; project instructions fenced and trust-labeled; three Anthropic cache breakpoints
@@ -443,10 +448,11 @@ branch --set-upstream-to`, `git config`), for `Bash` and `Check` alike: git's ow
   `[sandboxed]`. It previously called `exec` with no sandbox and no such check, so "the sandbox is
   on and unsandboxed commands are refused" was a promise `Check` did not keep.
 - Configuration for a removed feature is reported, never fatal. `src/settings-removed.ts` knows
-  which keys the subscription-auth, adaptive-harness and Zero-Mem removals left behind; validation
-  discards a removed block silently, so `book doctor` lists what is still on the machine and what
-  to delete — including `<BOOK_HOME>/auth.json`, which holds an OAuth refresh token nothing reads
-  or revokes any more. A removed _value_ of a surviving key is coerced rather than rejected, since
+  which keys the 0.3 subscription-auth (the `auth` block, `BOOK_AUTH_*`), adaptive-harness and
+  Zero-Mem removals left behind; validation discards a removed block silently, so `book doctor`
+  lists what is still on the machine and what to delete — including `<BOOK_HOME>/auth.json`, which
+  holds an OAuth refresh token nothing reads or revokes any more. The new Sign in with ChatGPT
+  shares none of those names. A removed _value_ of a surviving key is coerced rather than rejected, since
   `compactStrategy: "zero-mem"` would otherwise fail the whole document and stop Book from
   starting. The credential error names the removal when an `auth` block was the only credential.
 - Managed-agent planning-task linkage, rerun, and task-aware cleanup from the background-job plan

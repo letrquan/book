@@ -8,6 +8,7 @@ import { runDoctorCommand } from './cli/doctor.js';
 import { runToolStatsCommand } from './cli/tool-stats.js';
 import { runConfigCommand } from './cli/config-cmd.js';
 import { runTrustCommand } from './cli/trust-cmd.js';
+import { runAuthLoginCommand, runAuthLogoutCommand, runAuthStatusCommand } from './cli/auth-cmd.js';
 import { runMainAction } from './cli/run.js';
 import { resolvePrintPrompt } from './cli/utils.js';
 import { getPackageVersion } from './version-info.js';
@@ -242,6 +243,36 @@ mcpCommand
   .action((name: string, options: { workspace?: string; scope?: 'user' | 'project' }) =>
     runMcpRemoveCommand(name, { ...options, workspace: resolveWorkspace(options.workspace) }),
   );
+
+// ---- book auth ----
+const authCommand = program
+  .command('auth')
+  .description(
+    'Sign in with ChatGPT (experimental): bill a "chatgpt" provider to your ChatGPT plan',
+  );
+
+authCommand
+  .command('login')
+  .description("Sign in with ChatGPT in the browser, and record the plan's models")
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
+  .option('--no-browser', 'Print the sign-in URL without opening a browser')
+  .option('--new-account', 'Register this machine again, to sign in with another ChatGPT account')
+  .action(async (options: { workspace?: string; browser?: boolean; newAccount?: boolean }) => {
+    await runAuthLoginCommand({ ...options, workspace: resolveWorkspace(options.workspace) });
+  });
+
+authCommand
+  .command('logout')
+  .description('Revoke and delete the ChatGPT sign-in on this machine')
+  .action(async () => {
+    await runAuthLogoutCommand();
+  });
+
+authCommand
+  .command('status')
+  .description('Show the ChatGPT sign-in (no network, no credentials needed)')
+  .option('--json', 'Emit JSON')
+  .action((options: { json?: boolean }) => runAuthStatusCommand(options));
 
 // ---- book trust ----
 const trustCommand = program

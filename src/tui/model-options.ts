@@ -23,7 +23,8 @@ export interface ModelPickerOption {
 
 export interface ByokProviderDraft {
   providerId: string;
-  type: ProviderProtocol;
+  /** `chatgpt` only for an existing Sign in with ChatGPT entry; the wizard offers the other two. */
+  type: ProviderConfig['type'];
   baseURL: string;
   apiKey: string;
   models: DiscoveredModel[];
@@ -56,9 +57,12 @@ export function buildModelOptions(settings: ResolvedSettings): ModelPickerOption
       const id = `${providerId}/${modelId}`;
       const metadata = provider.models[modelId];
       const existing = options.get(id);
+      const label = metadata.label ?? existing?.label ?? modelId;
       options.set(id, {
         id,
-        label: metadata.label ?? existing?.label ?? modelId,
+        // OpenAI asks for plan use to be visible where the model is chosen; the route is
+        // experimental, which the owner asked to see in the same place.
+        label: provider.type === 'chatgpt' ? `${label} · ChatGPT plan (experimental)` : label,
         effort:
           metadata.effort === false
             ? false

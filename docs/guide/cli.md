@@ -40,6 +40,13 @@ book trust provider evil           # approve one, as it is declared now
 book trust provider evil --reject  # refuse it
 book trust provider --all-pending  # every provider awaiting a decision
 
+# Sign in with ChatGPT (experimental): use a ChatGPT Plus/Pro plan through a "chatgpt" provider
+book auth login               # sign in in the browser, and record the plan's models
+book auth login --no-browser  # print the URL instead (SSH sessions)
+book auth status              # the sign-in on this machine (no network, no credential needed)
+book auth logout              # revoke and delete the tokens
+book --model chatgpt/<model>  # bill a session to the plan; nothing else changes
+
 # Manage MCP servers (JSON shape is compatible with the wider MCP ecosystem)
 book mcp list
 book mcp add github npx -- -y @modelcontextprotocol/server-github

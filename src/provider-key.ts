@@ -127,6 +127,10 @@ export function deleteProviderConnectionKeys(
   }
 }
 
+/** A chatgpt entry sends the Sign in with ChatGPT token; an API key there would never be used. */
+export const CHATGPT_KEY_REFUSAL =
+  'This provider uses Sign in with ChatGPT and takes no API key. Run `book auth login` to sign in again.';
+
 export type ProviderKeyWriteResult =
   | {
       ok: true;
@@ -159,6 +163,7 @@ export function writeProviderKey(
   const written = new SettingsRepository(path).update((candidate) => {
     const entry = providerEntryOf(candidate, providerId);
     if (!entry) throw new Error(`Provider "${providerId}" is not configured in ${path}.`);
+    if (entry.type === 'chatgpt') throw new Error(CHATGPT_KEY_REFUSAL);
     entry.apiKey = apiKey;
   });
   if (!written.ok) {
@@ -217,6 +222,7 @@ export type ProviderKeyCheckResult =
 export async function checkProviderKey(
   options: ProviderKeyCheckOptions,
 ): Promise<ProviderKeyCheckResult> {
+  if (options.provider.type === 'chatgpt') return { ok: false, error: CHATGPT_KEY_REFUSAL };
   const baseUrl = options.provider.baseURL ?? options.provider.baseUrl;
   if (!baseUrl) {
     return {

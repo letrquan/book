@@ -263,6 +263,110 @@ describe('responsesStream request body', () => {
   });
 });
 
+describe('the ChatGPT plan route', () => {
+  const route = { omitMaxOutputTokens: true, toolNamespace: 'book' };
+
+  it('leaves out max_output_tokens and sends the tools as one namespace', async () => {
+    await collect(
+      responsesStream(
+        { ...config, maxTokens: 4096, maxTokensExplicit: true },
+        [{ role: 'user', content: 'hi' }],
+        [
+          describedTool({
+            name: 'Read',
+            description: 'Read a file',
+            parameters: { type: 'object' },
+          }),
+        ],
+        { maxOutputTokens: 512 },
+        route,
+      ),
+    );
+    expect(capturedBody).not.toHaveProperty('max_output_tokens');
+    expect(capturedBody.tools).toEqual([
+      {
+        type: 'namespace',
+        name: 'book',
+        description: 'The tools Book runs on this machine.',
+        tools: [
+          {
+            type: 'function',
+            name: 'Read',
+            description: 'Read a file',
+            parameters: { type: 'object' },
+            strict: false,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('names the namespace on every replayed call, and reads a namespaced call back by its name', async () => {
+    const { input } = toResponsesInput(
+      [
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'c1', type: 'function', function: { name: 'Read', arguments: '{}' } }],
+        },
+        { role: 'tool', tool_call_id: 'c1', content: 'ok' },
+      ],
+      route,
+    );
+    expect(input[0]).toEqual({
+      type: 'function_call',
+      call_id: 'c1',
+      name: 'Read',
+      arguments: '{}',
+      namespace: 'book',
+    });
+    stubFetch(() =>
+      sse([
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: {
+            type: 'function_call',
+            id: 'fc_1',
+            call_id: 'c2',
+            name: 'Read',
+            namespace: 'book',
+            arguments: '{"file_path":"a"}',
+          },
+        },
+        completed(),
+      ]),
+    );
+    const events = await collect(
+      responsesStream(config, [{ role: 'user', content: 'hi' }], [], undefined, route),
+    );
+    expect(events.find((e) => e.type === 'tool_call')?.toolCall).toEqual({
+      id: 'c2',
+      name: 'Read',
+      arguments: { file_path: 'a' },
+    });
+  });
+
+  it('stops after one request on a 429 that names the plan usage limit', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls += 1;
+        return new Response(
+          JSON.stringify({
+            error: { code: 'subscription_sharing_usage_limit_exceeded', message: 'Try later.' },
+          }),
+          { status: 429 },
+        );
+      }),
+    );
+    const events = await collect(responsesStream(config, [{ role: 'user', content: 'hi' }], []));
+    expect(calls).toBe(1);
+    expect(events[0]).toMatchObject({ type: 'error', errorCode: 'usage_limit' });
+  });
+});
+
 describe('toResponsesInput', () => {
   it('turns tool calls and results into function_call items paired by call_id, with no item ids', () => {
     const { input } = toResponsesInput([
