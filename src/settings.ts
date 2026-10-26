@@ -259,10 +259,20 @@ export const providerModelSchema = z.object({
 export const ADVISOR_OFF_VALUE = 'off';
 
 export const providerConfigSchema = z.object({
-  type: z.enum(['openai', 'anthropic']).default('openai'),
+  /**
+   * `chatgpt` is the experimental Sign in with ChatGPT route: the endpoint, API and credential
+   * are fixed (`src/auth/chatgpt-oauth.ts`), so `baseURL`, `apiKey` and `api` are ignored.
+   */
+  type: z.enum(['openai', 'anthropic', 'chatgpt']).default('openai'),
   baseURL: z.string().min(1).optional(),
   baseUrl: z.string().min(1).optional(),
   apiKey: z.string().min(1).optional(),
+  /**
+   * The OpenAI API a `type: "openai"` entry speaks: `chat` (Chat Completions, the default when
+   * unset) or `responses` (the Responses API). No default, so an entry that does not set it
+   * parses, merges and fingerprints exactly as before. An Anthropic entry ignores it.
+   */
+  api: z.enum(['chat', 'responses']).optional(),
   models: z.record(z.string(), providerModelSchema).default({}),
 });
 

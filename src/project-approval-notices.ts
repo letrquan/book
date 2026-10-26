@@ -91,6 +91,11 @@ export function collectWithheldProviderNotices(
   }
 
   for (const selection of gate.withheldSelections) {
+    // Nothing to approve: a repository never chooses a ChatGPT plan model.
+    if (selection.reason === 'plan') {
+      notices.push(`⚠  ${describeWithheldSelection(selection)}`);
+      continue;
+    }
     if (!pendingIds.has(selection.providerId)) continue;
     notices.push(
       `⚠  ${describeWithheldSelection(selection)} Run ${approveCommand(selection.providerId)} ` +

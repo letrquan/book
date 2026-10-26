@@ -27,8 +27,9 @@ export interface RemovedSettingNotice {
 const REMOVED_BLOCKS: ReadonlyArray<readonly [string, string]> = [
   [
     'auth',
-    'Subscription authentication was removed; Book authenticates with API keys only. ' +
-      'Delete the "auth" block, and set BOOK_API_KEY or provider.<id>.apiKey instead.',
+    'The 0.3 subscription profiles were removed, and the "auth" block is no longer read. ' +
+      'Delete it, and set BOOK_API_KEY or provider.<id>.apiKey instead (or, for a ChatGPT plan, ' +
+      'the experimental `book auth login`, which keeps its sign-in elsewhere).',
   ],
   [
     'harness',
@@ -71,7 +72,10 @@ function namesMemorySave(rule: unknown): rule is string {
   return typeof rule === 'string' && /^\s*MemorySave\s*(\(|$)/.test(rule);
 }
 
-/** The credential file `book auth login` used to write, which nothing reads any more. */
+/**
+ * The credential file the 0.3 `book auth login` wrote, which nothing reads any more. Sign in with
+ * ChatGPT keeps its record in `chatgpt-signin.json` (`src/auth/chatgpt-store.ts`), never here.
+ */
 export const REMOVED_AUTH_STORE_FILENAME = 'auth.json';
 
 /**
@@ -81,7 +85,7 @@ export const REMOVED_AUTH_STORE_FILENAME = 'auth.json';
  */
 export function removedAuthStoreNotice(path: string): string {
   return (
-    `${path} holds an OAuth refresh token from the removed subscription login. ` +
+    `${path} holds an OAuth refresh token from the 0.3 subscription login, which was removed. ` +
     'Nothing reads it any more — delete the file, and revoke the token with the provider ' +
     'if it was ever used.'
   );
@@ -89,9 +93,9 @@ export function removedAuthStoreNotice(path: string): string {
 
 /** Environment variables that no longer do anything, with their guidance. */
 const REMOVED_ENV_VARS: ReadonlyArray<readonly [string, string]> = [
-  ['BOOK_AUTH_PROFILE', 'Subscription authentication was removed; use BOOK_API_KEY.'],
-  ['BOOK_AUTH_CLIENT_ID', 'Subscription authentication was removed; use BOOK_API_KEY.'],
-  ['BOOK_AUTH_CLIENT_SECRET', 'Subscription authentication was removed; use BOOK_API_KEY.'],
+  ['BOOK_AUTH_PROFILE', 'The 0.3 subscription profiles were removed; use BOOK_API_KEY.'],
+  ['BOOK_AUTH_CLIENT_ID', 'The 0.3 subscription profiles were removed; use BOOK_API_KEY.'],
+  ['BOOK_AUTH_CLIENT_SECRET', 'The 0.3 subscription profiles were removed; use BOOK_API_KEY.'],
   ['BOOK_EXPERIMENTAL_ZERO_MEM', 'Zero-Mem was removed; summary compaction is the only strategy.'],
   ['BOOK_ZERO_MEM_MODEL_CACHE', 'Zero-Mem was removed.'],
   ['BOOK_ZERO_MEM_LOCAL_FILES_ONLY', 'Zero-Mem was removed.'],

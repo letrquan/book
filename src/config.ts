@@ -10,6 +10,8 @@ import {
   applySettingsEnvOverrides,
 } from './settings-loader.js';
 import {
+  chatGptProviderIds,
+  describeWithheldSelection,
   environmentModelSelections,
   evaluateLegacyBaseUrl,
   providerPrefixOf,
@@ -20,6 +22,7 @@ import {
 } from './provider-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { hadRemovedAuthConfiguration } from './settings-removed.js';
+import { CHATGPT_LOGIN_COMMAND, chatGptEndpoints, hasChatGptTokens } from './auth/chatgpt-oauth.js';
 import type { SettingsResolutionPaths } from './settings-loader.js';
 import {
   ADVISOR_OFF_VALUE,
@@ -182,17 +185,23 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const selectedModel = options?.modelOverride || process.env.BOOK_MODEL || settings.model;
   const legacyPrefix =
     selectedModel || legacy?.model === undefined ? undefined : providerPrefixOf(legacy.model);
+  // Nor may it name the user's own Sign in with ChatGPT provider: a repository can ship the file,
+  // and only the user chooses a model billed to their ChatGPT plan (#615).
+  const legacyNamesPlan =
+    legacyPrefix !== undefined && chatGptProviderIds(settings.provider).has(legacyPrefix);
   const withheldLegacyModel: WithheldModelSelection | undefined =
-    legacy?.model !== undefined && legacyPrefix !== undefined && withheldIds.has(legacyPrefix)
+    legacyPrefix !== undefined && (withheldIds.has(legacyPrefix) || legacyNamesPlan)
       ? {
           key: 'model',
-          value: legacy.model,
+          value: legacy!.model!,
           providerId: legacyPrefix,
           path: legacyConfigPath(resolvedWorkspace),
           fallback: undefined,
+          ...(legacyNamesPlan ? { reason: 'plan' as const } : {}),
         }
       : undefined;
-  const rawModel = selectedModel || (withheldLegacyModel ? undefined : legacy?.model) || 'gpt-4o';
+  const legacyChosen = !selectedModel && !withheldLegacyModel && legacy?.model !== undefined;
+  const rawModel = selectedModel || (legacyChosen ? legacy?.model : undefined) || 'gpt-4o';
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
   const advisorModel = process.env.BOOK_ADVISOR_MODEL || settings.advisorModel;
   const compactEffort = settings.compactEffort;
@@ -286,9 +295,11 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
 
   // Every source of `rawModel` is the user's, or a workspace's that is not withheld: the loader
   // replaced a withheld workspace selection above. One naming a withheld provider is therefore
-  // the user's own vendor-namespaced id, and resolves as the plain fallback.
+  // the user's own vendor-namespaced id, and resolves as the plain fallback. A legacy
+  // `.bookrc.json` model is still the repository's choice, so it resolves untrusted: the
+  // resolver's own refusals (a ChatGPT plan model among them) apply to it as well.
   config = applyModelDefaults(
-    resolveModelProviderConfig(config, rawModel, { trustedSelection: true }),
+    resolveModelProviderConfig(config, rawModel, { trustedSelection: !legacyChosen }),
   );
   // A withheld provider's prefix is reported as such, not as an unconfigured one.
   const rawPrefix = providerPrefixOf(rawModel);
@@ -297,23 +308,43 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
       ? undefined
       : describeUnresolvedProviderPrefix(settings.provider, rawModel.trim());
 
-  if (!config.apiKey && !options?.allowMissingApiKey) {
+  if (config.providerAuth === 'chatgpt') {
+    // Checked on disk only: print mode and the SDK never open a browser, so a run with no
+    // sign-in stops here with the command that makes one. The TUI starts, and says so per turn.
+    if (!options?.allowMissingApiKey && !hasChatGptTokens()) {
+      throw new Error(
+        `Model "${config.modelSelection}" uses Sign in with ChatGPT, and this machine is not ` +
+          `signed in. Run \`${CHATGPT_LOGIN_COMMAND}\` first.`,
+      );
+    }
+  } else if (!config.apiKey && !options?.allowMissingApiKey) {
     // Someone whose only credential was a subscription profile arrives here
     // after their `auth` block was silently discarded by validation. Telling
     // them to set a key they never had describes a user who configured
     // nothing, not one whose working configuration was removed.
+    // A plan model a repository chose was dropped above: say so, or the user is told to set a
+    // key they never needed and never learns why their ChatGPT sign-in is not used.
+    const droppedPlan = config.workspaceProviderGate?.withheldSelections.find(
+      (selection) => selection.reason === 'plan' && selection.key === 'model',
+    );
     throw new Error(
       'BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY ' +
         'or use {env:VAR} in settings.' +
+        (droppedPlan
+          ? `\n\n${describeWithheldSelection(droppedPlan)} To use your ChatGPT plan, choose ` +
+            `the model yourself: --model ${droppedPlan.value}, or "model" in ~/.book/settings.json.`
+          : '') +
         (hadRemovedAuthConfiguration(
           noSettings
             ? []
             : settingsLayerPaths(resolvedWorkspace, settingsOverridePath, options?.settingsPaths),
           process.env,
         )
-          ? '\n\nSubscription authentication (`book auth login`) was removed in this version, ' +
-            'and Book authenticates with API keys only. The auth configuration still on this ' +
-            'machine is no longer read; `book doctor` lists it and what to delete.'
+          ? '\n\nThe 0.3 subscription profiles (the `auth` block, BOOK_AUTH_* variables and ' +
+            'auth.json) were removed, and nothing reads them any more; `book doctor` lists what ' +
+            'is still on this machine and what to delete. Book authenticates with API keys, or, ' +
+            'experimentally, with Sign in with ChatGPT (`book auth login` and a provider entry ' +
+            'of type "chatgpt").'
           : ''),
     );
   }
@@ -369,6 +400,8 @@ function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
     modelSelection: model,
     modelInfo: undefined,
     provider: config.defaultProvider ?? config.provider,
+    providerApi: undefined,
+    providerAuth: undefined,
   };
 }
 
@@ -501,6 +534,39 @@ export function resolveModelProviderConfig(
   }
   const provider = config.settings.provider[providerId];
 
+  if (provider.type === 'chatgpt') {
+    // The plan token is the user's credential: a provider only a workspace declares never gets
+    // it, approved or not, exactly as it never inherits a key (#418).
+    if (config.workspaceProviderGate?.declared.includes(providerId)) {
+      throw new Error(
+        `provider.${providerId} is a ChatGPT sign-in provider that only this workspace declares. ` +
+          'Book uses your ChatGPT sign-in only for a provider your own settings define: add ' +
+          `"${providerId}": {"type": "chatgpt"} under "provider" in ~/.book/settings.json.`,
+      );
+    }
+    // A model id a workspace controls (an agent definition, a model-chosen spawn) may not bill
+    // the user's plan: only the user's own choices select a plan model.
+    if (!options.trustedSelection) {
+      throw new Error(
+        `"${selection}" is a ChatGPT plan model, which only your own settings, --model or ` +
+          '/model may choose; an agent definition or a delegated model id cannot.',
+      );
+    }
+    // The endpoint, API and credential are fixed. `apiKey` stays empty: the token is read per
+    // request (`src/provider/chatgpt.ts`), so no key is inherited in either direction.
+    return {
+      ...config,
+      apiKey: '',
+      baseUrl: chatGptEndpoints().apiBase,
+      model,
+      modelSelection: selection,
+      modelInfo: provider.models[model],
+      provider: 'openai',
+      providerApi: 'responses',
+      providerAuth: 'chatgpt',
+    };
+  }
+
   const baseUrl = provider.baseURL ?? provider.baseUrl ?? config.defaultBaseUrl ?? config.baseUrl;
   // A provider only the workspace declares sends its own key or none: the user's key does not
   // follow an origin the repository named, however the user came to approve the entry (#418).
@@ -515,6 +581,8 @@ export function resolveModelProviderConfig(
     modelSelection: selection,
     modelInfo: provider.models[model],
     provider: provider.type,
+    providerApi: provider.type === 'openai' ? provider.api : undefined,
+    providerAuth: undefined,
   };
 }
 

@@ -3,6 +3,8 @@ import type { ProviderMessage, ProviderStreamEvent } from '../types/providers.js
 import type { ToolDefinition } from '../types/tools.js';
 import { chatCompletionStream as openaiStream } from './openai-compatible.js';
 import { chatCompletionStream as anthropicStream, isAnthropicUrl } from './anthropic.js';
+import { responsesStream } from './openai-responses.js';
+import { chatGptStream } from './chatgpt.js';
 
 export interface ProviderStreamOptions {
   signal?: AbortSignal;
@@ -30,11 +32,26 @@ export function isAnthropicProvider(config: AgentConfig): boolean {
 }
 
 export function createProvider(config: AgentConfig): Provider {
+  // First: a chatgpt config is OpenAI-typed, and must never reach a client that sends its key.
+  if (config.providerAuth === 'chatgpt') {
+    return {
+      id: 'chatgpt',
+      stream: (currentConfig, messages, tools, options) =>
+        chatGptStream(currentConfig, messages, tools, options),
+    };
+  }
   if (isAnthropicProvider(config)) {
     return {
       id: 'anthropic',
       stream: (currentConfig, messages, tools, options) =>
         anthropicStream(currentConfig, messages, tools, options),
+    };
+  }
+  if (config.providerApi === 'responses') {
+    return {
+      id: 'openai-responses',
+      stream: (currentConfig, messages, tools, options) =>
+        responsesStream(currentConfig, messages, tools, options),
     };
   }
   return {

@@ -588,7 +588,7 @@ function shellPromptBase(resolved: ResolvedShell): string {
     case 'sh':
       return (
         `- The Bash tool runs commands through the platform's default shell, \`/bin/sh\`${where}. ` +
-        'The bash sandbox requires bubblewrap.'
+        'The bash sandbox uses bubblewrap on Linux and sandbox-exec on macOS.'
       );
   }
 }

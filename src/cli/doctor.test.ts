@@ -146,6 +146,15 @@ describe('runDoctorCommand sandbox policy', () => {
     expect(output).toMatch(/Auto-allow Bash: inert/);
   });
 
+  it('names the backend this platform sandboxes with', async () => {
+    writeSettings({ enabled: false });
+    const { describeSandboxBackend } = await import('../sandbox.js');
+
+    const output = await doctorOutput();
+
+    expect(output).toContain(`  Backend: ${describeSandboxBackend()}`);
+  });
+
   it('reports unsandboxed commands as refused when the key is false', async () => {
     writeSettings({ enabled: false, allowUnsandboxedCommands: false });
 

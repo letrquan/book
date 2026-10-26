@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createHash } from 'crypto';
 import { mkdtempSync, rmSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join, resolve } from 'path';
@@ -57,6 +58,18 @@ describe('workspaceProviderFingerprint', () => {
     ] as const) {
       expect(workspaceProviderFingerprint(changed)).not.toBe(workspaceProviderFingerprint(base));
     }
+  });
+
+  it('covers `api` when set, and digests an entry without it exactly as before the key existed', () => {
+    const before = createHash('sha256')
+      .update(JSON.stringify({ type: 'openai', origin: base.baseURL, apiKey: base.apiKey }))
+      .digest('hex')
+      .slice(0, 16);
+    expect(workspaceProviderFingerprint(base)).toBe(before);
+    expect(workspaceProviderFingerprint({ ...base, api: 'responses' })).not.toBe(before);
+    expect(workspaceProviderFingerprint({ ...base, api: 'chat' })).not.toBe(
+      workspaceProviderFingerprint({ ...base, api: 'responses' }),
+    );
   });
 
   it('reads the origin as `baseURL ?? baseUrl`, and ignores models and an omitted default type', () => {
@@ -119,16 +132,22 @@ describe('trusted-provider overrides', () => {
     {
       path: 'p',
       providers: {
-        work: { baseURL: 'https://x', apiKey: 'k', type: 'anthropic', models: {} },
+        work: {
+          baseURL: 'https://x',
+          apiKey: 'k',
+          type: 'anthropic',
+          api: 'responses',
+          models: {},
+        },
         evil: { baseURL: 'https://e' },
       },
     },
   ];
   const trusted = providerIdsOf([{ providers: { work: {} } }, { providers: undefined }]);
 
-  it('reports and removes the same keys, `type` included: only `models` may merge', () => {
+  it('reports and removes the same keys, `type` and `api` included: only `models` may merge', () => {
     expect(droppedProviderOverrides(workspaceLayers, trusted)).toEqual([
-      { path: 'p', providerId: 'work', keys: ['baseURL', 'apiKey', 'type'] },
+      { path: 'p', providerId: 'work', keys: ['baseURL', 'apiKey', 'type', 'api'] },
     ]);
     expect(withoutWorkspaceProviderOverrides(workspaceLayers[0].providers!, trusted)).toEqual({
       work: { models: {} },
@@ -320,6 +339,16 @@ describe('describeWorkspaceProvider', () => {
     );
     expect(line).toBe('meta-llama  https://team.example:9443  key: environment variable TEAM_KEY');
     expect(rest).toEqual([]);
+  });
+
+  it('shows a declared `api`, which the fingerprint covers, and nothing when it is unset', () => {
+    const [line] = describeWorkspaceProvider(
+      entry({ baseURL: 'https://team.example/v1', apiKey: '{env:K}', api: 'responses' }),
+      '/ws',
+    );
+    expect(line).toBe(
+      'meta-llama  https://team.example  key: environment variable K  api: responses',
+    );
   });
 
   // Finding 4(b)

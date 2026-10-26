@@ -16,6 +16,7 @@ import {
 import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { defaultConfig } from './test/fixtures.js';
+import { collectWithheldProviderNotices } from './project-approval-notices.js';
 import { tmpdir } from 'os';
 import {
   legacyBaseUrlFingerprint,
@@ -594,6 +595,190 @@ describe('loadConfig provider registry', () => {
     const withDefault = loadConfig(workspace);
     expect(resolveModelProviderConfig(withDefault, 'claude').apiKey).toBe('default-key');
     expect(resolveModelProviderConfig(withDefault, 'lab/model').apiKey).toBe('default-key');
+  });
+
+  describe('a Sign in with ChatGPT provider (type "chatgpt")', () => {
+    const settings = {
+      model: 'plan/gpt-plan',
+      provider: {
+        // Its baseURL, apiKey and api are ignored: the route is fixed.
+        plan: { type: 'chatgpt', baseURL: 'https://elsewhere.example/v1', apiKey: 'ignored-key' },
+      },
+    };
+    const signIn = (): void =>
+      writeFileSync(
+        join(isolatedHome, 'chatgpt-signin.json'),
+        JSON.stringify({
+          version: 1,
+          hostId: 'urn:uuid:test',
+          account: {
+            clientId: 'oaiapp_1',
+            subject: 's',
+            tokens: {
+              accessToken: 'plan-access-token',
+              idToken: 'id',
+              expiresAt: Date.now() + 3_600_000,
+              scopes: ['chatgpt.tokens.use.direct'],
+              savedAt: 0,
+            },
+          },
+        }),
+      );
+
+    it('resolves to the fixed OpenAI route with no key, even with BOOK_API_KEY set', () => {
+      process.env.BOOK_API_KEY = 'api-account-key';
+      writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify(settings));
+      signIn();
+      const config = loadConfig(workspace);
+      expect(config).toMatchObject({
+        apiKey: '',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-plan',
+        provider: 'openai',
+        providerApi: 'responses',
+        providerAuth: 'chatgpt',
+      });
+      // A bare id afterwards is an ordinary API request: the key it gets is BOOK_API_KEY, never
+      // the plan token, and it is no longer a chatgpt request.
+      const plain = resolveModelProviderConfig(config, 'gpt-4o');
+      expect(plain).toMatchObject({ apiKey: 'api-account-key', providerAuth: undefined });
+      delete process.env.BOOK_API_KEY;
+      expect(resolveModelProviderConfig(loadConfig(workspace), 'gpt-4o').apiKey).toBe('');
+    });
+
+    it('stops print mode and the SDK without a sign-in, naming the login command; the TUI starts', () => {
+      delete process.env.BOOK_API_KEY;
+      writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify(settings));
+      expect(() => loadConfig(workspace)).toThrow(/not signed in\. Run `book auth login`/);
+      expect(loadConfig(workspace, { allowMissingApiKey: true }).providerAuth).toBe('chatgpt');
+      signIn();
+      expect(loadConfig(workspace).providerAuth).toBe('chatgpt');
+    });
+
+    it("lets no workspace layer or agent definition choose a plan model, only the user's own settings", () => {
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({ ...settings, model: 'gpt-4o', advisorModel: 'plan/gpt-plan' }),
+      );
+      mkdirSync(join(workspace, '.book'), { recursive: true });
+      writeFileSync(
+        join(workspace, '.book', 'settings.json'),
+        JSON.stringify({ model: 'plan/gpt-plan', compactModel: 'plan/gpt-plan' }),
+      );
+      signIn();
+      const config = loadConfig(workspace);
+      expect(config.model).toBe('gpt-4o');
+      expect(config.providerAuth).toBeUndefined();
+      expect(config.settings.compactModel).toBeUndefined();
+      // The user's own advisor choice stands.
+      expect(config.settings.advisorModel).toBe('plan/gpt-plan');
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([
+        expect.objectContaining({
+          key: 'model',
+          value: 'plan/gpt-plan',
+          reason: 'plan',
+          fallback: 'gpt-4o',
+        }),
+        expect.objectContaining({ key: 'compactModel', reason: 'plan', fallback: undefined }),
+      ]);
+      // An id a workspace controls (an agent definition) is refused at resolution.
+      expect(() => resolveModelProviderConfig(config, 'plan/gpt-plan')).toThrow(
+        /ChatGPT plan model/,
+      );
+      expect(
+        resolveModelProviderConfig(config, 'plan/gpt-plan', { trustedSelection: true })
+          .providerAuth,
+      ).toBe('chatgpt');
+    });
+
+    it('keeps a legacy .bookrc.json model naming another of your providers next to a plan one', () => {
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({
+          provider: {
+            ...settings.provider,
+            lab: { type: 'openai', baseURL: 'http://localhost:9/v1' },
+          },
+        }),
+      );
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'lab/m' }));
+      const config = loadConfig(workspace, { allowMissingApiKey: true });
+      expect(config.modelSelection).toBe('lab/m');
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([]);
+    });
+
+    it('names the ignored plan model when the fallback leaves print mode without a key', () => {
+      delete process.env.BOOK_API_KEY;
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({ provider: settings.provider }),
+      );
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'plan/gpt-plan' }));
+      signIn();
+      expect(() => loadConfig(workspace)).toThrow(
+        /BOOK_API_KEY or provider\.<id>\.apiKey not set[\s\S]*"plan\/gpt-plan" from .*\.bookrc\.json ignored: "plan" bills your ChatGPT plan[\s\S]*--model plan\/gpt-plan/,
+      );
+    });
+
+    it('ignores a plan model a repository ships in a legacy .bookrc.json', () => {
+      delete process.env.BOOK_API_KEY;
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({ provider: settings.provider }),
+      );
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'plan/gpt-plan' }));
+      signIn();
+      const config = loadConfig(workspace, { allowMissingApiKey: true });
+      expect(config.model).toBe('gpt-4o');
+      expect(config.providerAuth).toBeUndefined();
+      expect(config.workspaceProviderGate?.withheldSelections).toEqual([
+        expect.objectContaining({
+          key: 'model',
+          value: 'plan/gpt-plan',
+          reason: 'plan',
+          path: join(workspace, '.bookrc.json'),
+        }),
+      ]);
+      // Launch says so, without suggesting an approval that does not exist.
+      const notices = collectWithheldProviderNotices(config.workspaceProviderGate!, workspace);
+      expect(notices).toEqual([expect.stringMatching(/"plan" bills your ChatGPT plan/)]);
+      expect(notices.join('\n')).not.toMatch(/book trust provider/);
+    });
+
+    it('is refused when only a workspace declares it, approved or not', () => {
+      const config = defaultConfig({
+        workspaceProviderGate: { declared: ['team'], withheld: [] } as unknown as NonNullable<
+          ReturnType<typeof defaultConfig>['workspaceProviderGate']
+        >,
+      });
+      config.settings.provider.team = { type: 'chatgpt', models: {} };
+      expect(() => resolveModelProviderConfig(config, 'team/gpt-plan')).toThrow(
+        /only this workspace declares/,
+      );
+    });
+  });
+
+  it("carries a provider's `api` to the request config, and no further", () => {
+    writeFileSync(
+      join(isolatedHome, 'settings.json'),
+      JSON.stringify({
+        model: 'resp/gpt-5',
+        provider: {
+          resp: { type: 'openai', baseURL: 'http://localhost:9/v1', api: 'responses' },
+          chat: { type: 'openai', baseURL: 'http://localhost:8/v1' },
+          claude: { type: 'anthropic', baseURL: 'https://api.anthropic.com', api: 'responses' },
+        },
+      }),
+    );
+    const config = loadConfig(workspace);
+    expect(config.providerApi).toBe('responses');
+    expect(resolveModelProviderConfig(config, 'chat/gpt-4o').providerApi).toBeUndefined();
+    // A bare id goes to the default endpoint, which speaks Chat Completions.
+    expect(resolveModelProviderConfig(config, 'gpt-4o').providerApi).toBeUndefined();
+    // `api` is an OpenAI setting; an Anthropic entry ignores it.
+    expect(
+      resolveModelProviderConfig(config, 'claude/claude-opus-5-5').providerApi,
+    ).toBeUndefined();
   });
 
   it('inherits the session key across endpoints that differ only by a trailing slash', () => {

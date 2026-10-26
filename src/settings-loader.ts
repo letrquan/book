@@ -31,6 +31,7 @@ import {
   type ModelSelectionLayer,
   type ProviderLayer,
   type WorkspaceProviderGate,
+  chatGptProviderIds,
 } from './provider-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { normalizeRemovedSettings } from './settings-removed.js';
@@ -719,7 +720,17 @@ export function resolveSettingsWithProviderGate(
     { path: localPath, trusted: false, selections: modelSelectionsOf(local ?? {}) },
     { path: overridePath ?? '', trusted: true, selections: modelSelectionsOf(override ?? {}) },
   ];
-  const withheldSelections = withheldModelSelections(selectionLayers, withheldProviders);
+  // A workspace layer's selection of a Sign in with ChatGPT provider would bill the user's plan
+  // for a choice the repository made: it gives way exactly as one naming a withheld provider does.
+  // Only the user's own settings, `--model` and `/model` choose a plan model (#615).
+  const planProviders = chatGptProviderIds(resolved.provider);
+  const withheldSelections = [
+    ...withheldModelSelections(selectionLayers, withheldProviders),
+    ...withheldModelSelections(selectionLayers, planProviders).map((selection) => ({
+      ...selection,
+      reason: 'plan' as const,
+    })),
+  ];
   for (const { key, fallback } of withheldSelections) {
     const profile = profileOfModelKey(key);
     if (profile === undefined) {

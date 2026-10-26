@@ -292,6 +292,17 @@ export interface AgentConfig {
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** Explicit provider override: 'anthropic' | 'openai' | 'auto' (default: auto-detect). */
   provider?: 'anthropic' | 'openai' | 'auto';
+  /**
+   * The OpenAI API a `type: "openai"` provider entry speaks (`provider.<id>.api`): Chat
+   * Completions when unset or `chat`, the Responses API for `responses`. Never set for an
+   * Anthropic entry or a bare model id on the default endpoint.
+   */
+  providerApi?: 'chat' | 'responses';
+  /**
+   * Set for a `type: "chatgpt"` provider entry in the user's own settings: requests carry the
+   * Sign in with ChatGPT access token, read per request, and `apiKey` stays empty.
+   */
+  providerAuth?: 'chatgpt';
   /** Metadata from settings.provider.<id>.models.<model>, if selected. */
   modelInfo?: ProviderModelConfig;
   /** Approved memory snapshot loaded once at session start. */

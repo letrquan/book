@@ -426,6 +426,16 @@ describe('resolvePrintCommand — host effects fail loudly', () => {
   });
 });
 
+describe('Sign in with ChatGPT in print mode', () => {
+  it('refuses /login and /logout: print mode and the SDK never open a browser', async () => {
+    for (const command of ['/login', '/logout']) {
+      await expect(resolvePrintCommand(command, env(tempWorkspace()))).rejects.toThrow(
+        /needs an interactive session/,
+      );
+    }
+  });
+});
+
 describe('PrintEffectRegistry', () => {
   it('handles exactly the effects a print host can perform itself', () => {
     const registry = createPrintEffectRegistry();

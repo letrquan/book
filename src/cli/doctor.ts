@@ -47,6 +47,7 @@ function formatRelativeTime(timestamp: number, now = Date.now()): string {
  * One line naming what will actually authenticate the next request.
  */
 function describeCredentials(config: AgentConfig): string {
+  if (config.providerAuth === 'chatgpt') return 'Sign in with ChatGPT (experimental; see below)';
   return config.apiKey
     ? 'API key resolved'
     : 'not resolved - set BOOK_API_KEY or set provider.<id>.apiKey in settings';
@@ -208,6 +209,21 @@ export async function runDoctorCommand(
   // the credential line read as a missing key, which is the wrong hunt.
   if (config.modelProviderWarning) console.log('  ⚠ ' + config.modelProviderWarning);
   console.log('Credentials:', describeCredentials(config));
+  // Sign in with ChatGPT is opt-in: reported only when this machine uses or configured it.
+  {
+    const { chatGptSigninStatus } = await import('../auth/chatgpt-oauth.js');
+    const { describeStatus } = await import('./auth-cmd.js');
+    const status = chatGptSigninStatus();
+    const configured = Object.values(settings.provider).some((entry) => entry.type === 'chatgpt');
+    if (
+      config.providerAuth === 'chatgpt' ||
+      configured ||
+      status.state !== 'signed-out' ||
+      status.clientId
+    ) {
+      console.log('Sign in with ChatGPT (experimental):', describeStatus(status));
+    }
+  }
   // Configuration for a feature that no longer exists is invisible otherwise:
   // validation discards unknown blocks silently, so a user whose subscription
   // login stopped working has nothing to read. The orphaned credential file
@@ -531,7 +547,8 @@ export async function runDoctorCommand(
   console.log();
 
   // Sandbox.
-  const { createSandbox, sandboxPolicySummary } = await import('../sandbox.js');
+  const { createSandbox, describeSandboxBackend, sandboxPolicySummary } =
+    await import('../sandbox.js');
   const { hasAdjudicationPolicy } = await import('../permissions.js');
   const sandbox = createSandbox(settings.sandbox);
   const policy = sandboxPolicySummary(settings.sandbox, {
@@ -540,6 +557,7 @@ export async function runDoctorCommand(
   });
   console.log('Sandbox:');
   console.log('  Enabled: ' + settings.sandbox.enabled);
+  console.log('  Backend: ' + describeSandboxBackend());
   console.log('  Available: ' + (sandbox !== null));
   if (sandbox) console.log('  Enforcing: ' + sandbox.describe());
   console.log('  Excluded commands: ' + settings.sandbox.excludedCommands.length);

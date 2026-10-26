@@ -173,6 +173,8 @@ export type BuiltinCommandEffect =
   | { type: 'add-task'; subject: string }
   | { type: 'show-diff' }
   | { type: 'reload-assets' }
+  /** Sign in with ChatGPT (experimental); only the interactive host can open a browser. */
+  | { type: 'chatgpt-auth'; action: 'login' | 'logout'; newAccount?: boolean }
   | {
       type: 'review';
       scope: ReviewScope;
@@ -1158,6 +1160,26 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
         true,
       );
     },
+  },
+  {
+    name: 'login',
+    description: 'Sign in with ChatGPT (experimental): use your ChatGPT plan',
+    argumentHint: '[--new-account]',
+    execute: ({ rawArguments }) => {
+      const argument = rawArguments.trim();
+      if (argument && argument !== '--new-account') {
+        return { type: 'local-message', content: 'Usage: /login [--new-account]', isError: true };
+      }
+      return { type: 'chatgpt-auth', action: 'login', newAccount: argument === '--new-account' };
+    },
+  },
+  {
+    name: 'logout',
+    description: 'Sign out of ChatGPT (experimental) and revoke the sign-in',
+    execute: ({ rawArguments }) =>
+      rawArguments.trim()
+        ? { type: 'local-message', content: 'Usage: /logout', isError: true }
+        : { type: 'chatgpt-auth', action: 'logout' },
   },
   {
     name: 'release-notes',

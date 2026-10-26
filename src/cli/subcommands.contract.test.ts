@@ -9,6 +9,7 @@ import { runMcpListCommand } from './mcp.js';
 import { runToolStatsCommand } from './tool-stats.js';
 import { runStatusCommand } from './status-cmd.js';
 import { runTrustCommand } from './trust-cmd.js';
+import { runAuthStatusCommand } from './auth-cmd.js';
 import { setExitFn } from './exit.js';
 
 /**
@@ -92,6 +93,22 @@ describe('non-interactive subcommands without credentials', () => {
       },
     ],
     ['book mcp list', () => runMcpListCommand({ workspace, home: bookHome })],
+    // Checking the ChatGPT sign-in is how someone finds out why a plan request failed.
+    ['book auth status', () => runAuthStatusCommand()],
+    ['book auth status --json', () => runAuthStatusCommand({ json: true })],
+    [
+      'book doctor on a chatgpt model with no sign-in',
+      () => {
+        writeFileSync(
+          join(bookHome, 'settings.json'),
+          JSON.stringify({
+            model: 'chatgpt/gpt-plan',
+            provider: { chatgpt: { type: 'chatgpt', models: {} } },
+          }),
+        );
+        return runDoctorCommand(workspace);
+      },
+    ],
     ['book tool-stats', () => runToolStatsCommand({ workspace })],
     // Reading what a long run is doing and what it has spent is exactly what
     // someone needs when the provider is misconfigured.
