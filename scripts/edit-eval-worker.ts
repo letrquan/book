@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { evaluateRunEligibility, type EvaluationEligibility } from './eval-eligibility.js';
 import type { EvaluationControls } from './eval-process.js';
 import { query } from '../src/sdk.js';
+import type { AgentRunResult } from '../src/types/runs.js';
 import { EVAL_TASKS, type EvalTask } from './edit-eval-fixtures.js';
 
 export interface EditEvalTaskOutcome {
@@ -30,6 +31,21 @@ function parseArgs(argv: string[]): { task?: string; model?: string } {
     else if (argv[index] === '--model') args.model = argv[++index];
   }
   return args;
+}
+
+/**
+ * Every token the task spent: the root run's inclusive usage, summed over all of
+ * its provider requests. The `result` event's own `usage` is only the latest
+ * request (the compaction gauge), which counted a four-request task as about a
+ * quarter of its traffic. The root is picked as evaluateRunEligibility picks it,
+ * and there is no fallback to `usage`: a run without accounting reports no total
+ * instead of a wrong one, and eligibility already fails closed on it.
+ */
+export function taskTotalTokens(runs: readonly AgentRunResult[] | undefined): number | undefined {
+  const root = runs?.find(
+    (run) => run.context.runId === run.context.rootRunId && run.context.parentRunId === undefined,
+  );
+  return root?.accounting?.inclusiveUsage?.totalTokens;
 }
 
 function collectVerifyPaths(task: EvalTask): string[] {
@@ -77,7 +93,7 @@ export async function runEditEvalWorker(
           outcome.failuresByCode[error.code] = (outcome.failuresByCode[error.code] ?? 0) + 1;
         }
       } else if (event.type === 'result') {
-        outcome.totalTokens = event.usage?.totalTokens;
+        outcome.totalTokens = taskTotalTokens(event.runs);
         outcome.attribution = evaluateRunEligibility(event.runs);
         if (!outcome.attribution.eligible && !outcome.runError) {
           outcome.runError = `ineligible evaluation evidence: ${outcome.attribution.reasons.join('; ')}`;

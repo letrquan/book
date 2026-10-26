@@ -7,7 +7,7 @@ import { runEvaluationProcess } from './eval-process.js';
 import { evaluateRunEligibility } from './eval-eligibility.js';
 import { query } from '../src/sdk.js';
 import type { EvalTask } from './edit-eval-fixtures.js';
-import { runEditEvalWorker } from './edit-eval-worker.js';
+import { runEditEvalWorker, taskTotalTokens } from './edit-eval-worker.js';
 
 vi.mock('../src/sdk.js', () => ({ query: vi.fn() }));
 vi.mock('./eval-eligibility.js', () => ({
@@ -16,6 +16,18 @@ vi.mock('./eval-eligibility.js', () => ({
 
 async function* events(values: unknown[]): ReturnType<typeof query> {
   for (const value of values) yield value as never;
+}
+
+/** A run record whose accounting spent `totalTokens` across all its requests. */
+function runRecord(runId: string, totalTokens: number, parentRunId?: string) {
+  return {
+    context: { runId, rootRunId: 'root-run', parentRunId, sessionId: 'session', startedAt: 0 },
+    outcome: { status: 'completed', reason: 'normal_completion' },
+    usage: null,
+    accounting: {
+      inclusiveUsage: { promptTokens: totalTokens - 2, completionTokens: 2, totalTokens },
+    },
+  } as never;
 }
 
 describe('runEditEvalWorker', () => {
@@ -60,8 +72,10 @@ describe('runEditEvalWorker', () => {
         } as never;
         yield {
           type: 'result',
-          usage: { totalTokens: 42 },
+          // Only the latest request; the task spent the run's whole inclusive usage.
+          usage: { totalTokens: 7 },
           outcome: { status: 'completed', reason: 'normal_completion' },
+          runs: [runRecord('root-run', 42)],
         } as never;
       })();
     });
@@ -143,6 +157,23 @@ describe('runEditEvalWorker', () => {
       verified: true,
       runError: 'interrupted: transport_interrupted',
     });
+  });
+
+  it('totals the root run, not a child run or the latest request', () => {
+    expect(
+      taskTotalTokens([runRecord('child-run', 5, 'root-run'), runRecord('root-run', 42)]),
+    ).toBe(42);
+  });
+
+  it('reports no total rather than a partial one when accounting is missing', () => {
+    expect(taskTotalTokens(undefined)).toBeUndefined();
+    expect(taskTotalTokens([])).toBeUndefined();
+    const unaccounted = {
+      context: { runId: 'root-run', rootRunId: 'root-run', sessionId: 'session', startedAt: 0 },
+      outcome: { status: 'completed', reason: 'normal_completion' },
+      usage: { promptTokens: 5, completionTokens: 2, totalTokens: 7 },
+    } as never;
+    expect(taskTotalTokens([unaccounted])).toBeUndefined();
   });
 
   it('loads the TypeScript worker from an isolated process workspace', async () => {
