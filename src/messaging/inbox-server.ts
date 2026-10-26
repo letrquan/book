@@ -13,7 +13,8 @@
  *    namespace with this pid) makes this session bind a moved-aside `<pid>-<8 hex>.sock`.
  * 3. Publish the key — `{peerToken, procStart, pidDomain}`, `0600`, written atomically — in the
  *    live-sessions directory, named after the socket path.
- * 4. Reap moved-aside sockets nothing listens on any more.
+ * 4. Reap the sockets, primary or moved aside, that nothing listens on any more: a session killed
+ *    by a signal leaves its socket behind.
  *
  * Each connection's first line must be an `auth` frame with the token, within 5 s; anything else
  * closes the connection without a word. After it come `user` and `control` frames. An accepted
@@ -48,13 +49,20 @@ import {
   type DropReport,
 } from './ingress-guard.js';
 import { sendToInbox } from './inbox-client.js';
-import { createLivenessProbe, type LivenessProbe } from './liveness.js';
-import { ensureLiveSessionsDir, liveSessionKeyName, liveSessionsDir } from './registry.js';
-import { resolveSocketDir, vettedReplyDirs } from './socket-dir.js';
+import { createLivenessProbe, isRecordProcessLive, type LivenessProbe } from './liveness.js';
+import {
+  ensureLiveSessionsDir,
+  liveSessionKeyName,
+  liveSessionsDir,
+  readLiveSessionEntries,
+} from './registry.js';
+import { resolveSocketDir, vetSocketDir } from './socket-dir.js';
 import {
   decodeUdsAddress,
   encodeUdsAddress,
   LineReader,
+  MAX_AUTH_LINE_CHARS,
+  MAX_LINE_CHARS,
   parseAuthLine,
   parseInboxLine,
   peerTokenMatches,
@@ -77,7 +85,8 @@ export const BIND_PROBE_TIMEOUT_MS = 250;
 const MAX_KEPT_RECEIPTS = INGRESS_LIMITS.maxQueuedPeerMessages;
 /** A socket name this inbox binds or reaps: `<pid>.sock` or the moved-aside `<pid>-<8 hex>.sock`. */
 const SOCKET_NAME = /^(\d+)(?:-[0-9a-f]{8})?\.sock$/;
-const MOVED_ASIDE_NAME = /^(\d+)-[0-9a-f]{8}\.sock$/;
+/** Sockets probed at once when reaping the dead ones. */
+const REAP_CONCURRENCY = 8;
 /** The sender key for a frame with no reply address: such senders share one bucket. */
 const ANONYMOUS_SENDER = '(no reply address)';
 
@@ -173,9 +182,10 @@ export class InboxServer {
   private readonly outgoing = new Set<Promise<void>>();
   private readonly queue: AcceptedPeerMessage[] = [];
   private readonly receipts: PeerMessageReceipt[] = [];
+  /** Socket directories that passed vetting: this inbox's own, and peers' once checked. */
+  private readonly vettedDirs = new Set<string>();
   private server?: Server;
   private token?: string;
-  private dir?: string;
   private boundPath?: string;
   private keyFile?: string;
   private closed = false;
@@ -275,12 +285,12 @@ export class InboxServer {
         .filter((skip) => skip.reason !== 'too-long')
         .map((skip) => skip.message);
       if (this.closed) return this.fail('the session closed before the inbox started');
-      this.dir = resolution.dir;
+      this.vettedDirs.add(resolution.dir);
       const { path, movedAside } = await this.bind(resolution.dir);
       if (this.closed) return this.fail('the session closed before the inbox started');
       await this.publishKey(path);
       if (this.closed) return this.fail('the session closed before the inbox started');
-      this.track(this.reapMovedAside(resolution.dir));
+      this.track(this.reapDeadSockets(resolution.dir));
       this.log.debug('inbox listening', { socket: path, movedAside });
       return { status: 'listening', socketPath: path, movedAside, refusedDirs };
     } catch (error) {
@@ -343,6 +353,9 @@ export class InboxServer {
       });
     });
     server.on('error', (error) => this.log.warn('inbox socket error', { code: errorCode(error) }));
+    // The inbox serves while the session runs and never keeps the process alive by itself: a
+    // launch that fails after the start must still exit, and its exit backstop clean up.
+    server.unref();
     this.server = server;
     this.boundPath = path;
     // The directory is the boundary (0700); the mode is the second wall, set before any key exists.
@@ -379,31 +392,39 @@ export class InboxServer {
     this.token = token;
   }
 
-  /** Remove moved-aside sockets whose pid is gone here and that nothing answers on. */
-  private async reapMovedAside(dir: string): Promise<void> {
+  /**
+   * Remove the sockets of sessions that are gone: every Book socket in this directory, primary or
+   * moved aside, that refuses a connection. A session killed by a signal (a closed terminal, a
+   * `kill`) never runs its exit backstop and leaves its socket behind. Judged by the connection
+   * alone, never the pid: the file may be another pid namespace's, whose pid means nothing here.
+   * A socket that answers, or does not answer in time, is left alone.
+   */
+  private async reapDeadSockets(dir: string): Promise<void> {
     let names: string[];
     try {
       names = await readdir(dir);
     } catch {
       return;
     }
-    for (const name of names) {
-      if (this.closed) return;
-      const match = MOVED_ASIDE_NAME.exec(name);
-      if (!match) continue;
-      const path = join(dir, name);
-      if (path === this.boundPath) continue;
-      const pid = Number(match[1]);
-      if (pid !== this.pid && this.probe.isAlive(pid)) continue;
-      // Only a socket is probed: a link under a socket's name is not followed anywhere.
-      const isSocket = await lstat(path).then(
-        (info) => info.isSocket(),
-        () => false,
-      );
-      if (isSocket && (await probeSocket(path)) === 'dead') {
-        await unlink(path).catch(() => undefined);
+    const paths = names
+      .filter((name) => SOCKET_NAME.test(name))
+      .map((name) => join(dir, name))
+      .filter((path) => path !== this.boundPath);
+    let next = 0;
+    const worker = async () => {
+      while (next < paths.length && !this.closed) {
+        const path = paths[next++]!;
+        // Only a socket is probed: a link under a socket's name is not followed anywhere.
+        const isSocket = await lstat(path).then(
+          (info) => info.isSocket(),
+          () => false,
+        );
+        if (isSocket && (await probeSocket(path)) === 'dead') {
+          await unlink(path).catch(() => undefined);
+        }
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(REAP_CONCURRENCY, paths.length) }, worker));
   }
 
   private accept(socket: Socket): void {
@@ -412,8 +433,9 @@ export class InboxServer {
       return;
     }
     this.sockets.add(socket);
+    socket.unref();
     socket.setEncoding('utf8');
-    const reader = new LineReader();
+    const reader = new LineReader(MAX_LINE_CHARS, MAX_AUTH_LINE_CHARS);
     let authenticated = false;
     const firstLine = setTimeout(() => {
       this.log.debug('inbox connection closed: no auth line in time');
@@ -503,7 +525,7 @@ export class InboxServer {
     }
     const from = frame.from;
     if (from === undefined) return;
-    this.dropReceipts.note(from, frame.msg_id, (droppedMsgIds) => {
+    this.dropReceipts.note(from, reason, frame.msg_id, (droppedMsgIds) => {
       this.track(
         this.sendReceipt(from, {
           type: 'control',
@@ -551,32 +573,54 @@ export class InboxServer {
   }
 
   /**
-   * The socket a reply address names, when it is one this session may connect to: a `uds:`
-   * address of a normalized absolute path, named like a Book socket, directly inside this inbox's
-   * directory or another socket directory of this user's that passes the same checks, and a socket
-   * now (not a symlink to one). A peer cannot make this session connect anywhere else.
+   * The socket a reply address names, when it is one this session may connect to. The registry is
+   * the authority: the path must be the `messagingSocketPath` of a live record of this pid domain,
+   * written by a session of this user's into the 0700 live-sessions directory. On top of that it
+   * must be a `uds:` address of a normalized absolute path with a Book socket's name, in a socket
+   * directory that passes the same checks as this session's own, and a socket now (not a link to
+   * one). A peer cannot make this session connect anywhere else.
    */
   async vetReplyAddress(address: string): Promise<string | undefined> {
     const path = decodeUdsAddress(address);
     if (!path || !isAbsolute(path) || normalize(path) !== path) return undefined;
     if (!SOCKET_NAME.test(basename(path))) return undefined;
-    const dirs = new Set(this.dir ? [this.dir] : []);
-    if (!dirs.has(dirname(path))) {
-      for (const dir of await vettedReplyDirs({
-        env: this.env,
-        pid: this.pid,
-        ...(this.uid !== undefined ? { uid: this.uid } : {}),
-        ...(this.tmpdir !== undefined ? { tmpdir: this.tmpdir } : {}),
-      })) {
-        dirs.add(dir);
-      }
-    }
-    if (!dirs.has(dirname(path))) return undefined;
+    if (!(await this.advertisedByLiveSession(path))) return undefined;
+    if (!(await this.isVettedSocketDir(dirname(path)))) return undefined;
     try {
       return (await lstat(path)).isSocket() ? path : undefined;
     } catch {
       return undefined;
     }
+  }
+
+  /** Whether a live record of this pid domain advertises `socketPath` as its inbox. */
+  private async advertisedByLiveSession(socketPath: string): Promise<boolean> {
+    const domain = await this.probe.pidDomain();
+    for (const { record } of await readLiveSessionEntries(this.keysDir)) {
+      if (!record || record.messagingSocketPath !== socketPath || record.pidDomain !== domain) {
+        continue;
+      }
+      if (await isRecordProcessLive(record, this.probe)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether a peer's socket directory passes the checks this session's own passed: this user's,
+   * 0700, not a link, under a parent no one else can swap it out of. A directory that passes is
+   * remembered for the session; one that fails is asked again next time, since its owner may have
+   * fixed it since.
+   */
+  private async isVettedSocketDir(dir: string): Promise<boolean> {
+    if (this.vettedDirs.has(dir)) return true;
+    const verdict = await vetSocketDir(dir, {
+      create: false,
+      pid: this.pid,
+      ...(this.uid !== undefined ? { uid: this.uid } : {}),
+    });
+    const vetted = verdict.ok && !verdict.missing && !verdict.loose && verdict.dir === dir;
+    if (vetted) this.vettedDirs.add(dir);
+    return vetted;
   }
 
   private track(work: Promise<void>): void {
@@ -628,29 +672,13 @@ export class InboxServer {
   };
 }
 
-/** How long the launch waits on the inbox before drawing, to show a failed start as a notice. */
-export const INBOX_NOTICE_WAIT_MS = 1_000;
-
 /**
  * The startup notices for an inbox start: one for a start that failed, one for a socket directory
- * that was refused on the way. A start still running after the wait is left to finish; whatever
- * it comes to then is in the debug log, and `book doctor` explains the directory.
+ * that was refused on the way. The TUI shows them once the start settles, after its first frame,
+ * so a slow start never holds the launch; `book doctor` explains the directory.
  */
-export async function inboxStartupNotices(
-  start: Promise<InboxStartResult> | undefined,
-  waitMs = INBOX_NOTICE_WAIT_MS,
-): Promise<string[]> {
-  if (!start) return [];
-  let timer: NodeJS.Timeout | undefined;
-  const result = await Promise.race([
-    start,
-    new Promise<undefined>((resolve) => {
-      timer = setTimeout(() => resolve(undefined), waitMs);
-      timer.unref?.();
-    }),
-  ]);
-  clearTimeout(timer);
-  if (!result) return [];
+export async function inboxStartupNotices(start: Promise<InboxStartResult>): Promise<string[]> {
+  const result = await start;
   if (result.status === 'failed') {
     return [
       `⚠  Cross-session messaging is on, but this session's inbox did not start: ${result.message}. ` +

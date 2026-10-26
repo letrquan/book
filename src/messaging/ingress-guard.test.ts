@@ -201,10 +201,10 @@ describe('DropReceiptCoalescer', () => {
     vi.useFakeTimers();
     const coalescer = new DropReceiptCoalescer();
     const sent: string[][] = [];
-    coalescer.note('a', 'm1', (ids) => sent.push(['first', ...ids]));
+    coalescer.note('a', 'rate-limited', 'm1', (ids) => sent.push(['first', ...ids]));
     expect(sent).toEqual([['first']]);
-    coalescer.note('a', 'm2', (ids) => sent.push(['batch-1', ...ids]));
-    coalescer.note('a', 'm3', (ids) => sent.push(['batch-2', ...ids]));
+    coalescer.note('a', 'rate-limited', 'm2', (ids) => sent.push(['batch-1', ...ids]));
+    coalescer.note('a', 'rate-limited', 'm3', (ids) => sent.push(['batch-2', ...ids]));
     vi.advanceTimersByTime(4_999);
     expect(sent).toHaveLength(1);
     vi.advanceTimersByTime(1);
@@ -213,12 +213,33 @@ describe('DropReceiptCoalescer', () => {
     coalescer.dispose();
   });
 
+  it('batches each drop reason on its own, so every id in a receipt shares its reason', () => {
+    vi.useFakeTimers();
+    const coalescer = new DropReceiptCoalescer();
+    const sent: Array<[string, string[]]> = [];
+    const send = (reason: string) => (ids: string[]) => sent.push([reason, ids]);
+    coalescer.note('a', 'rate-limited', 'm1', send('rate-limited'));
+    coalescer.note('a', 'duplicate', 'm2', send('duplicate'));
+    coalescer.note('a', 'rate-limited', 'm3', send('rate-limited'));
+    coalescer.note('a', 'duplicate', 'm4', send('duplicate'));
+    coalescer.note('a', 'rate-limited', 'm5', send('rate-limited'));
+    vi.advanceTimersByTime(5_000);
+    expect(sent).toEqual([
+      ['rate-limited', []],
+      ['duplicate', []],
+      ['rate-limited', ['m3', 'm5']],
+      ['duplicate', ['m4']],
+    ]);
+    coalescer.dispose();
+  });
+
   it('caps the ids a batch names at 256', () => {
     vi.useFakeTimers();
     const coalescer = new DropReceiptCoalescer();
     let batch: string[] = [];
-    coalescer.note('a', 'first', () => undefined);
-    for (let i = 0; i < 300; i++) coalescer.note('a', `m${i}`, (ids) => (batch = ids));
+    coalescer.note('a', 'rate-limited', 'first', () => undefined);
+    for (let i = 0; i < 300; i++)
+      coalescer.note('a', 'rate-limited', `m${i}`, (ids) => (batch = ids));
     vi.advanceTimersByTime(5_000);
     expect(batch).toHaveLength(256);
     coalescer.dispose();
@@ -228,7 +249,7 @@ describe('DropReceiptCoalescer', () => {
     vi.useFakeTimers();
     const coalescer = new DropReceiptCoalescer();
     let sent = 0;
-    for (let i = 0; i < 50; i++) coalescer.note(`s${i}`, `m${i}`, () => sent++);
+    for (let i = 0; i < 50; i++) coalescer.note(`s${i}`, 'rate-limited', `m${i}`, () => sent++);
     expect(sent).toBe(40);
     coalescer.dispose();
   });
@@ -237,11 +258,11 @@ describe('DropReceiptCoalescer', () => {
     vi.useFakeTimers();
     const coalescer = new DropReceiptCoalescer();
     const sent: string[][] = [];
-    coalescer.note('a', 'm1', (ids) => sent.push(ids));
-    coalescer.note('a', 'm2', (ids) => sent.push(ids));
+    coalescer.note('a', 'rate-limited', 'm1', (ids) => sent.push(ids));
+    coalescer.note('a', 'rate-limited', 'm2', (ids) => sent.push(ids));
     coalescer.dispose();
     vi.advanceTimersByTime(10_000);
-    coalescer.note('a', 'm3', (ids) => sent.push(ids));
+    coalescer.note('a', 'rate-limited', 'm3', (ids) => sent.push(ids));
     expect(sent).toEqual([[]]);
   });
 });

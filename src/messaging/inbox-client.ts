@@ -37,9 +37,10 @@ export interface PeerKeyLookup {
 }
 
 /**
- * The key for the inbox at `socketPath`, from this pid domain only. When several match — a pid
- * reused while an old key was still on disk — the one whose owner pid and start token are live
- * wins; failing that, the first valid one, and the connection decides.
+ * The key for the inbox at `socketPath`, from this pid domain only, and only one whose owner pid
+ * and start token are live now. When several match — a pid reused while an old key was still on
+ * disk — the live one wins. With none live there is no key: a stale one is never tried, because
+ * the receiver closes a wrong token without a word, and a send through it would look delivered.
  */
 export async function findPeerKey(
   lookup: PeerKeyLookup,
@@ -57,7 +58,6 @@ export async function findPeerKey(
     .map((name) => ({ name, parsed: parseLiveSessionKeyName(name) }))
     .filter(({ parsed }) => parsed !== undefined && parsed.hash === hash && parsed.tag === tag)
     .sort((a, b) => a.name.localeCompare(b.name));
-  let fallback: (LiveSessionKey & { pid: number; path: string }) | undefined;
   for (const { name, parsed } of candidates) {
     const path = join(lookup.keysDir, name);
     let text: string;
@@ -73,9 +73,8 @@ export async function findPeerKey(
     if (await isRecordProcessLive({ pid: found.pid, procStart: key.procStart }, lookup.probe)) {
       return found;
     }
-    fallback ??= found;
   }
-  return fallback;
+  return undefined;
 }
 
 export interface SendToInboxOptions extends PeerKeyLookup {
@@ -89,15 +88,44 @@ function errorCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | undefined)?.code;
 }
 
-/** A transport error, as the sender's tools will explain it. */
-export function classifySendError(code: string | undefined): InboxSendResult {
-  if (code === 'ENOENT' || code === 'ECONNREFUSED') {
-    return { status: 'gone', detail: 'no session is listening at that socket any more' };
+/** Errors of a connection the receiver closed under the sender: at its cap, or shutting down. */
+const DROPPED_CONNECTION = new Set(['ECONNRESET', 'EPIPE']);
+
+/**
+ * A transport error, as the sender's tools will explain it. A connection the receiver dropped is
+ * `busy` while its socket is still there (it was at its connection cap), and `gone` once the
+ * socket is not (it was shutting down).
+ */
+export function classifySendError(
+  code: string | undefined,
+  options: { socketGone?: boolean } = {},
+): InboxSendResult {
+  const gone: InboxSendResult = {
+    status: 'gone',
+    detail: 'no session is listening at that socket any more',
+  };
+  if (code === 'ENOENT' || code === 'ECONNREFUSED') return gone;
+  if (code !== undefined && DROPPED_CONNECTION.has(code)) {
+    return options.socketGone
+      ? gone
+      : {
+          status: 'busy',
+          detail: 'the receiving session closed the connection; try again shortly',
+        };
   }
   if (code === 'EAGAIN' || code === 'EBUSY' || code === 'ETIMEDOUT') {
     return { status: 'busy', detail: 'the receiving session did not take the connection in time' };
   }
   return { status: 'failed', detail: `the send failed (${code ?? 'unknown error'})` };
+}
+
+async function socketGone(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return false;
+  } catch (error) {
+    return errorCode(error) === 'ENOENT';
+  }
 }
 
 /** Deliver one frame to the inbox at `socketPath`. Never rejects. */
@@ -132,11 +160,12 @@ async function deliver(options: SendToInboxOptions, line: string): Promise<Inbox
     return classifySendError(errorCode(error));
   }
   const key = await findPeerKey(options);
-  if (!key)
+  if (!key) {
     return {
       status: 'gone',
-      detail: 'no key for that session; it has ended or never opened an inbox',
+      detail: 'no live key for that session; it has ended, so list the sessions again',
     };
+  }
   const auth = serializeFrame({ type: 'auth', token: key.peerToken });
   return new Promise<InboxSendResult>((resolve) => {
     let settled = false;
@@ -156,7 +185,17 @@ async function deliver(options: SendToInboxOptions, line: string): Promise<Inbox
     socket.once('connect', () => {
       socket.end(auth + line);
     });
-    socket.on('error', (error) => finish(classifySendError(errorCode(error))));
+    socket.on('error', (error) => {
+      const code = errorCode(error);
+      if (settled) return;
+      if (code === undefined || !DROPPED_CONNECTION.has(code)) {
+        finish(classifySendError(code));
+        return;
+      }
+      void socketGone(options.socketPath).then((gone) =>
+        finish(classifySendError(code, { socketGone: gone })),
+      );
+    });
     // Nothing is ever sent back on success; whatever the receiver writes is ignored.
     socket.on('data', () => undefined);
     socket.once('close', (hadError) => {

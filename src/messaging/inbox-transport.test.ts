@@ -33,7 +33,13 @@ const { sendToInbox } = await import(${JSON.stringify(moduleUrl('inbox-client.ts
 const { createLivenessProbe } = await import(${JSON.stringify(moduleUrl('liveness.ts'))});
 const { liveSessionsDir } = await import(${JSON.stringify(moduleUrl('registry.ts'))});
 const { encodeUdsAddress } = await import(${JSON.stringify(moduleUrl('wire.ts'))});
+const { LiveSessionWriter } = await import(${JSON.stringify(moduleUrl('writer.ts'))});
 const emit = (event) => process.stdout.write(JSON.stringify(event) + '\\n');
+// The record that vouches for this peer's reply address, as cli/run.ts keeps one beside the inbox.
+const writer = process.env.PEER_NO_RECORD
+  ? undefined
+  : new LiveSessionWriter({ cwd: process.cwd(), sessionId: 'peer-session', version: 'test' });
+void writer?.start();
 const inbox = new InboxServer({
   sessionId: () => 'peer-session',
   ...(process.env.PEER_PID ? { pid: Number(process.env.PEER_PID) } : {}),
@@ -42,7 +48,11 @@ const inbox = new InboxServer({
   onReceipt: (receipt) => emit({ event: 'receipt', ...receipt }),
 });
 const started = await inbox.start();
-emit({ event: 'started', ...started, keyPath: inbox.keyPath });
+if (started.status === 'listening' && writer) {
+  writer.setMessagingSocket(started.socketPath);
+  await writer.flushed();
+}
+emit({ event: 'started', ...started, keyPath: inbox.keyPath, recordPath: writer?.path });
 const probe = createLivenessProbe();
 const keysDir = liveSessionsDir();
 for await (const line of createInterface({ input: process.stdin })) {
@@ -70,6 +80,10 @@ for await (const line of createInterface({ input: process.stdin })) {
     emit({ event: 'queued', count: inbox.queued().length });
   } else if (command.cmd === 'exit') {
     process.exit(0);
+  } else if (command.cmd === 'abandon') {
+    // Stop reading, close nothing: whatever is left must not keep the process alive.
+    process.stdin.destroy();
+    break;
   }
 }
 `;
@@ -254,11 +268,25 @@ describe.skipIf(process.platform === 'win32')('inbox transport between processes
     });
   }, 60_000);
 
+  it('lets the process exit on its own once nothing else holds it, removing the socket and key', async () => {
+    const a = spawnPeer();
+    const { socketPath, keyPath } = await a.started();
+    a.command({ cmd: 'abandon' });
+    const outcome = await Promise.race([
+      a.exited,
+      new Promise((resolve) => setTimeout(() => resolve('still running'), 10_000).unref()),
+    ]);
+    expect(outcome).toBe(0);
+    expect(existsSync(socketPath)).toBe(false);
+    expect(existsSync(keyPath)).toBe(false);
+  }, 60_000);
+
   it('binds a moved-aside socket when a live session in another namespace holds its pid', async () => {
     const a = spawnPeer();
     const { socketPath: aSocket } = await a.started();
     // A second process told it has A's pid: what a container sharing the directory would be.
-    const twin = spawnPeer({ PEER_PID: String(a.child.pid) });
+    // It keeps no record, which would overwrite A's under the same pid.
+    const twin = spawnPeer({ PEER_PID: String(a.child.pid), PEER_NO_RECORD: '1' });
     const { socketPath: twinSocket, movedAside } = await twin.started();
     expect(movedAside).toBe(true);
     expect(twinSocket).toMatch(new RegExp(`/${a.child.pid}-[0-9a-f]{8}\\.sock$`));

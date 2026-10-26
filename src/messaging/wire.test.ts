@@ -156,6 +156,16 @@ describe('LineReader', () => {
     expect(overflowed).toBe(true);
   });
 
+  it('holds the first line to a cap of its own, and later lines to the full one', () => {
+    const reader = new LineReader(100, 10);
+    expect(reader.push('x'.repeat(11)).overflow).toBe(true);
+    const next = new LineReader(100, 10);
+    expect(next.push(`${'a'.repeat(10)}\n${'b'.repeat(100)}\n`)).toEqual({
+      lines: ['a'.repeat(10), 'b'.repeat(100)],
+      overflow: false,
+    });
+  });
+
   it('overflows on a complete line over the cap', () => {
     expect(new LineReader(4).push('12345\n')).toEqual({ lines: [], overflow: true });
   });

@@ -14,6 +14,12 @@ import { z } from 'zod';
 /** The longest line a peer may send, in UTF-16 code units, as Claude Code counts it. */
 export const MAX_LINE_CHARS = 1_048_576;
 
+/**
+ * The longest first line a connection may send before it has authenticated. An auth frame is
+ * about 60 characters; this leaves room for fields a later version adds, and no more.
+ */
+export const MAX_AUTH_LINE_CHARS = 1_024;
+
 /** A peer token: 16 random bytes, in lowercase hex. */
 export const PEER_TOKEN_PATTERN = /^[0-9a-f]{32}$/;
 
@@ -185,8 +191,17 @@ export function peerTokenMatches(given: unknown, expected: string): boolean {
 export class LineReader {
   private parts: string[] = [];
   private pending = 0;
+  private completed = 0;
 
-  constructor(private readonly maxChars = MAX_LINE_CHARS) {}
+  /**
+   * @param maxChars - the cap on every line.
+   * @param firstLineMaxChars - a tighter cap on the first line alone: on a connection that is the
+   *   auth line, about 60 characters, so an unauthenticated peer cannot make the inbox hold more.
+   */
+  constructor(
+    private readonly maxChars = MAX_LINE_CHARS,
+    private readonly firstLineMaxChars = maxChars,
+  ) {}
 
   /** The lines `chunk` completes, and whether a line went over the cap (the connection is done). */
   push(chunk: string): { lines: string[]; overflow: boolean } {
@@ -196,15 +211,16 @@ export class LineReader {
       const newline = chunk.indexOf('\n', start);
       if (newline < 0) break;
       const piece = chunk.slice(start, newline);
-      if (this.pending + piece.length > this.maxChars) return this.overflow(lines);
+      if (this.pending + piece.length > this.cap) return this.overflow(lines);
       this.parts.push(piece);
       lines.push(this.parts.join(''));
       this.parts = [];
       this.pending = 0;
+      this.completed++;
       start = newline + 1;
     }
     const rest = chunk.slice(start);
-    if (this.pending + rest.length > this.maxChars) return this.overflow(lines);
+    if (this.pending + rest.length > this.cap) return this.overflow(lines);
     if (rest) {
       this.parts.push(rest);
       this.pending += rest.length;
@@ -215,6 +231,10 @@ export class LineReader {
   /** The characters held for the line not yet ended. */
   get buffered(): number {
     return this.pending;
+  }
+
+  private get cap(): number {
+    return this.completed === 0 ? this.firstLineMaxChars : this.maxChars;
   }
 
   private overflow(lines: string[]): { lines: string[]; overflow: true } {

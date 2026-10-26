@@ -13,8 +13,9 @@
  *   than 28 a runaway (pure functions here; PR 3 wires them once the envelope parses chains).
  * - Drop reports for the human: one per sender and reason a minute, 20 a minute in all, with the
  *   suppressed ones counted into the next report.
- * - Drop receipts for the sender: the first goes at once, and later ones within a minute are
- *   batched for 5 s into one receipt naming every dropped id (up to 256); 40 a minute in all.
+ * - Drop receipts for the sender: the first for a reason goes at once, and later ones for it
+ *   within a minute are batched for 5 s into one receipt naming every dropped id (up to 256); 40
+ *   a minute in all.
  *
  * State is per inbox and held on explicit objects: there is no module state.
  */
@@ -261,9 +262,11 @@ interface PendingReceipts {
 
 /**
  * Coalesces the `dropped` receipts a flooding sender would otherwise get one per message. The
- * first drop of a sender in a minute is receipted at once; the drops after it wait 5 s and go
- * back as one receipt naming every id, so a sender that floods learns of each drop without the
- * receiver opening a connection per drop. No more than 40 receipts go out a minute in all.
+ * first drop of a sender for a reason in a minute is receipted at once; the drops after it wait
+ * 5 s and go back as one receipt naming every id, so a sender that floods learns of each drop
+ * without the receiver opening a connection per drop. Each reason is batched on its own, so every
+ * id a receipt names was dropped for the reason it gives. No more than 40 receipts go out a minute
+ * in all.
  */
 export class DropReceiptCoalescer {
   private readonly senders = new Map<string, PendingReceipts>();
@@ -277,22 +280,28 @@ export class DropReceiptCoalescer {
   ) {}
 
   /**
-   * Note one drop from `sender`. `send` builds and sends the receipt; the latest one passed is the
-   * one a batch is sent through.
+   * Note one drop from `sender`, for `reason`. `send` builds and sends the receipt; the latest one
+   * passed for the pair is the one its batch is sent through.
    */
-  note(sender: string, msgId: string | undefined, send: SendDropReceipt): void {
+  note(
+    sender: string,
+    reason: PeerDropReason,
+    msgId: string | undefined,
+    send: SendDropReceipt,
+  ): void {
     if (this.disposed) return;
     const now = this.now();
-    const state = this.senders.get(sender) ?? {
+    const key = `${sender}\0${reason}`;
+    const state = this.senders.get(key) ?? {
       lastImmediateAt: Number.NEGATIVE_INFINITY,
       pending: 0,
       pendingIds: [],
     };
-    this.senders.delete(sender);
-    this.senders.set(sender, state);
+    this.senders.delete(key);
+    this.senders.set(key, state);
     if (this.senders.size > DROP_RECEIPT_LIMITS.maxTrackedSenders) {
       const oldest = this.senders.keys().next();
-      if (!oldest.done && oldest.value !== sender) {
+      if (!oldest.done && oldest.value !== key) {
         const evicted = this.senders.get(oldest.value);
         this.senders.delete(oldest.value);
         if (evicted) this.flush(evicted);

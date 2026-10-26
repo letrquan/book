@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
 import {
+  chmodSync,
   existsSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -16,11 +18,11 @@ import { createConnection, createServer, type Server } from 'node:net';
 import { join } from 'node:path';
 import { isolateBookHome } from '../test/isolated-book-home.js';
 import type { AcceptedPeerMessage, PeerMessageReceipt } from '../types/messaging.js';
-import { sendToInbox, findPeerKey } from './inbox-client.js';
+import { classifySendError, findPeerKey, sendToInbox } from './inbox-client.js';
 import { InboxServer, inboxStartupNotices, type InboxServerOptions } from './inbox-server.js';
 import type { LivenessProbe } from './liveness.js';
 import { SendPacer } from './pacer.js';
-import { liveSessionKeyName, liveSessionsDir } from './registry.js';
+import { liveSessionKeyName, liveSessionRecordPath, liveSessionsDir } from './registry.js';
 import { LiveSessionWriter } from './writer.js';
 import { encodeUdsAddress, MAX_LINE_CHARS, serializeFrame, type UserFrame } from './wire.js';
 
@@ -119,6 +121,42 @@ function raw(
     socket.once('close', () => resolve({ reply, elapsedMs: Date.now() - begun }));
     setTimeout(() => reject(new Error('the server never closed the connection')), 10_000).unref();
   });
+}
+
+/** A live-session record advertising `socketPath`, as a peer's writer would leave it. */
+function advertise(pid: number, socketPath: string, pidDomain: string = DOMAIN): void {
+  const dir = liveSessionsDir(bookHome());
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    liveSessionRecordPath(dir, pid, pidDomain),
+    JSON.stringify({
+      pid,
+      sessionId: `session-${pid}`,
+      cwd: '/work',
+      startedAt: 1,
+      procStart: `start-${pid}`,
+      pidDomain,
+      version: 'test',
+      protocol: 1,
+      features: ['inbox'],
+      kind: 'interactive',
+      name: `peer-${pid}`,
+      nameSource: 'derived',
+      status: 'idle',
+      statusUpdatedAt: 1,
+      updatedAt: Date.now(),
+      messagingSocketPath: socketPath,
+    }),
+  );
+}
+
+/** Leave a socket file at `path` that nothing listens on, as a killed session does. */
+async function deadSocket(path: string): Promise<void> {
+  const server = createServer();
+  const temporary = join(socketDir, `tmp-${Math.random().toString(16).slice(2)}.sock`);
+  await new Promise<void>((resolve) => server.listen(temporary, resolve));
+  renameSync(temporary, path);
+  await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
 function userFrame(content: string, extra: Partial<UserFrame> = {}): UserFrame {
@@ -220,6 +258,22 @@ describe.skipIf(!posix)('InboxServer', () => {
     expect(recorded.inbox.queued()).toEqual([]);
     // A first line over the cap is closed the same way, before any auth.
     await raw(socketPath, 'a'.repeat(MAX_LINE_CHARS + 1), { end: false });
+  });
+
+  it('closes a connection whose first line passes 1 KiB, without waiting for the deadline', async () => {
+    const recorded = createInbox();
+    const { socketPath } = await started(recorded);
+    const { elapsedMs } = await raw(socketPath, 'a'.repeat(2048), { end: false });
+    expect(elapsedMs).toBeLessThan(1_000);
+  });
+
+  it('takes a frame over 1 KiB that follows the auth line in the same write', async () => {
+    const recorded = createInbox();
+    const { socketPath, token } = await started(recorded);
+    const big = 'b'.repeat(64 * 1024);
+    await raw(socketPath, authLine(token) + serializeFrame(userFrame(big)));
+    await settle();
+    expect(recorded.inbox.queued().map((message) => message.content.length)).toEqual([big.length]);
   });
 
   it('drops a frame naming another session id, and reads the id for every frame', async () => {
@@ -343,23 +397,31 @@ describe.skipIf(!posix)('InboxServer', () => {
     });
   });
 
-  it('reaps moved-aside sockets whose pid is gone and that nothing answers on', async () => {
-    const stale = createServer();
-    await new Promise<void>((resolve) => stale.listen(join(socketDir, 'stale.sock'), resolve));
-    renameSync(join(socketDir, 'stale.sock'), join(socketDir, '9999-0badf00d.sock'));
-    await new Promise<void>((resolve) => stale.close(() => resolve()));
+  it('reaps the sockets of killed sessions, primary or moved aside, that nothing answers on', async () => {
+    // A session killed by SIGHUP or SIGTERM leaves its socket; the pid alone cannot say so for
+    // another namespace's file, so only a refused connection does.
+    await deadSocket(join(socketDir, '9999.sock'));
+    await deadSocket(join(socketDir, '9997-0badf00d.sock'));
     const live = createServer();
     servers.push(live);
+    await new Promise<void>((resolve) => live.listen(join(socketDir, '9998.sock'), resolve));
+    const liveAside = createServer();
+    servers.push(liveAside);
     await new Promise<void>((resolve) =>
-      live.listen(join(socketDir, '9998-00c0ffee.sock'), resolve),
+      liveAside.listen(join(socketDir, '9996-00c0ffee.sock'), resolve),
     );
 
     const { inbox } = createInbox();
     await inbox.start();
     // The reap runs in the background, after the start.
-    await eventually(() => !existsSync(join(socketDir, '9999-0badf00d.sock')));
+    await eventually(
+      () =>
+        !existsSync(join(socketDir, '9999.sock')) &&
+        !existsSync(join(socketDir, '9997-0badf00d.sock')),
+    );
     await inbox.close();
-    expect(existsSync(join(socketDir, '9998-00c0ffee.sock'))).toBe(true);
+    expect(existsSync(join(socketDir, '9998.sock'))).toBe(true);
+    expect(existsSync(join(socketDir, '9996-00c0ffee.sock'))).toBe(true);
   });
 
   it('starts nothing on Windows', async () => {
@@ -383,33 +445,77 @@ describe.skipIf(!posix)('InboxServer', () => {
 });
 
 describe.skipIf(!posix)('reply addresses', () => {
-  it('accepts a socket inside a vetted socket directory, and nothing else', async () => {
+  it('accepts only a socket that a live record of this pid domain advertises', async () => {
     const a = createInbox();
     await started(a);
     const b = createInbox({ pid: PID_B });
     const { socketPath: bSocket } = await started(b);
-    writeFileSync(join(socketDir, '5555.sock'), '');
-    symlinkSync(bSocket, join(socketDir, '6666.sock'));
-    const outside = realpathSync(mkdtempSync(join('/tmp', 'bk-outside-')));
-    const stray = createServer();
-    servers.push(stray);
-    await new Promise<void>((resolve) => stray.listen(join(outside, '7777.sock'), resolve));
+    // In a vetted directory, but no record vouches for it yet.
+    expect(await a.inbox.vetReplyAddress(encodeUdsAddress(bSocket))).toBeUndefined();
+    advertise(PID_B, bSocket);
+    expect(await a.inbox.vetReplyAddress(encodeUdsAddress(bSocket))).toBe(bSocket);
 
+    // A record whose process is gone, or from another pid domain, vouches for nothing.
+    const c = createInbox({ pid: 5151 });
+    const { socketPath: cSocket } = await started(c);
+    advertise(5151, cSocket);
+    expect(await a.inbox.vetReplyAddress(encodeUdsAddress(cSocket))).toBeUndefined();
+    const d = createInbox({ pid: 5252 });
+    const { socketPath: dSocket } = await started(d);
+    advertise(5252, dSocket, 'linux:other-machine:pid:[1]');
+    expect(await a.inbox.vetReplyAddress(encodeUdsAddress(dSocket))).toBeUndefined();
+  });
+
+  it("accepts a peer's socket in a directory this session would never resolve itself", async () => {
+    const a = createInbox();
+    await started(a);
+    const elsewhere = realpathSync(mkdtempSync(join('/tmp', 'bk-elsewhere-')));
     try {
+      const b = createInbox({ pid: PID_B, env: { BOOK_MESSAGING_SOCKET_DIR: elsewhere } });
+      const { socketPath: bSocket } = await started(b);
+      advertise(PID_B, bSocket);
       expect(await a.inbox.vetReplyAddress(encodeUdsAddress(bSocket))).toBe(bSocket);
-      for (const address of [
-        bSocket,
-        encodeUdsAddress(join(socketDir, '5555.sock')),
-        encodeUdsAddress(join(socketDir, '6666.sock')),
-        encodeUdsAddress(join(outside, '7777.sock')),
-        encodeUdsAddress(`${socketDir}/../${socketDir.split('/').pop()}/${PID_B}.sock`),
-        encodeUdsAddress(join(socketDir, 'peer.sock')),
-        'uds:relative.sock',
-      ]) {
-        expect(await a.inbox.vetReplyAddress(address), address).toBeUndefined();
-      }
     } finally {
-      rmSync(outside, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an advertised socket whose directory fails the checks', async () => {
+    const a = createInbox();
+    await started(a);
+    const open = realpathSync(mkdtempSync(join('/tmp', 'bk-open-')));
+    try {
+      const b = createInbox({ pid: PID_B, env: { BOOK_MESSAGING_SOCKET_DIR: open } });
+      const { socketPath: bSocket } = await started(b);
+      advertise(PID_B, bSocket);
+      chmodSync(open, 0o755);
+      expect(await a.inbox.vetReplyAddress(encodeUdsAddress(bSocket))).toBeUndefined();
+    } finally {
+      chmodSync(open, 0o700);
+      rmSync(open, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an advertised path that is not a plain socket', async () => {
+    const a = createInbox();
+    await started(a);
+    const file = join(socketDir, '5555.sock');
+    writeFileSync(file, '');
+    advertise(5555, file);
+    const b = createInbox({ pid: PID_B });
+    const { socketPath: bSocket } = await started(b);
+    const link = join(socketDir, '6666.sock');
+    symlinkSync(bSocket, link);
+    advertise(PID_B, link);
+    for (const address of [
+      encodeUdsAddress(file),
+      encodeUdsAddress(link),
+      bSocket,
+      encodeUdsAddress(`${socketDir}/../${socketDir.split('/').pop()}/${PID_B}.sock`),
+      encodeUdsAddress(join(socketDir, 'peer.sock')),
+      'uds:relative.sock',
+    ]) {
+      expect(await a.inbox.vetReplyAddress(address), address).toBeUndefined();
     }
   });
 });
@@ -420,6 +526,7 @@ describe.skipIf(!posix)('drop receipts', () => {
     const { socketPath: aSocket } = await started(a);
     const b = createInbox({ pid: PID_B });
     const { socketPath: bSocket } = await started(b);
+    advertise(PID_B, bSocket);
     const keysDir = liveSessionsDir(bookHome());
     for (let i = 0; i < 34; i++) {
       const result = await sendToInbox({
@@ -447,7 +554,7 @@ describe.skipIf(!posix)('drop receipts', () => {
     ]);
   });
 
-  it('sends no receipt to an address outside the socket directories', async () => {
+  it('sends no receipt to an address no live record advertises', async () => {
     const a = createInbox();
     const { socketPath, token } = await started(a);
     await raw(
@@ -504,6 +611,48 @@ describe.skipIf(!posix)('sendToInbox', () => {
     expect(await send(30)).toMatchObject({ status: 'sender_paced' });
   });
 
+  it('is gone, and sends nothing, when the only key is a stale one of a reused pid', async () => {
+    const path = join(socketDir, '4444.sock');
+    let connected = false;
+    const listener = createServer((socket) => {
+      connected = true;
+      socket.destroy();
+    });
+    servers.push(listener);
+    await new Promise<void>((resolve) => listener.listen(path, resolve));
+    const keysDir = liveSessionsDir(bookHome());
+    mkdirSync(keysDir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(keysDir, liveSessionKeyName(4444, DOMAIN, path)),
+      JSON.stringify({ peerToken: 'e'.repeat(32), procStart: 'start-old', pidDomain: DOMAIN }),
+    );
+    const reused: LivenessProbe = {
+      isAlive: (pid) => pid === 4444,
+      startToken: async () => 'start-new',
+      pidDomain: async () => DOMAIN,
+    };
+    const result = await sendToInbox({
+      socketPath: path,
+      keysDir,
+      probe: reused,
+      frame: userFrame('x'),
+    });
+    expect(result.status).toBe('gone');
+    expect(connected).toBe(false);
+  });
+
+  it.each([
+    ['ECONNRESET', false, 'busy'],
+    ['EPIPE', false, 'busy'],
+    ['ECONNRESET', true, 'gone'],
+    ['EPIPE', true, 'gone'],
+    ['ECONNREFUSED', false, 'gone'],
+    ['EAGAIN', false, 'busy'],
+    ['EACCES', false, 'failed'],
+  ])('classifies %s (socket gone: %s) as %s', (code, socketGone, status) => {
+    expect(classifySendError(code, { socketGone }).status).toBe(status);
+  });
+
   it("finds the key of the live owner in this session's own pid domain only", async () => {
     const a = createInbox();
     const { socketPath, keyPath } = await started(a);
@@ -523,8 +672,7 @@ describe.skipIf(!posix)('sendToInbox', () => {
 });
 
 describe('inboxStartupNotices', () => {
-  it('is one notice for a start that failed, and one per refused directory', async () => {
-    expect(await inboxStartupNotices(undefined)).toEqual([]);
+  it('is one notice for a start that failed, one per refused directory, and none otherwise', async () => {
     expect(
       await inboxStartupNotices(
         Promise.resolve({ status: 'failed', message: 'no usable socket directory' }),
@@ -540,9 +688,15 @@ describe('inboxStartupNotices', () => {
         }),
       ),
     ).toEqual([expect.stringContaining('Using /tmp/book-socks-1 instead.')]);
-  });
-
-  it('says nothing about a start still running after the wait', async () => {
-    expect(await inboxStartupNotices(new Promise(() => undefined), 10)).toEqual([]);
+    expect(
+      await inboxStartupNotices(
+        Promise.resolve({
+          status: 'listening',
+          socketPath: '/tmp/book-socks-1/1.sock',
+          movedAside: false,
+          refusedDirs: [],
+        }),
+      ),
+    ).toEqual([]);
   });
 });

@@ -53,6 +53,8 @@ export function socketDirCandidates(options: SocketDirEnvironment = {}): SocketD
   const override = env[SOCKET_DIR_ENV]?.trim();
   if (override) return [{ dir: resolve(override), source: 'env' }];
   const candidates: SocketDirCandidate[] = [];
+  // An explicit BOOK_HOME isolates: its sessions keep their sockets under it and never use the
+  // shared runtime directory, so a test's or a sandboxed home's inboxes stay inside that home.
   if (env.BOOK_HOME?.trim()) {
     candidates.push({ dir: join(resolveBookHome(env), 'socks'), source: 'book-home' });
   } else {
@@ -288,18 +290,4 @@ export async function resolveSocketDir(options: VetSocketDirOptions): Promise<So
     });
   }
   return { ok: false, skipped };
-}
-
-/**
- * The directories a reply may be addressed into: every candidate this environment resolves that
- * exists now and passes the checks, without creating or changing any. A peer's own socket can be
- * in a different one than ours (its path was too long, or its runtime directory was refused).
- */
-export async function vettedReplyDirs(options: SocketDirEnvironment = {}): Promise<string[]> {
-  const dirs: string[] = [];
-  for (const candidate of socketDirCandidates(options)) {
-    const verdict = await vetSocketDir(candidate.dir, { ...options, create: false });
-    if (verdict.ok && !verdict.missing && !verdict.loose) dirs.push(verdict.dir);
-  }
-  return dirs;
 }

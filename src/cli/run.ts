@@ -441,27 +441,6 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       });
     }
 
-    // This process's entry in the live-session registry (#620): discovery only, kept while the
-    // TUI runs and removed when it ends. It starts in the background, so a registry Book cannot
-    // write neither delays the first frame nor fails the launch.
-    const liveSession = new LiveSessionWriter({
-      cwd: config.workspace,
-      sessionId: bootstrap.sessionId,
-      version: getPackageVersion(),
-    });
-    void liveSession.start();
-    // Its inbox, when cross-session messaging is on (#620; never on Windows yet). It binds while
-    // the TUI loads, and the record advertises it only once the socket and its key both exist. A
-    // start that fails is one notice, never a failed launch.
-    const inbox =
-      config.settings.messaging.enabled && process.platform !== 'win32'
-        ? new InboxServer({ sessionId: () => liveSession.sessionId })
-        : undefined;
-    const inboxStart = inbox?.start().then((result) => {
-      if (result.status === 'listening') liveSession.setMessagingSocket(result.socketPath);
-      return result;
-    });
-
     // Ink and React load here, not at the top of the file: the CLI is a split bundle that hoists
     // every static import of the entry above its body, so a static import would evaluate React
     // before runtime-env.ts sets NODE_ENV and ship its development build. The architecture check
@@ -487,6 +466,27 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     const restoreScreen = config.accessibility.screenReader
       ? () => {}
       : enterInteractiveScreen(process.stdout);
+    // This process's entry in the live-session registry (#620): discovery only, kept while the
+    // TUI runs and removed when it ends. It starts in the background, so a registry Book cannot
+    // write neither delays the first frame nor fails the launch.
+    const liveSession = new LiveSessionWriter({
+      cwd: config.workspace,
+      sessionId: bootstrap.sessionId,
+      version: getPackageVersion(),
+    });
+    void liveSession.start();
+    // Its inbox, when cross-session messaging is on (#620; never on Windows yet). Created right
+    // before the `try` whose `finally` closes it, and unref'd, so it can never hold the process
+    // open by itself. The record advertises it only once the socket and its key both exist, and a
+    // start that fails is one notice after the first frame, never a failed or delayed launch.
+    const inbox =
+      config.settings.messaging.enabled && process.platform !== 'win32'
+        ? new InboxServer({ sessionId: () => liveSession.sessionId })
+        : undefined;
+    const inboxStart = inbox?.start().then((result) => {
+      if (result.status === 'listening') liveSession.setMessagingSocket(result.socketPath);
+      return result;
+    });
     try {
       const rendererMode = resolveTuiRendererMode(process.env.BOOK_TUI_RENDERER, {
         isTTY: process.stdout.isTTY === true,
@@ -520,12 +520,8 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
             createdSessions,
             liveSession,
           },
-          startupNotices: [
-            ...nodeNotices,
-            ...providerNotices,
-            ...instructionNotices,
-            ...(await inboxStartupNotices(inboxStart)),
-          ],
+          startupNotices: [...nodeNotices, ...providerNotices, ...instructionNotices],
+          lateStartupNotices: inboxStart && inboxStartupNotices(inboxStart),
         }),
         {
           exitOnCtrlC: false,

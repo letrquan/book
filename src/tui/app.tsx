@@ -296,6 +296,11 @@ interface AppProps {
    * rows. They are not saved to the session and not sent to the model.
    */
   startupNotices?: readonly string[];
+  /**
+   * Warnings about this launch known only after the first frame (the messaging inbox's start,
+   * #620), shown the same way once they settle.
+   */
+  lateStartupNotices?: Promise<readonly string[]>;
 }
 
 const QUEUED_SEND_NOTICE = 'Sending queued follow-up...';
@@ -349,6 +354,7 @@ export function App({
   interactiveAssets,
   mcp,
   startupNotices,
+  lateStartupNotices,
 }: AppProps) {
   const {
     messages,
@@ -435,6 +441,7 @@ export function App({
     permissionMode,
     additionalTools: mcp ? () => mcp.getToolDefinitions() : undefined,
     startupNotices,
+    lateStartupNotices,
   });
 
   const managedAgentManager = useMemo(

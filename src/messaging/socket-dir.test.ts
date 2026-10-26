@@ -17,7 +17,6 @@ import {
   resolveSocketDir,
   socketDirCandidates,
   vetSocketDir,
-  vettedReplyDirs,
 } from './socket-dir.js';
 
 const posix = process.platform !== 'win32';
@@ -249,20 +248,5 @@ describe.skipIf(!posix)('resolveSocketDir', () => {
       uid,
     });
     expect(resolution).toMatchObject({ ok: false, skipped: [{ reason: 'not-directory' }] });
-  });
-
-  it('lists only existing, vetted directories as reply targets', async () => {
-    const home = scratch();
-    const tmp = scratch();
-    mkdirSync(join(home, 'socks'), { mode: 0o700 });
-    expect(await vettedReplyDirs({ env: { BOOK_HOME: home }, tmpdir: tmp, uid })).toEqual([
-      join(home, 'socks'),
-    ]);
-    mkdirSync(join(tmp, `book-socks-${uid}`), { mode: 0o755 });
-    chmodSync(join(tmp, `book-socks-${uid}`), 0o755);
-    // Too open: not a directory a reply may go to until a session tightens it.
-    expect(await vettedReplyDirs({ env: { BOOK_HOME: home }, tmpdir: tmp, uid })).toEqual([
-      join(home, 'socks'),
-    ]);
   });
 });

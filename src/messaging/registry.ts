@@ -18,7 +18,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, open, readdir, readFile, stat, unlink } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { z } from 'zod';
 import type { AtomicLockOwner } from '../agents/atomic-json.js';
 import { resolveBookHome } from '../book-home.js';
@@ -276,8 +276,12 @@ async function listNames(dir: string): Promise<string[]> {
  * Every record file in the directory, parsed. Only record names are read; the writer's lock and
  * temp files, and anything a later version keeps beside the records, are left alone.
  */
-export async function readLiveSessionEntries(dir: string): Promise<LiveSessionEntry[]> {
-  const files = (await listNames(dir))
+export async function readLiveSessionEntries(
+  dir: string,
+  /** The directory's listing, when the caller already has it. */
+  listing?: readonly string[],
+): Promise<LiveSessionEntry[]> {
+  const files = (listing ?? (await listNames(dir)))
     .map((name) => ({ name, match: RECORD_FILE.exec(name) }))
     .filter((file): file is { name: string; match: RegExpExecArray } => file.match !== null)
     .sort((a, b) => Number(a.match[1]) - Number(b.match[1]) || a.name.localeCompare(b.name));
@@ -323,25 +327,32 @@ export async function listLiveSessions(
   const { dir, probe, sweep = true, ownPid = process.pid, now = Date.now, signal } = options;
   if (signal?.aborted) return [];
   const domain = await probe.pidDomain();
+  // One listing serves the records and both sweeps after them.
+  const listing = await listNames(dir);
+  const swept = new Set<string>();
+  const sweepRecord = async (entry: LiveSessionEntry) => {
+    if (await sweepEntry(entry)) swept.add(basename(entry.path));
+  };
   const checked = await mapLimited(
-    await readLiveSessionEntries(dir),
+    await readLiveSessionEntries(dir, listing),
     CHECK_CONCURRENCY,
     async (entry) => {
       const record = entry.record;
       if (!record || signal?.aborted) return undefined;
       if (record.pidDomain !== domain) {
         const refreshedAt = record.updatedAt ?? record.startedAt;
-        if (sweep && now() - refreshedAt > FOREIGN_RECORD_MAX_AGE_MS) await sweepEntry(entry);
+        if (sweep && now() - refreshedAt > FOREIGN_RECORD_MAX_AGE_MS) await sweepRecord(entry);
         return undefined;
       }
       if (await isRecordProcessLive(record, probe)) return record;
-      if (sweep && entry.pid !== ownPid && !signal?.aborted) await sweepEntry(entry);
+      if (sweep && entry.pid !== ownPid && !signal?.aborted) await sweepRecord(entry);
       return undefined;
     },
   );
   if (sweep && !signal?.aborted) {
-    await sweepLiveSessionKeys(dir, { probe, domain, ownPid, now: now() });
-    await sweepOrphanedWriterFiles(dir, now());
+    const remaining = listing.filter((name) => !swept.has(name));
+    await sweepLiveSessionKeys(dir, remaining, { probe, domain, ownPid, now: now() });
+    await sweepOrphanedWriterFiles(dir, remaining, now());
   }
   return checked
     .filter((record): record is ReadLiveSessionRecord => record !== undefined)
@@ -366,22 +377,24 @@ function lockOwnerDocument(): string {
  * in between and losing it. A lock someone else holds means a write is under way: the record is
  * left for a later sweep.
  */
-async function sweepEntry(entry: LiveSessionEntry): Promise<void> {
+async function sweepEntry(entry: LiveSessionEntry): Promise<boolean> {
   const lockPath = `${entry.path}.lock`;
   let handle: FileHandle | undefined;
   try {
     handle = await open(lockPath, 'wx', 0o600);
   } catch {
-    return;
+    return false;
   }
   try {
     await handle.writeFile(lockOwnerDocument(), 'utf8');
     await handle.close();
     handle = undefined;
-    if ((await readFile(entry.path, 'utf8')) !== entry.text) return;
+    if ((await readFile(entry.path, 'utf8')) !== entry.text) return false;
     await unlink(entry.path);
+    return true;
   } catch {
     // Already gone, or not ours to remove: either way there is nothing to sweep.
+    return false;
   } finally {
     await handle?.close().catch(() => undefined);
     await unlink(lockPath).catch(() => undefined);
@@ -398,9 +411,9 @@ async function sweepEntry(entry: LiveSessionEntry): Promise<void> {
  */
 async function sweepLiveSessionKeys(
   dir: string,
+  names: readonly string[],
   options: { probe: LivenessProbe; domain: string | undefined; ownPid: number; now: number },
 ): Promise<void> {
-  const names = await listNames(dir);
   const records = new Set(names.filter((name) => RECORD_FILE.test(name)));
   const ownTag = options.domain === undefined ? undefined : pidDomainTag(options.domain);
   const keys = names.flatMap((name) => {
@@ -434,8 +447,12 @@ async function sweepLiveSessionKeys(
 }
 
 /** Remove writer locks and temp files a crash left behind; a live writer holds one for moments. */
-async function sweepOrphanedWriterFiles(dir: string, now: number): Promise<void> {
-  const names = (await listNames(dir)).filter((name) => WRITER_FILE.test(name));
+async function sweepOrphanedWriterFiles(
+  dir: string,
+  listing: readonly string[],
+  now: number,
+): Promise<void> {
+  const names = listing.filter((name) => WRITER_FILE.test(name));
   await mapLimited(names, CHECK_CONCURRENCY, async (name) => {
     const path = join(dir, name);
     try {

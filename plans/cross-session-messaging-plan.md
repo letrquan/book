@@ -440,6 +440,17 @@ The feature is live on this account: the tools are in this session.
 - **Token mandatory on every platform.** CC only requires it on Windows because it can verify the
   peer pid. Book cannot, so the token is the only proof beyond filesystem permissions. Because the
   sender's pid can't be verified, there is **no self-sent fast path** and **no `childToken`** in v1.
+- **Only a vouched key is used** (coordinator, 2026-10-26). A sender uses a key only when its owner
+  pid and start token check out live in the sender's own pid domain. With none, the send is `gone`
+  ("list again") and nothing is sent. A stale key is never tried, because the receiver closes a
+  wrong token without a word and the send would look delivered. This matches CC's refusal to write
+  to an unvouched pipe on Windows.
+- **The registry vouches for reply addresses** (coordinator, 2026-10-26). A receipt goes to a
+  frame's `from` only when that path is the `messagingSocketPath` of a live record in the
+  receiver's own pid domain, and its directory passes the same vetting as the receiver's own
+  socket directory: this user's, `0700`, not a symlink. The directory is vetted once and cached.
+  A socket directory derived from a session's own environment never decides, because two sessions
+  can resolve different directories.
 - **Paths**:
   - the registry lives in `<BOOK_HOME>/live-sessions/<pid>.<domain tag>.json`, where the tag is the
     first 12 hex digits of `sha256(pidDomain)` (plain `<pid>.json` where there is no pid domain, as
@@ -452,8 +463,12 @@ The feature is live on this account: the tools are in this session.
     token the key holds) is gone; a key nothing can judge (another domain's, or a torn one) goes
     once no record of its pid and domain is left and it is over an hour old, which also takes a
     foreign key with its record's 24-hour sweep (coordinator, 2026-10-26);
-  - sockets live in `$XDG_RUNTIME_DIR/book-socks/<pid>.sock`, falling back to
-    `<os.tmpdir()>/book-socks-<uid>/<pid>.sock` when the path is over 103 bytes;
+  - sockets live in `$XDG_RUNTIME_DIR/book-socks/<pid>.sock`, or `<BOOK_HOME>/socks/` when
+    `BOOK_HOME` is set (an explicit home isolates, so the runtime directory is not tried), falling
+    back to `<os.tmpdir()>/book-socks-<uid>/<pid>.sock` when the path is over 103 bytes or a
+    directory is refused. At start an inbox reaps every Book socket in its directory that refuses
+    a connection, because a session killed by a signal leaves its socket behind. The connection
+    decides, never the pid, so this is safe across pid namespaces;
   - directories are `0700` and vetted, the socket `0600`, the key `0600`.
 - **Process start token**: Linux reads field 22 of `/proc/<pid>/stat` asynchronously. macOS uses an
   async `ps -o lstart= -p <pid>`. `pidDomain` follows CC's shape.
