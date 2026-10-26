@@ -46,7 +46,7 @@ src/
   frontmatter.ts        Shared YAML frontmatter parser
   permissions.ts        Permission rule parsing/evaluation
   hooks.ts              Lifecycle hook runner (JSON-over-stdio contract)
-  sandbox.ts            Bash sandbox via bubblewrap
+  sandbox.ts            Bash sandbox policy + backends: bubblewrap (Linux), Seatbelt (macOS)
   sandbox-seatbelt.ts   macOS backend: Seatbelt (sandbox-exec) profile renderer, paths as -D params
   claude-md.ts          CLAUDE.md / AGENTS.md / rules tree-walk loader
   skills.ts             Multi-root SKILL.md discovery/validation and prompt catalog

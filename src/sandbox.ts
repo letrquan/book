@@ -1258,7 +1258,9 @@ function mountProtected(args: string[], mount: ProtectedMount, host: SandboxHost
  * free to be stricter still. The one `allowWrite` entry that is applied after
  * them is one that names a protected path or something under it, which is the
  * user asking for that path to be writable again; a broader root stays before,
- * so it cannot reopen what the protections just closed.
+ * so it cannot reopen what the protections just closed. The credential masks
+ * (`hidden-file`) are the one thing applied after `denyWrite` as well: a
+ * read-only bind of the directory that holds one would show its contents again.
  *
  * Exported for testing: it does not require bwrap to be installed, and with an
  * injected `host` its output is fully determined by its arguments.
@@ -1369,16 +1371,20 @@ export function buildSandboxExecution(
     }
   }
 
-  // A mask hides a file's *contents*, and an opt-in bind for the directory that
-  // holds it undoes that: `allowWrite: ["<workspace>/.book"]` puts the whole
-  // directory back in reach, provider credential included. The masks are
-  // therefore emitted again after every opt-in, so the last mount of a masked
-  // path is `/dev/null` whichever entry named its parent.
+  for (const path of settings.filesystem.denyWrite) bindIfPresent(args, '--ro-bind', path, host);
+
+  // A mask hides a file's *contents*, and a later bind of the directory that
+  // holds it undoes that: an opt-in such as `allowWrite: ["<workspace>/.book"]`
+  // puts the whole directory back in reach, provider credential included, and so
+  // does a `denyWrite` entry at or above it, which is a read-only bind of the
+  // real directory (#625). The masks are therefore emitted again after every
+  // opt-in and every `denyWrite` bind, so the last mount of a masked path is
+  // `/dev/null` whichever entry named its parent. `denyRead` stays after them:
+  // it only ever masks harder.
   for (const mount of paths.mounts) {
     if (mount.kind === 'hidden-file') mountProtected(args, mount, host);
   }
 
-  for (const path of settings.filesystem.denyWrite) bindIfPresent(args, '--ro-bind', path, host);
   // bwrap cannot unmount a subpath, so a denied path is masked instead. The
   // mask has to match the kind: --tmpfs needs to mkdir its target, so pointing
   // it at a file aborts the entire invocation with "Not a directory" — and a

@@ -1116,8 +1116,9 @@ Five consequences worth knowing:
   Because a trusted `filesystem.allowWrite` entry is applied after these mounts, an opt-in on a git
   dir reopens what it names, but keeps control paths strictly below it (`hooks/`, `config`, pointer files)
   read-only unless an entry names that control path directly. Every `hidden-file` mask is re-applied once
-  more at the end: remounting `.book` writable would otherwise reopen `settings.local.json` for both reading
-  and writing.
+  more after the `allowWrite` opt-ins and the `denyWrite` binds: remounting `.book` writable would otherwise
+  reopen `settings.local.json` for both reading and writing, and a `denyWrite` entry at or above `.book` is
+  a read-only bind of the real directory that would show its contents again (issue 625).
 
 The permission layer already asked before any file tool touched `.book/`, but a permission prompt is
 one approval the user can be talked into — and a shell command is not a file tool, so the sandbox

@@ -305,12 +305,17 @@ describe('buildSeatbeltPolicy', () => {
     expect(canWrite(policy, `${workspace}/a`)).toBe(true);
   });
 
-  it('keeps settings.local.json masked under a denyWrite entry for .book', () => {
-    const policy = policyFor({ filesystem: { denyWrite: [`${WS}/.book`, WS] } });
+  // The same three shapes the bubblewrap builder is pinned for (#625).
+  it.each([`${WS}/.book`, WS, `${WS}/.book/settings.local.json`])(
+    'keeps settings.local.json masked under a denyWrite entry for %s',
+    (denied) => {
+      const policy = policyFor({ filesystem: { denyWrite: [denied] } });
 
-    expect(canRead(policy, `${WS}/.book/settings.json`)).toBe(true);
-    expect(canRead(policy, `${WS}/.book/settings.local.json`)).toBe(false);
-  });
+      expect(canRead(policy, `${WS}/.book/settings.json`)).toBe(true);
+      expect(canRead(policy, `${WS}/.book/settings.local.json`)).toBe(false);
+      expect(canWrite(policy, `${WS}/.book/settings.local.json`)).toBe(false);
+    },
+  );
 
   it("keeps Book's home unreadable under a denyWrite entry above it", () => {
     const policy = buildSeatbeltPolicy(

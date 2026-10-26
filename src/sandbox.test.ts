@@ -2077,6 +2077,39 @@ describe('buildSandboxExecution workspace control files', () => {
     });
 
     /**
+     * A `denyWrite` bind is a read-only mount of the real directory, so one at or
+     * above `.book` shadows the `/dev/null` mask below it unless the mask comes
+     * after it (#625): the credential would be readable again.
+     */
+    it.each(['/work/.book', '/work', '/work/.book/settings.local.json'])(
+      'keeps the credential masked under a denyWrite entry for %s',
+      (denied) => {
+        const host = hostWith({
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.book/settings.local.json': 'file',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+        });
+        const settings = sandboxSettings();
+        settings.filesystem.denyWrite = [denied];
+
+        const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', WORKSPACE, settings, host);
+
+        const deniedAt = lastMountFor(exec.args, denied);
+        expect(deniedAt.flag).toBe('--ro-bind');
+        const maskAt = exec.args.lastIndexOf('/work/.book/settings.local.json') - 2;
+        expect(exec.args.slice(maskAt, maskAt + 3)).toEqual([
+          '--ro-bind',
+          '/dev/null',
+          '/work/.book/settings.local.json',
+        ]);
+        expect(maskAt).toBeGreaterThan(deniedAt.index);
+      },
+    );
+
+    /**
      * In the opt-out mode (`allowGitWrites: true`) the pin is a writable
      * self-bind, so an `allowWrite` entry under the git dir emitted before it
      * is shadowed and silently does nothing.
@@ -3392,6 +3425,24 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
           expect(result.content).not.toContain('sk-secret');
           // The host still holds it: this is a mask inside the namespace.
           expect(readFileSync(local, 'utf8')).toContain('sk-secret');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('keeps the credential masked under a denyWrite entry for .book or the workspace (#625)', async () => {
+        const repo = freshRepo({ book: true });
+        const local = join(repo, '.book', 'settings.local.json');
+        writeFileSync(local, JSON.stringify({ provider: { apiKey: 'sk-secret' } }));
+        try {
+          for (const denied of [join(repo, '.book'), repo]) {
+            const result = await sandboxedBash(`cat .book/settings.local.json || true`, repo, {
+              filesystem: { denyWrite: [denied] },
+            });
+
+            expect(result.status).toBe('success');
+            expect(result.content).not.toContain('sk-secret');
+          }
         } finally {
           rmSync(repo, { recursive: true, force: true });
         }
