@@ -103,6 +103,7 @@ import { normalizePersistedTodos } from '../../tools/todo.js';
 import { SessionRuntime } from '../../session/runtime.js';
 import { seedShellIds } from '../../jobs/shell-ids.js';
 import { createInteractiveAgentSession } from '../../session/interactive-session.js';
+import type { LiveSessionReporter } from '../../messaging/writer.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
 import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
 import type { BackgroundShellRecord } from '../../types/runtime.js';
@@ -145,6 +146,8 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
   createdSessions?: Set<string>;
   /** Live extra tools (e.g. MCP) merged into each per-send registry. */
   additionalTools?: () => ToolDefinition[];
+  /** This process's live-session record (#620); the TUI's host owns its start and removal. */
+  liveSession?: LiveSessionReporter;
   /**
    * Warnings about this launch, shown once as local rows after the loaded transcript. Not
    * persisted and not part of the model's context, so a resumed session shows the current
@@ -401,6 +404,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     createInteractiveAgentSession({
       runtime: createSeededRuntime(session, initialTranscript),
       additionalTools: session.additionalTools,
+      liveSession: session.liveSession,
     }),
   );
   // The session's `/goal` as the status line shows it. The runtime owns the goal and the loop

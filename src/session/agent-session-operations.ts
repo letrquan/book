@@ -20,6 +20,17 @@ interface ActiveOperation {
 /** Owns operation exclusion, cancellation, and stale-release protection for a session. */
 export class AgentSessionOperations {
   private active: ActiveOperation | null = null;
+  private readonly listeners = new Set<() => void>();
+
+  /** Called whenever an operation starts or ends, after `activeKind` reflects it. */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private publish(): void {
+    for (const listener of this.listeners) listener();
+  }
 
   get activeKind(): AgentSessionOperationKind | null {
     return this.active?.kind ?? null;
@@ -36,6 +47,7 @@ export class AgentSessionOperations {
       controller: abortable ? new AbortController() : undefined,
     };
     this.active = operation;
+    this.publish();
     return {
       kind,
       signal: operation.controller?.signal,
@@ -43,6 +55,7 @@ export class AgentSessionOperations {
       release: () => {
         if (this.active !== operation) return false;
         this.active = null;
+        this.publish();
         return true;
       },
     };
@@ -62,6 +75,7 @@ export class AgentSessionOperations {
     if (!active) return null;
     active.controller?.abort(reason);
     this.active = null;
+    this.publish();
     return active.kind;
   }
 }

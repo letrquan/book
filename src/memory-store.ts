@@ -27,6 +27,7 @@ import { resolveBookHome } from './book-home.js';
 import { DEFAULT_MAX_INDEX_LINES, MAX_INDEX_BYTES } from './memory-limits.js';
 import { isUserHome, tryRealPath } from './repo-containment.js';
 import { createUncGuard, type UncGuard } from './unc-path.js';
+import { capSlug, kebabSlug } from './slug.js';
 import type { SessionDriver } from './types/runtime.js';
 
 const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
@@ -637,26 +638,6 @@ function yamlValue(value: string): string {
   return risky ? JSON.stringify(value) : value;
 }
 
-/** A kebab-case slug cut to `max` characters at a `-` (a lone longer word is cut hard). */
-function capSlug(slug: string, max: number): string {
-  if (slug.length <= max) return slug;
-  const cut = slug.slice(0, max);
-  const whole = slug[max] === '-' ? cut : cut.slice(0, Math.max(cut.lastIndexOf('-'), 0) || max);
-  return whole.replace(/-+$/, '');
-}
-
-function kebabSlug(text: string): string {
-  return capSlug(
-    text
-      .normalize('NFKD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, ''),
-    SLUG_MAX,
-  );
-}
-
 /** What is left of `YYYY-MM-DD-<type>-<title>-<hash>.md` without the date, type and hash. */
 function titleFromLegacyName(name: string): string {
   return name
@@ -942,9 +923,9 @@ function migrateFormat(dir: string): void {
     const own = name.toLowerCase();
     const claim = (title: string): string => {
       const base =
-        kebabSlug(title) ||
-        kebabSlug(titleFromLegacyName(name)) ||
-        kebabSlug(unquote(file.keys.get('type') ?? '')) ||
+        kebabSlug(title, SLUG_MAX) ||
+        kebabSlug(titleFromLegacyName(name), SLUG_MAX) ||
+        kebabSlug(unquote(file.keys.get('type') ?? ''), SLUG_MAX) ||
         'memory';
       for (let n = 1; ; n++) {
         const suffix = n === 1 ? '' : `-${n}`;

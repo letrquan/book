@@ -1098,3 +1098,62 @@ describe('runDoctorCommand workspace-declared providers', () => {
     expect(output).toContain('model "evil/legacy" from');
   });
 });
+
+describe('runDoctorCommand live sessions (#620)', () => {
+  it('reports a registry the TUI has not created yet, without creating it', async () => {
+    const dir = join(bookHome(), 'live-sessions');
+    const output = await doctorOutput();
+    expect(output).toContain(`Live sessions: none (${dir} not created yet)`);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('counts the live records and leaves the dead ones for a sweep', async () => {
+    const { createLivenessProbe } = await import('../messaging/liveness.js');
+    const { liveSessionRecordName } = await import('../messaging/registry.js');
+    const probe = createLivenessProbe();
+    const dir = join(bookHome(), 'live-sessions');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const base = {
+      cwd: workspace,
+      startedAt: 1,
+      pidDomain: await probe.pidDomain(),
+      version: 'test',
+      protocol: 1,
+      features: [],
+      kind: 'interactive',
+      nameSource: 'derived',
+      status: 'idle',
+      statusUpdatedAt: 1,
+      updatedAt: 1,
+    };
+    const ownStart = await probe.startToken(process.pid);
+    writeFileSync(
+      join(dir, liveSessionRecordName(process.pid, base.pidDomain)),
+      JSON.stringify({
+        ...base,
+        pid: process.pid,
+        sessionId: 's1',
+        name: 'a-01',
+        procStart: ownStart,
+      }),
+    );
+    const deadPid = 2 ** 30;
+    writeFileSync(
+      join(dir, liveSessionRecordName(deadPid, base.pidDomain)),
+      JSON.stringify({ ...base, pid: deadPid, sessionId: 's2', name: 'a-02' }),
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).toContain(`Live sessions: 1 live in ${dir}`);
+    expect(existsSync(join(dir, liveSessionRecordName(deadPid, base.pidDomain)))).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('flags a symlinked registry directory', async () => {
+    const target = join(bookHome(), 'elsewhere');
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, join(bookHome(), 'live-sessions'));
+    const output = await doctorOutput();
+    expect(output).toContain('is a symlink; the TUI does not register there');
+  });
+});

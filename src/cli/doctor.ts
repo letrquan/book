@@ -155,6 +155,31 @@ async function reportUnloadableConfig(workspace: string, error: unknown): Promis
   console.log('  Run `book doctor --no-settings` to report the rest with every layer skipped.');
 }
 
+/** The registry directory's state and how many sessions in it are live, as one line. */
+async function describeLiveSessions(): Promise<string> {
+  const {
+    describeLiveSessionsDirState,
+    inspectLiveSessionsDir,
+    listLiveSessions,
+    liveSessionsDir,
+  } = await import('../messaging/registry.js');
+  const { createLivenessProbe } = await import('../messaging/liveness.js');
+  const dir = liveSessionsDir();
+  try {
+    const state = await inspectLiveSessionsDir(dir);
+    if (state === 'missing') return `none (${dir} ${describeLiveSessionsDirState(state)})`;
+    if (state !== 'ok' && state !== 'loose-mode') {
+      return `[!] ${dir} ${describeLiveSessionsDirState(state)}; the TUI does not register there`;
+    }
+    const live = await listLiveSessions({ dir, probe: createLivenessProbe(), sweep: false });
+    const count = `${live.length} live in ${dir}`;
+    // The TUI tightens a directory of the user's own to 0700 the next time it starts.
+    return state === 'ok' ? count : `${count} [!] ${describeLiveSessionsDirState(state)}`;
+  } catch (error) {
+    return `[!] ${dir} cannot be read: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
 export async function runDoctorCommand(
   workspace: string,
   options: { noSettings?: boolean } = {},
@@ -692,6 +717,11 @@ export async function runDoctorCommand(
   }
   console.log('  Last write:        ' + lastWrite);
   if (memoryBackup) console.log('  ' + legacyBackupNotice(memoryBackup));
+  console.log();
+
+  // The live-session registry the TUI writes (#620). Doctor only reports it: the directory is not
+  // created, and records whose process is gone are not swept.
+  console.log('Live sessions: ' + (await describeLiveSessions()));
   console.log();
 
   // Environment.
