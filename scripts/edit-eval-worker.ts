@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { evaluateRunEligibility, type EvaluationEligibility } from './eval-eligibility.js';
 import type { EvaluationControls } from './eval-process.js';
 import { query } from '../src/sdk.js';
+import type { AgentRunResult } from '../src/types/runs.js';
 import { EVAL_TASKS, type EvalTask } from './edit-eval-fixtures.js';
 
 export interface EditEvalTaskOutcome {
@@ -30,6 +31,26 @@ function parseArgs(argv: string[]): { task?: string; model?: string } {
     else if (argv[index] === '--model') args.model = argv[++index];
   }
   return args;
+}
+
+/**
+ * Every token the task spent, summed over the result's run records. The `result`
+ * event's own `usage` is only the latest request (the compaction gauge), which
+ * counted a four-request task as about a quarter of its traffic. Each record's
+ * accounting describes that one execution (snapshotRun), so a root's figure leaves
+ * out its children and any second root; summing the records keeps both. A record
+ * without accounting makes the total unknown rather than low, with no fallback to
+ * `usage`; eligibility already fails closed on such a run.
+ */
+export function taskTotalTokens(runs: readonly AgentRunResult[] | undefined): number | undefined {
+  if (!runs?.length) return undefined;
+  let total = 0;
+  for (const run of runs) {
+    const usage = run.accounting?.directUsage;
+    if (!usage) return undefined;
+    total += usage.totalTokens;
+  }
+  return total;
 }
 
 function collectVerifyPaths(task: EvalTask): string[] {
@@ -77,7 +98,7 @@ export async function runEditEvalWorker(
           outcome.failuresByCode[error.code] = (outcome.failuresByCode[error.code] ?? 0) + 1;
         }
       } else if (event.type === 'result') {
-        outcome.totalTokens = event.usage?.totalTokens;
+        outcome.totalTokens = taskTotalTokens(event.runs);
         outcome.attribution = evaluateRunEligibility(event.runs);
         if (!outcome.attribution.eligible && !outcome.runError) {
           outcome.runError = `ineligible evaluation evidence: ${outcome.attribution.reasons.join('; ')}`;
