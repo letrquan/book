@@ -124,6 +124,8 @@ export class LiveSessionWriter implements LiveSessionReporter {
   /** Cancels a start still listing the registry when the session closes. */
   private readonly startAbort = new AbortController();
   private recordPath?: string;
+  /** The inbox socket once it is bound and its key published; absent while messaging is off. */
+  private messagingSocketPath?: string;
   private desired: DesiredFields;
   private base?: RecordBase;
   private written?: LiveSessionRecord;
@@ -181,6 +183,23 @@ export class LiveSessionWriter implements LiveSessionReporter {
   /** The record as last written, if one has been. */
   current(): LiveSessionRecord | undefined {
     return this.written;
+  }
+
+  /** The session id the record carries, or is about to: the inbox matches `session_id` on it. */
+  get sessionId(): string {
+    return this.desired.sessionId;
+  }
+
+  /**
+   * Advertise the session's inbox: the record gains `messagingSocketPath` and `features: ['inbox']`
+   * from its next write, which this forces. Called by the host once the socket is bound and its key
+   * is published, never before, so a peer that reads the record finds both. Without a call the
+   * record is exactly what it is with messaging off.
+   */
+  setMessagingSocket(socketPath: string): void {
+    if (this.messagingSocketPath === socketPath) return;
+    this.messagingSocketPath = socketPath;
+    this.schedule(true);
   }
 
   /**
@@ -309,8 +328,12 @@ export class LiveSessionWriter implements LiveSessionReporter {
       written && written.status === desired.status && written.waitingFor === desired.waitingFor
         ? written.statusUpdatedAt
         : desired.statusChangedAt;
+    const messaging = this.messagingSocketPath;
     const record: LiveSessionRecord = {
       ...base,
+      ...(messaging !== undefined
+        ? { features: [...base.features, 'inbox'], messagingSocketPath: messaging }
+        : {}),
       sessionId: desired.sessionId,
       status: desired.status,
       ...(desired.waitingFor !== undefined ? { waitingFor: desired.waitingFor } : {}),

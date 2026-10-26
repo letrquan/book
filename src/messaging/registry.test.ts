@@ -22,8 +22,10 @@ import {
   inspectLiveSessionsDir,
   listLiveSessions,
   LiveSessionsDirRefusedError,
+  liveSessionKeyName,
   liveSessionRecordName,
   liveSessionsDir,
+  parseLiveSessionKeyName,
   readLiveSessionEntries,
 } from './registry.js';
 
@@ -383,6 +385,119 @@ describe('listLiveSessions', () => {
       await listLiveSessions({ dir, probe: fakeProbe(new Map()), signal: controller.signal }),
     ).toEqual([]);
     expect(files()).toHaveLength(3);
+  });
+});
+
+describe('inbox keys (#620)', () => {
+  const SOCKET = '/run/user/1000/book-socks/401.sock';
+  const TOKEN = '0123456789abcdef0123456789abcdef';
+
+  function writeKey(
+    pid: number,
+    pidDomain: string | undefined,
+    procStart?: string,
+    ageMs = 0,
+  ): string {
+    mkdirSync(dir, { recursive: true });
+    const name = liveSessionKeyName(pid, pidDomain, `/socks/${pid}.sock`);
+    const path = join(dir, name);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        peerToken: TOKEN,
+        ...(procStart !== undefined ? { procStart } : {}),
+        ...(pidDomain !== undefined ? { pidDomain } : {}),
+      }),
+    );
+    if (ageMs > 0) {
+      const then = new Date(Date.now() - ageMs);
+      utimesSync(path, then, then);
+    }
+    return name;
+  }
+
+  it('names a key after its pid, its domain and the full hash of its socket path', () => {
+    const hash = createHash('sha256').update(SOCKET).digest('hex');
+    const tag = createHash('sha256').update(DOMAIN).digest('hex').slice(0, 12);
+    expect(liveSessionKeyName(401, DOMAIN, SOCKET)).toBe(`401.${tag}.${hash}.key`);
+    expect(liveSessionKeyName(401, undefined, SOCKET)).toBe(`401.${hash}.key`);
+    expect(parseLiveSessionKeyName(`401.${tag}.${hash}.key`)).toEqual({ pid: 401, tag, hash });
+    expect(parseLiveSessionKeyName(`401.${hash}.key`)).toEqual({ pid: 401, hash });
+    expect(parseLiveSessionKeyName(`401.${hash.slice(1)}.key`)).toBeUndefined();
+    // A record is not a key.
+    expect(parseLiveSessionKeyName(liveSessionRecordName(401, DOMAIN))).toBeUndefined();
+  });
+
+  it("sweeps a key of this domain once its owner is gone, with its record's sweep", async () => {
+    writeRecord(record(402));
+    writeKey(402, DOMAIN, 'start-402');
+    await listLiveSessions({ dir, probe: fakeProbe(new Map()) });
+    expect(files()).toEqual([]);
+  });
+
+  it('sweeps a key whose pid a later process reuses', async () => {
+    writeKey(403, DOMAIN, 'start-old');
+    await listLiveSessions({ dir, probe: fakeProbe(new Map([[403, 'start-new']])) });
+    expect(files()).toEqual([]);
+  });
+
+  it('keeps the key of a live owner, record or not, whatever its age', async () => {
+    const name = writeKey(404, DOMAIN, 'start-404', 5 * HOUR);
+    await listLiveSessions({ dir, probe: fakeProbe(new Map([[404, 'start-404']])) });
+    expect(files()).toEqual([name]);
+  });
+
+  it('keeps a key from another domain while its record is there', async () => {
+    const now = Date.now();
+    const recordName = writeRecord(record(405, { pidDomain: OTHER_DOMAIN, updatedAt: now }));
+    const keyName = writeKey(405, OTHER_DOMAIN, 'start-405', 5 * HOUR);
+    await listLiveSessions({ dir, probe: fakeProbe(new Map()), now: () => now });
+    expect(files()).toEqual([keyName, recordName].sort());
+  });
+
+  it("sweeps a key from another domain with its record's day-old sweep", async () => {
+    const now = Date.now();
+    writeRecord(record(406, { pidDomain: OTHER_DOMAIN, updatedAt: now - 25 * HOUR }));
+    writeKey(406, OTHER_DOMAIN, 'start-406', 25 * HOUR);
+    await listLiveSessions({ dir, probe: fakeProbe(new Map()), now: () => now });
+    expect(files()).toEqual([]);
+  });
+
+  it('sweeps an orphan key nothing can judge once it is over an hour old, and no younger', async () => {
+    const now = Date.now();
+    writeKey(407, OTHER_DOMAIN, 'start-407', 2 * HOUR);
+    writeKey(408, undefined, undefined, 2 * HOUR);
+    const young = writeKey(409, OTHER_DOMAIN, 'start-409', 10 * 60 * 1000);
+    mkdirSync(dir, { recursive: true });
+    const torn = liveSessionKeyName(410, DOMAIN, '/socks/410.sock');
+    writeFileSync(join(dir, torn), '{"peerTok');
+    await listLiveSessions({ dir, probe: fakeProbe(new Map()), now: () => now });
+    expect(files()).toEqual([young, torn].sort());
+  });
+
+  it("never sweeps this process's own key", async () => {
+    const name = writeKey(process.pid, DOMAIN, 'start-old');
+    await listLiveSessions({ dir, probe: fakeProbe(new Map()), ownPid: process.pid });
+    expect(files()).toEqual([name]);
+  });
+
+  it("sweeps a key writer's leftover lock and temp files", async () => {
+    mkdirSync(dir, { recursive: true });
+    const stem = liveSessionKeyName(411, DOMAIN, '/socks/411.sock');
+    const now = Date.now();
+    for (const name of [`${stem}.lock`, `${stem}.411.abc.def.tmp`]) {
+      writeFileSync(join(dir, name), '{}');
+      const then = new Date(now - 2 * HOUR);
+      utimesSync(join(dir, name), then, then);
+    }
+    await listLiveSessions({ dir, probe: fakeProbe(new Map()), now: () => now });
+    expect(files()).toEqual([]);
+  });
+
+  it('leaves keys alone when sweep is off', async () => {
+    const name = writeKey(412, DOMAIN, 'start-412');
+    await listLiveSessions({ dir, probe: fakeProbe(new Map()), sweep: false });
+    expect(files()).toEqual([name]);
   });
 });
 

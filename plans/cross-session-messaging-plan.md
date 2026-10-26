@@ -444,7 +444,14 @@ The feature is live on this account: the tools are in this session.
   - the registry lives in `<BOOK_HOME>/live-sessions/<pid>.<domain tag>.json`, where the tag is the
     first 12 hex digits of `sha256(pidDomain)` (plain `<pid>.json` where there is no pid domain, as
     on Windows), so pid namespaces sharing a home never write over or remove each other's records;
-    the key sits beside it as `<pid>.<sha256(sock)>.key`;
+    the key sits beside it as `<pid>.<domain tag>.<sha256(sock)>.key` (`<pid>.<sha256(sock)>.key`
+    with no pid domain). The tag is there because two pid namespaces sharing a `BOOK_HOME` can bind
+    the same socket path string on different filesystems (the same `/run/user/1000` in two
+    containers), and their keys would otherwise collide. A sender looks up `*.<sha256(sock)>.key`
+    in its own domain tag only. A key of this domain is swept once its owner (pid and the start
+    token the key holds) is gone; a key nothing can judge (another domain's, or a torn one) goes
+    once no record of its pid and domain is left and it is over an hour old, which also takes a
+    foreign key with its record's 24-hour sweep (coordinator, 2026-10-26);
   - sockets live in `$XDG_RUNTIME_DIR/book-socks/<pid>.sock`, falling back to
     `<os.tmpdir()>/book-socks-<uid>/<pid>.sock` when the path is over 103 bytes;
   - directories are `0700` and vetted, the socket `0600`, the key `0600`.

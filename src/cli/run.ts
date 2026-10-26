@@ -52,6 +52,7 @@ import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 import { isReaderGoneError } from '../reader-gone.js';
 import { cleanupRunStatus } from '../run-status.js';
+import { InboxServer, inboxStartupNotices } from '../messaging/inbox-server.js';
 import { LiveSessionWriter } from '../messaging/writer.js';
 import { getPackageVersion } from '../version-info.js';
 
@@ -440,6 +441,27 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       });
     }
 
+    // This process's entry in the live-session registry (#620): discovery only, kept while the
+    // TUI runs and removed when it ends. It starts in the background, so a registry Book cannot
+    // write neither delays the first frame nor fails the launch.
+    const liveSession = new LiveSessionWriter({
+      cwd: config.workspace,
+      sessionId: bootstrap.sessionId,
+      version: getPackageVersion(),
+    });
+    void liveSession.start();
+    // Its inbox, when cross-session messaging is on (#620; never on Windows yet). It binds while
+    // the TUI loads, and the record advertises it only once the socket and its key both exist. A
+    // start that fails is one notice, never a failed launch.
+    const inbox =
+      config.settings.messaging.enabled && process.platform !== 'win32'
+        ? new InboxServer({ sessionId: () => liveSession.sessionId })
+        : undefined;
+    const inboxStart = inbox?.start().then((result) => {
+      if (result.status === 'listening') liveSession.setMessagingSocket(result.socketPath);
+      return result;
+    });
+
     // Ink and React load here, not at the top of the file: the CLI is a split bundle that hoists
     // every static import of the entry above its body, so a static import would evaluate React
     // before runtime-env.ts sets NODE_ENV and ship its development build. The architecture check
@@ -465,15 +487,6 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     const restoreScreen = config.accessibility.screenReader
       ? () => {}
       : enterInteractiveScreen(process.stdout);
-    // This process's entry in the live-session registry (#620): discovery only, kept while the
-    // TUI runs and removed when it ends. It starts in the background, so a registry Book cannot
-    // write neither delays the first frame nor fails the launch.
-    const liveSession = new LiveSessionWriter({
-      cwd: config.workspace,
-      sessionId: bootstrap.sessionId,
-      version: getPackageVersion(),
-    });
-    void liveSession.start();
     try {
       const rendererMode = resolveTuiRendererMode(process.env.BOOK_TUI_RENDERER, {
         isTTY: process.stdout.isTTY === true,
@@ -507,7 +520,12 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
             createdSessions,
             liveSession,
           },
-          startupNotices: [...nodeNotices, ...providerNotices, ...instructionNotices],
+          startupNotices: [
+            ...nodeNotices,
+            ...providerNotices,
+            ...instructionNotices,
+            ...(await inboxStartupNotices(inboxStart)),
+          ],
         }),
         {
           exitOnCtrlC: false,
@@ -526,6 +544,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       app?.cleanup();
       restoreScreen();
       await liveSession.close();
+      await inbox?.close();
       await mcpHost.dispose();
       ephemeralRewind?.dispose();
     }

@@ -327,6 +327,18 @@ export const memorySettingsSchema = z.object({
   autoSave: z.boolean().default(true),
 });
 
+/**
+ * Cross-session messaging (#620), experimental and off by default. `enabled` loosens what a
+ * session accepts, so it is read only from the user-global layer and `--settings`: a workspace
+ * layer that sets it is ignored and reported (`USER_OR_FLAG_ONLY_SETTING_PATHS`).
+ */
+export const messagingSettingsSchema = z.object({
+  /** The interactive TUI opens an inbox socket other Book sessions on this machine can reach. */
+  enabled: z.boolean().default(false),
+});
+
+export type MessagingSettings = z.infer<typeof messagingSettingsSchema>;
+
 export const agentSettingsSchema = z.object({
   mode: z.enum(['adaptive', 'manual', 'off']).default('adaptive'),
   maxConcurrent: z.number().int().min(1).max(16).default(3),
@@ -592,6 +604,7 @@ export const bookSettingsSchema = z.object({
   hooks: hooksSchema.prefault({}),
   retry: retrySettingsSchema.prefault({}),
   memory: memorySettingsSchema.prefault({}),
+  messaging: messagingSettingsSchema.prefault({}),
   continuation: continuationSettingsSchema.prefault({}),
   agents: agentSettingsSchema.prefault({}),
   toolDiscovery: toolDiscoverySettingsSchema.prefault({}),
@@ -700,6 +713,9 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   memory: {
     enabled: true,
     autoSave: true,
+  },
+  messaging: {
+    enabled: false,
   },
   agents: {
     mode: 'adaptive',

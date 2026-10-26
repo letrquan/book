@@ -8,6 +8,10 @@
  * symlink — and every record is written atomically as a `0600` file. Readers never trust a record's
  * word that its session is alive: liveness is checked against the OS (`liveness.ts`), and a record
  * whose process is gone is swept on read.
+ *
+ * With messaging on (#620), a session's inbox key sits beside its record, named after the record's
+ * pid and domain and the socket it unlocks (`<pid>.<domain tag>.<sha256(socket)>.key`). The sweep
+ * removes a key once its session is gone.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -39,8 +43,15 @@ const CHECK_CONCURRENCY = 8;
 
 const DOMAIN_TAG_LENGTH = 12;
 const RECORD_FILE = /^(\d+)(?:\.([0-9a-f]{12}))?\.json$/;
-/** A record writer's lock (`<record>.lock`) or temp file (`<record>.<pid>.<instance>.<id>.tmp`). */
-const WRITER_FILE = /^\d+(?:\.[0-9a-f]{12})?\.json\.(?:lock|[^/\\]+\.tmp)$/;
+/**
+ * An inbox key (#620): `<pid>.<domain tag>.<sha256 of the socket path>.key`, or
+ * `<pid>.<sha256>.key` where the platform has no pid domain.
+ */
+const KEY_FILE = /^(\d+)(?:\.([0-9a-f]{12}))?\.([0-9a-f]{64})\.key$/;
+/**
+ * A record or key writer's lock (`<file>.lock`) or temp file (`<file>.<pid>.<instance>.<id>.tmp`).
+ */
+const WRITER_FILE = /^\d+(?:\.[0-9a-f]{12})?(?:\.json|\.[0-9a-f]{64}\.key)\.(?:lock|[^/\\]+\.tmp)$/;
 
 export function liveSessionsDir(home: string = resolveBookHome()): string {
   return join(home, 'live-sessions');
@@ -62,6 +73,57 @@ export function liveSessionRecordName(pid: number, pidDomain?: string): string {
 
 export function liveSessionRecordPath(dir: string, pid: number, pidDomain?: string): string {
   return join(dir, liveSessionRecordName(pid, pidDomain));
+}
+
+/** The full SHA-256 of an inbox socket path, as its key file is named. */
+export function socketPathHash(socketPath: string): string {
+  return createHash('sha256').update(socketPath).digest('hex');
+}
+
+/**
+ * The inbox key's file name, beside the session's record. The domain tag keeps two pid namespaces
+ * that share a home apart even when both bind the same socket path string on different
+ * filesystems (the same `/run/user/1000` in two containers).
+ */
+export function liveSessionKeyName(
+  pid: number,
+  pidDomain: string | undefined,
+  socketPath: string,
+): string {
+  const hash = socketPathHash(socketPath);
+  return pidDomain === undefined
+    ? `${pid}.${hash}.key`
+    : `${pid}.${pidDomainTag(pidDomain)}.${hash}.key`;
+}
+
+/** One key file's name, parsed: the owner's pid, its domain tag, and the socket hash. */
+export function parseLiveSessionKeyName(
+  name: string,
+): { pid: number; tag?: string; hash: string } | undefined {
+  const match = KEY_FILE.exec(name);
+  if (!match) return undefined;
+  return { pid: Number(match[1]), ...(match[2] ? { tag: match[2] } : {}), hash: match[3]! };
+}
+
+/** What a key file holds. The token is the inbox's only secret; nothing else may carry it. */
+const liveSessionKeySchema = z.looseObject({
+  peerToken: z.string().regex(/^[0-9a-f]{32}$/),
+  procStart: z.string().optional().catch(undefined),
+  pidDomain: z.string().optional().catch(undefined),
+});
+
+export type LiveSessionKey = z.infer<typeof liveSessionKeySchema>;
+
+/** A key file's contents, or undefined when it is torn, malformed or unreadable. */
+export function parseLiveSessionKey(text: string): LiveSessionKey | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const parsed = liveSessionKeySchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 /**
@@ -277,7 +339,10 @@ export async function listLiveSessions(
       return undefined;
     },
   );
-  if (sweep && !signal?.aborted) await sweepOrphanedWriterFiles(dir, now());
+  if (sweep && !signal?.aborted) {
+    await sweepLiveSessionKeys(dir, { probe, domain, ownPid, now: now() });
+    await sweepOrphanedWriterFiles(dir, now());
+  }
   return checked
     .filter((record): record is ReadLiveSessionRecord => record !== undefined)
     .sort((a, b) => a.startedAt - b.startedAt || a.pid - b.pid);
@@ -321,6 +386,51 @@ async function sweepEntry(entry: LiveSessionEntry): Promise<void> {
     await handle?.close().catch(() => undefined);
     await unlink(lockPath).catch(() => undefined);
   }
+}
+
+/**
+ * Remove inbox keys whose session is gone (#620). A key of this pid domain goes once its owner —
+ * the pid, and the start token the key holds — is not alive, whatever its age; one whose owner is
+ * alive stays, record or not, because a record can be missing for moments between rewrites. A key
+ * from another domain cannot be judged by its pid, so it goes with its record: once no record of
+ * the same pid and domain is left and the key is over an hour old. Deleted under the key's own
+ * lock, like a record, so a session publishing a key of the same name is never undone.
+ */
+async function sweepLiveSessionKeys(
+  dir: string,
+  options: { probe: LivenessProbe; domain: string | undefined; ownPid: number; now: number },
+): Promise<void> {
+  const names = await listNames(dir);
+  const records = new Set(names.filter((name) => RECORD_FILE.test(name)));
+  const ownTag = options.domain === undefined ? undefined : pidDomainTag(options.domain);
+  const keys = names.flatMap((name) => {
+    const parsed = parseLiveSessionKeyName(name);
+    return parsed ? [{ name, ...parsed }] : [];
+  });
+  await mapLimited(keys, CHECK_CONCURRENCY, async ({ name, pid, tag }) => {
+    if (pid === options.ownPid && tag === ownTag) return;
+    const path = join(dir, name);
+    let text: string;
+    try {
+      text = await readFile(path, 'utf8');
+    } catch {
+      return;
+    }
+    const key = parseLiveSessionKey(text);
+    if (tag === ownTag && key) {
+      const live = await isRecordProcessLive({ pid, procStart: key.procStart }, options.probe);
+      if (!live) await sweepEntry({ pid, path, text });
+      return;
+    }
+    const recordName = tag === undefined ? `${pid}.json` : `${pid}.${tag}.json`;
+    if (records.has(recordName)) return;
+    try {
+      if (options.now - (await stat(path)).mtimeMs <= ORPHAN_FILE_MAX_AGE_MS) return;
+    } catch {
+      return;
+    }
+    await sweepEntry({ pid, path, text });
+  });
 }
 
 /** Remove writer locks and temp files a crash left behind; a live writer holds one for moments. */
