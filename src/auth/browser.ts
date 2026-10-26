@@ -22,7 +22,8 @@ export function browserCommands(
     .map((entry) => entry.trim().split(/\s+/).filter(Boolean))
     .filter((words) => words.length > 0)
     .map(([command, ...args]): [string, string[]] => {
-      const withUrl = args.map((arg) => arg.replaceAll('%s', url));
+      // A function replacement: a string one would read `$&` and `$'` in the URL as patterns.
+      const withUrl = args.map((arg) => arg.replaceAll('%s', () => url));
       return [command, args.some((arg) => arg.includes('%s')) ? withUrl : [...withUrl, url]];
     });
   if (configured.length > 0) return configured;

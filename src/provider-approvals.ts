@@ -424,6 +424,30 @@ export function withheldModelSelections(
 }
 
 /**
+ * Every slot a workspace layer won with a `<provider>/<model>` value, whatever the provider: the
+ * provenance {@link WorkspaceProviderGate.workspaceSelections} records.
+ */
+export function workspaceModelSelections(
+  layers: readonly ModelSelectionLayer[],
+): WithheldModelSelection[] {
+  const selections: WithheldModelSelection[] = [];
+  for (const key of selectionSlots(layers)) {
+    const winner = winnerOf(layers, key);
+    if (!winner || winner.layer.trusted) continue;
+    const providerId = providerPrefixOf(winner.value);
+    if (providerId === undefined) continue;
+    selections.push({
+      key,
+      value: winner.value,
+      providerId,
+      path: winner.layer.path,
+      fallback: winner.trustedValue,
+    });
+  }
+  return selections;
+}
+
+/**
  * The model selections a trusted layer made last whose prefix names only a withheld workspace
  * provider. The counterpart of {@link withheldModelSelections}: those fall back, these stay, and
  * the user is told that nothing they chose moved.
@@ -513,6 +537,14 @@ export interface WorkspaceProviderGate {
   withheldSelections: WithheldModelSelection[];
   /** The user's own selections that name only a withheld provider, and so are unaffected. */
   unaffectedSelections: UnaffectedModelSelection[];
+  /**
+   * Every model selection a workspace made that is in effect, with the value the trusted layers
+   * alone would give it (`fallback`): the slots a settings layer won, and the legacy
+   * `.bookrc.json` model when it applied. Provenance, not a verdict: a session that gains a Sign in
+   * with ChatGPT provider mid-session (`/login`) withholds the ones that now name it, without
+   * reading the disk again (`regateSessionConfig`, #615).
+   */
+  workspaceSelections: WithheldModelSelection[];
   /** The legacy `.bookrc.json` `baseUrl`, when the workspace has one. */
   legacyBaseUrl?: LegacyBaseUrlGate;
 }
@@ -526,6 +558,7 @@ export function createWorkspaceProviderGate(parts: {
   droppedOverrides?: DroppedProviderOverride[];
   withheldSelections?: WithheldModelSelection[];
   unaffectedSelections?: UnaffectedModelSelection[];
+  workspaceSelections?: WithheldModelSelection[];
   legacyBaseUrl?: LegacyBaseUrlGate;
 }): WorkspaceProviderGate {
   return {
@@ -535,6 +568,7 @@ export function createWorkspaceProviderGate(parts: {
     droppedOverrides: parts.droppedOverrides ?? [],
     withheldSelections: parts.withheldSelections ?? [],
     unaffectedSelections: parts.unaffectedSelections ?? [],
+    workspaceSelections: parts.workspaceSelections ?? [],
     legacyBaseUrl: parts.legacyBaseUrl,
   };
 }
