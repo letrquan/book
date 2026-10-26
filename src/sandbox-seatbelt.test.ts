@@ -140,7 +140,8 @@ type FileOperation =
  */
 function decide(policy: SeatbeltPolicy, operation: FileOperation, path: string): 'allow' | 'deny' {
   const bookTemp = new RegExp(`/(${BOOK_TEMP_PREFIXES.join('|')})[^/]*(/|$)`);
-  const under = (root: string): boolean => path === root || path.startsWith(`${root}/`);
+  const under = (root: string): boolean =>
+    root === '/' ? path.startsWith('/') : path === root || path.startsWith(`${root}/`);
   let wildcard: 'allow' | 'deny' | undefined =
     operation.startsWith('file-read') && (path === '/' || SEATBELT_SYSTEM_READ_ROOTS.some(under))
       ? 'allow'
@@ -317,32 +318,48 @@ describe('buildSeatbeltPolicy', () => {
     },
   );
 
-  it("keeps Book's home unreadable under a denyWrite entry above it", () => {
+  // A workspace layer may add deny entries: `denyWrite: ["~"]` from a repository
+  // must not open the home directory, for reading or for its sockets (#625).
+  it('shows nothing of the home directory through a denyWrite entry for it', () => {
     const policy = buildSeatbeltPolicy(
-      WS,
-      sandboxSettings({ filesystem: { denyWrite: ['~'] } }),
-      memoryHost(repoTree()),
+      `${USER_TEMP}/ws`,
+      sandboxSettings({ filesystem: { denyWrite: ['~', '/'] } }),
+      memoryHost(repoTree({ [`${USER_TEMP}/ws/a`]: 'file' })),
       undefined,
       TEMP_ROOTS,
       `${HOME}/.book`,
     );
 
-    expect(canRead(policy, `${HOME}/.ssh/id_ed25519`)).toBe(true);
+    expect(canRead(policy, `${HOME}/.ssh/id_ed25519`)).toBe(false);
     expect(canRead(policy, `${HOME}/.book/settings.json`)).toBe(false);
+    expect(decide(policy, 'file-read-metadata', `${HOME}/.ssh`)).toBe('deny');
+    expect(policy.unixSocketRoots).not.toContain(HOME);
+    expect(policy.unixSocketRoots).not.toContain('/');
+    // It still takes write access away, the workspace's included.
+    expect(canWrite(policy, `${USER_TEMP}/ws/a`)).toBe(false);
   });
 
-  it('applies denyWrite as a readable, read-only path and denyRead as an unreadable one', () => {
+  it('applies denyWrite as read-only without making it readable, and denyRead as unreadable', () => {
     const tree = repoTree({
       [`${HOME}/.cargo/bin/rg`]: 'file',
+      [`${WS}/vendor/lib.js`]: 'file',
       [`${WS}/conf/secrets/key`]: 'file',
     });
     const policy = policyFor(
-      { filesystem: { denyWrite: ['~/.cargo'], denyRead: [`${WS}/conf/secrets`] } },
+      {
+        filesystem: {
+          denyWrite: ['~/.cargo', `${WS}/vendor`],
+          denyRead: [`${WS}/conf/secrets`],
+        },
+      },
       tree,
     );
 
-    expect(canRead(policy, `${HOME}/.cargo/bin/rg`)).toBe(true);
+    // Outside the readable roots it stays as hidden as it was.
+    expect(canRead(policy, `${HOME}/.cargo/bin/rg`)).toBe(false);
     expect(canWrite(policy, `${HOME}/.cargo/bin/rg`)).toBe(false);
+    expect(canRead(policy, `${WS}/vendor/lib.js`)).toBe(true);
+    expect(canWrite(policy, `${WS}/vendor/lib.js`)).toBe(false);
     expect(canRead(policy, `${WS}/conf/secrets/key`)).toBe(false);
     expect(canWrite(policy, `${WS}/conf/secrets/key`)).toBe(false);
     // Moving the parent away would carry the secret to an unmasked path.
@@ -885,6 +902,34 @@ describe.skipIf(process.platform !== 'darwin')('the Seatbelt sandbox on a real M
     expect(read.status).not.toBe('success');
     expect(read.content).not.toContain('secret');
     expect(move.status).not.toBe('success');
+  });
+
+  it('shows nothing of the home directory through denyWrite: [~], files or sockets (#625)', async () => {
+    const secret = homePath('deny-secret');
+    writeFileSync(secret, 'home-secret\n');
+    const socketDir = mkdtempSync(join(homedir(), '.book-seatbelt-sock-'));
+    cleanup.push(socketDir);
+    const socketPath = join(socketDir, 's.sock');
+    let connections = 0;
+    const socketServer = createNetServer((socket) => {
+      connections += 1;
+      socket.end();
+    });
+    await new Promise<void>((resolve) => socketServer.listen(socketPath, resolve));
+    try {
+      const overrides = { filesystem: { denyWrite: ['~'] } };
+      const read = await sandboxedBash(`cat '${secret}'`, overrides);
+      const connect = await sandboxedBash(
+        `printf hi | /usr/bin/nc -U '${socketPath}' -w 2; echo "nc=$?"`,
+        overrides,
+      );
+
+      expect(read.content).not.toContain('home-secret');
+      expect(connect.content).toMatch(/nc=[1-9]/);
+      expect(connections).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => socketServer.close(() => resolve()));
+    }
   });
 
   it('keeps the local settings hidden under a denyWrite entry for .book', async () => {

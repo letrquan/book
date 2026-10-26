@@ -189,20 +189,24 @@ describe('buildSandboxExecution', () => {
 
   it('applies declared filesystem policy after the workspace bind', () => {
     const writable = mkdtempSync(join(tmpdir(), 'book-sbx-rw-'));
-    const readonly = mkdtempSync(join(tmpdir(), 'book-sbx-ro-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'book-sbx-ws-'));
     const masked = mkdtempSync(join(tmpdir(), 'book-sbx-hide-'));
+    // A read-only entry applies where the command could write: inside the workspace.
+    const readonly = join(workspace, 'vendor');
+    mkdirSync(readonly);
     try {
       const settings = sandboxSettings();
       settings.filesystem.allowWrite = [writable];
       settings.filesystem.denyWrite = [readonly];
       settings.filesystem.denyRead = [masked];
-      const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', '/work', settings);
+      const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', workspace, settings);
 
       expect(exec.args[exec.args.indexOf(writable) - 1]).toBe('--bind');
       expect(exec.args[exec.args.indexOf(readonly) - 1]).toBe('--ro-bind');
+      expect(exec.args.indexOf(readonly)).toBeGreaterThan(exec.args.indexOf(workspace));
       expect(exec.args[exec.args.indexOf(masked) - 1]).toBe('--tmpfs');
     } finally {
-      for (const dir of [writable, readonly, masked]) {
+      for (const dir of [writable, workspace, masked]) {
         rmSync(dir, { recursive: true, force: true });
       }
     }
@@ -255,12 +259,65 @@ describe('buildSandboxExecution', () => {
 
   it('expands ~ in configured filesystem paths', () => {
     const settings = sandboxSettings();
-    settings.filesystem.denyWrite = ['~'];
+    settings.filesystem.denyRead = ['~'];
     const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', '/work', settings);
     // Without expansion this resolves to "<cwd>/~", which does not exist and
     // would be dropped — unenforced policy the user believes is active.
     expect(exec.args).toContain(homedir());
     expect(exec.args).not.toContain(resolve('~'));
+  });
+
+  /**
+   * A read-only bind shows the real path as well as protecting it, and a
+   * workspace layer may add deny entries. Outside the writable roots it would only
+   * have shown something: the home directory, or the host's /proc and /tmp over
+   * the private ones (#625).
+   */
+  describe('denyWrite only ever takes write access away', () => {
+    const host = allExistingHost(posix);
+
+    it('shows nothing for an entry outside every writable root', () => {
+      const settings = sandboxSettings();
+      settings.filesystem.denyWrite = ['~', '/etc/ssh', '/home/other'];
+
+      const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', '/work', settings, host);
+
+      expect(exec.args).not.toContain('/home/book');
+      expect(exec.args).not.toContain('/home/other');
+      expect(exec.args.filter((arg) => arg === '/etc/ssh')).toEqual([]);
+    });
+
+    it('makes the writable roots inside an entry read-only instead of binding the entry', () => {
+      const settings = sandboxSettings();
+      settings.filesystem.allowWrite = ['/srv/cache'];
+      settings.filesystem.denyWrite = ['/'];
+
+      const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', '/work', settings, host);
+      const roBinds = exec.args.flatMap((arg, index) =>
+        arg === '--ro-bind' ? [exec.args[index + 1]] : [],
+      );
+
+      expect(roBinds).not.toContain('/');
+      expect(roBinds).toContain('/work');
+      expect(roBinds).toContain('/srv/cache');
+      // The private namespace mounts are not overlaid by the host's.
+      expect(exec.args.lastIndexOf('/proc')).toBe(exec.args.indexOf('/proc'));
+    });
+
+    it('binds an entry inside the workspace read-only, after the workspace', () => {
+      const settings = sandboxSettings();
+      settings.filesystem.denyWrite = ['/work/vendor'];
+
+      const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', '/work', settings, host);
+      const at = exec.args.lastIndexOf('/work/vendor');
+
+      expect(exec.args.slice(at - 2, at + 1)).toEqual([
+        '--ro-bind',
+        '/work/vendor',
+        '/work/vendor',
+      ]);
+      expect(at).toBeGreaterThan(exec.args.indexOf('/work'));
+    });
   });
 
   it('binds the workspace root, never a caller-supplied working directory', () => {
@@ -3430,18 +3487,48 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
         }
       });
 
+      it('shows nothing of the home directory through denyWrite: [~] (#625)', async () => {
+        const repo = freshRepo();
+        const secret = join(homedir(), `.book-bwrap-deny-${process.pid}`);
+        writeFileSync(secret, 'home-secret\n');
+        try {
+          const result = await sandboxedBash(`cat '${secret}' || true`, repo, {
+            filesystem: { denyWrite: ['~'] },
+          });
+
+          expect(result.status).toBe('success');
+          expect(result.content).not.toContain('home-secret');
+        } finally {
+          rmSync(secret, { force: true });
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
       it('keeps the credential masked under a denyWrite entry for .book or the workspace (#625)', async () => {
         const repo = freshRepo({ book: true });
         const local = join(repo, '.book', 'settings.local.json');
         writeFileSync(local, JSON.stringify({ provider: { apiKey: 'sk-secret' } }));
         try {
-          for (const denied of [join(repo, '.book'), repo]) {
-            const result = await sandboxedBash(`cat .book/settings.local.json || true`, repo, {
-              filesystem: { denyWrite: [denied] },
-            });
+          for (const denied of [join(repo, '.book'), repo, local]) {
+            const overrides = { filesystem: { denyWrite: [denied] } };
+            const result = await sandboxedBash(
+              `cat .book/settings.local.json || true`,
+              repo,
+              overrides,
+            );
+            // Positive controls: the bind is there (the shared settings read, the
+            // entry refuses a write), so it is the mask after it that hides the key.
+            const shared = await sandboxedBash(`cat .book/settings.json`, repo, overrides);
+            const write = await sandboxedBash(
+              `printf x >> '${denied === local ? local : join(denied, 'probe')}'`,
+              repo,
+              overrides,
+            );
 
             expect(result.status).toBe('success');
             expect(result.content).not.toContain('sk-secret');
+            expect(shared.content).toContain('{}');
+            expect(write.status).not.toBe('success');
           }
         } finally {
           rmSync(repo, { recursive: true, force: true });

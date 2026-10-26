@@ -1137,7 +1137,7 @@ above, and `sandbox.filesystem` — and starts from `(deny default)`:
   bubblewrap. A denied write fails with `Operation not permitted` rather than `Read-only file
 system`; the read-only git directory note is appended for it all the same.
 - **Reads** cover what bubblewrap mounts: the system directories (`/usr`, `/bin`, `/sbin`, `/opt`,
-  `/System`, `/Library`, `/Applications`, `/private/etc`), the workspace, and the declared paths.
+  `/System`, `/Library`, `/Applications`, `/private/etc`), the workspace, and the `allowWrite` paths.
   The home directory is not readable, as it is not mounted under bubblewrap — `~/.book`, `~/.ssh`
   and the rest stay out of reach. Git is run with `GIT_CONFIG_GLOBAL=/dev/null`, because git dies on
   an unreadable `~/.gitconfig` where it skips a missing one.
@@ -1155,7 +1155,7 @@ system`; the read-only git directory note is appended for it all the same.
   is or contains the home directory is not used at all.
 - **Network** is the host's unless a domain rule is declared, in which case every socket is denied
   (below). Even when it is shared, a command can connect only to unix-domain sockets inside the
-  workspace or a declared path, plus the system DNS resolver: the ssh-agent, Docker and other
+  workspace or an `allowWrite` path, plus the system DNS resolver: the ssh-agent, Docker and other
   local sockets are not reachable, as they are not mounted under bubblewrap.
 - **Processes.** Signals and process inspection are limited to the sandbox, and the profile allows
   only a short list of system services, so `launchctl submit`, `open` and Apple Events cannot have
@@ -1201,10 +1201,12 @@ sandbox at all, so a session that refused unsandboxed commands still ran its che
 | Key          | Effect                                                                 |
 | ------------ | ---------------------------------------------------------------------- |
 | `allowWrite` | Bind the path writable inside the sandbox                              |
-| `denyWrite`  | Bind the path read-only                                                |
+| `denyWrite`  | Make the path read-only where a command could write it                 |
 | `denyRead`   | Mask the path — an empty tmpfs for a directory, `/dev/null` for a file |
 
-Entries may start with `~`. Paths that do not exist are skipped — bubblewrap rejects a bind with a missing source — and the skipped entries are reported once at startup and by `book doctor`, since a skipped rule is policy you might otherwise believe is active. On macOS the same entries become Seatbelt rules: `denyWrite` readable but not writable, `denyRead` neither readable nor writable, and missing paths are skipped the same way.
+Entries may start with `~`. Paths that do not exist are skipped — bubblewrap rejects a bind with a missing source — and the skipped entries are reported once at startup and by `book doctor`, since a skipped rule is policy you might otherwise believe is active. On macOS the same entries become Seatbelt rules: `denyWrite` not writable, `denyRead` neither readable nor writable, and missing paths are skipped the same way.
+
+`denyWrite` only ever takes write access away; it never shows a path the sandbox did not already show. An entry inside the workspace or an `allowWrite` root is bound read-only, a writable root inside an entry becomes read-only, and an entry anywhere else changes nothing, because it was already invisible or read-only. Before issue 625, bubblewrap bound the real path read-only wherever it was. So `denyWrite: ["~"]`, which a workspace settings layer may add, showed the whole home directory to sandboxed commands, and `["/"]` overlaid the host's `/proc` and `/tmp`. To make a toolchain outside the workspace usable inside the sandbox, list it in `allowWrite` from your own settings.
 
 `sandbox.network` **fails closed**. Neither bubblewrap nor Seatbelt has DNS or per-domain filtering, so each can only share or deny the network as a whole. If `allowedDomains` or `deniedDomains` contains anything, Book cannot honour the rule as written and disables network access entirely for sandboxed commands, with a warning. Leave both empty to share the host network.
 
