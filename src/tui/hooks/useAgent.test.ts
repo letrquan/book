@@ -286,6 +286,37 @@ describe('provider removal runtime resolution', () => {
     expect(result.switched).toBe(true);
   });
 
+  it("moves off a repository's plan model that the re-read gate now withholds (#615)", () => {
+    const gate = {
+      ...emptyWorkspaceProviderGate(),
+      withheldSelections: [
+        {
+          key: 'model',
+          value: 'chatgpt/gpt-plan',
+          providerId: 'chatgpt',
+          path: '/ws/.book/settings.json',
+          fallback: undefined,
+          reason: 'plan' as const,
+        },
+      ],
+    };
+    const current = defaultConfig({
+      model: 'chatgpt/gpt-plan',
+      modelSelection: 'chatgpt/gpt-plan',
+      defaultApiKey: 'default-key',
+      defaultBaseUrl: 'https://default.test/v1',
+    });
+    const result = resolveConfigAfterProviderRemoval(
+      current,
+      settings({ provider: { chatgpt: { type: 'chatgpt', models: { 'gpt-plan': {} } } } }),
+      'gateway',
+      gate,
+    );
+    expect(result.config.providerAuth).toBeUndefined();
+    expect(result.activeModel).toBe('gpt-4o');
+    expect(result.switched).toBe(true);
+  });
+
   it('falls back to gpt-4o when no configured model remains', () => {
     const result = resolveConfigAfterProviderRemoval(
       activeGateway(),

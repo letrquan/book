@@ -19,6 +19,7 @@ import {
   WorkspaceProviderRefusalError,
   type LegacyBaseUrlGate,
   type WithheldModelSelection,
+  type WorkspaceProviderGate,
 } from './provider-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { hadRemovedAuthConfiguration } from './settings-removed.js';
@@ -183,23 +184,17 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   // to the default, as a `model` in a settings layer gives way to the trusted layers' (#418).
   const withheldIds = new Set(providerGate.withheld);
   const selectedModel = options?.modelOverride || process.env.BOOK_MODEL || settings.model;
-  const legacyPrefix =
-    selectedModel || legacy?.model === undefined ? undefined : providerPrefixOf(legacy.model);
   // Nor may it name the user's own Sign in with ChatGPT provider: a repository can ship the file,
   // and only the user chooses a model billed to their ChatGPT plan (#615).
-  const legacyNamesPlan =
-    legacyPrefix !== undefined && chatGptProviderIds(settings.provider).has(legacyPrefix);
   const withheldLegacyModel: WithheldModelSelection | undefined =
-    legacyPrefix !== undefined && (withheldIds.has(legacyPrefix) || legacyNamesPlan)
-      ? {
-          key: 'model',
-          value: legacy!.model!,
-          providerId: legacyPrefix,
+    selectedModel || legacy?.model === undefined
+      ? undefined
+      : withheldLegacyModelSelection({
+          legacyModel: legacy.model,
           path: legacyConfigPath(resolvedWorkspace),
-          fallback: undefined,
-          ...(legacyNamesPlan ? { reason: 'plan' as const } : {}),
-        }
-      : undefined;
+          withheldIds,
+          planIds: chatGptProviderIds(settings.provider),
+        });
   const legacyChosen = !selectedModel && !withheldLegacyModel && legacy?.model !== undefined;
   const rawModel = selectedModel || (legacyChosen ? legacy?.model : undefined) || 'gpt-4o';
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
@@ -332,7 +327,12 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
         'or use {env:VAR} in settings.' +
         (droppedPlan
           ? `\n\n${describeWithheldSelection(droppedPlan)} To use your ChatGPT plan, choose ` +
-            `the model yourself: --model ${droppedPlan.value}, or "model" in ~/.book/settings.json.`
+            'the model yourself: ' +
+            // The id is the repository's text: a command is suggested only for a plain id, never
+            // one that could carry an option or shell syntax into what the user types.
+            (SAFE_MODEL_ID.test(droppedPlan.value)
+              ? `\`--model ${droppedPlan.value}\`, or "model" in ~/.book/settings.json.`
+              : 'set "model" in ~/.book/settings.json.')
           : '') +
         (hadRemovedAuthConfiguration(
           noSettings
@@ -351,6 +351,9 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
 
   return config;
 }
+
+/** A model id plain enough to suggest in a command: no leading `-`, no whitespace or shell syntax. */
+const SAFE_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,199}$/;
 
 /**
  * The key for a request routed to `baseUrl` whose own configuration names none:
@@ -583,6 +586,88 @@ export function resolveModelProviderConfig(
     provider: provider.type,
     providerApi: provider.type === 'openai' ? provider.api : undefined,
     providerAuth: undefined,
+  };
+}
+
+/**
+ * The session's config once its provider registry changed mid-session: a `type: "chatgpt"`
+ * provider saved by `/login`, or a provider removed. It carries the settings and gate a launch
+ * would compute now, with the values derived from them recomputed: `compactModel` and
+ * `advisorModel` (environment first, as at launch), and the session's model.
+ *
+ * A launch-time gate cannot withhold a selection naming a Sign in with ChatGPT provider that did
+ * not exist yet. Without this, a repository's `compactModel`, `advisorModel`, profile `model`,
+ * `model` or legacy `.bookrc.json` model naming one would resolve as the user's choice once
+ * `/login` added the provider, and bill the user's plan (#615). The session's own model moves only
+ * when a repository chose it and it now names a plan provider; the user's choices stay as they are.
+ *
+ * `settings` and `providerGate` are a fresh `resolveSettingsWithProviderGate` read, with the
+ * environment's settings overrides already applied.
+ */
+export function regateSessionConfig(
+  current: AgentConfig,
+  settings: AgentConfig['settings'],
+  providerGate: WorkspaceProviderGate,
+  env: NodeJS.ProcessEnv = process.env,
+): AgentConfig {
+  const selection = (current.modelSelection ?? current.model).trim();
+  const legacyModel = parseLegacyConfig(current.workspace)?.model;
+  // Only when nothing above the file names a model, as at launch: `--model` is not kept on the
+  // config, so a session model equal to the file's value is read as having come from it.
+  const legacyPlan =
+    legacyModel !== undefined && !env.BOOK_MODEL && !settings.model
+      ? withheldLegacyModelSelection({
+          legacyModel,
+          path: legacyConfigPath(current.workspace),
+          withheldIds: new Set<string>(),
+          planIds: chatGptProviderIds(settings.provider),
+        })
+      : undefined;
+  const withheldSelections = legacyPlan
+    ? [...providerGate.withheldSelections, legacyPlan]
+    : providerGate.withheldSelections;
+  const regated: AgentConfig = {
+    ...current,
+    settings,
+    workspaceProviderGate: {
+      ...providerGate,
+      withheldSelections,
+      legacyBaseUrl: current.workspaceProviderGate?.legacyBaseUrl,
+    },
+    compactModel: env.BOOK_COMPACT_MODEL || settings.compactModel,
+    advisorModel: env.BOOK_ADVISOR_MODEL || settings.advisorModel,
+  };
+  const dropped = withheldSelections.find(
+    (withheld) =>
+      withheld.reason === 'plan' && withheld.key === 'model' && withheld.value.trim() === selection,
+  );
+  if (!dropped) return regated;
+  return applyModelDefaults(
+    resolveModelProviderConfig(regated, dropped.fallback ?? 'gpt-4o', { trustedSelection: true }),
+  );
+}
+
+/**
+ * The legacy `.bookrc.json` `model` as a withheld selection, when it must give way: it names a
+ * withheld workspace provider, or the user's own Sign in with ChatGPT provider (#418, #615).
+ */
+export function withheldLegacyModelSelection(input: {
+  legacyModel: string;
+  path: string;
+  withheldIds: ReadonlySet<string>;
+  planIds: ReadonlySet<string>;
+}): WithheldModelSelection | undefined {
+  const prefix = providerPrefixOf(input.legacyModel);
+  if (prefix === undefined) return undefined;
+  const namesPlan = input.planIds.has(prefix);
+  if (!namesPlan && !input.withheldIds.has(prefix)) return undefined;
+  return {
+    key: 'model',
+    value: input.legacyModel,
+    providerId: prefix,
+    path: input.path,
+    fallback: undefined,
+    ...(namesPlan ? { reason: 'plan' as const } : {}),
   };
 }
 

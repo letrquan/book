@@ -29,3 +29,10 @@ describe('browserCommands', () => {
     ]);
   });
 });
+
+describe('browserCommands with replacement patterns in the URL', () => {
+  it('substitutes the URL literally, $& and all', () => {
+    const odd = "https://auth.example/a?x=$&y=$'";
+    expect(browserCommands(odd, { BROWSER: 'open %s' }, 'linux')).toEqual([['open', [odd]]]);
+  });
+});
