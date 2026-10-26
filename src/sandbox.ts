@@ -1398,13 +1398,23 @@ export function buildSandboxExecution(
   // read-only when it lies inside a writable root, and every writable root
   // inside it bound read-only in its turn. Anything else is already invisible or
   // already read-only, and is left alone.
+  //
+  // The bind goes where the namespace already shows the path: the containing
+  // root's own spelling plus the rest. The entry's spelling can differ (a home
+  // reached through a symlink, a relative entry against a physical cwd), and a
+  // bind at that spelling would create a second view of the real directory that
+  // the credential masks, emitted at the workspace's spelling, do not cover.
   const readOnlyBinds = new Set<string>();
   for (const path of settings.filesystem.denyWrite) {
     const target = expandPath(path, host);
     if (!host.exists(target)) continue;
     const denied = canonicalPath(target, host);
-    if (writableRoots.some((root) => !isOutside(root.canonical, denied, host.path))) {
-      readOnlyBinds.add(target);
+    const container = writableRoots
+      .filter((root) => !isOutside(root.canonical, denied, host.path))
+      .sort((left, right) => right.canonical.length - left.canonical.length)[0];
+    if (container) {
+      const rest = host.path.relative(container.canonical, denied);
+      readOnlyBinds.add(rest ? host.path.resolve(container.at, rest) : container.at);
     }
     for (const root of writableRoots) {
       if (!isOutside(denied, root.canonical, host.path)) readOnlyBinds.add(root.at);

@@ -2166,6 +2166,34 @@ describe('buildSandboxExecution workspace control files', () => {
       },
     );
 
+    it("binds an entry at the namespace's spelling, never at a second one", () => {
+      // `/alias` is a symlink to the workspace: an entry spelled through it is
+      // inside the workspace, and bound where the masks are, not at `/alias`.
+      const linked = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.book/settings.local.json': 'file',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+          '/alias': 'symlink',
+        },
+        {},
+        { '/alias': '/work' },
+      );
+      const settings = sandboxSettings();
+      settings.filesystem.denyWrite = ['/alias/.book', '/alias'];
+
+      const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', WORKSPACE, settings, linked);
+
+      expect(exec.args.some((arg) => arg.startsWith('/alias'))).toBe(false);
+      expect(lastMountFor(exec.args, '/work/.book').flag).toBe('--ro-bind');
+      const maskAt = exec.args.lastIndexOf('/work/.book/settings.local.json') - 2;
+      expect(exec.args[maskAt + 1]).toBe('/dev/null');
+      expect(maskAt).toBeGreaterThan(lastMountFor(exec.args, '/work/.book').index);
+    });
+
     /**
      * In the opt-out mode (`allowGitWrites: true`) the pin is a writable
      * self-bind, so an `allowWrite` entry under the git dir emitted before it
@@ -3500,6 +3528,30 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
           expect(result.content).not.toContain('home-secret');
         } finally {
           rmSync(secret, { force: true });
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('shows no second view of .book through a symlinked spelling (#625)', async () => {
+        const repo = freshRepo({ book: true });
+        writeFileSync(
+          join(repo, '.book', 'settings.local.json'),
+          JSON.stringify({ provider: { apiKey: 'sk-secret' } }),
+        );
+        const alias = join(tmpdir(), `book-sbx-alias-${process.pid}`);
+        rmSync(alias, { force: true });
+        symlinkSync(repo, alias);
+        try {
+          const result = await sandboxedBash(
+            `cat '${join(alias, '.book', 'settings.local.json')}' || true; cat .book/settings.local.json || true`,
+            repo,
+            { filesystem: { denyWrite: [join(alias, '.book')] } },
+          );
+
+          expect(result.status).toBe('success');
+          expect(result.content).not.toContain('sk-secret');
+        } finally {
+          rmSync(alias, { force: true });
           rmSync(repo, { recursive: true, force: true });
         }
       });
