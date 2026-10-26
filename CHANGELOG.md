@@ -45,6 +45,13 @@ All notable changes to this project are documented in this file.
   `Sandbox (macOS Seatbelt)` CI job runs the real-sandbox tests on `macos-latest`. Windows still has
   no backend.
 
+### Fixed
+
+- **`npm run eval:edit` counts every token a task spent** (#631). Each task's `totalTokens` was the
+  latest model request alone, the figure Book's compaction gate reads, so a four-request task
+  reported about a quarter of its traffic. It is now the sum of the task's run records, child runs
+  included. Token figures in edit-eval reports written before this fix don't compare with new ones.
+
 ## [0.4.0-beta.1] - 2026-10-24
 
 ### Fixed

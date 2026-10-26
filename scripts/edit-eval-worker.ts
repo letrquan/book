@@ -34,18 +34,23 @@ function parseArgs(argv: string[]): { task?: string; model?: string } {
 }
 
 /**
- * Every token the task spent: the root run's inclusive usage, summed over all of
- * its provider requests. The `result` event's own `usage` is only the latest
- * request (the compaction gauge), which counted a four-request task as about a
- * quarter of its traffic. The root is picked as evaluateRunEligibility picks it,
- * and there is no fallback to `usage`: a run without accounting reports no total
- * instead of a wrong one, and eligibility already fails closed on it.
+ * Every token the task spent, summed over the result's run records. The `result`
+ * event's own `usage` is only the latest request (the compaction gauge), which
+ * counted a four-request task as about a quarter of its traffic. Each record's
+ * accounting describes that one execution (snapshotRun), so a root's figure leaves
+ * out its children and any second root; summing the records keeps both. A record
+ * without accounting makes the total unknown rather than low, with no fallback to
+ * `usage`; eligibility already fails closed on such a run.
  */
 export function taskTotalTokens(runs: readonly AgentRunResult[] | undefined): number | undefined {
-  const root = runs?.find(
-    (run) => run.context.runId === run.context.rootRunId && run.context.parentRunId === undefined,
-  );
-  return root?.accounting?.inclusiveUsage?.totalTokens;
+  if (!runs?.length) return undefined;
+  let total = 0;
+  for (const run of runs) {
+    const usage = run.accounting?.directUsage;
+    if (!usage) return undefined;
+    total += usage.totalTokens;
+  }
+  return total;
 }
 
 function collectVerifyPaths(task: EvalTask): string[] {

@@ -18,14 +18,14 @@ async function* events(values: unknown[]): ReturnType<typeof query> {
   for (const value of values) yield value as never;
 }
 
-/** A run record whose accounting spent `totalTokens` across all its requests. */
+/** A run record whose own execution spent `totalTokens` across all its requests. */
 function runRecord(runId: string, totalTokens: number, parentRunId?: string) {
   return {
     context: { runId, rootRunId: 'root-run', parentRunId, sessionId: 'session', startedAt: 0 },
     outcome: { status: 'completed', reason: 'normal_completion' },
     usage: null,
     accounting: {
-      inclusiveUsage: { promptTokens: totalTokens - 2, completionTokens: 2, totalTokens },
+      directUsage: { promptTokens: totalTokens - 2, completionTokens: 2, totalTokens },
     },
   } as never;
 }
@@ -159,10 +159,10 @@ describe('runEditEvalWorker', () => {
     });
   });
 
-  it('totals the root run, not a child run or the latest request', () => {
+  it('sums every run record, so child runs count toward the task', () => {
     expect(
-      taskTotalTokens([runRecord('child-run', 5, 'root-run'), runRecord('root-run', 42)]),
-    ).toBe(42);
+      taskTotalTokens([runRecord('root-run', 42), runRecord('child-run', 5, 'root-run')]),
+    ).toBe(47);
   });
 
   it('reports no total rather than a partial one when accounting is missing', () => {
@@ -174,6 +174,7 @@ describe('runEditEvalWorker', () => {
       usage: { promptTokens: 5, completionTokens: 2, totalTokens: 7 },
     } as never;
     expect(taskTotalTokens([unaccounted])).toBeUndefined();
+    expect(taskTotalTokens([runRecord('root-run', 42), unaccounted])).toBeUndefined();
   });
 
   it('loads the TypeScript worker from an isolated process workspace', async () => {
