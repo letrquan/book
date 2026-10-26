@@ -4,6 +4,47 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Experimental: Sign in with ChatGPT, so a ChatGPT Plus or Pro plan can run Book** (#615,
+  #626, #627). `book auth login` (or `/login` in the TUI) signs in through OpenAI's Sign in with
+  ChatGPT for locally hosted apps, and a provider you declare with `type: "chatgpt"` then bills
+  `chatgpt/<model>` requests to your plan. `book auth status` and `book doctor` report the sign-in;
+  `book auth logout` (or `/logout`) revokes the refresh token and clears the local tokens. It is
+  opt-in only: never auto-detected and never a default, nothing changes for API-key users, and
+  `/model` marks plan models experimental. A repository can never pick a plan model: a workspace
+  settings layer's or a legacy `.bookrc.json` `model` naming a `chatgpt` provider gives way to the
+  default with a notice. The sign-in uses a loopback callback with PKCE, state and nonce, checks the
+  ID token's signature, issuer, audience, expiry and nonce, and requires the plan-usage scope. Tokens
+  live only in `<BOOK_HOME>/chatgpt-signin.json` (mode 0600, written atomically), refresh before
+  expiry and once on a 401, and are serialised across processes. Print mode and the SDK never open a
+  browser; with no sign-in they fail naming `book auth login`. A spent plan limit stops retries and
+  shows OpenAI's wording. This brings back subscription sign-in, removed in 0.2.0, for OpenAI only:
+  OpenAI now registers a third-party client at sign-in, so Book needs no vendor client ID.
+  Anthropic stays API-key only, because its terms forbid routing requests through a Free, Pro or Max
+  plan in a third-party app.
+- **The OpenAI Responses API as a provider transport** (#615, #622). Set
+  `provider.<id>.api: "responses"` on a `type: "openai"` provider to stream `POST /responses` instead
+  of Chat Completions. It covers text, reasoning summaries, tool calls, usage and cost, finish
+  reasons, effort (`max` is sent as `xhigh`), abort, and the same retry, redirect and stall handling.
+  Every request sends `store: false` and `stream: true`, and the whole conversation is resent, so no
+  response state is kept at OpenAI. `api` is a connection key: a repository can't set it on a
+  provider your own settings define, and it enters the workspace-provider fingerprint only when set,
+  so existing trust approvals stay valid. Without `api`, nothing changes. Replaying OpenAI's encrypted
+  reasoning items is not part of this change.
+- **A macOS sandbox backend** (#616, #624). With `sandbox.enabled: true`, macOS now runs `Bash` and
+  `Check` under `sandbox-exec` (Seatbelt), with a profile generated per command from the same
+  resolved policy as bubblewrap. Before this, macOS had no backend, so commands ran unsandboxed or
+  were refused, depending on `sandbox.failIfUnavailable`. The workspace and `allowWrite` paths are
+  writable; `.book/`, git directories, hooks and config stay read-only; the home directory, Book's
+  home and `.book/settings.local.json` are unreadable; declared domain rules fail closed to no
+  network; and paths reach the profile only as `-D` parameters, never as profile text. A missing
+  `/usr/bin/sandbox-exec` falls under `failIfUnavailable` exactly as a missing `bwrap` does, and
+  `book doctor` names the backend. Unlike bubblewrap, temp directories are the host's own, because
+  macOS `mktemp` and the `xcrun` shim ignore `TMPDIR`; Book's own temp entries are denied. A new
+  `Sandbox (macOS Seatbelt)` CI job runs the real-sandbox tests on `macos-latest`. Windows still has
+  no backend.
+
 ## [0.4.0-beta.1] - 2026-10-24
 
 ### Fixed
