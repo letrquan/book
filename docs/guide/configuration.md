@@ -423,7 +423,7 @@ that namespace looks like and what happens to a command that cannot get one:
 | `autoAllowBashIfSandboxed`  | `true`  | skip the default permission ask for a genuinely sandboxed `Bash`                   |
 | `excludedCommands`          | `[]`    | command patterns that run outside the sandbox on purpose                           |
 | `filesystem.allowWrite`     | `[]`    | extra paths bound read-write inside the namespace                                  |
-| `filesystem.denyWrite`      | `[]`    | paths bound read-only                                                              |
+| `filesystem.denyWrite`      | `[]`    | paths made read-only where a command could write them; never made visible          |
 | `filesystem.denyRead`       | `[]`    | paths masked entirely (directories) or unreadable (files)                          |
 | `filesystem.allowGitWrites` | `false` | bind every git directory of the workspace read-only; true allows git writes        |
 | `network.allowedDomains`    | `[]`    | not enforceable in bubblewrap; declaring any domain policy disables network access |

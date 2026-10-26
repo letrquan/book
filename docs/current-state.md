@@ -321,8 +321,10 @@ Work aimed at running an objective unattended for days rather than hours. All of
   the configured `sandbox.failIfUnavailable` policy and may run unsandboxed. Where it is available
   the boundary is real: sandboxed commands are spawned as a direct argument vector rather than a
   shell string, so no host shell parses the command, and declared `sandbox.filesystem` entries are
-  applied. `sandbox.network` domain rules cannot be expressed in either backend and fail closed to
-  no network rather than to the full host network. A Windows backend is not implemented.
+  applied. `denyWrite` only ever takes write access away and never makes a path visible (issue
+  625): an entry outside the workspace and the `allowWrite` roots changes nothing.
+  `sandbox.network` domain rules cannot be expressed in either backend and fail closed to no network
+  rather than to the full host network. A Windows backend is not implemented.
   `sandbox.autoAllowBashIfSandboxed` and `sandbox.allowUnsandboxedCommands` are
   consulted now, from one shared predicate over the three ways a command leaves the namespace
   (sandboxing disabled, an `excludedCommands` match, an unavailable backend), so the execution path

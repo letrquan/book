@@ -1258,7 +1258,11 @@ function mountProtected(args: string[], mount: ProtectedMount, host: SandboxHost
  * free to be stricter still. The one `allowWrite` entry that is applied after
  * them is one that names a protected path or something under it, which is the
  * user asking for that path to be writable again; a broader root stays before,
- * so it cannot reopen what the protections just closed.
+ * so it cannot reopen what the protections just closed. The credential masks
+ * (`hidden-file`) are the one thing applied after `denyWrite` as well: a
+ * read-only bind of the directory that holds one would show its contents again.
+ * `denyWrite` itself is applied only where the command could write, so it never
+ * shows a path the namespace did not already show.
  *
  * Exported for testing: it does not require bwrap to be installed, and with an
  * injected `host` its output is fully determined by its arguments.
@@ -1297,6 +1301,15 @@ export function buildSandboxExecution(
   // The workspace is writable. Bound after /tmp so a workspace inside /tmp
   // (every mkdtemp-based test run, among others) survives the tmpfs.
   bindIfPresent(args, '--bind', workspaceRoot, host);
+
+  // Every host path bound writable below, at the spelling the namespace sees,
+  // with its canonical form for containment. `denyWrite` is applied against
+  // these and nothing else.
+  const writableRoots: Array<{ at: string; canonical: string }> = [];
+  const markWritable = (at: string): void => {
+    writableRoots.push({ at, canonical: canonicalPath(at, host) });
+  };
+  if (host.exists(expandPath(workspaceRoot, host))) markWritable(expandPath(workspaceRoot, host));
 
   // Declared filesystem policy overrides the defaults above.
   //
@@ -1337,12 +1350,18 @@ export function buildSandboxExecution(
   // read-only unless an entry names them directly.
   for (const dir of paths.pinnedDirectories) {
     args.push('--bind', host.path.resolve(dir), host.path.resolve(dir));
+    markWritable(host.path.resolve(dir));
   }
   for (const path of settings.filesystem.allowWrite) {
     if (isProtectedArea(path)) continue;
     bindIfPresent(args, '--bind', path, host);
+    if (host.exists(expandPath(path, host))) markWritable(expandPath(path, host));
   }
-  for (const mount of paths.mounts) mountProtected(args, mount, host);
+  // The credential masks are left for the end, after everything that could
+  // bind the directory holding one.
+  for (const mount of paths.mounts) {
+    if (mount.kind !== 'hidden-file') mountProtected(args, mount, host);
+  }
   // ...and only now the opt-ins for the protected areas themselves.
   const deferredOptInCanonicals: string[] = [];
   for (const path of settings.filesystem.allowWrite) {
@@ -1351,6 +1370,7 @@ export function buildSandboxExecution(
     if (host.exists(target)) {
       args.push('--bind', target, target);
       deferredOptInCanonicals.push(canonicalPath(target, host));
+      markWritable(target);
     }
   }
 
@@ -1369,16 +1389,51 @@ export function buildSandboxExecution(
     }
   }
 
-  // A mask hides a file's *contents*, and an opt-in bind for the directory that
-  // holds it undoes that: `allowWrite: ["<workspace>/.book"]` puts the whole
-  // directory back in reach, provider credential included. The masks are
-  // therefore emitted again after every opt-in, so the last mount of a masked
-  // path is `/dev/null` whichever entry named its parent.
+  // `denyWrite` only ever takes write access away. A read-only bind of the real
+  // path would also *show* it, and outside the writable roots nothing is shown:
+  // `denyWrite: ["~"]` bound the whole home directory into the namespace,
+  // `["/"]` the host's /proc, /dev and /tmp over the private ones — and a
+  // workspace layer may add deny entries, so a repository could ask for either
+  // (#625). So an entry is applied only where the command could write: bound
+  // read-only when it lies inside a writable root, and every writable root
+  // inside it bound read-only in its turn. Anything else is already invisible or
+  // already read-only, and is left alone.
+  //
+  // The bind goes where the namespace already shows the path: the containing
+  // root's own spelling plus the rest. The entry's spelling can differ (a home
+  // reached through a symlink, a relative entry against a physical cwd), and a
+  // bind at that spelling would create a second view of the real directory that
+  // the credential masks, emitted at the workspace's spelling, do not cover.
+  const readOnlyBinds = new Set<string>();
+  for (const path of settings.filesystem.denyWrite) {
+    const target = expandPath(path, host);
+    if (!host.exists(target)) continue;
+    const denied = canonicalPath(target, host);
+    const container = writableRoots
+      .filter((root) => !isOutside(root.canonical, denied, host.path))
+      .sort((left, right) => right.canonical.length - left.canonical.length)[0];
+    if (container) {
+      const rest = host.path.relative(container.canonical, denied);
+      readOnlyBinds.add(rest ? host.path.resolve(container.at, rest) : container.at);
+    }
+    for (const root of writableRoots) {
+      if (!isOutside(denied, root.canonical, host.path)) readOnlyBinds.add(root.at);
+    }
+  }
+  for (const at of readOnlyBinds) args.push('--ro-bind', at, at);
+
+  // A mask hides a file's *contents*, and a later bind of the directory that
+  // holds it undoes that: an opt-in such as `allowWrite: ["<workspace>/.book"]`
+  // puts the whole directory back in reach, provider credential included, and so
+  // does a `denyWrite` entry at or above it, which is a read-only bind of the
+  // real directory (#625). The masks are therefore emitted once, after every
+  // opt-in and every `denyWrite` bind, so the last mount of a masked path is
+  // `/dev/null` whichever entry named its parent. `denyRead` stays after them:
+  // it only ever masks harder.
   for (const mount of paths.mounts) {
     if (mount.kind === 'hidden-file') mountProtected(args, mount, host);
   }
 
-  for (const path of settings.filesystem.denyWrite) bindIfPresent(args, '--ro-bind', path, host);
   // bwrap cannot unmount a subpath, so a denied path is masked instead. The
   // mask has to match the kind: --tmpfs needs to mkdir its target, so pointing
   // it at a file aborts the entire invocation with "Not a directory" — and a
@@ -1446,15 +1501,18 @@ export function seatbeltTempRoots(host: SandboxHost = realSandboxHost): string[]
  * The Seatbelt policy for one workspace, from the same inputs and in the same
  * order as {@link buildSandboxExecution}: the workspace, then `allowWrite`, then
  * the protected control paths, then the opt-ins that reopen them, then the
- * masks again, then `denyWrite` / `denyRead`. Seatbelt applies the last rule
- * that matches, which is the same precedence bubblewrap's mount order gives.
+ * credential masks, then `denyWrite` / `denyRead`. Seatbelt applies the last
+ * rule that matches, which is the same precedence bubblewrap's mount order
+ * gives. `denyWrite` only denies writes, so nothing after the masks can reopen
+ * one: on both backends it never shows a path that was not already shown.
  *
  * What bubblewrap gets from mounting and Seatbelt has to state:
  *
  * - **Reads.** bubblewrap shows the command the system directories, the
- *   workspace and the declared paths, and nothing else — the home directory is
- *   not there. The profile reads the same set (`SEATBELT_SYSTEM_READ_ROOTS`
- *   plus the paths below), and directory *metadata* only of their ancestors, so
+ *   workspace and the writable declared paths, and nothing else — the home
+ *   directory is not there. The profile reads the same set
+ *   (`SEATBELT_SYSTEM_READ_ROOTS` plus the paths below), and directory
+ *   *metadata* only of their ancestors, so
  *   a path can be resolved without its parents being listed.
  * - **Pins.** A bind mount is a mount point, so renaming it fails with `EBUSY`;
  *   Seatbelt rules are by path, so a renamed directory takes its contents out
@@ -1548,13 +1606,7 @@ export function buildSeatbeltPolicy(
   };
   const hiddenFiles = paths.mounts.filter((mount) => mount.kind === 'hidden-file' && mount.present);
 
-  const readableRoots = [
-    ...tempRoots,
-    ...(workspace ? [workspace] : []),
-    ...allowWrite,
-    ...optIns,
-    ...denyWrite,
-  ];
+  const readableRoots = [...tempRoots, ...(workspace ? [workspace] : []), ...allowWrite, ...optIns];
   const rules: SeatbeltRule[] = [];
 
   // Directory metadata above every readable root, so a path inside one resolves
@@ -1606,16 +1658,10 @@ export function buildSeatbeltPolicy(
     const rule = protectedRule(mount);
     if (rule) rules.push(rule);
   }
-  // `denyWrite` is a read-only bind under bwrap: readable, even outside the workspace.
-  rules.push({ action: 'allow', operations: ['file-read*'], filters: denyWrite.map(subpath) });
+  // `denyWrite` takes write access away and gives nothing: no read allow, no
+  // socket root. A workspace layer may add deny entries, so one that made a path
+  // readable would let a repository open `~` with `denyWrite: ["~"]` (#625).
   rules.push({ action: 'deny', operations: ['file-write*'], filters: denyWrite.map(subpath) });
-  // That read allow would reopen a mask below it — `denyWrite: ["<ws>/.book"]`
-  // reading the credential back — so the masks and Book's home follow it again.
-  for (const mount of hiddenFiles) {
-    const rule = protectedRule(mount);
-    if (rule) rules.push(rule);
-  }
-  if (bookHomeRule && denyWrite.length > 0 && !workspaceInBookHome) rules.push(bookHomeRule);
   rules.push({
     action: 'deny',
     operations: READ_WRITE,
@@ -1665,7 +1711,7 @@ export function buildSeatbeltPolicy(
     // Seatbelt has no per-domain filtering either, so a domain policy fails
     // closed to no network rather than to the whole host network.
     network: hasDomainPolicy(settings) ? 'none' : 'host',
-    unixSocketRoots: [...(workspace ? [workspace] : []), ...allowWrite, ...optIns, ...denyWrite],
+    unixSocketRoots: [...(workspace ? [workspace] : []), ...allowWrite, ...optIns],
     unixSocketDenied: denyReadEntries.map((entry) => entry.path),
   };
 }
