@@ -37,6 +37,7 @@ import { maskAtGate } from '../../agent/tool-output-masking.js';
 import { resolveContextLimit } from '../../models.js';
 import {
   applyModelDefaults,
+  DEFAULT_MODEL,
   regateSessionConfig,
   resolveCompactModelConfig,
   resolveModelProviderConfig,
@@ -211,15 +212,24 @@ export function resolveConfigAfterProviderRemoval(
   inheritedProviderRevealed: boolean;
 } {
   // Re-gated first: the settings may now hold a Sign in with ChatGPT provider the launch gate never
-  // saw, and a repository's selections naming it must not survive as the user's (#615).
-  const regated = regateSessionConfig(current, settings, providerGate);
+  // saw, and a repository's selections naming it must not survive as the user's (#615). Which
+  // selections a workspace made is the launch's knowledge, so it is carried over, not re-read.
+  const regated = regateSessionConfig({
+    ...current,
+    settings,
+    workspaceProviderGate: {
+      ...providerGate,
+      legacyBaseUrl: current.workspaceProviderGate?.legacyBaseUrl,
+      workspaceSelections: current.workspaceProviderGate?.workspaceSelections ?? [],
+    },
+  });
   const currentSelection = regated.modelSelection ?? regated.model;
-  const configuredDefault = settings.model;
+  const configuredDefault = regated.settings.model;
   const defaultIsStale =
     configuredDefault !== undefined &&
     providerIdFromSelection(configuredDefault) === providerId &&
     !settings.provider[providerId];
-  const effectiveDefault = !configuredDefault || defaultIsStale ? 'gpt-4o' : configuredDefault;
+  const effectiveDefault = !configuredDefault || defaultIsStale ? DEFAULT_MODEL : configuredDefault;
   const activeProviderRemoved = providerIdFromSelection(currentSelection) === providerId;
   const nextSelection = activeProviderRemoved ? effectiveDefault : currentSelection;
   const next = applyModelDefaults(
@@ -231,9 +241,7 @@ export function resolveConfigAfterProviderRemoval(
   return {
     config: next,
     activeModel,
-    switched:
-      (activeProviderRemoved && activeModel !== currentSelection) ||
-      activeModel !== launchedSelection,
+    switched: activeModel !== launchedSelection,
     inheritedProviderRevealed: Boolean(settings.provider[providerId]),
   };
 }
@@ -2204,24 +2212,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         activate ? selection : undefined,
       );
       if (!result.ok) return result;
-      // A Sign in with ChatGPT provider (what `/login` saves) re-gates the session from disk, as a
-      // launch would: the launch-time gate could not withhold a repository's selections naming a
-      // plan provider that did not exist yet (#615).
-      let regate: { settings: ResolvedSettings; providerGate: WorkspaceProviderGate } | undefined;
-      if (savedProvider.type === 'chatgpt' && !config.settingsContext?.noSettings) {
-        try {
-          const reread = resolveSettingsWithProviderGate(
-            config.workspace,
-            config.settingsContext?.overridePath,
-          );
-          regate = {
-            settings: applySettingsEnvOverrides(reread.settings),
-            providerGate: reread.providerGate,
-          };
-        } catch (error) {
-          return { ok: false, error: error instanceof Error ? error.message : String(error) };
-        }
-      }
       // The live entry keeps what the workspace layers add to the user's, as a launch would.
       const liveProvider = liveProviderAfterSave(
         {
@@ -2236,27 +2226,23 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       );
 
       setLiveConfig((current) => {
-        const withProvider: AgentConfig = regate
-          ? regateSessionConfig(
-              current,
-              {
-                ...regate.settings,
-                ...(activate ? { model: selection } : {}),
-                provider: { ...regate.settings.provider, [providerId]: liveProvider },
-              },
-              regate.providerGate,
-            )
-          : {
-              ...current,
-              settings: {
-                ...current.settings,
-                ...(activate ? { model: selection } : {}),
-                provider: {
-                  ...current.settings.provider,
-                  [providerId]: liveProvider,
-                },
-              },
-            };
+        // Re-gated as a launch would: a Sign in with ChatGPT provider this save adds (what `/login`
+        // saves) must not turn a repository's selections naming it into the user's (#615). Pure,
+        // and a no-op for any other provider.
+        const regated = regateSessionConfig({
+          ...current,
+          settings: {
+            ...current.settings,
+            provider: {
+              ...current.settings.provider,
+              [providerId]: liveProvider,
+            },
+          },
+        });
+        // The user's activation applies after the re-gate: it is their choice, never withheld.
+        const withProvider: AgentConfig = activate
+          ? { ...regated, settings: { ...regated.settings, model: selection } }
+          : regated;
         return activate
           ? applyModelDefaults(
               resolveModelProviderConfig(withProvider, selection, { trustedSelection: true }),

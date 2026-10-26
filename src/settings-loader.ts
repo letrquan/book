@@ -32,6 +32,7 @@ import {
   type ProviderLayer,
   type WorkspaceProviderGate,
   chatGptProviderIds,
+  workspaceModelSelections,
 } from './provider-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { normalizeRemovedSettings } from './settings-removed.js';
@@ -801,6 +802,13 @@ export function resolveSettingsWithProviderGate(
     droppedOverrides: droppedProviderOverrides(workspaceProviderLayers, trustedProviderIds),
     withheldSelections,
     unaffectedSelections: unaffectedModelSelections(selectionLayers, withheldProviders),
+    // Those already withheld fell back above, so what remains is what a workspace chose and kept.
+    workspaceSelections: workspaceModelSelections(selectionLayers).filter(
+      (selection) =>
+        !withheldSelections.some(
+          (withheld) => withheld.key === selection.key && withheld.value === selection.value,
+        ),
+    ),
   });
   return { settings, providerGate };
 }

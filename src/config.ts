@@ -12,6 +12,7 @@ import {
 import {
   chatGptProviderIds,
   describeWithheldSelection,
+  profileOfModelKey,
   environmentModelSelections,
   evaluateLegacyBaseUrl,
   providerPrefixOf,
@@ -19,7 +20,6 @@ import {
   WorkspaceProviderRefusalError,
   type LegacyBaseUrlGate,
   type WithheldModelSelection,
-  type WorkspaceProviderGate,
 } from './provider-approvals.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { hadRemovedAuthConfiguration } from './settings-removed.js';
@@ -196,7 +196,30 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
           planIds: chatGptProviderIds(settings.provider),
         });
   const legacyChosen = !selectedModel && !withheldLegacyModel && legacy?.model !== undefined;
-  const rawModel = selectedModel || (legacyChosen ? legacy?.model : undefined) || 'gpt-4o';
+  const rawModel = selectedModel || (legacyChosen ? legacy?.model : undefined) || DEFAULT_MODEL;
+  // What a workspace chose and is in effect, for a mid-session re-gate (`regateSessionConfig`): a
+  // slot the user's `--model` or environment outranks is theirs, and the legacy model counts
+  // when it applied.
+  const environmentSlots = new Set([
+    ...(options?.modelOverride || process.env.BOOK_MODEL ? ['model'] : []),
+    ...(process.env.BOOK_COMPACT_MODEL ? ['compactModel'] : []),
+    ...(process.env.BOOK_ADVISOR_MODEL ? ['advisorModel'] : []),
+  ]);
+  const legacyPrefix = legacyChosen ? providerPrefixOf(legacy!.model!) : undefined;
+  const workspaceSelections: WithheldModelSelection[] = [
+    ...providerGate.workspaceSelections.filter((entry) => !environmentSlots.has(entry.key)),
+    ...(legacyPrefix !== undefined
+      ? [
+          {
+            key: 'model',
+            value: legacy!.model!,
+            providerId: legacyPrefix,
+            path: legacyConfigPath(resolvedWorkspace),
+            fallback: undefined,
+          },
+        ]
+      : []),
+  ];
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
   const advisorModel = process.env.BOOK_ADVISOR_MODEL || settings.advisorModel;
   const compactEffort = settings.compactEffort;
@@ -262,6 +285,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
       withheldSelections: withheldLegacyModel
         ? [...providerGate.withheldSelections, withheldLegacyModel]
         : providerGate.withheldSelections,
+      workspaceSelections,
       // What `--model` and the environment chose counts too: those outrank every settings layer.
       unaffectedSelections: withEnvironmentSelections(
         providerGate.unaffectedSelections,
@@ -589,61 +613,79 @@ export function resolveModelProviderConfig(
   };
 }
 
+/** The model a session runs when nothing names one. */
+export const DEFAULT_MODEL = 'gpt-4o';
+
 /**
- * The session's config once its provider registry changed mid-session: a `type: "chatgpt"`
- * provider saved by `/login`, or a provider removed. It carries the settings and gate a launch
- * would compute now, with the values derived from them recomputed: `compactModel` and
- * `advisorModel` (environment first, as at launch), and the session's model.
+ * The session's config once its provider registry changed mid-session (`/login` saved a
+ * `type: "chatgpt"` provider, a provider was removed): every selection a workspace made that now
+ * names a Sign in with ChatGPT provider is withheld, as a launch would withhold it (#615).
  *
- * A launch-time gate cannot withhold a selection naming a Sign in with ChatGPT provider that did
- * not exist yet. Without this, a repository's `compactModel`, `advisorModel`, profile `model`,
- * `model` or legacy `.bookrc.json` model naming one would resolve as the user's choice once
- * `/login` added the provider, and bill the user's plan (#615). The session's own model moves only
- * when a repository chose it and it now names a plan provider; the user's choices stay as they are.
- *
- * `settings` and `providerGate` are a fresh `resolveSettingsWithProviderGate` read, with the
- * environment's settings overrides already applied.
+ * A launch-time gate cannot withhold a selection naming a plan provider that did not exist yet, so
+ * a repository's `compactModel`, `advisorModel`, profile `model`, `model` or legacy `.bookrc.json`
+ * model naming one would otherwise resolve as the user's choice once `/login` added it, and bill
+ * the plan. The gate's `workspaceSelections` say which selections a workspace made and what the
+ * trusted layers alone would give each, so this reads no file and cannot fail. The user's own
+ * choices (their settings, `--model`, the environment, `/model`) are never in that list.
  */
 export function regateSessionConfig(
   current: AgentConfig,
-  settings: AgentConfig['settings'],
-  providerGate: WorkspaceProviderGate,
   env: NodeJS.ProcessEnv = process.env,
 ): AgentConfig {
+  const gate = current.workspaceProviderGate;
+  if (!gate) return current;
+  const planIds = chatGptProviderIds(current.settings.provider);
+  const withheld = new Set(gate.withheldSelections.map((entry) => `${entry.key}\0${entry.value}`));
+  const newlyWithheld = gate.workspaceSelections
+    .filter((entry) => planIds.has(entry.providerId))
+    .filter((entry) => !withheld.has(`${entry.key}\0${entry.value}`))
+    .map((entry) => ({ ...entry, reason: 'plan' as const }));
+  if (newlyWithheld.length === 0) return current;
+
+  const settings = { ...current.settings, agents: { ...current.settings.agents } };
+  settings.agents.profiles = { ...settings.agents.profiles };
+  let sessionFallback: string | undefined;
+  let sessionDropped = false;
   const selection = (current.modelSelection ?? current.model).trim();
-  const legacyModel = parseLegacyConfig(current.workspace)?.model;
-  // Only when nothing above the file names a model, as at launch: `--model` is not kept on the
-  // config, so a session model equal to the file's value is read as having come from it.
-  const legacyPlan =
-    legacyModel !== undefined && !env.BOOK_MODEL && !settings.model
-      ? withheldLegacyModelSelection({
-          legacyModel,
-          path: legacyConfigPath(current.workspace),
-          withheldIds: new Set<string>(),
-          planIds: chatGptProviderIds(settings.provider),
-        })
-      : undefined;
-  const withheldSelections = legacyPlan
-    ? [...providerGate.withheldSelections, legacyPlan]
-    : providerGate.withheldSelections;
+  for (const entry of newlyWithheld) {
+    const profile = profileOfModelKey(entry.key);
+    if (profile !== undefined) {
+      const rest = { ...settings.agents.profiles[profile] };
+      delete rest.model;
+      if (entry.fallback === undefined) {
+        if (Object.keys(rest).length === 0) delete settings.agents.profiles[profile];
+        else settings.agents.profiles[profile] = rest;
+      } else {
+        settings.agents.profiles[profile] = { ...rest, model: entry.fallback };
+      }
+      continue;
+    }
+    const slot = entry.key as 'model' | 'compactModel' | 'advisorModel';
+    if (entry.fallback === undefined) delete settings[slot];
+    else settings[slot] = entry.fallback;
+    if (slot === 'model' && entry.value.trim() === selection) {
+      sessionDropped = true;
+      sessionFallback = entry.fallback;
+    }
+  }
   const regated: AgentConfig = {
     ...current,
     settings,
     workspaceProviderGate: {
-      ...providerGate,
-      withheldSelections,
-      legacyBaseUrl: current.workspaceProviderGate?.legacyBaseUrl,
+      ...gate,
+      withheldSelections: [...gate.withheldSelections, ...newlyWithheld],
+      workspaceSelections: gate.workspaceSelections.filter(
+        (entry) => !newlyWithheld.some((dropped) => dropped.key === entry.key),
+      ),
     },
     compactModel: env.BOOK_COMPACT_MODEL || settings.compactModel,
     advisorModel: env.BOOK_ADVISOR_MODEL || settings.advisorModel,
   };
-  const dropped = withheldSelections.find(
-    (withheld) =>
-      withheld.reason === 'plan' && withheld.key === 'model' && withheld.value.trim() === selection,
-  );
-  if (!dropped) return regated;
+  if (!sessionDropped) return regated;
   return applyModelDefaults(
-    resolveModelProviderConfig(regated, dropped.fallback ?? 'gpt-4o', { trustedSelection: true }),
+    resolveModelProviderConfig(regated, sessionFallback ?? DEFAULT_MODEL, {
+      trustedSelection: true,
+    }),
   );
 }
 

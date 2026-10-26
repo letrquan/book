@@ -17,7 +17,6 @@ import {
 import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { defaultConfig } from './test/fixtures.js';
-import { resolveSettingsWithProviderGate } from './settings-loader.js';
 import { collectWithheldProviderNotices } from './project-approval-notices.js';
 import { tmpdir } from 'os';
 import {
@@ -620,20 +619,20 @@ describe('loadConfig provider registry', () => {
           },
         }),
       );
-    /** What /login does: the user file gains the chatgpt provider; the session re-gates. */
+    /** What /login does to the live session: the chatgpt provider joins it, then it re-gates. */
     const loginMidSession = (config: ReturnType<typeof loadConfig>) => {
-      writeFileSync(
-        join(isolatedHome, 'settings.json'),
-        JSON.stringify({
-          ...JSON.parse(readFileSync(join(isolatedHome, 'settings.json'), 'utf8')),
-          provider: { chatgpt: planEntry },
-        }),
-      );
       signInRecord();
-      const reread = resolveSettingsWithProviderGate(workspace);
-      return regateSessionConfig(config, reread.settings, reread.providerGate);
+      return regateSessionConfig({
+        ...config,
+        settings: {
+          ...config.settings,
+          provider: {
+            ...config.settings.provider,
+            chatgpt: { ...planEntry, type: 'chatgpt' as const },
+          },
+        },
+      });
     };
-
     it("never lets a workspace's compact, advisor or profile model bill a plan that appears after launch", () => {
       process.env.BOOK_API_KEY = 'api-account-key';
       delete process.env.BOOK_COMPACT_MODEL;
@@ -696,6 +695,29 @@ describe('loadConfig provider registry', () => {
           path: join(workspace, '.bookrc.json'),
         }),
       ]);
+    });
+
+    it("keeps the user's own BOOK_MODEL, even one equal to the repository's", () => {
+      process.env.BOOK_API_KEY = 'api-account-key';
+      process.env.BOOK_MODEL = 'chatgpt/gpt-plan';
+      writeFileSync(join(isolatedHome, 'settings.json'), JSON.stringify({}));
+      writeFileSync(
+        join(workspace, '.book', 'settings.json'),
+        JSON.stringify({ model: 'chatgpt/gpt-plan' }),
+      );
+      const launched = loadConfig(workspace);
+      const next = loginMidSession(launched);
+      expect(next.modelSelection).toBe('chatgpt/gpt-plan');
+      delete process.env.BOOK_MODEL;
+    });
+
+    it('withholds a legacy .bookrc.json plan model under --no-settings too', () => {
+      process.env.BOOK_API_KEY = 'api-account-key';
+      writeFileSync(join(workspace, '.bookrc.json'), JSON.stringify({ model: 'chatgpt/gpt-plan' }));
+      const launched = loadConfig(workspace, { noSettings: true });
+      expect(launched.modelSelection).toBe('chatgpt/gpt-plan');
+      const next = loginMidSession(launched);
+      expect(next.modelSelection).toBe('gpt-4o');
     });
 
     it("keeps the user's own plan selections", () => {
