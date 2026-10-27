@@ -69,8 +69,9 @@ src/
   memory-*.ts           memory-store.ts (file store + MEMORY.md index + provenance),
                         memory-display.ts (/memory)
   jobs/                 Background shell manager, persistent state, and restart recovery
-  messaging/            Cross-session messaging (#620): live-session registry + TUI-only writer, inbox socket/client/wire,
-                        envelope, receive policy + hold, delivery, idle notices, peer awareness (peer-awareness.ts)
+  messaging/            Cross-session messaging: live-session registry + TUI-only writer,
+                        inbox socket/client/wire, envelope, receive policy + hold, delivery,
+                        idle notices, peer awareness (peer-awareness.ts)
   agent/
     loop.ts             Core agent loop (runAgentLoop)
     context.ts          System prompt builder (cached kernel/session-context zones),
