@@ -391,12 +391,14 @@ describe('runHeadless — a failure outlives a reader that leaves (#248)', () =>
     } as unknown as AgentManager;
     const registry = createRegistry();
     registry.registerAll(createDefaultRegistry().getDefinitions());
+    let spawned = false;
     registry.register({
       name: 'SpawnFakeAgent',
       description: 'Create the managed-agent runtime.',
       parameters: { type: 'object', properties: {} },
       execute: async (_args, context) => {
         context.runtime!.agentManager = fakeManager;
+        spawned = true;
         return toolSuccess('spawned');
       },
     });
@@ -415,6 +417,9 @@ describe('runHeadless — a failure outlives a reader that leaves (#248)', () =>
       stdout: readerLeavesAfter('"type":"error"', controller, writes),
     });
 
+    // Without a child runtime the run never waits for children, and the case is not tested: this
+    // passed vacuously while the fake tool, a deferred one, was refused as not active (#619).
+    expect(spawned).toBe(true);
     expect(result.outcome.status).toBe('failed');
   });
 

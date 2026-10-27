@@ -335,8 +335,35 @@ authorization does (the permission mode, an agent role, or a skill or command re
 scoring. Names are canonical names or aliases, in any letter case, separated by commas or spaces; two tools that differ only by case need the exact name. Authorization is the same as for
 a search: a name that no tool has, or that the role, mode or capability rules exclude, gets a line
 naming it, a tool that is already active says so, and the loaded-tool and schema budgets still
-apply. `category`, `namespace` and `limit` are ignored with `select:`. Loaded tools are callable on
-the next model turn.
+apply. `category`, `namespace` and `limit` are ignored with `select:`. Loaded tools are declared to
+the provider from the next model turn.
+
+A listed tool can also be called directly, without `ToolSearch`: a call to an authorized deferred
+tool that is not active runs just in time. It is active for the rest of that model turn and loaded
+for the next one, exactly as `select:` would load it, and it then meets every gate a call after
+`select:` meets: the argument-scoped `allowed-tools` rules, its schema, the permission mode, the
+`PreToolUse` hooks and the permission prompt. The same holds for a core tool that became available
+after the turn's request was built, such as `BashOutput` after a background `Bash` earlier in the
+same response, or `Write` after an approved `ExitPlanMode`. Authorization is `select:`'s too, so a
+tool outside the agent role, `allowed-tools`, the mode or the run's state is refused as
+`tool_not_active`, as before, and its schema is never shown; the refusal says which of those it is,
+and plan mode still refuses its mutating tools with its own message.
+
+A `permissions.deny` or `ask` rule on `ToolSearch` itself, or a `PreToolUse` or `PostToolUse` hook
+whose matcher names `ToolSearch`, turns direct calls off for the run: whoever wrote it meant to gate
+or to audit discovery, so a direct call to a tool that is not active is refused toward `ToolSearch`
+as before, where the rule or hook applies, and the deferred-tool list does not offer direct calls. A
+hook with no matcher runs on every call, the direct one included, and turns nothing off; nor does an
+allow rule.
+
+Invalid arguments on a call to a tool the turn's request did not declare (called directly, or loaded
+by `select:` earlier in the same response) are refused with the tool's argument names and types, two
+object levels deep and at most about 2,000 characters, then a pointer to `select:`; the tool is still
+loaded, so the next attempt has its schema. A tool whose schema alone exceeds the schema budget still
+runs, with a line saying it was not loaded, and is admitted again on each call; `select:` and a search
+that cannot load it say so. Activations are logged under `BOOK_DEBUG` (`tools:discovery`) with their
+reason: `search`, `select`, `direct`, or `host` for a tool Book loads itself (a skill's resource
+reader).
 
 ## Permission rules and modes
 

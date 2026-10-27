@@ -493,8 +493,12 @@ export interface ToolDiscoveryContext {
     query: string,
     filter?: { category?: ToolCategory; namespace?: string; limit?: number },
   ): string[];
-  /** Activate selected definitions for the next provider request. */
-  activate(names: string[]): string[];
+  /**
+   * Activate selected definitions for the next provider request. The reason is logged: ToolSearch's
+   * query passes `search`, and anything else is the host loading a tool itself (a skill's resource
+   * reader), the default.
+   */
+  activate(names: string[], reason?: 'search' | 'host'): string[];
   /**
    * Activate exact tools by name (`select:A,B`) instead of ranking a query, reporting each name's
    * outcome. Optional so a discovery object built without it keeps working; ToolSearch then
@@ -522,9 +526,41 @@ export interface ToolDiscoveryContext {
    * "not allowed" and reports the former.
    */
   isAuthorized?(name: string): boolean;
+  /**
+   * Admit a direct call to a tool that is not active, just in time (#619). A tool the surface
+   * authorizes right now (role, capability rules, mode and runtime: the set `select:` loads from)
+   * is active for the rest of this request and declared in the next, as after `select:`: a
+   * deferred one is loaded, and a core one that became available since the request was built needs
+   * no loading. Returns undefined for any other name, or whether the tool will be declared: `false`
+   * only when its schema alone exceeds the budget. A name already admitted this request answers the
+   * same again without being loaded twice. Admission is not approval: the call still meets the
+   * argument-scoped rules, its schema, the mode, the hooks and the permission check. Optional so a
+   * discovery object built without it keeps working; such a call is then refused as not active.
+   */
+  admitDirect?(name: string): { loaded: boolean } | undefined;
+  /**
+   * Whether this surface admits direct calls at all: not when a permission rule or a PreToolUse
+   * hook targets ToolSearch itself, which then gates every deferred tool as it did before #619.
+   * Optional; without it no text offers a direct call.
+   */
+  admitsDirectCalls?(): boolean;
+  /**
+   * Why a registered tool is not active, for its refusal: outside the role or the capability rules,
+   * outside what the mode or the runtime offers right now, or authorized but not loaded. Optional;
+   * without it the registry tells only `isAuthorized`'s two answers apart.
+   */
+  whyInactive?(name: string): 'unauthorized' | 'unavailable' | 'activatable';
+  /**
+   * Whether the provider request the model is answering declared this tool. A call to one it did not
+   * declare was written without the schema, so its argument errors name the types. Optional.
+   */
+  wasDeclared?(name: string): boolean;
   /** Whether a tool is currently visible and executable for this turn. */
   canExecute(call: ToolCall): boolean;
-  /** Definitions to send to the provider for the current request. */
+  /**
+   * Definitions to send to the provider for the current request. Building them starts a new
+   * request: the tools `admitDirect` admitted for the previous one are active now only if loaded.
+   */
   activeDefinitions(): ToolDefinition[];
   /** Compact catalog text used by the system prompt. */
   catalogSummary(): string;

@@ -357,12 +357,11 @@ export async function runHeadless(
     let lastUsage: Usage | null = null;
     let lastOutcome: AgentTerminalOutcome | null = null;
     /**
-     * Whether an abort may reclassify the run as cancelled when it ends a wait
-     * for managed children. Set once the prompts are done, and only ever false
-     * when the run's last turn failed: a failure is what went wrong, whatever
-     * arrived afterwards (#248).
+     * Whether the run's last turn failed. A function rather than a read of `lastOutcome` in place:
+     * the turns assign it from their callbacks, which control-flow narrowing does not see, so a
+     * read after the prompts would be narrowed to its initial `null`.
      */
-    let mayReclassify = true;
+    const lastTurnFailed = (): boolean => lastOutcome?.status === 'failed';
     /** The opening message of the latest model run: the answer is read from that run only. */
     let finalRunOpeningId: string | undefined;
     const runResults: AgentRunResult[] = [];
@@ -1071,7 +1070,10 @@ export async function runHeadless(
         const idle =
           !runSignal?.aborted && (await raceAbort(managedAgentManager.waitForIdle(), runSignal));
         if (!idle) {
-          if (mayReclassify) lastOutcome = classifyAbortReason(runSignal?.reason, true);
+          // A turn that failed failed: an abort afterwards is a reader going away, a
+          // cancel, or a timeout, and none of them is what went wrong (#248). Read here,
+          // where the abort lands: a flag set after the prompts was set after this wait too.
+          if (!lastTurnFailed()) lastOutcome = classifyAbortReason(runSignal?.reason, true);
           break;
         }
         const pending = (await managedAgentManager.listPendingCompletions()).filter(
@@ -1153,9 +1155,6 @@ export async function runHeadless(
     // A run made only of host-performed commands has no last turn, so reporting
     // `null` would say "this cost nothing" about work that really spent tokens.
     const reportedUsage = lastUsage ?? commandUsage;
-    // A turn that failed failed: an abort afterwards is a reader going away, a
-    // cancel, or a timeout, and none of them is what went wrong (#248).
-    mayReclassify = lastOutcome?.status !== 'failed';
     // No model turn in this process (a run of host-performed commands, such as
     // `book -p --continue "/review"`) has no answer: the walk would otherwise read the
     // previous process's answer out of the resumed history (#248).

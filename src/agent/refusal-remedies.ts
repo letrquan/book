@@ -141,7 +141,7 @@ export const REFUSAL_REMEDIES: Readonly<Record<LocalRefusalKind, string>> = {
     'the pattern is shaped in a way the matcher cannot read — too long, or nesting groups deeper than it compiles into a regular expression — and no directory, permission rule or mode makes that walk happen; the model has to write a simpler pattern',
   hook: 'a PreToolUse hook refused the calls, which no permission rule or mode lifts; change or remove that hook',
   inactive:
-    "the calls named tools, or arguments, that this turn's tool surface does not allow, which no permission rule or mode changes; a deferred tool has to be activated with ToolSearch first, and the run's allowed tools (--allowedTools, or a skill's or command's allowed-tools) must cover the tool and its arguments",
+    "the calls named tools, or arguments, that this turn's tool surface does not allow, which no permission rule or mode changes; the run's allowed tools (--allowedTools, or a skill's or command's allowed-tools) must cover the tool and its arguments, and a tool that only some states offer (a background-shell tool before a shell runs) cannot be called before then",
   capability:
     "the calls are outside this agent's tool policy (its profile or definition), which no permission rule or mode lifts; give the step to an agent whose policy allows it",
   skill:

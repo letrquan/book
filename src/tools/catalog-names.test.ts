@@ -287,6 +287,8 @@ describe('ToolSearch select: (#619)', () => {
     expect(names(surface)).toContain('WebFetch');
     expect(names(surface)).not.toContain('GitLog');
     expect(result.content).toContain('GitLog: does not fit');
+    // A direct call still runs a tool the budget keeps out (#619, review of #637).
+    expect(result.content).toContain('a direct call still runs it');
   });
 
   it('keeps the schema budget', async () => {
@@ -300,6 +302,11 @@ describe('ToolSearch select: (#619)', () => {
     const { result } = await run('select:WebFetch', surface);
     expect(result.status).toBe('error');
     expect(result.structuredError?.code).toBe('tool_discovery_budget_exceeded');
+    expect(result.structuredError?.remediation).toContain('a direct call still runs');
+
+    const searched = await run('fetch web page url', surface);
+    expect(searched.result.structuredError?.code).toBe('tool_discovery_budget_exceeded');
+    expect(searched.result.structuredError?.remediation).toContain('a direct call still runs');
   });
 
   it('asks for a name after select:', async () => {

@@ -431,7 +431,31 @@ describe('tool schema quality', () => {
 });
 
 describe('discovery gate and invalid JSON arguments', () => {
-  it('refuses a malformed call to an inactive deferred tool as inactive', async () => {
+  it('refuses a malformed call to an unauthorized deferred tool as inactive', async () => {
+    const runtimeConfig = config();
+    runtimeConfig.settings.toolDiscovery.mode = 'deferred';
+    const definitions = [definition('Read'), definition('DeferredTool')];
+    const surface = createToolSurface({
+      config: runtimeConfig,
+      context: context(),
+      definitions,
+      capabilityRules: ['Read'],
+    });
+    expect(surface.activeDefinitions().map((tool) => tool.name)).not.toContain('DeferredTool');
+    const registry = createRegistry();
+    registry.registerAll(definitions);
+
+    const result = await registry.execute(
+      { id: 'raw-deferred', name: 'DeferredTool', arguments: { __raw: '{"q":' } },
+      { ...context(), toolDiscovery: surface },
+    );
+
+    expect(result.status).toBe('blocked');
+    expect(result.structuredError?.code).toBe('tool_not_active');
+  });
+
+  it('names invalid JSON for an authorized deferred tool it admits just in time (#619)', async () => {
+    // The answer `select:DeferredTool` followed by the same call would get.
     const runtimeConfig = config();
     runtimeConfig.settings.toolDiscovery.mode = 'deferred';
     const definitions = [definition('Read'), definition('DeferredTool')];
@@ -445,8 +469,8 @@ describe('discovery gate and invalid JSON arguments', () => {
       { ...context(), toolDiscovery: surface },
     );
 
-    expect(result.status).toBe('blocked');
-    expect(result.structuredError?.code).toBe('tool_not_active');
+    expect(result.structuredError?.code).toBe('invalid_json_arguments');
+    expect(surface.activeDefinitions().map((tool) => tool.name)).toContain('DeferredTool');
   });
 
   it('names invalid JSON for an active tool before its argument-scoped rule runs', async () => {
