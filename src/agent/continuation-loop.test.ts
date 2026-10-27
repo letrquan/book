@@ -724,8 +724,8 @@ function refusedWebProvider(
 }
 
 /**
- * A provider that calls NotebookEdit on every turn. It is a deferred tool and the run never
- * activates it, so every call is refused as inactive — a refusal no permission can lift.
+ * A provider that calls NotebookEdit on every turn. Against a NotebookEdit the run's state does not
+ * offer, every call is refused as inactive — a refusal no permission can lift.
  */
 function inactiveNotebookProvider(): Provider {
   let call = 0;
@@ -879,17 +879,25 @@ describe('the refusal brake names the cause it stopped on', () => {
     expect(outcome?.message).toContain('every destination');
   });
 
-  it('points a streak of refusals at activating the tool, not at permissions', async () => {
-    // NotebookEdit was never activated, so no permission rule and no permission mode can
-    // make it run: only ToolSearch (and an allowed-tools list that includes it) can. Telling
-    // this run to "grant the permission" sends it after a gate that was never the one that
-    // refused.
-    const { outcome, codes } = await runRefusals(inactiveNotebookProvider(), 'bypassPermissions');
+  it('points a streak of refusals at the tool surface, not at permissions', async () => {
+    // NotebookEdit is not available in this run's state, so no permission rule and no
+    // permission mode can make it run, and neither can a search: a deferred tool that is
+    // available runs when called directly (#619). Telling this run to "grant the permission"
+    // sends it after a gate that was never the one that refused.
+    const registry = createDefaultRegistry();
+    const notebook = registry.getTool('NotebookEdit')!;
+    registry.register({ ...notebook, catalog: { ...notebook.catalog, available: () => false } });
+    const { outcome, codes } = await runRefusals(
+      inactiveNotebookProvider(),
+      'bypassPermissions',
+      registry,
+    );
 
     expect(codes).toEqual(['tool_not_active', 'tool_not_active', 'tool_not_active']);
     expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
-    expect(outcome?.message).toContain('ToolSearch');
+    expect(outcome?.message).toContain('allowed tools');
     expect(outcome?.message).toContain('NotebookEdit');
+    expect(outcome?.message).not.toContain('ToolSearch');
     expect(outcome?.message).not.toContain('grant the permission');
   });
 

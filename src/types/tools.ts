@@ -522,9 +522,23 @@ export interface ToolDiscoveryContext {
    * "not allowed" and reports the former.
    */
   isAuthorized?(name: string): boolean;
+  /**
+   * Admit a direct call to a deferred tool that is not active, just in time (#619). A tool the
+   * surface authorizes right now (role, capability rules, mode and runtime: the set `select:` loads
+   * from) is active for the rest of this request and loaded for the next, as `select:` would load
+   * it. Returns undefined for any other name, or whether the tool's schema was loaded: `false` only
+   * when that schema alone exceeds the budget. A name already admitted this request answers the
+   * same again without being loaded twice. Admission is not approval: the call still meets the
+   * argument-scoped rules, its schema, the mode, the hooks and the permission check. Optional so a
+   * discovery object built without it keeps working; such a call is then refused as not active.
+   */
+  admitDirect?(name: string): { loaded: boolean } | undefined;
   /** Whether a tool is currently visible and executable for this turn. */
   canExecute(call: ToolCall): boolean;
-  /** Definitions to send to the provider for the current request. */
+  /**
+   * Definitions to send to the provider for the current request. Building them starts a new
+   * request: the tools `admitDirect` admitted for the previous one are active now only if loaded.
+   */
   activeDefinitions(): ToolDefinition[];
   /** Compact catalog text used by the system prompt. */
   catalogSummary(): string;

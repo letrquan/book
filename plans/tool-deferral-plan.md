@@ -1,6 +1,7 @@
 # Tool deferral plan
 
-Status: **owner decisions recorded 2026-10-25** (§6); PR 1 not started. It is split out of
+Status: **owner decisions recorded 2026-10-25** (§6); PR 1 (names and `select:`) merged in #623;
+PR 2 (just-in-time execution) in review; PRs 3–5 not started. It is split out of
 `plans/cross-session-messaging-plan.md` §4.4, because deferral affects every tool and both provider
 paths.
 

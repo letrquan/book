@@ -1055,10 +1055,11 @@ describe('unparsed tool-call arguments', () => {
     }
   });
 
-  it('refuses a call to an inactive deferred tool before the permission prompt', async () => {
-    // NotebookEdit is registered but never activated this turn, so it can never run
+  it('refuses a call to a tool outside the allowed tools before the permission prompt', async () => {
+    // NotebookEdit is registered but outside this run's allowed tools, so it can never run
     // however it is approved. Approving it would save a rule for a call that cannot
-    // execute; the refusal has to be the inactive one.
+    // execute; the refusal has to be the inactive one. (A deferred tool the run allows is
+    // admitted when called directly (#619), and then reaches the prompt like any other.)
     const workspace = mkdtempSync(join(tmpdir(), 'book-loop-inactive-'));
     try {
       let providerTurn = 0;
@@ -1094,11 +1095,12 @@ describe('unparsed tool-call arguments', () => {
           onToolResult: (result) => results.push(result),
         }),
         'default',
-        { provider, isNewSession: false },
+        { provider, isNewSession: false, allowedTools: ['Read'] },
       );
 
       expect(onPermissionRequired).not.toHaveBeenCalled();
       expect(results[0]?.structuredError?.code).toBe('tool_not_active');
+      expect(results[0]?.structuredError?.details?.activatable).toBe(false);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

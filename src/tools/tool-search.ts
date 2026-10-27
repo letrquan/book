@@ -71,7 +71,7 @@ export const toolSearchTools: ToolDefinition[] = [
   {
     name: 'ToolSearch',
     description:
-      'Load deferred tools when the active tools do not cover the task; they become available on the next model turn. Pass "select:Name1,Name2" to load exact tools by the names the deferred tool list gives (aliases and any letter case work), or describe a capability, product, server, or action to search: a search returns at most five concise matches. Has no external side effects.',
+      'Load deferred tools\' schemas; they are declared from the next model turn. A tool the deferred tool list names can also be called directly without loading it first; pass "select:Name1,Name2" to load exact tools by those names when their arguments are unclear (aliases and any letter case work), or describe a capability, product, server, or action to search: a search returns at most five concise matches. Has no external side effects.',
     parameters: {
       type: 'object',
       properties: {

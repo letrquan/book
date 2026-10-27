@@ -13,6 +13,7 @@ import type {
   ToolSelection,
 } from '../types/tools.js';
 import { estimateTokens } from '../context-report.js';
+import { createDebugLogger } from '../debug-log.js';
 import { resolveContextLimit } from '../models.js';
 import { canonicalToolName, TOOL_ALIASES, unwrapProviderPrefix } from './aliases.js';
 import {
@@ -25,6 +26,8 @@ import { READ_ONLY_PLAN_TOOLS } from './plan-mode.js';
 import { normalizeToolSchema } from './schema.js';
 import { toolSearchTools } from './tool-search.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
+
+const log = createDebugLogger('tools:discovery');
 
 const ALWAYS_CORE = new Set(['Read', 'Glob', 'Grep', 'AskUserQuestion', 'TodoWrite', 'ToolSearch']);
 const MUTATION_CORE = new Set(['ApplyPatch', 'Write', 'Edit', 'MultiEdit', 'Bash']);
@@ -404,6 +407,10 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     ? { clock: 0, loaded: new Map() }
     : (context.runtime?.toolDiscoveryState ?? { clock: 0, loaded: new Map() });
   let activeSnapshot = new Set<string>();
+  // The tools a direct call admitted just in time this request (#619), with whether the budget let
+  // their schema load. Separate from the snapshot, which a search rebuilds mid-request: an
+  // admission lasts until the loop builds the next request's definitions.
+  const admitted = new Map<string, boolean>();
   // A definition's word lists are fixed once normalized, and every search ranks the whole
   // catalog, so they are built on the first ranking and read from here after.
   const wordsByDefinition = new WeakMap<ToolDefinition, Array<[number, string[]]>>();
@@ -476,7 +483,8 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     }
   };
 
-  const activeDefinitions = (): ToolDefinition[] => {
+  /** The active definitions now, refreshing the snapshot `isActive` reads. */
+  const currentDefinitions = (): ToolDefinition[] => {
     trimLoaded();
     const available = authorized();
     const active = !deferredMode()
@@ -487,6 +495,12 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
         );
     activeSnapshot = new Set(active.map((definition) => canonicalToolName(definition.name)));
     return active;
+  };
+
+  /** The definitions for the next provider request, which ends this request's admissions. */
+  const activeDefinitions = (): ToolDefinition[] => {
+    admitted.clear();
+    return currentDefinitions();
   };
 
   /**
@@ -568,7 +582,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     limit = config.settings.toolDiscovery.searchLimit,
   ): ToolSearchMatch[] => {
     const active = new Set(
-      activeDefinitions().map((definition) => canonicalToolName(definition.name)),
+      currentDefinitions().map((definition) => canonicalToolName(definition.name)),
     );
     const candidates = authorized()
       .filter((definition) => definition.name !== 'ToolSearch')
@@ -603,7 +617,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
   ): string[] =>
     rankByWords(
       query,
-      activeDefinitions()
+      currentDefinitions()
         .filter((definition) => definition.name !== 'ToolSearch')
         .filter(
           (definition) => !filter?.category || definition.catalog?.category === filter.category,
@@ -615,7 +629,11 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       .slice(0, Math.max(1, Math.min(5, filter?.limit ?? 5)))
       .map((definition) => definition.name);
 
-  const activate = (names: string[]): string[] => {
+  /**
+   * Load authorized tools for the next request, under the loaded-tool and schema budgets: the one
+   * way in for a search, `select:` and a direct call alike. The reason is only logged.
+   */
+  const load = (names: string[], reason: 'search' | 'select' | 'direct'): string[] => {
     const allowed = new Set(authorized().map((definition) => canonicalToolName(definition.name)));
     const requested = names.map(canonicalToolName);
     const budget = effectiveBudget(config);
@@ -631,10 +649,14 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       }
     }
     trimLoaded();
-    return requested.filter(
+    const loaded = requested.filter(
       (name, index) => requested.indexOf(name) === index && state.loaded.has(name),
     );
+    if (requested.length > 0) log.debug('tools activated', { reason, requested, loaded });
+    return loaded;
   };
+
+  const activate = (names: string[]): string[] => load(names, 'search');
 
   /**
    * A tool's canonical name from a model-written one: exact first, then aliases, a provider prefix,
@@ -663,7 +685,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
    */
   const select = (names: string[]): ToolSelection[] => {
     const active = new Set(
-      activeDefinitions().map((definition) => canonicalToolName(definition.name)),
+      currentDefinitions().map((definition) => canonicalToolName(definition.name)),
     );
     const allowed = new Set(authorized().map((definition) => canonicalToolName(definition.name)));
     const outcomes: ToolSelection[] = [];
@@ -682,9 +704,9 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
         if (!active.has(name) || state.loaded.has(name)) requested.push(name);
       }
     }
-    const loaded = new Set(activate(requested));
+    const loaded = new Set(load(requested, 'select'));
     const nowActive = new Set(
-      activeDefinitions().map((definition) => canonicalToolName(definition.name)),
+      currentDefinitions().map((definition) => canonicalToolName(definition.name)),
     );
     return outcomes.map((outcome) => {
       if (!outcome.name) return outcome;
@@ -728,7 +750,32 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     // has it (always: `authorized()` admits it unconditionally), even in eager mode where it is
     // left off the provider's tool list. Refusing it as `tool_not_active` told the model to
     // "call ToolSearch" about ToolSearch.
-    return canonical === 'ToolSearch' || activeSnapshot.has(canonical);
+    return canonical === 'ToolSearch' || activeSnapshot.has(canonical) || admitted.has(canonical);
+  };
+
+  /**
+   * Admit a direct call to an authorized deferred tool that is not active (#619): the same
+   * `authorized()` set and the same `load` that `select:` uses, so the call meets exactly the gates
+   * it would meet after `select:`. A schema too large for the budget is still admitted for this
+   * request, because the budget limits what the provider is sent, not what runs; it is just not
+   * loaded.
+   */
+  const admitDirect = (name: string): { loaded: boolean } | undefined => {
+    const canonical = canonicalToolName(name);
+    const earlier = admitted.get(canonical);
+    if (earlier !== undefined) return { loaded: earlier };
+    if (isActive(canonical) || !deferredMode()) return undefined;
+    const definition = authorized().find(
+      (candidate) => canonicalToolName(candidate.name) === canonical,
+    );
+    // Only a deferred tool is admitted. A core tool that is authorized but not active became
+    // available after this request was built (a background shell started this turn): it is
+    // declared from the next request, as before, and loading it would spend the loaded-tool
+    // budget on a tool that needs none.
+    if (!definition || isCore(definition)) return undefined;
+    const loaded = load([canonical], 'direct').includes(canonical);
+    admitted.set(canonical, loaded);
+    return { loaded };
   };
 
   /**
@@ -796,9 +843,9 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
         return `${key}: ${entries.join('; ')}`;
       });
     return [
-      `${deferred.length} authorized tools are deferred: a tool's schema is loaded only once you select or search for it, and one already loaded is callable now. Load tools with ToolSearch: query "select:Name1,Name2" loads those exact tools (aliases and any letter case are accepted), and any other query searches by capability. Loaded tools are callable on the next turn.`,
+      `${deferred.length} authorized tools are deferred: their schemas are not loaded yet, but you can call any tool listed here directly by name, and the call loads it. When you are unsure of a tool's arguments, load its schema first with ToolSearch: query "select:Name1,Name2" loads those exact tools (aliases and any letter case are accepted), and any other query searches by capability. A loaded tool's schema is declared from the next turn.`,
       ...lines,
-      'Call ToolSearch when the active tools do not cover the task.',
+      'Call ToolSearch when neither the active tools nor this list cover the task.',
     ].join('\n');
   };
 
@@ -812,6 +859,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     previewRestriction,
     isActive,
     isAuthorized,
+    admitDirect,
     canExecute,
     activeDefinitions,
     catalogSummary,

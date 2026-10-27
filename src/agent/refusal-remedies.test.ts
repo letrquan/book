@@ -180,9 +180,11 @@ describe('the remedy catalog', () => {
 
   it('does not offer the inactive remedy the wrong gate would name', () => {
     // Each remedy is worded to follow "Nothing can proceed: ", so it must be actionable on
-    // its own; an inactive call is fixed by activating the tool, not by a permission.
+    // its own; an inactive call is fixed by the run's allowed tools, not by a permission. A
+    // deferred tool those allow runs when called (#619), so ToolSearch is no remedy either.
     const kinds: LocalRefusalKind[] = [...REFUSAL_KIND_ORDER];
-    expect(REFUSAL_REMEDIES.inactive).toContain('ToolSearch');
+    expect(REFUSAL_REMEDIES.inactive).toContain('allowed tools');
+    expect(REFUSAL_REMEDIES.inactive).not.toContain('ToolSearch');
     expect(REFUSAL_REMEDIES.inactive).not.toContain('grant the permission');
     expect(kinds).toContain('inactive');
   });

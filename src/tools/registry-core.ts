@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
-import type { ToolDefinition, ToolContext, ToolResult, ToolCall } from '../types/tools.js';
+import type {
+  JsonSchemaObject,
+  ToolDefinition,
+  ToolContext,
+  ToolResult,
+  ToolCall,
+} from '../types/tools.js';
 import { escapeInvisibleCharacters } from '../control-characters.js';
 import { TOOL_ALIASES, unwrapProviderPrefix } from './aliases.js';
 import { normalizeToolDefinition } from './catalog.js';
@@ -21,6 +27,8 @@ export interface PreparedToolCall {
   call: ToolCall;
   tool: ToolDefinition;
   timeoutMs: number;
+  /** A line appended to the result: a just-in-time call whose schema the budget kept out (#619). */
+  notice?: string;
 }
 
 export type PrepareToolCallResult =
@@ -120,6 +128,53 @@ const WRAPPED_REMEDIATION = `Send the arguments as one bare JSON object: no code
 /** A JSON string literal with every invisible character escaped, for quoting raw text. */
 function quoteRaw(text: string): string {
   return escapeInvisibleCharacters(JSON.stringify(text));
+}
+
+/** The most a just-in-time call's `invalid_arguments` error spends on the tool's arguments. */
+const ARGUMENT_SIGNATURE_LIMIT = 2_000;
+
+/**
+ * A schema node as a call writes it: `string`, `"a" | "b"`, `string[]`, `{path: string; n?: number}`.
+ * Two object levels are spelled out and deeper ones are `object`; descriptions are left out, since
+ * an MCP server writes its own and the names and types are what a call needs.
+ */
+function typeLabel(schema: JsonSchemaObject, depth: number): string {
+  if (schema.enum?.length) return schema.enum.map((value) => JSON.stringify(value)).join(' | ');
+  if (schema.const !== undefined) return JSON.stringify(schema.const);
+  const variants = schema.oneOf ?? schema.anyOf;
+  if (variants?.length) return variants.map((variant) => typeLabel(variant, depth)).join(' | ');
+  // An MCP server's schema can name several types, which the JSON Schema type allows.
+  const type: unknown = schema.type;
+  if (Array.isArray(type)) return type.join(' | ');
+  if (type === 'array' || (type === undefined && schema.items)) {
+    if (!schema.items) return 'array';
+    const item = typeLabel(schema.items, depth);
+    return item.includes(' | ') ? `(${item})[]` : `${item}[]`;
+  }
+  if (schema.properties && depth < 2) return objectLabel(schema, depth + 1);
+  return typeof type === 'string' ? type : schema.properties ? 'object' : 'any';
+}
+
+function objectLabel(schema: JsonSchemaObject, depth: number): string {
+  const required = new Set(schema.required ?? []);
+  const fields = Object.entries(schema.properties ?? {}).map(
+    ([key, property]) => `${key}${required.has(key) ? '' : '?'}: ${typeLabel(property, depth)}`,
+  );
+  return `{${fields.join('; ')}}`;
+}
+
+/**
+ * The arguments a tool takes, for a model that called it without its schema: names, types and which
+ * are optional, within {@link ARGUMENT_SIGNATURE_LIMIT}; past it, the text is cut and points to
+ * `select:`, which loads the whole schema.
+ */
+function argumentSignature(tool: ToolDefinition): string {
+  if (Object.keys(tool.inputSchema?.properties ?? {}).length === 0)
+    return `${tool.name} takes no arguments.`;
+  const signature = objectLabel(tool.inputSchema!, 0);
+  const text = `${tool.name} takes ${signature} ("?" marks an optional argument).`;
+  if (text.length <= ARGUMENT_SIGNATURE_LIMIT) return text;
+  return `${text.slice(0, ARGUMENT_SIGNATURE_LIMIT)}… (cut; ToolSearch query "select:${tool.name}" loads the whole schema).`;
 }
 
 /** The schema's own errors for these arguments, with the host `timeout` budget hidden. */
@@ -357,11 +412,14 @@ function noteRepeatedFailure(context: ToolContext, call: ToolCall, result: ToolR
   // A refusal did not fail, and telling the model it did sends it looking for a broken tool
   // rather than for the rule, hook or policy that refused it.
   const verb = result.status === 'blocked' ? 'was already refused' : 'already failed';
+  const details = result.structuredError.details;
   const advice =
     result.structuredError.code === 'tool_not_active'
-      ? result.structuredError.details?.activatable === false
-        ? "use a tool this run allows; the run's allowed tools do not include this one."
-        : 'activate it with ToolSearch first, or use a tool that is active.'
+      ? details?.unavailable === true
+        ? 'use a tool that is active; this one is not available in this mode or state.'
+        : details?.activatable === false
+          ? "use a tool this run allows; the run's allowed tools do not include this one."
+          : 'activate it with ToolSearch first, or use a tool that is active.'
       : 're-read the target, revise the arguments, or use a different tool.';
   const escalation = `This exact ${call.name} call ${verb} ${previousFailures} time(s) with the same arguments. Do not retry it unchanged: ${advice}`;
   const existing = result.structuredError.remediation;
@@ -635,8 +693,12 @@ export function createRegistry() {
     // A name the run's capability rules exclude can never be activated by a search, so
     // "call ToolSearch" would send the model after a tool no search can return; the
     // advice names the rules instead, and `activatable` keeps the repeat escalation
-    // from repeating the wrong one.
-    const activatable = context.toolDiscovery?.isAuthorized?.(normalizedCall.name) !== false;
+    // from repeating the wrong one. A discovery that admits direct calls (#619) has already
+    // admitted any tool it authorizes, so an allowed one that still lands here is one the mode
+    // or the turn's state leaves out, which no search loads either.
+    const discovery = context.toolDiscovery;
+    const allowed = discovery?.isAuthorized?.(normalizedCall.name) !== false;
+    const unavailable = allowed && discovery?.admitDirect !== undefined;
     return noteRepeatedFailure(
       context,
       normalizedCall,
@@ -644,10 +706,16 @@ export function createRegistry() {
         toolCallId: call.id,
         code: 'tool_not_active',
         status: 'blocked',
-        remediation: activatable
-          ? 'Call ToolSearch to discover it or use an authorized active tool.'
-          : "It is outside this run's allowed tools (--allowedTools, or a skill's or command's allowed-tools), which no search can change; use a tool this run allows.",
-        details: { ...PRE_EXECUTION_DETAILS, ...(activatable ? {} : { activatable: false }) },
+        remediation: unavailable
+          ? 'It is not available in this mode or at this point of the turn (for example a background-shell tool before a shell runs), so neither a direct call nor ToolSearch can load it now; use an active tool.'
+          : allowed
+            ? 'Call ToolSearch to discover it or use an authorized active tool.'
+            : "It is outside this run's allowed tools (--allowedTools, or a skill's or command's allowed-tools), which no search can change; use a tool this run allows.",
+        details: {
+          ...PRE_EXECUTION_DETAILS,
+          ...(unavailable ? { activatable: false, unavailable: true } : {}),
+          ...(allowed ? {} : { activatable: false }),
+        },
       }),
     );
   };
@@ -709,13 +777,22 @@ export function createRegistry() {
       }),
     );
 
-  /** Name-only visibility, or the whole `canExecute` for a discovery object without `isActive`. */
-  const isVisible = (normalizedCall: ToolCall, context: ToolContext): boolean => {
+  /**
+   * Name-only visibility, or the whole `canExecute` for a discovery object without `isActive`. A
+   * deferred tool that is not active but authorized right now is admitted just in time (#619), and
+   * the admission comes back with the answer: `admitDirect` answers again for a tool it admitted
+   * earlier in the request, so `prepare` sees the admission `rejectBeforeGates` made.
+   */
+  const visibility = (
+    normalizedCall: ToolCall,
+    context: ToolContext,
+  ): { visible: boolean; admission?: { loaded: boolean } } => {
     const discovery = context.toolDiscovery;
-    if (!discovery) return true;
-    return discovery.isActive
-      ? discovery.isActive(normalizedCall.name)
-      : discovery.canExecute(normalizedCall);
+    if (!discovery) return { visible: true };
+    if (!discovery.isActive) return { visible: discovery.canExecute(normalizedCall) };
+    const admission = discovery.admitDirect?.(normalizedCall.name);
+    if (admission) return { visible: true, admission };
+    return { visible: discovery.isActive(normalizedCall.name) };
   };
 
   /** The `invalid_arguments` rejection for arguments that fail the tool's schema, or `undefined`. */
@@ -724,13 +801,18 @@ export function createRegistry() {
     normalizedCall: ToolCall,
     callId: string,
     context: ToolContext,
+    admission?: { loaded: boolean },
   ): ToolResult | undefined => {
     const validationErrors = argumentErrors(tool, normalizedCall.arguments);
     if (validationErrors.length === 0) return undefined;
     const allowedKeys = Object.keys(tool.inputSchema?.properties ?? {});
-    const allowedSuffix = allowedKeys.length
-      ? ` Allowed arguments: ${allowedKeys.join(', ')}.`
-      : '';
+    // A call admitted just in time was written without the schema, which the provider is sent only
+    // from the next request (and never, past the budget), so the error carries the arguments' types.
+    const allowedSuffix = admission
+      ? ` ${argumentSignature(tool)}`
+      : allowedKeys.length
+        ? ` Allowed arguments: ${allowedKeys.join(', ')}.`
+        : '';
     return noteRepeatedFailure(
       context,
       normalizedCall,
@@ -779,14 +861,14 @@ export function createRegistry() {
       const resolved = resolveCall(call);
       if (!resolved) return unknownToolRejection(call, context);
       const { tool, normalizedCall } = resolved;
+      const { visible, admission } = visibility(normalizedCall, context);
       const invalid = describeInvalidJson(tool, normalizedCall);
       if (invalid !== undefined) {
-        if (!isVisible(normalizedCall, context))
-          return inactiveRejection(call, normalizedCall, context);
+        if (!visible) return inactiveRejection(call, normalizedCall, context);
         return invalidJsonRejection(invalid, normalizedCall, context);
       }
-      if (!isVisible(normalizedCall, context)) return undefined;
-      return schemaRejection(tool, normalizedCall, call.id, context);
+      if (!visible) return undefined;
+      return schemaRejection(tool, normalizedCall, call.id, context, admission);
     },
     /**
      * The `tool_not_active` refusal for a registered tool that is not active this turn, the
@@ -800,7 +882,7 @@ export function createRegistry() {
       const resolved = resolveCall(call);
       if (!resolved) return undefined;
       const { normalizedCall } = resolved;
-      if (!isVisible(normalizedCall, context))
+      if (!visibility(normalizedCall, context).visible)
         return inactiveRejection(call, normalizedCall, context);
       const discovery = context.toolDiscovery;
       if (discovery?.isActive && !discovery.canExecute(normalizedCall))
@@ -819,7 +901,8 @@ export function createRegistry() {
       // A discovery object without the name-only `isActive` gets its whole
       // `canExecute` check here instead, before the JSON check, which is where
       // it ran before `isActive` existed: every call it refused is refused alike.
-      if (!isVisible(normalizedCall, context))
+      const { visible, admission } = visibility(normalizedCall, context);
+      if (!visible)
         return { status: 'rejected', result: inactiveRejection(call, normalizedCall, context) };
       // Invalid JSON is named before the argument-scoped rules run: a rule such
       // as `Bash(git *)` cannot match text that never parsed, so the gate would
@@ -839,7 +922,7 @@ export function createRegistry() {
           result: argumentsNotAllowedRejection(call, normalizedCall, context),
         };
 
-      const invalidArguments = schemaRejection(tool, normalizedCall, call.id, context);
+      const invalidArguments = schemaRejection(tool, normalizedCall, call.id, context, admission);
       if (invalidArguments) return { status: 'rejected', result: invalidArguments };
 
       const declaredTimeoutMs =
@@ -874,7 +957,16 @@ export function createRegistry() {
           : Math.min(resolvedTimeoutMs + SELF_TIMEOUT_GRACE_MS, MAX_SAFE_TIMEOUT_MS);
       return {
         status: 'ready',
-        prepared: { call: normalizedCall, tool, timeoutMs: toolTimeoutMs },
+        prepared: {
+          call: normalizedCall,
+          tool,
+          timeoutMs: toolTimeoutMs,
+          ...(admission?.loaded === false
+            ? {
+                notice: `${tool.name} ran without being loaded: its schema alone is larger than the tool discovery budget, so it is not declared next turn either; call it directly again when you need it.`,
+              }
+            : {}),
+        },
       };
     },
     async executePrepared(
@@ -883,6 +975,13 @@ export function createRegistry() {
       maxRetries: number = 0,
     ): Promise<ToolResult> {
       const { call: normalizedCall, tool, timeoutMs: toolTimeoutMs } = prepared;
+      const withNotice = (result: ToolResult): ToolResult =>
+        prepared.notice
+          ? {
+              ...result,
+              content: result.content ? `${result.content}\n\n${prepared.notice}` : prepared.notice,
+            }
+          : result;
       const retries = tool.idempotent ? maxRetries : 0;
       let lastResult: ToolResult | null = null;
       for (let attempt = 0; attempt <= retries; attempt++) {
@@ -897,10 +996,10 @@ export function createRegistry() {
           if (result.status === 'success') {
             if (attempt > 0) result.metrics = { ...result.metrics, retryAttempt: attempt + 1 };
             forgetFailures(context, normalizedCall);
-            return result;
+            return withNotice(result);
           }
           if (result.status === 'blocked')
-            return noteRepeatedFailure(context, normalizedCall, result);
+            return withNotice(noteRepeatedFailure(context, normalizedCall, result));
           lastResult = result;
         } catch (error) {
           lastResult = toolFailure(error instanceof Error ? error.message : String(error), {
@@ -912,7 +1011,7 @@ export function createRegistry() {
         if (attempt < retries)
           await new Promise((resolve) => setTimeout(resolve, 250 + Math.random() * 500));
       }
-      return noteRepeatedFailure(context, normalizedCall, lastResult!);
+      return withNotice(noteRepeatedFailure(context, normalizedCall, lastResult!));
     },
     async execute(
       call: ToolCall,
