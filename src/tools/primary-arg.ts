@@ -1,10 +1,11 @@
+import { canonicalToolName } from './aliases.js';
+
 /**
  * Extract the primary argument from a tool call for display and rule matching.
  *
  * Priority order follows Claude Code's convention:
  * command → shell_id → shellId → taskId → task_id → filePath → file_path
- * → notebook_path → pattern → path → agent → skill → to (beside a message) → message → url
- * → query → subject
+ * → notebook_path → pattern → path → agent → skill → message → url → query → subject
  * → old_string → first string key.
  *
  * `pattern` outranks `path`: for search tools (Grep) the pattern is the
@@ -29,9 +30,6 @@ export function getPrimaryArg(args: Record<string, unknown>): string {
   if (typeof args.path === 'string') return args.path;
   if (typeof args.agent === 'string') return args.agent;
   if (typeof args.skill === 'string') return args.skill;
-  // A message's recipient, not its text, is what a rule names: `SessionSend(book-3f)`, or
-  // `SessionSend(book-3f [a1b2c3])` for exactly that session (a pattern's brackets are literal).
-  if (typeof args.to === 'string' && typeof args.message === 'string') return args.to.trim();
   if (typeof args.message === 'string') return args.message;
   if (typeof args.url === 'string') return args.url;
   if (typeof args.query === 'string') return args.query;
@@ -43,4 +41,19 @@ export function getPrimaryArg(args: Record<string, unknown>): string {
     return typeof v === 'string' ? v : '';
   }
   return '';
+}
+
+/**
+ * Tools whose primary argument is a named one rather than {@link getPrimaryArg}'s pick, keyed by
+ * tool, never by argument shape: `SessionSend`'s is its recipient, `to`, as typed (trimmed), so a
+ * rule names the session (`SessionSend(book-3f)`, `SessionSend(book-3f [a1b2c3])`), not the
+ * message text. Any other tool with a `to` keeps its primary argument.
+ */
+const NAMED_PRIMARY_ARGS: Readonly<Record<string, string>> = { SessionSend: 'to' };
+
+/** A call's primary argument for display and rule matching, given the tool it is for. */
+export function toolPrimaryArg(toolName: string, args: Record<string, unknown>): string {
+  const key = NAMED_PRIMARY_ARGS[canonicalToolName(toolName)];
+  const value = key !== undefined ? args[key] : undefined;
+  return typeof value === 'string' ? value.trim() : getPrimaryArg(args);
 }

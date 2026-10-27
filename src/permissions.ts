@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'path';
 import type { ResolvedSettings } from './settings.js';
 import type { PermissionDecision, PermissionResult, ToolCall } from './types/tools.js';
 import { canonicalToolName } from './tools/aliases.js';
-import { getPrimaryArg } from './tools/primary-arg.js';
+import { getPrimaryArg, toolPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex, globWalkPlan } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
 import {
@@ -450,7 +450,7 @@ export function permissionRuleForToolCall(call: ToolCall): string | undefined {
     return `Bash(${command})`;
   }
   if (toolName === 'WebSearch') return toolName;
-  const scope = ruleScopeOf(toolName, getPrimaryArg(call.arguments));
+  const scope = ruleScopeOf(toolName, toolPrimaryArg(toolName, call.arguments));
   if (!scope || RULE_WILDCARD.test(scope.taken)) return undefined;
   return `${toolName}(${scope.pattern})`;
 }
@@ -483,7 +483,7 @@ export function missingRuleReason(call: ToolCall): MissingRuleReason | undefined
       wildcard: command.includes('*'),
     };
   }
-  const scope = ruleScopeOf(toolName, getPrimaryArg(call.arguments));
+  const scope = ruleScopeOf(toolName, toolPrimaryArg(toolName, call.arguments));
   return scope && RULE_WILDCARD.test(scope.taken)
     ? { lineBreak: false, wildcard: true }
     : undefined;
@@ -578,7 +578,7 @@ export function permissionRuleMatchesCall(
   if (toolName === 'Bash') {
     return bashAllowRuleMatches(parseRule(rule), call.arguments.command, platform, shell);
   }
-  const primaryArg = getPrimaryArg(call.arguments);
+  const primaryArg = toolPrimaryArg(toolName, call.arguments);
   if (toolName === 'WebFetch' && primaryArg) {
     try {
       // URL.toString() gives origin roots a trailing slash, matching the remembered origin glob.
@@ -625,8 +625,8 @@ function compatiblePatchRuleMatches(
  * Extract the primary argument from a tool call for rule matching.
  * Delegates to the shared getPrimaryArg utility.
  */
-export function primaryArgForRule(_toolName: string, args: Record<string, unknown>): string {
-  return getPrimaryArg(args);
+export function primaryArgForRule(toolName: string, args: Record<string, unknown>): string {
+  return toolPrimaryArg(toolName, args);
 }
 
 /**
@@ -1238,7 +1238,7 @@ export function evaluatePermissionDetail(
   // A rule about a file applies however the call spells its path: `Read(.env)` must also stop
   // `D:/ws/.env` and `src/../.env`, which the glob on the raw argument misses. Resolved only when
   // a rule names the tool, since resolving touches the file system.
-  const candidates: string[] = [getPrimaryArg(args)];
+  const candidates: string[] = [toolPrimaryArg(tool, args)];
   let restrictiveCandidates: string[] =
     tool === 'Bash' ? bashRestrictiveCandidates(args.command, candidates[0]) : candidates;
   if (scope && paths && PATH_RULE_TOOLS.has(tool) && rulesName(parsed, tool)) {

@@ -3,7 +3,7 @@ import type { ToolResult } from '../types/tools.js';
 import { isTerminalShellStatus } from '../jobs/shell-manager.js';
 import { foldControlCharacters as foldShared } from '../control-characters.js';
 import { canonicalToolName } from '../tools/aliases.js';
-import { getPrimaryArg } from '../tools/primary-arg.js';
+import { getPrimaryArg, toolPrimaryArg } from '../tools/primary-arg.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import { grepResultMetadata, readResultMetadata } from '../tools/result.js';
 import { refusedBeforeRun } from '../tools/pre-execution-codes.js';
@@ -452,7 +452,7 @@ export function deriveToolPresentation(
   // TodoWrite's row comes from its arguments, in both paths below.
   const todoColumns = canonicalName === 'TodoWrite' ? todoWriteColumns(args, status) : undefined;
   const mark = todoColumns?.mark;
-  const primary = getPrimaryArg(args);
+  const primary = toolPrimaryArg(canonicalName, args);
   const mcp = parseMcpToolName(name);
   let title = LABELS[canonicalName] ?? canonicalName;
   let target = primary || undefined;

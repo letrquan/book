@@ -6,7 +6,7 @@ import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN, PANEL_CHROME, frameGrid } from '../layout.js';
 import { useDensityMetrics } from '../density.js';
 import { useMemoryRoot } from '../memory-root.js';
-import { getPrimaryArg } from '../../tools/primary-arg.js';
+import { toolPrimaryArg } from '../../tools/primary-arg.js';
 import { canonicalToolName } from '../../tools/aliases.js';
 import { isFileMutatingTool } from '../../tools/tool-capabilities.js';
 import {
@@ -132,7 +132,7 @@ export function permissionPatternForDisplay(pattern: string): string {
 export function permissionPayloadText(toolCall: ToolCall): string {
   const command = toolCall.arguments?.command;
   if (typeof command === 'string') return command;
-  return getPrimaryArg(toolCall.arguments ?? {});
+  return toolPrimaryArg(toolCall.name, toolCall.arguments ?? {});
 }
 
 export interface WrappedPayload {

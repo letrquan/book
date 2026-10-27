@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAgentLoop } from '../agent/loop.js';
-import { ALWAYS_ALLOWED_TOOLS, permissionRuleForToolCall } from '../permissions.js';
+import {
+  ALWAYS_ALLOWED_TOOLS,
+  evaluatePermission,
+  permissionRuleForToolCall,
+} from '../permissions.js';
 import type { Provider } from '../provider/index.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { isolateBookHome } from '../test/isolated-book-home.js';
@@ -16,7 +20,7 @@ import type {
 } from '../types/messaging.js';
 import type { ToolResult } from '../types/tools.js';
 import { READ_ONLY_PLAN_TOOLS } from './plan-mode.js';
-import { getPrimaryArg } from './primary-arg.js';
+import { getPrimaryArg, toolPrimaryArg } from './primary-arg.js';
 import { createDefaultRegistry } from './registry.js';
 import { formatSessionListing, createSessionListTool } from './session-list.js';
 import { createSessionSendTool, sessionSendResult } from './session-send.js';
@@ -163,10 +167,31 @@ describe('SessionSend results', () => {
     expect(failure({ status: 'unavailable' }).code).toBe('messaging_unavailable');
   });
 
-  it("makes the recipient, not the message, the call's rule identity", () => {
-    expect(getPrimaryArg({ to: 'book-3f', message: 'hello' })).toBe('book-3f');
+  it('keys only SessionSend on its recipient: any other {to, message} tool keeps its rules', () => {
+    // An MCP chat tool shaped like SessionSend is untouched: its rules still read the message.
+    expect(getPrimaryArg({ to: ' bob [abcdef] ', message: 'my password is x' })).toBe(
+      'my password is x',
+    );
+    const settings = defaultConfig().settings;
+    settings.permissions.deny = ['mcp__chat__send(*password*)'];
+    expect(
+      evaluatePermission('mcp__chat__send', { to: 'bob', message: 'my password is x' }, settings),
+    ).toBe('deny');
+    expect(
+      permissionRuleForToolCall({
+        id: 'm',
+        name: 'mcp__chat__send',
+        arguments: { to: ' bob [abcdef] ', message: 'hello' },
+      }),
+    ).toBe('mcp__chat__send(hello)');
+  });
+
+  it("makes the recipient, not the message, SessionSend's rule identity", () => {
+    expect(toolPrimaryArg('SessionSend', { to: 'book-3f', message: 'hello' })).toBe('book-3f');
     // A ref stays: `SessionSend(book-3f [a1b2c3])` is the rule for exactly that session.
-    expect(getPrimaryArg({ to: ' book-3f [a1b2c3] ', message: 'hello' })).toBe('book-3f [a1b2c3]');
+    expect(toolPrimaryArg('SessionSend', { to: ' book-3f [a1b2c3] ', message: 'hello' })).toBe(
+      'book-3f [a1b2c3]',
+    );
     expect(
       permissionRuleForToolCall({
         id: 'c',
@@ -174,7 +199,7 @@ describe('SessionSend results', () => {
         arguments: { to: 'book-3f [a1b2c3]', message: 'hello' },
       }),
     ).toBe('SessionSend(book-3f [a1b2c3])');
-    expect(getPrimaryArg({ message: 'hello' })).toBe('hello');
+    expect(toolPrimaryArg('SessionSend', { message: 'hello' })).toBe('hello');
   });
 });
 
@@ -359,6 +384,18 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       (await run('auto', { ask: ['SessionSend(peer-b [a1b2c3])'], to: 'peer-b [a1b2c3]' }))
         .promptedFor,
     ).toEqual(['SessionSend']);
+  });
+
+  it('binds every session of the name with a deny or ask rule written with a ref', async () => {
+    // Another live session called peer-b (ref ffffff) is not the one the rule's ref names.
+    for (const mode of ['bypassPermissions', 'auto', 'default']) {
+      const outcome = await run(mode, { deny: ['SessionSend(peer-b [ffffff])'] });
+      expect(outcome.send?.structuredError?.code, mode).toBe('permission_denied');
+      expect(outcome.sends, mode).toEqual([]);
+    }
+    const asked = await run('auto', { ask: ['SessionSend(peer-b [ffffff])'] });
+    expect(asked.send?.structuredError?.code).toBe('ask_rule_spelling');
+    expect(asked.sends).toEqual([]);
   });
 
   it('lets an allow rule with a ref cover only that session', async () => {

@@ -4,7 +4,7 @@ import { readsSingleQuoteAsPosix } from '../shell-selection.js';
 import { canonicalToolName } from './aliases.js';
 import { globToRegex } from './glob-regex.js';
 import { comparablePath } from './path-utils.js';
-import { getPrimaryArg } from './primary-arg.js';
+import { toolPrimaryArg } from './primary-arg.js';
 import { hasCompoundShellSyntax, type ScanShell } from './shell-chaining.js';
 import { strictRmMatchesGlob } from './strict-rm.js';
 
@@ -72,7 +72,7 @@ export function isToolCallAllowed(
 ): boolean {
   const canonical = canonicalToolName(call.name);
   const isFileTool = FILE_PATH_TOOLS.has(canonical);
-  let primary = getPrimaryArg(call.arguments).replace(/^\.\//, '');
+  let primary = toolPrimaryArg(canonical, call.arguments).replace(/^\.\//, '');
   // `*` crosses `/`, so `Write(/memory/*.md)` would match `/memory/../elsewhere/x.md` as written.
   // A file is matched by the path it names, with its `.` and `..` segments resolved. Rule and call
   // are compared in one spelling (`/` separators, case folded on Windows), and the segments are

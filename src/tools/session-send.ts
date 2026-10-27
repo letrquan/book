@@ -8,7 +8,8 @@ import { foldControlCharacters } from '../control-characters.js';
 import { peerLabel } from '../messaging/addressing.js';
 import { encodeUdsAddress } from '../messaging/wire.js';
 import { evaluatePermissionDetail } from '../permissions.js';
-import { getPrimaryArg } from './primary-arg.js';
+import type { ResolvedSettings } from '../settings.js';
+import { toolPrimaryArg } from './primary-arg.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 export const SESSION_SEND_DESCRIPTION = `Send a message to another Book session running on this machine (SessionList lists them).
@@ -38,9 +39,9 @@ export function ruleRefusal(
   const asked = evaluatePermissionDetail('SessionSend', { to, message }, settings);
   const label = foldControlCharacters(peerLabel(target));
   // The spellings that reach the session, each judged as the loop judges a call's `to`.
-  const judged = getPrimaryArg({ to, message });
+  const judged = toolPrimaryArg('SessionSend', { to, message });
   for (const spelling of [target.name, peerLabel(target), encodeUdsAddress(target.socketPath)]) {
-    if (getPrimaryArg({ to: spelling, message }) === judged) continue;
+    if (toolPrimaryArg('SessionSend', { to: spelling, message }) === judged) continue;
     const verdict = evaluatePermissionDetail('SessionSend', { to: spelling, message }, settings);
     if (verdict.decision === 'deny') {
       return toolFailure('SKIPPED: Permission denied', {
@@ -64,7 +65,50 @@ export function ruleRefusal(
       );
     }
   }
+  // A deny or ask rule written with a ref also binds every session of that name: read as the bare
+  // name it is stricter, never looser. (An allow rule keeps its ref: it admits that session only.)
+  const byName = refStrippedRestrictions(settings);
+  if (byName) {
+    const verdict = evaluatePermissionDetail('SessionSend', { to: target.name, message }, byName);
+    if (verdict.decision === 'deny') {
+      return toolFailure('SKIPPED: Permission denied', {
+        code: 'permission_denied',
+        status: 'blocked',
+        content: `A deny rule (${verdict.matchedRule}) names a session called ${quoted(target.name)}, as ${label} is.`,
+      });
+    }
+    if (verdict.source === 'ask' && context.currentMode !== 'bypassPermissions') {
+      return toolFailure(
+        `An ask rule (${verdict.matchedRule}) names a session called ${quoted(target.name)}, as ${label} is, and no spelling of ${label} lets that rule ask.`,
+        {
+          code: 'ask_rule_spelling',
+          status: 'blocked',
+          remediation:
+            'Do not send it: tell your user the rule names another session of that name.',
+        },
+      );
+    }
+  }
   return undefined;
+}
+
+/** A trailing ` [ref]` on a `SessionSend` rule's recipient. */
+const RULE_REF = /^(SessionSend\(.*?)\s*\[[0-9a-fA-F]{6}\]\)$/;
+
+/**
+ * The settings with only the `deny` and `ask` rules on `SessionSend` that carry a ref, each read as
+ * the rule on the bare name, or undefined when there are none.
+ */
+function refStrippedRestrictions(settings: ResolvedSettings): ResolvedSettings | undefined {
+  const strip = (rules: readonly string[]) =>
+    rules.flatMap((rule) => {
+      const match = RULE_REF.exec(rule.trim());
+      return match ? [`${match[1]})`] : [];
+    });
+  const deny = strip(settings.permissions.deny ?? []);
+  const ask = strip(settings.permissions.ask ?? []);
+  if (deny.length === 0 && ask.length === 0) return undefined;
+  return { ...settings, permissions: { ...settings.permissions, allow: [], deny, ask } };
 }
 
 function quoted(text: string): string {
