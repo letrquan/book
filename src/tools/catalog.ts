@@ -1,4 +1,5 @@
 import Fuse from 'fuse.js';
+import type { Message } from '../types/messages.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type {
   ToolCall,
@@ -9,6 +10,7 @@ import type {
   ToolDiscoveryContext,
   ToolDiscoveryState,
   ToolEffect,
+  ToolRequest,
   ToolSearchMatch,
   ToolSelection,
 } from '../types/tools.js';
@@ -274,6 +276,30 @@ function toolSearchIsGated(config: AgentConfig): boolean {
   );
 }
 
+/**
+ * The surface the agent loop builds its requests from: the shared discovery context, plus the one
+ * call that starts a provider request.
+ */
+export interface ToolSurface extends ToolDiscoveryContext {
+  /**
+   * Build the next provider request's tools (#619), ending the previous request's direct
+   * admissions as `activeDefinitions` does; a second build of the same request (after a compaction,
+   * say) is just another call. `history` is the conversation the request carries. A reset point is
+   * a newest compaction checkpoint the loaded set was not reset at, a different model, or a
+   * smaller schema budget: there the loaded set drops what the model has already seen declared,
+   * keeps what was loaded or called since it last answered (this turn's host activations, the last
+   * tool round's `select:`) and, on a stable request, what the history still offers, and is
+   * trimmed to the budgets oldest first. `stable` asks for the declaration a provider that keeps
+   * `tools[]` fixed for the session sends.
+   */
+  prepareRequest(history: readonly Message[], options?: { stable?: boolean }): ToolRequest;
+  /**
+   * The provider answered the request built last: the tools it declared are ones the model has
+   * seen. A request that failed is never marked, so a retry after a compaction keeps them.
+   */
+  markAnswered(): void;
+}
+
 interface SurfaceOptions {
   config: AgentConfig;
   context: ToolContext;
@@ -412,7 +438,7 @@ const SEARCH_FIELD_WEIGHTS = {
   category: 1,
 } as const;
 
-export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext {
+export function createToolSurface(options: SurfaceOptions): ToolSurface {
   const { config, context } = options;
   const sourceDefinitions = options.definitions.some(
     (definition) => definition.name === 'ToolSearch',
@@ -469,28 +495,58 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     return fields;
   };
 
-  const authorized = (additionalRules?: CapabilityRule[]): ToolDefinition[] =>
-    definitions.filter((definition) => {
-      const name = canonicalToolName(definition.name);
-      if (name === 'ToolSearch') return true;
-      if (!definition.catalog?.roles?.includes(role)) return false;
-      if ([...ruleSets.values()].some((rules) => !isToolDefinitionAllowed(rules, definition)))
-        return false;
-      if (additionalRules && !isToolDefinitionAllowed(additionalRules, definition)) return false;
-      return isModeAvailable(definition, context) && isRuntimeAvailable(definition, context);
-    });
+  /**
+   * A tool the runtime offers only some of the time: `BashOutput` and `KillShell` while a background
+   * shell exists, and any tool whose catalog says when it is available (Advisor, the session tools).
+   */
+  const runtimeGated = (definition: ToolDefinition): boolean =>
+    RUNTIME_CORE.has(canonicalToolName(definition.name)) || Boolean(definition.catalog?.available);
 
-  /** Whether tools are deferred, for an `authorized()` set the caller already has, if any. */
-  const deferredMode = (available = authorized()): boolean => {
+  /**
+   * Whether the surface admits a definition: its role, every capability rule set, the mode, and
+   * what the runtime offers right now. `declaring` asks instead whether a request declares it
+   * (#619), which skips the runtime's own check for a runtime-gated tool: it stays declared whether
+   * or not the runtime offers it right now, so its coming and going never rewrites `tools[]`.
+   * Declaring is not offering: a call still meets `isActive` and `canExecute`, which refuse a tool
+   * the runtime does not offer as unavailable.
+   */
+  const admits = (
+    definition: ToolDefinition,
+    additionalRules?: CapabilityRule[],
+    declaring = false,
+  ): boolean => {
+    const name = canonicalToolName(definition.name);
+    if (name === 'ToolSearch') return true;
+    if (!definition.catalog?.roles?.includes(role)) return false;
+    if ([...ruleSets.values()].some((rules) => !isToolDefinitionAllowed(rules, definition)))
+      return false;
+    if (additionalRules && !isToolDefinitionAllowed(additionalRules, definition)) return false;
+    if (!isModeAvailable(definition, context)) return false;
+    return (declaring && runtimeGated(definition)) || isRuntimeAvailable(definition, context);
+  };
+
+  const authorized = (additionalRules?: CapabilityRule[]): ToolDefinition[] =>
+    definitions.filter((definition) => admits(definition, additionalRules));
+
+  /**
+   * Whether tools are deferred, for an `authorized()` set the caller already has, if any. In `auto`
+   * mode it is decided once and kept until a reset point (#619): a background shell, an advisor or
+   * the session tools coming and going would otherwise flip it, and rewrite every request's tools.
+   */
+  const deferredMode = (available?: ToolDefinition[]): boolean => {
     const settings = config.settings.toolDiscovery;
     if (settings.mode === 'eager') return false;
     if (settings.mode === 'deferred') return true;
-    const withoutSearch = available.filter((definition) => definition.name !== 'ToolSearch');
-    return (
-      withoutSearch.length > settings.eagerToolCount ||
-      withoutSearch.reduce((total, definition) => total + tokensOf(definition), 0) >
-        effectiveBudget(config)
-    );
+    if (state.deferredMode === undefined) {
+      const withoutSearch = (available ?? authorized()).filter(
+        (definition) => definition.name !== 'ToolSearch',
+      );
+      state.deferredMode =
+        withoutSearch.length > settings.eagerToolCount ||
+        withoutSearch.reduce((total, definition) => total + tokensOf(definition), 0) >
+          effectiveBudget(config);
+    }
+    return state.deferredMode;
   };
 
   const isCore = (definition: ToolDefinition): boolean => {
@@ -503,35 +559,57 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     return definition.catalog?.exposure === 'core' || definition.catalog?.exposure === 'runtime';
   };
 
+  /**
+   * A tool every request carries in front while it is authorized: the core in deferred mode, or
+   * everything in eager mode, less the runtime-gated tools, which are appended (or, on a stable
+   * request, deferred) once the runtime first offers them. ToolSearch only while deferring.
+   */
+  const isFixed = (definition: ToolDefinition, deferring: boolean): boolean =>
+    deferring
+      ? isCore(definition) && !runtimeGated(definition)
+      : !runtimeGated(definition) && definition.name !== 'ToolSearch';
+
+  const hostLoaded = (): Set<string> => (state.hostLoaded ??= new Set());
+
+  /**
+   * Drop loaded names this surface does not register. Nothing else is dropped mid-session (#619):
+   * `load` admits a tool only while the budgets have room, so a loaded tool stays declared and the
+   * request's tools only grow, until a reset point (`prepareRequest`) or `/clear`.
+   */
   const trimLoaded = (): void => {
     for (const name of state.loaded.keys()) {
-      if (!byName.has(name)) state.loaded.delete(name);
-    }
-    const max = config.settings.toolDiscovery.maxLoadedTools;
-    const ordered = [...state.loaded.entries()].sort((a, b) => b[1] - a[1]);
-    for (const [name] of ordered.slice(max)) state.loaded.delete(name);
-
-    let total = 0;
-    for (const [name] of ordered) {
-      if (!state.loaded.has(name)) continue;
-      const definition = byName.get(name);
-      if (!definition) continue;
-      const tokens = tokensOf(definition);
-      if (total + tokens > effectiveBudget(config)) state.loaded.delete(name);
-      else total += tokens;
+      if (byName.has(name)) continue;
+      state.loaded.delete(name);
+      hostLoaded().delete(name);
     }
   };
 
-  /** The active definitions now, refreshing the snapshot `isActive` reads. */
-  const currentDefinitions = (): ToolDefinition[] => {
+  /**
+   * The tools callable now, refreshing the snapshot `isActive` reads: the fixed core in catalog
+   * order, then the loaded tools the surface authorizes in the order they loaded, then a runtime
+   * core tool the runtime offered since the request was built.
+   */
+  const currentDefinitions = (available = authorized()): ToolDefinition[] => {
     trimLoaded();
-    const available = authorized();
-    const active = !deferredMode()
-      ? available.filter((definition) => definition.name !== 'ToolSearch')
-      : available.filter(
-          (definition) =>
-            isCore(definition) || state.loaded.has(canonicalToolName(definition.name)),
-        );
+    let active: ToolDefinition[];
+    if (!deferredMode(available)) {
+      active = available.filter((definition) => definition.name !== 'ToolSearch');
+    } else {
+      const fixed = available.filter((definition) => isFixed(definition, true));
+      const taken = new Set(fixed.map((definition) => canonicalToolName(definition.name)));
+      const availableByName = new Map(
+        available.map((definition) => [canonicalToolName(definition.name), definition]),
+      );
+      const loaded = [...state.loaded.keys()]
+        .filter((name) => !taken.has(name))
+        .map((name) => availableByName.get(name))
+        .filter((definition): definition is ToolDefinition => definition !== undefined);
+      for (const definition of loaded) taken.add(canonicalToolName(definition.name));
+      const offeredSince = available.filter(
+        (definition) => isCore(definition) && !taken.has(canonicalToolName(definition.name)),
+      );
+      active = [...fixed, ...loaded, ...offeredSince];
+    }
     activeSnapshot = new Set(active.map((definition) => canonicalToolName(definition.name)));
     return active;
   };
@@ -544,6 +622,172 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     return active;
   };
 
+  /** The tools earlier replies recorded as offered by an addition (#619). */
+  const offeredIn = (history: readonly Message[]): Set<string> => {
+    const offered = new Set<string>();
+    for (const message of history) {
+      if (!message.includeInContext || message.role !== 'assistant') continue;
+      for (const name of message.providerMetadata?.toolAdditions ?? []) offered.add(name);
+    }
+    return offered;
+  };
+
+  /** The loaded tools' count and schema tokens, which the budgets are checked against. */
+  const loadedUsage = (allowed: ReadonlySet<string>): { count: number; tokens: number } => {
+    // A loaded tool the surface does not authorize now (plan mode, a skill's restriction) holds no
+    // slot while it is hidden, and the host's loads hold none at all.
+    let count = 0;
+    let tokens = 0;
+    for (const name of state.loaded.keys()) {
+      const definition = byName.get(name);
+      if (!definition || !allowed.has(name) || hostLoaded().has(name)) continue;
+      count++;
+      tokens += tokensOf(definition);
+    }
+    return { count, tokens };
+  };
+
+  /** At a reset point, fit the loaded tools the budgets count back into them, oldest first. */
+  const trimToBudget = (allowed: ReadonlySet<string>, budget: number): void => {
+    const max = config.settings.toolDiscovery.maxLoadedTools;
+    let { count, tokens } = loadedUsage(allowed);
+    const oldestFirst = [...state.loaded.entries()]
+      .filter(([name]) => allowed.has(name) && !hostLoaded().has(name) && byName.has(name))
+      .sort((a, b) => a[1] - b[1]);
+    for (const [name] of oldestFirst) {
+      if (count <= max && tokens <= budget) break;
+      state.loaded.delete(name);
+      count--;
+      tokens -= tokensOf(byName.get(name)!);
+    }
+  };
+
+  /** A stable request's copy of a deferred tool, kept so every request sends the same object. */
+  const deferredCopies = new WeakMap<ToolDefinition, ToolDefinition>();
+  const deferredCopy = (definition: ToolDefinition): ToolDefinition => {
+    let copy = deferredCopies.get(definition);
+    if (!copy) {
+      copy = { ...definition, deferLoading: true };
+      deferredCopies.set(definition, copy);
+    }
+    return copy;
+  };
+
+  const markAnswered = (): void => {
+    state.answeredAt = state.builtAt ?? 0;
+  };
+
+  const prepareRequest = (
+    history: readonly Message[],
+    requestOptions?: { stable?: boolean },
+  ): ToolRequest => {
+    const stable = requestOptions?.stable === true;
+    let checkpoint: string | undefined;
+    for (let index = history.length - 1; index >= 0; index--) {
+      const message = history[index]!;
+      if (message.includeInContext && message.kind === 'checkpoint') {
+        checkpoint = message.id;
+        break;
+      }
+    }
+    const budget = effectiveBudget(config);
+    // A reset point: a compaction rebuilt the provider's cache, whichever host compacted, and a
+    // different model shares no cache with this one; a smaller budget (a smaller window) is one
+    // too. There the loaded set drops what the model has seen declared and keeps what was loaded
+    // or called since its last answer, which it has not seen yet or just used.
+    const reset =
+      checkpoint !== state.resetAt ||
+      (state.model !== undefined && state.model !== config.model) ||
+      (state.budget !== undefined && budget < state.budget);
+    state.resetAt = checkpoint;
+    state.model = config.model;
+    state.budget = budget;
+    if (reset) {
+      const answeredAt = state.answeredAt ?? 0;
+      for (const [name, clock] of state.loaded) {
+        if (clock > answeredAt) continue;
+        state.loaded.delete(name);
+        hostLoaded().delete(name);
+      }
+      state.deferredMode = undefined;
+    }
+    const available = authorized();
+    const allowed = new Set(available.map((definition) => canonicalToolName(definition.name)));
+    const deferring = deferredMode(available);
+    if (reset) trimToBudget(allowed, budget);
+    const offered = stable ? offeredIn(history) : new Set<string>();
+    if (stable && deferring) {
+      // What the history offers stays offered: the provider renders those additions again, so the
+      // loaded set agrees with them after a reset point or a resume.
+      for (const name of offered) {
+        const definition = byName.get(name);
+        if (
+          definition &&
+          allowed.has(name) &&
+          !isFixed(definition, true) &&
+          !runtimeGated(definition) &&
+          !state.loaded.has(name)
+        ) {
+          state.loaded.set(name, ++state.clock);
+        }
+      }
+    }
+    // A runtime-gated tool the runtime offers loads as the host's once it first does, and stays
+    // until a reset point: appended, or on a stable request offered by an addition, rather than
+    // inserted into and taken out of the request's tools as it comes and goes.
+    for (const definition of available) {
+      const name = canonicalToolName(definition.name);
+      if (!runtimeGated(definition) || state.loaded.has(name)) continue;
+      if (deferring && !isCore(definition)) continue;
+      state.loaded.set(name, ++state.clock);
+      hostLoaded().add(name);
+    }
+    admitted.clear();
+    currentDefinitions(available);
+    state.builtAt = state.clock;
+
+    const declarable = definitions.filter(
+      (definition) =>
+        admits(definition, undefined, true) && (deferring || definition.name !== 'ToolSearch'),
+    );
+    const fixed = declarable.filter((definition) => isFixed(definition, deferring));
+    const fixedNames = new Set(fixed.map((definition) => canonicalToolName(definition.name)));
+    if (!stable) {
+      // Append-only: the fixed core, then every loaded tool still declarable, in load order. A
+      // runtime tool the runtime stopped offering stays; execution refuses it as unavailable.
+      const declarableNames = new Set(
+        declarable.map((definition) => canonicalToolName(definition.name)),
+      );
+      const appended = [...state.loaded.keys()]
+        .filter((name) => declarableNames.has(name) && !fixedNames.has(name))
+        .map((name) => byName.get(name)!);
+      const tools = [...fixed, ...appended];
+      declared = new Set(tools.map((definition) => canonicalToolName(definition.name)));
+      return { tools, shown: tools, additions: [] };
+    }
+    const deferredTools = declarable.filter((definition) => !isFixed(definition, deferring));
+    const deferredNames = new Set(
+      deferredTools.map((definition) => canonicalToolName(definition.name)),
+    );
+    const surfaced = [...state.loaded.keys()].filter((name) => deferredNames.has(name));
+    // Offered once, after the request's last message; the reply records it, and the provider
+    // sends it again in place on every later request. A runtime tool waits until it is offered.
+    const additions = surfaced.filter((name) => !offered.has(name) && allowed.has(name));
+    const shown = [
+      ...fixed,
+      ...surfaced
+        .filter((name) => offered.has(name) || additions.includes(name))
+        .map((name) => byName.get(name)!),
+    ];
+    declared = new Set(shown.map((definition) => canonicalToolName(definition.name)));
+    return { tools: [...fixed, ...deferredTools.map(deferredCopy)], shown, additions };
+  };
+
+  const unloadedReason = (name: string): 'schema' | 'full' => {
+    const definition = byName.get(canonicalToolName(name));
+    return definition && tokensOf(definition) > effectiveBudget(config) ? 'schema' : 'full';
+  };
+
   /**
    * Rank definitions against a query by its words, not the query as one fuzzy string: each query
    * word scores the heaviest field it names (tool name 4, alias 3, keyword 2, MCP namespace 2,
@@ -554,7 +798,10 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
    * would let every "do not" in a description answer a search for notes). Ties keep catalog
    * order.
    */
-  const rankByWords = (query: string, candidates: ToolDefinition[]): ToolDefinition[] => {
+  const scoreByWords = (
+    query: string,
+    candidates: ToolDefinition[],
+  ): Array<{ definition: ToolDefinition; score: number }> => {
     const tokens = [...new Set(searchWords(query))].filter((token) => !QUERY_STOPWORDS.has(token));
     if (tokens.length === 0) return [];
     const scored: Array<{ definition: ToolDefinition; score: number; index: number }> = [];
@@ -575,10 +822,11 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       const qualifies = strongHits > 0 || descriptionHits >= 2;
       if (qualifies && score > 0) scored.push({ definition, score, index });
     });
-    return scored
-      .sort((a, b) => b.score - a.score || a.index - b.index)
-      .map((entry) => entry.definition);
+    return scored.sort((a, b) => b.score - a.score || a.index - b.index);
   };
+
+  const rankByWords = (query: string, candidates: ToolDefinition[]): ToolDefinition[] =>
+    scoreByWords(query, candidates).map((entry) => entry.definition);
 
   /**
    * The Fuse fallback for a query no word of which names anything, which is mostly a name whose
@@ -632,7 +880,13 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       .filter((definition) => !namespace || definition.catalog?.namespace === namespace);
 
     const count = Math.max(1, Math.min(5, limit));
-    const ranked = query.trim() ? rankByWords(query, candidates) : candidates;
+    // A match scoring under half the best one is incidental, and loading it would hold a slot
+    // nothing frees until the next compaction (#619): only the strong matches are loaded.
+    const scored = query.trim() ? scoreByWords(query, candidates) : [];
+    const best = scored[0]?.score ?? 0;
+    const ranked = query.trim()
+      ? scored.filter((entry) => entry.score * 2 >= best).map((entry) => entry.definition)
+      : candidates;
     const matchedDefinitions =
       ranked.length > 0 || !query.trim()
         ? ranked.slice(0, count)
@@ -673,7 +927,12 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
   /**
    * Load authorized tools for the next request, under the loaded-tool and schema budgets: the one
    * way in for a search, `select:`, a direct call, the intent router and the host alike. The reason
-   * is only logged.
+   * is only logged. Admission is append-only (#619): names are taken in the order given (a search's
+   * rank order) while the budgets have room, a tool already loaded takes no new slot, and a tool
+   * that does not fit is refused rather than evicting one the model has seen declared, which would
+   * rewrite the request's tools. Every activation of a tool round lands in the next request
+   * together. A tool the host needs (an active skill's resource reader) always loads, and takes no
+   * slot.
    */
   const load = (
     names: string[],
@@ -681,38 +940,38 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     available = authorized(),
   ): string[] => {
     const allowed = new Set(available.map((definition) => canonicalToolName(definition.name)));
-    const requested = names.map(canonicalToolName);
+    const requested = [...new Set(names.map(canonicalToolName))];
     const budget = effectiveBudget(config);
-    for (const name of [...requested].reverse()) {
+    const max = config.settings.toolDiscovery.maxLoadedTools;
+    trimLoaded();
+    const usage = loadedUsage(allowed);
+    const outsideBudgets: string[] = [];
+    for (const name of requested) {
       const definition = byName.get(name);
-      if (
-        allowed.has(name) &&
-        name !== 'ToolSearch' &&
-        definition &&
-        tokensOf(definition) <= budget
-      ) {
+      if (!allowed.has(name) || name === 'ToolSearch' || !definition) continue;
+      if (state.loaded.has(name)) {
         state.loaded.set(name, ++state.clock);
+        continue;
       }
+      const tokens = tokensOf(definition);
+      const fits = usage.count + 1 <= max && usage.tokens + tokens <= budget;
+      if (reason === 'host') {
+        hostLoaded().add(name);
+        if (!fits) outsideBudgets.push(name);
+      } else if (fits) {
+        usage.count++;
+        usage.tokens += tokens;
+      } else {
+        continue;
+      }
+      state.loaded.set(name, ++state.clock);
     }
-    trimLoaded();
-    const loaded = requested.filter(
-      (name, index) => requested.indexOf(name) === index && state.loaded.has(name),
-    );
+    const loaded = requested.filter((name) => state.loaded.has(name));
     if (requested.length > 0) log.debug('tools activated', { reason, requested, loaded });
+    if (outsideBudgets.length > 0) {
+      log.debug('host tools loaded outside the discovery budgets', { names: outsideBudgets });
+    }
     return loaded;
-  };
-
-  /**
-   * Whether loading `names` beside every tool loaded now stays within the loaded-tool limit and the
-   * schema budget, so that it evicts nothing.
-   */
-  const fitsWithoutEviction = (names: string[]): boolean => {
-    trimLoaded();
-    const loaded = new Set([...state.loaded.keys(), ...names]);
-    if (loaded.size > config.settings.toolDiscovery.maxLoadedTools) return false;
-    let tokens = 0;
-    for (const name of loaded) tokens += tokensOf(byName.get(name)!);
-    return tokens <= effectiveBudget(config);
   };
 
   /**
@@ -730,12 +989,11 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     const active = new Set(
       currentDefinitions().map((definition) => canonicalToolName(definition.name)),
     );
-    const fitting: string[] = [];
-    for (const name of new Set(names.map(canonicalToolName))) {
-      if (name === 'ToolSearch' || !allowed.has(name) || active.has(name)) continue;
-      if (fitsWithoutEviction([...fitting, name])) fitting.push(name);
-    }
-    return load(fitting, reason, available);
+    // `load` admits what fits and evicts nothing, so the router needs no budget check of its own.
+    const wanted = [...new Set(names.map(canonicalToolName))].filter(
+      (name) => name !== 'ToolSearch' && allowed.has(name) && !active.has(name),
+    );
+    return load(wanted, reason, available);
   };
 
   /**
@@ -779,8 +1037,8 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       else if (name === 'ToolSearch') outcomes.push({ requested: raw, name, status: 'active' });
       else {
         outcomes.push({ requested: raw, name, status: active.has(name) ? 'active' : 'budget' });
-        // A tool that is loaded is requested again so its recency is refreshed: loading the
-        // others in this call must not evict one this call reports as callable.
+        // A tool that is loaded is requested again so its recency is refreshed; it takes no new
+        // slot, and nothing a call reports as callable is evicted to make room (#619).
         if (!active.has(name) || state.loaded.has(name)) requested.push(name);
       }
     }
@@ -966,11 +1224,14 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     isActive,
     isAuthorized,
     admitDirect,
+    unloadedReason,
     admitsDirectCalls: () => !directCallsGated,
     whyInactive,
     wasDeclared,
     canExecute,
     activeDefinitions,
+    prepareRequest,
+    markAnswered,
     catalogSummary,
   };
 }

@@ -10,6 +10,7 @@
     "scripts/audit-gate.ts",
     "scripts/audit-gate.test.ts",
     "scripts/prompt-eval.ts",
+    "scripts/probe-stable-tools.ts",
     "scripts/peer-awareness-eval.ts",
     "scripts/peer-awareness-eval.test.ts",
     "scripts/tool-discovery-eval.ts",

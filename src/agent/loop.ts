@@ -18,7 +18,7 @@ import type {
   UserQuestionResponse,
 } from '../types/tools.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
-import { createProvider, type Provider } from '../provider/index.js';
+import { createProvider, keepsToolsStable, type Provider } from '../provider/index.js';
 import { isTruncationFinishReason, TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
 import { buildMessages } from './context.js';
 import type { WorkspaceNoticeSources } from './session-state.js';
@@ -1420,7 +1420,11 @@ export async function runAgentLoop(
           break;
         }
       }
-      const activeDefinitions = toolSurface.activeDefinitions();
+      // On a provider that keeps `tools[]` fixed (#619) the request declares every authorized tool
+      // and offers loaded ones by addition; elsewhere it sends the active tools, append-only.
+      const stableTools = keepsToolsStable(effectiveConfig);
+      let toolRequest = toolSurface.prepareRequest(newHistory, { stable: stableTools });
+      let activeDefinitions = toolRequest.shown;
       // Resolved once per turn. The session-state block is memoized on the newest
       // user message, so a rebuild below reuses these bytes rather than re-listing.
       const outstandingAgents = await outstandingAgentLabels(
@@ -1450,6 +1454,10 @@ export async function runAgentLoop(
       );
       let requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
       const rebuildRequest = async (): Promise<void> => {
+        // A compaction that ran since is a reset point for the loaded set, and this request is
+        // the one whose cache it rebuilds, so the tools are taken again with the messages.
+        toolRequest = toolSurface.prepareRequest(newHistory, { stable: stableTools });
+        activeDefinitions = toolRequest.shown;
         messages = await buildMessages(
           effectiveConfig,
           newHistory,
@@ -1744,7 +1752,8 @@ export async function runAgentLoop(
         }
       }
       sentSystemPrompt = systemPromptText(messages);
-      const stream = provider.stream(effectiveConfig, messages, activeDefinitions, {
+      const stream = provider.stream(effectiveConfig, messages, toolRequest.tools, {
+        ...(toolRequest.additions.length > 0 ? { toolAdditions: toolRequest.additions } : {}),
         signal,
         onRetry: (attempt, max, delayMs) => {
           if (options?.runContext) {
@@ -1833,6 +1842,8 @@ export async function runAgentLoop(
             break;
           } else if (event.type === 'done') {
             streamDone = true;
+            // The model saw this request's tools: a reset point may now drop them (#619).
+            toolSurface.markAnswered();
             if (event.usage) {
               turnUsage = event.usage;
               lastUsage = turnUsage;

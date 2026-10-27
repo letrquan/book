@@ -328,7 +328,7 @@ deferred tool by name, grouped by category, with a hint of eight words or fewer 
 characters for the 25 deferred tools of the default registry. MCP tools are listed by name only (a
 server writes its own descriptions), and a namespace of more than 12 of them is summarised as a count
 with a pointer to the `namespace` filter. The list names a tool whether or
-not it is loaded, so loading or evicting one never changes the text; it changes only when
+not it is loaded, so loading one never changes the text; it changes only when
 authorization does (the permission mode, an agent role, or a skill or command restriction).
 
 `ToolSearch` with `query: "select:WebFetch,WebSearch"` loads exactly those tools, skipping the
@@ -389,6 +389,68 @@ reports success, the turn of the first correct call, workarounds such as `curl` 
 calls (ToolSearch misses, refusals, unknown tools), tokens and, on Anthropic, the cache-read ratio.
 `--mock` runs the matrix on scripted models with no key, and `--estimate` prices the real matrix from
 a mock run; `npm run eval:tools -- --help` lists the options.
+
+### Activation is append-only
+
+Loading a tool never unloads another. A loaded tool is added to the end of the tools the provider
+is sent, after the core tools and every tool loaded before it, so what a request declared stays the
+front of what the next one declares, and every activation of one model turn lands in the next
+request together. Nothing loaded is evicted to make room: that would rewrite the tools mid-session
+and throw away the prompt cache.
+
+- **The budgets.** `toolDiscovery.maxLoadedTools` and the schema budget count only the loaded tools
+  the current mode and restrictions authorize, so a tool plan mode hides holds no slot while it is
+  hidden. When the counted tools fill either budget, a further `select:` or search refuses with
+  `tool_discovery_budget_exceeded`, saying the set is full until the next compaction. A direct call
+  to such a tool still runs, without loading it, and its result says the loaded tools fill the
+  budgets.
+- **Searches load strong matches only.** A search still returns at most five tools, but only those
+  scoring at least half of the best match load, so an incidental match does not take a slot for
+  the rest of the session. `select:` loads exactly what it names.
+- **Book's own loads.** A tool Book loads itself, such as an active skill's resource reader, always
+  loads and takes no slot. So does a tool the runtime offers only some of the time —
+  `BashOutput` and `KillShell` while a background shell runs, `Advisor` once an advisor is
+  configured, the session tools while messaging is on. It is added to the end of the tools when
+  the runtime first offers it, and stays there; while the runtime does not offer it, a call to it
+  is refused as unavailable.
+- **Deferral is decided once.** Whether tools are deferred at all (`toolDiscovery.mode: "auto"`)
+  is decided on a session's first request and kept until a reset point, so a shell or an advisor
+  appearing never switches it.
+
+A reset point is a moment when the provider's cache is rebuilt anyway: a compaction, a change of
+model, or a smaller schema budget (a model with a smaller window). There the loaded set drops the
+tools the model has already seen declared, keeps any tool loaded or called since the model's last
+answer (so a `select:` in the round just compacted, or a tool Book loaded this turn, is not lost),
+and is trimmed to the budgets oldest first. `/clear` starts the set over. A resumed session starts
+with nothing loaded, except on the Anthropic path below, where the tools the resumed conversation
+already offers are loaded again.
+
+### Stable tools on Anthropic
+
+On the Anthropic API (`api.anthropic.com` itself, not a proxy or gateway in front of it) with a
+model that takes mid-conversation tool changes — Claude Opus 5, Opus 5.5, Opus 4.8, Fable 5 and
+5.1, Mythos 5 and 5.1, and Sonnet 5.5 — the tools array does not change when a tool loads:
+
+- The first request declares every authorized tool: the core ones as before, and every deferred
+  one with `defer_loading: true`, which keeps its schema out of the model's context. The tools the
+  runtime offers only some of the time are declared deferred from the start too, so a background
+  shell starting or ending, or an advisor being configured, does not change the array.
+- A tool that loads, from any source (a search, `select:`, a direct call, or Book itself, including
+  a runtime tool when the runtime first offers it), is offered by a `role: "system"` message with a
+  `tool_addition` block after the request's last message. The reply records it, and later requests
+  send that message again in the same place, so the conversation before it stays the same bytes.
+  Only requests whose messages carry such a block send the
+  `anthropic-beta: mid-conversation-tool-changes-2026-07-01` header.
+- The tools array, and the prompt cache with it, changes only when authorization does: the
+  permission mode, an agent role, or a skill or command restriction. Then the array is rebuilt,
+  as before.
+- The prompt cache breakpoint on the tools sits on the last tool that is not deferred: a deferred
+  tool cannot carry one, and the API leaves deferred tools out of the cached prefix.
+
+Every other model and endpoint gets the append-only array: Claude Sonnet 5, a `claude-*` model
+reached through a router, proxy or gateway, Azure Foundry, and every OpenAI-compatible provider.
+`toolDiscovery.stableTools: "off"` turns the Anthropic path off, should the beta misbehave;
+activation stays append-only either way.
 
 ## Permission rules and modes
 

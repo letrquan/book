@@ -496,8 +496,9 @@ export interface SystemPromptOverrides {
    */
   isSubagent?: boolean;
   /**
-   * Deferred-tool catalog summary. Dynamic-zone content: it changes on
-   * ToolSearch activation, which rewrites the tools array anyway.
+   * Deferred-tool catalog summary. Dynamic-zone content, though it changes only
+   * with authorization: an activation leaves it, and on a stable surface the
+   * tools array too, byte-identical (#619).
    */
   toolCatalogSummary?: string;
   /**
