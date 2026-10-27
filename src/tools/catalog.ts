@@ -1,4 +1,5 @@
 import Fuse from 'fuse.js';
+import type { Message } from '../types/messages.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type {
   ToolCall,
@@ -9,6 +10,7 @@ import type {
   ToolDiscoveryContext,
   ToolDiscoveryState,
   ToolEffect,
+  ToolRequest,
   ToolSearchMatch,
   ToolSelection,
 } from '../types/tools.js';
@@ -274,6 +276,28 @@ function toolSearchIsGated(config: AgentConfig): boolean {
   );
 }
 
+/**
+ * The surface the agent loop builds its requests from: the shared discovery context, plus the one
+ * call that starts a provider request.
+ */
+export interface ToolSurface extends ToolDiscoveryContext {
+  /**
+   * Start the next provider request (#619), ending the previous request's direct admissions as
+   * `activeDefinitions` does. `history` is the conversation the request carries: when its newest
+   * compaction checkpoint is not the one the loaded set was last reset at, this is a reset point.
+   * There the loaded set drops what the model has already seen declared, and keeps what was loaded
+   * or called since it answered the last request (this turn's host activations, the last tool
+   * round's `select:`), plus, on a stable surface, what the history still offers. `stable` asks
+   * for the declaration a provider that keeps `tools[]` fixed for the session sends. `rebuild`
+   * marks a second build of the same request, after a compaction for instance: it is not a new
+   * turn, so the request before it still counts as the last one answered.
+   */
+  prepareRequest(
+    history: readonly Message[],
+    options?: { stable?: boolean; rebuild?: boolean },
+  ): ToolRequest;
+}
+
 interface SurfaceOptions {
   config: AgentConfig;
   context: ToolContext;
@@ -412,7 +436,7 @@ const SEARCH_FIELD_WEIGHTS = {
   category: 1,
 } as const;
 
-export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext {
+export function createToolSurface(options: SurfaceOptions): ToolSurface {
   const { config, context } = options;
   const sourceDefinitions = options.definitions.some(
     (definition) => definition.name === 'ToolSearch',
@@ -469,16 +493,31 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     return fields;
   };
 
+  /**
+   * Whether the surface admits a definition: its role, every capability rule set, the mode, and
+   * what the runtime offers right now. `declaring` asks instead whether a stable request declares it
+   * (#619), which skips the runtime check for `BashOutput` and `KillShell`: they are declared before
+   * any background shell exists, so a shell starting or ending never rewrites `tools[]`. Declaring
+   * is not offering: a deferred tool reaches the model only through an addition, and a call still
+   * meets `isActive` and `canExecute`.
+   */
+  const admits = (
+    definition: ToolDefinition,
+    additionalRules?: CapabilityRule[],
+    declaring = false,
+  ): boolean => {
+    const name = canonicalToolName(definition.name);
+    if (name === 'ToolSearch') return true;
+    if (!definition.catalog?.roles?.includes(role)) return false;
+    if ([...ruleSets.values()].some((rules) => !isToolDefinitionAllowed(rules, definition)))
+      return false;
+    if (additionalRules && !isToolDefinitionAllowed(additionalRules, definition)) return false;
+    if (!isModeAvailable(definition, context)) return false;
+    return (declaring && RUNTIME_CORE.has(name)) || isRuntimeAvailable(definition, context);
+  };
+
   const authorized = (additionalRules?: CapabilityRule[]): ToolDefinition[] =>
-    definitions.filter((definition) => {
-      const name = canonicalToolName(definition.name);
-      if (name === 'ToolSearch') return true;
-      if (!definition.catalog?.roles?.includes(role)) return false;
-      if ([...ruleSets.values()].some((rules) => !isToolDefinitionAllowed(rules, definition)))
-        return false;
-      if (additionalRules && !isToolDefinitionAllowed(additionalRules, definition)) return false;
-      return isModeAvailable(definition, context) && isRuntimeAvailable(definition, context);
-    });
+    definitions.filter((definition) => admits(definition, additionalRules));
 
   /** Whether tools are deferred, for an `authorized()` set the caller already has, if any. */
   const deferredMode = (available = authorized()): boolean => {
@@ -503,35 +542,40 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     return definition.catalog?.exposure === 'core' || definition.catalog?.exposure === 'runtime';
   };
 
+  /**
+   * Drop loaded names this surface does not register. Nothing else is ever dropped mid-session
+   * (#619): `load` admits a tool only while the budgets have room, so a loaded tool stays declared
+   * and the request's tools only grow, until a reset point (`prepareRequest`) or `/clear`.
+   */
   const trimLoaded = (): void => {
     for (const name of state.loaded.keys()) {
       if (!byName.has(name)) state.loaded.delete(name);
     }
-    const max = config.settings.toolDiscovery.maxLoadedTools;
-    const ordered = [...state.loaded.entries()].sort((a, b) => b[1] - a[1]);
-    for (const [name] of ordered.slice(max)) state.loaded.delete(name);
-
-    let total = 0;
-    for (const [name] of ordered) {
-      if (!state.loaded.has(name)) continue;
-      const definition = byName.get(name);
-      if (!definition) continue;
-      const tokens = tokensOf(definition);
-      if (total + tokens > effectiveBudget(config)) state.loaded.delete(name);
-      else total += tokens;
-    }
   };
 
-  /** The active definitions now, refreshing the snapshot `isActive` reads. */
+  /**
+   * The active definitions now, refreshing the snapshot `isActive` reads: the core tools in catalog
+   * order, then the loaded ones in the order they loaded, so a newly loaded tool is appended to the
+   * request's tools rather than inserted among them (#619).
+   */
   const currentDefinitions = (): ToolDefinition[] => {
     trimLoaded();
     const available = authorized();
-    const active = !deferredMode()
-      ? available.filter((definition) => definition.name !== 'ToolSearch')
-      : available.filter(
-          (definition) =>
-            isCore(definition) || state.loaded.has(canonicalToolName(definition.name)),
-        );
+    let active: ToolDefinition[];
+    if (!deferredMode()) {
+      active = available.filter((definition) => definition.name !== 'ToolSearch');
+    } else {
+      const core = available.filter(isCore);
+      const coreNames = new Set(core.map((definition) => canonicalToolName(definition.name)));
+      const availableByName = new Map(
+        available.map((definition) => [canonicalToolName(definition.name), definition]),
+      );
+      const loaded = [...state.loaded.keys()]
+        .filter((name) => !coreNames.has(name))
+        .map((name) => availableByName.get(name))
+        .filter((definition): definition is ToolDefinition => definition !== undefined);
+      active = [...core, ...loaded];
+    }
     activeSnapshot = new Set(active.map((definition) => canonicalToolName(definition.name)));
     return active;
   };
@@ -542,6 +586,83 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     const active = currentDefinitions();
     declared = new Set(active.map((definition) => canonicalToolName(definition.name)));
     return active;
+  };
+
+  /** The tools earlier replies recorded as offered by an addition (#619), in history order. */
+  const offeredIn = (history: readonly Message[]): Set<string> => {
+    const offered = new Set<string>();
+    for (const message of history) {
+      if (!message.includeInContext || message.role !== 'assistant') continue;
+      for (const name of message.providerMetadata?.toolAdditions ?? []) offered.add(name);
+    }
+    return offered;
+  };
+
+  /**
+   * Whether a tool's deferral in a stable declaration is its own, fixed whatever the runtime does:
+   * a runtime tool is deferred even while it is offered, so its `defer_loading` never flips.
+   */
+  const declaredDeferred = (definition: ToolDefinition): boolean =>
+    RUNTIME_CORE.has(canonicalToolName(definition.name)) || !isCore(definition);
+
+  const prepareRequest = (
+    history: readonly Message[],
+    requestOptions?: { stable?: boolean; rebuild?: boolean },
+  ): ToolRequest => {
+    const stable = requestOptions?.stable === true;
+    // A new turn's request: the one built before it was answered.
+    if (!requestOptions?.rebuild) state.answeredAt = state.builtAt ?? 0;
+    // A reset point: a compaction rebuilt the provider's cache, so the loaded set may start over
+    // without costing a second rebuild. The newest checkpoint marks it, whichever host compacted.
+    // What loaded or ran since the last answered request has not been declared to the model yet,
+    // or was just used, so it stays.
+    const checkpoint = [...history]
+      .reverse()
+      .find((message) => message.includeInContext && message.kind === 'checkpoint')?.id;
+    if (checkpoint !== state.resetAt) {
+      const answeredAt = state.answeredAt ?? 0;
+      for (const [name, clock] of state.loaded) {
+        if (clock <= answeredAt) state.loaded.delete(name);
+      }
+      state.resetAt = checkpoint;
+    }
+    const offered = stable ? offeredIn(history) : new Set<string>();
+    if (stable && deferredMode()) {
+      // What the history offers stays offered: the provider renders those additions again, so
+      // the loaded set agrees with them after a reset point or a resume.
+      const available = new Set(
+        authorized().map((definition) => canonicalToolName(definition.name)),
+      );
+      for (const name of offered) {
+        const definition = byName.get(name);
+        if (
+          definition &&
+          available.has(name) &&
+          definition.catalog?.exposure === 'deferred' &&
+          !state.loaded.has(name)
+        ) {
+          state.loaded.set(name, ++state.clock);
+        }
+      }
+    }
+    const active = activeDefinitions();
+    if (!requestOptions?.rebuild) state.builtAt = state.clock;
+    if (!stable) return { active };
+    if (!deferredMode())
+      return { active, stable: { tools: active, deferred: new Set(), additions: [] } };
+    const declaredTools = definitions.filter((definition) => admits(definition, undefined, true));
+    const fixed = declaredTools.filter((definition) => !declaredDeferred(definition));
+    const deferredTools = declaredTools.filter(declaredDeferred);
+    const deferred = new Set(deferredTools.map((definition) => canonicalToolName(definition.name)));
+    const additions = active
+      .map((definition) => canonicalToolName(definition.name))
+      .filter((name) => deferred.has(name) && !offered.has(name));
+    return { active, stable: { tools: [...fixed, ...deferredTools], deferred, additions } };
+  };
+
+  const unloadedReason = (name: string): 'schema' | 'full' => {
+    const definition = byName.get(canonicalToolName(name));
+    return definition && tokensOf(definition) > effectiveBudget(config) ? 'schema' : 'full';
   };
 
   /**
@@ -670,9 +791,23 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       .slice(0, Math.max(1, Math.min(5, filter?.limit ?? 5)))
       .map((definition) => definition.name);
 
+  /** The loaded tools' count and schema tokens, which the budgets are checked against. */
+  const loadedUsage = (): { count: number; tokens: number } => {
+    let tokens = 0;
+    for (const name of state.loaded.keys()) {
+      const definition = byName.get(name);
+      if (definition) tokens += tokensOf(definition);
+    }
+    return { count: state.loaded.size, tokens };
+  };
+
   /**
    * Load authorized tools for the next request, under the loaded-tool and schema budgets: the one
    * way in for a search, `select:`, a direct call and the host alike. The reason is only logged.
+   * Admission is append-only (#619): names are taken in the order given (a search's rank order)
+   * while the budgets have room, a tool already loaded takes no new slot, and a tool that does not
+   * fit is refused rather than evicting one the model has seen declared, which would rewrite the
+   * request's tools. Every activation of a tool round lands in the next request together.
    */
   const load = (
     names: string[],
@@ -680,23 +815,25 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     available = authorized(),
   ): string[] => {
     const allowed = new Set(available.map((definition) => canonicalToolName(definition.name)));
-    const requested = names.map(canonicalToolName);
+    const requested = [...new Set(names.map(canonicalToolName))];
     const budget = effectiveBudget(config);
-    for (const name of [...requested].reverse()) {
-      const definition = byName.get(name);
-      if (
-        allowed.has(name) &&
-        name !== 'ToolSearch' &&
-        definition &&
-        tokensOf(definition) <= budget
-      ) {
-        state.loaded.set(name, ++state.clock);
-      }
-    }
+    const max = config.settings.toolDiscovery.maxLoadedTools;
     trimLoaded();
-    const loaded = requested.filter(
-      (name, index) => requested.indexOf(name) === index && state.loaded.has(name),
-    );
+    const usage = loadedUsage();
+    for (const name of requested) {
+      const definition = byName.get(name);
+      if (!allowed.has(name) || name === 'ToolSearch' || !definition) continue;
+      if (state.loaded.has(name)) {
+        state.loaded.set(name, ++state.clock);
+        continue;
+      }
+      const tokens = tokensOf(definition);
+      if (usage.count + 1 > max || usage.tokens + tokens > budget) continue;
+      state.loaded.set(name, ++state.clock);
+      usage.count++;
+      usage.tokens += tokens;
+    }
+    const loaded = requested.filter((name) => state.loaded.has(name));
     if (requested.length > 0) log.debug('tools activated', { reason, requested, loaded });
     return loaded;
   };
@@ -745,8 +882,8 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       else if (name === 'ToolSearch') outcomes.push({ requested: raw, name, status: 'active' });
       else {
         outcomes.push({ requested: raw, name, status: active.has(name) ? 'active' : 'budget' });
-        // A tool that is loaded is requested again so its recency is refreshed: loading the
-        // others in this call must not evict one this call reports as callable.
+        // A tool that is loaded is requested again so its recency is refreshed; it takes no new
+        // slot, and nothing a call reports as callable is evicted to make room (#619).
         if (!active.has(name) || state.loaded.has(name)) requested.push(name);
       }
     }
@@ -932,11 +1069,13 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     isActive,
     isAuthorized,
     admitDirect,
+    unloadedReason,
     admitsDirectCalls: () => !directCallsGated,
     whyInactive,
     wasDeclared,
     canExecute,
     activeDefinitions,
+    prepareRequest,
     catalogSummary,
   };
 }

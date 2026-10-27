@@ -1,6 +1,11 @@
 import type { AgentConfig } from '../types/runtime.js';
-import type { ProviderMessage, ProviderStreamEvent } from '../types/providers.js';
+import type {
+  ProviderMessage,
+  ProviderStreamEvent,
+  StableToolsRequest,
+} from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
+import { supportsMidConversationToolChanges } from '../models.js';
 import { chatCompletionStream as openaiStream } from './openai-compatible.js';
 import { chatCompletionStream as anthropicStream, isAnthropicUrl } from './anthropic.js';
 import { responsesStream } from './openai-responses.js';
@@ -12,6 +17,8 @@ export interface ProviderStreamOptions {
   onStreamStall?: (countdownMs: number) => void;
   onStreamResume?: () => void;
   maxOutputTokens?: number;
+  /** Set only where `keepsToolsStable` holds; every other provider ignores it. */
+  stableTools?: StableToolsRequest;
 }
 
 export interface Provider {
@@ -29,6 +36,25 @@ export function isAnthropicProvider(config: AgentConfig): boolean {
   if (config.provider === 'openai') return false;
   if (isAnthropicUrl(config.baseUrl)) return true;
   return Boolean(config.model && /^claude-/i.test(config.model));
+}
+
+/**
+ * Whether this config's requests keep `tools[]` the same for the whole session (#619): every
+ * authorized tool declared from the first request, the deferred ones with `defer_loading`, and a
+ * loaded one offered by a `tool_addition` message. Only the first-party Anthropic API on a model
+ * that takes mid-conversation tool changes: a `claude-*` model reached through a router, or an
+ * Azure Foundry endpoint (which has no mid-conversation tool changes, per the claude-api skill's
+ * `shared/platform-availability.md`), keeps the append-only array every other provider gets.
+ * `toolDiscovery.stableTools: "off"` is the kill switch.
+ */
+export function keepsToolsStable(config: AgentConfig): boolean {
+  return (
+    config.settings.toolDiscovery.stableTools !== 'off' &&
+    config.providerAuth !== 'chatgpt' &&
+    isAnthropicProvider(config) &&
+    isAnthropicUrl(config.baseUrl) &&
+    supportsMidConversationToolChanges(config.model)
+  );
 }
 
 export function createProvider(config: AgentConfig): Provider {

@@ -72,12 +72,25 @@ export interface ProviderResponseMetadata {
   finishReasons?: string[];
 }
 
+/**
+ * A request's tools on a provider that keeps `tools[]` stable for the session (#619): the tools it
+ * declares but withholds until an addition offers them, and the additions this request makes, which
+ * go after its last message. The provider reports the additions it sent in the reply's
+ * `providerMetadata.toolAdditions`.
+ */
+export interface StableToolsRequest {
+  deferred: ReadonlySet<string>;
+  additions: readonly string[];
+}
+
 export interface ProviderStreamOptions {
   signal?: AbortSignal;
   onRetry?: (attempt: number, max: number, delayMs: number) => void;
   onStreamStall?: (countdownMs: number) => void;
   onStreamResume?: () => void;
   maxOutputTokens?: number;
+  /** Set only where `keepsToolsStable` holds; every other provider ignores it. */
+  stableTools?: StableToolsRequest;
 }
 
 export interface AgentLoopCallbacks {

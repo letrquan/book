@@ -539,6 +539,12 @@ export interface ToolDiscoveryContext {
    */
   admitDirect?(name: string): { loaded: boolean } | undefined;
   /**
+   * Why a tool `admitDirect` admitted without loading it is not loaded: its schema alone is larger
+   * than the schema budget, or the loaded tools already fill the budgets, since nothing is evicted
+   * mid-session (#619). Optional; without it the schema is named.
+   */
+  unloadedReason?(name: string): 'schema' | 'full';
+  /**
    * Whether this surface admits direct calls at all: not when a permission rule or a PreToolUse
    * hook targets ToolSearch itself, which then gates every deferred tool as it did before #619.
    * Optional; without it no text offers a direct call.
@@ -567,7 +573,41 @@ export interface ToolDiscoveryContext {
 }
 
 export interface ToolDiscoveryState {
-  /** Monotonic access counter used for deterministic LRU eviction. */
+  /** Monotonic access counter: a loaded tool's last activation or call. */
   clock: number;
+  /**
+   * The loaded deferred tools, in the order they loaded: that is the order they are appended to a
+   * request's tools, and nothing is evicted mid-session (#619), so the order never changes.
+   */
   loaded: Map<string, number>;
+  /**
+   * The newest compaction checkpoint the loaded set was last reset at (#619). A history whose
+   * newest checkpoint differs is a reset point, where the provider's cache is rebuilt anyway.
+   */
+  resetAt?: string;
+  /** `clock` when the latest turn's request was built, and when the one before it was. */
+  builtAt?: number;
+  answeredAt?: number;
+}
+
+/**
+ * What one provider request declares (#619). `active` is what the model can call with its schema:
+ * the core tools in catalog order, then the loaded ones in the order they loaded.
+ */
+export interface ToolRequest {
+  active: ToolDefinition[];
+  /** Set when the surface was asked for a stable declaration. */
+  stable?: StableToolDeclaration;
+}
+
+/**
+ * A stable declaration (#619): `tools` is every tool the request declares, the fixed core first and
+ * the deferred ones after, each in catalog order, so it changes only with authorization. A deferred
+ * tool reaches the model only through an addition; `additions` are the active deferred tools that
+ * no message in the history has offered yet, which this request offers after its last message.
+ */
+export interface StableToolDeclaration {
+  tools: ToolDefinition[];
+  deferred: ReadonlySet<string>;
+  additions: string[];
 }

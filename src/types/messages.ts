@@ -16,6 +16,12 @@ export interface Usage {
 export interface ProviderMessageMetadata {
   /** Anthropic content blocks, including thinking signatures, in original order. */
   anthropicContentBlocks?: Array<Record<string, unknown>>;
+  /**
+   * Deferred tools the request this message answers offered first (#619), by name: a provider that
+   * keeps `tools[]` stable sent them as additions after that request's last message, and renders
+   * them right before this message on every later request, so the bytes it sent stay the same.
+   */
+  toolAdditions?: string[];
 }
 
 /** A session-owned image referenced by a user message. */

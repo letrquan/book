@@ -592,7 +592,8 @@ output.
     "eagerToolCount": 10,
     "schemaTokenBudget": 8000,
     "maxLoadedTools": 15,
-    "searchLimit": 5
+    "searchLimit": 5,
+    "stableTools": "auto"
   },
   "toolExecution": {
     "maxConcurrent": 4
@@ -618,6 +619,15 @@ output.
 Memory lives in `<BOOK_HOME>/projects/<slug>/memory/` (`~/.book/projects/<slug>/memory/` by default), where `<slug>` is the path of the git repository root with path separators and any character other than letters, digits, `.`, `_` and `-` turned into `-`. A linked worktree uses its main checkout's root, and a workspace outside a repository uses its own path, so subdirectories and worktrees of one repository share one memory. A `.git` file counts as a linked worktree only when the main checkout lists it back, as `git worktree add` leaves it: its pointer names `<main>/.git/worktrees/<name>`, whose `gitdir` file names this `.git`; any other `.git` file (one copied from an archive, say) keys its directory by itself, as does a worktree moved without `git worktree move` until `git worktree repair` relinks it. On Windows nothing on a network (UNC) path is opened for this: a workspace on one keys by itself, as written; a `.git` that links to one keys the workspace by itself; and a `.git` whose git dir, `commondir` or worktree back-pointer is on one keys its own directory. A `.git` in your home directory itself (a dotfiles repository) does not count as a repository, so a project under your home without its own `.git` keeps its own memory; memory saved earlier under the home directory's key stays there and is not moved. A directory under the old, workspace-path key is moved there on first run. `memory.enabled` controls loading and reading the project memory index at session start (the first 200 lines or 25,000 bytes of `MEMORY.md`, with a warning line when it is cut); `memory.autoSave` controls whether the model may write memory: the model writes it with `Write`/`Edit`/`MultiEdit`/`ApplyPatch`, and with `autoSave` off those tools are refused in the memory directory ("memory is read-only in this session"), the prompt drops the save instructions, and the index still loads. A `deny` rule that covers a write to a memory file does the same to the prompt, for that rule's tools. Those are the only two memory keys.
 
 Three memory keys were removed with the approval inbox, the external-content quarantine and background extraction: `memory.requireApproval`, `memory.quarantineExternal` and the `memory.extraction` block. They are no longer read. A settings file that still carries one loads without error, and `book doctor` names the key and what to do about it. A permission rule that names the retired `MemorySave` tool (`MemorySave`, `MemorySave(*)`) matches nothing now and is reported the same way; to restrict memory writes, write a rule on `Write`, `Edit`, `MultiEdit` or `ApplyPatch` for the memory directory, or set `memory.autoSave` to `false`. An `.inbox/` directory an old version left in the memory directory is not read or deleted.
+
+`toolDiscovery.maxLoadedTools` and `toolDiscovery.schemaTokenBudget` cap the deferred tools
+loaded at once. Nothing loaded is evicted mid-session, so once they are full a further load is
+refused until the next compaction or `/clear` (see "Tool discovery" in
+[Tools and safety](tools-and-safety.md#tool-discovery)). `toolDiscovery.stableTools` is `auto` (the
+default) or `off`: `auto` keeps the tools array fixed on the Anthropic API for models that take
+mid-conversation tool changes, declaring deferred tools with `defer_loading` and offering a loaded
+one with a `tool_addition` message, so loading a tool keeps the prompt cache; `off` sends the
+growing array every other provider gets.
 
 `agents.checkTimeoutMs` caps one `Check` run (default 120 s, maximum 2 h). A check that exceeds it
 is killed and reported as `check_timed_out` — explicitly _not_ as a failing check, so an agent does

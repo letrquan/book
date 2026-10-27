@@ -18,7 +18,7 @@ import type {
   UserQuestionResponse,
 } from '../types/tools.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
-import { createProvider, type Provider } from '../provider/index.js';
+import { createProvider, keepsToolsStable, type Provider } from '../provider/index.js';
 import { isTruncationFinishReason, TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
 import { buildMessages } from './context.js';
 import { renameToolUseBlocks, renderedToolCallIds, uniqueToolCallId } from './tool-call-ids.js';
@@ -1325,7 +1325,11 @@ export async function runAgentLoop(
 
       toolContext.currentTurn = turn;
       syncSkillRestrictions(turn);
-      const activeDefinitions = toolSurface.activeDefinitions();
+      // On a provider that keeps `tools[]` fixed (#619) the request declares every authorized tool
+      // and offers loaded ones by addition; elsewhere it sends the active tools, append-only.
+      const stableTools = keepsToolsStable(effectiveConfig);
+      let toolRequest = toolSurface.prepareRequest(newHistory, { stable: stableTools });
+      let activeDefinitions = toolRequest.active;
       // Resolved once per turn. The session-state block is memoized on the newest
       // user message, so a rebuild below reuses these bytes rather than re-listing.
       const outstandingAgents = await outstandingAgentLabels(
@@ -1354,6 +1358,13 @@ export async function runAgentLoop(
       );
       let requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
       const rebuildRequest = async (): Promise<void> => {
+        // A compaction that ran since is a reset point for the loaded set, and this request is
+        // the one whose cache it rebuilds, so the tools are taken again with the messages.
+        toolRequest = toolSurface.prepareRequest(newHistory, {
+          stable: stableTools,
+          rebuild: true,
+        });
+        activeDefinitions = toolRequest.active;
         messages = await buildMessages(
           effectiveConfig,
           newHistory,
@@ -1647,7 +1658,9 @@ export async function runAgentLoop(
         }
       }
       sentSystemPrompt = systemPromptText(messages);
-      const stream = provider.stream(effectiveConfig, messages, activeDefinitions, {
+      const requestTools = toolRequest.stable?.tools ?? activeDefinitions;
+      const stream = provider.stream(effectiveConfig, messages, requestTools, {
+        stableTools: toolRequest.stable,
         signal,
         onRetry: (attempt, max, delayMs) => {
           if (options?.runContext) {

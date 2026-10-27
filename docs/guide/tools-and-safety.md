@@ -328,7 +328,7 @@ deferred tool by name, grouped by category, with a hint of eight words or fewer 
 characters for the 25 deferred tools of the default registry. MCP tools are listed by name only (a
 server writes its own descriptions), and a namespace of more than 12 of them is summarised as a count
 with a pointer to the `namespace` filter. The list names a tool whether or
-not it is loaded, so loading or evicting one never changes the text; it changes only when
+not it is loaded, so loading one never changes the text; it changes only when
 authorization does (the permission mode, an agent role, or a skill or command restriction).
 
 `ToolSearch` with `query: "select:WebFetch,WebSearch"` loads exactly those tools, skipping the
@@ -364,6 +364,49 @@ runs, with a line saying it was not loaded, and is admitted again on each call; 
 that cannot load it say so. Activations are logged under `BOOK_DEBUG` (`tools:discovery`) with their
 reason: `search`, `select`, `direct`, or `host` for a tool Book loads itself (a skill's resource
 reader).
+
+### Activation is append-only
+
+Loading a tool never unloads another. A loaded tool is added to the end of the tools the provider
+is sent, after the core tools and every tool loaded before it, so what a request declared stays the
+front of what the next one declares, and every activation of one model turn lands in the next
+request together. When the loaded tools fill `toolDiscovery.maxLoadedTools` or the schema budget,
+a further `select:` or search refuses with `tool_discovery_budget_exceeded`, as for a schema that
+is too large on its own; a direct call to such a tool still runs, without loading it, and its result
+says the loaded tools fill the budgets. Nothing loaded before is evicted to make room: that would
+rewrite the tools mid-session and throw away the prompt cache.
+
+A compaction is the reset point, the one moment mid-session where the provider's cache is rebuilt
+anyway: the loaded set drops the tools the model has already seen declared, and keeps any tool
+loaded or called since the model's last answer, so a `select:` in the round just compacted is not
+lost. `/clear` starts the set over. A resumed session starts with nothing loaded, except on the
+Anthropic path below, where the tools the resumed conversation already offers are loaded again.
+
+### Stable tools on Anthropic
+
+On the Anthropic API (`api.anthropic.com`) with a model that takes mid-conversation tool changes —
+Claude Opus 5, Opus 5.5, Opus 4.8, Fable 5 and 5.1, Mythos 5 and 5.1, and Sonnet 5.5 — the tools
+array does not change when a tool loads:
+
+- The first request declares every authorized tool: the core ones as before, and every deferred
+  one with `defer_loading: true`, which keeps its schema out of the model's context.
+  `BashOutput` and `KillShell` are declared deferred from the start too, so a background shell
+  starting or ending does not change the array.
+- A tool that loads, from any source (a search, `select:`, a direct call, or Book itself), is
+  offered by a `role: "system"` message with a `tool_addition` block after the request's last
+  message. The reply records it, and later requests send that message again in the same place, so
+  the conversation before it stays the same bytes. Only requests whose messages carry such a block
+  send the `anthropic-beta: mid-conversation-tool-changes-2026-07-01` header.
+- The tools array, and the prompt cache with it, changes only when authorization does: the
+  permission mode, an agent role, or a skill or command restriction. Then the array is rebuilt,
+  as before.
+- The prompt cache breakpoint on the tools sits on the last tool that is not deferred: a deferred
+  tool cannot carry one, and the API leaves deferred tools out of the cached prefix.
+
+Every other model and endpoint gets the append-only array: Claude Sonnet 5, a `claude-*` model
+reached through a router or proxy, Azure Foundry, and every OpenAI-compatible provider.
+`toolDiscovery.stableTools: "off"` turns the Anthropic path off, should the beta misbehave;
+activation stays append-only either way.
 
 ## Permission rules and modes
 

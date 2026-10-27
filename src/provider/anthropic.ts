@@ -2,6 +2,7 @@ import type { AgentConfig } from '../types/runtime.js';
 import type {
   ProviderMessage,
   ProviderStreamEvent,
+  StableToolsRequest,
   SystemPromptZones,
 } from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
@@ -82,8 +83,50 @@ interface AnthropicTool {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
+  /**
+   * Declared, but kept out of the model's context until an addition offers it (#619). Field from
+   * the claude-api skill (`shared/tool-use-concepts.md` § Mid-conversation tool changes) and
+   * platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool ("Deferred tool
+   * loading"): at least one tool must stay non-deferred, and a deferred tool may not carry
+   * `cache_control`.
+   */
+  defer_loading?: true;
   cache_control?: CacheControl;
 }
+
+/**
+ * An addition in a mid-conversation `role: "system"` message (#619): it offers a tool that `tools`
+ * declares with `defer_loading: true`, from this point of the conversation on, without touching
+ * `tools`. The shape is the one in the claude-api skill (`shared/tool-use-concepts.md`
+ * § Mid-conversation tool changes) and in
+ * platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages: a reference by
+ * name, never a definition, and a name `tools` does not declare is a 400
+ * (`tool_reference_unresolved`).
+ */
+interface AnthropicToolAddition {
+  type: 'tool_addition';
+  tool: { type: 'tool_reference'; name: string };
+}
+
+/**
+ * A mid-conversation system message carrying tool additions. The docs' placement rule: it follows a
+ * `user` turn (one of `tool_result` blocks counts) and ends the array or precedes an `assistant`
+ * turn, never `messages[0]`.
+ */
+interface AnthropicSystemMessage {
+  role: 'system';
+  content: AnthropicToolAddition[];
+}
+
+type AnthropicRequestMessage = AnthropicMessage | AnthropicSystemMessage;
+
+/**
+ * The beta tool changes by reference need. It is sent only on a request whose messages carry one,
+ * which from the first addition on is every request of the session, since the history keeps it.
+ * The docs name `inline-tools-2026-09-15` as its Claude API superset (it adds tools defined in a
+ * message); a reference to a tool declared up front needs nothing more than this one.
+ */
+const TOOL_CHANGES_BETA = 'mid-conversation-tool-changes-2026-07-01';
 
 interface AnthropicSystemBlock {
   type: 'text';
@@ -172,22 +215,34 @@ const UNCACHEABLE_BLOCK_TYPES = new Set<AnthropicContentBlock['type']>([
 const EPHEMERAL: CacheControl = { type: 'ephemeral' };
 
 /**
- * Mark only the final tool. The breakpoint's prefix span already covers every
- * tool before it, so per-tool markers buy nothing and blow the 4-marker limit.
+ * Mark only the final tool the model is shown. The breakpoint's prefix span already covers every
+ * tool before it, so per-tool markers buy nothing and blow the 4-marker limit. A deferred tool
+ * cannot carry one (a 400), and the API leaves deferred tools out of the prompt prefix, so with a
+ * stable declaration the marker sits on the last non-deferred tool, the last of the fixed core,
+ * which `prepareRequest` puts ahead of every deferred one.
  */
 function withToolCacheBreakpoint(tools: AnthropicTool[]): AnthropicTool[] {
-  if (tools.length === 0) return tools;
-  return tools.map((tool, index) =>
-    index === tools.length - 1 ? { ...tool, cache_control: EPHEMERAL } : tool,
+  let index = tools.length - 1;
+  while (index >= 0 && tools[index].defer_loading) index--;
+  if (index === -1) return tools;
+  return tools.map((tool, position) =>
+    position === index ? { ...tool, cache_control: EPHEMERAL } : tool,
   );
 }
 
 /**
  * Move the conversation breakpoint to the newest message so the next request
  * reads back the whole history instead of re-billing it at full input price.
+ * A trailing system message of tool additions is passed over: the docs do not say a
+ * `tool_addition` block takes `cache_control`, so the marker goes on the user turn before it, and
+ * the next request reads the prefix back from there.
  */
-export function markLastMessageForCaching(messages: AnthropicMessage[]): void {
-  const last = messages[messages.length - 1];
+export function markLastMessageForCaching(messages: AnthropicRequestMessage[]): void {
+  let last: AnthropicMessage | undefined;
+  for (let index = messages.length - 1; index >= 0 && !last; index--) {
+    const message = messages[index];
+    if (message.role !== 'system') last = message;
+  }
   if (!last) return;
 
   // `cache_control` lives on a content block, so string content has to become one.
@@ -208,10 +263,11 @@ export function markLastMessageForCaching(messages: AnthropicMessage[]): void {
 export function countCacheBreakpoints(body: {
   tools?: AnthropicTool[];
   system?: AnthropicSystemBlock[];
-  messages?: AnthropicMessage[];
+  messages?: AnthropicRequestMessage[];
 }): number {
-  const marked = (blocks: Array<{ cache_control?: CacheControl }> = []) =>
-    blocks.filter((block) => block.cache_control).length;
+  // Any block may carry a marker, a tool addition included, though Book never puts one there.
+  const marked = (blocks: ReadonlyArray<object> = []) =>
+    blocks.filter((block) => 'cache_control' in block && block.cache_control).length;
 
   return (
     marked(body.tools) +
@@ -276,22 +332,56 @@ function supportsEffortOnly(model: string): boolean {
   return false;
 }
 
+/** The additions a request can send (#619): names it declares deferred, each once, in order. */
+function offerableAdditions(
+  names: readonly string[] | undefined,
+  deferred: ReadonlySet<string> | undefined,
+): string[] {
+  if (!names?.length || !deferred) return [];
+  return [...new Set(names)].filter((name) => deferred.has(name));
+}
+
+function toolAdditionMessage(names: readonly string[]): AnthropicSystemMessage {
+  return {
+    role: 'system',
+    content: names.map((name) => ({
+      type: 'tool_addition',
+      tool: { type: 'tool_reference', name },
+    })),
+  };
+}
+
 /**
  * Convert Book's internal message format (OpenAI-flavored) to Anthropic Messages API format.
  * Extracts the system prompt (role: 'system') and returns it separately as the top-level `system` string.
  *
  * Tool results from a single assistant turn are merged into one user message to satisfy
  * Anthropic's strict alternating user/assistant requirement.
+ *
+ * `deferred` names the tools a stable request declares with `defer_loading` (#619). An assistant
+ * message that recorded additions gets them back as a system message right before it, where the
+ * request that produced it sent them, so the bytes are the same on every later request; names
+ * outside `deferred` are left out, since a reference `tools` does not declare is a 400.
  */
-export function convertMessages(messages: ProviderMessage[]): {
+export function convertMessages(
+  messages: ProviderMessage[],
+  deferred?: ReadonlySet<string>,
+): {
   system: string;
   systemZones?: SystemPromptZones;
-  messages: AnthropicMessage[];
+  messages: AnthropicRequestMessage[];
 } {
   let system = 'You are a helpful AI coding assistant.';
   let systemZones: SystemPromptZones | undefined;
 
-  const anthropicMessages: AnthropicMessage[] = [];
+  const anthropicMessages: AnthropicRequestMessage[] = [];
+  /** The additions recorded on an assistant message, placed before it after a user turn only. */
+  const restoreAdditions = (msg: ProviderMessage): void => {
+    const additions = offerableAdditions(msg.providerMetadata?.toolAdditions, deferred);
+    if (additions.length > 0 && anthropicMessages[anthropicMessages.length - 1]?.role === 'user') {
+      anthropicMessages.push(toolAdditionMessage(additions));
+    }
+  };
 
   for (const msg of messages) {
     if (msg.role === 'system') {
@@ -350,6 +440,7 @@ export function convertMessages(messages: ProviderMessage[]): {
     }
 
     if (msg.role === 'assistant') {
+      restoreAdditions(msg);
       const nativeBlocks = msg.providerMetadata?.anthropicContentBlocks;
       if (nativeBlocks?.length) {
         anthropicMessages.push({
@@ -430,13 +521,18 @@ export function convertMessages(messages: ProviderMessage[]): {
 }
 
 /**
- * Convert Book's ToolDefinition[] to Anthropic Messages API tool format.
+ * Convert Book's ToolDefinition[] to Anthropic Messages API tool format. A tool named in `deferred`
+ * is declared with `defer_loading: true` (#619).
  */
-export function convertTools(tools: ToolDefinition[]): AnthropicTool[] {
+export function convertTools(
+  tools: ToolDefinition[],
+  deferred?: ReadonlySet<string>,
+): AnthropicTool[] {
   return tools.map((t) => ({
     name: t.name,
     description: t.description,
     input_schema: t.inputSchema ?? t.parameters,
+    ...(deferred?.has(t.name) ? { defer_loading: true as const } : {}),
   }));
 }
 
@@ -470,6 +566,7 @@ export async function* chatCompletionStream(
     onStreamStall?: (countdownMs: number) => void;
     onStreamResume?: () => void;
     maxOutputTokens?: number;
+    stableTools?: StableToolsRequest;
   },
 ): AsyncGenerator<ProviderStreamEvent> {
   const retry = config.retry;
@@ -477,10 +574,30 @@ export async function* chatCompletionStream(
   const normalizedBaseUrl = config.baseUrl.replace(/\/+$/, '');
   const url = `${normalizedBaseUrl}${/\/v1$/i.test(normalizedBaseUrl) ? '' : '/v1'}/messages`;
 
+  // A stable declaration (#619) defers only while some tool stays non-deferred: a request whose
+  // every tool is deferred is a 400 ("All tools cannot be deferred", tool search docs).
+  const stable = options?.stableTools;
+  const deferred =
+    stable && stable.deferred.size > 0 && tools.some((tool) => !stable.deferred.has(tool.name))
+      ? stable.deferred
+      : undefined;
+
   // Convert messages and tools to Anthropic format
-  const { system, systemZones, messages: anthropicMessages } = convertMessages(messages);
-  const anthropicTools = withToolCacheBreakpoint(convertTools(tools));
+  const { system, systemZones, messages: anthropicMessages } = convertMessages(messages, deferred);
+  // This request's own additions go after its last message, which is a user turn: the reply
+  // records them, and later requests send them right before it.
+  let toolAdditions = offerableAdditions(stable?.additions, deferred);
+  if (
+    toolAdditions.length > 0 &&
+    anthropicMessages[anthropicMessages.length - 1]?.role === 'user'
+  ) {
+    anthropicMessages.push(toolAdditionMessage(toolAdditions));
+  } else {
+    toolAdditions = [];
+  }
+  const anthropicTools = withToolCacheBreakpoint(convertTools(tools, deferred));
   markLastMessageForCaching(anthropicMessages);
+  const usesToolChanges = anthropicMessages.some((message) => message.role === 'system');
 
   const body: Record<string, unknown> = {
     model: config.model,
@@ -535,6 +652,8 @@ export async function* chatCompletionStream(
     model: config.model,
     messageCount: anthropicMessages.length,
     toolCount: anthropicTools.length,
+    deferredTools: deferred?.size ?? 0,
+    toolAdditions,
     maxTokens: config.maxTokens,
     effort: config.effort,
   });
@@ -549,6 +668,7 @@ export async function* chatCompletionStream(
           'Content-Type': 'application/json',
           'x-api-key': config.apiKey,
           'anthropic-version': '2023-06-01',
+          ...(usesToolChanges ? { 'anthropic-beta': TOOL_CHANGES_BETA } : {}),
         },
         body: JSON.stringify(body),
       },
@@ -798,10 +918,17 @@ export async function* chatCompletionStream(
               ...(responseModel ? { responseModel } : {}),
               ...(responseId ? { responseId } : {}),
               ...(finishReasons.size > 0 ? { finishReasons: [...finishReasons] } : {}),
-              ...(assistantContentBlocks.length > 0
+              ...(assistantContentBlocks.length > 0 || toolAdditions.length > 0
                 ? {
                     providerMetadata: {
-                      anthropicContentBlocks: assistantContentBlocks.map((block) => ({ ...block })),
+                      ...(assistantContentBlocks.length > 0
+                        ? {
+                            anthropicContentBlocks: assistantContentBlocks.map((block) => ({
+                              ...block,
+                            })),
+                          }
+                        : {}),
+                      ...(toolAdditions.length > 0 ? { toolAdditions } : {}),
                     },
                   }
                 : {}),

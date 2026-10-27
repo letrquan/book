@@ -229,7 +229,7 @@ describe('tool surface discovery', () => {
     expect(surface.activeDefinitions().map((tool) => tool.name)).not.toContain('SecondTool');
   });
 
-  it('refreshes loaded-tool recency when an activated tool executes', () => {
+  it('keeps every loaded tool once the loaded-tool cap is reached (#619)', () => {
     const runtimeConfig = config();
     runtimeConfig.settings.toolDiscovery.mode = 'deferred';
     runtimeConfig.settings.toolDiscovery.maxLoadedTools = 2;
@@ -247,11 +247,13 @@ describe('tool surface discovery', () => {
     surface.activeDefinitions();
     expect(surface.canExecute({ id: 'second', name: 'SecondTool', arguments: {} })).toBe(true);
 
-    surface.activate(['ThirdTool']);
+    // Evicting the least recently used tool would rewrite the request's tools mid-session: the
+    // new activation is refused instead.
+    expect(surface.activate(['ThirdTool'])).toEqual([]);
     const active = surface.activeDefinitions().map((tool) => tool.name);
+    expect(active).toContain('FirstTool');
     expect(active).toContain('SecondTool');
-    expect(active).toContain('ThirdTool');
-    expect(active).not.toContain('FirstTool');
+    expect(active).not.toContain('ThirdTool');
   });
 
   it('keeps smaller recent tools when an oversized schema cannot fit the budget', () => {

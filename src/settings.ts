@@ -415,6 +415,13 @@ export const toolDiscoverySettingsSchema = z.object({
   schemaTokenBudget: z.number().int().min(1000).max(100000).default(8000),
   maxLoadedTools: z.number().int().min(1).max(100).default(15),
   searchLimit: z.number().int().min(1).max(5).default(5),
+  /**
+   * Stable tools on Anthropic (#619): on a model and endpoint that take mid-conversation tool
+   * changes, `tools[]` declares every authorized tool from the first request and a loaded one is
+   * offered by a `tool_addition` message, so an activation keeps the prompt cache. `off` is the
+   * kill switch for that beta request shape; activation stays append-only either way.
+   */
+  stableTools: z.enum(['auto', 'off']).default('auto'),
 });
 
 export type ToolDiscoverySettings = z.infer<typeof toolDiscoverySettingsSchema>;
@@ -742,6 +749,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     schemaTokenBudget: 8000,
     maxLoadedTools: 15,
     searchLimit: 5,
+    stableTools: 'auto',
   },
   toolExecution: {
     maxConcurrent: 4,
