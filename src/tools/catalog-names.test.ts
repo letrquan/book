@@ -88,11 +88,12 @@ describe('deferred tool list (#619)', () => {
       definitions: createDefaultRegistry().getDefinitions(),
     });
     const before = surface.catalogSummary();
-    surface.activate(['WebFetch']);
+    surface.activate(['WebFetch'], 'search');
     surface.prepareRequest([]);
+    surface.markAnswered();
     expect(surface.catalogSummary()).toBe(before);
     // Nothing is evicted mid-session any more (#619): a full set refuses the next activation.
-    expect(surface.activate(['GitLog'])).toEqual([]);
+    expect(surface.activate(['GitLog'], 'search')).toEqual([]);
     expect(surface.activeDefinitions().map((entry) => entry.name)).toContain('WebFetch');
     expect(surface.catalogSummary()).toBe(before);
     // A compaction checkpoint is the reset point that unloads it: the model saw it declared.
@@ -104,7 +105,7 @@ describe('deferred tool list (#619)', () => {
       includeInContext: true,
       timestamp: 0,
     };
-    const reset = surface.prepareRequest([checkpoint]).active.map((entry) => entry.name);
+    const reset = surface.prepareRequest([checkpoint]).tools.map((entry) => entry.name);
     expect(reset).not.toContain('WebFetch');
     expect(surface.catalogSummary()).toBe(before);
   });

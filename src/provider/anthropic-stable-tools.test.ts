@@ -6,11 +6,7 @@ import { createToolSurface } from '../tools/catalog.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
 import type { AgentConfig } from '../types/runtime.js';
-import type {
-  ProviderMessage,
-  ProviderStreamEvent,
-  StableToolsRequest,
-} from '../types/providers.js';
+import type { ProviderMessage, ProviderStreamEvent } from '../types/providers.js';
 import type { ToolContext, ToolDefinition } from '../types/tools.js';
 
 // Stable tools on Anthropic (#619): on a model that takes mid-conversation tool changes, the first
@@ -80,8 +76,11 @@ function declaration() {
     context: context(),
     definitions: createDefaultRegistry().getDefinitions(),
   });
-  const first = surface.prepareRequest([], { stable: true }).stable!;
-  return { config, surface, tools: first.tools, deferred: first.deferred };
+  const first = surface.prepareRequest([], { stable: true });
+  const deferred = new Set(
+    first.tools.filter((tool) => tool.deferLoading).map((tool) => tool.name),
+  );
+  return { config, surface, tools: first.tools, deferred };
 }
 
 const system: ProviderMessage = {
@@ -93,10 +92,10 @@ async function send(
   config: AgentConfig,
   messages: ProviderMessage[],
   tools: ToolDefinition[],
-  stableTools?: StableToolsRequest,
+  toolAdditions?: readonly string[],
 ): Promise<ProviderStreamEvent[]> {
   const events: ProviderStreamEvent[] = [];
-  for await (const event of chatCompletionStream(config, messages, tools, { stableTools })) {
+  for await (const event of chatCompletionStream(config, messages, tools, { toolAdditions })) {
     events.push(event);
   }
   return events;
@@ -149,10 +148,7 @@ describe('the stable request on a supported model (#619)', () => {
     const captured = captureFetch();
     const { config, tools, deferred } = declaration();
 
-    await send(config, [system, { role: 'user', content: 'hi' }], tools, {
-      deferred,
-      additions: [],
-    });
+    await send(config, [system, { role: 'user', content: 'hi' }], tools, []);
 
     const [{ body, headers }] = captured;
     expect(body.tools.map((tool) => tool.name)).toEqual(tools.map((tool) => tool.name));
@@ -178,19 +174,16 @@ describe('the stable request on a supported model (#619)', () => {
 
   it('turns an activation into a tool_addition, leaving tools[] byte-identical', async () => {
     const captured = captureFetch();
-    const { config, surface, tools, deferred } = declaration();
+    const { config, surface, tools } = declaration();
     const before: ProviderMessage[] = [system, { role: 'user', content: 'hi' }];
-    await send(config, before, tools, { deferred, additions: [] });
+    await send(config, before, tools, []);
 
     surface.select!(['GitLog']);
-    const next = surface.prepareRequest([], { stable: true }).stable!;
+    const next = surface.prepareRequest([], { stable: true });
     expect(next.tools).toEqual(tools);
     expect(next.additions).toEqual(['GitLog']);
     const during = [...before, assistantReply(), { role: 'user', content: 'next' }];
-    const events = await send(config, during, next.tools, {
-      deferred: next.deferred,
-      additions: next.additions,
-    });
+    const events = await send(config, during, next.tools, next.additions);
 
     const [first, second] = captured;
     expect(JSON.stringify(second.body.tools)).toBe(JSON.stringify(first.body.tools));
@@ -214,16 +207,16 @@ describe('the stable request on a supported model (#619)', () => {
 
   it('sends a recorded addition right before the reply it preceded, with the beta', async () => {
     const captured = captureFetch();
-    const { config, tools, deferred } = declaration();
+    const { config, tools } = declaration();
     const activation: ProviderMessage[] = [
       system,
       { role: 'user', content: 'hi' },
       assistantReply(),
       { role: 'user', content: 'next' },
     ];
-    await send(config, activation, tools, { deferred, additions: ['GitLog'] });
+    await send(config, activation, tools, ['GitLog']);
     const later = [...activation, assistantReply(['GitLog']), { role: 'user', content: 'again' }];
-    await send(config, later, tools, { deferred, additions: [] });
+    await send(config, later, tools, []);
 
     const [second, third] = captured;
     expect(third.body.messages.map((entry) => entry.role)).toEqual([
@@ -244,13 +237,13 @@ describe('the stable request on a supported model (#619)', () => {
 
   it('sends no reference to a tool the request does not declare deferred', async () => {
     const captured = captureFetch();
-    const { config, tools, deferred } = declaration();
+    const { config, tools } = declaration();
 
     await send(
       config,
       [system, { role: 'user', content: 'hi' }, assistantReply(['Read', 'NoSuchTool'])],
       tools,
-      { deferred, additions: ['Read'] },
+      ['Read'],
     );
 
     expect(captured[0]!.body.messages.some((entry) => entry.role === 'system')).toBe(false);
@@ -260,12 +253,9 @@ describe('the stable request on a supported model (#619)', () => {
   it('defers nothing when every tool would be deferred', async () => {
     const captured = captureFetch();
     const { config, tools } = declaration();
-    const everything = new Set(tools.map((tool) => tool.name));
+    const everything = tools.map((tool) => ({ ...tool, deferLoading: true }));
 
-    await send(config, [system, { role: 'user', content: 'hi' }], tools, {
-      deferred: everything,
-      additions: ['GitLog'],
-    });
+    await send(config, [system, { role: 'user', content: 'hi' }], everything, ['GitLog']);
 
     expect(captured[0]!.body.tools.some((tool) => tool.defer_loading)).toBe(false);
     expect(captured[0]!.body.messages.some((entry) => entry.role === 'system')).toBe(false);
@@ -273,7 +263,8 @@ describe('the stable request on a supported model (#619)', () => {
 
   it('renders no addition and no beta without a stable declaration', async () => {
     const captured = captureFetch();
-    const { config, tools } = declaration();
+    const { config } = declaration();
+    const tools = createDefaultRegistry().getDefinitions();
 
     await send(
       config,
@@ -327,5 +318,18 @@ describe('where tools stay stable (#619)', () => {
     const openai = stableConfig();
     openai.provider = 'openai';
     expect(keepsToolsStable(openai)).toBe(false);
+    // The hostname must be the API's own, not merely contain its name.
+    for (const lookAlike of [
+      'https://anthropic.com.gateway.corp/v1',
+      'https://llm-proxy-anthropic.com/v1',
+      'https://api.anthropic.com.evil.example',
+    ]) {
+      const proxy = stableConfig();
+      proxy.baseUrl = lookAlike;
+      expect(keepsToolsStable(proxy), lookAlike).toBe(false);
+    }
+    const trailing = stableConfig();
+    trailing.baseUrl = 'https://API.anthropic.com/v1/';
+    expect(keepsToolsStable(trailing)).toBe(true);
   });
 });

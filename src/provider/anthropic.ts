@@ -2,7 +2,6 @@ import type { AgentConfig } from '../types/runtime.js';
 import type {
   ProviderMessage,
   ProviderStreamEvent,
-  StableToolsRequest,
   SystemPromptZones,
 } from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
@@ -521,18 +520,15 @@ export function convertMessages(
 }
 
 /**
- * Convert Book's ToolDefinition[] to Anthropic Messages API tool format. A tool named in `deferred`
- * is declared with `defer_loading: true` (#619).
+ * Convert Book's ToolDefinition[] to Anthropic Messages API tool format. A tool a stable request
+ * marks `deferLoading` is declared with `defer_loading: true` (#619), unless `deferral` is off.
  */
-export function convertTools(
-  tools: ToolDefinition[],
-  deferred?: ReadonlySet<string>,
-): AnthropicTool[] {
+export function convertTools(tools: ToolDefinition[], deferral = true): AnthropicTool[] {
   return tools.map((t) => ({
     name: t.name,
     description: t.description,
     input_schema: t.inputSchema ?? t.parameters,
-    ...(deferred?.has(t.name) ? { defer_loading: true as const } : {}),
+    ...(deferral && t.deferLoading ? { defer_loading: true as const } : {}),
   }));
 }
 
@@ -566,7 +562,7 @@ export async function* chatCompletionStream(
     onStreamStall?: (countdownMs: number) => void;
     onStreamResume?: () => void;
     maxOutputTokens?: number;
-    stableTools?: StableToolsRequest;
+    toolAdditions?: readonly string[];
   },
 ): AsyncGenerator<ProviderStreamEvent> {
   const retry = config.retry;
@@ -574,19 +570,20 @@ export async function* chatCompletionStream(
   const normalizedBaseUrl = config.baseUrl.replace(/\/+$/, '');
   const url = `${normalizedBaseUrl}${/\/v1$/i.test(normalizedBaseUrl) ? '' : '/v1'}/messages`;
 
-  // A stable declaration (#619) defers only while some tool stays non-deferred: a request whose
-  // every tool is deferred is a 400 ("All tools cannot be deferred", tool search docs).
-  const stable = options?.stableTools;
-  const deferred =
-    stable && stable.deferred.size > 0 && tools.some((tool) => !stable.deferred.has(tool.name))
-      ? stable.deferred
-      : undefined;
+  // A stable declaration (#619) marks its deferred tools. It defers only while some tool stays
+  // non-deferred: a request whose every tool is deferred is a 400 ("All tools cannot be
+  // deferred", tool search docs).
+  const deferral =
+    tools.some((tool) => tool.deferLoading) && tools.some((tool) => !tool.deferLoading);
+  const deferred = deferral
+    ? new Set(tools.filter((tool) => tool.deferLoading).map((tool) => tool.name))
+    : undefined;
 
   // Convert messages and tools to Anthropic format
   const { system, systemZones, messages: anthropicMessages } = convertMessages(messages, deferred);
   // This request's own additions go after its last message, which is a user turn: the reply
   // records them, and later requests send them right before it.
-  let toolAdditions = offerableAdditions(stable?.additions, deferred);
+  let toolAdditions = offerableAdditions(options?.toolAdditions, deferred);
   if (
     toolAdditions.length > 0 &&
     anthropicMessages[anthropicMessages.length - 1]?.role === 'user'
@@ -595,7 +592,7 @@ export async function* chatCompletionStream(
   } else {
     toolAdditions = [];
   }
-  const anthropicTools = withToolCacheBreakpoint(convertTools(tools, deferred));
+  const anthropicTools = withToolCacheBreakpoint(convertTools(tools, deferral));
   markLastMessageForCaching(anthropicMessages);
   const usesToolChanges = anthropicMessages.some((message) => message.role === 'system');
 

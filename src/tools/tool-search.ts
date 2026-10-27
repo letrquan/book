@@ -12,6 +12,18 @@ function directCallNote(discovery: ToolDiscoveryContext, text: string): string {
   return discovery.admitsDirectCalls?.() ? text : '';
 }
 
+/**
+ * Whether a refusal is the loaded set being full rather than a schema too large on its own (#619):
+ * nothing is unloaded to make room before the next compaction, so narrowing the query cannot help.
+ */
+function loadedSetFull(discovery: ToolDiscoveryContext, names: string[]): boolean {
+  return names.some((name) => discovery.unloadedReason?.(name) === 'full');
+}
+
+function fullSetRemediation(discovery: ToolDiscoveryContext): string {
+  return `The loaded-tool set is full until the next compaction; ${directCallNote(discovery, 'call a listed tool directly (it runs without being loaded) or ')}select: one exact tool.`;
+}
+
 function selectionLine(selection: ToolSelection, direct: string): string {
   switch (selection.status) {
     case 'loaded':
@@ -54,12 +66,17 @@ function selectTools(list: string, discovery: ToolDiscoveryContext): ToolResult 
   const content = selections.map((selection) => selectionLine(selection, direct)).join('\n');
   const data = { query: `select:${names.join(',')}`, selections };
   if (loaded.length === 0 && !selections.some((selection) => selection.status === 'active')) {
-    const budget = selections.some((selection) => selection.status === 'budget');
+    const refused = selections.flatMap((selection) =>
+      selection.status === 'budget' && selection.name ? [selection.name] : [],
+    );
+    const budget = refused.length > 0;
     return toolFailure(content, {
       code: budget ? 'tool_discovery_budget_exceeded' : 'tool_not_found',
-      remediation: budget
-        ? `Select fewer or smaller tools, or ask the host to increase the tool discovery budget${directCallNote(discovery, '; a direct call still runs a tool that does not fit, without loading its schema')}.`
-        : 'Use the names in the deferred tool list, or search by capability.',
+      remediation: !budget
+        ? 'Use the names in the deferred tool list, or search by capability.'
+        : loadedSetFull(discovery, refused)
+          ? fullSetRemediation(discovery)
+          : `Select fewer or smaller tools, or ask the host to increase the tool discovery budget${directCallNote(discovery, '; a direct call still runs a tool that does not fit, without loading its schema')}.`,
       data,
     });
   }
@@ -187,11 +204,17 @@ export const toolSearchTools: ToolDefinition[] = [
         );
       }
       if (loadedMatches.length === 0) {
+        const full = loadedSetFull(
+          context.toolDiscovery,
+          matches.map((match) => match.name),
+        );
         return toolFailure(
           `Matching tools could not fit within the configured loaded-tool and schema budgets: ${query}`,
           {
             code: 'tool_discovery_budget_exceeded',
-            remediation: `Use a narrower query or ask the host to increase the tool discovery budget${directCallNote(context.toolDiscovery, '; a direct call still runs a matching tool, without loading its schema')}.`,
+            remediation: full
+              ? fullSetRemediation(context.toolDiscovery)
+              : `Use a narrower query or ask the host to increase the tool discovery budget${directCallNote(context.toolDiscovery, '; a direct call still runs a matching tool, without loading its schema')}.`,
             data: { query, matches: resolvedMatches },
           },
         );

@@ -9,7 +9,9 @@ import { toolSuccess } from '../tools/result.js';
 import type { Provider, ProviderStreamOptions } from '../provider/index.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { AgentConfig } from '../types/runtime.js';
-import type { ToolCall } from '../types/tools.js';
+import type { CompactResult } from '../types/sessions.js';
+import type { ToolCall, ToolDefinition } from '../types/tools.js';
+import { MemoryModelWindowStore } from '../model-window-store.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { isolateBookHome } from '../test/isolated-book-home.js';
 
@@ -289,6 +291,95 @@ describe('append-only tools on an OpenAI-compatible provider (#619)', () => {
       [...core!, 'GitLog', 'GitDiff'],
       [...core!, 'GitLog', 'GitDiff', 'WebFetch'],
     ]);
-    expect(options.every((entry) => entry?.stableTools === undefined)).toBe(true);
+    expect(options.every((entry) => !entry?.toolAdditions?.length)).toBe(true);
+  });
+});
+
+describe('a reset point on a retried request (#619)', () => {
+  it('still declares a tool the last round loaded when an overflow compacts and retries', async () => {
+    const requests: string[][] = [];
+    let call = 0;
+    const provider = {
+      id: 'scripted',
+      stream: async function* (_config: unknown, _messages: unknown, tools: ToolDefinition[]) {
+        requests.push(tools.map((tool) => tool.name));
+        call++;
+        if (call === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'select', name: 'ToolSearch', arguments: { query: 'select:WebFetch' } },
+          };
+          yield { type: 'done' };
+        } else if (call === 2) {
+          yield {
+            type: 'error',
+            error: 'maximum context length exceeded',
+            errorCode: 'context_overflow',
+          };
+        } else {
+          yield { type: 'text', content: 'done' };
+          yield { type: 'done' };
+        }
+      },
+    } as unknown as Provider;
+    const compacted: Extract<CompactResult, { status: 'compacted' }> = {
+      status: 'compacted',
+      trigger: 'auto',
+      replacementHistory: [
+        {
+          id: 'checkpoint-retry',
+          role: 'assistant',
+          content: 'compact summary',
+          kind: 'checkpoint',
+          includeInContext: true,
+          timestamp: 2,
+        },
+      ],
+      summary: 'compact summary',
+      compactId: 'compact-retry',
+      generation: 1,
+      checkpoint: {
+        version: 2,
+        generation: 1,
+        state: { summary: 'compact summary', status: 'active' },
+        constraints: [],
+        files: [],
+        episodes: [],
+        openThreads: [],
+        statistics: { summarizedMessages: 1, retainedMessages: 0, preTokens: 100, postTokens: 10 },
+      },
+      checkpointVersion: 2,
+      summarizedCount: 1,
+      retainedCount: 0,
+      carriedCount: 0,
+      carriedClippedCount: 0,
+      carriedDroppedCount: 0,
+      postContextTokens: 10,
+      preMessageCount: 2,
+      strategy: 'single-pass',
+      modelCalls: 1,
+    };
+
+    await runAgentLoop(
+      defaultConfig({
+        workspace,
+        maxTurns: 4,
+        autoCompactEnabled: true,
+        // Declared, so the overflow does not shrink the learned window and the schema budget.
+        modelInfo: { contextWindow: 200_000 },
+      }),
+      registry(),
+      'go',
+      [],
+      { ...callbacks(), onCompact: async () => compacted },
+      'default',
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
+    );
+
+    expect(requests).toHaveLength(3);
+    // The refused request declared WebFetch; the retry after the compaction must too, since the
+    // model never saw an answer to it.
+    expect(requests[1]).toContain('WebFetch');
+    expect(requests[2]).toContain('WebFetch');
   });
 });

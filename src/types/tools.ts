@@ -324,6 +324,12 @@ export interface ToolDefinition {
   ignoredArguments?: readonly string[];
   catalog?: ToolCatalogMetadata;
   policy?: ToolPolicy;
+  /**
+   * Declared to the provider but kept out of the model's context until an addition offers it
+   * (#619). Set only on the copies a stable request declares; a provider that does not keep
+   * `tools[]` stable never receives it.
+   */
+  deferLoading?: boolean;
   /** When true, the tool is safe to retry once on transient failure (Read, Grep, WebFetch, etc.). */
   idempotent?: boolean;
   /**
@@ -585,29 +591,36 @@ export interface ToolDiscoveryState {
    * newest checkpoint differs is a reset point, where the provider's cache is rebuilt anyway.
    */
   resetAt?: string;
-  /** `clock` when the latest turn's request was built, and when the one before it was. */
+  /**
+   * The model and the schema budget of the last request: a change of model, or a smaller budget,
+   * is a reset point too.
+   */
+  model?: string;
+  budget?: number;
+  /**
+   * Loaded by the host rather than the model: a skill's resource reader, or a runtime tool such as
+   * `BashOutput` once the runtime first offers it. They always load, and the budgets leave them out.
+   */
+  hostLoaded?: Set<string>;
+  /** Whether tools are deferred, decided once and kept until a reset point. */
+  deferredMode?: boolean;
+  /** `clock` when the last request was built, and when the last one answered was. */
   builtAt?: number;
   answeredAt?: number;
 }
 
 /**
- * What one provider request declares (#619). `active` is what the model can call with its schema:
- * the core tools in catalog order, then the loaded ones in the order they loaded.
+ * What one provider request declares (#619), as one value: `tools` is the request's tools array.
+ * On a stable request it declares every authorized tool, the fixed core first and the rest after,
+ * each in catalog order, those after marked `deferLoading`, so it changes only with authorization;
+ * a deferred tool reaches the model through an addition, and `additions` are the ones no message in
+ * the history has offered yet, which this request offers after its last message. Elsewhere `tools`
+ * is the core in catalog order, then the loaded tools in the order they loaded, and `additions` is
+ * empty. `shown` is what the model sees with its schema, which the request's size is estimated
+ * from.
  */
 export interface ToolRequest {
-  active: ToolDefinition[];
-  /** Set when the surface was asked for a stable declaration. */
-  stable?: StableToolDeclaration;
-}
-
-/**
- * A stable declaration (#619): `tools` is every tool the request declares, the fixed core first and
- * the deferred ones after, each in catalog order, so it changes only with authorization. A deferred
- * tool reaches the model only through an addition; `additions` are the active deferred tools that
- * no message in the history has offered yet, which this request offers after its last message.
- */
-export interface StableToolDeclaration {
   tools: ToolDefinition[];
-  deferred: ReadonlySet<string>;
+  shown: ToolDefinition[];
   additions: string[];
 }

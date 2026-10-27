@@ -157,7 +157,6 @@ async function probe(model: string, apiKey: string, workspace: string): Promise<
       timestamp: Date.now(),
     });
     const request = surface.prepareRequest(history, { stable: true });
-    const stable = request.stable!;
     const messages = await buildMessages(config, history, [], undefined, undefined, {
       toolCatalogSummary: surface.catalogSummary(),
     });
@@ -165,14 +164,15 @@ async function probe(model: string, apiKey: string, workspace: string): Promise<
     let usage: Usage | undefined;
     let metadata: ProviderMessageMetadata | undefined;
     let error: string | undefined;
-    for await (const event of chatCompletionStream(config, messages, stable.tools, {
-      stableTools: { deferred: stable.deferred, additions: stable.additions },
+    for await (const event of chatCompletionStream(config, messages, request.tools, {
+      toolAdditions: request.additions,
     })) {
       if (event.type === 'text') answer += event.content ?? '';
       if (event.type === 'error') error = `${event.errorCode ?? 'error'}: ${event.error}`;
       if (event.type === 'done') {
         usage = event.usage;
         metadata = event.providerMetadata;
+        surface.markAnswered();
       }
     }
     history.push({

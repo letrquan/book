@@ -621,8 +621,9 @@ Memory lives in `<BOOK_HOME>/projects/<slug>/memory/` (`~/.book/projects/<slug>/
 Three memory keys were removed with the approval inbox, the external-content quarantine and background extraction: `memory.requireApproval`, `memory.quarantineExternal` and the `memory.extraction` block. They are no longer read. A settings file that still carries one loads without error, and `book doctor` names the key and what to do about it. A permission rule that names the retired `MemorySave` tool (`MemorySave`, `MemorySave(*)`) matches nothing now and is reported the same way; to restrict memory writes, write a rule on `Write`, `Edit`, `MultiEdit` or `ApplyPatch` for the memory directory, or set `memory.autoSave` to `false`. An `.inbox/` directory an old version left in the memory directory is not read or deleted.
 
 `toolDiscovery.maxLoadedTools` and `toolDiscovery.schemaTokenBudget` cap the deferred tools
-loaded at once. Nothing loaded is evicted mid-session, so once they are full a further load is
-refused until the next compaction or `/clear` (see "Tool discovery" in
+loaded at once, counting only those the mode and restrictions authorize. Nothing loaded is evicted
+mid-session, so once they are full a further load is refused until the next compaction, change of
+model or `/clear` (see "Tool discovery" in
 [Tools and safety](tools-and-safety.md#tool-discovery)). `toolDiscovery.stableTools` is `auto` (the
 default) or `off`: `auto` keeps the tools array fixed on the Anthropic API for models that take
 mid-conversation tool changes, declaring deferred tools with `defer_loading` and offering a loaded
