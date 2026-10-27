@@ -111,6 +111,7 @@ import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/sessio
 import type { PeerAwareness } from '../../messaging/peer-awareness.js';
 import type { PeerPermissionClass } from '../../types/messaging.js';
 import { stricterClass } from '../../messaging/receive-policy.js';
+import type { PeerNoticeOptions } from './usePeerMessageDelivery.js';
 import type { SessionMentionSource } from '../../input/session-mentions.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
 import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
@@ -122,6 +123,15 @@ const uiLog = createUiDebugLogger('tui:agent');
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
 import { startupNoticeMessages } from '../startup-notices.js';
+
+/** The newest reply the model gave, or undefined before its first. */
+export function lastAssistantText(messages: readonly Message[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role === 'assistant' && message.content.trim() !== '') return message.content;
+  }
+  return undefined;
+}
 
 export function didSendMessageComplete(result: AgentSessionSendResult): boolean {
   return result.status === 'completed';
@@ -607,6 +617,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   useEffect(() => {
     messaging?.setInbound(inboundSetting);
   }, [messaging, inboundSetting]);
+
+  // The last reply an idle notice summarizes for a session subscribed to this one (#620 PR 6),
+  // read when the notice goes out, with the provider's secrets redacted.
+  useEffect(() => {
+    messaging?.setTurnTextSource(() => {
+      const text = lastAssistantText(messagesRef.current);
+      return text && redactSecrets(text, collectProviderSecrets(liveConfigRef.current));
+    });
+  }, [messaging]);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -1867,14 +1886,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   /**
    * Tell the model what came of messages this session sent (#620): the `[Cross-session delivery
    * notice]` text, as a host turn the transcript does not show; the human reads the warning row.
+   * An `[Cross-session idle notice]` (PR 6) goes the same way with a row of its own, and runs in
+   * the class a message from the notifying session would, since it may carry that session's words.
    */
   const sendPeerDeliveryNotice = useCallback(
-    async (notice: string): Promise<boolean> => {
+    async (notice: string, options: PeerNoticeOptions = {}): Promise<boolean> => {
       // Told once the turn is recorded: a turn the user then cancels must not bring the notice back.
       let accepted = false;
-      await sendMessage('Cross-session delivery notice.', undefined, {
+      await sendMessage(options.display ?? 'Cross-session delivery notice.', undefined, {
         contextMessage: notice,
         kind: 'agent-notification',
+        ...(options.peerTurnClass !== undefined ? { peerTurnClass: options.peerTurnClass } : {}),
         onRecorded: () => {
           accepted = true;
         },

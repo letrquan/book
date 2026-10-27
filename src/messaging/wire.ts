@@ -4,7 +4,7 @@
  *
  * A connection's first line is an `auth` frame carrying the receiver's token. After it come `user`
  * frames (a message for the session) and `control` frames (`peer_message_status` receipts, and the
- * `notify_when_idle` / `peer_idle_notice` pair a later PR acts on). Frames are parsed leniently —
+ * `notify_when_idle` / `peer_idle_notice` pair, `idle-notify.ts`). Frames are parsed leniently —
  * unknown fields are kept — but a line that is not a frame at all is never guessed at.
  */
 
@@ -82,7 +82,11 @@ export const peerIdleNoticeFrameSchema = z.looseObject({
   type: z.literal('control'),
   action: z.literal('peer_idle_notice'),
   orig_msg_id: z.string(),
-  state: z.enum(['idle', 'exited']),
+  /**
+   * Claude Code's states are `idle` and `exited`. Book adds `expired`, for a subscription that
+   * lapsed unfired (D1-a: Book-only); a Claude Code receiver ignores it as malformed.
+   */
+  state: z.enum(['idle', 'exited', 'expired']),
   finished_at: z.union([z.number(), z.string()]).optional(),
   detail: z.string().optional(),
   from_mode: z.string().optional(),

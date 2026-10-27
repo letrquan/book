@@ -1,9 +1,11 @@
 /**
- * Cross-session delivery between real processes (#620 PR 3, PR 5): two sessions, each with its own
- * live-session record and messaging runtime, as the TUI's host wires them. One sends by name; the
- * other turns its queue into a `peer-message` turn and acknowledges it, or holds a message from
- * the other permission class until its user approves or denies it or it expires; the sender hears
- * each receipt as a delivery notice. Integration tier: every case spawns processes.
+ * Cross-session delivery between real processes (#620 PR 3, PR 5, PR 6): two sessions, each with
+ * its own live-session record and messaging runtime, as the TUI's host wires them. One sends by
+ * name; the other turns its queue into a `peer-message` turn and acknowledges it, or holds a
+ * message from the other permission class until its user approves or denies it or it expires; the
+ * sender hears each receipt as a delivery notice. A session subscribed with `notify_when_idle`
+ * hears once when the other next goes idle, or exits. Integration tier: every case spawns
+ * processes.
  *
  * Every socket stays under a temporary `BOOK_MESSAGING_SOCKET_DIR`, and every record and key under
  * a temporary `BOOK_HOME`, never the developer's own.
@@ -37,8 +39,14 @@ const messaging = new SessionMessaging({
   writer,
   permissionMode: process.env.PEER_MODE ?? 'default',
   ...(process.env.PEER_APPROVAL_MS ? { approvalTimeoutMs: Number(process.env.PEER_APPROVAL_MS) } : {}),
+  idleLimits: { debounceMs: 100, recheckMs: 300 },
 });
+messaging.setTurnTextSource(() => process.env.PEER_REPLY);
 messaging.subscribe((event) => {
+  if (event.type === 'idle-notice') {
+    emit({ event: 'idle-notice', ...event.notice });
+    return;
+  }
   if (event.type === 'held') {
     emit({ event: 'held', id: event.held.id, cause: event.held.cause, sender: event.held.sender });
     return;
@@ -73,6 +81,15 @@ for await (const line of createInterface({ input: process.stdin })) {
     emit({ event: 'approved', ...messaging.approve(command.id) });
   } else if (command.cmd === 'deny') {
     emit({ event: 'denied', ok: messaging.deny(command.id) });
+  } else if (command.cmd === 'subscribe') {
+    emit({ event: 'sent', ...(await messaging.send({ to: command.to, message: command.message, notifyWhenIdle: true })) });
+  } else if (command.cmd === 'idle') {
+    messaging.setIdle(command.idle);
+  } else if (command.cmd === 'close') {
+    await messaging.close();
+    await writer.close();
+    emit({ event: 'closed' });
+    break;
   }
 }
 `;
@@ -158,7 +175,7 @@ describe.skipIf(process.platform === 'win32')('cross-session delivery between pr
     rmSync(root, { recursive: true, force: true });
   });
 
-  function spawnSession(name: string, mode: string, approvalMs?: number): Session {
+  function spawnSession(name: string, mode: string, approvalMs?: number, reply?: string): Session {
     const child = spawn(process.execPath, ['--import', TSX_LOADER, script], {
       env: {
         ...process.env,
@@ -167,6 +184,7 @@ describe.skipIf(process.platform === 'win32')('cross-session delivery between pr
         BOOK_SESSION_NAME: name,
         PEER_MODE: mode,
         ...(approvalMs !== undefined ? { PEER_APPROVAL_MS: String(approvalMs) } : {}),
+        ...(reply !== undefined ? { PEER_REPLY: reply } : {}),
       },
       stdio: ['pipe', 'pipe', 'inherit'],
     });
@@ -257,5 +275,80 @@ describe.skipIf(process.platform === 'win32')('cross-session delivery between pr
       expect.stringMatching(/expired while held by that session, without being approved\.$/),
     ]);
     expect(b.events.some((event) => event.event === 'turn')).toBe(false);
+  }, 60_000);
+
+  const idleNotices = (session: Session) =>
+    session.events.filter((event) => event.event === 'idle-notice');
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('notifies a subscriber once when the session goes idle after its turn, and `exited` when it ends', async () => {
+    const a = spawnSession('peer-a', 'default');
+    const b = spawnSession('peer-b', 'default', undefined, 'Tests pass.');
+    await a.started();
+    await b.started();
+
+    // B is busy; A sends it a message and subscribes.
+    b.command({ cmd: 'idle', idle: false });
+    a.command({ cmd: 'subscribe', to: 'peer-b', message: 'Run the tests, then tell me.' });
+    expect(await a.waitFor((event) => event.event === 'sent')).toMatchObject({
+      status: 'sent',
+      idle: { status: 'subscribed', already: false },
+    });
+    await b.waitFor((event) => event.event === 'turn');
+    await pause(600);
+    expect(idleNotices(a)).toEqual([]);
+
+    // B's turn is over and nothing is queued: one notice, with its last reply.
+    b.command({ cmd: 'idle', idle: true });
+    const notice = await a.waitFor((event) => event.event === 'idle-notice');
+    expect(notice).toMatchObject({
+      target: expect.stringMatching(/^peer-b \[[0-9a-f]{6}\]$/),
+      state: 'idle',
+      detail: 'Tests pass.',
+      toModel: true,
+      turnClass: 'prompting',
+    });
+
+    // A second idle spell sends nothing: the subscription was one-shot.
+    b.command({ cmd: 'idle', idle: false });
+    b.command({ cmd: 'idle', idle: true });
+    await pause(1_000);
+    expect(idleNotices(a)).toHaveLength(1);
+
+    // A new subscription, still waiting when B ends, is answered `exited`.
+    b.command({ cmd: 'idle', idle: false });
+    a.command({ cmd: 'subscribe', to: 'peer-b' });
+    expect(
+      await a.waitFor((event) => event.event === 'sent' && event.status === 'subscribed'),
+    ).toMatchObject({ already: false });
+    await pause(300);
+    b.command({ cmd: 'close' });
+    expect(
+      await a.waitFor((event) => event.event === 'idle-notice' && event.state === 'exited'),
+    ).toMatchObject({ detail: 'Tests pass.', toModel: true });
+    await b.waitFor((event) => event.event === 'closed');
+    b.child.stdin!.end();
+    expect(await b.exited).toBe(0);
+    expect(idleNotices(a)).toHaveLength(2);
+  }, 60_000);
+
+  it('exits on its own with subscriptions waiting on both sides: no timer holds a process', async () => {
+    const a = spawnSession('peer-a', 'default');
+    const b = spawnSession('peer-b', 'default');
+    await a.started();
+    await b.started();
+    b.command({ cmd: 'idle', idle: false });
+    a.command({ cmd: 'subscribe', to: 'peer-b' });
+    expect(await a.waitFor((event) => event.event === 'sent')).toMatchObject({
+      status: 'subscribed',
+    });
+    await pause(300);
+    a.child.stdin!.end();
+    b.child.stdin!.end();
+    const exits = await Promise.race([
+      Promise.all([a.exited, b.exited]),
+      pause(10_000).then(() => 'still running'),
+    ]);
+    expect(exits).toEqual([0, 0]);
   }, 60_000);
 });

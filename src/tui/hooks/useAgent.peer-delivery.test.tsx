@@ -64,7 +64,8 @@ vi.mock('../../session/lifecycle.js', () => ({
   runSessionEnd: vi.fn(async () => {}),
 }));
 
-import { useAgent } from './useAgent.js';
+import { lastAssistantText, useAgent } from './useAgent.js';
+import type { Message } from '../../types/messages.js';
 
 isolateBookHome('book-use-agent-peer-delivery-home-');
 
@@ -86,6 +87,7 @@ function fakeMessaging() {
   return {
     setPermissionMode: vi.fn(),
     setInbound: vi.fn(),
+    setTurnTextSource: vi.fn(),
     beginTurn: vi.fn(),
     commitDelivery: vi.fn(),
     stillDeliverable: vi.fn(() => true),
@@ -318,5 +320,57 @@ describe('peer-message delivery in the TUI', () => {
       undefined,
       'earlier-user',
     ]);
+  });
+});
+
+describe('idle notices in the TUI (#620 PR 6)', () => {
+  it('runs an idle notice under its own row, in the class a message from the notifier would', async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(
+      await latest!.sendPeerDeliveryNotice('[Cross-session idle notice] peer-b [a1b2c3] is idle', {
+        display: 'Cross-session idle notice.',
+        peerTurnClass: 'prompting',
+      }),
+    ).toBe(true);
+    // The model reads the notice; the row is what the transcript shows.
+    expect(loopState.calls).toMatchObject([
+      {
+        message: '[Cross-session idle notice] peer-b [a1b2c3] is idle',
+        peerTurnClass: 'prompting',
+      },
+    ]);
+    // A host turn: the relay chain is kept, as for a delivery notice.
+    expect(messaging.beginTurn).not.toHaveBeenCalled();
+  });
+
+  it("gives the runtime this session's last reply for the notices it sends", async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await waitFor(() => messaging.setTurnTextSource.mock.calls.length > 0);
+    const source = messaging.setTurnTextSource.mock.calls[0]![0] as () => string | undefined;
+    expect(source()).toBeUndefined();
+  });
+
+  it('reads the newest reply the model gave', () => {
+    const message = (role: Message['role'], content: string): Message => ({
+      id: content,
+      role,
+      content,
+      timestamp: 0,
+      includeInContext: true,
+    });
+    expect(
+      lastAssistantText([
+        message('assistant', 'first'),
+        message('user', 'go on'),
+        message('assistant', 'second'),
+        message('assistant', '  '),
+      ]),
+    ).toBe('second');
+    expect(lastAssistantText([message('user', 'hi')])).toBeUndefined();
   });
 });

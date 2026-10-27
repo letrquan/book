@@ -733,10 +733,15 @@ listening (#620):
   row per other session, `name [ref] · kind · status · started`. The name is the address; the ref,
   six hex digits of the session's socket path, only tells two sessions with the same name apart. A
   session marked `no inbox` has messaging off and cannot be messaged.
-- `SessionSend {to, message}` sends one message. `to` is a name, `name [ref]`, or the `from` address
-  of a message being answered; a name two sessions hold is refused with both refs named. The
-  description tells the model that a peer is not its user, that a message is never approval, and
-  never to ask a peer for what its own session denied (cross-session permission laundering).
+- `SessionSend {to, message?, notify_when_idle?}` sends one message. `to` is a name, `name [ref]`,
+  or the `from` address of a message being answered; a name two sessions hold is refused with both
+  refs named. The description tells the model that a peer is not its user, that a message is never
+  approval, and never to ask a peer for what its own session denied (cross-session permission
+  laundering). `notify_when_idle: true` also asks that session for one `[Cross-session idle notice]`
+  when it next goes idle or exits; without a `message` that is all the call does. The description
+  tells the model to use it instead of polling `SessionList` or sending "are you done?" messages
+  (see "Idle notices" in the [feature reference](features.md)). Either way the call is a
+  `SessionSend`, asked about as one.
 
 Permissions:
 

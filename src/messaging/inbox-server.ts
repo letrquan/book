@@ -22,7 +22,8 @@
  * judges. An accepted one waits on the queue for the session to deliver it; a dropped one is
  * reported and receipted back to its sender (`ingress-guard.ts`). The session's receive policy
  * (`receive-policy.ts`) screens what the guard admits: it may hold a message for the user or
- * refuse it instead of letting it queue (#620 PR 5).
+ * refuse it instead of letting it queue (#620 PR 5). A `notify_when_idle` subscription is passed on
+ * once its reply address is vetted, and a `peer_idle_notice` as it arrives (`idle-notify.ts`, PR 6).
  *
  * The token lives in this object and in the key file, nowhere else: it is never logged, put in an
  * error, written to the registry record or exported to a child process.
@@ -39,8 +40,10 @@ import { resolveBookHome } from '../book-home.js';
 import { createDebugLogger } from '../debug-log.js';
 import type {
   AcceptedPeerMessage,
+  IdleSubscriptionRequest,
   InboxStartResult,
   PeerDropReason,
+  PeerIdleNoticeReceipt,
   PeerMessageReceipt,
 } from '../types/messaging.js';
 import { deriveHopToken, parseEnvelope } from './envelope.js';
@@ -71,6 +74,8 @@ import {
   parseInboxLine,
   peerTokenMatches,
   type ControlFrame,
+  type NotifyWhenIdleFrame,
+  type PeerIdleNoticeFrame,
   type PeerMessageStatusFrame,
   type UserFrame,
 } from './wire.js';
@@ -95,6 +100,8 @@ const REAP_CONCURRENCY = 8;
 const ANONYMOUS_SENDER = '(no reply address)';
 /** How long a closing inbox waits for the receipts it is still sending: Claude Code's 750 ms. */
 export const CLOSE_DRAIN_MS = 750;
+/** `notify_when_idle` reply addresses being vetted at once; a subscription past it is ignored. */
+export const MAX_PENDING_SUBSCRIPTION_VETS = 8;
 
 type InboxLogger = { debug: (...args: unknown[]) => void; warn: (...args: unknown[]) => void };
 
@@ -124,6 +131,10 @@ export interface InboxServerOptions {
   onReceipt?: (receipt: PeerMessageReceipt) => void;
   /** Called with each drop the human should hear about (rate limited, `suppressed` counted). */
   onDropReport?: (report: DropReport) => void;
+  /** Called with each `notify_when_idle` subscription whose reply address passed vetting. */
+  onSubscribe?: (subscription: IdleSubscriptionRequest) => void;
+  /** Called with each `peer_idle_notice` another session sent; the session judges whose it is. */
+  onIdleNotice?: (notice: PeerIdleNoticeReceipt) => void;
   /**
    * The session's receive policy, asked about each message the ingress guard admitted, before it
    * is queued: `queue` lets it wait for delivery; `taken` means the session held or refused it,
@@ -193,6 +204,13 @@ export class InboxServer {
   private readonly log: InboxLogger;
   private readonly limits: ConnectionLimits;
   private readonly guard: IngressGuard;
+  /**
+   * Paces `notify_when_idle` per reply address, apart from the messages' own buckets (which a
+   * sender's pacer mirrors): Claude Code's limits again, and a `msg_id` repeated within 30 s is a
+   * duplicate.
+   */
+  private readonly subscriptionGuard: IngressGuard;
+  private vettingSubscriptions = 0;
   private readonly dropReports: DropReportLimiter;
   private readonly dropReceipts: DropReceiptCoalescer;
   private readonly sockets = new Set<Socket>();
@@ -230,6 +248,7 @@ export class InboxServer {
       closeDrainMs: options.limits?.closeDrainMs ?? CLOSE_DRAIN_MS,
     };
     this.guard = new IngressGuard(this.now);
+    this.subscriptionGuard = new IngressGuard(this.now);
     this.dropReports = new DropReportLimiter(this.now);
     this.dropReceipts = new DropReceiptCoalescer(this.now, options.limits?.receiptTrailMs);
   }
@@ -306,7 +325,7 @@ export class InboxServer {
     const from = message.from;
     if (from === undefined || this.closed) return;
     this.track(
-      this.sendReceipt(
+      this.sendControl(
         from,
         {
           type: 'control',
@@ -318,6 +337,39 @@ export class InboxServer {
             : { status }),
           ...(reason !== undefined ? { reason } : {}),
           ...(message.msgId !== undefined ? { orig_msg_id: message.msgId } : {}),
+        },
+        options.timeoutMs,
+      ),
+    );
+  }
+
+  /**
+   * Answer a `notify_when_idle` subscription with a `peer_idle_notice` to its reply address, vetted
+   * again now, since the subscriber may have gone meanwhile. Sent in the background, like a receipt.
+   */
+  sendIdleNotice(
+    to: string,
+    notice: {
+      origMsgId: string;
+      state: PeerIdleNoticeFrame['state'];
+      finishedAt?: number;
+      detail?: string;
+      fromMode: string;
+    },
+    options: { timeoutMs?: number } = {},
+  ): void {
+    if (this.closed) return;
+    this.track(
+      this.sendControl(
+        to,
+        {
+          type: 'control',
+          action: 'peer_idle_notice',
+          orig_msg_id: notice.origMsgId,
+          state: notice.state,
+          ...(notice.finishedAt !== undefined ? { finished_at: notice.finishedAt } : {}),
+          ...(notice.detail !== undefined ? { detail: notice.detail } : {}),
+          from_mode: notice.fromMode,
         },
         options.timeoutMs,
       ),
@@ -626,7 +678,7 @@ export class InboxServer {
     if (from === undefined) return;
     this.dropReceipts.note(from, reason, frame.msg_id, (droppedMsgIds) => {
       this.track(
-        this.sendReceipt(from, {
+        this.sendControl(from, {
           type: 'control',
           action: 'peer_message_status',
           status: 'dropped',
@@ -640,9 +692,12 @@ export class InboxServer {
   }
 
   private handleControl(frame: ControlFrame): void {
-    if (frame.action !== 'peer_message_status') {
-      // notify_when_idle and peer_idle_notice are parsed, and acted on in a later PR.
-      this.log.debug('inbox control frame not handled yet', { action: frame.action });
+    if (frame.action === 'notify_when_idle') {
+      this.admitSubscription(frame);
+      return;
+    }
+    if (frame.action === 'peer_idle_notice') {
+      this.options.onIdleNotice?.(idleNoticeOf(frame, this.now()));
       return;
     }
     const receipt = receiptOf(frame, this.now());
@@ -652,18 +707,64 @@ export class InboxServer {
   }
 
   /**
-   * Send a receipt to the address a frame named, once that address passes
-   * {@link vetReplyAddress}. Never to this inbox itself, and never in reply to a control frame.
+   * A `notify_when_idle` subscription, passed on only once its reply address passes
+   * {@link vetReplyAddress} and is not this inbox's own: the address is the frame's word alone, and
+   * a forged one must not take a place in the session's table from a real subscriber. Paced per
+   * address first, and at most {@link MAX_PENDING_SUBSCRIPTION_VETS} vetted at once, so a flood of
+   * frames costs neither a registry read each nor unbounded work.
    */
-  private async sendReceipt(
+  private admitSubscription(frame: NotifyWhenIdleFrame): void {
+    if (!this.options.onSubscribe || this.closed) return;
+    const verdict = this.subscriptionGuard.admit({
+      senderKey: frame.from,
+      body: frame.msg_id,
+      queued: 0,
+    });
+    if (!verdict.admitted) {
+      this.log.debug('idle subscription ignored', { reason: verdict.reason });
+      return;
+    }
+    if (this.vettingSubscriptions >= MAX_PENDING_SUBSCRIPTION_VETS) {
+      this.log.debug('idle subscription ignored', { reason: 'vetting-busy' });
+      return;
+    }
+    this.vettingSubscriptions++;
+    const receivedAt = this.now();
+    this.track(
+      this.vetReplyAddress(frame.from)
+        .then((target) => {
+          if (!target || target === this.boundPath || this.closed) {
+            this.log.debug('idle subscription ignored', { reason: 'reply-address' });
+            return;
+          }
+          this.options.onSubscribe?.({
+            from: frame.from,
+            msgId: frame.msg_id,
+            ...(frame.from_mode !== undefined ? { fromMode: frame.from_mode } : {}),
+            receivedAt,
+          });
+        })
+        .finally(() => {
+          this.vettingSubscriptions--;
+        }),
+    );
+  }
+
+  /**
+   * Send a control frame — a receipt, or an idle notice — to the address a frame named, once that
+   * address passes {@link vetReplyAddress}. Never to this inbox itself, and never in reply to a
+   * receipt or a notice.
+   */
+  private async sendControl(
     from: string,
-    frame: PeerMessageStatusFrame,
+    frame: PeerMessageStatusFrame | PeerIdleNoticeFrame,
     timeoutMs?: number,
   ): Promise<void> {
     const own = this.boundPath;
     const target = await this.vetReplyAddress(from);
+    const what = frame.action === 'peer_message_status' ? 'receipt' : 'idle notice';
     if (!target || !own || target === own) {
-      this.log.debug('receipt not sent: reply address refused');
+      this.log.debug(`${what} not sent: reply address refused`);
       return;
     }
     const result = await sendToInbox({
@@ -673,7 +774,7 @@ export class InboxServer {
       frame: { ...frame, from: encodeUdsAddress(own), msg_id: randomUUID() },
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     });
-    this.log.debug('receipt sent', { status: result.status });
+    this.log.debug(`${what} sent`, { status: result.status });
   }
 
   /**
@@ -804,6 +905,20 @@ export async function inboxStartupNotices(start: Promise<InboxStartResult>): Pro
       `⚠  Cross-session messaging passed over a socket directory: ${message}. ` +
       `Using ${dirname(result.socketPath)} instead.`,
   );
+}
+
+function idleNoticeOf(frame: PeerIdleNoticeFrame, receivedAt: number): PeerIdleNoticeReceipt {
+  const finishedAt =
+    typeof frame.finished_at === 'string' ? Date.parse(frame.finished_at) : frame.finished_at;
+  return {
+    origMsgId: frame.orig_msg_id,
+    state: frame.state,
+    ...(finishedAt !== undefined && Number.isFinite(finishedAt) ? { finishedAt } : {}),
+    ...(frame.detail !== undefined ? { detail: frame.detail } : {}),
+    ...(frame.from_mode !== undefined ? { fromMode: frame.from_mode } : {}),
+    ...(frame.from !== undefined ? { from: frame.from } : {}),
+    receivedAt,
+  };
 }
 
 function receiptOf(frame: PeerMessageStatusFrame, receivedAt: number): PeerMessageReceipt {

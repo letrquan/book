@@ -1,10 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
 import { humanReceiptLine, modelReceiptNotice } from '../../messaging/delivery.js';
 import { heldMessageLine, HoldRowLimiter, settledMessageLine } from '../../messaging/hold.js';
+import { idleNoticeHumanLine, idleNoticeModelText } from '../../messaging/idle-notify.js';
 import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/session-messaging.js';
+import type { PeerPermissionClass } from '../../types/messaging.js';
 
 /** How long a delivery the session could not start waits before it is tried again. */
 const RETRY_MS = 1_000;
+
+/** How a host notice turn shows and runs: its transcript row, and the class a peer's words pin. */
+export interface PeerNoticeOptions {
+  display?: string;
+  peerTurnClass?: PeerPermissionClass;
+}
+
+interface PendingNotice extends PeerNoticeOptions {
+  context: string;
+}
 
 /**
  * Cross-session messaging in the TUI (#620): deliver the messages other sessions sent, and tell
@@ -16,18 +28,22 @@ const RETRY_MS = 1_000;
  * A receipt's line for the human is written when the batch arrives; its notice for the model
  * waits its turn like a message. A message the receive policy holds, and how a held one ends, are
  * rows for the human only: a held message never reaches the model until it is released (PR 5).
+ *
+ * An idle notice about a session this one subscribed to (PR 6) is a row for the human, and a turn
+ * for the model too when the receive policy would accept a message from that session. The same idleness — nothing running, asked, queued or about to be delivered — is what
+ * this session reports to the runtime, which answers the subscriptions other sessions made to it.
  */
 export function usePeerMessageDelivery(options: {
   messaging?: SessionMessaging;
   blocked: boolean;
   deliver: (batch: PeerDeliveryBatch) => Promise<boolean>;
-  notify: (notice: string) => Promise<boolean>;
+  notify: (notice: string, options?: PeerNoticeOptions) => Promise<boolean>;
   warn: (line: string) => void;
 }): void {
   const [tick, setTick] = useState(0);
   const latest = useRef(options);
   latest.current = options;
-  const notices = useRef<string[]>([]);
+  const notices = useRef<PendingNotice[]>([]);
   const holdRows = useRef(new HoldRowLimiter());
   const inFlight = useRef(false);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -42,7 +58,7 @@ export function usePeerMessageDelivery(options: {
         const notice = event.receipts
           .map(modelReceiptNotice)
           .filter((line): line is string => line !== undefined);
-        if (notice.length > 0) notices.current.push(notice.join('\n'));
+        if (notice.length > 0) notices.current.push({ context: notice.join('\n') });
       } else if (event.type === 'held' || event.type === 'hold-settled') {
         const row = holdRows.current.admit(
           event.type === 'held'
@@ -50,6 +66,19 @@ export function usePeerMessageDelivery(options: {
             : settledMessageLine(event.held, event.outcome, event.by),
         );
         if (row !== undefined) latest.current.warn(row);
+      } else if (event.type === 'idle-notice') {
+        // The human always gets the row; the model gets its turn only when the policy accepts the
+        // notifier. A host turn's own row is not shown, as for a delivery notice.
+        latest.current.warn(idleNoticeHumanLine(event.notice));
+        if (event.notice.toModel) {
+          notices.current.push({
+            context: idleNoticeModelText(event.notice),
+            display: 'Cross-session idle notice.',
+            ...(event.notice.turnClass !== undefined
+              ? { peerTurnClass: event.notice.turnClass }
+              : {}),
+          });
+        }
       }
       setTick((current) => current + 1);
     });
@@ -64,10 +93,17 @@ export function usePeerMessageDelivery(options: {
     inFlight.current = true;
     const work = batch
       ? current.deliver(batch)
-      : current.notify(notice!).then((accepted) => {
-          if (accepted) notices.current.shift();
-          return accepted;
-        });
+      : current
+          .notify(notice!.context, {
+            ...(notice!.display !== undefined ? { display: notice!.display } : {}),
+            ...(notice!.peerTurnClass !== undefined
+              ? { peerTurnClass: notice!.peerTurnClass }
+              : {}),
+          })
+          .then((accepted) => {
+            if (accepted) notices.current.shift();
+            return accepted;
+          });
     void work
       .catch(() => false)
       .then((accepted) => {
@@ -82,6 +118,18 @@ export function usePeerMessageDelivery(options: {
           if (mounted.current) setTick((value) => value + 1);
         }, RETRY_MS);
       });
+  }, [options.blocked, messaging, tick]);
+
+  // After the delivery above, which may just have started a turn: idle only when nothing runs,
+  // nothing is asked or queued, and no delivery or notice is under way or waiting to be retried.
+  // Queued and held peer messages the runtime counts itself.
+  useEffect(() => {
+    latest.current.messaging?.setIdle(
+      !latest.current.blocked &&
+        !inFlight.current &&
+        !retryTimer.current &&
+        notices.current.length === 0,
+    );
   }, [options.blocked, messaging, tick]);
 
   useEffect(() => {
