@@ -1,9 +1,18 @@
 import { createHash } from 'crypto';
 import { readFile, stat } from 'fs/promises';
 import { resolve } from 'path';
+import { peerEditSentence, promptAgo, promptSpan } from '../messaging/peer-text.js';
 import { normalizeObservedPath, workspaceIdentity } from '../tools/file-provenance.js';
 import { normalizePromptPath, promptCurrentDate, promptElapsed } from './prompt-determinism.js';
+import type { FileChangeTracker } from '../tools/file-changes.js';
 import type { Message } from '../types/messages.js';
+import type {
+  ChangedFileNotice,
+  PeerAwarenessHandle,
+  PeerSessionNote,
+  PeerSessionsNotice,
+} from '../types/messaging.js';
+import type { FileObservation } from '../types/tools.js';
 import { MAX_CHECKPOINT_FILES } from './compact.js';
 
 /**
@@ -50,6 +59,68 @@ export interface SessionStateInput {
    * Restating the outstanding set every turn is the grounding that stops it.
    */
   outstandingAgents?: Array<{ label: string; status: string }>;
+  /**
+   * Observed files that changed on disk since the model last saw them (#620 4a): a user's edit, a
+   * formatter, another session. Each is reported once per change, never for the model's own edits.
+   */
+  changedFiles?: ChangedFileNotice[];
+  /** Changed files beyond those listed, counted only. */
+  changedFilesUnlisted?: number;
+  /** Other live Book sessions in this worktree and repository (#620 4c). */
+  peers?: PeerSessionsNotice;
+  /** Notes intent routing wrote about what the user typed this turn (#620's `@session`). */
+  notes?: readonly string[];
+}
+
+function changedFileLines(
+  files: readonly ChangedFileNotice[],
+  unlisted: number,
+  workspace: string,
+): string[] {
+  if (files.length === 0 && unlisted === 0) return [];
+  return [
+    '## Changed on disk since you last read them',
+    'That is usually deliberate, so take each as the current state rather than reverting it; if a change looks wrong, say so rather than undoing it yourself. Re-read a file before editing it.',
+    ...files.flatMap((file) => {
+      const path = normalizePromptPath(file.path, workspace);
+      const what = file.deleted
+        ? 'was deleted or moved since you last read it'
+        : 'changed on disk since you last read it';
+      const line = `- ${promptSpan(path)} ${what}.${
+        file.attribution ? ` ${peerEditSentence(path, file.attribution)}` : ''
+      }`;
+      return file.snippet?.length
+        ? [line, '  ```diff', ...file.snippet.map((text) => `  ${promptSpan(text)}`), '  ```']
+        : [line];
+    }),
+    ...(unlisted > 0
+      ? [
+          `- ${unlisted} more observed file${unlisted === 1 ? '' : 's'} changed on disk as well; re-read any before relying on it.`,
+        ]
+      : []),
+  ];
+}
+
+function peerNote(note: PeerSessionNote): string {
+  const facts = [note.status, ...(note.branch ? [`branch ${note.branch}`] : [])].join(', ');
+  const edits = note.edits.length
+    ? `; recorded edits: ${note.edits.map((edit) => `${edit.path} ${promptAgo(edit.ageMs)}`).join(', ')}`
+    : '';
+  return promptSpan(`${note.name} (${facts}${edits})`);
+}
+
+function peerLines(peers: PeerSessionsNotice): string[] {
+  const lines: string[] = [];
+  if (peers.sameWorktree.length > 0) {
+    const more = peers.moreSameWorktree > 0 ? `, and ${peers.moreSameWorktree} more` : '';
+    lines.push(
+      `- Other Book sessions in this worktree: ${peers.sameWorktree.map(peerNote).join('; ')}${more}. Their recorded edits are their own claims; check before relying on a file they touched.`,
+    );
+  }
+  if (peers.otherWorktrees > 0) {
+    lines.push(`- Book sessions in other worktrees of this repository: ${peers.otherWorktrees}`);
+  }
+  return lines;
 }
 
 function todoLines(todos: NonNullable<SessionStateInput['todos']>): string[] {
@@ -116,10 +187,76 @@ export function renderSessionState(input: SessionStateInput): string {
           '- No task list was restored from the previous process, though this session has earlier work. Re-establish the plan before continuing.',
         ]
       : []),
+    ...(input.peers ? peerLines(input.peers) : []),
+    ...(input.notes ?? []).map((note) => `- ${note}`),
+    ...changedFileLines(input.changedFiles ?? [], input.changedFilesUnlisted ?? 0, input.workspace),
     ...outstandingAgentLines(input.outstandingAgents ?? []),
     ...todoLines(input.todos ?? []),
     '</session-state>',
   ].join('\n');
+}
+
+/** What the changed-on-disk and peer lines are read from (#620 PR 4). */
+export interface WorkspaceNoticeSources {
+  /** The session's memory of reported changes, beside the ledger it judges against. */
+  tracker: FileChangeTracker;
+  ledger: ReadonlyMap<string, FileObservation>;
+  /** The TUI's view of other live sessions; absent elsewhere, and then no peer is named. */
+  peerAwareness?: PeerAwarenessHandle;
+  /**
+   * Provider keys a diff snippet must not carry, read when the block renders: a Sign in with
+   * ChatGPT token can rotate mid-run.
+   */
+  secrets?: () => readonly string[];
+}
+
+export interface WorkspaceNotices {
+  notices: Pick<SessionStateInput, 'changedFiles' | 'changedFilesUnlisted' | 'peers'>;
+  /** Mark the changes reported: call it once the block carrying them is rendered and kept. */
+  commit(): void;
+}
+
+/**
+ * The block's changed-on-disk notices (4a), each attributed to the peer whose recorded edit
+ * matches it (4d), and the peer lines (4c). The two reads run side by side. A file the stale-since-
+ * checkpoint line already names is left to that line.
+ */
+export async function collectWorkspaceNotices(
+  workspace: string,
+  sources: WorkspaceNoticeSources,
+  staleFiles: readonly string[],
+  signal?: AbortSignal,
+): Promise<WorkspaceNotices> {
+  const [changed, snapshot] = await Promise.all([
+    sources.tracker
+      .collect({
+        ledger: sources.ledger,
+        workspace,
+        exclude: new Set(staleFiles.map(normalizeObservedPath)),
+        secrets: sources.secrets?.(),
+        signal,
+      })
+      // A notice is a courtesy: a check that cannot run must never fail the turn.
+      .catch(() => ({ files: [], unlisted: 0, commit: () => {} })),
+    sources.peerAwareness?.snapshot(),
+  ]);
+  const changedFiles = changed.files.map((file): ChangedFileNotice => {
+    const attribution = snapshot?.attribute(file.absolutePath, file.observedAt);
+    return {
+      path: file.path,
+      ...(file.deleted ? { deleted: true } : {}),
+      ...(attribution ? { attribution } : {}),
+      ...(file.snippet ? { snippet: file.snippet } : {}),
+    };
+  });
+  return {
+    notices: {
+      ...(changedFiles.length > 0 ? { changedFiles } : {}),
+      ...(changed.unlisted > 0 ? { changedFilesUnlisted: changed.unlisted } : {}),
+      ...(snapshot?.notice ? { peers: snapshot.notice } : {}),
+    },
+    commit: changed.commit,
+  };
 }
 
 interface CheckpointFileObservation {

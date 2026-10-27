@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { requiresToolPermission, runAgentLoop } from './loop.js';
+import { PEER_TURN_MODE_REFUSAL, requiresToolPermission, runAgentLoop } from './loop.js';
 import * as asyncModule from '../async.js';
 import {
   applyCompactResult,
@@ -23,12 +23,13 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 import type { Message, Usage } from '../types/messages.js';
 import { askUserQuestionTools } from '../tools/ask-user-question.js';
+import { planModeTools } from '../tools/plan-mode.js';
 import { fileTools } from '../tools/file.js';
 import { toolSuccess } from '../tools/result.js';
 import { readToolUseRecords } from '../tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
-import type { AgentConfig } from '../types/runtime.js';
+import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import type { CompactRequestHints, CompactResult, PreparedCompaction } from '../types/sessions.js';
 import { terminalRecovery, type AgentTerminalOutcome } from '../types/terminal.js';
 import { createAgentRunContext } from '../types/runs.js';
@@ -2686,6 +2687,288 @@ describe('runAgentLoop streaming render callbacks', () => {
     );
 
     expect(permissionPrompts).toBe(1);
+  });
+});
+
+describe('a peer turn pinned to its permission class (#620 PR 5)', () => {
+  /** A provider that switches the host mode, then makes `calls` Echo calls, one per turn. */
+  function switchingRun(options: {
+    startMode: 'default' | 'bypassPermissions';
+    switchTo: 'default' | 'bypassPermissions' | 'plan';
+    peerTurnClass?: 'bypass' | 'prompting';
+    calls: number;
+  }) {
+    let providerTurn = 0;
+    let activeMode: string = options.startMode;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerTurn++;
+        if (providerTurn === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'switch_1', name: 'SwitchMode', arguments: {} },
+          };
+        } else if (providerTurn <= options.calls + 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: `echo_${providerTurn}`, name: 'Echo', arguments: { value: 'ok' } },
+          };
+        } else {
+          yield { type: 'text', content: 'done' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.register({
+      name: 'SwitchMode',
+      description: 'Switch the host permission mode',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        activeMode = options.switchTo;
+        return toolSuccess('switched');
+      },
+    });
+    registry.register({
+      name: 'Echo',
+      description: 'Echo value',
+      parameters: { type: 'object', properties: { value: { type: 'string' } } },
+      execute: async (args) => toolSuccess(String(args.value)),
+    });
+    const prompted: string[] = [];
+    const modeChanges: string[] = [];
+    const results: ToolResult[] = [];
+    const run = runAgentLoop(
+      defaultConfig({ maxTurns: options.calls + 2 }),
+      registry,
+      'a peer asked',
+      [],
+      noopCallbacks({
+        getMode: () => activeMode as PermissionMode,
+        onModeChange: (mode) => modeChanges.push(mode),
+        onToolResult: (result) => results.push(result),
+        onPermissionRequired: async (call) => {
+          prompted.push(call.name);
+          return 'allow';
+        },
+      }),
+      options.startMode,
+      {
+        provider,
+        isNewSession: false,
+        userMessageKind: 'peer-message',
+        ...(options.peerTurnClass ? { peerTurnClass: options.peerTurnClass } : {}),
+      },
+    );
+    return { run, prompted, modeChanges, results };
+  }
+
+  it('keeps asking when the user switches into the bypass class mid-turn, in later turns too', async () => {
+    const pinned = switchingRun({
+      startMode: 'default',
+      switchTo: 'bypassPermissions',
+      peerTurnClass: 'prompting',
+      calls: 2,
+    });
+    await pinned.run;
+    expect(pinned.prompted).toEqual(['SwitchMode', 'Echo', 'Echo']);
+    // The pin is the gate's alone: the session's own mode is left as the user set it.
+    expect(pinned.modeChanges).toEqual([]);
+
+    // Without the pin the same switch lets the calls run unasked, as it does for the user's turn.
+    const unpinned = switchingRun({
+      startMode: 'default',
+      switchTo: 'bypassPermissions',
+      calls: 2,
+    });
+    await unpinned.run;
+    expect(unpinned.prompted).toEqual(['SwitchMode']);
+  });
+
+  it('applies a stricter mode at once: a bypass turn switched to plan follows plan rules', async () => {
+    const pinned = switchingRun({
+      startMode: 'bypassPermissions',
+      switchTo: 'plan',
+      peerTurnClass: 'bypass',
+      calls: 1,
+    });
+    await pinned.run;
+    const echo = pinned.results.find((result) => result.toolCallId === 'echo_2');
+    expect(echo?.status).toBe('blocked');
+    expect(pinned.prompted).toEqual([]);
+  });
+
+  it("refuses a peer turn's plan-mode tools: it never changes this session's mode", async () => {
+    let providerTurn = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerTurn++;
+        if (providerTurn === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'enter_1', name: 'EnterPlanMode', arguments: {} },
+          };
+        } else if (providerTurn === 2) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'exit_1', name: 'ExitPlanMode', arguments: { plan: 'do it' } },
+          };
+        } else {
+          yield { type: 'text', content: 'done' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    for (const tool of planModeTools) registry.register(tool);
+    const modeChanges: string[] = [];
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 4 }),
+      registry,
+      'a peer asked for a plan',
+      [],
+      noopCallbacks({
+        getMode: () => 'bypassPermissions',
+        onModeChange: (mode) => modeChanges.push(mode),
+        onToolResult: (result) => results.push(result),
+        onPlanApprovalRequired: async () => 'approve',
+      }),
+      'bypassPermissions',
+      {
+        provider,
+        isNewSession: false,
+        userMessageKind: 'peer-message',
+        peerTurnClass: 'prompting',
+      },
+    );
+    expect(results.map((result) => [result.toolCallId, result.status])).toEqual([
+      ['enter_1', 'blocked'],
+      ['exit_1', 'blocked'],
+    ]);
+    expect(results[0].structuredError?.message).toContain(PEER_TURN_MODE_REFUSAL);
+    expect(modeChanges).toEqual([]);
+  });
+
+  it('refuses to start or steer managed agents from a prompting-class peer turn', async () => {
+    const steering = ['AgentSpawn', 'AgentPlan', 'AgentSend'];
+    const run = async (peerTurnClass?: 'bypass' | 'prompting') => {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          const name = steering[providerTurn++];
+          if (name) {
+            yield {
+              type: 'tool_call',
+              toolCall: { id: `${name}_1`, name, arguments: {} },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const registry = createRegistry();
+      for (const name of steering) {
+        registry.register({
+          name,
+          description: `stand-in for ${name}`,
+          parameters: { type: 'object', properties: {} },
+          execute: async () => toolSuccess('ran'),
+        });
+      }
+      const results: ToolResult[] = [];
+      await runAgentLoop(
+        defaultConfig({ maxTurns: 5 }),
+        registry,
+        'a peer asked for agents',
+        [],
+        noopCallbacks({
+          getMode: () => 'bypassPermissions',
+          onToolResult: (result) => results.push(result),
+        }),
+        'bypassPermissions',
+        {
+          provider,
+          isNewSession: false,
+          userMessageKind: 'peer-message',
+          ...(peerTurnClass ? { peerTurnClass } : {}),
+        },
+      );
+      return results.map((result) => result.status);
+    };
+    // Managed agents outlive the turn and run at the session's own mode, so the pin cannot reach
+    // them: a prompting-class peer turn may not start or steer one.
+    expect(await run('prompting')).toEqual(['blocked', 'blocked', 'blocked']);
+    expect(await run('bypass')).toEqual(['success', 'success', 'success']);
+  });
+
+  it("asks before a peer turn stops, steers or applies the user's agents, even in bypass", async () => {
+    const acting = ['AgentStop', 'AgentApply', 'AgentSend'];
+    const run = async (peerTurnClass?: 'bypass' | 'prompting') => {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          const name = acting[providerTurn++];
+          if (name) {
+            yield { type: 'tool_call', toolCall: { id: `${name}_1`, name, arguments: {} } };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const registry = createRegistry();
+      for (const name of acting) {
+        registry.register({
+          name,
+          description: `stand-in for ${name}`,
+          parameters: { type: 'object', properties: {} },
+          execute: async () => toolSuccess('ran'),
+        });
+      }
+      const prompted: string[] = [];
+      await runAgentLoop(
+        defaultConfig({ maxTurns: 5 }),
+        registry,
+        'a peer asked',
+        [],
+        noopCallbacks({
+          getMode: () => 'bypassPermissions',
+          onPermissionRequired: async (call) => {
+            prompted.push(call.name);
+            return 'allow';
+          },
+        }),
+        'bypassPermissions',
+        {
+          provider,
+          isNewSession: false,
+          userMessageKind: 'peer-message',
+          ...(peerTurnClass ? { peerTurnClass } : {}),
+        },
+      );
+      return prompted;
+    };
+    expect(await run('bypass')).toEqual(acting);
+    // A prompting-class turn may not steer one at all (AgentSend is refused); the rest ask.
+    expect(await run('prompting')).toEqual(['AgentStop', 'AgentApply']);
+    expect(await run()).toEqual([]);
+  });
+
+  it('keeps a turn delivered in the bypass class unprompted in it', async () => {
+    const pinned = switchingRun({
+      startMode: 'bypassPermissions',
+      switchTo: 'bypassPermissions',
+      peerTurnClass: 'bypass',
+      calls: 1,
+    });
+    await pinned.run;
+    expect(pinned.prompted).toEqual([]);
   });
 });
 

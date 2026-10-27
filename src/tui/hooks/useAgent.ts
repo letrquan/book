@@ -108,6 +108,11 @@ import { createInteractiveAgentSession } from '../../session/interactive-session
 import { isHostDeliveredTurn } from '../../session/name.js';
 import type { LiveSessionReporter } from '../../messaging/writer.js';
 import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/session-messaging.js';
+import type { PeerAwareness } from '../../messaging/peer-awareness.js';
+import type { PeerPermissionClass } from '../../types/messaging.js';
+import { stricterClass } from '../../messaging/receive-policy.js';
+import type { PeerNoticeOptions } from './usePeerMessageDelivery.js';
+import type { SessionMentionSource } from '../../input/session-mentions.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
 import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
 import type { BackgroundShellRecord } from '../../types/runtime.js';
@@ -118,6 +123,25 @@ const uiLog = createUiDebugLogger('tui:agent');
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
 import { startupNoticeMessages } from '../startup-notices.js';
+
+/**
+ * The model's own reply in the newest turn, for an idle notice's `detail` (#620 PR 6), or
+ * undefined when that turn produced no text. Only model text counts: the rows the host adds — a
+ * held peer message, a slash command's output, a notice, a checkpoint — are skipped, never read,
+ * and a turn whose start comes first ends the search.
+ */
+export function lastTurnReply(messages: readonly Message[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.kind === 'local' || message.kind === 'checkpoint') continue;
+    // A row the loop writes for the host (a hook's block reason, a rejected tool batch) ends the
+    // turn without a reply of the model's, as `finalAnswerText` reads it.
+    if (message.role !== 'assistant' || message.hostNotice) return undefined;
+    if (message.kind !== undefined && message.kind !== 'conversation') continue;
+    if (message.content.trim() !== '') return message.content;
+  }
+  return undefined;
+}
 
 export function didSendMessageComplete(result: AgentSessionSendResult): boolean {
   return result.status === 'completed';
@@ -154,6 +178,10 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
   liveSession?: LiveSessionReporter;
   /** This process's messaging runtime (#620), when messaging is on; the TUI's host owns it. */
   messaging?: SessionMessaging;
+  /** The live sessions `@session` mentions read (#620), when messaging is on. */
+  sessionMentions?: SessionMentionSource;
+  /** This process's view of other live sessions (#620 PR 4); the TUI's host owns it. */
+  peerAwareness?: PeerAwareness;
   /**
    * Warnings about this launch, shown once as local rows after the loaded transcript. Not
    * persisted and not part of the model's context, so a resumed session shows the current
@@ -293,6 +321,11 @@ interface SendMessageOptions {
   onRecorded?: () => void;
   /** Checked once the pre-turn compaction is done: false cancels the send before it is recorded. */
   stillDeliverable?: () => boolean;
+  /**
+   * The class a `peer-message` turn was delivered in, or, for a host-delivered turn, the class of
+   * the pinned work it reports: the permission gate pins it (#620).
+   */
+  peerTurnClass?: PeerPermissionClass;
   attachments?: Message['attachments'];
   /** Managed-continuation linkage back to the originating root and parent run. */
   rootRunId?: string;
@@ -430,6 +463,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       additionalTools: session.additionalTools,
       liveSession: session.liveSession,
       messaging: session.messaging,
+      sessionMentions: session.sessionMentions,
+      peerAwareness: session.peerAwareness,
     }),
   );
   // The session's `/goal` as the status line shows it. The runtime owns the goal and the loop
@@ -527,6 +562,25 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       mounted = false;
     };
   }, [lateStartupNotices, startupNoticeCount]);
+  // A live session in this worktree recorded an edit to a path this one edited too (#620 4e).
+  // Shown at once, mid-turn included, and kept in memory only, like the startup notices: a resumed
+  // session must not replay a warning about sessions that may be long gone.
+  const peerAwareness = session.peerAwareness;
+  useEffect(
+    () =>
+      peerAwareness?.subscribe((warning) => {
+        const notice = {
+          ...makeMessage('assistant', warning, undefined, false),
+          kind: 'local' as const,
+        };
+        setMessages((prev) => {
+          const next = [...prev, notice];
+          messagesRef.current = next;
+          return next;
+        });
+      }),
+    [peerAwareness],
+  );
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
   const sessionNameRef = useRef(session.sessionName);
@@ -545,6 +599,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // Plan-handoff request captured from the loop's onPlanHandoff callback, consumed
   // once the plan-approving send settles.
   const pendingHandoffRef = useRef<{ plan: string; mode: PermissionMode } | null>(null);
+  // The permission class pin a peer turn set (#620). The host-delivered turns after it — a
+  // completion, a delivery notice — carry its work on, so they inherit it, as they keep its relay
+  // chain; only a turn the user starts clears it.
+  const peerPinRef = useRef<PeerPermissionClass | undefined>(undefined);
+  // The class of each background job a pinned run started: its completion carries the peer's
+  // work on whenever it lands, after the user's own turn cleared the session's pin too.
+  // TODO(#620): accepted gaps (security review of #643): the map is in memory, so a persistent
+  // job's completion after a restart or `--resume` is unpinned; a pinned run that starts more than
+  // the shell manager's 20 retained terminal jobs loses the oldest before the diff; and the entry
+  // goes with the first completion delivered, so a later completion of the same id is unpinned.
+  const pinnedJobsRef = useRef(new Map<string, PeerPermissionClass>());
   const timelineStore = session.timelineStore ?? session.store;
 
   useEffect(() => interactions.subscribe(setInteractionSnapshot), [interactions]);
@@ -556,6 +621,21 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   useEffect(() => {
     liveConfigRef.current = liveConfig;
   }, [liveConfig]);
+
+  // `messaging.inbound` as the settings now say it (#620): a change re-judges every held message.
+  const inboundSetting = liveConfig.settings.messaging.inbound;
+  useEffect(() => {
+    messaging?.setInbound(inboundSetting);
+  }, [messaging, inboundSetting]);
+
+  // The last reply an idle notice summarizes for a session subscribed to this one (#620 PR 6),
+  // read when the notice goes out, with the provider's secrets redacted.
+  useEffect(() => {
+    messaging?.setTurnTextSource(() => {
+      const text = lastTurnReply(messagesRef.current);
+      return text && redactSecrets(text, collectProviderSecrets(liveConfigRef.current));
+    });
+  }, [messaging]);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -1089,16 +1169,33 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (stillCurrent()) setIsCompacting(false);
           }
         }
-        // Another session's messages whose permission class no longer matches the mode — the
-        // user switched it during the compaction above — are not delivered: the send is cancelled
-        // before its user message is recorded, they stay queued, and the next delivery refuses
-        // them with the interim reason (#620).
-        // TODO(#620): PR 5 (mode parity) pins a peer turn to the class it was delivered under, so
-        // a mode switched in the middle of the turn cannot run its request unasked either.
+        // Another session's messages the receive policy no longer accepts — the user switched the
+        // mode during the compaction above — are not delivered: the send is cancelled before its
+        // user message is recorded, they stay queued, and the next delivery holds them for the
+        // user (#620). Once the turn starts, its class is pinned (`peerTurnClass`), so a mode
+        // switched in the middle of it cannot run the peer's request unasked either.
         if (messageOptions?.stillDeliverable && !messageOptions.stillDeliverable()) {
           agentSession.cancel('peer-class-changed');
         }
       };
+
+      // The class this run is pinned to: a peer turn's own, made no looser by a pin still standing,
+      // or the standing pin for a turn that carries a peer's work on. A user's turn has none.
+      const runPeerClass =
+        messageOptions?.kind === 'peer-message'
+          ? stricterClass(messageOptions.peerTurnClass ?? 'prompting', peerPinRef.current)
+          : isHostDeliveredTurn({ kind: messageOptions?.kind })
+            ? stricterClass(messageOptions?.peerTurnClass, peerPinRef.current)
+            : undefined;
+      const jobsBefore =
+        runPeerClass !== undefined
+          ? new Set(
+              agentSession
+                .getRuntime()
+                .shellManager.list()
+                .map((job) => job.id),
+            )
+          : undefined;
 
       const createUserMessage = () => {
         const message = makeMessage('user', userMessage, messageOptions?.contextMessage, true);
@@ -1153,8 +1250,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // fresh relay chain for what it sends (#620). A host-delivered turn does not: a peer
         // turn sets its own chain when its batch is committed, and a notification turn (a
         // background job's or an agent's completion, a delivery notice) keeps the chain of the
-        // turn that set it going, so a relay cannot restart itself through a completion.
-        if (!isHostDeliveredTurn({ kind: messageOptions?.kind })) messaging?.beginTurn();
+        // turn that set it going, so a relay cannot restart itself through a completion. The
+        // peer pin follows the same rule: a peer turn sets it, and only the user's turn clears it.
+        if (!isHostDeliveredTurn({ kind: messageOptions?.kind })) {
+          messaging?.beginTurn();
+          peerPinRef.current = undefined;
+        } else if (messageOptions?.kind === 'peer-message') {
+          peerPinRef.current = runPeerClass;
+        }
         messageOptions?.onRecorded?.();
         if (prepared.sessionName !== sessionNameRef.current) {
           sessionNameRef.current = prepared.sessionName;
@@ -1540,8 +1643,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           modelOverride: commandContext?.modelOverride,
           commands: commandContext ? [commandContext.command] : undefined,
           parentSessionId: activeSessionId,
+          ...(runPeerClass !== undefined ? { peerTurnClass: runPeerClass } : {}),
         },
       });
+      if (jobsBefore && runPeerClass !== undefined) {
+        for (const job of agentSession.getRuntime().shellManager.list()) {
+          if (jobsBefore.has(job.id)) continue;
+          const pinned = pinnedJobsRef.current;
+          pinned.set(job.id, stricterClass(pinned.get(job.id), runPeerClass)!);
+        }
+      }
       // A host-delivered turn (a notification, a peer's message) never takes the resumed run's
       // linkage: the user's own next prompt continues it.
       if (
@@ -1769,6 +1880,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         contextMessage: batch.turn.context,
         kind: 'peer-message',
         peerMessages: batch.turn.peerMessages,
+        peerTurnClass: batch.turnClass,
         stillDeliverable: () => messaging.stillDeliverable(batch),
         onRecorded: () => {
           if (committed) return;
@@ -1784,21 +1896,27 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   /**
    * Tell the model what came of messages this session sent (#620): the `[Cross-session delivery
    * notice]` text, as a host turn the transcript does not show; the human reads the warning row.
+   * An `[Cross-session idle notice]` (PR 6) goes the same way with a row of its own, and runs in
+   * the class a message from the notifying session would, since it may carry that session's words.
    */
   const sendPeerDeliveryNotice = useCallback(
-    async (notice: string): Promise<boolean> => {
+    async (notice: string, options: PeerNoticeOptions = {}): Promise<boolean> => {
       // Told once the turn is recorded: a turn the user then cancels must not bring the notice back.
       let accepted = false;
-      await sendMessage('Cross-session delivery notice.', undefined, {
+      await sendMessage(options.display ?? 'Cross-session delivery notice.', undefined, {
         contextMessage: notice,
         kind: 'agent-notification',
+        ...(options.peerTurnClass !== undefined ? { peerTurnClass: options.peerTurnClass } : {}),
+        ...(options.stillDeliverable ? { stillDeliverable: options.stillDeliverable } : {}),
         onRecorded: () => {
           accepted = true;
+          // An idle notice's turn continues the relay its subscription was sent on.
+          if (options.relayChain) messaging?.continueRelay(options.relayChain);
         },
       });
       return accepted;
     },
-    [sendMessage],
+    [sendMessage, messaging],
   );
 
   const sendBackgroundShellCompletion = useCallback(
@@ -1828,10 +1946,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       ]
         .filter((line): line is string => line !== undefined)
         .join('\n');
+      const jobClass = pinnedJobsRef.current.get(shell.id);
       const result = await sendMessage(display, undefined, {
         contextMessage: context,
         kind: 'agent-notification',
+        ...(jobClass !== undefined ? { peerTurnClass: jobClass } : {}),
       });
+      if (didSendMessageComplete(result)) pinnedJobsRef.current.delete(shell.id);
       return didSendMessageComplete(result);
     },
     [agentSession, sendMessage],

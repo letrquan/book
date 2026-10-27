@@ -89,6 +89,7 @@ import type {
 import { seedShellIds } from '../jobs/shell-ids.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { normalizePermissionMode, resolvePermissionMode } from '../permission-mode.js';
+import { peerTurnGateMode } from '../messaging/receive-policy.js';
 
 interface ManagerOptions {
   storeRoot?: string;
@@ -1119,6 +1120,7 @@ export class AgentManager {
     const runId = randomUUID();
     const record: AgentRecord = {
       id: randomUUID(),
+      ...(request.peerTurnClass !== undefined ? { peerTurnClass: request.peerTurnClass } : {}),
       profile: definition.name,
       displayName,
       profileDescription: definition.description,
@@ -2108,15 +2110,18 @@ export class AgentManager {
         parentRunId: record.parentRunId,
         source: 'internal',
       });
+      // The session's mode as the run starts, read for a child a peer turn spawned at no looser
+      // than that turn's class (#620): a mode switched into bypass while it queued does not reach it.
+      const runMode = peerTurnGateMode(this.permissionMode, record.peerTurnClass);
       const systemPromptAppend = this.systemPrompt(record, definition, snapshot);
       runtime.runAccounting.startExecution(runContext);
       runtime.recordRunAmbientSnapshot(
         runContext.runId,
         createRunAmbientSnapshot(agentConfig, registry, {
-          permissionMode: this.permissionMode,
+          permissionMode: runMode,
           systemPromptAppend,
           hideAgents: true,
-          planMode: this.permissionMode === 'plan',
+          planMode: runMode === 'plan',
           allowedTools: definition.allowedTools,
         }),
       );
@@ -2279,7 +2284,7 @@ export class AgentManager {
           },
           onAgentEvent: (event) => this.emit(event),
         },
-        this.permissionMode,
+        runMode,
         {
           signal: controller.signal,
           isNewSession: record.transcript.length === 0,

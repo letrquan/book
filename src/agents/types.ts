@@ -1,4 +1,5 @@
 import type { Message, Usage } from '../types/messages.js';
+import type { PeerPermissionClass } from '../types/messaging.js';
 import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 
 export type AgentMode = 'adaptive' | 'manual' | 'off';
@@ -108,6 +109,8 @@ export interface SpawnerClaim {
 
 export interface AgentRecord {
   id: string;
+  /** The class of the peer turn that spawned it, kept for every run (#620; `AgentSpawnRequest`). */
+  peerTurnClass?: PeerPermissionClass;
   profile?: string;
   displayName?: string;
   profileDescription?: string;
@@ -348,6 +351,11 @@ export interface AgentSpawnRequest {
    * agent surface while it runs.
    */
   notifyParentOnCompletion?: boolean;
+  /**
+   * The class of the peer turn the spawn came from (#620): the agent runs at most as loose as it,
+   * read as `default` for a bypass-class session mode, whatever that mode is when the agent starts.
+   */
+  peerTurnClass?: PeerPermissionClass;
   /**
    * Whether `agents.resumeInterrupted` may re-run this agent after the process
    * died mid-run. Defaults to true. Like `notifyParentOnCompletion`, it covers only the runs the

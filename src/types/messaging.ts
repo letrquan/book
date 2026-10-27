@@ -62,6 +62,28 @@ export interface LiveSessionRecord {
   statusUpdatedAt: number;
   /** Epoch milliseconds of the last write of any field. */
   updatedAt: number;
+  /**
+   * The git worktree the session runs in (`git rev-parse --show-toplevel`, a real path), when it
+   * runs in one (#620 4b). Peers with the same worktree edit the same files.
+   */
+  worktree?: string;
+  /** The repository's common git directory, one for all its worktrees. */
+  repository?: string;
+  /** The checked-out branch; absent on a detached HEAD or outside git. */
+  branch?: string;
+  /**
+   * The session's latest successful file mutations, oldest first, at most 20, one per path. Paths
+   * only, relative to {@link worktree}, never content; taken from the tools' results, never from
+   * the model's text. Absent until the session edits something in its worktree.
+   */
+  recentEdits?: LiveSessionEdit[];
+}
+
+/** One recorded edit: a worktree-relative path (forward slashes) and when it landed. */
+export interface LiveSessionEdit {
+  path: string;
+  /** Epoch milliseconds. */
+  at: number;
 }
 
 /**
@@ -147,7 +169,18 @@ export interface AcceptedPeerMessage {
   priority?: string;
   /** Epoch milliseconds when the inbox accepted it. */
   receivedAt: number;
+  /**
+   * Held, then let go (#620 PR 5): `approved` by the user, or `released` because the policy accepts
+   * it under the session's mode now. Either way it is judged again at delivery, where an approval
+   * still answers a parity hold or `inbound: hold`, never `refuse`; it is acknowledged `released`,
+   * and an approved message's turn runs in the prompting class (`receive-policy.ts`).
+   */
+  release?: 'approved' | 'released';
 }
+
+/** `messaging.inbound`, from loosest to strictest (#620 PR 5). */
+export const INBOUND_SETTINGS = ['accept', 'hold', 'refuse'] as const;
+export type InboundSetting = (typeof INBOUND_SETTINGS)[number];
 
 /** A `peer_message_status` receipt another session sent back about a message this one sent. */
 export interface PeerMessageReceipt {
@@ -209,10 +242,38 @@ export interface PeerSessionListing {
   peers: PeerSessionRow[];
 }
 
+/**
+ * A `notify_when_idle` subscription another session made (#620 PR 6), once its reply address
+ * passed the inbox's vetting. `fromMode` is the class the subscriber asserted, unverified.
+ */
+export interface IdleSubscriptionRequest {
+  /** The reply address, canonical: the vetted socket path, encoded once. */
+  from: string;
+  msgId: string;
+  fromMode?: string;
+}
+
+/** A `peer_idle_notice` another session sent about a subscription this one made (#620 PR 6). */
+export interface PeerIdleNoticeReceipt {
+  origMsgId: string;
+  state: 'idle' | 'exited' | 'expired';
+  /** The notifier's summary of its last reply: peer text, sanitized again before anyone reads it. */
+  detail?: string;
+  fromMode?: string;
+  from?: string;
+  receivedAt: number;
+}
+
 export interface PeerSendRequest {
   /** A name, `name [ref]`, or a `uds:` reply address copied from a message's `from`. */
   to: string;
-  message: string;
+  /** The message; absent for a pure `notify_when_idle` subscription. */
+  message?: string;
+  /**
+   * Also ask the session for one idle notice (#620 PR 6): when it next goes idle with nothing
+   * queued, or exits. Without a `message`, that is all the send does.
+   */
+  notifyWhenIdle?: boolean;
   /** The sending loop's permission mode now: the envelope's `from-mode` follows it. */
   mode?: string;
   /**
@@ -231,8 +292,22 @@ export type PeerAddressResolution =
   | { ok: true; target: PeerSessionRow & { socketPath: string } }
   | { ok: false; problem: PeerAddressProblem; candidates: PeerSessionRow[] };
 
+/** What became of a `notify_when_idle` request sent with a message. */
+export type IdleSubscribeResult =
+  { status: 'subscribed' } | { status: Exclude<InboxSendResult['status'], 'sent'>; detail: string };
+
 export type PeerSendOutcome =
-  | { status: 'sent'; target: PeerSessionRow; msgId: string }
+  /** The message went; `idle` says what became of the subscription asked for with it. */
+  | { status: 'sent'; target: PeerSessionRow; msgId: string; idle?: IdleSubscribeResult }
+  /** A pure subscription went. */
+  | { status: 'subscribed'; target: PeerSessionRow }
+  /** A pure subscription did not go, and why: its own result, never a message's. */
+  | {
+      status: 'not_subscribed';
+      reason: Exclude<InboxSendResult['status'], 'sent'> | 'relay_limit';
+      detail: string;
+      target: PeerSessionRow;
+    }
   | { status: 'unavailable' }
   /** Refused here: the relay this turn continues would be dropped as a loop or a runaway. */
   | { status: 'relay_limit'; detail: string; target: PeerSessionRow }
@@ -254,4 +329,76 @@ export interface SessionMessagingHandle {
   /** The live session `to` names now, without sending anything. */
   resolve(to: string): Promise<PeerAddressResolution>;
   send(request: PeerSendRequest): Promise<PeerSendOutcome>;
+  /**
+   * The session's status, as its live-session record reports it (#620 PR 6): the runtime answers
+   * the idle subscriptions other sessions made from it. Absent on a stand-in that has none.
+   */
+  setSessionStatus?(status: LiveSessionStatus): void;
+}
+
+/** Another session's recorded edit of a changed or stale file: its own claim, so notices hedge. */
+export interface PeerEditAttribution {
+  /** The peer's name, sanitized; `name [ref]` when {@link messaging} is true. */
+  peer: string;
+  /** How long ago the peer recorded the edit. */
+  ageMs: number;
+  /** This session can message the peer (`SessionSend`); otherwise the user is the go-between. */
+  messaging: boolean;
+}
+
+/** An observed file that changed on disk since the model last saw it (#620 4a). */
+export interface ChangedFileNotice {
+  /** Workspace-relative, as the file was observed. */
+  path: string;
+  /** The file is gone, or is no longer a file. */
+  deleted?: boolean;
+  attribution?: PeerEditAttribution;
+  /** A short diff of the change; absent when it is long. */
+  snippet?: string[];
+}
+
+/** One live peer as the `<session-state>` worktree line shows it (#620 4c). */
+export interface PeerSessionNote {
+  /** Sanitized and capped, like every field below: another session wrote them. */
+  name: string;
+  status: string;
+  branch?: string;
+  /** The peer's most recent recorded edits, newest first. */
+  edits: Array<{ path: string; ageMs: number }>;
+}
+
+/** The live peers this session shares a worktree or a repository with. */
+export interface PeerSessionsNotice {
+  /** Live peers in this worktree, at most `MAX_PEER_NOTES` of them. */
+  sameWorktree: PeerSessionNote[];
+  /** Live peers in this worktree beyond those listed. */
+  moreSameWorktree: number;
+  /** Live peers in other worktrees of the same repository: a count only, never their paths. */
+  otherWorktrees: number;
+}
+
+/** One bounded read of the live-session registry, as peer awareness judges it. */
+export interface PeerAwarenessSnapshot {
+  /** The `<session-state>` peer lines' content; absent when no live peer shares the repository. */
+  notice?: PeerSessionsNotice;
+  /**
+   * The live peer in this worktree whose newest recorded edit of `absolutePath` is no older than
+   * `since` (epoch milliseconds: when this session last observed the file).
+   */
+  attribute(absolutePath: string, since: number): PeerEditAttribution | undefined;
+}
+
+/**
+ * What the agent loop and its tools reach of peer awareness (#620 PR 4): the TUI host's
+ * `messaging/peer-awareness.ts`, or a test's stand-in. Print mode, the SDK and managed agents have
+ * none.
+ */
+export interface PeerAwarenessHandle {
+  /** Never rejects: a registry it cannot read is a registry with no peers in it. */
+  snapshot(): Promise<PeerAwarenessSnapshot>;
+  /**
+   * This session's successful mutations, as their results name them: paths relative to
+   * `workspace`. Paths only, never content.
+   */
+  recordEdits(workspace: string, paths: readonly string[]): void;
 }

@@ -25,7 +25,11 @@ import { READ_ONLY_PLAN_TOOLS } from './plan-mode.js';
 import { getPrimaryArg, toolPrimaryArg } from './primary-arg.js';
 import { createDefaultRegistry } from './registry.js';
 import { formatSessionListing, createSessionListTool } from './session-list.js';
-import { createSessionSendTool, sessionSendResult } from './session-send.js';
+import {
+  createSessionSendTool,
+  SESSION_SEND_DESCRIPTION,
+  sessionSendResult,
+} from './session-send.js';
 import { peerSessionRow } from '../messaging/addressing.js';
 import { FILE_MUTATING_TOOLS, OUTWARD_FACING_TOOLS } from './tool-capabilities.js';
 import { encodeUdsAddress } from '../messaging/wire.js';
@@ -499,5 +503,114 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       .map((definition) => definition.name);
     expect(names).not.toContain('SessionList');
     expect(names).not.toContain('SessionSend');
+  });
+});
+
+describe('SessionSend notify_when_idle (#620 PR 6)', () => {
+  function handle(outcome: (request: PeerSendRequest) => PeerSendOutcome) {
+    const sends: PeerSendRequest[] = [];
+    const messaging: SessionMessagingHandle = {
+      available: () => true,
+      list: async () => ({ peers: [] }),
+      resolve: async () => ({
+        ok: true,
+        target: row('peer-b') as PeerSessionRow & { socketPath: string },
+      }),
+      send: async (request) => {
+        sends.push(request);
+        return outcome(request);
+      },
+    };
+    const tool = createSessionSendTool(messaging);
+    const call = (args: Record<string, unknown>) =>
+      tool.execute(args, {} as Parameters<typeof tool.execute>[1]);
+    return { sends, call };
+  }
+  const target = row('peer-b');
+
+  it('subscribes without a message, and says exactly one notice will come', async () => {
+    const { sends, call } = handle(() => ({ status: 'subscribed', target }));
+    const result = await call({ to: 'peer-b', notify_when_idle: true });
+    expect(sends).toEqual([expect.objectContaining({ to: 'peer-b', notifyWhenIdle: true })]);
+    expect(sends[0]).not.toHaveProperty('message');
+    expect(result.status).toBe('success');
+    expect(result.content).toMatch(
+      /^Asked peer-b \[a1b2c3\] for an idle notice\. One \[Cross-session idle notice\] arrives when it next goes idle or exits/,
+    );
+    expect(result.content).toContain('only your user sees it');
+  });
+
+  it('sends the message and subscribes, and says both', async () => {
+    const { sends, call } = handle(() => ({
+      status: 'sent',
+      target,
+      msgId: 'm1',
+      idle: { status: 'subscribed' },
+    }));
+    const result = await call({ to: 'peer-b', message: 'run the tests', notify_when_idle: true });
+    expect(sends[0]).toMatchObject({ message: 'run the tests', notifyWhenIdle: true });
+    expect(result.content).toMatch(
+      /^Sent to peer-b \[a1b2c3\]\. It reached that session's inbox; that is not proof its model read it\. One \[Cross-session idle notice\] arrives/,
+    );
+  });
+
+  it('treats an empty message with notify_when_idle as a pure subscription, and refuses neither', async () => {
+    const { sends, call } = handle(() => ({ status: 'subscribed', target }));
+    await call({ to: 'peer-b', message: '  ', notify_when_idle: true });
+    expect(sends[0]).not.toHaveProperty('message');
+    for (const args of [
+      { to: 'peer-b' },
+      { to: 'peer-b', message: ' ' },
+      { to: 'peer-b', notify_when_idle: false },
+    ]) {
+      const result = await call(args);
+      expect(result.structuredError?.code, JSON.stringify(args)).toBe('invalid_arguments');
+    }
+    expect(sends).toHaveLength(1);
+  });
+
+  it('says a pure subscription failed as a subscription, never a message, with its detail folded', () => {
+    const result = sessionSendResult({
+      status: 'not_subscribed',
+      reason: 'busy',
+      detail: 'timed out\u001b[2J\nafter 5 s',
+      target,
+    });
+    expect(result.status).toBe('error');
+    expect(result.structuredError).toMatchObject({
+      code: 'subscription_failed',
+      retryable: true,
+      remediation: 'Try again shortly.',
+    });
+    expect(result.structuredError?.message).toMatch(
+      /^The subscription to peer-b \[a1b2c3\] could not be made \(busy: timed out\S* \[2J after 5 s\)\. No idle notice will come\.$/,
+    );
+    expect(result.structuredError?.message).not.toMatch(/message|\u001b|\n/);
+    expect(
+      sessionSendResult({ status: 'not_subscribed', reason: 'relay_limit', detail: 'x', target })
+        .structuredError,
+    ).toMatchObject({
+      code: 'relay_limit',
+      remediation: expect.stringContaining('Do not subscribe again'),
+    });
+    expect(
+      sessionSendResult({
+        status: 'sent',
+        target,
+        msgId: 'm1',
+        idle: { status: 'gone', detail: 'no live\u001b[2J key' },
+      }).content,
+    ).toMatch(
+      /The idle notice was not set up \(gone: no live\S* \[2J key\); do not poll instead\.$/,
+    );
+  });
+
+  it('tells the model to subscribe rather than poll, in Claude Code’s terms', () => {
+    expect(SESSION_SEND_DESCRIPTION).toContain(
+      'pass `notify_when_idle: true`. It is one-shot and opt-in',
+    );
+    expect(SESSION_SEND_DESCRIPTION).toContain(
+      'Never poll SessionList in a loop or send "are you done?" messages: use `notify_when_idle` instead.',
+    );
   });
 });

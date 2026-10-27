@@ -851,6 +851,121 @@ describe('InputBar @ file mention menu', () => {
 
     expect(submitted).toEqual(['@src/app.ts ']);
   });
+
+  const peer = (name: string, ref: string) => ({
+    name,
+    ref,
+    socketPath: `/tmp/socks/${name}-${ref}.sock`,
+    kind: 'interactive',
+    status: 'idle',
+    startedAt: 0,
+    sessionId: `session-${name}-${ref}`,
+    pid: 1,
+    self: false,
+  });
+  const listing = {
+    self: { ...peer('book-1', 'ffffff'), self: true },
+    peers: [
+      peer('book-36', '825389'),
+      peer('alpha', '111111'),
+      peer('beta', '222222'),
+      peer('gamma', '333333'),
+    ],
+  };
+  /** A warm snapshot, or a cold one whose read never finishes. */
+  const sessions = (options: { available?: boolean; warm?: boolean } = {}) => ({
+    available: () => options.available ?? true,
+    peek: () => (options.warm === false ? undefined : listing),
+    fresh: () =>
+      options.warm === false
+        ? new Promise<undefined>(() => {})
+        : Promise.resolve(listing as typeof listing | undefined),
+  });
+
+  it('offers matching live sessions above the files, labelled as sessions (#620)', async () => {
+    const ws = makeWorkspace();
+    writeFileSync(join(ws, 'book-notes.md'), 'x');
+    vi.stubEnv('BOOK_WORKSPACE', ws);
+
+    const view = render(inputBar(() => {}, { sessionMentions: sessions(), terminalWidth: 100 }));
+    await tick();
+
+    view.stdin.write('@book');
+    await tick(200);
+
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame).toContain('@book-notes.md');
+    expect(frame).toContain('@book-36');
+    expect(frame).toContain('[Session]');
+    expect(frame).toContain('Mentions matching');
+    expect(frame).not.toContain('@book-1');
+    expect(frame.indexOf('@book-36')).toBeLessThan(frame.indexOf('@book-notes.md'));
+  });
+
+  it('offers up to three sessions first for `@` alone (#620)', async () => {
+    const ws = makeWorkspace();
+    writeFileSync(join(ws, 'notes.md'), 'x');
+    vi.stubEnv('BOOK_WORKSPACE', ws);
+
+    const view = render(inputBar(() => {}, { sessionMentions: sessions(), terminalWidth: 100 }));
+    await tick();
+
+    view.stdin.write('@');
+    await tick(200);
+
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame.match(/\[Session\]/g)).toHaveLength(3);
+    expect(frame.indexOf('[Session]')).toBeLessThan(frame.indexOf('@notes.md'));
+  });
+
+  it('shows the files at once while the session registry is still being read (#620)', async () => {
+    const ws = makeWorkspace();
+    writeFileSync(join(ws, 'book-notes.md'), 'x');
+    vi.stubEnv('BOOK_WORKSPACE', ws);
+
+    const view = render(
+      inputBar(() => {}, { sessionMentions: sessions({ warm: false }), terminalWidth: 100 }),
+    );
+    await tick();
+
+    view.stdin.write('@book');
+    await tick(200);
+
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame).toContain('@book-notes.md');
+    expect(frame).not.toContain('[Session]');
+  });
+
+  it('Tab completes a session mention by its address (#620)', async () => {
+    vi.stubEnv('BOOK_WORKSPACE', makeWorkspace());
+
+    const submitted: string[] = [];
+    const view = render(
+      inputBar((value) => submitted.push(value), { sessionMentions: sessions() }),
+    );
+    await tick();
+
+    view.stdin.write('ask @book-3');
+    await tick(200);
+    view.stdin.write('\t');
+    await tick(20);
+    view.stdin.write('\r');
+    await tick(200);
+
+    expect(submitted).toEqual(['ask @book-36 ']);
+  });
+
+  it('offers no session while messaging is unavailable (#620)', async () => {
+    vi.stubEnv('BOOK_WORKSPACE', makeWorkspace());
+
+    const view = render(inputBar(() => {}, { sessionMentions: sessions({ available: false }) }));
+    await tick();
+
+    view.stdin.write('@book');
+    await tick(200);
+
+    expect(stripAnsi(view.lastFrame())).not.toContain('@book-36');
+  });
 });
 
 // ---------------------------------------------------------------------------

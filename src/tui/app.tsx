@@ -38,6 +38,7 @@ import { PlanApprovalActions, PlanApprovalDetails } from './components/PlanAppro
 import { AskUserQuestionWizard } from './components/AskUserQuestionWizard.js';
 import { McpElicitationForm } from './components/McpElicitationForm.js';
 import { McpServerApprovalPrompt } from './components/McpServerApprovalPrompt.js';
+import { PeerMessageApprovalPrompt } from './components/PeerMessageApprovalPrompt.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import { useManagedAgents } from './hooks/useManagedAgents.js';
@@ -66,6 +67,10 @@ import type { CommandContext } from '../types/commands.js';
 import type { RewindSnapshotStoreInterface, SessionStoreInterface } from '../types/sessions.js';
 import type { LiveSessionReporter } from '../messaging/writer.js';
 import type { SessionMessaging } from '../messaging/session-messaging.js';
+import { lateApprovalLine } from '../messaging/hold.js';
+import type { PeerAwareness } from '../messaging/peer-awareness.js';
+import type { SessionMentionSource } from '../input/session-mentions.js';
+import { sessionMentionsOffered } from '../tools/intent-routing.js';
 import type { SessionBootstrap } from '../session/resolve.js';
 import type { InkFlushSync } from '../cli/ink-renderer.js';
 import { displaySessionName } from '../session/name.js';
@@ -287,6 +292,10 @@ interface AppProps {
     liveSession?: LiveSessionReporter;
     /** This process's messaging runtime (#620), when messaging is on; started and closed by `cli/run.ts`. */
     messaging?: SessionMessaging;
+    /** The live sessions `@session` mentions read (#620), when messaging is on. */
+    sessionMentions?: SessionMentionSource;
+    /** This process's view of other live sessions (#620 PR 4), closed by `cli/run.ts`. */
+    peerAwareness?: PeerAwareness;
   };
   redrawViewport?: () => void;
   /**
@@ -1226,24 +1235,39 @@ export function App({
     return () => mcp.setElicitationHandler(undefined);
   }, [mcp, elicitationHandler]);
   const pendingMcpApproval = mcpSnapshot.pendingApprovals[0];
-  // The trust prompt yields to every other modal surface and reappears once idle.
-  const showMcpApproval =
-    Boolean(pendingMcpApproval) &&
-    !ownsModalInput(
-      pendingPermission ?? childPermission ?? childQuestion,
-      pendingPlanApproval,
-      showModelPicker,
-      showSessionPicker,
-      pendingUserQuestion,
-      showEffortPicker,
-      showRewindPicker,
-      showConfigPicker,
-      showAgentProfilePicker,
-      showPermissionModePicker,
-      showSkills,
-      undefined,
-      pendingElicitation,
-    );
+  // The trust prompts below yield to every other modal surface and reappear once it closes.
+  const otherModalOwnsInput = ownsModalInput(
+    pendingPermission ?? childPermission ?? childQuestion,
+    pendingPlanApproval,
+    showModelPicker,
+    showSessionPicker,
+    pendingUserQuestion,
+    showEffortPicker,
+    showRewindPicker,
+    showConfigPicker,
+    showAgentProfilePicker,
+    showPermissionModePicker,
+    showSkills,
+    undefined,
+    pendingElicitation,
+  );
+  const showMcpApproval = Boolean(pendingMcpApproval) && !otherModalOwnsInput;
+  // A peer message the receive policy held for the user (#620), asked about after the MCP trust
+  // prompt. It does not hold up delivery: an approval that found the queue full is offered again
+  // once a delivery makes room. What it holds changes only with an event from the messaging
+  // runtime, which re-renders this component; `Later` is the one answer that does not, so it
+  // bumps this.
+  const [, setPeerHoldTick] = useState(0);
+  const pendingPeerApproval = session.messaging?.nextApproval();
+  const showPeerApproval = Boolean(pendingPeerApproval) && !showMcpApproval && !otherModalOwnsInput;
+  // A message put off with Later is asked about again each time the session goes idle after a
+  // turn, once: the user said "not now", not "never".
+  const peerSessionBusy = isThinking || sendInFlight;
+  const peerSessionWasBusy = useRef(peerSessionBusy);
+  useEffect(() => {
+    if (peerSessionWasBusy.current && !peerSessionBusy) session.messaging?.reofferDeferred();
+    peerSessionWasBusy.current = peerSessionBusy;
+  }, [peerSessionBusy, session.messaging]);
 
   // Surface connection outcomes as transcript notices once the turn is idle;
   // addLocalMessage drops messages mid-turn, so consumption waits for idle.
@@ -1305,6 +1329,12 @@ export function App({
     messaging: session.messaging,
     // The user's own queued follow-ups go first.
     blocked: queueDrainBlocked || queuedInputs.length > 0,
+    // What will start a turn of its own, a completion's retry included: the session is not idle
+    // for another session's notice while any waits (#620 PR 6).
+    pendingWork:
+      queuedInputs.length > 0 ||
+      backgroundShells.pendingAgentCompletions.length > 0 ||
+      managedAgents.pendingCompletions.length > 0,
     deliver: sendPeerMessages,
     notify: sendPeerDeliveryNotice,
     warn: addLocalMessage,
@@ -1671,7 +1701,7 @@ export function App({
         showAgentProfilePicker,
         showPermissionModePicker,
         showSkills,
-        showMcpApproval,
+        showMcpApproval || showPeerApproval,
         pendingElicitation,
       )
     ) {
@@ -2771,7 +2801,7 @@ export function App({
     showAgentProfilePicker,
     showPermissionModePicker,
     showSkills,
-    showMcpApproval,
+    showMcpApproval || showPeerApproval,
     pendingElicitation,
   );
 
@@ -2786,7 +2816,9 @@ export function App({
       pendingPlanApproval ??
       pendingUserQuestion ??
       pendingElicitation,
-    ) || showMcpApproval;
+    ) ||
+    showMcpApproval ||
+    showPeerApproval;
 
   // Whether the composer is taking keys at all. The transcript asks the same
   // question before it reads Ctrl+U and Ctrl+D as paging chords, so the answer
@@ -3513,6 +3545,46 @@ export function App({
                 terminalWidth={termWidth}
               />
             ) : null}
+            {showPeerApproval && pendingPeerApproval && session.messaging ? (
+              <PeerMessageApprovalPrompt
+                key={pendingPeerApproval.id}
+                held={pendingPeerApproval}
+                fromSender={session.messaging.heldFromSender(pendingPeerApproval)}
+                fromOthers={
+                  session.messaging.heldList().length -
+                  session.messaging.heldFromSender(pendingPeerApproval)
+                }
+                onApprove={() => {
+                  // A release, a refusal or an expiry is told by the runtime's own row; only an
+                  // approval that could not release the message needs a word here.
+                  const result = session.messaging?.approve(pendingPeerApproval.id);
+                  if (result && result.outcome !== 'released') {
+                    addLocalMessage(
+                      lateApprovalLine(
+                        result.outcome === 'no-room' ? result.held : undefined,
+                        result.outcome,
+                      ),
+                    );
+                  }
+                }}
+                onDeny={() => {
+                  if (!session.messaging?.deny(pendingPeerApproval.id)) {
+                    addLocalMessage(lateApprovalLine(undefined, 'resolved'));
+                  }
+                }}
+                onDenyAllFromSender={() => {
+                  session.messaging?.denyAllFrom(pendingPeerApproval.id);
+                }}
+                onDenyAll={() => {
+                  session.messaging?.denyAll();
+                }}
+                onDefer={() => {
+                  session.messaging?.defer(pendingPeerApproval.id);
+                  setPeerHoldTick((tick) => tick + 1);
+                }}
+                terminalWidth={termWidth}
+              />
+            ) : null}
           </Box>
 
           {/* A finished compaction is its row in the transcript alone; only a failure or a skip
@@ -3644,6 +3716,11 @@ export function App({
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
               skills={skills}
+              sessionMentions={
+                session.sessionMentions && sessionMentionsOffered(mode, liveConfig)
+                  ? session.sessionMentions
+                  : undefined
+              }
               terminalWidth={termWidth}
               maxMenuRows={maxCommandMenuRows}
               compact={isNarrow || isTiny}
@@ -3745,6 +3822,7 @@ export function App({
                     ).length
                   : 0
               }
+              heldPeerMessageCount={session.messaging?.heldList().length ?? 0}
               goalSetAt={activeGoal?.setAt}
               turnCount={turnCount}
               terminalWidth={termWidth}

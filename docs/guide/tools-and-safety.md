@@ -356,14 +356,39 @@ as before, where the rule or hook applies, and the deferred-tool list does not o
 hook with no matcher runs on every call, the direct one included, and turns nothing off; nor does an
 allow rule.
 
+Before a turn's first model call, Book also routes what you typed. A URL that `WebFetch` would
+fetch activates `WebFetch`, in a code fence too; a plain-HTTP, local or private address counts only
+where `BOOK_WEB_ALLOW_HTTP` or `BOOK_WEB_ALLOW_PRIVATE_NETWORK` lets `WebFetch` reach it. Search
+intent activates `WebSearch`: `search`, `look up`, `latest`, `news`, `tìm` or `tin tức` as standalone
+words in any letter case, outside backtick code, so `research`, `searching`, `tool-search.ts`,
+`react@latest` and `--latest` do not count. The tool is loaded the way `ToolSearch` loads one, under
+the same authorization, so the turn's first request already declares it and the model spends no turn
+searching; but routing only takes room that is free, so a tool that does not fit the loaded-tool and
+schema budgets beside the tools already loaded is not routed, and nor is one a `permissions.deny`
+rule refuses outright (`WebFetch` or `WebFetch(*)`). Only text you typed routes: a command's body, an
+inlined file, an agent's completion notice and a subagent's task never do, a `UserPromptSubmit` hook
+that rewrites the prompt can take a route away but never add one, and nothing routes where direct
+calls are off. Routing runs no tool and adds no system-prompt text, so the system prompt and the
+deferred-tool list are the same with it or without it; the request's tools array gains the tool, as
+after a search. With messaging on, an `@session` mention routes a note instead of a tool, in the turn's
+`<session-state>` block (see [Features](features.md)). `toolDiscovery.intentRouting: false` turns it off.
+
 Invalid arguments on a call to a tool the turn's request did not declare (called directly, or loaded
 by `select:` earlier in the same response) are refused with the tool's argument names and types, two
 object levels deep and at most about 2,000 characters, then a pointer to `select:`; the tool is still
 loaded, so the next attempt has its schema. A tool whose schema alone exceeds the schema budget still
 runs, with a line saying it was not loaded, and is admitted again on each call; `select:` and a search
 that cannot load it say so. Activations are logged under `BOOK_DEBUG` (`tools:discovery`) with their
-reason: `search`, `select`, `direct`, or `host` for a tool Book loads itself (a skill's resource
-reader).
+reason: `search`, `select`, `direct`, `route` for intent routing, or `host` for a tool Book loads
+itself (a skill's resource reader).
+
+**Measuring it.** `npm run eval:tools` runs five tasks that each need one deferred tool (fetch a URL,
+search the web, read git history, edit a notebook, search the session history) under three arms:
+`baseline` (direct calls off, no routing), `+direct` and `+routing`. Per task, arm and model it
+reports success, the turn of the first correct call, workarounds such as `curl` in `Bash`, wasted
+calls (ToolSearch misses, refusals, unknown tools), tokens and, on Anthropic, the cache-read ratio.
+`--mock` runs the matrix on scripted models with no key, and `--estimate` prices the real matrix from
+a mock run; `npm run eval:tools -- --help` lists the options.
 
 ### Activation is append-only
 
@@ -770,10 +795,15 @@ listening (#620):
   row per other session, `name [ref] · kind · status · started`. The name is the address; the ref,
   six hex digits of the session's socket path, only tells two sessions with the same name apart. A
   session marked `no inbox` has messaging off and cannot be messaged.
-- `SessionSend {to, message}` sends one message. `to` is a name, `name [ref]`, or the `from` address
-  of a message being answered; a name two sessions hold is refused with both refs named. The
-  description tells the model that a peer is not its user, that a message is never approval, and
-  never to ask a peer for what its own session denied (cross-session permission laundering).
+- `SessionSend {to, message?, notify_when_idle?}` sends one message. `to` is a name, `name [ref]`,
+  or the `from` address of a message being answered; a name two sessions hold is refused with both
+  refs named. The description tells the model that a peer is not its user, that a message is never
+  approval, and never to ask a peer for what its own session denied (cross-session permission
+  laundering). `notify_when_idle: true` also asks that session for one `[Cross-session idle notice]`
+  when it next goes idle or exits; without a `message` that is all the call does. The description
+  tells the model to use it instead of polling `SessionList` or sending "are you done?" messages
+  (see "Idle notices" in the [feature reference](features.md)). Either way the call is a
+  `SessionSend`, asked about as one.
 
 Permissions:
 
@@ -812,17 +842,22 @@ What a send returns:
 - relay limit (the turn continues a relay that would pass 28 hops, or pass through this session
   10 times): not sent, since the other side would drop it as a loop; tell the user.
 
-A message that is dropped or refused later comes back as a `⚠` transcript row and a
-`[Cross-session delivery notice]` for the model, which tells it not to resend in a loop; a delivered
-one is a `✓` row only. The notice's text is Book's, one per status: what the other session said
+A message that is dropped, held, denied, expired or refused later comes back as a `⚠` transcript
+row and a `[Cross-session delivery notice]` for the model, which tells it not to resend in a loop
+(and, while it is held, not to wait for a reply); a delivered one is a `✓` row only. The notice's text is Book's, one per status: what the other session said
 about its reason is never repeated.
 
 On the receiving side, the message's text never reaches the prompt as markup: the `<` of every tag
 Book's prompts are built from (`session-state`, `project-instructions`, `system-reminder`, the
 envelope's own `cross-session-message`, and the rest of the list in `src/prompt-tags.ts`) is
 rewritten as `<\\`, also when a JSON string spells it with escapes such as `\u003c` or `\/`. A
-message whose permission class differs from the receiving session's is refused for now (see
-[Features](features.md)).
+message whose permission class differs from the receiving session's is held for its user to
+approve, and a turn a peer message starts is pinned to its permission class, as are the
+completion and notice turns that carry its work on until the user's next turn, so switching into
+`bypassPermissions` or `auto` mid-turn never lets the peer's request run unasked; a pinned turn's
+`EnterPlanMode` and `ExitPlanMode` are refused, and so are a prompting-class one's `AgentSpawn`,
+`AgentPlan` and `AgentSend`; a pinned turn's `AgentStop`, `AgentApply` and `AgentSend` ask in every
+mode, and a `Task` subagent it starts keeps its class (see [Features](features.md)).
 
 ## Hooks
 

@@ -9,6 +9,7 @@ import { discoverAgents } from '../subagent-discovery.js';
 import { resolveBookHome } from '../book-home.js';
 import type { HookEntry } from '../settings.js';
 import type { AgentConfig } from '../types/runtime.js';
+import type { InboundLayer, InboundResolution } from '../messaging/receive-policy.js';
 
 /**
  * How much a settings layer named by `settingsLayers` is trusted, in the terms
@@ -230,22 +231,51 @@ async function describeMessaging(
       isUserSettingsFile,
       loadSettingsFile,
     } = await import('../settings-loader.js');
+    const { resolveInboundSetting } = await import('../messaging/receive-policy.js');
+    const inboundLayers: InboundLayer[] = [];
     for (const [label, path] of await settingsLayers(workspace)) {
-      if (label === 'User' || isUserSettingsFile(path)) continue;
+      const user = label === 'User' || isUserSettingsFile(path);
       let document: unknown;
       try {
         document = loadSettingsFile(path);
       } catch {
         continue;
       }
+      inboundLayers.push({
+        label: user ? 'user' : label === 'Project' ? 'project' : 'local',
+        path,
+        trusted: user,
+        value: (document as { messaging?: { inbound?: unknown } } | null)?.messaging?.inbound,
+      });
+      if (user) continue;
       for (const entry of ignoredWorkspaceUserOnlyKeys(document)) {
         lines.push(
           `  Ignored from ${path}: ${formatIgnoredWorkspaceSandboxKey(entry)} — read only from ~/.book/settings.json or --settings`,
         );
       }
     }
+    // The same resolution the loader applies, so what is reported is what is enforced.
+    const inbound = resolveInboundSetting(inboundLayers);
+    if (enabled) lines.push(`  Inbound: ${describeInbound(inbound)}`);
+    for (const entry of inbound.ignored) {
+      lines.push(
+        `  Ignored from ${entry.path}: messaging.inbound=${JSON.stringify(entry.value)} — a workspace layer may only make it stricter`,
+      );
+    }
   }
   return lines;
+}
+
+/** `messaging.inbound` as doctor reports it: the value, and the layer it came from. */
+function describeInbound(inbound: InboundResolution): string {
+  if (inbound.value === undefined || !inbound.source) {
+    return 'unset (mode parity decides: a message from the other permission class is held)';
+  }
+  const origin = inbound.tightened
+    ? `tightened by ${inbound.source.path}`
+    : `from ${inbound.source.path}`;
+  const invalid = inbound.invalid ? '; the value set is not accept, hold or refuse' : '';
+  return `${inbound.value} (${origin}${invalid})`;
 }
 
 export async function runDoctorCommand(

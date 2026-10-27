@@ -21,6 +21,9 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import { createProvider, keepsToolsStable, type Provider } from '../provider/index.js';
 import { isTruncationFinishReason, TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
 import { buildMessages } from './context.js';
+import type { WorkspaceNoticeSources } from './session-state.js';
+import type { PeerAwarenessHandle, PeerPermissionClass } from '../types/messaging.js';
+import { peerTurnGateMode } from '../messaging/receive-policy.js';
 import { renameToolUseBlocks, renderedToolCallIds, uniqueToolCallId } from './tool-call-ids.js';
 import type { PreparedToolCall, ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
@@ -94,6 +97,12 @@ import {
   validateUserQuestionResponse,
 } from '../tools/ask-user-question.js';
 import { createToolSurface } from '../tools/catalog.js';
+import {
+  routeTurnIntent,
+  turnIntentRouters,
+  type IntentRoutingRequest,
+} from '../tools/intent-routing.js';
+import type { SessionMentionSource } from '../input/session-mentions.js';
 import {
   enrichToolResultPresentation,
   boundToolResultOutput,
@@ -185,6 +194,27 @@ function needsPermissionCheck(mode: string): boolean {
   return true; // all other modes (default, accept-edits, plan, dontAsk) check rules
 }
 
+/** Why a peer turn's EnterPlanMode or ExitPlanMode is refused (#620). */
+export const PEER_TURN_MODE_REFUSAL =
+  "a turn from another session cannot change this session's mode; ask your user";
+
+/** The managed-agent tools that start or steer an agent, which a prompting-class peer turn may not call. */
+const PEER_TURN_AGENT_TOOLS: ReadonlySet<string> = new Set([
+  'AgentSpawn',
+  'AgentPlan',
+  'AgentSend',
+]);
+
+/**
+ * The managed-agent tools that act on an existing agent — most likely the user's — which a peer
+ * turn's call asks for in every mode (#620). A prompting-class turn's AgentSend is refused first.
+ */
+const PEER_TURN_ASK_TOOLS: ReadonlySet<string> = new Set(['AgentStop', 'AgentApply', 'AgentSend']);
+
+/** Why a prompting-class peer turn's AgentSpawn, AgentPlan or AgentSend is refused (#620). */
+export const PEER_TURN_AGENT_REFUSAL =
+  "a turn from another session cannot start or steer managed agents, which run at this session's own mode; ask your user";
+
 function requiresToolPermission(mode: string, persistentBackgroundShell: boolean): boolean {
   return needsPermissionCheck(mode) || (persistentBackgroundShell && mode !== 'bypassPermissions');
 }
@@ -269,6 +299,13 @@ export async function runAgentLoop(
     userAttachments?: Message['attachments'];
     resolveAttachment?: (attachment: ImageAttachment) => Promise<Uint8Array> | Uint8Array;
     userMessageKind?: Message['kind'];
+    /**
+     * The permission class a `peer-message` turn was delivered in (#620). The gate applies it for
+     * the whole run: a host mode switched into the bypass class meanwhile is read as `default`
+     * (`peerTurnGateMode`), so another session's request keeps asking; a stricter mode applies
+     * as it is. Absent for every other turn.
+     */
+    peerTurnClass?: PeerPermissionClass;
     /** The prompt was resolved from a command or delegated, not typed by the user. */
     userMessageDerived?: boolean;
     /**
@@ -320,6 +357,17 @@ export async function runAgentLoop(
     agentManager?: ToolContext['agentManager'];
     /** Mutable resources owned by the logical session. */
     runtime?: SessionRuntime;
+    /**
+     * The TUI host's view of other live sessions (#620 PR 4): the session-state peer lines, the
+     * peer a changed or stale file is attributed to, and this session's recorded edits. Root
+     * interactive runs only; a subagent or managed agent records and names no peer.
+     */
+    peerAwareness?: PeerAwarenessHandle;
+    /**
+     * The messaging runtime a typed `@session` mention resolves against (#620). Root interactive
+     * runs only, and only while messaging is on.
+     */
+    sessionMentions?: SessionMentionSource;
     /** Frozen attribution for this root or linked child execution. */
     runContext?: AgentRunContext;
     /** Override user-local oversized tool-output storage (primarily for isolated hosts/tests). */
@@ -480,6 +528,8 @@ export async function runAgentLoop(
   // UserPromptSubmit hook — can modify or block the user prompt.
   let effectivePrompt = userMessage;
   let displayPrompt = options?.displayMessage ?? userMessage;
+  /** Set when a hook rewrote the prompt: intent routing then keeps only routes it still asks for. */
+  let rewrittenPrompt: string | undefined;
   const userHookResults = options?.skipUserPromptHooks
     ? []
     : await runHooks(
@@ -509,6 +559,7 @@ export async function runAgentLoop(
     if (r.action === 'modify' && r.modifiedPrompt) {
       effectivePrompt = r.modifiedPrompt;
       displayPrompt = r.modifiedPrompt;
+      rewrittenPrompt = r.modifiedPrompt;
     }
   }
 
@@ -645,7 +696,7 @@ export async function runAgentLoop(
     timestamp: options?.userMessageTimestamp ?? Date.now(),
   });
 
-  const initialMode = mode as PermissionMode;
+  const initialMode = peerTurnGateMode(mode as PermissionMode, options?.peerTurnClass);
   // Read may open the memory directory and, below, every file this session clipped a result
   // into: a clip notice's "Full output: <path>" (#248). Never the whole tool-output directory,
   // which holds every project's clipped output. The earlier prompts' files come from the
@@ -752,7 +803,9 @@ export async function runAgentLoop(
     tasks: runtime.tasks,
     backgroundShells: runtime.backgroundShells,
     fileObservationLedger: runtime.fileObservationLedger,
+    peerAwareness: options?.peerAwareness,
     currentMode: initialMode,
+    ...(options?.peerTurnClass !== undefined ? { peerTurnClass: options.peerTurnClass } : {}),
     userQuestionHandler: callbacks.onUserQuestionRequired,
     agentPath: options?.agentPath ?? [],
     availableTools: availableToolDefinitions,
@@ -779,6 +832,13 @@ export async function runAgentLoop(
     isSubagent: options?.isSubagent,
   });
   toolContext.toolDiscovery = toolSurface;
+  // The session-state block's changed-on-disk and peer lines read these (#620 PR 4).
+  const workspaceNotices: WorkspaceNoticeSources = {
+    tracker: runtime.fileChanges,
+    ledger: runtime.fileObservationLedger,
+    peerAwareness: options?.peerAwareness,
+    secrets: () => toolContext.providerSecrets ?? [],
+  };
   // MEMORY.md was in the prompt, so the model has "read" it: seed the ledger and its first Edit
   // needs no Read. Only a whole index, and once per loaded snapshot: a cut one has to be Read, and
   // a later turn must not claim a file the model has not seen since it changed.
@@ -1144,6 +1204,8 @@ export async function runAgentLoop(
     const runStartedAt = clock.monotonicNowMs();
     /** Guards the periodic work-state message against a same-turn re-issue. */
     let lastWorkStateTurn = -1;
+    /** Intent routing runs once, before the run's first model call (#619). */
+    let intentRouted = false;
     /** The turn these empty-completion retries were spent on, and how many of them. */
     let emptyResponseRetryTurn = -1;
     let emptyResponseRetries = 0;
@@ -1169,9 +1231,15 @@ export async function runAgentLoop(
      * instead of burning the remaining turns on ExitPlanMode retries.
      */
     let planStopRequested: { plan: string; message: string } | null = null;
+    // The one place the loop reads the host's mode, so the one place a peer turn's class pin
+    // applies: every gate, the mode a child agent inherits and the class a SessionSend asserts all
+    // read `currentMode`. The host's own mode is left as the user set it.
     const syncHostMode = (): void => {
       const hostMode = callbacks.getMode?.();
-      if (hostMode !== undefined) toolContext.currentMode = hostMode;
+      if (hostMode !== undefined) {
+        toolContext.hostMode = hostMode;
+        toolContext.currentMode = peerTurnGateMode(hostMode, options?.peerTurnClass);
+      }
       effectiveMode = toolContext.currentMode ?? effectiveMode;
     };
     const explorationRouting = new ExplorationRoutingTracker(
@@ -1325,6 +1393,33 @@ export async function runAgentLoop(
 
       toolContext.currentTurn = turn;
       syncSkillRestrictions(turn);
+      if (!intentRouted) {
+        intentRouted = true;
+        // After the mode and the skill restrictions are applied, so it activates only what this
+        // surface authorizes. It reads what the user typed, never the prompt that text resolved
+        // to, and a hook's rewrite of it can only take a route or a note away.
+        const routing: IntentRoutingRequest = {
+          typedText: options?.typedText,
+          rewrittenPrompt,
+          kind: options?.userMessageKind,
+          isSubagent: options?.isSubagent,
+          config: effectiveConfig,
+          context: toolContext,
+        };
+        const { notes } = routeTurnIntent(
+          routing,
+          toolSurface,
+          await turnIntentRouters(routing, toolSurface, options?.sessionMentions, { signal }),
+        );
+        // A note (#620) rides on the message whose block `buildMessages` renders next, the newest
+        // user turn in context, and renders with that block.
+        for (let index = newHistory.length - 1; notes.length > 0 && index >= 0; index--) {
+          const message = newHistory[index];
+          if (message.role !== 'user' || !message.includeInContext) continue;
+          message.turnNotes = notes;
+          break;
+        }
+      }
       // On a provider that keeps `tools[]` fixed (#619) the request declares every authorized tool
       // and offers loaded ones by addition; elsewhere it sends the active tools, append-only.
       const stableTools = keepsToolsStable(effectiveConfig);
@@ -1352,6 +1447,7 @@ export async function runAgentLoop(
           planUnrestored: runtime.planUnrestored,
           runElapsedMs: clock.monotonicNowMs() - runStartedAt,
           outstandingAgents,
+          workspaceNotices,
         },
         runtime.agentContextCache,
         options?.resolveAttachment,
@@ -1378,6 +1474,7 @@ export async function runAgentLoop(
             planUnrestored: runtime.planUnrestored,
             runElapsedMs: clock.monotonicNowMs() - runStartedAt,
             outstandingAgents,
+            workspaceNotices,
           },
           runtime.agentContextCache,
           options?.resolveAttachment,
@@ -2664,6 +2761,29 @@ export async function runAgentLoop(
         // model after a tool no search can activate, so those calls are left to the mode — but
         // only a registered tool is the mode's to hide; an unknown one is `unknown_tool`, not a
         // plan refusal.
+        // A turn another session's message started, or one carrying its work on, never changes
+        // this session's permission mode (#620): entering or leaving plan mode is the user's.
+        if (
+          options?.peerTurnClass !== undefined &&
+          (earlyName === 'EnterPlanMode' || earlyName === 'ExitPlanMode')
+        ) {
+          toolResults[callIndex] = toolFailure(`SKIPPED: ${PEER_TURN_MODE_REFUSAL}`, {
+            toolCallId: originalCall.id,
+            code: 'peer_turn_mode_change',
+            status: 'blocked',
+          });
+          return undefined;
+        }
+        // Nor does a prompting-class one start or steer a managed agent: an agent outlives the
+        // turn and runs at the session's own mode, which the pin does not reach (#620).
+        if (options?.peerTurnClass === 'prompting' && PEER_TURN_AGENT_TOOLS.has(earlyName)) {
+          toolResults[callIndex] = toolFailure(`SKIPPED: ${PEER_TURN_AGENT_REFUSAL}`, {
+            toolCallId: originalCall.id,
+            code: 'peer_turn_agents',
+            status: 'blocked',
+          });
+          return undefined;
+        }
         const modeRefusesItself =
           registeredTool !== undefined &&
           ((effectiveMode === 'plan' && !READ_ONLY_PLAN_TOOLS.has(earlyName)) ||
@@ -2925,15 +3045,20 @@ export async function runAgentLoop(
         // can read, only the call's own exact rule vouches for it: a widened rung (`Bash(git *)`,
         // `Write(secrets/*)`) or a bare tool rule must not skip the prompt (review of #531).
         const exactSessionRuleOnly = compoundUnderPolicy || askRuleMatched;
+        // A peer turn's call that stops, steers or applies a managed agent asks in every mode,
+        // bypass included, past any rule: the agent is the user's, not the peer's (#620).
+        const peerMustAsk =
+          options?.peerTurnClass !== undefined && PEER_TURN_ASK_TOOLS.has(canonName);
         if (
-          (forceSkillPermission || toolPermissionRequired) &&
+          (forceSkillPermission || toolPermissionRequired || peerMustAsk) &&
           (persistentBackgroundShell ||
+            peerMustAsk ||
             !approveAllRules.some(
               (rule) =>
                 (!exactSessionRuleOnly || rule === ownRule) &&
                 permissionRuleMatchesCall(rule, call, process.platform, scanShell),
             )) &&
-          (!autoSafeTool || userRuleAsked || guardedReadInPlan) &&
+          (!autoSafeTool || userRuleAsked || guardedReadInPlan || peerMustAsk) &&
           (effectiveMode !== 'plan' || planReadOnly)
         ) {
           const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);
@@ -2950,6 +3075,7 @@ export async function runAgentLoop(
             const autoAllowed = ALWAYS_ALLOWED_TOOLS.has(canonName) || verdict.source === 'memory';
             if (
               !userRuleAsked &&
+              !peerMustAsk &&
               (forceSkillPermission || effectiveMode !== 'dontAsk' || autoAllowed) &&
               !persistentBackgroundShell
             ) {
@@ -3166,6 +3292,18 @@ export async function runAgentLoop(
             runtime.agentContextCache.invalidateWorkspace(config.workspace);
           } else if (canonName.startsWith('Git')) {
             runtime.agentContextCache.invalidateGit(config.workspace);
+          }
+          // Every mutation tool reports its files here, so this is the one place an edit is
+          // recorded for peers (#620 4b): paths from the result, never from the model's text.
+          const mutations =
+            result.artifacts?.fileMutations ??
+            (result.artifacts?.fileMutation ? [result.artifacts.fileMutation] : []);
+          const edited = mutations.filter((mutation) => !mutation.memory);
+          if (edited.length > 0) {
+            options?.peerAwareness?.recordEdits(
+              config.workspace,
+              edited.map((mutation) => mutation.filePath),
+            );
           }
         }
 

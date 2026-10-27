@@ -926,16 +926,17 @@ export function createToolSurface(options: SurfaceOptions): ToolSurface {
 
   /**
    * Load authorized tools for the next request, under the loaded-tool and schema budgets: the one
-   * way in for a search, `select:`, a direct call and the host alike. The reason is only logged.
-   * Admission is append-only (#619): names are taken in the order given (a search's rank order)
-   * while the budgets have room, a tool already loaded takes no new slot, and a tool that does not
-   * fit is refused rather than evicting one the model has seen declared, which would rewrite the
-   * request's tools. Every activation of a tool round lands in the next request together. A tool
-   * the host needs (an active skill's resource reader) always loads, and takes no slot.
+   * way in for a search, `select:`, a direct call, the intent router and the host alike. The reason
+   * is only logged. Admission is append-only (#619): names are taken in the order given (a search's
+   * rank order) while the budgets have room, a tool already loaded takes no new slot, and a tool
+   * that does not fit is refused rather than evicting one the model has seen declared, which would
+   * rewrite the request's tools. Every activation of a tool round lands in the next request
+   * together. A tool the host needs (an active skill's resource reader) always loads, and takes no
+   * slot.
    */
   const load = (
     names: string[],
-    reason: 'search' | 'select' | 'direct' | 'host',
+    reason: 'search' | 'select' | 'direct' | 'route' | 'host',
     available = authorized(),
   ): string[] => {
     const allowed = new Set(available.map((definition) => canonicalToolName(definition.name)));
@@ -973,8 +974,27 @@ export function createToolSurface(options: SurfaceOptions): ToolSurface {
     return loaded;
   };
 
-  const activate = (names: string[], reason: 'search' | 'host' = 'host'): string[] =>
-    load(names, reason);
+  /**
+   * `route` is the pre-turn intent router (#619), which asks for the user's text rather than for
+   * the model, so it is opportunistic: it loads only authorized tools that are not active (a core
+   * tool never takes a loaded slot) and that fit without evicting a tool the model loaded, and
+   * none on a surface whose ToolSearch a rule or hook gates: there deferred tools load through
+   * ToolSearch alone, where that rule or hook sees them, exactly as a direct call is refused.
+   */
+  const activate = (names: string[], reason: 'search' | 'host' | 'route' = 'host'): string[] => {
+    if (reason !== 'route') return load(names, reason);
+    if (directCallsGated) return [];
+    const available = authorized();
+    const allowed = new Set(available.map((definition) => canonicalToolName(definition.name)));
+    const active = new Set(
+      currentDefinitions().map((definition) => canonicalToolName(definition.name)),
+    );
+    // `load` admits what fits and evicts nothing, so the router needs no budget check of its own.
+    const wanted = [...new Set(names.map(canonicalToolName))].filter(
+      (name) => name !== 'ToolSearch' && allowed.has(name) && !active.has(name),
+    );
+    return load(wanted, reason, available);
+  };
 
   /**
    * A tool's canonical name from a model-written one: exact first, then aliases, a provider prefix,

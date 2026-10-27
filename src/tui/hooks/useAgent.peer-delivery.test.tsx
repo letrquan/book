@@ -15,7 +15,7 @@ import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/sessio
  */
 
 const loopState = vi.hoisted(() => ({
-  calls: [] as Array<{ message: string; resumedFromRunId?: string }>,
+  calls: [] as Array<{ message: string; resumedFromRunId?: string; peerTurnClass?: string }>,
   usage: undefined as unknown,
 }));
 
@@ -28,9 +28,13 @@ vi.mock('../../agent/loop.js', () => ({
       history: unknown[],
       callbacks: { onUsage?: (usage: unknown) => void },
       _mode: unknown,
-      options: { runContext?: { resumedFromRunId?: string } },
+      options: { runContext?: { resumedFromRunId?: string }; peerTurnClass?: string },
     ) => {
-      loopState.calls.push({ message, resumedFromRunId: options?.runContext?.resumedFromRunId });
+      loopState.calls.push({
+        message,
+        resumedFromRunId: options?.runContext?.resumedFromRunId,
+        ...(options?.peerTurnClass ? { peerTurnClass: options.peerTurnClass } : {}),
+      });
       if (loopState.usage) callbacks.onUsage?.(loopState.usage);
       return history;
     },
@@ -60,7 +64,8 @@ vi.mock('../../session/lifecycle.js', () => ({
   runSessionEnd: vi.fn(async () => {}),
 }));
 
-import { useAgent } from './useAgent.js';
+import { lastTurnReply, useAgent } from './useAgent.js';
+import type { Message } from '../../types/messages.js';
 
 isolateBookHome('book-use-agent-peer-delivery-home-');
 
@@ -81,6 +86,9 @@ function Harness({
 function fakeMessaging() {
   return {
     setPermissionMode: vi.fn(),
+    setInbound: vi.fn(),
+    setTurnTextSource: vi.fn(),
+    continueRelay: vi.fn(),
     beginTurn: vi.fn(),
     commitDelivery: vi.fn(),
     stillDeliverable: vi.fn(() => true),
@@ -122,6 +130,8 @@ function fixture(messaging: ReturnType<typeof fakeMessaging>) {
 const batch: PeerDeliveryBatch = {
   count: 1,
   delivered: [],
+  withheld: [],
+  turnClass: 'prompting',
   turn: {
     display: 'Message from peer-b [a1b2c3]:\nrun the tests',
     context: 'Another Book session sent a message:\n<cross-session-message>…',
@@ -176,6 +186,80 @@ describe('peer-message delivery in the TUI', () => {
     expect(messaging.commitDelivery).toHaveBeenCalledWith(batch);
     // A peer turn is not a turn the user started: its relay chain is not cleared.
     expect(messaging.beginTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands the turn's permission class to the loop, which pins it; other turns have none", async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(await latest!.sendPeerMessages({ ...batch, turnClass: 'bypass' })).toBe(true);
+    await latest!.send('the user types');
+    expect(loopState.calls.map((call) => call.peerTurnClass)).toEqual(['bypass', undefined]);
+  });
+
+  it("keeps a peer turn's pin on the turns that carry its work on, until the user's next turn", async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // A peer turn pinned to prompting starts a background shell; its completion is a turn of its
+    // own, which must not run unasked in the bypass session.
+    expect(await latest!.sendPeerMessages({ ...batch, turnClass: 'prompting' })).toBe(true);
+    const shell = {
+      id: 'bg-1',
+      title: 'tests',
+      command: 'npm test',
+      status: 'completed',
+      exitCode: 0,
+      startedAt: Date.now() - 1000,
+      finishedAt: Date.now(),
+    } as unknown as Parameters<NonNullable<typeof latest>['sendBackgroundShellCompletion']>[0];
+    expect(await latest!.sendBackgroundShellCompletion(shell)).toBe(true);
+    expect(await latest!.sendPeerDeliveryNotice('[Cross-session delivery notice] …')).toBe(true);
+    // A bypass-class peer turn after it cannot loosen the standing pin.
+    expect(await latest!.sendPeerMessages({ ...batch, turnClass: 'bypass' })).toBe(true);
+    await latest!.send('the user types');
+    expect(await latest!.sendBackgroundShellCompletion(shell)).toBe(true);
+    expect(loopState.calls.map((call) => call.peerTurnClass)).toEqual([
+      'prompting',
+      'prompting',
+      'prompting',
+      'prompting',
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it('pins the completion of a background job a pinned turn started, after the user typed too', async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const shell = {
+      id: 'bg-peer',
+      title: 'peer job',
+      command: 'npm test',
+      status: 'completed',
+      exitCode: 0,
+      startedAt: Date.now() - 1000,
+      finishedAt: Date.now(),
+    } as unknown as Parameters<NonNullable<typeof latest>['sendBackgroundShellCompletion']>[0];
+    // The peer turn starts the job: it is listed only once that run has gone.
+    const list = vi
+      .spyOn(latest!.runtime.shellManager, 'list')
+      .mockReturnValueOnce([])
+      .mockReturnValue([shell]);
+    expect(await latest!.sendPeerMessages({ ...batch, turnClass: 'prompting' })).toBe(true);
+    list.mockReturnValue([shell]);
+    // The user's own turn clears the session's pin, but not the pin on the work the peer started.
+    await latest!.send('the user types');
+    expect(await latest!.sendBackgroundShellCompletion(shell)).toBe(true);
+    expect(loopState.calls.map((call) => call.peerTurnClass)).toEqual([
+      'prompting',
+      undefined,
+      'prompting',
+    ]);
   });
 
   it('does not start a peer turn whose sender no longer matches the mode', async () => {
@@ -237,5 +321,84 @@ describe('peer-message delivery in the TUI', () => {
       undefined,
       'earlier-user',
     ]);
+  });
+});
+
+describe('idle notices in the TUI (#620 PR 6)', () => {
+  it('runs an idle notice under its own row, in the class a message from the notifier would', async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(
+      await latest!.sendPeerDeliveryNotice('[Cross-session idle notice] peer-b [a1b2c3] is idle', {
+        display: 'Cross-session idle notice.',
+        peerTurnClass: 'prompting',
+        relayChain: ['aaaaaaaaaaaaaaaaaaaaaaaa'],
+      }),
+    ).toBe(true);
+    // The model reads the notice; the row is what the transcript shows.
+    expect(loopState.calls).toMatchObject([
+      {
+        message: '[Cross-session idle notice] peer-b [a1b2c3] is idle',
+        peerTurnClass: 'prompting',
+      },
+    ]);
+    // A host turn: the relay chain is kept, and continued with the subscription's.
+    expect(messaging.beginTurn).not.toHaveBeenCalled();
+    expect(messaging.continueRelay).toHaveBeenCalledWith(['aaaaaaaaaaaaaaaaaaaaaaaa']);
+  });
+
+  it("gives the runtime this session's last reply for the notices it sends", async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await waitFor(() => messaging.setTurnTextSource.mock.calls.length > 0);
+    const source = messaging.setTurnTextSource.mock.calls[0]![0] as () => string | undefined;
+    expect(source()).toBeUndefined();
+  });
+
+  it("reads only the model's own reply in the newest turn, never a row the host added", () => {
+    const message = (role: Message['role'], content: string, kind?: Message['kind']): Message => ({
+      id: content,
+      role,
+      content,
+      timestamp: 0,
+      includeInContext: kind !== 'local',
+      ...(kind !== undefined ? { kind } : {}),
+    });
+    const turn = [message('user', 'run the build'), message('assistant', 'The build is green.')];
+    expect(lastTurnReply(turn)).toBe('The build is green.');
+    // A held peer message's row, /cost output, a notice row and a checkpoint come after it.
+    expect(
+      lastTurnReply([
+        ...turn,
+        message(
+          'assistant',
+          '⚠ Held peer message — from peer-c [c0ffee]; preview: «secret plan»',
+          'local',
+        ),
+        message('user', '/cost', 'local'),
+        message('assistant', 'Total cost: $0.42', 'local'),
+        message('assistant', '◦ Cross-session idle notice: peer-d is idle.', 'local'),
+        message('assistant', 'Summary of the conversation so far', 'checkpoint'),
+      ]),
+    ).toBe('The build is green.');
+    // A newest turn with no text of the model's says nothing, rather than an older turn's reply.
+    expect(
+      lastTurnReply([...turn, message('user', 'and now?'), message('assistant', '  ')]),
+    ).toBeUndefined();
+    expect(lastTurnReply([message('assistant', 'only a row', 'local')])).toBeUndefined();
+    // A row the loop writes for the host — a hook's block reason, a rejected tool batch — is not
+    // the model's reply either.
+    expect(
+      lastTurnReply([
+        ...turn,
+        {
+          ...message('assistant', 'Blocked by UserPromptSubmit hook: secret reason'),
+          hostNotice: true,
+        },
+      ]),
+    ).toBeUndefined();
   });
 });

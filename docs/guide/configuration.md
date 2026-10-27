@@ -593,7 +593,8 @@ output.
     "schemaTokenBudget": 8000,
     "maxLoadedTools": 15,
     "searchLimit": 5,
-    "stableTools": "auto"
+    "stableTools": "auto",
+    "intentRouting": true
   },
   "toolExecution": {
     "maxConcurrent": 4
@@ -619,6 +620,11 @@ output.
 Memory lives in `<BOOK_HOME>/projects/<slug>/memory/` (`~/.book/projects/<slug>/memory/` by default), where `<slug>` is the path of the git repository root with path separators and any character other than letters, digits, `.`, `_` and `-` turned into `-`. A linked worktree uses its main checkout's root, and a workspace outside a repository uses its own path, so subdirectories and worktrees of one repository share one memory. A `.git` file counts as a linked worktree only when the main checkout lists it back, as `git worktree add` leaves it: its pointer names `<main>/.git/worktrees/<name>`, whose `gitdir` file names this `.git`; any other `.git` file (one copied from an archive, say) keys its directory by itself, as does a worktree moved without `git worktree move` until `git worktree repair` relinks it. On Windows nothing on a network (UNC) path is opened for this: a workspace on one keys by itself, as written; a `.git` that links to one keys the workspace by itself; and a `.git` whose git dir, `commondir` or worktree back-pointer is on one keys its own directory. A `.git` in your home directory itself (a dotfiles repository) does not count as a repository, so a project under your home without its own `.git` keeps its own memory; memory saved earlier under the home directory's key stays there and is not moved. A directory under the old, workspace-path key is moved there on first run. `memory.enabled` controls loading and reading the project memory index at session start (the first 200 lines or 25,000 bytes of `MEMORY.md`, with a warning line when it is cut); `memory.autoSave` controls whether the model may write memory: the model writes it with `Write`/`Edit`/`MultiEdit`/`ApplyPatch`, and with `autoSave` off those tools are refused in the memory directory ("memory is read-only in this session"), the prompt drops the save instructions, and the index still loads. A `deny` rule that covers a write to a memory file does the same to the prompt, for that rule's tools. Those are the only two memory keys.
 
 Three memory keys were removed with the approval inbox, the external-content quarantine and background extraction: `memory.requireApproval`, `memory.quarantineExternal` and the `memory.extraction` block. They are no longer read. A settings file that still carries one loads without error, and `book doctor` names the key and what to do about it. A permission rule that names the retired `MemorySave` tool (`MemorySave`, `MemorySave(*)`) matches nothing now and is reported the same way; to restrict memory writes, write a rule on `Write`, `Edit`, `MultiEdit` or `ApplyPatch` for the memory directory, or set `memory.autoSave` to `false`. An `.inbox/` directory an old version left in the memory directory is not read or deleted.
+
+`toolDiscovery.intentRouting` (default `true`) loads a deferred tool before a turn's first model call
+when what you typed asks for it: a URL loads `WebFetch`, search intent `WebSearch` (see
+[Tool discovery](tools-and-safety.md#tool-discovery)). It only loads tools the run already
+authorizes, so any settings layer may set it.
 
 `toolDiscovery.maxLoadedTools` and `toolDiscovery.schemaTokenBudget` cap the deferred tools
 loaded at once, counting only those the mode and restrictions authorize. Nothing loaded is evicted
@@ -657,20 +663,39 @@ after a failed run.
 ## Cross-session messaging (experimental)
 
 ```json
-{ "messaging": { "enabled": true } }
+{ "messaging": { "enabled": true, "inbound": "hold", "approvalTimeout": 300000 } }
 ```
 
 `messaging.enabled` (default `false`) gives each interactive TUI session an inbox that other Book
-sessions on the same machine can deliver messages to (#620). **It is not usable yet**: this
-release has the transport only, and the tools that send and the delivery into the conversation
-come later. Print mode, the SDK and agents never open an inbox, and on Windows the setting starts
-nothing yet.
+sessions on the same machine can deliver messages to, and the `SessionList` and `SessionSend`
+tools (#620; see [Features](features.md)). Print mode, the SDK and agents never open an inbox, and
+on Windows the setting starts nothing yet.
 
 The key is read **only from `~/.book/settings.json` (`<BOOK_HOME>/settings.json`) and a
 `--settings` file**. It loosens what a session lets in, and a clone can force-add its own
 `.book/settings.local.json`, so a value in either workspace file is ignored at any value, and
 `book doctor` names the file. `book config set --project`/`--local` and `/config` refuse to write
 it there.
+
+`messaging.inbound` decides what an arriving message gets:
+
+| Value    | What happens                                                                                 |
+| -------- | -------------------------------------------------------------------------------------------- |
+| unset    | Mode parity decides (the default): a message from the other permission class is held for you |
+| `accept` | Every message is delivered when the session is idle, whatever the sender's permission mode   |
+| `hold`   | Every message is held: a row shows it, it is not delivered, and it expires after the timeout |
+| `refuse` | Every message is refused, and its sender is told                                             |
+
+The user file and `--settings` decide it. `.book/settings.json` and `.book/settings.local.json`
+may only make it stricter (`accept`, then unset, then `hold`, then `refuse`): a repository can
+hold or refuse messages in its workspace, never let more in. A stricter workspace value wins even
+over `--settings`, and `book doctor` reports the result with the file it came from, and any
+workspace value that tried to loosen it. A value that is none of the three is read as `hold`,
+never as an error.
+
+`messaging.approvalTimeout` (milliseconds, default `300000`, 5 minutes; 10 s to 24 h) is how long a
+held message waits for your approval before it expires and its sender is told. Like
+`messaging.enabled`, it is read only from the user file and `--settings`.
 
 With it on, the inbox is a socket (`0600`) in a private directory (`0700`):
 `<BOOK_HOME>/socks/` when `BOOK_HOME` is set, otherwise `$XDG_RUNTIME_DIR/book-socks/` on Linux,

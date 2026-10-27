@@ -6,7 +6,7 @@ import type {
 } from '../types/tools.js';
 import { throwIfAborted } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
-import { observeFile, requireFreshObservation } from './file-provenance.js';
+import { forgetObservation, observeFile, requireFreshObservation } from './file-provenance.js';
 import { checkMemoryWrite, noticeMemoryWrite, withMemoryWarnings } from '../memory-write-guard.js';
 import {
   messagePathFor,
@@ -593,7 +593,8 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
 
         const observations = [];
         for (const file of staged) {
-          if (file.operation.kind !== 'delete')
+          if (file.operation.kind === 'delete') forgetObservation(ctx, file.absolutePath);
+          else
             observations.push(
               await observeFile(
                 ctx,

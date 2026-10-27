@@ -413,8 +413,25 @@ export interface ToolContext {
   shellManager?: import('../jobs/shell-manager.js').ShellJobManager;
   /** Runtime-only newest file observation per workspace/path. */
   fileObservationLedger?: Map<string, FileObservation>;
+  /**
+   * The interactive session's view of other live sessions (#620 PR 4): a stale-file refusal names
+   * the one that recorded an edit of the file. Absent outside the TUI.
+   */
+  peerAwareness?: import('./messaging.js').PeerAwarenessHandle;
   /** Live permission mode for the active agent loop; tools may update this. */
   currentMode?: PermissionMode;
+  /**
+   * The host's own mode, as the user set it, when the loop reads a peer turn's class pin into
+   * `currentMode` (#620): what entering plan mode records to restore, so a pinned turn can never
+   * hand its pinned mode back to the session.
+   */
+  hostMode?: PermissionMode;
+  /**
+   * The class the run is pinned to when a peer's message started it or it carries a peer's work
+   * on (#620): a managed agent it spawns keeps that class, whatever the session's mode is when the
+   * agent starts.
+   */
+  peerTurnClass?: import('./messaging.js').PeerPermissionClass;
   /** Mode to restore after a tool-initiated plan-mode session exits. */
   previousMode?: PermissionMode;
   /** Plan text submitted by ExitPlanMode and awaiting host approval. */
@@ -501,10 +518,11 @@ export interface ToolDiscoveryContext {
   ): string[];
   /**
    * Activate selected definitions for the next provider request. The reason is logged: ToolSearch's
-   * query passes `search`, and anything else is the host loading a tool itself (a skill's resource
-   * reader), the default.
+   * query passes `search`, the pre-turn intent router `route`, and anything else is the host loading
+   * a tool itself (a skill's resource reader), the default. A `route` activation loads only tools
+   * that are not active, and none on a surface that admits no direct calls.
    */
-  activate(names: string[], reason?: 'search' | 'host'): string[];
+  activate(names: string[], reason?: 'search' | 'host' | 'route'): string[];
   /**
    * Activate exact tools by name (`select:A,B`) instead of ranking a query, reporting each name's
    * outcome. Optional so a discovery object built without it keeps working; ToolSearch then

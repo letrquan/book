@@ -69,7 +69,9 @@ src/
   memory-*.ts           memory-store.ts (file store + MEMORY.md index + provenance),
                         memory-display.ts (/memory)
   jobs/                 Background shell manager, persistent state, and restart recovery
-  messaging/            Live-session registry (<BOOK_HOME>/live-sessions/<pid>.<domain>.json; TUI-only writer.ts)
+  messaging/            Cross-session messaging: live-session registry + TUI-only writer,
+                        inbox socket/client/wire, envelope, receive policy + hold, delivery,
+                        idle notices, peer awareness (peer-awareness.ts)
   agent/
     loop.ts             Core agent loop (runAgentLoop)
     context.ts          System prompt builder (cached kernel/session-context zones),
@@ -120,6 +122,7 @@ src/
     catalog.ts          Provider-neutral capability catalog
     advisor.ts          Advisor tool (`/advisor <model>`)
     tool-search.ts      ToolSearch (activate authorized tools on next turn)
+    intent-routing.ts   Pre-turn routing of typed text: a URL loads WebFetch, search words WebSearch, `@session` notes
     capability-rules.ts Capability intersection (command/skill/agent/mode/state)
     tool-capabilities.ts  Read-only / mutating / plan-mode capability flags
     execution-scheduler.ts  Parallel-safe wave scheduling (see conventions)
@@ -129,6 +132,7 @@ src/
     patch.ts            ApplyPatch (preferred source-mutation tool; Codex-style envelope)
     mutation.ts / mutation-preview.ts  Mutation orchestration + rollback, permission-prompt diff preview
     file-provenance.ts  File freshness tracking for compaction reuse
+    file-changes.ts     Changed-on-disk notices for files the model observed (racily-clean safe, peer-attributed)
     shell.ts            Bash / BashOutput / KillShell (+ run_in_background)
     git.ts              Git tools
     web.ts              WebFetch / WebSearch
@@ -137,6 +141,7 @@ src/
     agent-tools.ts      Managed-agent lifecycle tools (AgentSpawn/Read/Wait, Check, …)
     task-tool.ts        Task (subagent) tool
     session-history.ts  Session-reference retrieval for compacted context
+    session-list.ts / session-send.ts  SessionList / SessionSend cross-session messaging tools (TUI-only)
     plan-mode.ts        EnterPlanMode / ExitPlanMode
     ask-user-question.ts  AskUserQuestion validation + pending-request tool
     notebook.ts         NotebookEdit
@@ -167,7 +172,7 @@ Other conventions:
 - **Module-level mutable state is eliminated**: state flows through `ToolContext`, `AgentConfig`, or explicit parameters (session task/shell maps live on config for continuity).
 - **Tool names**: PascalCase (Read, Write, GitStatus, WebFetch, TaskCreate, ApplyPatch, EnterPlanMode, …). Legacy snake_case names (e.g. `apply_patch`) map to canonical names via `tools/aliases.ts` for execution only — not exposed as model-facing tools.
 - **Mutation-tool preference is model-conditional**: the system prompt steers GPT/Codex-family models to `ApplyPatch` (Codex-style `*** Begin Patch` envelope) and all other models to `Edit`/`MultiEdit` (`editFormatFor()` in `src/models.ts`; per-model `editFormat` override in settings). `Write` is for full-file replacement. Edit/MultiEdit/Write-to-existing require a prior Read/mention (`file_not_observed`). See "File mutations" in `docs/guide/tools-and-safety.md`.
-- **Tool discovery**: a practical core stays loaded; `ToolSearch` activates up to five authorized tools on the next turn, always within the current command/skill/agent-role/permission-mode/state capability intersection (`tools/capability-rules.ts`).
+- **Tool discovery**: a practical core stays loaded and the system prompt lists every authorized deferred tool by name; `ToolSearch` (`select:Name` or a capability query) loads up to five for the next turn, and a direct call to an authorized tool that is not active runs just in time and loads it (`admitDirect` in `tools/catalog.ts`), unless a `permissions.deny`/`ask` rule or a PreToolUse/PostToolUse hook matcher names `ToolSearch`, which keeps discovery behind ToolSearch as before. Either way it stays within the current command/skill/agent-role/permission-mode/state capability intersection (`tools/capability-rules.ts`).
 - **Tool execution is serial by default**; only an explicitly reviewed parallel-safe set (`Read`, `Glob`, `Grep`, `GitStatus`, `GitDiff`, `GitLog`, `GitBranch`) runs in bounded ordered waves via `tools/execution-scheduler.ts`.
 - **Permission modes** (internal): `default` | `auto` | `plan` | `accept-edits` | `dontAsk` | `bypassPermissions`. CLI/settings accept `acceptEdits` and normalize to `accept-edits`.
 - **Prompt content is sorted by volatility, not by topic.** Anthropic matches cache

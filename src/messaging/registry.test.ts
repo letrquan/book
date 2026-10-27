@@ -153,6 +153,27 @@ describe('liveSessionRecordName', () => {
 });
 
 describe('readLiveSessionEntries', () => {
+  it.skipIf(process.platform === 'win32')(
+    'reads past a FIFO or a link where a record should be when the read is capped',
+    async () => {
+      mkdirSync(dir, { recursive: true });
+      const fifo = join(dir, liveSessionRecordName(901, DOMAIN));
+      await new Promise<void>((resolve, reject) =>
+        spawn('mkfifo', [fifo]).once('exit', (code) =>
+          code === 0 ? resolve() : reject(new Error('mkfifo failed')),
+        ),
+      );
+      const target = join(root, 'elsewhere.json');
+      writeFileSync(target, JSON.stringify({ pid: 902, sessionId: 's', name: 'n', startedAt: 1 }));
+      symlinkSync(target, join(dir, liveSessionRecordName(902, DOMAIN)));
+
+      const entries = await readLiveSessionEntries(dir, undefined, 64 * 1024);
+
+      expect(entries.filter((entry) => entry.record !== undefined)).toEqual([]);
+    },
+    5_000,
+  );
+
   it('is empty when the directory does not exist', async () => {
     expect(await readLiveSessionEntries(dir)).toEqual([]);
   });

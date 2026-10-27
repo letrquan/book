@@ -181,11 +181,11 @@ export function humanReceiptLine({ receipt, target, msgIds }: ReceiptForSend): s
     case 'delivered':
       return `✓ ${subject} ${were} delivered.`;
     case 'released':
-      return `✓ ${subject} ${were} released by that session's user and delivered.`;
+      return `✓ ${subject} ${were} held by that session, then released and delivered.`;
     case 'dropped':
       return `⚠ ${subject} ${were} dropped by that session (${dropReasonText(receipt.dropReason)}).`;
     case 'refused':
-      return `⚠ ${subject} ${were} refused by that session: its receive policy does not accept messages from this session's permission mode.`;
+      return `⚠ ${subject} ${were} refused by that session: its receive policy refuses messages from other sessions.`;
     case 'held':
       return `⚠ ${subject} ${were} held by that session for its user's approval.`;
     case 'denied':
@@ -209,14 +209,16 @@ export function modelReceiptNotice({
   const notice = (text: string) => `[Cross-session delivery notice] ${subject} ${text}`;
   switch (receipt.status) {
     case 'released':
-      return notice(`${were} released by that session's user and delivered.`);
+      return notice(
+        `${were} held by that session, then released (its user approved it, or its permission mode changed) and delivered.`,
+      );
     case 'dropped':
       return notice(
         `${were} dropped at that session's inbox: ${dropReasonText(receipt.dropReason)}. ${msgIds.length === 1 ? 'It was' : 'They were'} NOT delivered and will not be. Do not resend now and never retry in a loop; if it still matters, fold it into ONE later message.`,
       );
     case 'refused':
       return notice(
-        `${were} refused by that session's receive policy (for example, its permission mode is in another class than this session's). NOT delivered, and it will not be. Do not resend it and do not report it as delivered; tell your user if it mattered.`,
+        `${were} refused by that session's receive policy: its user set it to refuse messages from other sessions. NOT delivered, and it will not be. Do not resend it and do not report it as delivered; tell your user if it mattered.`,
       );
     case 'held':
       return notice(

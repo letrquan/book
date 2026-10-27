@@ -5,6 +5,7 @@ import type { Todo } from '../tools/todo.js';
 import type { FileObservation, ToolDiscoveryState } from '../types/tools.js';
 import { AgentContextCache } from '../agent/context.js';
 import { ToolExecutionScheduler } from '../tools/execution-scheduler.js';
+import { FileChangeTracker } from '../tools/file-changes.js';
 import { RunAccounting } from './run-accounting.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
 import type { AgentRunAmbientSnapshot } from '../types/runs.js';
@@ -72,6 +73,11 @@ export class SessionRuntime {
   memoryIndexSeededFor?: object;
   readonly backgroundShells: BackgroundShellStore;
   readonly fileObservationLedger: Map<string, FileObservation>;
+  /**
+   * The changes on disk this session's notices have reported, and the observed texts they diff
+   * against (#620 4a). Lives beside the ledger it reads, and is replaced with it.
+   */
+  readonly fileChanges = new FileChangeTracker();
   readonly toolDiscoveryState: ToolDiscoveryState;
   readonly agentContextCache: AgentContextCache;
   readonly toolExecutionScheduler: ToolExecutionScheduler;

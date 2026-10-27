@@ -7,6 +7,7 @@ import type {
   ToolContext,
   ToolResult,
 } from '../types/tools.js';
+import { peerEditSentence } from '../messaging/peer-text.js';
 import { canonicalizePath } from './path-utils.js';
 import { toolFailure } from './result.js';
 
@@ -130,8 +131,27 @@ export async function observeFile(
   };
   const key = observationKey(workspaceId, path);
   const ledger = ctx.fileObservationLedger;
-  if (ledger && mayReplaceObservation(ledger.get(key), observation)) ledger.set(key, observation);
+  if (ledger && mayReplaceObservation(ledger.get(key), observation)) {
+    ledger.set(key, observation);
+    // The text a later changed-on-disk notice diffs against (#620 4a). An outline's bytes are the
+    // file's too, but an outline is not what the model saw.
+    if (!isOutline(observation)) ctx.runtime?.fileChanges.remember(key, observation.sha256, bytes);
+  }
   return observation;
+}
+
+/**
+ * Forget the file a mutation of this session's own deleted (ApplyPatch's `*** Delete File`): the
+ * model knows it is gone, so it is neither a stale observation nor a change on disk (#620 4a). A
+ * later write creates it afresh.
+ */
+export function forgetObservation(ctx: ToolContext, absolutePath: string): void {
+  const key = observationKey(
+    workspaceIdentity(ctx.workspaceRoot),
+    observationPathFor(ctx.workspaceRoot, absolutePath),
+  );
+  ctx.fileObservationLedger?.delete(key);
+  ctx.runtime?.fileChanges.forget(key);
 }
 
 export async function requireFreshObservation(
@@ -151,17 +171,32 @@ export async function requireFreshObservation(
   if (!remembered || isOutline(remembered)) return undefined;
   try {
     const info = await stat(absolutePath);
-    if (!info.isFile()) return staleMessage(displayPath);
+    if (!info.isFile()) return staleMessage(ctx, absolutePath, displayPath, remembered);
     const bytes = await readFile(absolutePath);
     const currentHash = createHash('sha256').update(bytes).digest('hex');
-    return currentHash === remembered.sha256 ? undefined : staleMessage(displayPath);
+    return currentHash === remembered.sha256
+      ? undefined
+      : staleMessage(ctx, absolutePath, displayPath, remembered);
   } catch {
-    return staleMessage(displayPath);
+    return staleMessage(ctx, absolutePath, displayPath, remembered);
   }
 }
 
-function staleMessage(path: string): string {
-  return `SKIPPED: ${path} changed or disappeared since it was last shown to the model. Call Read (or mention the file again) before modifying it.`;
+/**
+ * The refusal, naming the live session in this worktree that recorded an edit of the file since
+ * the model saw it, when one did (#620 4d). `patch.ts` keys its error code on "changed or
+ * disappeared", so that wording stays.
+ */
+async function staleMessage(
+  ctx: ToolContext,
+  absolutePath: string,
+  path: string,
+  remembered: FileObservation,
+): Promise<string> {
+  const message = `SKIPPED: ${path} changed or disappeared since it was last shown to the model. Call Read (or mention the file again) before modifying it.`;
+  const snapshot = await ctx.peerAwareness?.snapshot();
+  const attribution = snapshot?.attribute(absolutePath, remembered.timestamp);
+  return attribution ? `${message} ${peerEditSentence(path, attribution)}` : message;
 }
 
 /**

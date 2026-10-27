@@ -586,73 +586,188 @@ Each PR is built by Book in print mode (`run-book` skill), watched in the real T
   these turns the way `compact.ts` already carries `agentNotifications`.
 - Receipts become the `[Cross-session delivery notice]` turns of §1.9.
 - The per-message wrapper text from §4.2, with idle and mid-turn variants.
-- **`@`-mention routing** (`src/input/file-mentions.ts` / `input-expansion.ts`):
+- **`@`-mention routing**, moved out of PR 3 and shipped on its own with #620's mention PR
+  (2026-10-27) as the `@session` router in `src/tools/intent-routing.ts` (#619's routing seam, now
+  with router notes): the note renders in the turn's `<session-state>` block, the tokens and the
+  file-precedence check come from `src/input/input-expansion.ts`, and the completion from
+  `src/input/session-mentions.ts`.
   - An `@name` or `@name [ref]` token that matches a live session, and not a file or directory,
     adds a meta note naming `SessionSend` and the exact `name [ref]`. The note also says not to
     send unless the user asked.
   - Two sessions with the same name produce "ask the user which one" instead.
   - The TUI completes `@` with live session names, after the file names.
 
-**PR 4: peer awareness and concurrent-edit notices.** Step 4a is CC parity. Steps 4b–4e are a
-**Book addition beyond CC parity** (§1.11a: CC has no same-worktree signal). The goal is that a
-weak model learns about a conflict from the harness, at the moment it matters, instead of having
-to think of asking.
+**PR 4: peer awareness and concurrent-edit notices** (shipped as below, 2026-10-27). Step 4a is
+CC parity. Steps 4b–4e are a **Book addition beyond CC parity** (§1.11a: CC has no same-worktree
+signal). The goal is that a weak model learns about a conflict from the harness, at the moment it
+matters, instead of having to think of asking. All of it works with `messaging.enabled` off.
 
-- **4a. Changed-on-disk notice**, CC's `edited_text_file`. It is useful without peers too: user
-  edits, linters, formatters.
-  - **When**: once per turn, before the model call. Files the model has observed, through
-    `file-provenance.ts` hashes, and that changed on disk get a meta note: "`<file>` changed on
-    disk since you last read it …". A diff snippet is included if it is short.
-  - **Placement**: it goes in `<session-state>`, the volatile zone, so the cached prefix is never
-    touched.
-  - **Bound**: at most 10 files per turn, all checked asynchronously.
-- **4b. Registry fields**:
-  - `worktree`: the `git rev-parse --show-toplevel` result, run asynchronously and cached.
-  - `branch`.
-  - `recentEdits`: up to 20 `{path relative to worktree, at}` entries, appended after every
-    successful mutation.
-  - Writes are throttled to one every 2 s. Paths only, never content.
-- **4c. Peer line in `<session-state>`**:
-  - When live peers share this worktree, add one line for at most 3 of them, for example:
+- **4a. Changed-on-disk notice**, CC's `edited_text_file` (`tools/file-changes.ts`, a
+  `FileChangeTracker` on the `SessionRuntime` beside the observation ledger).
+  - **When**: once per user turn, while the turn's `<session-state>` is rendered, and never on a
+    rebuild that reuses the memoized block (a change is reported once, so a read whose line never
+    rendered would lose it).
+  - **Which files**: the ledger's non-outline observations of this workspace, newest 256. Each is
+    `stat`ed; it is read and hashed only when its size or mtime moved since it was last judged. A
+    hash that differs from the observation's is a change; a missing file is "deleted or moved".
+  - **Bound**: 10 files a turn are named, newest observation first; any more are counted in one
+    line and marked reported, so a branch switch is one notice, not several turns of them. Checks
+    run 8 at a time. A file the stale-since-checkpoint line names is left to that line.
+  - **Repeats**: each (file, content hash) is reported once, committed only after the block is
+    rendered (a cancelled turn reports nothing), and forgotten when the file goes back to what the
+    model saw. The model's own edits re-observe the file and its ApplyPatch deletions drop the
+    observation, so they never count.
+  - **Snippet**: `observeFile` keeps the observed text of files up to 64 KiB (2 MiB in all, oldest
+    dropped). A change whose changed span is under 20 lines is shown as a diff of at most 20 lines,
+    provider keys redacted (current keys, before long lines are cut); anything longer, binary or
+    not remembered names the file only. A link is never followed: a file that became one, or sits
+    under a directory that did, is reported as changed and never read (security review).
+  - Runs wherever the loop runs (print mode and the SDK too); only the peer parts need the TUI.
+- **4b. Registry fields** (`messaging/writer.ts`, `git-location.ts`):
+  - `worktree` and `repository` (`git rev-parse --show-toplevel --git-common-dir`, real paths)
+    and `branch` (`git symbolic-ref --short -q HEAD`), through `openReadOnlyGit` (#574 hardening),
+    resolved at start beside the pid domain and looked up again when a turn ends, at most every
+    10 s. `repository` was added to tell "other worktree of this repository" from "unrelated".
+  - `recentEdits`: up to 20 `{path, at}`, one per path, newest last, relative to the worktree, from
+    the one seam every mutation tool reports through (`finalizeToolCall`'s `fileMutation(s)`),
+    memory files excluded, paths outside the worktree never written. Root interactive runs only.
+  - An edit's write waits until 2 s after the previous write (coalesced); a status change is not
+    held back. Old records without these fields still read.
+- **4c. Peer line** (`messaging/peer-awareness.ts`):
+  - One listing; up to 256 record files of this pid domain parsed (each capped at 64 KiB); only
+    those in this repository kept, and at most 8 of them liveness-checked, most recently written
+    first (review: a top-8-by-pid cut before the filter let unrelated sessions crowd out a peer).
+    `sweep: false`; a snapshot is reused for 1 s.
+  - Same worktree: up to 3 peers, most recently active first, with status, branch and up to 3 edits
+    from the last hour, then "and N more". Other worktrees of the same repository: a count only.
+  - Names go through `sanitizeEnvelopeName`, status through the `SessionList` row sanitizer, and
+    every peer string (branch, paths) is folded, capped and `neutralizeTags`'d when rendered. A
+    recorded edit with an absolute path or a `..` segment is dropped.
+- **4d. Attributed staleness**: the 4a line and the `stale_file_observation` refusal
+  (`requireFreshObservation`, so Write/Edit/MultiEdit/ApplyPatch/NotebookEdit all get it) name the
+  same-worktree peer whose newest recorded edit of the path is no older than this session's
+  observation. `name [ref]` and the `SessionSend` hint when both sessions have messaging; the
+  "tell the user" variant otherwise.
+- **4e. Overlap warning**: a `⚠` local row when this session and a live same-worktree peer both
+  recorded an edit to one path within 10 min: checked right after this session's edit, and every
+  15 s while its own edits are within the window. Once per (peer session, path) per 10 min; in
+  memory only, never persisted. Laid out by the existing local-event row (`AgentMessage`).
+- **Eval**: `scripts/peer-awareness-eval.ts`, mock mode, no cost: two sessions (real loop, tools,
+  writers and registry) with overlapping edits, 4c–4e off then on; a scripted weak model that
+  reacts only to a line naming another session. Mock result: off arm 1 lost edit, 0 conflicts
+  noticed; on arm 0 lost, 1 noticed, 2 overlap warnings, ~540 characters of peer lines. The
+  real-model runs (weak and strong model, same scenario, also measuring coordination messages and
+  extra tokens) wait for the owner's budget.
 
-    ```
-    Other Book sessions in this worktree: book-36 (busy, branch feat/x; recorded edits: src/a.ts 2m ago)
-    ```
+**PR 5: receive policy and approval** (shipped as below, 2026-10-27).
 
-  - The registry read is async and bounded: a directory listing plus at most 8 records.
-  - Peers on other worktrees of the same repository get a one-line count only.
-- **4d. Attributed staleness**:
-  - The 4a notice and the `stale_file_observation` error name the peer whose `recentEdits` holds
-    the path. They hedge, because `recentEdits` is the peer's own claim: "`book-36` recorded an
-    edit to `src/a.ts` 1m ago. Re-read it; if your changes overlap, coordinate with
-    `SessionSend` to `book-36`."
-  - When messaging is off, the line drops the `SessionSend` hint and suggests telling the user.
-- **4e. Human-visible warning**: the TUI shows a one-line warning when this session and a peer
-  both recorded edits to the same path within 10 min. It does not depend on what the model does.
-- **Eval**:
-  - Two sessions run scripted overlapping tasks on one worktree, with a weak and a strong model,
-    and 4c–4e off and then on.
-  - Measure: lost edits (one session overwrote the other's change), conflicts noticed,
-    coordination messages sent, and extra tokens.
+- **Policy** (`messaging/receive-policy.ts`, pure): `messaging.inbound` decides first (`refuse`,
+  `hold` with cause `policy`, `accept`); unset, mode parity with the D5 classes: the same asserted
+  class is accepted, the other is held (`mode-mismatch`), none is held by a bypass-class receiver
+  (`no-mode-asserted`) and accepted by a prompting one. A receiver mode outside the six, or an
+  opening tag claiming a `from-mode` no class has (it fails the envelope round trip, so it is read
+  from the raw tag), is held (`mode-unknown`). The ingress guard runs first; the inbox's `screen`
+  hook replaced PR 3's interim cross-class refusal. Every queued message, a released one included,
+  is judged again when a delivery is prepared and once more at commit (never by a verdict from
+  before the pre-turn compaction): one no longer accepted is held or refused, and one accepted
+  again stays queued. A user's approval answers a parity hold or `inbound: hold`, never `refuse`;
+  a release by a mode change answers nothing the policy now says.
+- **Settings**: `messaging.inbound` is decided by the user file then `--settings`; the project and
+  local layers may only tighten it (accept < unset < hold < refuse, so a workspace `accept` is a
+  loosening and ignored), even over `--settings`. An invalid value is `hold` (the schema accepts
+  any value; nothing fails the launch). One pure resolver serves the loader and `book doctor`,
+  which labels a tightened result with its file and reports a workspace value that tried to loosen
+  it. `messaging.approvalTimeout` (ms, default 300000, 10 s–24 h) joined
+  `USER_OR_FLAG_ONLY_SETTING_PATHS`. The TUI follows a live change of `inbound`
+  (`SessionMessaging.setInbound`), which re-judges every held message.
+- **Held buffer** (`SessionMessaging`): 100, the oldest expired (`room`) with a receipt; one unref'd
+  timer for the earliest deadline; every held message re-judged on a mode change (released ones go
+  on the delivery queue, or stay held while it is full; a changed cause is re-announced). On close,
+  every undelivered message (held, released, queued) gets an `expired` receipt before the inbox
+  closes, a frame screened while closing a `refused` one, and the close waits at most 750 ms
+  (`CLOSE_DRAIN_MS`) for the receipts going out, each of which also times out then. Senders are
+  named from one registry listing per 2 s, shared by a burst of holds.
+- **Receipts**: `held` on hold, `denied`, `expired`, `refused`, and `released` at delivery for a
+  message that was held. CC's wire has no `released`: it goes as `delivered` with
+  `status_detail: "released"`, read back as `released` (older Book senders see `delivered`). The
+  sender texts are PR 3's; `refused` now names the receive policy.
+- **TUI**: a `⚠ Held peer message — from <name [ref]> (peer claims name: X); preview: «…» — not
+delivered (N held)` row (name from the registry record advertising the frame's address; every
+  peer span folded to one line, invisible characters dropped, harness tags neutralized, `«»`
+  replaced, 120 characters; the sender's registry name too, and `sanitizeEnvelopeName` strips
+  `«»`, the dashes and the row marks). Parity holds get `PeerMessageApprovalPrompt`, a
+  `DecisionSheet` like the MCP trust prompt (the permission card is untouched, so no README media
+  change): Deliver now / Deny / Later, opening on Later with no letter keys, ignoring keys for
+  500 ms after it appears, Esc = Later; it yields to every other modal and never blocks delivery.
+  The sheet asks once per sender, with a count, and offers "Deny all from this sender" (denied
+  receipts, and later parity holds from that address refused for the session) and "Deny all held";
+  Later defers the whole sender, its later messages included, and re-offers at most every 5 min.
+  Later re-offers the message the next time the session goes idle after a turn; an approval that
+  finds the queue full stays held and is re-offered once a delivery makes room; the status line
+  shows `held N`. A `policy` hold is not offered: only a change of the setting releases it.
+  Settled holds get a row each (at most 20 rows a minute); an approval that finds the message
+  settled gets a follow-up (a policy turned to `refuse` refuses held messages at once, with a row,
+  so "policy now refuse" is that row).
+- **Pin**: `runAgentLoop`'s `peerTurnClass` option, set from the batch: the stricter of the
+  receiver's class and each sender's asserted one, and always prompting for a message the user
+  approved. `syncHostMode`, the one place the loop reads the host's mode, applies
+  `peerTurnGateMode`: a bypass-class host mode is read as `default` for the whole run; a stricter
+  mode applies at once. Child agents, `SessionSend`'s `from-mode` and every gate read the pinned
+  mode. The TUI keeps a session-level pin a peer turn sets and host-delivered turns (completions,
+  notices) inherit, cleared only by a turn the user starts; a background job a pinned run starts
+  keeps the run's class for its own completion turn, whenever it lands. A pinned run's
+  `EnterPlanMode` and `ExitPlanMode` are refused, and `EnterPlanMode` records the host's own mode
+  (`ToolContext.hostMode`) as the one to restore, so a peer turn never changes the session's mode.
+  A prompting-class run's `AgentSpawn`, `AgentPlan` and `AgentSend` are refused: managed agents
+  outlive the turn and run at the `AgentManager`'s shared mode, which the pin does not reach
+  (security review). A pinned run's
+  `AgentStop`, `AgentApply` and `AgentSend` ask in every mode, past any rule; a managed agent a pinned
+  run spawns (`Task`, `AgentSpawn`) records `peerTurnClass` on its record and runs at
+  `peerTurnGateMode(manager mode, class)` when it starts, so a switch to bypass while it queues does
+  not reach it.
+- Print mode and the SDK still have no inbox (D3), so nothing is held there; their `--messaging`
+  opt-in and stream-json `peer_message_hold` events stay in PR 7.
 
-**PR 5: receive policy and approval.**
+**PR 6: `notify_when_idle`** (shipped as below).
 
-- Setting `messaging.inbound: accept | hold | refuse`. User-global and `--settings` decide; project
-  and local settings can only tighten; an invalid value is `hold`.
-- Mode parity uses the §4.1 D5 mapping.
-- Held buffer of 100. Re-evaluate held messages on a mode change (the Shift+Tab mode cycle).
-- A TUI approval overlay with a deadline (`messaging.approvalTimeout`, default 5 min). Print mode
-  and the SDK expire held messages.
-- Settle held messages as expired on shutdown.
-- **Pin a peer turn to its class** (from PR 3's security review): a `peer-message` turn runs under
-  the permission class it was delivered in. A mode switched in the middle of the turn, into the
-  other class, must not let the peer's request run unasked; hold or end the turn instead. PR 3
-  checks the class on arrival, at delivery and again after the pre-turn compaction, but not
-  mid-turn (`TODO(#620)` in `useAgent.ts`).
-- If the overlay reuses the permission-prompt component, regenerate the README media.
-
-**PR 6: `notify_when_idle`.** Add `SessionSend {notify_when_idle: true}` and the idle notice, with
-CC's table limits, debounce and 12 h expiry.
+- **Tool**: `SessionSend {to, message?, notify_when_idle?}`. With no `message` it is a pure
+  subscription (a `notify_when_idle {from, msg_id, from_mode, hop_chain}` control frame), paced
+  by the `SendPacer` as a message is; with one, the message goes first and the subscription only
+  once it went. Either counts a hop on the turn's relay and is refused locally at the relay limit
+  (`not_subscribed` / `relay_limit` for a pure one). Every request is sent and replaces the one
+  waiting on that session. The description carries CC's text, in Book's names.
+- **Receiver** (`messaging/idle-notify.ts`, owned by `SessionMessaging`): the inbox keys intake on
+  the decoded socket path, never the spelling; paces it per path with a guard of its own, which
+  also judges `hop_chain` (a repeated `msg_id` within 30 s is a duplicate, and ignored); vets at
+  most 8 at once; and takes a subscription only once `vetReplyAddress` passes (not its own). One it
+  does not keep — rate limited, vetting busy, a relay loop, or later evicted from a full table — is
+  answered with a `dropped` receipt (`drop_reason` `rate-limited`, `hop-loop`, `hop-runaway`,
+  `evicted`), coalesced as message drops are; an address that fails vetting hears nothing. The
+  table keeps 32, at most 4 per path. It fires after 750 ms of idle (a subscription to an idle
+  session included), held back while queued or held peer messages wait and judged again every
+  30 s; an unfired one expires after 12 h; `close()` answers every one `exited` inside the 750 ms
+  close drain. Idle has one definition: the status `interactive-session.ts` reports to the record
+  (`liveSessionStateOf`), told to the runtime too (`setSessionStatus`), and no host work that will
+  start a turn (`setHostWork`, from `usePeerMessageDelivery`: queued follow-ups, pending shell and
+  agent completions with their retries, and its own notices). Timers are unref'd.
+- **Notice**: a `peer_idle_notice` frame
+  (`{orig_msg_id, state: idle|exited|expired, finished_at?, detail?, from_mode}`), sent like a
+  receipt to the vetted `from`. `expired` is Book's addition (D1-a). `detail` is the model's own
+  reply in the newest turn (no host rows; secrets redacted by the TUI; folded, cut to 280
+  characters, then tags neutralized), included only when `judge` (the receive policy plus the
+  user's denied senders) would accept a message from the subscriber's asserted class now.
+- **Subscriber**: a notice or `dropped` receipt counts only if it names one of this session's
+  waiting subscriptions and comes from the session subscribed to, and only once. The user always
+  gets a row. A notice reaches the model only when this session's own `judge` accepts the
+  notifier, as a host-delivered `[Cross-session idle notice]` turn in the class a message from the
+  notifier would get (`peerTurnClass`), which continues the relay the subscription was sent on
+  (`continueRelay`); a `dropped` receipt reaches it as a delivery receipt does. Waiting notices are
+  told together, up to 10 a turn, continuing the longest relay among them, so re-subscribing from
+  many notices counts one hop rather than a branch each (security review). Each notifier is judged
+  again (`noticeTurnClass`) when the batch is built and when its turn starts (`stillDeliverable`):
+  one the policy no longer accepts is left out, its row the only trace. The notice text
+  says the subscription was one-shot and does not suggest subscribing again. A subscription with
+  no word for 12 h plus 5 min lapses locally, as a user-only row.
 
 **PR 7 and later**:
 

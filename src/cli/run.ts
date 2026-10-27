@@ -53,7 +53,9 @@ import { resolveBookHome } from '../book-home.js';
 import { isReaderGoneError } from '../reader-gone.js';
 import { cleanupRunStatus } from '../run-status.js';
 import { inboxStartupNotices } from '../messaging/inbox-server.js';
+import { PeerAwareness } from '../messaging/peer-awareness.js';
 import { SessionMessaging } from '../messaging/session-messaging.js';
+import { SessionMentionSnapshot } from '../input/session-mentions.js';
 import { LiveSessionWriter } from '../messaging/writer.js';
 import { getPackageVersion } from '../version-info.js';
 
@@ -484,9 +486,24 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     // and `SessionSend` tools; nothing else does (D2, D3).
     const messaging =
       config.settings.messaging.enabled && process.platform !== 'win32'
-        ? new SessionMessaging({ writer: liveSession, permissionMode: mode })
+        ? new SessionMessaging({
+            writer: liveSession,
+            permissionMode: mode,
+            inbound: config.settings.messaging.inbound,
+            approvalTimeoutMs: config.settings.messaging.approvalTimeout,
+          })
         : undefined;
     const inboxStart = messaging?.start();
+    // The registry as `@session` mentions read it (#620): `@` completion and a turn's mention notes
+    // share one snapshot, read again only when a mention needs it.
+    const sessionMentions = messaging && new SessionMentionSnapshot(messaging);
+    // What this session knows of the other live sessions in its worktree (#620 PR 4): the peer
+    // lines and attributed notices the model reads, and the overlap warning the user sees. It reads
+    // the registry the writer keeps, so it works with messaging off.
+    const peerAwareness = new PeerAwareness({
+      writer: liveSession,
+      messaging: () => messaging?.available() ?? false,
+    });
     try {
       const rendererMode = resolveTuiRendererMode(process.env.BOOK_TUI_RENDERER, {
         isTTY: process.stdout.isTTY === true,
@@ -520,6 +537,8 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
             createdSessions,
             liveSession,
             messaging,
+            sessionMentions,
+            peerAwareness,
           },
           startupNotices: [...nodeNotices, ...providerNotices, ...instructionNotices],
           lateStartupNotices: inboxStart && inboxStartupNotices(inboxStart),
@@ -540,6 +559,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     } finally {
       app?.cleanup();
       restoreScreen();
+      peerAwareness.close();
       await liveSession.close();
       await messaging?.close();
       await mcpHost.dispose();

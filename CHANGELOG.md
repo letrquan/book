@@ -45,6 +45,68 @@ All notable changes to this project are documented in this file.
   macOS `mktemp` and the `xcrun` shim ignore `TMPDIR`; Book's own temp entries are denied. A new
   `Sandbox (macOS Seatbelt)` CI job runs the real-sandbox tests on `macos-latest`. Windows still has
   no backend.
+- **Experimental: cross-session messaging between the Book sessions on one machine** (#620, #628,
+  #635, #638, #642, #643, #645). Every interactive TUI now keeps a record of itself in
+  `<BOOK_HOME>/live-sessions/` while it runs (a name such as `book-3f`, its workspace and branch,
+  and whether it is `busy`, `waiting` or `idle`), the next read sweeps a record whose process is
+  gone, and `book doctor` counts the live sessions. Turning on `messaging.enabled`, which only
+  `~/.book/settings.json` or `--settings` can set, gives the TUI an authenticated inbox (a `0600`
+  socket in a vetted `0700` directory, with a `0600` key beside its record) and gives the model two
+  core tools: `SessionList` lists the other live sessions, and `SessionSend` messages one by name,
+  by `name [ref]` when two share a name, or by a message's `from` address to reply. Messages travel
+  in Claude Code's `<cross-session-message>` envelope and frame shapes, under its rate limits and
+  relay-loop detection. `SessionSend` asks in `default` and `acceptEdits`, is refused in `dontAsk`
+  and is not offered in plan mode, and a permission rule names the recipient
+  (`SessionSend(book-3f)`). The receiving TUI delivers a message as a turn of its own once it is
+  idle, with every harness tag in the body neutralized and a paragraph saying it is another
+  session's request and never the user's approval. The sender sees a `✓` or `⚠` row, and its model
+  gets a `[Cross-session delivery notice]` for anything but a delivery. A message from the other
+  permission class (`bypassPermissions` and `auto` on one side, every other mode on the other) is
+  held for your approval: a row, and a sheet to deliver it, deny it, deny everything from that
+  sender, or decide later. It expires after `messaging.approvalTimeout` (5 minutes).
+  `messaging.inbound` (`accept`, `hold` or `refuse`) decides for every message instead, and a
+  workspace settings layer may only tighten it. A delivered peer turn is pinned to its permission
+  class, so switching into `bypassPermissions` or `auto` while it runs keeps its tool calls asking.
+  The pin also follows the turns that carry the peer's work on, and the background jobs and `Task`
+  subagents it starts, and a prompting-class peer turn cannot start a managed agent. It has known
+  gaps: a background job's completion can still run unpinned after a restart, past 20 jobs in one
+  turn, or on a second completion (#650), and a pinned completion turn can still write memory
+  without a prompt (#655). Messages not yet delivered expire when the session exits, and their
+  senders are told. `SessionSend` with `notify_when_idle: true` asks for one
+  `[Cross-session idle notice]` when that session next goes idle or exits, with the start of its
+  last reply only for a subscriber its receive policy would accept. Typing `@name` for a live
+  session adds a note to that turn's `<session-state>` naming `SessionSend` and the session's
+  address, and `@` completion offers the live sessions. Print mode, the SDK, managed agents and
+  subagents have no inbox and no messaging tools, Windows is not supported yet, and a message waits
+  for the turn in progress to end. See "Cross-session messaging" in the configuration guide.
+- **Peer awareness: the model hears when a file it read changed on disk, and which Book session in
+  the same worktree changed it** (#620, #641, #646). Before each turn, every file the model read or
+  wrote this session is checked against what it last saw, and a change gets a line in that turn's
+  `<session-state>` with a diff of up to 20 lines (provider keys redacted); at most 10 files are
+  named a turn. A file is read again when its size, mtime or ctime moved, or when it changed within
+  2 s of the read its last verdict came from, so a same-size edit inside one mtime tick, or a file
+  put back with its old mtime, is not missed. In the TUI the live-session record also carries the
+  session's worktree, branch and last 20 edited paths. The `<session-state>` names up to three
+  other live sessions in the same worktree with their recent edits, the changed-on-disk line and
+  the stale-file refusal name the session whose recorded edit came after the model's read, and a
+  `⚠` row warns you when this session and another both edited one path within 10 minutes. None of
+  it needs `messaging.enabled`, and the changed-on-disk notice also runs in print mode and the SDK.
+- **Tool discovery names every deferred tool, runs a direct call to one just in time, and loads
+  `WebFetch` or `WebSearch` when what you typed asks for it** (#619, #623, #637, #639). The system
+  prompt's deferred-tool list now names every authorized deferred tool, grouped by category with a
+  hint of eight words or fewer, and stays byte-identical as tools are loaded or evicted.
+  `ToolSearch` takes `select:Name[,Name]` to load exact tools. A direct call to an authorized
+  deferred tool that is not active now runs instead of being refused, and loads the tool for the
+  next turn as `select:` would. It meets every gate a call after `select:` meets, a tool outside
+  the agent role, the mode, `allowed-tools` or the run's state is still refused, and invalid
+  arguments get the tool's argument names and types. A `permissions.deny` or `ask` rule, or a
+  `PreToolUse` or `PostToolUse` hook matcher, that names `ToolSearch` turns direct calls and
+  routing off, keeping discovery behind `ToolSearch` as before. Before a turn's first model call, a
+  URL you typed loads `WebFetch`, and search words (`search`, `look up`, `latest`, `news`, `tìm`,
+  `tin tức`) load `WebSearch`, under the same authorization and budgets
+  (`toolDiscovery.intentRouting`, default on). `npm run eval:tools` measures discovery per arm and
+  model on five tasks, with a no-key `--mock` mode and an `--estimate` of a real run's cost.
+  `SYSTEM_PROMPT_VERSION` is now `book-system-prompt-v8`.
 
 ### Fixed
 
@@ -52,6 +114,12 @@ All notable changes to this project are documented in this file.
   latest model request alone, the figure Book's compaction gate reads, so a four-request task
   reported about a quarter of its traffic. It is now the sum of the task's run records, child runs
   included. Token figures in edit-eval reports written before this fix don't compare with new ones.
+- **A failed print run is no longer reported as cancelled when its reader leaves while managed
+  agents are still running** (#248, #637). The guard that keeps a failed outcome was set only after
+  the wait for managed children, so the one check inside that wait always let the reader's
+  departure turn the failure into a cancellation. The wait now keeps a failed outcome where the
+  abort lands. The test for it now asserts that its fake agent tool ran: it used to pass without
+  reaching the case at all, because that tool was deferred and refused.
 
 ### Security
 

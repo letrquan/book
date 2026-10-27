@@ -8,7 +8,12 @@ import type { ProviderMessage, SystemPromptZones } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
 import type { FileObservation, ToolContext } from '../types/tools.js';
 import { createHash } from 'crypto';
-import { collectStaleCheckpointFiles, renderSessionState } from './session-state.js';
+import {
+  collectStaleCheckpointFiles,
+  collectWorkspaceNotices,
+  renderSessionState,
+  type WorkspaceNoticeSources,
+} from './session-state.js';
 import { reasoningReplayKeeps } from './reasoning-replay.js';
 import { normalizeObservedPath, supersedesObservation } from '../tools/file-provenance.js';
 import { normalizePromptPath } from './prompt-determinism.js';
@@ -528,6 +533,12 @@ export interface SystemPromptOverrides {
    * reading means nothing to anyone who did not take it.
    */
   runElapsedMs?: number;
+  /**
+   * Where the block's changed-on-disk and peer lines come from (#620 PR 4). Read only when the
+   * turn's block is rendered — never on a rebuild that reuses it — because a change is reported
+   * once, and a read whose lines never render would lose it.
+   */
+  workspaceNotices?: WorkspaceNoticeSources;
 }
 
 /**
@@ -672,6 +683,7 @@ async function ensureSessionState(
   outstandingAgents: Array<{ label: string; status: string }>,
   signal?: AbortSignal,
   cache?: AgentContextCache,
+  workspaceNotices?: WorkspaceNoticeSources,
 ): Promise<void> {
   let newest: Message | undefined;
   let checkpoint: Message | undefined;
@@ -698,18 +710,34 @@ async function ensureSessionState(
   }
   if (!newest || newest.sessionState !== undefined) return;
 
+  // The git line and the file checks are independent reads, so they run side by side.
+  const [git, files] = await Promise.all([
+    cache?.git(config.workspace, signal) ?? gitContext(config.workspace, signal),
+    (async () => {
+      const staleFiles = checkpoint
+        ? await collectStaleCheckpointFiles(config.workspace, checkpoint, observedSince)
+        : [];
+      const notices = workspaceNotices
+        ? await collectWorkspaceNotices(config.workspace, workspaceNotices, staleFiles, signal)
+        : undefined;
+      return { staleFiles, notices };
+    })(),
+  ]);
   newest.sessionState = renderSessionState({
     workspace: config.workspace,
     runElapsedMs,
-    git: await (cache?.git(config.workspace, signal) ?? gitContext(config.workspace, signal)),
+    git,
     planMode,
     planUnrestored,
     outstandingAgents,
     todos,
-    staleFiles: checkpoint
-      ? await collectStaleCheckpointFiles(config.workspace, checkpoint, observedSince)
-      : [],
+    staleFiles: files.staleFiles,
+    ...files.notices?.notices,
+    // Intent routing's notes about this message (#620): rendered with its block, and only there.
+    ...(newest.turnNotes?.length ? { notes: newest.turnNotes } : {}),
   });
+  // Only now are the changes reported: a turn cancelled above leaves them for the next block.
+  files.notices?.commit();
 }
 
 export async function buildMessages(
@@ -734,6 +762,7 @@ export async function buildMessages(
     systemOverrides?.outstandingAgents ?? [],
     signal,
     cache,
+    systemOverrides?.workspaceNotices,
   );
 
   messages.push({
