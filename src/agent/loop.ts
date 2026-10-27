@@ -793,7 +793,7 @@ export async function runAgentLoop(
     tracker: runtime.fileChanges,
     ledger: runtime.fileObservationLedger,
     peerAwareness: options?.peerAwareness,
-    secrets: toolContext.providerSecrets,
+    secrets: () => toolContext.providerSecrets ?? [],
   };
   // MEMORY.md was in the prompt, so the model has "read" it: seed the ledger and its first Edit
   // needs no Read. Only a whole index, and once per loaded snapshot: a cut one has to be Read, and

@@ -11,7 +11,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { mapLimited } from '../async.js';
 import { redactSecrets } from '../provider-secrets.js';
@@ -37,6 +38,10 @@ const MAX_SNIPPET_LINE_CHARS = 160;
 const MAX_BASELINE_BYTES = 64 * 1024;
 /** All the remembered texts together, least recently observed dropped first. */
 const MAX_BASELINE_TOTAL_BYTES = 2 * 1024 * 1024;
+/** A bigger file is not read again to be judged: it goes unreported rather than cost a turn. */
+const MAX_JUDGED_BYTES = 16 * 1024 * 1024;
+/** Where the platform has it (not Windows), a read that refuses to follow a final link. */
+const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
 
 export interface ChangedObservedFile {
   /** The ledger key. */
@@ -84,6 +89,12 @@ interface Judged {
 }
 
 const DELETED = 'deleted';
+/** A link, or a path through one, now stands where the observed file was. */
+const REPLACED = 'replaced';
+
+function samePath(a: string, b: string): boolean {
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
 
 function looksBinary(bytes: Uint8Array): boolean {
   return bytes.subarray(0, 8192).includes(0);
@@ -245,6 +256,11 @@ export class FileChangeTracker {
   /**
    * The file's current hash, from the last verdict when its size and mtime have not moved, and its
    * text when it is small enough to diff. `undefined` when it cannot be judged now.
+   *
+   * A link is never followed. The observed path is the file's real one, so a link at it, or a
+   * directory above it that became one, means something else stands there now: it is reported as
+   * changed and never read, so a checkout or a peer cannot point the notice at `~/.npmrc` or a
+   * denied `.env` and have its lines diffed into the prompt.
    */
   private async judge(
     key: string,
@@ -253,12 +269,15 @@ export class FileChangeTracker {
   ): Promise<{ sha: string; text?: string } | undefined> {
     let info;
     try {
-      info = await stat(absolutePath);
+      info = await lstat(absolutePath);
+      if (info.isSymbolicLink()) return { sha: REPLACED };
+      if (!info.isFile()) return { sha: DELETED };
+      if (!samePath(await realpath(absolutePath), absolutePath)) return { sha: REPLACED };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
       return { sha: DELETED };
     }
-    if (!info.isFile()) return { sha: DELETED };
+    if (info.size > MAX_JUDGED_BYTES) return undefined;
     const last = this.judged.get(key);
     if (
       last &&
@@ -270,9 +289,15 @@ export class FileChangeTracker {
     }
     let bytes: Buffer;
     try {
-      bytes = await readFile(absolutePath);
-    } catch {
-      return undefined;
+      const handle = await open(absolutePath, constants.O_RDONLY | NO_FOLLOW);
+      try {
+        if (!(await handle.stat()).isFile()) return { sha: REPLACED };
+        bytes = await handle.readFile();
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ELOOP' ? { sha: REPLACED } : undefined;
     }
     const sha = createHash('sha256').update(bytes).digest('hex');
     this.judged.set(key, {

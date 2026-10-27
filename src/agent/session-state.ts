@@ -200,8 +200,11 @@ export interface WorkspaceNoticeSources {
   ledger: ReadonlyMap<string, FileObservation>;
   /** The TUI's view of other live sessions; absent elsewhere, and then no peer is named. */
   peerAwareness?: PeerAwarenessHandle;
-  /** Provider keys a diff snippet must not carry. */
-  secrets?: readonly string[];
+  /**
+   * Provider keys a diff snippet must not carry, read when the block renders: a Sign in with
+   * ChatGPT token can rotate mid-run.
+   */
+  secrets?: () => readonly string[];
 }
 
 export interface WorkspaceNotices {
@@ -227,7 +230,7 @@ export async function collectWorkspaceNotices(
         ledger: sources.ledger,
         workspace,
         exclude: new Set(staleFiles.map(normalizeObservedPath)),
-        secrets: sources.secrets,
+        secrets: sources.secrets?.(),
         signal,
       })
       // A notice is a courtesy: a check that cannot run must never fail the turn.

@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildMessages, buildSystemPromptZones, type AgentContextCache } from './context.js';
 import { runAgentLoop } from './loop.js';
-import { renderSessionState, type WorkspaceNoticeSources } from './session-state.js';
+import {
+  collectWorkspaceNotices,
+  renderSessionState,
+  type WorkspaceNoticeSources,
+} from './session-state.js';
 import type { Provider } from '../provider/index.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { assistantMsg, defaultConfig, userMsg } from '../test/fixtures.js';
@@ -125,6 +129,19 @@ describe('changed-on-disk and peer lines in <session-state> (#620 PR 4)', () => 
     const out = await buildMessages(config, [userMsg('go')], [], undefined, undefined, overrides);
 
     expect(stateOf(out[1]!)).toContain('- a.ts changed on disk since you last read it.');
+  });
+
+  it('redacts with the provider keys current when the block renders, not when the run began', async () => {
+    const key = 'sk-live-rotated-0123456789abcdef';
+    const a = await observe('a.ts', 'A=1\n');
+    writeFileSync(a, `A=1\nKEY=${key}\n`);
+    let secrets: readonly string[] = [];
+    const noticeSources = { ...sources(), secrets: () => secrets };
+    secrets = [key];
+
+    const { notices } = await collectWorkspaceNotices(workspace, noticeSources, []);
+
+    expect(JSON.stringify(notices)).not.toContain(key);
   });
 
   it('works without a peer handle, as print mode and the SDK run', async () => {

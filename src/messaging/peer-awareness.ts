@@ -20,7 +20,6 @@ import { readdir } from 'node:fs/promises';
 import { relative } from 'node:path';
 import { mapLimited } from '../async.js';
 import { resolveBookHome } from '../book-home.js';
-import { foldControlCharacters } from '../control-characters.js';
 import { canonicalizePath, isOutside } from '../tools/path-utils.js';
 import type {
   LiveSessionEdit,
@@ -33,7 +32,7 @@ import type {
 } from '../types/messaging.js';
 import { peerLabel, peerSessionRow } from './addressing.js';
 import { createLivenessProbe, isRecordProcessLive, type LivenessProbe } from './liveness.js';
-import { promptAgo } from './peer-text.js';
+import { plainSpan, promptAgo } from './peer-text.js';
 import {
   liveSessionsDir,
   MAX_RECORD_BYTES,
@@ -95,21 +94,26 @@ export interface PeerAwarenessOptions {
 }
 
 function cut(text: string, max: number): string {
-  return Array.from(foldControlCharacters(text)).slice(0, max).join('');
+  return Array.from(plainSpan(text)).slice(0, max).join('');
 }
+
+/** A recorded edit dated further ahead than this is a forged or broken clock, and dropped. */
+const MAX_EDIT_CLOCK_SKEW_MS = 60_000;
 
 /**
  * A peer's `recentEdits`, kept only where it is what a writer writes: an array of worktree-relative
- * paths with times. An absolute path, a `..` segment or an oversized entry is dropped, so a record
- * can never point this session outside the worktree it shares.
+ * paths with times no later than `now`. An absolute path, a `..` segment, an oversized entry or a
+ * future date is dropped, so a record can never point this session outside the worktree it shares,
+ * nor claim an edit that is always "just now".
  */
-export function validPeerEdits(value: unknown): LiveSessionEdit[] {
+export function validPeerEdits(value: unknown, now = Number.POSITIVE_INFINITY): LiveSessionEdit[] {
   if (!Array.isArray(value)) return [];
   const edits: LiveSessionEdit[] = [];
   for (const entry of value.slice(-MAX_PEER_EDITS)) {
     if (typeof entry !== 'object' || entry === null) continue;
     const { path: raw, at } = entry as { path?: unknown; at?: unknown };
     if (typeof raw !== 'string' || typeof at !== 'number' || !Number.isFinite(at)) continue;
+    if (at > now + MAX_EDIT_CLOCK_SKEW_MS) continue;
     // Separators are normalized first, so a `\\host\share` UNC path or a `\rooted` one is
     // judged as the absolute path it is.
     const path = raw.replace(/\\/g, '/');
@@ -350,6 +354,7 @@ export class PeerAwareness implements PeerAwarenessHandle {
       (await isRecordProcessLive(record, this.probe)) ? record : undefined,
     );
     const messagingHere = this.messaging();
+    const now = this.now();
     return live
       .filter((record): record is ReadLiveSessionRecord => record !== undefined)
       .flatMap((record) => {
@@ -366,7 +371,7 @@ export class PeerAwareness implements PeerAwarenessHandle {
             ...(typeof record.branch === 'string' && record.branch
               ? { branch: cut(record.branch, MAX_BRANCH_CHARS) }
               : {}),
-            edits: sameWorktree ? validPeerEdits(record.recentEdits) : [],
+            edits: sameWorktree ? validPeerEdits(record.recentEdits, now) : [],
             sameWorktree,
           } satisfies PeerView,
         ];

@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileChangeTracker, changeSnippet, MAX_CHANGED_FILES_PER_TURN } from './file-changes.js';
@@ -196,6 +205,37 @@ describe('changed-on-disk detection (#620 4a)', () => {
 
     expect(changed!.snippet?.join('\n')).not.toContain(key.slice(0, 8));
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'never shows what a file replaced by a link points at, in or out of the workspace',
+    async () => {
+      const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-file-changes-out-')));
+      try {
+        writeFileSync(join(outside, 'secret.txt'), 'token=ghp_outside_secret\n');
+        mkdirSync(join(outside, 'sub'));
+        writeFileSync(join(outside, 'sub', 'b.txt'), 'token=ghp_parent_secret\n');
+        const a = write('a.txt', 'one\n');
+        mkdirSync(join(workspace, 'sub'));
+        const b = write(join('sub', 'b.txt'), 'two\n');
+        await observeFile(ctx, a, 'read');
+        await observeFile(ctx, b, 'read');
+
+        // The file itself becomes a link, and a directory above another becomes one.
+        unlinkSync(a);
+        symlinkSync(join(outside, 'secret.txt'), a);
+        renameSync(join(workspace, 'sub'), join(workspace, 'sub-moved'));
+        symlinkSync(join(outside, 'sub'), join(workspace, 'sub'));
+
+        const files = await collect();
+
+        expect(files.map((file) => file.path).sort()).toEqual(['a.txt', 'sub/b.txt']);
+        expect(JSON.stringify(files)).not.toContain('secret');
+        expect(files.every((file) => file.snippet === undefined)).toBe(true);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('only diffs a change measured short, before diffing it', () => {
     expect(changeSnippet('a\nb\n', 'a\nc\n')).toEqual(['@@ -1 +1 @@', ' a', '-b', '+c']);

@@ -7,13 +7,25 @@ import { foldControlCharacters } from '../control-characters.js';
 import { neutralizeTags } from '../prompt-tags.js';
 import type { PeerEditAttribution } from '../types/messaging.js';
 
+/** Invisible format characters: zero-width spaces and joiners, word joiners, Unicode tag text. */
+const FORMAT_CHARACTERS = /\p{Cf}/gu;
+
+/**
+ * Text from outside the harness, one line of it, with its control characters folded and its
+ * invisible format characters removed, so neither a line break nor hidden text survives.
+ */
+export function plainSpan(text: string): string {
+  return foldControlCharacters(text).replace(FORMAT_CHARACTERS, '');
+}
+
 /**
  * Text from outside the harness — a file's name or lines, another session's name, branch or paths
  * — as one safe span of a prompt line: no line break or control character can start a line of its
- * own, and no harness tag can open or close.
+ * own, nothing invisible rides along (a zero-width space inside a tag name would hide the tag from
+ * the neutralizer), and no harness tag can open or close.
  */
 export function promptSpan(text: string): string {
-  return neutralizeTags(foldControlCharacters(text));
+  return neutralizeTags(plainSpan(text));
 }
 
 /** A coarse age for a peer's recorded edit: `just now`, `4m ago`, `2h ago`. */

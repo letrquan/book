@@ -615,7 +615,9 @@ matters, instead of having to think of asking. All of it works with `messaging.e
     observation, so they never count.
   - **Snippet**: `observeFile` keeps the observed text of files up to 64 KiB (2 MiB in all, oldest
     dropped). A change whose changed span is under 20 lines is shown as a diff of at most 20 lines,
-    provider keys redacted; anything longer, binary or not remembered names the file only.
+    provider keys redacted (current keys, before long lines are cut); anything longer, binary or
+    not remembered names the file only. A link is never followed: a file that became one, or sits
+    under a directory that did, is reported as changed and never read (security review).
   - Runs wherever the loop runs (print mode and the SDK too); only the peer parts need the TUI.
 - **4b. Registry fields** (`messaging/writer.ts`, `git-location.ts`):
   - `worktree` and `repository` (`git rev-parse --show-toplevel --git-common-dir`, real paths)

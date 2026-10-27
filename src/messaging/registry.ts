@@ -15,6 +15,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import { chmod, lstat, mkdir, open, readdir, readFile, stat, unlink } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
@@ -256,10 +257,18 @@ function parseRecord(
   return parsed.data as ReadLiveSessionRecord;
 }
 
-/** The file's text, or a string no record parses from when it holds more than `maxBytes`. */
+/** Where the platform has them (not Windows): no final link followed, no wait on a FIFO. */
+const CAPPED_READ_FLAGS =
+  fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
+
+/**
+ * The file's text, or a string no record parses from when it holds more than `maxBytes` or is not
+ * a regular file: a link, or a FIFO a read would block on, is never a record.
+ */
 async function readCapped(path: string, maxBytes: number): Promise<string> {
-  const handle = await open(path, 'r');
+  const handle = await open(path, CAPPED_READ_FLAGS);
   try {
+    if (!(await handle.stat()).isFile()) return '';
     const buffer = Buffer.alloc(maxBytes + 1);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
     return bytesRead > maxBytes ? '' : buffer.subarray(0, bytesRead).toString('utf8');
