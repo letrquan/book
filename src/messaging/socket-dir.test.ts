@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   MAX_SOCKET_PATH_BYTES,
   longestSocketName,
@@ -53,7 +53,7 @@ describe('socketDirCandidates', () => {
         tmpdir: '/t',
         uid: 7,
       }),
-    ).toEqual([{ dir: '/x/socks', source: 'env' }]);
+    ).toEqual([{ dir: resolve('/x/socks'), source: 'env' }]);
   });
 
   it('derives from an explicit BOOK_HOME before the runtime directory', () => {
@@ -64,7 +64,7 @@ describe('socketDirCandidates', () => {
         uid: 7,
       }),
     ).toEqual([
-      { dir: join('/h', 'socks'), source: 'book-home' },
+      { dir: join(resolve('/h'), 'socks'), source: 'book-home' },
       { dir: join('/t', 'book-socks-7'), source: 'tmp' },
     ]);
   });
