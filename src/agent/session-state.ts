@@ -72,15 +72,6 @@ export interface SessionStateInput {
   notes?: readonly string[];
 }
 
-/**
- * Intent routing's notes about one user message (#620): they render in that message's block, and
- * only there, so a later host-written turn of the same run does not repeat them.
- */
-export interface TurnNotes {
-  messageId: string;
-  notes: readonly string[];
-}
-
 function changedFileLines(
   files: readonly ChangedFileNotice[],
   unlisted: number,

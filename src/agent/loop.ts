@@ -102,7 +102,6 @@ import {
   type IntentRoutingRequest,
 } from '../tools/intent-routing.js';
 import type { SessionMentionSource } from '../input/session-mentions.js';
-import type { TurnNotes } from './session-state.js';
 import {
   enrichToolResultPresentation,
   boundToolResultOutput,
@@ -1177,8 +1176,6 @@ export async function runAgentLoop(
     let lastWorkStateTurn = -1;
     /** Intent routing runs once, before the run's first model call (#619). */
     let intentRouted = false;
-    /** Its notes (#620's `@session`), for the block of the user message they were routed from. */
-    let turnNotes: TurnNotes | undefined;
     /** The turn these empty-completion retries were spent on, and how many of them. */
     let emptyResponseRetryTurn = -1;
     let emptyResponseRetries = 0;
@@ -1376,14 +1373,15 @@ export async function runAgentLoop(
         const { notes } = routeTurnIntent(
           routing,
           toolSurface,
-          await turnIntentRouters(routing, toolSurface, options?.sessionMentions),
+          await turnIntentRouters(routing, toolSurface, options?.sessionMentions, { signal }),
         );
-        // The message whose block `buildMessages` renders next: the newest user turn in context.
-        const routedMessage = [...newHistory]
-          .reverse()
-          .find((message) => message.role === 'user' && message.includeInContext);
-        if (notes.length > 0 && routedMessage) {
-          turnNotes = { messageId: routedMessage.id, notes };
+        // A note (#620) rides on the message whose block `buildMessages` renders next, the newest
+        // user turn in context, and renders with that block.
+        for (let index = newHistory.length - 1; notes.length > 0 && index >= 0; index--) {
+          const message = newHistory[index];
+          if (message.role !== 'user' || !message.includeInContext) continue;
+          message.turnNotes = notes;
+          break;
         }
       }
       const activeDefinitions = toolSurface.activeDefinitions();
@@ -1410,7 +1408,6 @@ export async function runAgentLoop(
           runElapsedMs: clock.monotonicNowMs() - runStartedAt,
           outstandingAgents,
           workspaceNotices,
-          turnNotes,
         },
         runtime.agentContextCache,
         options?.resolveAttachment,
@@ -1434,7 +1431,6 @@ export async function runAgentLoop(
             runElapsedMs: clock.monotonicNowMs() - runStartedAt,
             outstandingAgents,
             workspaceNotices,
-            turnNotes,
           },
           runtime.agentContextCache,
           options?.resolveAttachment,

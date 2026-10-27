@@ -23,7 +23,7 @@ export interface InteractiveAgentSessionDependencies extends AgentSessionDepende
   /**
    * This process's messaging runtime (#620), when messaging is on. Its tools, `SessionList` and
    * `SessionSend`, join every send's registry, and only this session's: print mode, the SDK and
-   * managed agents build registries without it. A typed `@session` mention resolves against it.
+   * managed agents build registries without it.
    */
   messaging?: SessionMessagingHandle;
 }
@@ -39,8 +39,6 @@ export function createInteractiveAgentSession(
   const startRunner = sessionDependencies.sessionStartRunner ?? runSessionStart;
   const session = new AgentSession({
     ...sessionDependencies,
-    // A root run's `@session` mentions resolve against the same runtime the tools send through.
-    ...(messaging ? { sessionMentions: messaging } : {}),
     // Every session the TUI enters starts here — the launch's, and each `/clear`, `/new` and
     // `/resume` — so this is where the record learns the session it now describes.
     sessionStartRunner: liveSession

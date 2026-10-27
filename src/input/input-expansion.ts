@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from 'fs';
+import { stat } from 'fs/promises';
 import { exec } from 'child_process';
 import { createHash } from 'crypto';
 import { isAbsolute, relative, resolve } from 'path';
@@ -457,16 +458,17 @@ export function mentionTokens(input: string): MentionTokenSpan[] {
  * `@reviewer` stays a mention of `reviewer/` whatever another session is called. A path that
  * reaches a network share is never probed, and counts as named.
  */
-export function mentionNamesPath(
+export async function mentionNamesPath(
   workspace: string,
   mentionPath: string,
   additionalRoots: readonly string[] = [],
-): boolean {
+): Promise<boolean> {
   const target = mentionTarget(workspace, mentionPath, additionalRoots);
   if (!target) return false;
   if (reachesUncPath(target.filePath)) return true;
   try {
-    return statSync(target.filePath, { throwIfNoEntry: false }) !== undefined;
+    await stat(target.filePath);
+    return true;
   } catch {
     return false;
   }

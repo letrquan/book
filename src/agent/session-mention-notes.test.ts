@@ -10,7 +10,9 @@ import { isolateBookHome } from '../test/isolated-book-home.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { createSessionListTool } from '../tools/session-list.js';
 import { createSessionSendTool } from '../tools/session-send.js';
+import { SessionMentionSnapshot } from '../input/session-mentions.js';
 import type {
+  PeerSendRequest,
   PeerSessionListing,
   PeerSessionRow,
   SessionMessagingHandle,
@@ -49,12 +51,19 @@ const LISTING: PeerSessionListing = {
   peers: [row('book-36')],
 };
 
-function messaging(): SessionMessagingHandle {
+function messaging(sends: PeerSendRequest[] = []): SessionMessagingHandle {
+  const target = row('book-36') as PeerSessionRow & { socketPath: string };
   return {
     available: () => true,
     list: async () => LISTING,
-    resolve: async () => ({ ok: false, problem: 'not_found', candidates: [] }),
-    send: async () => ({ status: 'sent', target: row('book-36'), msgId: 'm1' }),
+    resolve: async (to) =>
+      ['book-36', 'book-36 [825389]'].includes(to.trim())
+        ? { ok: true, target }
+        : { ok: false, problem: 'not_found', candidates: [] },
+    send: async (request) => {
+      sends.push(request);
+      return { status: 'sent', target, msgId: 'm1' };
+    },
   };
 }
 
@@ -63,15 +72,34 @@ interface Captured {
   tools: string[][];
 }
 
-/** Request 1 calls SessionList, so the run sends a second request; request 2 answers. */
-function provider(captured: Captured): Provider {
+const userText = (messages: ProviderMessage[]): string => {
+  const user = messages.find((message) => message.role === 'user');
+  if (typeof user?.content !== 'string') throw new Error('expected a string user turn');
+  return user.content;
+};
+
+/**
+ * Request 1 makes a call, so the run sends a second request; request 2 answers. The call is
+ * SessionList, or with `followNote` a SessionSend to the address the note names, as a model would.
+ */
+function provider(captured: Captured, followNote = false): Provider {
   return {
     id: 'scripted',
     stream: async function* (_config, messages, tools) {
       captured.messages.push(structuredClone(messages));
       captured.tools.push(tools.map((tool) => tool.name));
       if (captured.messages.length === 1) {
-        yield { type: 'tool_call', toolCall: { id: 'l1', name: 'SessionList', arguments: {} } };
+        const to = /use SessionSend with to: "([^"]+)"/.exec(userText(messages))?.[1];
+        yield followNote && to
+          ? {
+              type: 'tool_call',
+              toolCall: {
+                id: 's1',
+                name: 'SessionSend',
+                arguments: { to, message: 'run the tests' },
+              },
+            }
+          : { type: 'tool_call', toolCall: { id: 'l1', name: 'SessionList', arguments: {} } };
       } else {
         yield { type: 'text', content: 'done' };
       }
@@ -91,39 +119,49 @@ const callbacks: AgentLoopCallbacks = {
   onPlanApprovalRequired: async () => 'approve',
 };
 
-async function run(prompt: string, mode = 'default'): Promise<Captured> {
+async function run(
+  prompt: string,
+  options: { mode?: string; allow?: string[]; followNote?: boolean } = {},
+) {
   const captured: Captured = { messages: [], tools: [] };
-  const handle = messaging();
+  const sends: PeerSendRequest[] = [];
+  const prompted: string[] = [];
+  const handle = messaging(sends);
+  const snapshot = new SessionMentionSnapshot(handle);
+  // The TUI's completion warms the snapshot as the mention is typed.
+  await snapshot.fresh();
   const registry = createDefaultRegistry();
   registry.registerAll([createSessionListTool(handle), createSessionSendTool(handle)]);
+  const config = defaultConfig({ workspace, maxTurns: 3 });
+  if (options.allow) config.settings.permissions.allow = options.allow;
   await runAgentLoop(
-    defaultConfig({ workspace, maxTurns: 3 }),
+    config,
     registry,
     prompt,
     [],
-    callbacks,
-    mode,
     {
-      provider: provider(captured),
+      ...callbacks,
+      onPermissionRequired: async (call) => {
+        prompted.push(call.name);
+        return 'allow';
+      },
+    },
+    options.mode ?? 'default',
+    {
+      provider: provider(captured, options.followNote),
       isNewSession: false,
       typedText: prompt,
-      sessionMentions: handle,
+      sessionMentions: snapshot,
     },
   );
-  return captured;
+  return { ...captured, sends, prompted };
 }
-
-const userText = (messages: ProviderMessage[]): string => {
-  const user = messages.find((message) => message.role === 'user');
-  if (typeof user?.content !== 'string') throw new Error('expected a string user turn');
-  return user.content;
-};
 
 const systemText = (messages: ProviderMessage[]): string =>
   JSON.stringify(messages.filter((message) => message.role === 'system'));
 
 const NOTE =
-  '- The user @-mentioned the Book session "book-36 [825389]" (this machine) as @book-36. If their message asks you to tell or ask that session something, use SessionSend with to: "book-36 [825389]".';
+  '- The user @-mentioned the Book session "book-36 [825389]" (this machine) as @book-36. If their message asks you to tell or ask that session something, use SessionSend with to: "book-36".';
 
 describe('@session notes in the agent loop (#620)', () => {
   it("puts the note in the user turn's <session-state> block on the first request", async () => {
@@ -152,8 +190,18 @@ describe('@session notes in the agent loop (#620)', () => {
     expect(mentioned.tools[0]).toEqual(plain.tools[0]);
   });
 
+  it("sends to the note's address under a bare-name allow rule without asking", async () => {
+    const captured = await run('ask @book-36 to run the tests', {
+      allow: ['SessionSend(book-36)'],
+      followNote: true,
+    });
+    expect(captured.sends).toHaveLength(1);
+    expect(captured.sends[0]).toMatchObject({ to: 'book-36' });
+    expect(captured.prompted).toEqual([]);
+  });
+
   it('adds no note in plan mode, where SessionSend is not offered', async () => {
-    const captured = await run('ask @book-36 to run the tests', 'plan');
+    const captured = await run('ask @book-36 to run the tests', { mode: 'plan' });
     expect(userText(captured.messages[0])).not.toContain('@-mentioned');
   });
 });

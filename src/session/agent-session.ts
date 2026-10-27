@@ -370,8 +370,9 @@ export interface AgentSessionDependencies {
    */
   peerAwareness?: PeerAwarenessHandle;
   /**
-   * The messaging runtime a root run's `@session` mentions resolve against (#620): the TUI's, while
-   * messaging is on. Like `peerAwareness`, it outlives `/clear` and `/resume`.
+   * The live sessions a root run's `@session` mentions resolve against (#620): the TUI's snapshot
+   * of the registry, while messaging is on. Like `peerAwareness`, it outlives `/clear` and
+   * `/resume`.
    */
   sessionMentions?: SessionMentionSource;
   registryFactory?: (request: {

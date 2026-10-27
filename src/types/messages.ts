@@ -155,6 +155,11 @@ export interface Message {
    * reproduce the message byte-for-byte behind the conversation cache breakpoint.
    */
   sessionState?: string;
+  /**
+   * Notes intent routing wrote about this user turn (#620's `@session` mentions), rendered in its
+   * `<session-state>` block. In memory only, like the block they render in.
+   */
+  turnNotes?: readonly string[];
   /** Images attached to a user turn; bytes live in session attachment storage. */
   attachments?: ImageAttachment[];
   /** Whether this message is included in provider and compaction context. */
