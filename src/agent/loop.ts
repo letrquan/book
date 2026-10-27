@@ -94,6 +94,7 @@ import {
   validateUserQuestionResponse,
 } from '../tools/ask-user-question.js';
 import { createToolSurface } from '../tools/catalog.js';
+import { routeTurnIntent } from '../tools/intent-routing.js';
 import {
   enrichToolResultPresentation,
   boundToolResultOutput,
@@ -1140,6 +1141,8 @@ export async function runAgentLoop(
     const runStartedAt = clock.monotonicNowMs();
     /** Guards the periodic work-state message against a same-turn re-issue. */
     let lastWorkStateTurn = -1;
+    /** Intent routing runs once, before the run's first model call (#619). */
+    let intentRouted = false;
     /** The turn these empty-completion retries were spent on, and how many of them. */
     let emptyResponseRetryTurn = -1;
     let emptyResponseRetries = 0;
@@ -1321,6 +1324,22 @@ export async function runAgentLoop(
 
       toolContext.currentTurn = turn;
       syncSkillRestrictions(turn);
+      if (!intentRouted) {
+        intentRouted = true;
+        // After the mode and the skill restrictions are applied, so it activates only what this
+        // surface authorizes. It reads what the user typed, never the prompt that text resolved
+        // to; a router's note has nowhere to go yet, so the result is not read.
+        routeTurnIntent(
+          {
+            typedText: options?.typedText,
+            kind: options?.userMessageKind,
+            isSubagent: options?.isSubagent,
+            config: effectiveConfig,
+            context: toolContext,
+          },
+          toolSurface,
+        );
+      }
       const activeDefinitions = toolSurface.activeDefinitions();
       // Resolved once per turn. The session-state block is memoized on the newest
       // user message, so a rebuild below reuses these bytes rather than re-listing.

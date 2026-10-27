@@ -356,14 +356,25 @@ as before, where the rule or hook applies, and the deferred-tool list does not o
 hook with no matcher runs on every call, the direct one included, and turns nothing off; nor does an
 allow rule.
 
+Before a turn's first model call, Book also routes what you typed: a URL (`http://` or `https://`,
+in a code fence too) activates `WebFetch`, and search intent activates `WebSearch`. Search intent is
+`search`, `look up`, `latest`, `news`, `tìm` or `tin tức`, as whole words in any letter case, so
+`research` and `searching` do not count. The tool is loaded the way `ToolSearch` loads one, under the
+same authorization and budgets, so the turn's first request already declares it and the model spends
+no turn searching. Only text you typed routes: a command's body, an inlined file, an agent's
+completion notice and a subagent's task never do, and nothing routes where direct calls are off.
+Routing runs no tool and adds no prompt text, so the system prompt and the deferred-tool list are the
+same with it or without it; the request's tools array gains the tool, as after a search.
+`toolDiscovery.intentRouting: false` turns it off.
+
 Invalid arguments on a call to a tool the turn's request did not declare (called directly, or loaded
 by `select:` earlier in the same response) are refused with the tool's argument names and types, two
 object levels deep and at most about 2,000 characters, then a pointer to `select:`; the tool is still
 loaded, so the next attempt has its schema. A tool whose schema alone exceeds the schema budget still
 runs, with a line saying it was not loaded, and is admitted again on each call; `select:` and a search
 that cannot load it say so. Activations are logged under `BOOK_DEBUG` (`tools:discovery`) with their
-reason: `search`, `select`, `direct`, or `host` for a tool Book loads itself (a skill's resource
-reader).
+reason: `search`, `select`, `direct`, `route` for intent routing, or `host` for a tool Book loads
+itself (a skill's resource reader).
 
 ## Permission rules and modes
 
