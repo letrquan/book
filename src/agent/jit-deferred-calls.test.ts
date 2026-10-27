@@ -541,6 +541,12 @@ describe('a rule or hook on ToolSearch itself gates discovery again (#619, decis
         config.settings.hooks.PreToolUse = [{ command: 'exit 0', matcher: 'ToolSearch', env: {} }];
       }),
     ],
+    [
+      'a PostToolUse hook on ToolSearch',
+      gated((config) => {
+        config.settings.hooks.PostToolUse = [{ command: 'exit 0', matcher: 'ToolSearch', env: {} }];
+      }),
+    ],
   ])('%s: a direct call is refused toward ToolSearch, as before #619', async (_name, configure) => {
     for (const mode of ['default', 'bypassPermissions'] as const) {
       for (const tool of ['GitLog', 'WebFetch', 'mcp__demo__lookup']) {

@@ -252,9 +252,9 @@ function effectiveBudget(config: AgentConfig): number {
 
 /**
  * Whether a rule or hook the user wrote targets ToolSearch itself: a `permissions.deny` or `ask`
- * rule on it, or a PreToolUse hook whose matcher names it. Whoever wrote one meant to gate the
- * deferred catalog, so such a surface admits no direct call (#619): the model loads deferred tools
- * through ToolSearch as before, and the rule or hook judges that call. A hook with no matcher runs
+ * rule on it, or a PreToolUse or PostToolUse hook whose matcher names it. Whoever wrote one meant
+ * to gate or to audit the deferred catalog, so such a surface admits no direct call (#619): the
+ * model loads deferred tools through ToolSearch as before, and the rule or hook sees that call. A hook with no matcher runs
  * on every call, the direct one included, so it gates nothing; an allow rule gates nothing either.
  * The tool is read as a permission rule (`parseRule`) and a hook matcher (`matchesHookMatcher`)
  * read it: the text before any `(`, trimmed, compared exactly, which is the only spelling either
@@ -268,7 +268,7 @@ function toolSearchIsGated(config: AgentConfig): boolean {
   const { permissions, hooks } = config.settings;
   return (
     [...(permissions?.deny ?? []), ...(permissions?.ask ?? [])].some(namesToolSearch) ||
-    (hooks?.PreToolUse ?? []).some(
+    [...(hooks?.PreToolUse ?? []), ...(hooks?.PostToolUse ?? [])].some(
       (entry) => Boolean(entry.matcher) && namesToolSearch(entry.matcher!),
     )
   );

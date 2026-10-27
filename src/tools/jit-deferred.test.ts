@@ -579,18 +579,20 @@ describe('a rule or hook on ToolSearch itself (#619, decision c)', () => {
     expect(ran).toEqual([]);
   });
 
-  it.each([['ToolSearch'], ['ToolSearch(select:*)']])(
-    'a PreToolUse hook matching %s restores it',
-    async (matcher) => {
-      const { surface } = setup({
-        configure: (config) => {
-          config.settings.hooks.PreToolUse = [{ command: 'exit 0', matcher, env: {} }];
-        },
-      });
+  it.each([
+    ['PreToolUse', 'ToolSearch'],
+    ['PreToolUse', 'ToolSearch(select:*)'],
+    // An audit hook: it cannot block, but whoever wrote it means to see every load.
+    ['PostToolUse', 'ToolSearch'],
+  ] as const)('a %s hook matching %s restores it', async (event, matcher) => {
+    const { surface } = setup({
+      configure: (config) => {
+        config.settings.hooks[event] = [{ command: 'exit 0', matcher, env: {} }];
+      },
+    });
 
-      expect(surface.admitDirect?.('GitLog')).toBeUndefined();
-    },
-  );
+    expect(surface.admitDirect?.('GitLog')).toBeUndefined();
+  });
 
   it.each([
     ['no matcher, which runs on every call', undefined],

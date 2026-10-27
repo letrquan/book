@@ -349,11 +349,12 @@ tool outside the agent role, `allowed-tools`, the mode or the run's state is ref
 `tool_not_active`, as before, and its schema is never shown; the refusal says which of those it is,
 and plan mode still refuses its mutating tools with its own message.
 
-A `permissions.deny` or `ask` rule on `ToolSearch` itself, or a `PreToolUse` hook whose matcher
-names `ToolSearch`, turns direct calls off for the run: whoever wrote it meant to gate discovery, so a direct call to a tool that is not active
-is refused toward `ToolSearch` as before, where the rule or hook applies, and the deferred-tool list
-does not offer direct calls. A hook with no matcher runs on every call, the direct one included, and
-turns nothing off; nor does an allow rule.
+A `permissions.deny` or `ask` rule on `ToolSearch` itself, or a `PreToolUse` or `PostToolUse` hook
+whose matcher names `ToolSearch`, turns direct calls off for the run: whoever wrote it meant to gate
+or to audit discovery, so a direct call to a tool that is not active is refused toward `ToolSearch`
+as before, where the rule or hook applies, and the deferred-tool list does not offer direct calls. A
+hook with no matcher runs on every call, the direct one included, and turns nothing off; nor does an
+allow rule.
 
 Invalid arguments on a call to a tool the turn's request did not declare (called directly, or loaded
 by `select:` earlier in the same response) are refused with the tool's argument names and types, two
