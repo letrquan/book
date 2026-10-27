@@ -17,9 +17,11 @@
  *    by a signal leaves its socket behind.
  *
  * Each connection's first line must be an `auth` frame with the token, within 5 s; anything else
- * closes the connection without a word. After it come `user` and `control` frames. An accepted
- * `user` frame waits on the queue for the session (PR 3 delivers it); a dropped one is reported
- * and receipted back to its sender (`ingress-guard.ts`).
+ * closes the connection without a word. After it come `user` and `control` frames. A `user`
+ * frame's content is parsed as an envelope (`envelope.ts`), whose relay chain the ingress guard
+ * judges. An accepted one waits on the queue for the session to deliver it; a dropped one is
+ * reported and receipted back to its sender (`ingress-guard.ts`); one whose sender's permission
+ * class differs from this session's is refused with a receipt, until holding exists (#620 PR 5).
  *
  * The token lives in this object and in the key file, nowhere else: it is never logged, put in an
  * error, written to the registry record or exported to a child process.
@@ -39,7 +41,9 @@ import type {
   InboxStartResult,
   PeerDropReason,
   PeerMessageReceipt,
+  PeerPermissionClass,
 } from '../types/messaging.js';
+import { deriveHopToken, parseEnvelope } from './envelope.js';
 import {
   DROPPED_RECEIPT_REASON,
   DropReceiptCoalescer,
@@ -89,6 +93,8 @@ const SOCKET_NAME = /^(\d+)(?:-[0-9a-f]{8})?\.sock$/;
 const REAP_CONCURRENCY = 8;
 /** The sender key for a frame with no reply address: such senders share one bucket. */
 const ANONYMOUS_SENDER = '(no reply address)';
+/** The `reason` of a `refused` receipt for a message from the other permission class. */
+export const CROSS_CLASS_REFUSAL_REASON = 'permission class differs; holding is not available yet';
 
 type InboxLogger = { debug: (...args: unknown[]) => void; warn: (...args: unknown[]) => void };
 
@@ -118,6 +124,12 @@ export interface InboxServerOptions {
   onReceipt?: (receipt: PeerMessageReceipt) => void;
   /** Called with each drop the human should hear about (rate limited, `suppressed` counted). */
   onDropReport?: (report: DropReport) => void;
+  /**
+   * This session's permission class now (D5). A message whose envelope names the other class —
+   * or names none, which counts as `prompting` — is refused on arrival. Absent, nothing is refused
+   * for its class.
+   */
+  permissionClass?: () => PeerPermissionClass;
   /** Test seams for the limits. */
   limits?: Partial<ConnectionLimits> & { receiptTrailMs?: number };
 }
@@ -186,6 +198,7 @@ export class InboxServer {
   private readonly vettedDirs = new Set<string>();
   private server?: Server;
   private token?: string;
+  private ownHopToken?: string;
   private boundPath?: string;
   private keyFile?: string;
   private closed = false;
@@ -225,6 +238,14 @@ export class InboxServer {
     return this.keyFile;
   }
 
+  /**
+   * This session's hop token (`envelope.ts`), once the inbox is listening: the HMAC of its own
+   * address under its peer token. The token itself never leaves this object.
+   */
+  get hopToken(): string | undefined {
+    return this.ownHopToken;
+  }
+
   /** The accepted messages waiting for the session, oldest first. */
   queued(): readonly AcceptedPeerMessage[] {
     return [...this.queue];
@@ -238,6 +259,29 @@ export class InboxServer {
   /** The receipts other sessions sent back, oldest first. */
   receivedReceipts(): readonly PeerMessageReceipt[] {
     return [...this.receipts];
+  }
+
+  /**
+   * Tell a message's sender what became of it: `delivered` once its turn starts, `refused` when
+   * this session will not deliver it. Sent in the background, only to a reply address the
+   * registry vouches for; a message with no reply address gets nothing.
+   */
+  acknowledge(
+    message: AcceptedPeerMessage,
+    status: 'delivered' | 'refused',
+    reason?: string,
+  ): void {
+    const from = message.from;
+    if (from === undefined || this.closed) return;
+    this.track(
+      this.sendReceipt(from, {
+        type: 'control',
+        action: 'peer_message_status',
+        status,
+        ...(reason !== undefined ? { reason } : {}),
+        ...(message.msgId !== undefined ? { orig_msg_id: message.msgId } : {}),
+      }),
+    );
   }
 
   /** Bind the socket and publish the key. Never rejects; a failure is the result's message. */
@@ -390,6 +434,7 @@ export class InboxServer {
       throw new Error(`the inbox key could not be written (${result.status})`);
     }
     this.token = token;
+    this.ownHopToken = deriveHopToken(token, encodeUdsAddress(socketPath));
   }
 
   /**
@@ -493,9 +538,19 @@ export class InboxServer {
   }
 
   private handleUser(frame: UserFrame): void {
+    const parsed = parseEnvelope(frame.message.content);
+    // An envelope that names another reply address than its frame is not attributed: the model
+    // replies to the envelope's `from`, and a receipt goes to the frame's, so a peer could
+    // otherwise point the reply at a third session.
+    const envelope =
+      parsed && (parsed.attributes.from === undefined || parsed.attributes.from === frame.from)
+        ? parsed
+        : undefined;
     const verdict = this.guard.admit({
       senderKey: frame.from ?? ANONYMOUS_SENDER,
       body: frame.message.content,
+      hopChain: envelope?.attributes.hopChain,
+      ownTokens: new Set(this.ownHopToken !== undefined ? [this.ownHopToken] : []),
       queued: this.queue.length,
     });
     if (!verdict.admitted) {
@@ -504,11 +559,18 @@ export class InboxServer {
     }
     const message: AcceptedPeerMessage = {
       content: frame.message.content,
+      ...(envelope !== undefined ? { envelope } : {}),
       ...(frame.from !== undefined ? { from: frame.from } : {}),
       ...(frame.msg_id !== undefined ? { msgId: frame.msg_id } : {}),
       ...(frame.priority !== undefined ? { priority: frame.priority } : {}),
       receivedAt: this.now(),
     };
+    const ownClass = this.options.permissionClass?.();
+    if (ownClass !== undefined && senderClassOf(message) !== ownClass) {
+      this.log.warn('peer message refused: permission class differs', { from: frame.from });
+      this.acknowledge(message, 'refused', CROSS_CLASS_REFUSAL_REASON);
+      return;
+    }
     this.queue.push(message);
     this.options.onMessage?.(message);
   }
@@ -690,6 +752,14 @@ export async function inboxStartupNotices(start: Promise<InboxStartResult>): Pro
       `⚠  Cross-session messaging passed over a socket directory: ${message}. ` +
       `Using ${dirname(result.socketPath)} instead.`,
   );
+}
+
+/**
+ * The permission class a message's sender asserted. A message with none — an unattributed one, or
+ * an envelope without `from-mode` — counts as `prompting`, so it can never steer a bypass session.
+ */
+export function senderClassOf(message: AcceptedPeerMessage): PeerPermissionClass {
+  return message.envelope?.attributes.fromMode ?? 'prompting';
 }
 
 function receiptOf(frame: PeerMessageStatusFrame, receivedAt: number): PeerMessageReceipt {

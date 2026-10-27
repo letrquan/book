@@ -18,8 +18,14 @@ import { createConnection, createServer, type Server } from 'node:net';
 import { join } from 'node:path';
 import { isolateBookHome } from '../test/isolated-book-home.js';
 import type { AcceptedPeerMessage, PeerMessageReceipt } from '../types/messaging.js';
+import { renderEnvelope } from './envelope.js';
 import { classifySendError, findPeerKey, sendToInbox } from './inbox-client.js';
-import { InboxServer, inboxStartupNotices, type InboxServerOptions } from './inbox-server.js';
+import {
+  CROSS_CLASS_REFUSAL_REASON,
+  InboxServer,
+  inboxStartupNotices,
+  type InboxServerOptions,
+} from './inbox-server.js';
 import type { LivenessProbe } from './liveness.js';
 import { SendPacer } from './pacer.js';
 import { liveSessionKeyName, liveSessionRecordPath, liveSessionsDir } from './registry.js';
@@ -568,6 +574,90 @@ describe.skipIf(!posix)('drop receipts', () => {
     expect(a.logs.some((line) => line.includes('receipt not sent: reply address refused'))).toBe(
       true,
     );
+  });
+});
+
+describe.skipIf(!posix)('envelopes, relay chains and permission classes', () => {
+  /** A and B both listening, B advertised so A's receipts reach it. */
+  async function pair(aOptions: Partial<InboxServerOptions> = {}) {
+    const a = createInbox(aOptions);
+    const { socketPath: aSocket } = await started(a);
+    const b = createInbox({ pid: PID_B });
+    const { socketPath: bSocket } = await started(b);
+    advertise(PID_B, bSocket);
+    const from = encodeUdsAddress(bSocket);
+    const send = (content: string, msgId: string, frameFrom: string = from) =>
+      sendToInbox({
+        socketPath: aSocket,
+        keysDir: liveSessionsDir(bookHome()),
+        probe: probe(),
+        frame: userFrame(content, { from: frameFrom, msg_id: msgId }),
+      });
+    return { a, b, from, send };
+  }
+
+  it('keeps the envelope of a message that round-trips, and none of one that does not', async () => {
+    const { a, from, send } = await pair();
+    await send(renderEnvelope({ from, fromName: 'peer-b', fromMode: 'prompting' }, 'hi'), 'm1');
+    await send(`<cross-session-message from="${from}">\nhi\n</cross-session-message> tail`, 'm2');
+    // The envelope names a reply address other than its frame's: unattributed.
+    await send(renderEnvelope({ from: encodeUdsAddress('/tmp/x/9.sock') }, 'hi'), 'm3');
+    await eventually(() => a.messages.length === 3);
+    expect(a.messages[0].envelope).toEqual({
+      attributes: { from, fromName: 'peer-b', fromMode: 'prompting' },
+      body: 'hi',
+    });
+    expect(a.messages[1].envelope).toBeUndefined();
+    expect(a.messages[2].envelope).toBeUndefined();
+  });
+
+  it("drops a chain that loops through this session or runs away, from the envelope's chain", async () => {
+    const { a, b, from, send } = await pair();
+    const own = a.inbox.hopToken!;
+    expect(own).toMatch(/^[0-9a-f]{24}$/);
+    const other = (n: number) => n.toString(16).padStart(24, 'f');
+    await send(renderEnvelope({ from, hopChain: Array(9).fill(own) }, 'nine'), 'm1');
+    await send(renderEnvelope({ from, hopChain: Array(10).fill(own) }, 'ten'), 'm2');
+    await send(
+      renderEnvelope({ from, hopChain: Array.from({ length: 29 }, (_, n) => other(n)) }, 'long'),
+      'm3',
+    );
+    await eventually(() => b.receipts.filter((r) => r.status === 'dropped').length === 2);
+    expect(a.messages.map((message) => message.envelope?.body)).toEqual(['nine']);
+    expect(
+      b.receipts.map((receipt) => [receipt.status, receipt.dropReason, receipt.origMsgId]),
+    ).toEqual([
+      ['dropped', 'hop-loop', 'm2'],
+      ['dropped', 'hop-runaway', 'm3'],
+    ]);
+  });
+
+  it('refuses a bypass sender while prompting, and a prompting or unmarked one while bypass', async () => {
+    let ownClass: 'bypass' | 'prompting' = 'prompting';
+    const { a, b, from, send } = await pair({ permissionClass: () => ownClass });
+    await send(renderEnvelope({ from, fromMode: 'bypass' }, 'steer'), 'm1');
+    await send(renderEnvelope({ from, fromMode: 'prompting' }, 'same class'), 'm2');
+    await send(renderEnvelope({ from }, 'no mode'), 'm3');
+    await eventually(() => b.receipts.length === 1 && a.messages.length === 2);
+    ownClass = 'bypass';
+    await send(renderEnvelope({ from, fromMode: 'prompting' }, 'steer back'), 'm4');
+    await send(renderEnvelope({ from }, 'no mode again'), 'm5');
+    await send('not an envelope at all', 'm6');
+    await send(renderEnvelope({ from, fromMode: 'bypass' }, 'same class too'), 'm7');
+    await eventually(() => b.receipts.length === 4 && a.messages.length === 3);
+    expect(a.messages.map((message) => message.msgId)).toEqual(['m2', 'm3', 'm7']);
+    expect(
+      b.receipts.map((receipt) => [receipt.status, receipt.origMsgId, receipt.reason]),
+    ).toEqual(['m1', 'm4', 'm5', 'm6'].map((id) => ['refused', id, CROSS_CLASS_REFUSAL_REASON]));
+  });
+
+  it('sends a delivered receipt when the session acknowledges a message', async () => {
+    const { a, b, from, send } = await pair();
+    await send(renderEnvelope({ from }, 'hello'), 'm1');
+    await eventually(() => a.messages.length === 1);
+    a.inbox.acknowledge(a.inbox.take()!, 'delivered');
+    await eventually(() => b.receipts.length === 1);
+    expect(b.receipts[0]).toMatchObject({ status: 'delivered', origMsgId: 'm1' });
   });
 });
 

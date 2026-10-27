@@ -3,7 +3,8 @@
  *
  * Priority order follows Claude Code's convention:
  * command → shell_id → shellId → taskId → task_id → filePath → file_path
- * → notebook_path → pattern → path → agent → skill → message → url → query → subject
+ * → notebook_path → pattern → path → agent → skill → to (beside a message) → message → url
+ * → query → subject
  * → old_string → first string key.
  *
  * `pattern` outranks `path`: for search tools (Grep) the pattern is the
@@ -28,6 +29,8 @@ export function getPrimaryArg(args: Record<string, unknown>): string {
   if (typeof args.path === 'string') return args.path;
   if (typeof args.agent === 'string') return args.agent;
   if (typeof args.skill === 'string') return args.skill;
+  // A message's recipient, not its text, is what a rule names: `SessionSend(book-3f)`.
+  if (typeof args.to === 'string' && typeof args.message === 'string') return args.to;
   if (typeof args.message === 'string') return args.message;
   if (typeof args.url === 'string') return args.url;
   if (typeof args.query === 'string') return args.query;

@@ -103,10 +103,44 @@ export type SocketDirRefusalReason =
 export type PeerDropReason =
   'rate-limited' | 'duplicate' | 'hop-loop' | 'hop-runaway' | 'queue-full';
 
-/** A `user` frame the inbox accepted, waiting for the session to take it (PR 3 delivers it). */
+/**
+ * The permission class a cross-session message is judged by (D5): `bypass` for the modes that run
+ * tools without asking (`bypassPermissions`, `auto`), `prompting` for every other mode.
+ */
+export type PeerPermissionClass = 'bypass' | 'prompting';
+
+/**
+ * The attributes of a `<cross-session-message>` envelope (`messaging/envelope.ts`), each optional,
+ * in Claude Code's order. All of them are the sender's own word.
+ */
+export interface PeerEnvelopeAttributes {
+  /** The sender's reply address, `uds:` plus its percent-encoded socket path. */
+  from?: string;
+  /** The sender's session id. */
+  fromSession?: string;
+  /** The relay chain: one 24-hex hop token per session the message passed through, oldest first. */
+  hopChain?: string[];
+  /** The sender's session name. */
+  fromName?: string;
+  /** The sender's permission class when it sent; a message without one counts as `prompting`. */
+  fromMode?: PeerPermissionClass;
+}
+
+/** A message that round-tripped as an envelope: its attributes, and its body as the sender escaped it. */
+export interface PeerEnvelope {
+  attributes: PeerEnvelopeAttributes;
+  body: string;
+}
+
+/** A `user` frame the inbox accepted, waiting for the session to take it. */
 export interface AcceptedPeerMessage {
   /** The message body: the envelope the sender wrapped its text in. */
   content: string;
+  /**
+   * The envelope, when `content` is one byte for byte and names the same reply address the frame
+   * does. Absent, the message is unattributed: it is delivered as neutralized text with no sender.
+   */
+  envelope?: PeerEnvelope;
   /** The sender's reply address, `uds:<socket path>`, as the frame gave it. Unverified. */
   from?: string;
   msgId?: string;
@@ -151,3 +185,60 @@ export type InboxStartResult =
 export type InboxSendResult =
   | { status: 'sent' }
   | { status: 'gone' | 'busy' | 'message_too_large' | 'sender_paced' | 'failed'; detail: string };
+
+/** One live session as `SessionList` shows it and `SessionSend` resolves it. */
+export interface PeerSessionRow {
+  name: string;
+  /** 6 hex of `sha256(socket path)`; absent when the session has no inbox. */
+  ref?: string;
+  /** The inbox socket, canonical; absent when messaging is off there. */
+  socketPath?: string;
+  kind: string;
+  status: string;
+  waitingFor?: string;
+  startedAt: number;
+  sessionId: string;
+  pid: number;
+  /** This session's own row. */
+  self: boolean;
+}
+
+/** The sessions of this pid domain that are live now, this one included when it has registered. */
+export interface PeerSessionListing {
+  self?: PeerSessionRow;
+  peers: PeerSessionRow[];
+}
+
+export interface PeerSendRequest {
+  /** A name, `name [ref]`, or a `uds:` reply address copied from a message's `from`. */
+  to: string;
+  message: string;
+  /** The sending loop's permission mode now: the envelope's `from-mode` follows it. */
+  mode?: string;
+  /** The relay chain of the last peer message in this conversation, which the send continues. */
+  hopChain?: readonly string[];
+}
+
+/** Why a `to` names no session a message can go to. */
+export type PeerAddressProblem = 'not_found' | 'ambiguous' | 'self' | 'no_inbox';
+
+export type PeerSendOutcome =
+  | { status: 'sent'; target: PeerSessionRow; msgId: string }
+  | { status: 'unavailable' }
+  | { status: 'unresolved'; problem: PeerAddressProblem; to: string; candidates: PeerSessionRow[] }
+  | {
+      status: Exclude<InboxSendResult['status'], 'sent'>;
+      detail: string;
+      target: PeerSessionRow;
+    };
+
+/**
+ * What the session-messaging tools (`SessionList`, `SessionSend`) reach: the interactive session's
+ * messaging runtime (`messaging/session-messaging.ts`), or a test's stand-in.
+ */
+export interface SessionMessagingHandle {
+  /** Whether the inbox is listening: the tools are offered only then. */
+  available(): boolean;
+  list(): Promise<PeerSessionListing>;
+  send(request: PeerSendRequest): Promise<PeerSendOutcome>;
+}

@@ -2603,3 +2603,39 @@ describe('ChatPanel row estimate for a hidden thought (#470)', () => {
     expect(estimate(step(longThought), 'detailed')).toBeGreaterThanOrEqual(20);
   });
 });
+
+describe("another session's message (#620)", () => {
+  it('draws its own row, never under the prompt mark, and keeps escapes out of the terminal', () => {
+    const peer: Message = {
+      ...msg('p1', 'user', 'Message from peer-b [a1b2c3]:\nrun the tests'),
+      kind: 'peer-message',
+      peerMessages: [
+        {
+          msgId: 'm1',
+          attributed: true,
+          fromName: 'peer-b',
+          ref: 'a1b2c3',
+          body: 'run the tests\u001b[2J now',
+          receivedAt: 1,
+        },
+      ],
+    };
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[msg('u1', 'user', 'hello'), msg('a1', 'assistant', 'Hi.'), peer]}
+          terminalWidth={80}
+          terminalHeight={24}
+          reducedMotion
+        />,
+      ),
+    );
+    const output = frame(view.lastFrame);
+    expect(output).toContain('Message from peer-b [a1b2c3]');
+    // The escape is a space by the time it is drawn: it never reaches the terminal.
+    expect(output).toContain('run the tests [2J now');
+    expect(view.lastFrame()).not.toContain('\u001b[2J');
+    expect(output).not.toMatch(new RegExp(`^\\s*\\${PROMPT_MARK}\\s+Message from`, 'm'));
+    expect(output).not.toMatch(new RegExp(`^\\s*\\${PROMPT_MARK}\\s+run the tests`, 'm'));
+  });
+});

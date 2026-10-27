@@ -645,6 +645,45 @@ describe('SessionStore', () => {
     expect(new SessionStore(dir).load(id).meta.name).toBe('Fix the build');
   });
 
+  it("round-trips another session's message turn, and never names a session after it (#620)", () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    const peerMessages = [
+      {
+        msgId: 'm1',
+        attributed: true,
+        from: 'uds:/tmp/socks/4343.sock',
+        fromName: 'peer-b',
+        ref: 'a1b2c3',
+        fromMode: 'prompting' as const,
+        hopChain: ['a'.repeat(24)],
+        body: 'run the tests',
+        receivedAt: 1,
+      },
+    ];
+    s.append(id, {
+      type: 'user',
+      eventId: 'peer-1',
+      timestamp: 1,
+      data: {
+        id: 'peer-1',
+        content: 'Message from peer-b:\nrun the tests',
+        contextContent: 'Another Book session sent a message: …',
+        kind: 'peer-message',
+        peerMessages,
+      },
+    });
+    expect(s.findById(id)?.name).toBeUndefined();
+    const loaded = new SessionStore(dir).load(id);
+    expect(loaded.meta.name).toBeUndefined();
+    expect(loaded.history[0]).toMatchObject({
+      id: 'peer-1',
+      kind: 'peer-message',
+      contextContent: 'Another Book session sent a message: …',
+      peerMessages,
+    });
+  });
+
   it('applies append-only metadata patches without counting them as messages', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });

@@ -10,6 +10,7 @@ import {
   tryRealPath,
   type SkippedProjectFile,
 } from './repo-containment.js';
+import { neutralizeTags } from './prompt-tags.js';
 import { isOutside } from './tools/path-utils.js';
 import { reachesUncPath } from './unc-path.js';
 
@@ -201,13 +202,16 @@ export function collectSkippedInstructionNotices(workspace: string, homeDir?: st
   );
 }
 
+/** The fence's own tags: a source body may hold any other markup as written. */
+const FENCE_TAGS = ['project-instructions', 'source'];
+
 /**
  * Neutralize fence markup a source file might contain. Without this a repo file
  * could close the fence early — or forge a `<source>` header — and have the rest
  * of its body read as prompt-level instruction rather than workspace policy.
  */
 function neutralizeFenceTags(body: string): string {
-  return body.replace(/<(\/?)(project-instructions|source)\b/gi, '&lt;$1$2');
+  return neutralizeTags(body, { tags: FENCE_TAGS, style: 'entity' });
 }
 
 /**

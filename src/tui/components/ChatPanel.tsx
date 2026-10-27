@@ -13,6 +13,7 @@ import type {
 } from '../../session/agent-interactions.js';
 import { AgentMessage, managedAgentTracesEqualForMessage } from './AgentMessage.js';
 import { UserMessage, userTurnRows } from './UserMessage.js';
+import { PeerMessageRow, peerMessageRows } from './PeerMessageRow.js';
 import {
   createQuietCollapser,
   createShellPartsMemo,
@@ -208,10 +209,16 @@ export function estimateTimelineRows(
   // it): the margin belongs to the turn, so an unmeasured one is estimated with
   // it. The transcript's first turn has no margin — measuring corrects that row.
   if (entry.role === 'user') {
-    return (
-      userTurnRows(entry.content, terminalWidth, entry.timestamp, entry.attachments?.length ?? 0) +
-      (density === 'tight' ? 0 : 1)
-    );
+    const rows =
+      entry.kind === 'peer-message'
+        ? peerMessageRows(entry.peerMessages ?? [], terminalWidth)
+        : userTurnRows(
+            entry.content,
+            terminalWidth,
+            entry.timestamp,
+            entry.attachments?.length ?? 0,
+          );
+    return rows + (density === 'tight' ? 0 : 1);
   }
   // The compact transcript draws no thought, whatever its length.
   const content = quietTools ? withoutThoughts(entry.content) : entry.content;
@@ -538,16 +545,25 @@ export function ChatPanelInner({
               // One blank row, the same as between any two items: the prompt mark
               // and its colour are what set your turn apart from the reply above.
               <Box flexDirection="column" marginTop={index > 0 && density !== 'tight' ? 1 : 0}>
-                {screenReader ? (
+                {screenReader && message.kind !== 'peer-message' ? (
                   <ScreenReaderRoleLabel role="user" timestamp={message.timestamp} />
                 ) : null}
-                <UserMessage
-                  content={message.content}
-                  attachments={message.attachments}
-                  terminalWidth={terminalWidth}
-                  timestamp={message.timestamp}
-                  screenReader={screenReader}
-                />
+                {message.kind === 'peer-message' ? (
+                  // Another session's message (#620) is not the user's: never the prompt mark.
+                  <PeerMessageRow
+                    peers={message.peerMessages ?? []}
+                    terminalWidth={terminalWidth}
+                    screenReader={screenReader}
+                  />
+                ) : (
+                  <UserMessage
+                    content={message.content}
+                    attachments={message.attachments}
+                    terminalWidth={terminalWidth}
+                    timestamp={message.timestamp}
+                    screenReader={screenReader}
+                  />
+                )}
               </Box>
             );
           } else {

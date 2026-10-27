@@ -14,6 +14,7 @@ import {
   type ScanShell,
 } from './tools/shell-chaining.js';
 import { strictRmOfMarkdownUnder } from './tools/strict-rm.js';
+import { UNPROMPTED_READ_TOOLS } from './tools/tool-capabilities.js';
 import {
   canonicalizePath,
   isBookLocalSettingsPath,
@@ -1414,10 +1415,11 @@ export function evaluatePermissionDetail(
 }
 
 /**
- * Tools that never prompt: the agent's checklist, and the advisor the user chose with
- * `/advisor` (it reads the conversation and acts on nothing). A `deny` rule still blocks
+ * Tools that never prompt: the agent's checklist, the advisor the user chose with
+ * `/advisor` (it reads the conversation and acts on nothing), and the read-only tools that report
+ * on the session's surroundings (`UNPROMPTED_READ_TOOLS`). A `deny` rule still blocks
  * them and an `ask` rule still asks, and `dontAsk` does not refuse them, since it only
  * refuses what it would have had to ask about. (A write into the memory directory is
  * allowed separately, with source `memory`.)
  */
-export const ALWAYS_ALLOWED_TOOLS = new Set(['TodoWrite', 'Advisor']);
+export const ALWAYS_ALLOWED_TOOLS = new Set(['TodoWrite', 'Advisor', ...UNPROMPTED_READ_TOOLS]);

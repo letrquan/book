@@ -103,6 +103,7 @@ export function persistHistory(
               kind: message.kind,
               includeInContext: message.includeInContext,
               agentNotifications: message.agentNotifications,
+              peerMessages: message.peerMessages,
               fileObservations: message.fileObservations,
             }
           : {

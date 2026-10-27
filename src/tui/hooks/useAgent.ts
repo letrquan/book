@@ -106,6 +106,7 @@ import { SessionRuntime } from '../../session/runtime.js';
 import { seedShellIds } from '../../jobs/shell-ids.js';
 import { createInteractiveAgentSession } from '../../session/interactive-session.js';
 import type { LiveSessionReporter } from '../../messaging/writer.js';
+import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/session-messaging.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
 import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
 import type { BackgroundShellRecord } from '../../types/runtime.js';
@@ -150,6 +151,8 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
   additionalTools?: () => ToolDefinition[];
   /** This process's live-session record (#620); the TUI's host owns its start and removal. */
   liveSession?: LiveSessionReporter;
+  /** This process's messaging runtime (#620), when messaging is on; the TUI's host owns it. */
+  messaging?: SessionMessaging;
   /**
    * Warnings about this launch, shown once as local rows after the loaded transcript. Not
    * persisted and not part of the model's context, so a resumed session shows the current
@@ -281,6 +284,9 @@ interface SendMessageOptions {
   sessionNameExact?: string;
   kind?: Message['kind'];
   agentNotifications?: Message['agentNotifications'];
+  peerMessages?: Message['peerMessages'];
+  /** Called once the send is accepted, before its turn is prepared: the turn has started. */
+  onAccepted?: () => void;
   attachments?: Message['attachments'];
   /** Managed-continuation linkage back to the originating root and parent run. */
   rootRunId?: string;
@@ -406,11 +412,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [mode, setMode] = useState<PermissionMode>(() =>
     resolvePermissionMode(config.settings, session.permissionMode),
   );
+  // What this session sends is marked with its permission class, and what it accepts is judged by
+  // it (#620): the messaging runtime follows the mode.
+  const messaging = session.messaging;
+  useEffect(() => {
+    messaging?.setPermissionMode(mode);
+  }, [messaging, mode]);
   const [agentSession] = useState(() =>
     createInteractiveAgentSession({
       runtime: createSeededRuntime(session, initialTranscript),
       additionalTools: session.additionalTools,
       liveSession: session.liveSession,
+      messaging: session.messaging,
     }),
   );
   // The session's `/goal` as the status line shows it. The runtime owns the goal and the loop
@@ -969,6 +982,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         operationIsCurrent = control.isCurrent;
         activeRunContext = control.runContext;
         activeSignal = control.signal;
+        messageOptions?.onAccepted?.();
         // The plan this turn started from, read from the runtime — the loop
         // mutates that array in place, so it is the plan the turn is actually
         // working through, not a render-old copy of it.
@@ -1029,7 +1043,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               options: {
                 trigger: 'auto',
                 preContextTokens: usagePressureTokens(hostUsageRef.current),
-                upcomingUserIntent: messageOptions?.contextMessage ?? userMessage,
+                // Another session's message is not the user's next message (#620).
+                upcomingUserIntent:
+                  messageOptions?.kind === 'peer-message'
+                    ? undefined
+                    : (messageOptions?.contextMessage ?? userMessage),
                 // Esc on this row's "Esc to cancel" must stop the reducer, not only the send:
                 // without the turn's signal the model kept being called after the send was gone.
                 signal: control.signal,
@@ -1075,6 +1093,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // project command is repository-authored text, and for a builtin is Book's own.
         message.derivedContent = commandContext || messageOptions?.derived ? true : undefined;
         message.agentNotifications = messageOptions?.agentNotifications;
+        message.peerMessages = messageOptions?.peerMessages;
         message.attachments = messageOptions?.attachments;
         activeUserMessage = message;
         return message;
@@ -1699,6 +1718,54 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         },
       );
       return didSendMessageComplete(result);
+    },
+    [sendMessage],
+  );
+
+  /**
+   * Deliver other sessions' messages (#620) as one `peer-message` turn. The batch is taken off the
+   * inbox's queue only once the turn has started — a send the session cannot start now leaves the
+   * messages queued for the next try — and its senders hear `delivered` then.
+   */
+  const sendPeerMessages = useCallback(
+    async (batch: PeerDeliveryBatch): Promise<boolean> => {
+      if (!messaging) return false;
+      if (!batch.turn) {
+        messaging.commitDelivery(batch);
+        return true;
+      }
+      let committed = false;
+      await sendMessage(batch.turn.display, undefined, {
+        contextMessage: batch.turn.context,
+        kind: 'peer-message',
+        peerMessages: batch.turn.peerMessages,
+        onAccepted: () => {
+          if (committed) return;
+          committed = true;
+          messaging.commitDelivery(batch);
+        },
+      });
+      return committed;
+    },
+    [sendMessage, messaging],
+  );
+
+  /**
+   * Tell the model what came of messages this session sent (#620): the `[Cross-session delivery
+   * notice]` text, as a host turn the transcript does not show; the human reads the warning row.
+   */
+  const sendPeerDeliveryNotice = useCallback(
+    async (notice: string): Promise<boolean> => {
+      // Told once the turn starts: a turn the user then cancels must not bring the notice back.
+      let accepted = false;
+      await sendMessage('Cross-session delivery notice.', undefined, {
+        contextMessage: notice,
+        kind: 'agent-notification',
+        onAccepted: () => {
+          accepted = true;
+        },
+      });
+      return accepted;
     },
     [sendMessage],
   );
@@ -2710,6 +2777,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     send,
     sendAgentCompletions,
     sendBackgroundShellCompletion,
+    sendPeerMessages,
+    sendPeerDeliveryNotice,
     startHostRun,
     setGoal,
     clearGoal,

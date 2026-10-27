@@ -2,7 +2,10 @@ import { createDefaultRegistry } from '../tools/registry.js';
 import { AgentSession, type AgentSessionDependencies } from './agent-session.js';
 import { runSessionStart } from './lifecycle.js';
 import type { ToolDefinition } from '../types/tools.js';
+import type { SessionMessagingHandle } from '../types/messaging.js';
 import { liveSessionStateOf, type LiveSessionReporter } from '../messaging/writer.js';
+import { createSessionListTool } from '../tools/session-list.js';
+import { createSessionSendTool } from '../tools/session-send.js';
 
 export interface InteractiveAgentSessionDependencies extends AgentSessionDependencies {
   /**
@@ -17,13 +20,22 @@ export interface InteractiveAgentSessionDependencies extends AgentSessionDepende
    * Only the TUI's host passes one; a session without it registers nothing.
    */
   liveSession?: LiveSessionReporter;
+  /**
+   * This process's messaging runtime (#620), when messaging is on. Its tools, `SessionList` and
+   * `SessionSend`, join every send's registry, and only this session's: print mode, the SDK and
+   * managed agents build registries without it.
+   */
+  messaging?: SessionMessagingHandle;
 }
 
 /** Compose the interactive tool surface outside React host code. */
 export function createInteractiveAgentSession(
   dependencies: InteractiveAgentSessionDependencies = {},
 ): AgentSession {
-  const { additionalTools, liveSession, ...sessionDependencies } = dependencies;
+  const { additionalTools, liveSession, messaging, ...sessionDependencies } = dependencies;
+  const messagingTools = messaging
+    ? [createSessionListTool(messaging), createSessionSendTool(messaging)]
+    : [];
   const startRunner = sessionDependencies.sessionStartRunner ?? runSessionStart;
   const session = new AgentSession({
     ...sessionDependencies,
@@ -49,6 +61,7 @@ export function createInteractiveAgentSession(
               }
             : {}),
         });
+        if (messagingTools.length > 0) registry.registerAll(messagingTools);
         const extra = additionalTools?.() ?? [];
         if (extra.length > 0) registry.registerAll(extra);
         return registry;

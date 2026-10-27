@@ -10,6 +10,7 @@ import type {
 } from '../types/tools.js';
 import { validateUserQuestionResponse } from './ask-user-question.js';
 import { toolFailure, toolSuccess } from './result.js';
+import { UNPROMPTED_READ_TOOLS } from './tool-capabilities.js';
 
 export const READ_ONLY_PLAN_TOOLS = new Set([
   'Read',
@@ -32,6 +33,7 @@ export const READ_ONLY_PLAN_TOOLS = new Set([
   'ExitPlanMode',
   'AskUserQuestion',
   'Advisor',
+  ...UNPROMPTED_READ_TOOLS,
   'AgentList',
   'AgentGet',
   'AgentRead',

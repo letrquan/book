@@ -728,7 +728,13 @@ function clipText(text: string, maxChars: number): string {
   return `${text.slice(0, head)}${marker}${text.slice(text.length - (room - head))}`;
 }
 
+/**
+ * Who a message is from, as the summarizer reads it. Another session's message (#620) sits in a
+ * user turn but is not the user's: labelled `User`, a peer's request could come out of a summary as
+ * one of the user's own constraints.
+ */
 function messageLabel(message: Message): string {
+  if (message.kind === 'peer-message') return 'Another session (not the user)';
   return message.role === 'user' ? 'User' : 'Assistant';
 }
 
@@ -1620,7 +1626,7 @@ function carriedTurnsTokens(carried: CarriedTurns): number {
 /**
  * A user turn whose prose the user actually wrote: not a resolved slash-command
  * body or a delegated task prompt (both arrive as `role: 'user'`), not a
- * checkpoint or a notification, and not tool traffic.
+ * checkpoint, a notification or another session's message, and not tool traffic.
  */
 export function isUserAuthored(message: Message): boolean {
   if (message.role !== 'user') return false;
@@ -1628,6 +1634,7 @@ export function isUserAuthored(message: Message): boolean {
   if (message.kind && message.kind !== 'conversation') return false;
   if (message.toolCalls?.length || message.toolResults?.length) return false;
   if (message.agentNotifications?.length) return false;
+  if (message.peerMessages?.length) return false;
   return true;
 }
 

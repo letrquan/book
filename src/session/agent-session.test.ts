@@ -607,6 +607,46 @@ describe('AgentSession', () => {
     });
   });
 
+  it("persists another session's message with its structured rows, and runs no user hooks for it", async () => {
+    const records: SessionRecord[] = [];
+    let options: Parameters<AgentLoopRunner>[6];
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, _prompt, history, _callbacks, _mode, nextOptions) => {
+        options = nextOptions;
+        return history;
+      },
+    });
+    const peerMessages: Message['peerMessages'] = [
+      { msgId: 'm1', attributed: true, fromName: 'peer-b', body: 'run the tests', receivedAt: 1 },
+    ];
+    const contextMessage = 'Another Book session sent a message:\n<cross-session-message>…';
+    const result = await session.send({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      displayMessage: 'Message from peer-b:\nrun the tests',
+      contextMessage,
+      createUserMessage: () => ({
+        id: 'peer-1',
+        role: 'user',
+        content: 'Message from peer-b:\nrun the tests',
+        contextContent: contextMessage,
+        includeInContext: true,
+        kind: 'peer-message',
+        peerMessages,
+        timestamp: 10,
+      }),
+      history: [],
+      sessionId: 'session-1',
+      timelineStore: { append: (_id, record) => records.push(record) },
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+    expect(result.status).toBe('completed');
+    expect(options).toMatchObject({ userMessageKind: 'peer-message', skipUserPromptHooks: true });
+    expect(records.find((record) => record.type === 'user')).toMatchObject({
+      data: { kind: 'peer-message', contextContent: contextMessage, peerMessages },
+    });
+  });
+
   it('routes synthetic completion context through the send pipeline without user hooks', async () => {
     let prompt = '';
     let options: Parameters<AgentLoopRunner>[6];
@@ -2950,6 +2990,12 @@ describe('AgentSession.recordUserMessage — session names (#446)', () => {
     const unnamed = await recordTurn({ kind: 'agent-notification' });
     // `undefined` stays `undefined`: the TUI writes this straight into its name state, and
     // "no name yet" must not become an empty-string name.
+    expect(unnamed.result.sessionName).toBeUndefined();
+    expect(unnamed.patches).toEqual([]);
+  });
+
+  it("never names a session after another session's message (#620)", async () => {
+    const unnamed = await recordTurn({ kind: 'peer-message' });
     expect(unnamed.result.sessionName).toBeUndefined();
     expect(unnamed.patches).toEqual([]);
   });

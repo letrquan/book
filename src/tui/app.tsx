@@ -44,6 +44,7 @@ import { useManagedAgents } from './hooks/useManagedAgents.js';
 import { useBackgroundShells } from './hooks/useBackgroundShells.js';
 import { useGitStatus } from './hooks/useGitStatus.js';
 import { useAgentCompletionDelivery } from './hooks/useAgentCompletionDelivery.js';
+import { usePeerMessageDelivery } from './hooks/usePeerMessageDelivery.js';
 import { SubagentPanel } from './components/SubagentPanel.js';
 import { SubagentDetail } from './components/SubagentDetail.js';
 import { BackgroundShellDetail } from './components/BackgroundShellDetail.js';
@@ -64,6 +65,7 @@ import type { ImageAttachment } from '../types/messages.js';
 import type { CommandContext } from '../types/commands.js';
 import type { RewindSnapshotStoreInterface, SessionStoreInterface } from '../types/sessions.js';
 import type { LiveSessionReporter } from '../messaging/writer.js';
+import type { SessionMessaging } from '../messaging/session-messaging.js';
 import type { SessionBootstrap } from '../session/resolve.js';
 import type { InkFlushSync } from '../cli/ink-renderer.js';
 import { displaySessionName } from '../session/name.js';
@@ -283,6 +285,8 @@ interface AppProps {
     createdSessions?: Set<string>;
     /** This process's live-session record (#620), written and removed by `cli/run.ts`. */
     liveSession?: LiveSessionReporter;
+    /** This process's messaging runtime (#620), when messaging is on; started and closed by `cli/run.ts`. */
+    messaging?: SessionMessaging;
   };
   redrawViewport?: () => void;
   /**
@@ -394,6 +398,8 @@ export function App({
     send,
     sendAgentCompletions,
     sendBackgroundShellCompletion,
+    sendPeerMessages,
+    sendPeerDeliveryNotice,
     startHostRun,
     setGoal,
     clearGoal,
@@ -1294,6 +1300,15 @@ export function App({
     editingQueuedInput ||
     managedAgents.surface !== 'main',
   );
+
+  usePeerMessageDelivery({
+    messaging: session.messaging,
+    // The user's own queued follow-ups go first.
+    blocked: queueDrainBlocked || queuedInputs.length > 0,
+    deliver: sendPeerMessages,
+    notify: sendPeerDeliveryNotice,
+    warn: addLocalMessage,
+  });
 
   const scheduleShellCompletionRetry = useCallback(() => {
     if (shellCompletionRetryTimerRef.current) {
