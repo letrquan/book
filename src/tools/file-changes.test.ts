@@ -7,6 +7,7 @@ import {
   rmSync,
   symlinkSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -98,12 +99,33 @@ describe('changed-on-disk detection (#620 4a)', () => {
   it('reports a change again after the file went back to what the model saw in between', async () => {
     const file = write('a.ts', 'A\n');
     await observeFile(ctx, file, 'read');
+    // Every write lands on one mtime, as same-size writes inside a coarse mtime tick do (Windows,
+    // FAT, network filesystems): only the racy-clean rule can tell them apart.
+    const tick = new Date();
+    const rewrite = (text: string) => {
+      writeFileSync(file, text);
+      utimesSync(file, tick, tick);
+    };
 
-    writeFileSync(file, 'B\n');
+    rewrite('B\n');
     expect(await collect()).toHaveLength(1);
-    writeFileSync(file, 'A\n');
+    rewrite('A\n');
     expect(await collect()).toEqual([]);
-    writeFileSync(file, 'B\n');
+    rewrite('B\n');
+    expect(await collect()).toHaveLength(1);
+  });
+
+  it('reads a file replaced by a rename again, though its size and old mtime match', async () => {
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    const file = write('a.ts', 'A\n');
+    utimesSync(file, old, old);
+    await observeFile(ctx, file, 'read');
+    expect(await collect()).toEqual([]);
+
+    const staged = write('a.ts.tmp', 'B\n');
+    utimesSync(staged, old, old);
+    renameSync(staged, file);
+
     expect(await collect()).toHaveLength(1);
   });
 

@@ -5,9 +5,12 @@
  * fail on the stale-file check.
  *
  * Judged against the observation ledger (`file-provenance.ts`), so the model's own edits — which
- * re-observe the file — never count. Each change is reported once. A file whose size and mtime
- * have not moved since it was last judged is not read again, so a quiet turn costs one `stat` per
- * observed file.
+ * re-observe the file — never count. Each change is reported once. A file whose size, mtime and
+ * inode have not moved since it was last judged is not read again, so a quiet turn costs one `stat`
+ * per observed file — but only once its mtime is safely older than that judgment. A write landing
+ * in the same mtime tick as the read (same-size edits on a coarse clock: Windows, FAT's 2 s, network
+ * filesystems) leaves every stat field as it was, so a file modified that close to its judgment is
+ * read again: git's "racily clean" rule.
  */
 
 import { createHash } from 'node:crypto';
@@ -40,6 +43,11 @@ const MAX_BASELINE_BYTES = 64 * 1024;
 const MAX_BASELINE_TOTAL_BYTES = 2 * 1024 * 1024;
 /** A bigger file is not read again to be judged: it goes unreported rather than cost a turn. */
 const MAX_JUDGED_BYTES = 16 * 1024 * 1024;
+/**
+ * How much older than its judgment a file's mtime must be before that judgment is trusted without a
+ * read: FAT's 2 s mtime granularity, which also covers clock skew with a network filesystem.
+ */
+const RACY_MARGIN_MS = 2_000;
 /** Where the platform has it (not Windows), a read that refuses to follow a final link. */
 const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
 
@@ -84,6 +92,9 @@ interface Judged {
   observedSha: string;
   size: number;
   mtimeMs: number;
+  ino: number;
+  /** When the file was read for this verdict, by the wall clock mtimes are stamped with. */
+  judgedAt: number;
   /** The file's hash then, or `deleted`. */
   currentSha: string;
 }
@@ -254,8 +265,9 @@ export class FileChangeTracker {
   }
 
   /**
-   * The file's current hash, from the last verdict when its size and mtime have not moved, and its
-   * text when it is small enough to diff. `undefined` when it cannot be judged now.
+   * The file's current hash, from the last verdict when its size, mtime and inode have not moved
+   * and its mtime was safely older than that verdict, and its text when it is small enough to diff.
+   * `undefined` when it cannot be judged now.
    *
    * A link is never followed. The observed path is the file's real one, so a link at it, or a
    * directory above it that became one, means something else stands there now: it is reported as
@@ -283,10 +295,15 @@ export class FileChangeTracker {
       last &&
       last.observedSha === observation.sha256 &&
       last.size === info.size &&
-      last.mtimeMs === info.mtimeMs
+      last.mtimeMs === info.mtimeMs &&
+      last.ino === info.ino &&
+      info.mtimeMs + RACY_MARGIN_MS <= last.judgedAt
     ) {
       return { sha: last.currentSha };
     }
+    // Taken before the read: a write after this instant either moves the mtime past it or lands
+    // inside the margin, and either way the next turn reads the file again.
+    const judgedAt = Date.now();
     let bytes: Buffer;
     try {
       const handle = await open(absolutePath, constants.O_RDONLY | NO_FOLLOW);
@@ -304,6 +321,8 @@ export class FileChangeTracker {
       observedSha: observation.sha256,
       size: info.size,
       mtimeMs: info.mtimeMs,
+      ino: info.ino,
+      judgedAt,
       currentSha: sha,
     });
     const text =
