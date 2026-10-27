@@ -64,7 +64,16 @@ const CALLS: Record<string, ToolCall> = {
   OfflineProbe: { id: 'x', name: 'OfflineProbe', arguments: {} },
 };
 
-const STUBBED = ['GitLog', 'GitStatus', 'WebFetch', 'NotebookEdit', 'GitCommit', 'AgentSpawn'];
+const STUBBED = [
+  'GitLog',
+  'GitStatus',
+  'WebFetch',
+  'NotebookEdit',
+  'GitCommit',
+  'AgentSpawn',
+  'BashOutput',
+  'Write',
+];
 
 /** The default tools with every tool the cases call stubbed, so nothing reaches git or the net. */
 function stubbedRegistry(ran: string[]) {
@@ -82,6 +91,26 @@ function stubbedRegistry(ran: string[]) {
       },
     });
   }
+  // A background Bash: records a finished shell, as a real one would, without a process.
+  registry.register({
+    ...registry.getTool('Bash')!,
+    execute: async (_args, context) => {
+      ran.push('Bash');
+      context.backgroundShells?.shells.set('shell-1', {
+        id: 'shell-1',
+        command: 'sleep 1',
+        effectiveCommand: 'sleep 1',
+        workdir: context.workspaceRoot,
+        status: 'exited',
+        output: '',
+        readOffset: 0,
+        truncatedBytes: 0,
+        startedAt: 0,
+        exitCode: 0,
+      });
+      return toolSuccess('started shell-1');
+    },
+  });
   return registry;
 }
 
@@ -183,6 +212,7 @@ async function run(
       if (call.id === 'target') asked++;
       return 'allow';
     },
+    onPlanApprovalRequired: async () => 'approve',
   };
   const config = defaultConfig({ workspace, maxTurns: turns.length + 1 });
   testCase.configure?.(config);
@@ -278,6 +308,43 @@ describe('a direct call against select: then the same call (#619)', () => {
       },
     ],
     [
+      // A core tool that became available after the request was built (review of #637).
+      'a background Bash, then BashOutput',
+      {
+        mode: 'default',
+        prelude: [
+          {
+            id: 'bash',
+            name: 'Bash',
+            arguments: { command: 'sleep 1', run_in_background: true },
+          },
+        ],
+        call: { id: 'x', name: 'BashOutput', arguments: { shell_id: 'shell-1' } },
+      },
+    ],
+    [
+      'a background Bash, then BashOutput, under bypassPermissions',
+      {
+        mode: 'bypassPermissions',
+        prelude: [
+          {
+            id: 'bash',
+            name: 'Bash',
+            arguments: { command: 'sleep 1', run_in_background: true },
+          },
+        ],
+        call: { id: 'x', name: 'BashOutput', arguments: { shell_id: 'shell-1' } },
+      },
+    ],
+    [
+      'an approved ExitPlanMode, then Write',
+      {
+        mode: 'plan',
+        prelude: [{ id: 'exit', name: 'ExitPlanMode', arguments: { plan: 'Write the file.' } }],
+        call: { id: 'x', name: 'Write', arguments: { file_path: 'out.txt', content: 'x' } },
+      },
+    ],
+    [
       'InvokeSkill with allowed-tools, then WebFetch',
       {
         mode: 'bypassPermissions',
@@ -315,6 +382,34 @@ describe('what a direct call gets (#619)', () => {
   it('runs AgentSpawn when the model names it without searching (§3)', async () => {
     const outcome = await run({ mode: 'bypassPermissions', call: CALLS.AgentSpawn }, 'direct');
     expect(outcome).toMatchObject({ status: 'success', ran: true, declaredNext: true });
+  });
+
+  it('runs a core tool that became available earlier in the response', async () => {
+    const bashOutput = await run(
+      {
+        mode: 'bypassPermissions',
+        prelude: [
+          {
+            id: 'bash',
+            name: 'Bash',
+            arguments: { command: 'sleep 1', run_in_background: true },
+          },
+        ],
+        call: { id: 'x', name: 'BashOutput', arguments: { shell_id: 'shell-1' } },
+      },
+      'direct',
+    );
+    const write = await run(
+      {
+        mode: 'plan',
+        prelude: [{ id: 'exit', name: 'ExitPlanMode', arguments: { plan: 'Write the file.' } }],
+        call: { id: 'x', name: 'Write', arguments: { file_path: 'out.txt', content: 'x' } },
+      },
+      'direct',
+    );
+
+    expect(bashOutput).toMatchObject({ status: 'success', ran: true });
+    expect(write).toMatchObject({ status: 'success', ran: true });
   });
 
   it('still asks for a mutating tool in default mode', async () => {

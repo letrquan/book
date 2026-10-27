@@ -342,14 +342,21 @@ A listed tool can also be called directly, without `ToolSearch`: a call to an au
 tool that is not active runs just in time. It is active for the rest of that model turn and loaded
 for the next one, exactly as `select:` would load it, and it then meets every gate a call after
 `select:` meets: the argument-scoped `allowed-tools` rules, its schema, the permission mode, the
-`PreToolUse` hooks and the permission prompt. Authorization is `select:`'s too, so a tool outside the
-agent role, `allowed-tools`, the mode or the run's state is refused as `tool_not_active`, as before,
-and its schema is never shown; plan mode still refuses its mutating tools with its own message.
-Invalid arguments on such a call are refused with the tool's argument names and types (at most about
-2,000 characters, then a pointer to `select:`), and the tool is still loaded, so the next attempt has
-its schema. A tool whose schema alone exceeds the schema budget still runs, with a line saying it was
-not loaded; it is admitted again on each call. Just-in-time activations are logged with reason
-`direct` under `BOOK_DEBUG` (`tools:discovery`), beside `search` and `select`.
+`PreToolUse` hooks and the permission prompt. The same holds for a core tool that became available
+after the turn's request was built, such as `BashOutput` after a background `Bash` earlier in the
+same response, or `Write` after an approved `ExitPlanMode`. Authorization is `select:`'s too, so a
+tool outside the agent role, `allowed-tools`, the mode or the run's state is refused as
+`tool_not_active`, as before, and its schema is never shown; the refusal says which of those it is,
+and plan mode still refuses its mutating tools with its own message.
+
+Invalid arguments on a call to a tool the turn's request did not declare (called directly, or loaded
+by `select:` earlier in the same response) are refused with the tool's argument names and types, two
+object levels deep and at most about 2,000 characters, then a pointer to `select:`; the tool is still
+loaded, so the next attempt has its schema. A tool whose schema alone exceeds the schema budget still
+runs, with a line saying it was not loaded, and is admitted again on each call; `select:` and a search
+that cannot load it say so. Activations are logged under `BOOK_DEBUG` (`tools:discovery`) with their
+reason: `search`, `select`, `direct`, or `host` for a tool Book loads itself (a skill's resource
+reader).
 
 ## Permission rules and modes
 

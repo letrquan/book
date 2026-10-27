@@ -411,9 +411,23 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
   // their schema load. Separate from the snapshot, which a search rebuilds mid-request: an
   // admission lasts until the loop builds the next request's definitions.
   const admitted = new Map<string, boolean>();
+  // What the request the model is answering declared to the provider: a tool outside it was called
+  // without its schema, loaded since or not.
+  let declared = new Set<string>();
   // A definition's word lists are fixed once normalized, and every search ranks the whole
   // catalog, so they are built on the first ranking and read from here after.
   const wordsByDefinition = new WeakMap<ToolDefinition, Array<[number, string[]]>>();
+  // So is its schema's size, which the budget checks and `deferredMode` read on every admission
+  // and every request: estimating it serializes the whole schema.
+  const tokensByDefinition = new WeakMap<ToolDefinition, number>();
+  const tokensOf = (definition: ToolDefinition): number => {
+    let tokens = tokensByDefinition.get(definition);
+    if (tokens === undefined) {
+      tokens = schemaTokens(definition);
+      tokensByDefinition.set(definition, tokens);
+    }
+    return tokens;
+  };
 
   const fieldsFor = (definition: ToolDefinition): Array<[number, string[]]> => {
     const cached = wordsByDefinition.get(definition);
@@ -441,15 +455,15 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       return isModeAvailable(definition, context) && isRuntimeAvailable(definition, context);
     });
 
-  const deferredMode = (): boolean => {
-    const available = authorized();
+  /** Whether tools are deferred, for an `authorized()` set the caller already has, if any. */
+  const deferredMode = (available = authorized()): boolean => {
     const settings = config.settings.toolDiscovery;
     if (settings.mode === 'eager') return false;
     if (settings.mode === 'deferred') return true;
     const withoutSearch = available.filter((definition) => definition.name !== 'ToolSearch');
     return (
       withoutSearch.length > settings.eagerToolCount ||
-      withoutSearch.reduce((total, definition) => total + schemaTokens(definition), 0) >
+      withoutSearch.reduce((total, definition) => total + tokensOf(definition), 0) >
         effectiveBudget(config)
     );
   };
@@ -477,7 +491,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
       if (!state.loaded.has(name)) continue;
       const definition = byName.get(name);
       if (!definition) continue;
-      const tokens = schemaTokens(definition);
+      const tokens = tokensOf(definition);
       if (total + tokens > effectiveBudget(config)) state.loaded.delete(name);
       else total += tokens;
     }
@@ -500,7 +514,9 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
   /** The definitions for the next provider request, which ends this request's admissions. */
   const activeDefinitions = (): ToolDefinition[] => {
     admitted.clear();
-    return currentDefinitions();
+    const active = currentDefinitions();
+    declared = new Set(active.map((definition) => canonicalToolName(definition.name)));
+    return active;
   };
 
   /**
@@ -631,10 +647,14 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
 
   /**
    * Load authorized tools for the next request, under the loaded-tool and schema budgets: the one
-   * way in for a search, `select:` and a direct call alike. The reason is only logged.
+   * way in for a search, `select:`, a direct call and the host alike. The reason is only logged.
    */
-  const load = (names: string[], reason: 'search' | 'select' | 'direct'): string[] => {
-    const allowed = new Set(authorized().map((definition) => canonicalToolName(definition.name)));
+  const load = (
+    names: string[],
+    reason: 'search' | 'select' | 'direct' | 'host',
+    available = authorized(),
+  ): string[] => {
+    const allowed = new Set(available.map((definition) => canonicalToolName(definition.name)));
     const requested = names.map(canonicalToolName);
     const budget = effectiveBudget(config);
     for (const name of [...requested].reverse()) {
@@ -643,7 +663,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
         allowed.has(name) &&
         name !== 'ToolSearch' &&
         definition &&
-        schemaTokens(definition) <= budget
+        tokensOf(definition) <= budget
       ) {
         state.loaded.set(name, ++state.clock);
       }
@@ -656,7 +676,8 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     return loaded;
   };
 
-  const activate = (names: string[]): string[] => load(names, 'search');
+  const activate = (names: string[], reason: 'search' | 'host' = 'host'): string[] =>
+    load(names, reason);
 
   /**
    * A tool's canonical name from a model-written one: exact first, then aliases, a provider prefix,
@@ -754,29 +775,48 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
   };
 
   /**
-   * Admit a direct call to an authorized deferred tool that is not active (#619): the same
-   * `authorized()` set and the same `load` that `select:` uses, so the call meets exactly the gates
-   * it would meet after `select:`. A schema too large for the budget is still admitted for this
-   * request, because the budget limits what the provider is sent, not what runs; it is just not
-   * loaded.
+   * Admit a direct call to an authorized tool that is not active (#619), doing what `select:` does
+   * with the same `authorized()` set: load a deferred tool, then rebuild the snapshot. The call then
+   * meets exactly the gates it would meet after `select:`. A core tool needs no loading: it is one
+   * that became available after this request was built (a background shell started, an approved
+   * plan restored the mode's mutating tools). A schema too large for the budget is still admitted
+   * for this request, because the budget limits what the provider is sent, not what runs; it is
+   * just not loaded.
    */
   const admitDirect = (name: string): { loaded: boolean } | undefined => {
     const canonical = canonicalToolName(name);
     const earlier = admitted.get(canonical);
     if (earlier !== undefined) return { loaded: earlier };
-    if (isActive(canonical) || !deferredMode()) return undefined;
-    const definition = authorized().find(
+    if (isActive(canonical)) return undefined;
+    const available = authorized();
+    const definition = available.find(
       (candidate) => canonicalToolName(candidate.name) === canonical,
     );
-    // Only a deferred tool is admitted. A core tool that is authorized but not active became
-    // available after this request was built (a background shell started this turn): it is
-    // declared from the next request, as before, and loading it would spend the loaded-tool
-    // budget on a tool that needs none.
-    if (!definition || isCore(definition)) return undefined;
-    const loaded = load([canonical], 'direct').includes(canonical);
+    if (!definition) return undefined;
+    const loaded =
+      deferredMode(available) && !isCore(definition)
+        ? load([canonical], 'direct', available).includes(canonical)
+        : true;
+    currentDefinitions();
     admitted.set(canonical, loaded);
     return { loaded };
   };
+
+  /**
+   * Why a registered tool is not active, for its refusal: outside the role or the capability rules
+   * (`unauthorized`), outside what the mode or the runtime offers right now (`unavailable`), or
+   * authorized and simply not loaded (`activatable`), which a surface that admits direct calls
+   * admits instead of refusing.
+   */
+  const whyInactive = (name: string): 'unauthorized' | 'unavailable' | 'activatable' => {
+    if (!isAuthorized(name)) return 'unauthorized';
+    const canonical = canonicalToolName(name);
+    return authorized().some((definition) => canonicalToolName(definition.name) === canonical)
+      ? 'activatable'
+      : 'unavailable';
+  };
+
+  const wasDeclared = (name: string): boolean => declared.has(canonicalToolName(name));
 
   /**
    * Whether the run admits the tool at all — its role and the capability rule sets —
@@ -860,6 +900,8 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     isActive,
     isAuthorized,
     admitDirect,
+    whyInactive,
+    wasDeclared,
     canExecute,
     activeDefinitions,
     catalogSummary,

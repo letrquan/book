@@ -20,7 +20,7 @@ function selectionLine(selection: ToolSelection): string {
     case 'unauthorized':
       return `${selection.name}: not authorized in this context (role, mode or capability rules), so it cannot be loaded.`;
     case 'budget':
-      return `${selection.name}: does not fit within the configured loaded-tool and schema budgets.`;
+      return `${selection.name}: does not fit within the configured loaded-tool and schema budgets; a direct call still runs it, without loading its schema.`;
   }
 }
 
@@ -49,7 +49,7 @@ function selectTools(list: string, discovery: ToolDiscoveryContext): ToolResult 
     return toolFailure(content, {
       code: budget ? 'tool_discovery_budget_exceeded' : 'tool_not_found',
       remediation: budget
-        ? 'Select fewer or smaller tools, or ask the host to increase the tool discovery budget.'
+        ? 'Select fewer or smaller tools, or ask the host to increase the tool discovery budget; a direct call still runs a tool that does not fit, without loading its schema.'
         : 'Use the names in the deferred tool list, or search by capability.',
       data,
     });
@@ -152,7 +152,12 @@ export const toolSearchTools: ToolDefinition[] = [
           namespace: typeof args.namespace === 'string' ? args.namespace : undefined,
           limit: typeof args.limit === 'number' ? args.limit : undefined,
         }) ?? [];
-      const activated = new Set(context.toolDiscovery.activate(matches.map((match) => match.name)));
+      const activated = new Set(
+        context.toolDiscovery.activate(
+          matches.map((match) => match.name),
+          'search',
+        ),
+      );
       const resolvedMatches = matches.map((match) => ({
         ...match,
         loaded: activated.has(match.name),
@@ -178,7 +183,7 @@ export const toolSearchTools: ToolDefinition[] = [
           {
             code: 'tool_discovery_budget_exceeded',
             remediation:
-              'Use a narrower query or ask the host to increase the tool discovery budget.',
+              'Use a narrower query or ask the host to increase the tool discovery budget; a direct call still runs a matching tool, without loading its schema.',
             data: { query, matches: resolvedMatches },
           },
         );

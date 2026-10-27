@@ -178,7 +178,7 @@ describe('a direct call to an inactive deferred tool (#619)', () => {
       expect(text).not.toContain(property);
   });
 
-  it('admits no core tool: one the request left out stays refused as unavailable', async () => {
+  it('refuses a runtime tool its state does not offer as unavailable', async () => {
     // BashOutput is a runtime tool: core once a shell exists. With none, it is not authorized,
     // so neither a direct call nor ToolSearch can load it, and the refusal says so.
     const { surface, registry, context } = setup();
@@ -221,6 +221,83 @@ describe('a direct call to an inactive deferred tool (#619)', () => {
     expect(repeat.structuredError?.remediation).toContain('not available in this mode or state');
   });
 
+  it('admits a core tool that became available after the request was built, as select: would', async () => {
+    // A background shell started earlier in the response: BashOutput is authorized and core
+    // now, but not in this request's snapshot. `select:BashOutput` would rebuild the snapshot
+    // and report it active, so a direct call must run too (review of #637, finding 1).
+    const { surface, registry, context, ran } = setup({ extra: [] });
+    const shells = context.backgroundShells!.shells;
+    shells.set('shell-1', {
+      id: 'shell-1',
+      command: 'sleep 1',
+      effectiveCommand: 'sleep 1',
+      workdir: process.cwd(),
+      status: 'exited',
+      output: '',
+      readOffset: 0,
+      truncatedBytes: 0,
+      startedAt: 0,
+    });
+    const output: ToolDefinition = {
+      ...registry.getTool('BashOutput')!,
+      execute: async () => {
+        ran.push('BashOutput');
+        return toolSuccess('ran BashOutput');
+      },
+    };
+    registry.register(output);
+
+    const result = await registry.execute(
+      { id: 'out-1', name: 'BashOutput', arguments: { shell_id: 'shell-1' } },
+      context,
+    );
+
+    expect(result.status).toBe('success');
+    expect(ran).toEqual(['BashOutput']);
+    expect(surface.isActive?.('BashOutput')).toBe(true);
+  });
+
+  it('says why a tool is inactive, from the surface rather than from its shape', () => {
+    const offline: ToolDefinition = {
+      name: 'OfflineProbe',
+      description: 'Probe a service that is not running.',
+      parameters: { type: 'object', properties: {} },
+      catalog: { available: () => false },
+      execute: async () => toolSuccess('never'),
+    };
+    const { surface } = setup({ capabilityRules: ['Read', 'OfflineProbe'], extra: [offline] });
+
+    expect(surface.whyInactive?.('WebFetch')).toBe('unauthorized');
+    expect(surface.whyInactive?.('OfflineProbe')).toBe('unavailable');
+    expect(surface.whyInactive?.('NoSuchTool')).toBe('unauthorized');
+  });
+
+  it('keeps the ToolSearch advice for a discovery that admits but cannot say why', async () => {
+    // A discovery object of its own, with `admitDirect` but no `whyInactive`: the registry must
+    // not guess "unavailable" from the methods it has.
+    const { registry, context } = setup();
+    const discovery = context.toolDiscovery!;
+    const result = await registry.execute(
+      { id: 'probe-1', name: 'GitLog', arguments: {} },
+      {
+        ...context,
+        toolDiscovery: {
+          ...discovery,
+          whyInactive: undefined,
+          isActive: () => false,
+          admitDirect: () => undefined,
+          isAuthorized: () => true,
+        },
+      },
+    );
+
+    expect(result.structuredError?.code).toBe('tool_not_active');
+    expect(result.structuredError?.remediation).toBe(
+      'Call ToolSearch to discover it or use an authorized active tool.',
+    );
+    expect(result.structuredError?.details?.unavailable).toBeUndefined();
+  });
+
   it('applies the argument-scoped rules after admission', async () => {
     const { registry, context, ran } = setup({
       // Book scopes WebFetch by a glob over its URL, not a `domain:` form.
@@ -260,6 +337,20 @@ describe('invalid arguments on a just-in-time call (#619)', () => {
     expect(message.length).toBeLessThan(2_500);
     expect(ran).toEqual([]);
     expect(names()).toContain('WebFetch');
+  });
+
+  it('names the types for a tool select: loaded earlier in the same response', async () => {
+    // `select:` loaded it, but the request the model answered did not declare it, so the call
+    // was written without the schema just as a direct one is (review of #637, finding 9).
+    const { surface, registry, context } = setup();
+    surface.select?.(['WebFetch']);
+
+    const result = await registry.execute(
+      { id: 'fetch-1', name: 'WebFetch', arguments: { link: 'https://example.com' } },
+      context,
+    );
+
+    expect(result.structuredError?.message).toContain('WebFetch takes {url: string;');
   });
 
   it('keeps the short key list for a tool that was already active', async () => {
@@ -337,6 +428,64 @@ describe('invalid arguments on a just-in-time call (#619)', () => {
   });
 });
 
+describe('the argument signature of a just-in-time call (#619)', () => {
+  async function signatureOf(parameters: Record<string, unknown>): Promise<string> {
+    const probe: ToolDefinition = {
+      name: 'ShapeProbe',
+      description: 'Takes shaped arguments.',
+      parameters,
+      execute: async () => toolSuccess('never'),
+    };
+    const { registry, context } = setup({ extra: [probe] });
+    const result = await registry.execute(
+      { id: 'shape-1', name: 'ShapeProbe', arguments: { unexpected: 1 } },
+      context,
+    );
+    return result.structuredError?.message ?? '';
+  }
+
+  it('lists the variants of a top-level union instead of "no arguments"', async () => {
+    const message = await signatureOf({
+      anyOf: [
+        { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+      ],
+    });
+
+    expect(message).toContain('ShapeProbe takes {id: string} | {name: string}');
+    expect(message).not.toContain('no arguments');
+  });
+
+  it('names the value type of a map', async () => {
+    const message = await signatureOf({
+      type: 'object',
+      additionalProperties: { type: 'string' },
+    });
+
+    expect(message).toContain('ShapeProbe takes {[key: string]: string}');
+  });
+
+  it('says "no arguments" only for a schema that allows none', async () => {
+    expect(await signatureOf({ type: 'object', properties: {} })).toContain(
+      'ShapeProbe takes no arguments.',
+    );
+  });
+
+  it('spells out two object levels and collapses the third', async () => {
+    const message = await signatureOf({
+      type: 'object',
+      properties: {
+        outer: {
+          type: 'object',
+          properties: { inner: { type: 'object', properties: { leaf: { type: 'string' } } } },
+        },
+      },
+    });
+
+    expect(message).toContain('ShapeProbe takes {outer?: {inner?: object}}');
+  });
+});
+
 describe('the schema budget on a just-in-time call (#619)', () => {
   it('runs a tool too large to load, says so, and leaves it out of the next request', async () => {
     const { surface, registry, context, ran, names } = setup({
@@ -357,6 +506,35 @@ describe('the schema budget on a just-in-time call (#619)', () => {
     expect(surface.select?.(['GitLog'])).toEqual([
       expect.objectContaining({ name: 'GitLog', status: 'budget' }),
     ]);
+  });
+
+  it('never says a refused or failed over-budget call ran', async () => {
+    const failing: ToolDefinition = {
+      name: 'mcp__demo__fails',
+      description: 'Fails.',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => ({
+        version: 2,
+        toolCallId: '',
+        status: 'blocked',
+        content: 'refused by policy',
+      }),
+    };
+    const { registry, context } = setup({
+      extra: [failing],
+      configure: (config) => {
+        config.settings.toolDiscovery.schemaTokenBudget = 1;
+      },
+    });
+
+    const result = await registry.execute(
+      { id: 'fail-1', name: 'mcp__demo__fails', arguments: {} },
+      context,
+    );
+
+    expect(result.status).toBe('blocked');
+    expect(result.content).not.toContain('ran');
+    expect(result.content).toContain('not loaded');
   });
 
   it('admits it again on the next request, as nothing loaded it', async () => {
@@ -405,6 +583,9 @@ describe('the deferred tool list across a direct admission (#619)', () => {
       surface.activeDefinitions();
       surface.admitDirect?.('GitLog');
       surface.select?.(['WebFetch']);
+      // The host loading a tool itself (a skill's resource reader) is not a search.
+      surface.activate(['GitStatus']);
+      surface.activate(['GitBranch'], 'search');
 
       expect(debug).toHaveBeenCalledWith('tools activated', {
         reason: 'direct',
@@ -414,6 +595,14 @@ describe('the deferred tool list across a direct admission (#619)', () => {
       expect(debug).toHaveBeenCalledWith(
         'tools activated',
         expect.objectContaining({ reason: 'select', requested: ['WebFetch'] }),
+      );
+      expect(debug).toHaveBeenCalledWith(
+        'tools activated',
+        expect.objectContaining({ reason: 'host', requested: ['GitStatus'] }),
+      );
+      expect(debug).toHaveBeenCalledWith(
+        'tools activated',
+        expect.objectContaining({ reason: 'search', requested: ['GitBranch'] }),
       );
     } finally {
       vi.doUnmock('../debug-log.js');
