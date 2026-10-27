@@ -280,14 +280,9 @@ export async function resolveSocketDir(options: VetSocketDirOptions): Promise<So
   const skipped: SocketDirFallback[] = [];
   for (const candidate of socketDirCandidates(options)) {
     if (candidate.source === 'xdg-runtime' && (options.platform ?? process.platform) === 'darwin') {
-      const root = await sandboxWritableRoot(dirname(candidate.dir), options);
-      if (root !== undefined) {
-        skipped.push({
-          dir: candidate.dir,
-          source: candidate.source,
-          reason: 'temp-root',
-          message: `${dirname(candidate.dir)} is inside ${root}, a temp directory sandboxed commands can write on macOS`,
-        });
+      const passedOver = await sandboxWritableRuntimeDir(dirname(candidate.dir), options);
+      if (passedOver) {
+        skipped.push({ dir: candidate.dir, source: candidate.source, ...passedOver });
         continue;
       }
     }
@@ -313,23 +308,37 @@ export async function resolveSocketDir(options: VetSocketDirOptions): Promise<So
 }
 
 /**
- * The Seatbelt temp root `dir` lies in, its symlinks resolved, or undefined. On macOS a sandboxed
- * command may write anywhere in those roots except Book's own named entries, so a runtime
- * directory set inside one (some nix and dotfile setups do) is not a place for the inbox; the
- * per-uid fallback beside it is one of those named entries.
+ * Why a macOS runtime directory is no place for the inbox, or undefined when it is one. On macOS a
+ * sandboxed command may write anywhere in the Seatbelt temp roots except Book's own named entries,
+ * and some nix and dotfile setups put `XDG_RUNTIME_DIR` there. The directory is passed over when
+ * its own entry sits in a temp root (a sandboxed command could point that entry anywhere), when
+ * it resolves into one, or when it does not resolve at all: macOS has no system runtime
+ * directory, so one that is missing was set by hand, and is not created. The per-uid fallback
+ * the inbox uses instead is one of the named entries Seatbelt denies.
  */
-async function sandboxWritableRoot(
-  dir: string,
+async function sandboxWritableRuntimeDir(
+  runtime: string,
   options: VetSocketDirOptions,
-): Promise<string | undefined> {
+): Promise<Pick<SocketDirFallback, 'reason' | 'message'> | undefined> {
+  let entry: string;
   let real: string;
   try {
-    real = await realpath(dir);
-  } catch {
-    return undefined;
+    entry = join(await realpath(dirname(runtime)), basename(runtime));
+    real = await realpath(runtime);
+  } catch (error) {
+    return {
+      reason: 'unavailable',
+      message: `${runtime} cannot be resolved (${errorCode(error) ?? 'error'})`,
+    };
   }
   const roots = options.sandboxTempRoots ?? seatbeltTempRoots();
-  return roots.find(
-    (root) => real === root || real.startsWith(root.endsWith(sep) ? root : root + sep),
-  );
+  const inside = (path: string) =>
+    roots.find((root) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep));
+  const root = inside(entry) ?? inside(real);
+  return root === undefined
+    ? undefined
+    : {
+        reason: 'temp-root',
+        message: `${runtime} is inside ${root}, a temp directory sandboxed commands can write on macOS`,
+      };
 }

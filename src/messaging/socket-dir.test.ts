@@ -285,6 +285,43 @@ describe.skipIf(!posix)('resolveSocketDir', () => {
       });
     });
 
+    it('is passed over when its own entry is in a temp root, wherever that entry points', async () => {
+      // The entry itself is sandbox-writable, so a sandboxed command could point it anywhere.
+      const { writable, outside, tmp } = layout();
+      symlinkSync(join(outside, 'run'), join(writable, 'link'));
+      const resolution = await resolveSocketDir({
+        create: true,
+        env: { XDG_RUNTIME_DIR: join(writable, 'link') },
+        tmpdir: tmp,
+        uid,
+        platform: 'darwin',
+        sandboxTempRoots: [writable],
+      });
+      expect(resolution).toMatchObject({
+        ok: true,
+        source: 'tmp',
+        skipped: [{ source: 'xdg-runtime', reason: 'temp-root' }],
+      });
+    });
+
+    it('is passed over, and never created, when it does not exist', async () => {
+      const { writable, outside, tmp } = layout();
+      const resolution = await resolveSocketDir({
+        create: true,
+        env: { XDG_RUNTIME_DIR: join(outside, 'missing') },
+        tmpdir: tmp,
+        uid,
+        platform: 'darwin',
+        sandboxTempRoots: [writable],
+      });
+      expect(resolution).toMatchObject({
+        ok: true,
+        source: 'tmp',
+        skipped: [{ source: 'xdg-runtime', reason: 'unavailable' }],
+      });
+      expect(() => lstatSync(join(outside, 'missing'))).toThrow();
+    });
+
     it('is used when it lies outside every temp root, and on other platforms', async () => {
       const { writable, outside, tmp } = layout();
       expect(
