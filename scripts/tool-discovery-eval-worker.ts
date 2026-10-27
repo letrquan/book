@@ -10,6 +10,7 @@ import { toolSuccess } from '../src/tools/result.js';
 import type { Message, Usage } from '../src/types/messages.js';
 import type { AgentRunResult } from '../src/types/runs.js';
 import type { SessionStoreInterface } from '../src/types/sessions.js';
+import type { AgentTerminalOutcome } from '../src/types/terminal.js';
 import type { ToolResult } from '../src/types/tools.js';
 import { taskTotalTokens } from './edit-eval-worker.js';
 import { evaluateRunEligibility, type EvaluationEligibility } from './eval-eligibility.js';
@@ -163,6 +164,20 @@ export function taskUsage(runs: readonly AgentRunResult[] | undefined): ToolEval
   };
 }
 
+/** Why a run cannot count, every reason at once: its evidence is ineligible, it did not complete. */
+export function runErrorOf(
+  attribution: Pick<EvaluationEligibility, 'eligible' | 'reasons'>,
+  outcome: Pick<AgentTerminalOutcome, 'status' | 'reason'>,
+): string | undefined {
+  const errors = [
+    ...(attribution.eligible
+      ? []
+      : [`ineligible evaluation evidence: ${attribution.reasons.join('; ')}`]),
+    ...(outcome.status === 'completed' ? [] : [`${outcome.status}: ${outcome.reason}`]),
+  ];
+  return errors.length > 0 ? errors.join('; ') : undefined;
+}
+
 /** SessionHistorySearch and SessionHistoryRead over the fixture's events. */
 const fixtureSessionStore = {
   searchCurrent: () => FIXTURE_SESSION_EVENTS.map((event) => ({ ...event, timestamp: 0 })),
@@ -218,12 +233,7 @@ export async function runToolEvalWorker(
     outcome.usage = taskUsage(result.runs);
     // Scripted and unlisted models have no rate; the tokens are what this eval reads.
     outcome.attribution = evaluateRunEligibility(result.runs, { requireKnownCost: false });
-    if (!outcome.attribution.eligible) {
-      outcome.runError = `ineligible evaluation evidence: ${outcome.attribution.reasons.join('; ')}`;
-    }
-    if (result.outcome.status !== 'completed') {
-      outcome.runError = `${result.outcome.status}: ${result.outcome.reason}`;
-    }
+    outcome.runError = runErrorOf(outcome.attribution, result.outcome);
   } catch (error) {
     outcome.runError = error instanceof Error ? error.message : String(error);
   }

@@ -481,6 +481,8 @@ export async function runAgentLoop(
   // UserPromptSubmit hook — can modify or block the user prompt.
   let effectivePrompt = userMessage;
   let displayPrompt = options?.displayMessage ?? userMessage;
+  /** Set when a hook rewrote the prompt: intent routing then keeps only routes it still asks for. */
+  let rewrittenPrompt: string | undefined;
   const userHookResults = options?.skipUserPromptHooks
     ? []
     : await runHooks(
@@ -510,6 +512,7 @@ export async function runAgentLoop(
     if (r.action === 'modify' && r.modifiedPrompt) {
       effectivePrompt = r.modifiedPrompt;
       displayPrompt = r.modifiedPrompt;
+      rewrittenPrompt = r.modifiedPrompt;
     }
   }
 
@@ -1328,10 +1331,11 @@ export async function runAgentLoop(
         intentRouted = true;
         // After the mode and the skill restrictions are applied, so it activates only what this
         // surface authorizes. It reads what the user typed, never the prompt that text resolved
-        // to; a router's note has nowhere to go yet, so the result is not read.
+        // to, and a hook's rewrite of it can only take a route away.
         routeTurnIntent(
           {
             typedText: options?.typedText,
+            rewrittenPrompt,
             kind: options?.userMessageKind,
             isSubagent: options?.isSubagent,
             config: effectiveConfig,

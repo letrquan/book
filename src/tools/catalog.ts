@@ -703,21 +703,39 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
   };
 
   /**
+   * Whether loading `names` beside every tool loaded now stays within the loaded-tool limit and the
+   * schema budget, so that it evicts nothing.
+   */
+  const fitsWithoutEviction = (names: string[]): boolean => {
+    trimLoaded();
+    const loaded = new Set([...state.loaded.keys(), ...names]);
+    if (loaded.size > config.settings.toolDiscovery.maxLoadedTools) return false;
+    let tokens = 0;
+    for (const name of loaded) tokens += tokensOf(byName.get(name)!);
+    return tokens <= effectiveBudget(config);
+  };
+
+  /**
    * `route` is the pre-turn intent router (#619), which asks for the user's text rather than for
-   * the model. It loads only tools that are not active, so a core tool never takes a loaded slot,
-   * and none on a surface whose ToolSearch a rule or hook gates: there deferred tools load through
+   * the model, so it is opportunistic: it loads only authorized tools that are not active (a core
+   * tool never takes a loaded slot) and that fit without evicting a tool the model loaded, and
+   * none on a surface whose ToolSearch a rule or hook gates: there deferred tools load through
    * ToolSearch alone, where that rule or hook sees them, exactly as a direct call is refused.
    */
   const activate = (names: string[], reason: 'search' | 'host' | 'route' = 'host'): string[] => {
     if (reason !== 'route') return load(names, reason);
     if (directCallsGated) return [];
+    const available = authorized();
+    const allowed = new Set(available.map((definition) => canonicalToolName(definition.name)));
     const active = new Set(
       currentDefinitions().map((definition) => canonicalToolName(definition.name)),
     );
-    return load(
-      names.filter((name) => !active.has(canonicalToolName(name))),
-      reason,
-    );
+    const fitting: string[] = [];
+    for (const name of new Set(names.map(canonicalToolName))) {
+      if (name === 'ToolSearch' || !allowed.has(name) || active.has(name)) continue;
+      if (fitsWithoutEviction([...fitting, name])) fitting.push(name);
+    }
+    return load(fitting, reason, available);
   };
 
   /**

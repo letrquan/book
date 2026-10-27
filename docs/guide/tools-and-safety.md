@@ -356,16 +356,21 @@ as before, where the rule or hook applies, and the deferred-tool list does not o
 hook with no matcher runs on every call, the direct one included, and turns nothing off; nor does an
 allow rule.
 
-Before a turn's first model call, Book also routes what you typed: a URL (`http://` or `https://`,
-in a code fence too) activates `WebFetch`, and search intent activates `WebSearch`. Search intent is
-`search`, `look up`, `latest`, `news`, `tìm` or `tin tức`, as whole words in any letter case, so
-`research` and `searching` do not count. The tool is loaded the way `ToolSearch` loads one, under the
-same authorization and budgets, so the turn's first request already declares it and the model spends
-no turn searching. Only text you typed routes: a command's body, an inlined file, an agent's
-completion notice and a subagent's task never do, and nothing routes where direct calls are off.
-Routing runs no tool and adds no prompt text, so the system prompt and the deferred-tool list are the
-same with it or without it; the request's tools array gains the tool, as after a search.
-`toolDiscovery.intentRouting: false` turns it off.
+Before a turn's first model call, Book also routes what you typed. A URL that `WebFetch` would
+fetch activates `WebFetch`, in a code fence too; a plain-HTTP, local or private address counts only
+where `BOOK_WEB_ALLOW_HTTP` or `BOOK_WEB_ALLOW_PRIVATE_NETWORK` lets `WebFetch` reach it. Search
+intent activates `WebSearch`: `search`, `look up`, `latest`, `news`, `tìm` or `tin tức` as standalone
+words in any letter case, outside backtick code, so `research`, `searching`, `tool-search.ts`,
+`react@latest` and `--latest` do not count. The tool is loaded the way `ToolSearch` loads one, under
+the same authorization, so the turn's first request already declares it and the model spends no turn
+searching; but routing only takes room that is free, so a tool that does not fit the loaded-tool and
+schema budgets beside the tools already loaded is not routed, and nor is one a `permissions.deny`
+rule refuses outright (`WebFetch` or `WebFetch(*)`). Only text you typed routes: a command's body, an
+inlined file, an agent's completion notice and a subagent's task never do, a `UserPromptSubmit` hook
+that rewrites the prompt can take a route away but never add one, and nothing routes where direct
+calls are off. Routing runs no tool and adds no prompt text, so the system prompt and the
+deferred-tool list are the same with it or without it; the request's tools array gains the tool, as
+after a search. `toolDiscovery.intentRouting: false` turns it off.
 
 Invalid arguments on a call to a tool the turn's request did not declare (called directly, or loaded
 by `select:` earlier in the same response) are refused with the tool's argument names and types, two

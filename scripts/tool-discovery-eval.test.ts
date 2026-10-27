@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { bookSettingsSchema } from '../src/settings.js';
 import { defaultConfig } from '../src/test/fixtures.js';
 import { createToolSurface } from '../src/tools/catalog.js';
@@ -9,11 +12,13 @@ import type { Message } from '../src/types/messages.js';
 import type { ToolCall, ToolResult } from '../src/types/tools.js';
 import {
   armTaskFigures,
+  estimateFromArgs,
   estimateModels,
   mockEvaluationSettings,
   mockSignatureFailures,
   parseToolEvalArgs,
   renderEstimate,
+  seedWorkspace,
   trialCostUsd,
   TOOL_EVAL_ARMS,
   withArm,
@@ -22,7 +27,7 @@ import {
 } from './tool-discovery-eval.js';
 import { cachedPrefixChars, mockReply, type ChatRequest } from './tool-discovery-eval-mock.js';
 import { FETCH_CODENAME, TOOL_EVAL_TASKS } from './tool-discovery-eval-tasks.js';
-import { scoreToolEvalRun } from './tool-discovery-eval-worker.js';
+import { runErrorOf, scoreToolEvalRun } from './tool-discovery-eval-worker.js';
 
 const FIXTURE = { baseUrl: 'http://127.0.0.1:4000' };
 const task = (name: string) => TOOL_EVAL_TASKS.find((candidate) => candidate.name === name)!;
@@ -40,7 +45,8 @@ describe('arm selection', () => {
     config.settings.hooks = settings.hooks;
     const context = {
       workspaceRoot: process.cwd(),
-      env: {},
+      // As the harness sets them for the worker, so WebFetch reaches the fixture server.
+      env: { BOOK_WEB_ALLOW_HTTP: 'true', BOOK_WEB_ALLOW_PRIVATE_NETWORK: 'true' },
       currentMode: 'default' as const,
       backgroundShells: { nextId: 1, shells: new Map() },
     };
@@ -370,5 +376,76 @@ describe('the estimate', () => {
     expect(table).toContain('| Other | $0.02 | $0.02 | $0.02 | $0.19 |');
     expect(table).toContain('| Unpriced | no rate | no rate | no rate | no rate |');
     expect(table).toContain('**$0.19**, not counting Unpriced');
+  });
+});
+
+describe('seeding a task workspace', () => {
+  let workspace = '';
+  afterEach(() => rmSync(workspace, { recursive: true, force: true }));
+
+  it('commits with a fixed identity and signing off', async () => {
+    workspace = mkdtempSync(join(tmpdir(), 'book-tool-eval-seed-'));
+    const commands: string[][] = [];
+    await seedWorkspace(task('git-history'), workspace, async (_command, args) => {
+      commands.push(args);
+      return 0;
+    });
+    const commits = commands.filter((args) => args.includes('commit'));
+    expect(commits).toHaveLength(3);
+    for (const args of commits) {
+      expect(args).toEqual(
+        expect.arrayContaining([
+          '-c',
+          'commit.gpgsign=false',
+          'user.email=eval@book',
+          'user.name=book-eval',
+        ]),
+      );
+    }
+    expect(readFileSync(join(workspace, 'README.md'), 'utf8')).toContain('HTTP client');
+  });
+
+  it('fails loudly when a git command fails', async () => {
+    workspace = mkdtempSync(join(tmpdir(), 'book-tool-eval-seed-'));
+    await expect(
+      seedWorkspace(task('git-history'), workspace, async (_command, args) =>
+        args.includes('commit') ? 128 : 0,
+      ),
+    ).rejects.toThrow(/git .*commit.* exited with 128/);
+  });
+});
+
+describe('the estimate options', () => {
+  it('prices the --trials it was given', () => {
+    const outcomes = TOOL_EVAL_ARMS.map((arm) => outcome('naive', arm, 'fetch-url', 1));
+    const table = estimateFromArgs(
+      parseToolEvalArgs(['--estimate', '--trials', '5', '--model', 'openai/gpt-5']),
+      outcomes,
+    );
+    expect(table).toContain('5 trials, all arms');
+    expect(table).toContain('× 5 trials');
+  });
+
+  it.each(['abc', '0', '-3', '1.5'])('refuses --output-tokens %s', (value) => {
+    expect(() => parseToolEvalArgs(['--output-tokens', value])).toThrow('--output-tokens');
+  });
+});
+
+describe('a run error', () => {
+  const eligibility = (eligible: boolean) => ({
+    eligible,
+    reasons: eligible ? [] : ['accounting_missing'],
+  });
+
+  it('keeps both the ineligibility and the outcome', () => {
+    expect(runErrorOf(eligibility(false), { status: 'failed', reason: 'provider_error' })).toBe(
+      'ineligible evaluation evidence: accounting_missing; failed: provider_error',
+    );
+  });
+
+  it('is absent for an eligible, completed run', () => {
+    expect(
+      runErrorOf(eligibility(true), { status: 'completed', reason: 'normal_completion' }),
+    ).toBeUndefined();
   });
 });

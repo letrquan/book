@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runAgentLoop } from './loop.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import type { Provider } from '../provider/index.js';
@@ -130,6 +133,40 @@ describe('intent routing in the agent loop (#619)', () => {
       },
     });
     expect(captured.tools[0]).not.toContain('WebFetch');
+  });
+
+  describe('after a UserPromptSubmit hook rewrote the prompt', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-routing-hook-'));
+    afterAll(() => rmSync(dir, { recursive: true, force: true }));
+    /** A hook that replaces the prompt with `prompt`. */
+    const rewriting = (name: string, prompt: string) => {
+      const hook = join(dir, `${name}.mjs`);
+      writeFileSync(
+        hook,
+        `process.stdout.write(JSON.stringify({ action: 'modify', prompt: ${JSON.stringify(prompt)} }));`,
+      );
+      return (config: ReturnType<typeof defaultConfig>) => {
+        config.settings.hooks.UserPromptSubmit = [{ command: `node "${hook}"`, env: {} }];
+      };
+    };
+
+    it('routes nothing for a URL the hook stripped', async () => {
+      const captured = await run({
+        prompt: URL_PROMPT,
+        typedText: URL_PROMPT,
+        configure: rewriting('strip', 'What does this page say?'),
+      });
+      expect(captured.tools[0]).not.toContain('WebFetch');
+    });
+
+    it('routes a URL the hook kept', async () => {
+      const captured = await run({
+        prompt: URL_PROMPT,
+        typedText: URL_PROMPT,
+        configure: rewriting('keep', `Answer briefly.\n${URL_PROMPT}`),
+      });
+      expect(captured.tools[0]).toContain('WebFetch');
+    });
   });
 
   it("respects the run's allowed tools", async () => {

@@ -10,6 +10,7 @@ import { toolSuccess } from './result.js';
 import {
   routeTurnIntent,
   SEARCH_INTENT_PHRASES,
+  searchIntentPattern,
   searchIntentRouter,
   urlRouter,
   type IntentRouter,
@@ -46,18 +47,23 @@ function surface(
   return { config, toolContext, discovery, declared };
 }
 
-const routed = (router: IntentRouter, text: string): string[] =>
-  router
-    .route({ text: text.normalize('NFC'), config: defaultConfig(), context: context() })
-    ?.tools?.map((route) => route.tool) ?? [];
+const routed = (
+  router: IntentRouter,
+  text: string,
+  env: Record<string, string | undefined> = {},
+): string[] => router.route({ text: text.normalize('NFC'), env }).map((route) => route.tool);
+
+/** The host settings that let WebFetch reach plain HTTP and private addresses. */
+const OPEN_WEB = { BOOK_WEB_ALLOW_HTTP: 'true', BOOK_WEB_ALLOW_PRIVATE_NETWORK: 'true' };
 
 describe('the URL router', () => {
   it.each([
     'Read https://example.com/a?b=c and summarize it',
-    'see http://127.0.0.1:8080/notes.txt',
     '(https://example.com)',
     // A URL inside a code fence is still one the user wrote.
     'Why does this fail?\n```\ncurl https://api.example.com/v1/items\n```',
+    // One URL WebFetch would fetch is enough.
+    'compare http://localhost:3000 with https://example.com/docs',
   ])('activates WebFetch for %j', (text) => {
     expect(routed(urlRouter, text)).toEqual(['WebFetch']);
   });
@@ -68,8 +74,23 @@ describe('the URL router', () => {
     'ftp://example.com/file',
     'https://',
     'xhttps://example.com',
+    // URLs WebFetch refuses under the default policy: plain HTTP, local and private
+    // destinations, embedded credentials.
+    'the dev server at http://localhost:5173 shows a blank page',
+    'https://localhost:5173/app',
+    'see http://example.com/notes.txt',
+    'https://10.0.0.1/admin',
+    'https://intranet/wiki',
+    'https://user:secret@example.com/',
   ])('routes nothing for %j', (text) => {
     expect(routed(urlRouter, text)).toEqual([]);
+  });
+
+  it('routes what the host environment lets WebFetch reach', () => {
+    expect(routed(urlRouter, 'see http://127.0.0.1:8080/notes.txt', OPEN_WEB)).toEqual([
+      'WebFetch',
+    ]);
+    expect(routed(urlRouter, 'https://localhost:5173/app', OPEN_WEB)).toEqual(['WebFetch']);
   });
 });
 
@@ -94,8 +115,12 @@ describe('the search-intent router', () => {
     'Search: what changed in TypeScript 6',
     'tìm giúp tôi tài liệu về Ink 8',
     'TÌM tài liệu về Ink 8',
+    'search the web for the Ink 8 migration guide',
+    'latest Node release?',
+    'Any news.',
+    '"latest" Node.js release notes',
     // Decomposed, as some input methods and macOS send it.
-    'tìm tài liệu',
+    'ti\u0300m tài liệu',
     'tin tức hôm nay về Node.js',
     'TIN TỨC về Node.js',
   ])('activates WebSearch for %j', (text) => {
@@ -111,8 +136,26 @@ describe('the search-intent router', () => {
     'tin nhắn mới',
     'tìmkiếm',
     'fix the parser',
+    // Paths, package specs, flags and identifiers are not words.
+    'fix the bug in src/tools/tool-search.ts',
+    'npm install react@latest',
+    'run with --latest',
+    'rename news-feed/index.ts',
+    'the search_index table',
+    'pull image:latest',
+    'open news.ts',
+    // Nor is code the user quoted.
+    'see `search` in the docs',
+    'Why is this slow?\n```\nconst hits = search(index, query);\n```',
   ])('routes nothing for %j', (text) => {
     expect(routed(searchIntentRouter, text)).toEqual([]);
+  });
+
+  it('escapes each phrase before matching it', () => {
+    const pattern = searchIntentPattern(['c++ news', "what's new?"]);
+    expect(pattern.test('any c++ news today')).toBe(true);
+    expect(pattern.test("so, what's new? tell me")).toBe(true);
+    expect(pattern.test('any cc news today')).toBe(false);
   });
 });
 
@@ -139,7 +182,7 @@ describe('routeTurnIntent', () => {
       { typedText: URL_TEXT, config, context: toolContext },
       discovery,
     );
-    expect(result).toEqual({ routes: [], activated: [], notes: [] });
+    expect(result).toEqual({ routes: [], activated: [] });
     expect(declared()).not.toContain('WebFetch');
   });
 
@@ -158,7 +201,7 @@ describe('routeTurnIntent', () => {
       name: 'spy',
       route: () => {
         called = true;
-        return { tools: [{ tool: 'WebFetch', reason: 'spy' }] };
+        return [{ tool: 'WebFetch', reason: 'spy' }];
       },
     };
     const result = routeTurnIntent({ ...request, config, context: toolContext }, discovery, [spy]);
@@ -167,21 +210,10 @@ describe('routeTurnIntent', () => {
     expect(declared()).not.toContain('WebFetch');
   });
 
-  it('collects router notes without activating anything for them', () => {
-    const { config, toolContext, discovery } = surface();
-    const noting: IntentRouter = { name: 'noting', route: () => ({ note: 'a meta note' }) };
-    const result = routeTurnIntent(
-      { typedText: 'hello', kind: 'conversation', config, context: toolContext },
-      discovery,
-      [noting],
-    );
-    expect(result).toEqual({ routes: [], activated: [], notes: ['a meta note'] });
-  });
-
   /** A router that asks for one fixed tool, whatever the text. */
   const asking = (tool: string): IntentRouter => ({
     name: 'fixed',
-    route: () => ({ tools: [{ tool, reason: 'test' }] }),
+    route: () => [{ tool, reason: 'test' }],
   });
 
   it("respects the mode: plan mode's surface does not offer a mutating tool", () => {
@@ -265,6 +297,64 @@ describe('routeTurnIntent', () => {
     ]);
     expect(result.activated).toEqual([]);
     expect(declared()).not.toContain('HugeTool');
+  });
+
+  it('never evicts a tool the model loaded', () => {
+    const config = defaultConfig();
+    config.settings.toolDiscovery.maxLoadedTools = 1;
+    const { toolContext, discovery, declared } = surface({ config });
+    discovery.select!(['GitLog']);
+    const result = routeTurnIntent(
+      { typedText: URL_TEXT, config, context: toolContext },
+      discovery,
+    );
+    expect(result.activated).toEqual([]);
+    expect(declared()).toContain('GitLog');
+    expect(declared()).not.toContain('WebFetch');
+  });
+
+  it('routes beside the loaded tools when there is room', () => {
+    const config = defaultConfig();
+    config.settings.toolDiscovery.maxLoadedTools = 2;
+    const { toolContext, discovery, declared } = surface({ config });
+    discovery.select!(['GitLog']);
+    const result = routeTurnIntent(
+      { typedText: URL_TEXT, config, context: toolContext },
+      discovery,
+    );
+    expect(result.activated).toEqual(['WebFetch']);
+    expect(declared()).toEqual(expect.arrayContaining(['GitLog', 'WebFetch']));
+  });
+
+  it.each<[string, Partial<{ deny: string[]; ask: string[] }>, string[]]>([
+    ['a deny rule on the tool', { deny: ['WebFetch'] }, []],
+    ['a deny rule on all its calls', { deny: ['WebFetch(*)'] }, []],
+    ['an argument-scoped deny rule', { deny: ['WebFetch(domain:evil.example)'] }, ['WebFetch']],
+    ['an ask rule on the tool', { ask: ['WebFetch'] }, ['WebFetch']],
+  ])('with %s', (_name, rules, activated) => {
+    const config = defaultConfig();
+    config.settings.permissions.deny = rules.deny ?? [];
+    config.settings.permissions.ask = rules.ask ?? [];
+    const { toolContext, discovery } = surface({ config });
+    const result = routeTurnIntent(
+      { typedText: URL_TEXT, config, context: toolContext },
+      discovery,
+    );
+    expect(result.activated).toEqual(activated);
+  });
+
+  it.each<[string, string, string, string[]]>([
+    ['strips the URL', URL_TEXT, 'What does this page say?', []],
+    ['keeps the URL', URL_TEXT, `Context: none.\n${URL_TEXT}`, ['WebFetch']],
+    // A hook's rewrite can take a route away, never add one the user did not type.
+    ['adds a URL', 'What does it say?', URL_TEXT, []],
+  ])('after a prompt hook that %s', (_name, typedText, rewrittenPrompt, activated) => {
+    const { config, toolContext, discovery } = surface();
+    const result = routeTurnIntent(
+      { typedText, rewrittenPrompt, config, context: toolContext },
+      discovery,
+    );
+    expect(result.activated).toEqual(activated);
   });
 
   it('does not load a tool that is already active', () => {

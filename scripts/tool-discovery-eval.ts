@@ -13,7 +13,6 @@
  * never part of CI.
  */
 
-import { spawn } from 'node:child_process';
 import { readdir, readFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -23,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
 import { resolveModelPricing, usageCostUsd, type ModelPricing } from '../src/pricing.js';
 import { isAnthropicProvider } from '../src/provider/index.js';
-import { createEditEvaluationSettings } from './edit-eval.js';
+import { createEditEvaluationSettings, runCommand } from './edit-eval.js';
 import {
   evaluationControlsFromResult,
   runEvaluationProcess,
@@ -176,8 +175,13 @@ export function parseToolEvalArgs(argv: readonly string[]): ToolEvalArgs {
     } else if (flag === '--trials') args.trials = Number(value());
     else if (flag === '--estimate') args.estimate = true;
     else if (flag === '--from') args.from = value();
-    else if (flag === '--output-tokens') args.outputTokensPerRequest = Number(value());
-    else if (flag === '--rate') parseRate(value(), args.rates);
+    else if (flag === '--output-tokens') {
+      const raw = value();
+      args.outputTokensPerRequest = Number(raw);
+      if (!Number.isInteger(args.outputTokensPerRequest) || args.outputTokensPerRequest <= 0) {
+        throw new Error(`--output-tokens expects a positive integer: ${raw}`);
+      }
+    } else if (flag === '--rate') parseRate(value(), args.rates);
     else throw new Error(`Unknown option: ${flag}`);
   }
   if (args.trials !== undefined && !(Number.isInteger(args.trials) && args.trials > 0)) {
@@ -241,16 +245,25 @@ export async function startFixtureServer(): Promise<ToolEvalFixture & { close():
   };
 }
 
-async function git(args: string[], cwd: string): Promise<void> {
-  await new Promise<void>((resolveRun) => {
-    const child = spawn('git', args, { cwd, stdio: 'ignore', shell: false });
-    child.once('error', () => resolveRun());
-    child.once('close', () => resolveRun());
-  });
-}
-
-async function seedWorkspace(task: ToolEvalTask, workspace: string): Promise<void> {
-  await git(['init', '--quiet'], workspace);
+/**
+ * Write the task's files and commits into `workspace`. Commits use a fixed identity with signing
+ * off, whatever the user's git configuration says, and any git command that fails fails the seed,
+ * so a run never measures a workspace that is missing its fixture.
+ */
+export async function seedWorkspace(
+  task: ToolEvalTask,
+  workspace: string,
+  run: typeof runCommand = runCommand,
+): Promise<void> {
+  const git = async (args: string[]) => {
+    const code = await run('git', args, workspace);
+    if (code !== 0) {
+      throw new Error(
+        `Seeding the ${task.name} workspace failed: git ${args.join(' ')} exited with ${code ?? 'no code'}.`,
+      );
+    }
+  };
+  await git(['init', '--quiet']);
   const commits = [...(task.commits ?? [])];
   if (task.files) commits.push({ message: 'Add the task files', files: task.files });
   for (const commit of commits) {
@@ -258,11 +271,18 @@ async function seedWorkspace(task: ToolEvalTask, workspace: string): Promise<voi
       await mkdir(dirname(join(workspace, path)), { recursive: true });
       await writeFile(join(workspace, path), content, 'utf8');
     }
-    await git(['add', '-A'], workspace);
-    await git(
-      ['-c', 'user.email=eval@book', '-c', 'user.name=book-eval', 'commit', '-qm', commit.message],
-      workspace,
-    );
+    await git(['add', '-A']);
+    await git([
+      '-c',
+      'user.email=eval@book',
+      '-c',
+      'user.name=book-eval',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-qm',
+      commit.message,
+    ]);
   }
 }
 
@@ -597,6 +617,19 @@ export function trialCostUsd(
   return total;
 }
 
+/**
+ * The estimate the options ask for. It never runs a real model: `--model` only names the models it
+ * prices (the plan's six without it), and `--trials` the trials of the full run (3 without it).
+ */
+export function estimateFromArgs(args: ToolEvalArgs, outcomes: readonly ToolEvalOutcome[]): string {
+  return renderEstimate(
+    outcomes,
+    estimateModels(args.mock ? [] : args.models, args.rates),
+    args.outputTokensPerRequest,
+    args.trials ?? 3,
+  );
+}
+
 const usd = (value: number | undefined): string =>
   value === undefined ? 'no rate' : `$${value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`;
 
@@ -713,13 +746,11 @@ async function main(): Promise<void> {
     return;
   }
   const reportDir = join(process.cwd(), '.book', 'reports');
-  // An estimate never runs a real model: `--model` only names the models it prices.
-  const models = estimateModels(args.mock ? [] : args.models, args.rates);
   if (args.estimate && !args.mock) {
     const from = args.from ?? (await newestMockReport(reportDir));
     const report = JSON.parse(await readFile(from, 'utf8')) as ToolEvalReport;
     console.log(`Estimate from ${from}\n`);
-    console.log(renderEstimate(report.outcomes, models, args.outputTokensPerRequest));
+    console.log(estimateFromArgs(args, report.outcomes));
     return;
   }
 
@@ -784,9 +815,7 @@ async function main(): Promise<void> {
     trials,
     outcomes,
   };
-  const estimate = args.estimate
-    ? renderEstimate(outcomes, models, args.outputTokensPerRequest)
-    : undefined;
+  const estimate = args.estimate ? estimateFromArgs(args, outcomes) : undefined;
   const stamp = report.generatedAt.replace(/[-:]/g, '').replace(/\..*$/, '').replace('T', '-');
   const baseName = `tool-discovery-eval-${report.mode}-${stamp}`;
   await mkdir(reportDir, { recursive: true });
