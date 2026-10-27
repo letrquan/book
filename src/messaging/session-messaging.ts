@@ -17,6 +17,7 @@ import type {
   AcceptedPeerMessage,
   InboxStartResult,
   LiveSessionRecord,
+  PeerAddressResolution,
   PeerMessageReceipt,
   PeerSendOutcome,
   PeerSendRequest,
@@ -197,6 +198,10 @@ export class SessionMessaging implements SessionMessagingHandle {
     };
   }
 
+  async resolve(to: string): Promise<PeerAddressResolution> {
+    return resolveIn(await this.list(), to);
+  }
+
   async send(request: PeerSendRequest): Promise<PeerSendOutcome> {
     if (this.starting) await this.starting;
     const own = this.inbox.socketPath;
@@ -205,8 +210,7 @@ export class SessionMessaging implements SessionMessagingHandle {
       return { status: 'unavailable' };
     }
     const listing = await this.list();
-    const rows = listing.self ? [listing.self, ...listing.peers] : listing.peers;
-    const resolution = resolvePeerAddress(rows, request.to);
+    const resolution = resolveIn(listing, request.to);
     if (!resolution.ok) {
       return {
         status: 'unresolved',
@@ -340,4 +344,8 @@ export class SessionMessaging implements SessionMessagingHandle {
       }
     }
   }
+}
+
+function resolveIn(listing: PeerSessionListing, to: string): PeerAddressResolution {
+  return resolvePeerAddress(listing.self ? [listing.self, ...listing.peers] : listing.peers, to);
 }

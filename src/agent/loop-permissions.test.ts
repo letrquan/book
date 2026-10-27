@@ -1208,6 +1208,7 @@ describe('runAgentLoop memory writes', () => {
       isSubagent?: boolean;
       notices?: string[];
       configure?: (config: AgentConfig) => void;
+      userMessageKind?: 'peer-message';
     } = {},
   ) {
     const prompt = vi.fn(async () => 'deny' as const);
@@ -1233,10 +1234,38 @@ describe('runAgentLoop memory writes', () => {
         provider: toolsThenText(calls),
         isNewSession: false,
         isSubagent: options.isSubagent,
+        userMessageKind: options.userMessageKind,
       },
     );
     return { prompt, results };
   }
+
+  it("gives a turn another session's message started no memory write root (#620)", async () => {
+    // A memory write needs no prompt, and what it saves loads into every later session, a bypass
+    // one included: a peer must not be able to plant one.
+    for (const mode of ['default', 'auto'] as const) {
+      const memory = tempDir('book-loop-memory-');
+      const file = join(memory, 'fact.md');
+      const { results } = await run(
+        memory,
+        [
+          {
+            id: 'w1',
+            name: 'Write',
+            arguments: {
+              filePath: file,
+              content:
+                '---\nname: fact\ndescription: A fact\nmetadata:\n  type: project\n---\nBody\n',
+            },
+          },
+        ],
+        mode,
+        { userMessageKind: 'peer-message' },
+      );
+      expect(byId(results, 'w1')?.status, mode).not.toBe('success');
+      expect(existsSync(file), mode).toBe(false);
+    }
+  });
 
   for (const mode of ['default', 'accept-edits', 'dontAsk', 'auto'] as const) {
     it(`writes a memory file without a prompt in ${mode}, stamped with the session`, async () => {

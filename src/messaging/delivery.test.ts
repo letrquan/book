@@ -79,6 +79,15 @@ describe('peer-message turns', () => {
     expect(turn.display.startsWith('Message from an unattributed sender:')).toBe(true);
   });
 
+  it("keeps a peer's escape sequences out of the text the transcript and the rewind picker show", () => {
+    const body = 'hi\u001b]52;c;cGF5bG9hZA==\u0007 there';
+    const turn = buildPeerMessageTurn([accepted(renderEnvelope({ from: FROM }, body))]);
+    expect(turn.display).not.toMatch(/[\u001b\u0007]/);
+    expect(turn.display).toMatch(/hi ]52;c;cGF5bG9hZA== +there/);
+    // The structured row keeps the body as sent; the row strips it when drawing.
+    expect(turn.peerMessages[0].body).toBe(body);
+  });
+
   it('puts several messages in one turn, the guidance once', () => {
     const turn = buildPeerMessageTurn([
       accepted(renderEnvelope({ from: FROM, fromName: 'peer-b' }, 'one'), 'm1'),

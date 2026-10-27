@@ -5,7 +5,7 @@
  */
 
 import type {
-  PeerAddressProblem,
+  PeerAddressResolution,
   PeerSessionRow,
   ReadLiveSessionRecord,
 } from '../types/messaging.js';
@@ -44,9 +44,6 @@ export function peerLabel(row: Pick<PeerSessionRow, 'name' | 'ref'>): string {
 
 const NAME_WITH_REF = /^(.*\S)\s*\[([0-9a-fA-F]{6})\]$/;
 
-export type PeerResolution =
-  | { ok: true; target: PeerSessionRow & { socketPath: string } }
-  | { ok: false; problem: PeerAddressProblem; candidates: PeerSessionRow[] };
 
 function addressable(row: PeerSessionRow): row is PeerSessionRow & { socketPath: string } {
   return row.socketPath !== undefined;
@@ -56,7 +53,10 @@ function addressable(row: PeerSessionRow): row is PeerSessionRow & { socketPath:
  * The session `to` names among `rows` (this one's own included): by `uds:` address, by
  * `name [ref]`, or by a bare name only one session that can be messaged holds.
  */
-export function resolvePeerAddress(rows: readonly PeerSessionRow[], to: string): PeerResolution {
+export function resolvePeerAddress(
+  rows: readonly PeerSessionRow[],
+  to: string,
+): PeerAddressResolution {
   const address = to.trim();
   let matches: PeerSessionRow[];
   if (address.startsWith('uds:')) {

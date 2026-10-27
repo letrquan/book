@@ -19,7 +19,7 @@ import type {
   PeerDropReason,
   PeerMessageReceipt,
 } from '../types/messaging.js';
-import { foldControlCharacters } from '../control-characters.js';
+import { foldControlCharacters, stripTerminalControls } from '../control-characters.js';
 import { neutralizeTags } from '../prompt-tags.js';
 import { peerRef } from './addressing.js';
 import { renderEnvelope } from './envelope.js';
@@ -97,8 +97,13 @@ export function buildPeerMessageTurn(messages: readonly AcceptedPeerMessage[]): 
   });
   const replyable = peerMessages.some((display) => display.from !== undefined);
   return {
+    // The text the transcript, the rewind picker and session lists show: no escape sequence or
+    // bidi override from a peer reaches the terminal through any of them.
     display: peerMessages
-      .map((display) => `Message from ${peerSenderLabel(display)}:\n${display.body}`)
+      .map(
+        (display) =>
+          `Message from ${peerSenderLabel(display)}:\n${stripTerminalControls(display.body)}`,
+      )
       .join('\n\n'),
     context: [...blocks, peerMessageGuidance(messages.length, replyable)].join('\n\n'),
     peerMessages,

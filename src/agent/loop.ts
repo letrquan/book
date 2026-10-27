@@ -708,14 +708,18 @@ export async function runAgentLoop(
   /**
    * The memory directory as a write root: the root agent only, and only when memory is on with
    * `autoSave`. A subagent or managed child never gets it (a Task subagent runs in
-   * `bypassPermissions`, so the missing field is what keeps it out of memory).
+   * `bypassPermissions`, so the missing field is what keeps it out of memory). Nor does a turn
+   * another session's message started (#620): a memory write needs no prompt, and what it saves
+   * loads into every later session of the workspace, a bypass one included, so a peer could
+   * otherwise steer the sessions it may not message.
    */
   const memoryWriteMode = memoryWriteScope(config);
   const memoryWrite: ToolContext['memoryWrite'] =
     config.memoryContext?.dir &&
     memoryWriteMode !== 'none' &&
     !options?.isSubagent &&
-    !options?.agentId
+    !options?.agentId &&
+    options?.userMessageKind !== 'peer-message'
       ? {
           root: config.memoryContext.dir,
           scope: memoryWriteMode,

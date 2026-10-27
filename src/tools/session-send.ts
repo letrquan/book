@@ -1,9 +1,15 @@
 import type { Message } from '../types/messages.js';
-import type { PeerSendOutcome, SessionMessagingHandle } from '../types/messaging.js';
-import type { ToolDefinition, ToolResult } from '../types/tools.js';
+import type {
+  PeerSendOutcome,
+  PeerSessionRow,
+  SessionMessagingHandle,
+} from '../types/messaging.js';
+import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { foldControlCharacters } from '../control-characters.js';
 import { peerLabel } from '../messaging/addressing.js';
 import { lastHopChain } from '../messaging/delivery.js';
+import { encodeUdsAddress } from '../messaging/wire.js';
+import { evaluatePermissionDetail } from '../permissions.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 export const SESSION_SEND_DESCRIPTION = `Send a message to another Book session running on this machine (SessionList lists them).
@@ -21,6 +27,53 @@ export function conversationHopChain(conversation: readonly Message[]): string[]
     if (message.kind !== 'peer-message') continue;
     const chain = lastHopChain(message.peerMessages);
     if (chain) return chain;
+  }
+  return undefined;
+}
+
+/**
+ * A refusal when a `deny` or `ask` rule names the session `to` resolved to by another spelling
+ * than the call's. The loop matched the call's rules on `to` as written, before it was resolved:
+ * `name [ref]`, a reply's `uds:` address or a stray space reach the same session as the name, and
+ * must not slip past a rule that names it. A deny refuses; an ask the call's own spelling did not
+ * raise sends the model back to the name, which the rule then asks about (except in
+ * `bypassPermissions`, where no ask rule asks). `to` is the argument exactly as the loop judged it.
+ */
+export function ruleRefusal(
+  context: Pick<ToolContext, 'agentConfig' | 'currentMode'>,
+  to: string,
+  message: string,
+  target: PeerSessionRow & { socketPath: string },
+): ToolResult | undefined {
+  const settings = context.agentConfig?.settings;
+  if (!settings) return undefined;
+  const asked = evaluatePermissionDetail('SessionSend', { to, message }, settings);
+  const label = foldControlCharacters(peerLabel(target));
+  const spellings = [target.name, peerLabel(target), encodeUdsAddress(target.socketPath)];
+  for (const spelling of new Set(spellings)) {
+    if (spelling === to) continue;
+    const verdict = evaluatePermissionDetail('SessionSend', { to: spelling, message }, settings);
+    if (verdict.decision === 'deny') {
+      return toolFailure('SKIPPED: Permission denied', {
+        code: 'permission_denied',
+        status: 'blocked',
+        content: `A deny rule (${verdict.matchedRule}) names ${label}, the session ${quoted(to)} reaches.`,
+      });
+    }
+    if (
+      verdict.source === 'ask' &&
+      asked.source !== 'ask' &&
+      context.currentMode !== 'bypassPermissions'
+    ) {
+      return toolFailure(
+        `An ask rule (${verdict.matchedRule}) names ${label}, but this call spelled it ${quoted(to)}, which the rule does not match.`,
+        {
+          code: 'ask_rule_spelling',
+          status: 'blocked',
+          remediation: `Call SessionSend again with \`to\` set to ${quoted(target.name)}, so the rule asks the user.`,
+        },
+      );
+    }
   }
   return undefined;
 }
@@ -150,9 +203,21 @@ export function createSessionSendTool(messaging: SessionMessagingHandle): ToolDe
           retryable: false,
         });
       }
+      const resolution = await messaging.resolve(to);
+      if (!resolution.ok) {
+        return sessionSendResult({
+          status: 'unresolved',
+          problem: resolution.problem,
+          to,
+          candidates: resolution.candidates,
+        });
+      }
+      const refusal = ruleRefusal(context, args.to as string, message, resolution.target);
+      if (refusal) return refusal;
       const chain = conversationHopChain(context.conversation?.() ?? []);
       const outcome = await messaging.send({
-        to,
+        // The address the rules were just checked against, so the send cannot reach another.
+        to: encodeUdsAddress(resolution.target.socketPath),
         message,
         ...(context.currentMode !== undefined ? { mode: context.currentMode } : {}),
         ...(chain ? { hopChain: chain } : {}),

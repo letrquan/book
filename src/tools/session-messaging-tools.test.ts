@@ -22,6 +22,7 @@ import { createDefaultRegistry } from './registry.js';
 import { formatSessionListing, createSessionListTool } from './session-list.js';
 import { conversationHopChain, createSessionSendTool, sessionSendResult } from './session-send.js';
 import { FILE_MUTATING_TOOLS, OUTWARD_FACING_TOOLS } from './tool-capabilities.js';
+import { encodeUdsAddress } from '../messaging/wire.js';
 
 isolateBookHome('book-session-tools-home-');
 
@@ -165,6 +166,13 @@ function fakeMessaging(): SessionMessagingHandle & { sends: PeerSendRequest[] } 
     sends,
     available: () => true,
     list: async () => ({ self: row('me', { self: true }), peers: [row('peer-b')] }),
+    resolve: async (to) => {
+      const target = row('peer-b') as PeerSessionRow & { socketPath: string };
+      const spellings = ['peer-b', 'peer-b [a1b2c3]', encodeUdsAddress(target.socketPath)];
+      return spellings.includes(to.trim())
+        ? { ok: true, target }
+        : { ok: false, problem: 'not_found', candidates: [] };
+    },
     send: async (request) => {
       sends.push(request);
       return { status: 'sent', target: row('peer-b'), msgId: `m${sends.length}` };
@@ -173,7 +181,7 @@ function fakeMessaging(): SessionMessagingHandle & { sends: PeerSendRequest[] } 
 }
 
 /** Turn 1 calls SessionList and SessionSend; every later turn answers with text. */
-function provider(): Provider {
+function provider(to = 'peer-b'): Provider {
   let turn = 0;
   return {
     id: 'scripted',
@@ -189,7 +197,7 @@ function provider(): Provider {
           toolCall: {
             id: 's1',
             name: 'SessionSend',
-            arguments: { to: 'peer-b', message: 'hello' },
+            arguments: { to, message: 'hello' },
           },
         };
       } else {
@@ -222,13 +230,20 @@ describe('SessionList and SessionSend permissions (D7)', () => {
 
   async function run(
     mode: string,
-    options: { allowedTools?: string[]; isSubagent?: boolean; deny?: string[] } = {},
+    options: {
+      allowedTools?: string[];
+      isSubagent?: boolean;
+      deny?: string[];
+      ask?: string[];
+      to?: string;
+    } = {},
   ) {
     const messaging = fakeMessaging();
     const registry = createDefaultRegistry();
     registry.registerAll([createSessionListTool(messaging), createSessionSendTool(messaging)]);
     const config = defaultConfig({ workspace, maxTurns: 2 });
     if (options.deny) config.settings.permissions.deny = options.deny;
+    if (options.ask) config.settings.permissions.ask = options.ask;
     const prompted = vi.fn(async () => 'allow' as const);
     const results: ToolResult[] = [];
     await runAgentLoop(
@@ -239,7 +254,7 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       callbacks({ onPermissionRequired: prompted, onToolResult: (result) => results.push(result) }),
       mode,
       {
-        provider: provider(),
+        provider: provider(options.to),
         isNewSession: false,
         ...(options.allowedTools ? { allowedTools: options.allowedTools } : {}),
         ...(options.isSubagent ? { isSubagent: true } : {}),
@@ -267,7 +282,7 @@ describe('SessionList and SessionSend permissions (D7)', () => {
   });
 
   it('marks the send with the mode it ran in', async () => {
-    expect((await run('default')).sends[0]).toMatchObject({ to: 'peer-b', mode: 'default' });
+    expect((await run('default')).sends[0]).toMatchObject({ mode: 'default' });
     expect((await run('auto')).sends[0]).toMatchObject({ mode: 'auto' });
   });
 
@@ -290,10 +305,29 @@ describe('SessionList and SessionSend permissions (D7)', () => {
     }
   });
 
-  it('holds a deny rule even under bypassPermissions', async () => {
-    const outcome = await run('bypassPermissions', { deny: ['SessionSend(peer-b)'] });
-    expect(outcome.send?.structuredError?.code).toBe('permission_denied');
-    expect(outcome.sends).toEqual([]);
+  it('holds a deny rule even under bypassPermissions, however `to` spells the session', async () => {
+    for (const to of ['peer-b', ' peer-b', 'peer-b [a1b2c3]', 'uds:/tmp/socks/peer-b.sock']) {
+      const outcome = await run('bypassPermissions', { deny: ['SessionSend(peer-b)'], to });
+      expect(outcome.send?.structuredError?.code, to).toBe('permission_denied');
+      expect(outcome.sends, to).toEqual([]);
+    }
+  });
+
+  it('sends the model back to the name an ask rule matches, so the rule can ask (auto)', async () => {
+    const spelled = await run('auto', { ask: ['SessionSend(peer-b)'], to: 'peer-b [a1b2c3]' });
+    expect(spelled.promptedFor).toEqual([]);
+    expect(spelled.send?.structuredError?.code).toBe('ask_rule_spelling');
+    expect(spelled.send?.structuredError?.remediation).toContain('"peer-b"');
+    expect(spelled.sends).toEqual([]);
+    const named = await run('auto', { ask: ['SessionSend(peer-b)'] });
+    expect(named.promptedFor).toEqual(['SessionSend']);
+    expect(named.sends).toHaveLength(1);
+  });
+
+  it('sends to the address it resolved and checked', async () => {
+    expect((await run('auto', { to: 'peer-b [a1b2c3]' })).sends[0].to).toBe(
+      'uds:/tmp/socks/peer-b.sock',
+    );
   });
 
   it('is not offered to a skill or command whose allowed tools leave it out, nor to a child agent', async () => {

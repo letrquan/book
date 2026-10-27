@@ -222,6 +222,11 @@ export interface PeerSendRequest {
 /** Why a `to` names no session a message can go to. */
 export type PeerAddressProblem = 'not_found' | 'ambiguous' | 'self' | 'no_inbox';
 
+/** The session a `to` names, or why it names none a message can go to. */
+export type PeerAddressResolution =
+  | { ok: true; target: PeerSessionRow & { socketPath: string } }
+  | { ok: false; problem: PeerAddressProblem; candidates: PeerSessionRow[] };
+
 export type PeerSendOutcome =
   | { status: 'sent'; target: PeerSessionRow; msgId: string }
   | { status: 'unavailable' }
@@ -240,5 +245,7 @@ export interface SessionMessagingHandle {
   /** Whether the inbox is listening: the tools are offered only then. */
   available(): boolean;
   list(): Promise<PeerSessionListing>;
+  /** The live session `to` names now, without sending anything. */
+  resolve(to: string): Promise<PeerAddressResolution>;
   send(request: PeerSendRequest): Promise<PeerSendOutcome>;
 }
