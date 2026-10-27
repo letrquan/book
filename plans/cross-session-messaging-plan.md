@@ -711,9 +711,13 @@ delivered (N held)` row (name from the registry record advertising the frame's a
   `peerTurnGateMode`: a bypass-class host mode is read as `default` for the whole run; a stricter
   mode applies at once. Child agents, `SessionSend`'s `from-mode` and every gate read the pinned
   mode. The TUI keeps a session-level pin a peer turn sets and host-delivered turns (completions,
-  notices) inherit, cleared only by a turn the user starts. A pinned run's `EnterPlanMode` and
-  `ExitPlanMode` are refused, and `EnterPlanMode` records the host's own mode (`ToolContext.hostMode`)
-  as the one to restore, so a peer turn never changes the session's mode.
+  notices) inherit, cleared only by a turn the user starts; a background job a pinned run starts
+  keeps the run's class for its own completion turn, whenever it lands. A pinned run's
+  `EnterPlanMode` and `ExitPlanMode` are refused, and `EnterPlanMode` records the host's own mode
+  (`ToolContext.hostMode`) as the one to restore, so a peer turn never changes the session's mode.
+  A prompting-class run's `AgentSpawn`, `AgentPlan` and `AgentSend` are refused: managed agents
+  outlive the turn and run at the `AgentManager`'s shared mode, which the pin does not reach
+  (security review).
 - Print mode and the SDK still have no inbox (D3), so nothing is held there; their `--messaging`
   opt-in and stream-json `peer_message_hold` events stay in PR 7.
 
