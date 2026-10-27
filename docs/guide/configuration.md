@@ -662,13 +662,12 @@ The key is read **only from `~/.book/settings.json` (`<BOOK_HOME>/settings.json`
 it there.
 
 With it on, the inbox is a socket (`0600`) in a private directory (`0700`):
-`$XDG_RUNTIME_DIR/book-socks/`, or `<BOOK_HOME>/socks/` when `BOOK_HOME` is set, falling back to
-`<tmp>/book-socks-<uid>/` when that path is too long for a socket or the directory is refused (a
-symlink, another user's, or inside a directory others can write without the sticky bit). On macOS
-a runtime directory in or resolving into a temp directory is passed over too, since sandboxed
-commands can write there, as is one that does not exist; the sandbox keeps them out of the
-fallback. The key
-other sessions authenticate with is a `0600` file beside the session's record in
+`<BOOK_HOME>/socks/` when `BOOK_HOME` is set, otherwise `$XDG_RUNTIME_DIR/book-socks/` on Linux,
+falling back to `<tmp>/book-socks-<uid>/` when that path is too long for a socket or the directory
+is refused (a symlink, another user's, or inside a directory others can write without the sticky
+bit). macOS has no system runtime directory, so `XDG_RUNTIME_DIR` is not used there, and the
+sandbox keeps sandboxed commands out of `<tmp>/book-socks-<uid>/`. The key other sessions
+authenticate with is a `0600` file beside the session's record in
 `<BOOK_HOME>/live-sessions/`. Both go when the session ends. `book doctor` shows the socket
 directory and whether it passes those checks. A session whose inbox cannot start shows one notice
 and runs normally.

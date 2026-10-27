@@ -71,7 +71,12 @@ describe('socketDirCandidates', () => {
 
   it('uses the runtime directory, then the per-uid fallback', () => {
     expect(
-      socketDirCandidates({ env: { XDG_RUNTIME_DIR: '/run/user/1' }, tmpdir: '/t', uid: 7 }),
+      socketDirCandidates({
+        env: { XDG_RUNTIME_DIR: '/run/user/1' },
+        tmpdir: '/t',
+        uid: 7,
+        platform: 'linux',
+      }),
     ).toEqual([
       { dir: join('/run/user/1', 'book-socks'), source: 'xdg-runtime' },
       { dir: join('/t', 'book-socks-7'), source: 'tmp' },
@@ -238,110 +243,59 @@ describe.skipIf(!posix)('resolveSocketDir', () => {
     expect(resolution.skipped[0]!.message).toContain('is a symlink');
   });
 
-  describe('on macOS, a runtime directory sandboxed commands can write', () => {
+  describe('on macOS, XDG_RUNTIME_DIR', () => {
+    // macOS has no system runtime directory, so the variable is always set by hand, and a
+    // sandboxed command could repoint whatever it names: it is never a candidate there.
     function layout() {
-      const writable = scratch();
       const outside = scratch();
       const tmp = scratch();
-      mkdirSync(join(writable, 'run'), { mode: 0o700 });
       mkdirSync(join(outside, 'run'), { mode: 0o700 });
-      return { writable, outside, tmp };
+      symlinkSync(join(outside, 'run'), join(outside, 'link'));
+      return { outside, tmp };
     }
 
-    it('is passed over for the per-uid fallback when it is inside a Seatbelt temp root', async () => {
-      const { writable, tmp } = layout();
+    it.each([
+      ['a real directory', 'run'],
+      ['a symlink', 'link'],
+      ['missing', 'missing'],
+    ])('is ignored when it is %s', async (_name, entry) => {
+      const { outside, tmp } = layout();
       const resolution = await resolveSocketDir({
         create: true,
-        env: { XDG_RUNTIME_DIR: join(writable, 'run') },
+        env: { XDG_RUNTIME_DIR: join(outside, entry) },
         tmpdir: tmp,
         uid,
         platform: 'darwin',
-        sandboxTempRoots: [writable],
       });
-      expect(resolution).toMatchObject({
+      expect(resolution).toEqual({
         ok: true,
         source: 'tmp',
         dir: join(tmp, `book-socks-${uid}`),
-        skipped: [{ source: 'xdg-runtime', reason: 'temp-root' }],
+        skipped: [],
       });
-      expect(() => lstatSync(join(writable, 'run', 'book-socks'))).toThrow();
+      expect(() => lstatSync(join(outside, entry, 'book-socks'))).toThrow();
     });
 
-    it('is passed over when it only reaches a temp root through a symlink', async () => {
-      const { writable, outside, tmp } = layout();
-      symlinkSync(join(writable, 'run'), join(outside, 'link'));
-      const resolution = await resolveSocketDir({
-        create: true,
-        env: { XDG_RUNTIME_DIR: join(outside, 'link') },
-        tmpdir: tmp,
-        uid,
-        platform: 'darwin',
-        sandboxTempRoots: [writable],
-      });
-      expect(resolution).toMatchObject({
-        ok: true,
-        source: 'tmp',
-        skipped: [{ source: 'xdg-runtime', reason: 'temp-root' }],
-      });
+    it('is not a candidate on darwin, and is one elsewhere', () => {
+      const env = { XDG_RUNTIME_DIR: '/run/user/1' };
+      expect(socketDirCandidates({ env, tmpdir: '/t', uid: 7, platform: 'darwin' })).toEqual([
+        { dir: join('/t', 'book-socks-7'), source: 'tmp' },
+      ]);
+      expect(socketDirCandidates({ env, tmpdir: '/t', uid: 7, platform: 'linux' })).toEqual([
+        { dir: join('/run/user/1', 'book-socks'), source: 'xdg-runtime' },
+        { dir: join('/t', 'book-socks-7'), source: 'tmp' },
+      ]);
     });
 
-    it('is passed over when its own entry is in a temp root, wherever that entry points', async () => {
-      // The entry itself is sandbox-writable, so a sandboxed command could point it anywhere.
-      const { writable, outside, tmp } = layout();
-      symlinkSync(join(outside, 'run'), join(writable, 'link'));
-      const resolution = await resolveSocketDir({
-        create: true,
-        env: { XDG_RUNTIME_DIR: join(writable, 'link') },
-        tmpdir: tmp,
-        uid,
-        platform: 'darwin',
-        sandboxTempRoots: [writable],
-      });
-      expect(resolution).toMatchObject({
-        ok: true,
-        source: 'tmp',
-        skipped: [{ source: 'xdg-runtime', reason: 'temp-root' }],
-      });
-    });
-
-    it('is passed over, and never created, when it does not exist', async () => {
-      const { writable, outside, tmp } = layout();
-      const resolution = await resolveSocketDir({
-        create: true,
-        env: { XDG_RUNTIME_DIR: join(outside, 'missing') },
-        tmpdir: tmp,
-        uid,
-        platform: 'darwin',
-        sandboxTempRoots: [writable],
-      });
-      expect(resolution).toMatchObject({
-        ok: true,
-        source: 'tmp',
-        skipped: [{ source: 'xdg-runtime', reason: 'unavailable' }],
-      });
-      expect(() => lstatSync(join(outside, 'missing'))).toThrow();
-    });
-
-    it('is used when it lies outside every temp root, and on other platforms', async () => {
-      const { writable, outside, tmp } = layout();
+    it('stays a candidate on Linux', async () => {
+      const { outside, tmp } = layout();
       expect(
         await resolveSocketDir({
           create: true,
           env: { XDG_RUNTIME_DIR: join(outside, 'run') },
           tmpdir: tmp,
           uid,
-          platform: 'darwin',
-          sandboxTempRoots: [writable],
-        }),
-      ).toMatchObject({ ok: true, source: 'xdg-runtime', skipped: [] });
-      expect(
-        await resolveSocketDir({
-          create: true,
-          env: { XDG_RUNTIME_DIR: join(writable, 'run') },
-          tmpdir: tmp,
-          uid,
           platform: 'linux',
-          sandboxTempRoots: [writable],
         }),
       ).toMatchObject({ ok: true, source: 'xdg-runtime', skipped: [] });
     });

@@ -10,20 +10,18 @@
  * 1. `BOOK_MESSAGING_SOCKET_DIR`, for tests. Used as given or not at all: falling back from it
  *    would put a test's sockets in the developer's real directory.
  * 2. `<BOOK_HOME>/socks/`, when `BOOK_HOME` is set, so an isolated home keeps its sockets too.
- * 3. `$XDG_RUNTIME_DIR/book-socks/`.
+ * 3. `$XDG_RUNTIME_DIR/book-socks/`, except on macOS, which has no system runtime directory.
  * 4. `<os.tmpdir()>/book-socks-<uid>/`: the per-uid fallback, also used whenever an earlier
- *    choice is refused or its socket path would not fit in a `sun_path`, and on macOS in place of
- *    a runtime directory inside a temp root sandboxed commands can write (Seatbelt denies them
- *    the fallback by name, `BOOK_TEMP_PREFIXES`).
+ *    choice is refused or its socket path would not fit in a `sun_path`. On macOS Seatbelt denies
+ *    sandboxed commands this directory by name (`BOOK_TEMP_PREFIXES`).
  *
  * Everything is asynchronous, and nothing is cached here: the inbox resolves once at start.
  */
 
 import { chmod, lstat, mkdir, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { resolveBookHome } from '../book-home.js';
-import { seatbeltTempRoots } from '../sandbox.js';
 import type { SocketDirRefusalReason, SocketDirSource } from '../types/messaging.js';
 
 /**
@@ -48,6 +46,7 @@ export interface SocketDirEnvironment {
   uid?: number;
   /** The pid whose socket names the length check budgets for. */
   pid?: number;
+  platform?: NodeJS.Platform;
 }
 
 /** The directories to try, in order. Pure. */
@@ -60,7 +59,10 @@ export function socketDirCandidates(options: SocketDirEnvironment = {}): SocketD
   // shared runtime directory, so a test's or a sandboxed home's inboxes stay inside that home.
   if (env.BOOK_HOME?.trim()) {
     candidates.push({ dir: join(resolveBookHome(env), 'socks'), source: 'book-home' });
-  } else {
+  } else if ((options.platform ?? process.platform) !== 'darwin') {
+    // macOS has no system runtime directory: XDG_RUNTIME_DIR there is always set by hand, and
+    // what it names may be somewhere a sandboxed command can write and repoint (Seatbelt opens the
+    // temp roots), so it is never a candidate. The per-uid fallback is one Seatbelt denies.
     const runtime = env.XDG_RUNTIME_DIR?.trim();
     if (runtime && isAbsolute(runtime)) {
       candidates.push({ dir: join(runtime, 'book-socks'), source: 'xdg-runtime' });
@@ -103,12 +105,6 @@ export interface VetSocketDirOptions extends SocketDirEnvironment {
    * `book doctor`, which reports what a session would do and changes nothing.
    */
   create: boolean;
-  platform?: NodeJS.Platform;
-  /**
-   * The temp directories a sandboxed command can write on macOS: the Seatbelt profile's own list
-   * (`seatbeltTempRoots`) unless a test pins it.
-   */
-  sandboxTempRoots?: readonly string[];
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -279,13 +275,6 @@ export type SocketDirResolution =
 export async function resolveSocketDir(options: VetSocketDirOptions): Promise<SocketDirResolution> {
   const skipped: SocketDirFallback[] = [];
   for (const candidate of socketDirCandidates(options)) {
-    if (candidate.source === 'xdg-runtime' && (options.platform ?? process.platform) === 'darwin') {
-      const passedOver = await sandboxWritableRuntimeDir(dirname(candidate.dir), options);
-      if (passedOver) {
-        skipped.push({ dir: candidate.dir, source: candidate.source, ...passedOver });
-        continue;
-      }
-    }
     const verdict = await vetSocketDir(candidate.dir, options);
     if (verdict.ok) {
       return {
@@ -305,40 +294,4 @@ export async function resolveSocketDir(options: VetSocketDirOptions): Promise<So
     });
   }
   return { ok: false, skipped };
-}
-
-/**
- * Why a macOS runtime directory is no place for the inbox, or undefined when it is one. On macOS a
- * sandboxed command may write anywhere in the Seatbelt temp roots except Book's own named entries,
- * and some nix and dotfile setups put `XDG_RUNTIME_DIR` there. The directory is passed over when
- * its own entry sits in a temp root (a sandboxed command could point that entry anywhere), when
- * it resolves into one, or when it does not resolve at all: macOS has no system runtime
- * directory, so one that is missing was set by hand, and is not created. The per-uid fallback
- * the inbox uses instead is one of the named entries Seatbelt denies.
- */
-async function sandboxWritableRuntimeDir(
-  runtime: string,
-  options: VetSocketDirOptions,
-): Promise<Pick<SocketDirFallback, 'reason' | 'message'> | undefined> {
-  let entry: string;
-  let real: string;
-  try {
-    entry = join(await realpath(dirname(runtime)), basename(runtime));
-    real = await realpath(runtime);
-  } catch (error) {
-    return {
-      reason: 'unavailable',
-      message: `${runtime} cannot be resolved (${errorCode(error) ?? 'error'})`,
-    };
-  }
-  const roots = options.sandboxTempRoots ?? seatbeltTempRoots();
-  const inside = (path: string) =>
-    roots.find((root) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep));
-  const root = inside(entry) ?? inside(real);
-  return root === undefined
-    ? undefined
-    : {
-        reason: 'temp-root',
-        message: `${runtime} is inside ${root}, a temp directory sandboxed commands can write on macOS`,
-      };
 }

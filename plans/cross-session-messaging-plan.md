@@ -463,15 +463,22 @@ The feature is live on this account: the tools are in this session.
     token the key holds) is gone; a key nothing can judge (another domain's, or a torn one) goes
     once no record of its pid and domain is left and it is over an hour old, which also takes a
     foreign key with its record's 24-hour sweep (coordinator, 2026-10-26);
-  - sockets live in `$XDG_RUNTIME_DIR/book-socks/<pid>.sock`, or `<BOOK_HOME>/socks/` when
-    `BOOK_HOME` is set (an explicit home isolates, so the runtime directory is not tried), falling
-    back to `<os.tmpdir()>/book-socks-<uid>/<pid>.sock` when the path is over 103 bytes or a
-    directory is refused. On macOS a runtime directory whose own entry or real path is inside a
-    Seatbelt temp root, or that does not resolve, is passed over as well, because sandboxed
-    commands can write there; Seatbelt denies them
-    the fallback by name (`book-socks` in `BOOK_TEMP_PREFIXES`). At start an inbox reaps every Book socket in its directory that refuses
-    a connection, because a session killed by a signal leaves its socket behind. The connection
-    decides, never the pid, so this is safe across pid namespaces;
+  - sockets live in, per platform (coordinator, 2026-10-26):
+    - **Linux:** `BOOK_MESSAGING_SOCKET_DIR` (tests only, never with a fallback), then
+      `<BOOK_HOME>/socks/` when `BOOK_HOME` is set (an explicit home isolates, so the runtime
+      directory is not tried), then `$XDG_RUNTIME_DIR/book-socks/`, then
+      `<os.tmpdir()>/book-socks-<uid>/`;
+    - **macOS:** the same, without `$XDG_RUNTIME_DIR`. macOS has no system runtime directory, so the
+      variable is always set by hand, and what it names could be somewhere a sandboxed command can
+      write and repoint. A check-then-use skip of such a directory can't be made race-free, so the
+      variable is simply not a candidate. Seatbelt denies sandboxed commands the per-uid fallback
+      by name (`book-socks` in `BOOK_TEMP_PREFIXES`).
+
+    The per-uid fallback is also used when a path is over 103 bytes or a directory is refused. At
+    start an inbox reaps every Book socket in its directory that refuses a connection, because a
+    session killed by a signal leaves its socket behind. The connection decides, never the pid, so
+    this is safe across pid namespaces;
+
   - directories are `0700` and vetted, the socket `0600`, the key `0600`.
 - **Process start token**: Linux reads field 22 of `/proc/<pid>/stat` asynchronously. macOS uses an
   async `ps -o lstart= -p <pid>`. `pidDomain` follows CC's shape.
