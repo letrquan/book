@@ -37,7 +37,7 @@ import { addUsage } from '../pricing.js';
 import { isSessionDriver } from '../session-driver.js';
 import { createDebugLogger } from '../debug-log.js';
 import { normalizeToolResult } from '../tools/result.js';
-import { deriveSessionName } from './name.js';
+import { deriveSessionName, isHostDeliveredTurn } from './name.js';
 
 export type { SessionMeta } from '../types/sessions.js';
 
@@ -422,7 +422,7 @@ export class SessionStore {
     } else if (record.type === 'user') {
       entry.meta.messageCount++;
       entry.lastMessageRole = 'user';
-      if (!entry.meta.name && data.content && data.kind !== 'agent-notification') {
+      if (!entry.meta.name && data.content && !isHostDeliveredTurn(data)) {
         entry.meta.name = deriveSessionName(data.content);
       }
     } else if (record.type === 'local') {
@@ -527,6 +527,7 @@ export class SessionStore {
         includeInContext?: boolean;
         fileObservations?: Message['fileObservations'];
         agentNotifications?: Message['agentNotifications'];
+        peerMessages?: Message['peerMessages'];
         attachments?: Message['attachments'];
         hostNotice?: boolean;
       };
@@ -705,6 +706,7 @@ export class SessionStore {
           includeInContext: data.includeInContext ?? true,
           kind: (data.kind as Message['kind']) ?? 'conversation',
           agentNotifications: data.agentNotifications,
+          ...(data.peerMessages !== undefined ? { peerMessages: data.peerMessages } : {}),
           attachments: data.attachments,
           fileObservations: data.fileObservations,
           timestamp: record.timestamp,
@@ -787,9 +789,7 @@ export class SessionStore {
     if (!meta.name) {
       const firstUserPrompt = transcript.find(
         (message) =>
-          message.role === 'user' &&
-          message.kind !== 'local' &&
-          message.kind !== 'agent-notification',
+          message.role === 'user' && message.kind !== 'local' && !isHostDeliveredTurn(message),
       )?.content;
       if (firstUserPrompt) meta.name = deriveSessionName(firstUserPrompt);
     }

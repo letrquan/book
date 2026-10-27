@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'path';
 import type { ResolvedSettings } from './settings.js';
 import type { PermissionDecision, PermissionResult, ToolCall } from './types/tools.js';
 import { canonicalToolName } from './tools/aliases.js';
-import { getPrimaryArg } from './tools/primary-arg.js';
+import { getPrimaryArg, namesSessionByAddress, toolPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex, globWalkPlan } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
 import {
@@ -14,6 +14,7 @@ import {
   type ScanShell,
 } from './tools/shell-chaining.js';
 import { strictRmOfMarkdownUnder } from './tools/strict-rm.js';
+import { UNPROMPTED_READ_TOOLS } from './tools/tool-capabilities.js';
 import {
   canonicalizePath,
   isBookLocalSettingsPath,
@@ -449,7 +450,9 @@ export function permissionRuleForToolCall(call: ToolCall): string | undefined {
     return `Bash(${command})`;
   }
   if (toolName === 'WebSearch') return toolName;
-  const scope = ruleScopeOf(toolName, getPrimaryArg(call.arguments));
+  // A session named by its inbox is approved once, never remembered (`namesSessionByAddress`).
+  if (namesSessionByAddress(toolName, call.arguments)) return undefined;
+  const scope = ruleScopeOf(toolName, toolPrimaryArg(toolName, call.arguments));
   if (!scope || RULE_WILDCARD.test(scope.taken)) return undefined;
   return `${toolName}(${scope.pattern})`;
 }
@@ -463,6 +466,11 @@ export interface MissingRuleReason {
    * or a `*` or `?` in another tool's argument.
    */
   wildcard: boolean;
+  /**
+   * A `SessionSend` to a session named by its inbox (`name [ref]`, `uds:`): a rule for it would
+   * outlive the session, so none is offered (`namesSessionByAddress`).
+   */
+  sessionAddress?: boolean;
 }
 
 /**
@@ -482,7 +490,10 @@ export function missingRuleReason(call: ToolCall): MissingRuleReason | undefined
       wildcard: command.includes('*'),
     };
   }
-  const scope = ruleScopeOf(toolName, getPrimaryArg(call.arguments));
+  if (namesSessionByAddress(toolName, call.arguments)) {
+    return { lineBreak: false, wildcard: false, sessionAddress: true };
+  }
+  const scope = ruleScopeOf(toolName, toolPrimaryArg(toolName, call.arguments));
   return scope && RULE_WILDCARD.test(scope.taken)
     ? { lineBreak: false, wildcard: true }
     : undefined;
@@ -577,7 +588,7 @@ export function permissionRuleMatchesCall(
   if (toolName === 'Bash') {
     return bashAllowRuleMatches(parseRule(rule), call.arguments.command, platform, shell);
   }
-  const primaryArg = getPrimaryArg(call.arguments);
+  const primaryArg = toolPrimaryArg(toolName, call.arguments);
   if (toolName === 'WebFetch' && primaryArg) {
     try {
       // URL.toString() gives origin roots a trailing slash, matching the remembered origin glob.
@@ -624,8 +635,8 @@ function compatiblePatchRuleMatches(
  * Extract the primary argument from a tool call for rule matching.
  * Delegates to the shared getPrimaryArg utility.
  */
-export function primaryArgForRule(_toolName: string, args: Record<string, unknown>): string {
-  return getPrimaryArg(args);
+export function primaryArgForRule(toolName: string, args: Record<string, unknown>): string {
+  return toolPrimaryArg(toolName, args);
 }
 
 /**
@@ -1237,7 +1248,7 @@ export function evaluatePermissionDetail(
   // A rule about a file applies however the call spells its path: `Read(.env)` must also stop
   // `D:/ws/.env` and `src/../.env`, which the glob on the raw argument misses. Resolved only when
   // a rule names the tool, since resolving touches the file system.
-  const candidates: string[] = [getPrimaryArg(args)];
+  const candidates: string[] = [toolPrimaryArg(tool, args)];
   let restrictiveCandidates: string[] =
     tool === 'Bash' ? bashRestrictiveCandidates(args.command, candidates[0]) : candidates;
   if (scope && paths && PATH_RULE_TOOLS.has(tool) && rulesName(parsed, tool)) {
@@ -1414,10 +1425,11 @@ export function evaluatePermissionDetail(
 }
 
 /**
- * Tools that never prompt: the agent's checklist, and the advisor the user chose with
- * `/advisor` (it reads the conversation and acts on nothing). A `deny` rule still blocks
+ * Tools that never prompt: the agent's checklist, the advisor the user chose with
+ * `/advisor` (it reads the conversation and acts on nothing), and the read-only tools that report
+ * on the session's surroundings (`UNPROMPTED_READ_TOOLS`). A `deny` rule still blocks
  * them and an `ask` rule still asks, and `dontAsk` does not refuse them, since it only
  * refuses what it would have had to ask about. (A write into the memory directory is
  * allowed separately, with source `memory`.)
  */
-export const ALWAYS_ALLOWED_TOOLS = new Set(['TodoWrite', 'Advisor']);
+export const ALWAYS_ALLOWED_TOOLS = new Set(['TodoWrite', 'Advisor', ...UNPROMPTED_READ_TOOLS]);

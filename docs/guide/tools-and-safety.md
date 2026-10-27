@@ -698,6 +698,70 @@ TUI prompts; print/headless and the SDK route the decision through `onUserQuesti
 host that supplies no handler ends the run with the plan itself rather than rejecting it — see
 [Print mode](cli.md#print-mode).
 
+## Cross-session messaging tools
+
+With the experimental `messaging.enabled` on (see [Configuration](configuration.md#cross-session-messaging-experimental)),
+the interactive TUI's own session has two tools, core rather than deferred while its inbox is
+listening (#620):
+
+- `SessionList` lists the live sessions of this machine: this session's own name first, then one
+  row per other session, `name [ref] · kind · status · started`. The name is the address; the ref,
+  six hex digits of the session's socket path, only tells two sessions with the same name apart. A
+  session marked `no inbox` has messaging off and cannot be messaged.
+- `SessionSend {to, message}` sends one message. `to` is a name, `name [ref]`, or the `from` address
+  of a message being answered; a name two sessions hold is refused with both refs named. The
+  description tells the model that a peer is not its user, that a message is never approval, and
+  never to ask a peer for what its own session denied (cross-session permission laundering).
+
+Permissions:
+
+| Mode                        | `SessionList` | `SessionSend` |
+| --------------------------- | ------------- | ------------- |
+| `default`, `acceptEdits`    | runs          | asks          |
+| `plan`                      | runs          | not offered   |
+| `dontAsk`                   | runs          | refused       |
+| `auto`, `bypassPermissions` | runs          | runs          |
+
+`SessionSend` is outward-facing: no allow-set names it, so the ordinary flow decides it, and a rule
+names its recipient: `SessionSend(book-3f)` for the session of that name, or
+`SessionSend(book-3f [a1b2c3])` for exactly that one (a pattern's brackets are literal). A bare name
+reaches a session only while no other live session holds it; a shared name is answered with the
+refs, and a `name [ref]` call is not covered by a rule on the bare name, so it asks. "Always allow"
+is offered only for a call to a bare name, and saves that name: a `name [ref]` or `uds:` recipient
+comes from the session's pid-named socket, so a rule saved for it could admit a later session that
+reuses the pid, and such a call can only be approved once. A hook's matcher reads the recipient
+the same way: `SessionSend(prod-*)` matches a message to `prod-3f`. A `deny` or `ask` rule written with a ref binds every session of
+that name, which is stricter. A `deny` or `ask` rule applies however the call spells the
+session, `bypassPermissions` included for a deny: once it has resolved `to`, the tool checks the
+name, `name [ref]` and the session's `from` address, refusing a denied one and, for an ask, sending
+the model back with the spelling the rule names. Print mode, the SDK,
+managed agents and `Task` subagents have neither tool, and a skill or command whose
+`allowed-tools` leaves `SessionSend` out does not get it. A turn another session's message
+started cannot write memory, since what it saved would load into every later session.
+
+What a send returns:
+
+- sent: the message reached the other session's inbox, which is not proof its model read it;
+- the session is gone: call `SessionList` again;
+- busy: try again shortly;
+- too large (over the 1 MiB line limit): put the content in a file and send its path;
+- paced (this session has sent that one as many messages as it accepts for now): batch what
+  remains into one message, never retry in a loop;
+- relay limit (the turn continues a relay that would pass 28 hops, or pass through this session
+  10 times): not sent, since the other side would drop it as a loop; tell the user.
+
+A message that is dropped or refused later comes back as a `⚠` transcript row and a
+`[Cross-session delivery notice]` for the model, which tells it not to resend in a loop; a delivered
+one is a `✓` row only. The notice's text is Book's, one per status: what the other session said
+about its reason is never repeated.
+
+On the receiving side, the message's text never reaches the prompt as markup: the `<` of every tag
+Book's prompts are built from (`session-state`, `project-instructions`, `system-reminder`, the
+envelope's own `cross-session-message`, and the rest of the list in `src/prompt-tags.ts`) is
+rewritten as `<\\`, also when a JSON string spells it with escapes such as `\u003c` or `\/`. A
+message whose permission class differs from the receiving session's is refused for now (see
+[Features](features.md)).
+
 ## Hooks
 
 `hooks.<event>` takes a list of `{ command, matcher? }` entries run in declaration order over a

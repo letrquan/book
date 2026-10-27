@@ -1,3 +1,13 @@
+import type { Message } from '../types/messages.js';
+
+/**
+ * A user-role turn the host delivered rather than the user typed: a completion notification, or
+ * another session's message (#620). Its text is nobody's prompt, so it never names a session.
+ */
+export function isHostDeliveredTurn(message: { kind?: Message['kind'] | string }): boolean {
+  return message.kind === 'agent-notification' || message.kind === 'peer-message';
+}
+
 /** Label used for a session before its first prompt has been recorded. */
 export const UNTITLED_SESSION_NAME = 'Untitled session';
 

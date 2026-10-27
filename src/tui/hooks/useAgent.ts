@@ -105,7 +105,9 @@ import { normalizePersistedTodos } from '../../tools/todo.js';
 import { SessionRuntime } from '../../session/runtime.js';
 import { seedShellIds } from '../../jobs/shell-ids.js';
 import { createInteractiveAgentSession } from '../../session/interactive-session.js';
+import { isHostDeliveredTurn } from '../../session/name.js';
 import type { LiveSessionReporter } from '../../messaging/writer.js';
+import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/session-messaging.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
 import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
 import type { BackgroundShellRecord } from '../../types/runtime.js';
@@ -150,6 +152,8 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
   additionalTools?: () => ToolDefinition[];
   /** This process's live-session record (#620); the TUI's host owns its start and removal. */
   liveSession?: LiveSessionReporter;
+  /** This process's messaging runtime (#620), when messaging is on; the TUI's host owns it. */
+  messaging?: SessionMessaging;
   /**
    * Warnings about this launch, shown once as local rows after the loaded transcript. Not
    * persisted and not part of the model's context, so a resumed session shows the current
@@ -281,6 +285,14 @@ interface SendMessageOptions {
   sessionNameExact?: string;
   kind?: Message['kind'];
   agentNotifications?: Message['agentNotifications'];
+  peerMessages?: Message['peerMessages'];
+  /**
+   * Called once the turn's user message is recorded: past the pre-turn compaction, so a send
+   * cancelled or superseded before then never calls it.
+   */
+  onRecorded?: () => void;
+  /** Checked once the pre-turn compaction is done: false cancels the send before it is recorded. */
+  stillDeliverable?: () => boolean;
   attachments?: Message['attachments'];
   /** Managed-continuation linkage back to the originating root and parent run. */
   rootRunId?: string;
@@ -406,11 +418,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [mode, setMode] = useState<PermissionMode>(() =>
     resolvePermissionMode(config.settings, session.permissionMode),
   );
+  // What this session sends is marked with its permission class, and what it accepts is judged by
+  // it (#620): the messaging runtime follows the mode.
+  const messaging = session.messaging;
+  useEffect(() => {
+    messaging?.setPermissionMode(mode);
+  }, [messaging, mode]);
   const [agentSession] = useState(() =>
     createInteractiveAgentSession({
       runtime: createSeededRuntime(session, initialTranscript),
       additionalTools: session.additionalTools,
       liveSession: session.liveSession,
+      messaging: session.messaging,
     }),
   );
   // The session's `/goal` as the status line shows it. The runtime owns the goal and the loop
@@ -1029,7 +1048,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               options: {
                 trigger: 'auto',
                 preContextTokens: usagePressureTokens(hostUsageRef.current),
-                upcomingUserIntent: messageOptions?.contextMessage ?? userMessage,
+                // Another session's message is not the user's next message (#620).
+                upcomingUserIntent:
+                  messageOptions?.kind === 'peer-message'
+                    ? undefined
+                    : (messageOptions?.contextMessage ?? userMessage),
                 // Esc on this row's "Esc to cancel" must stop the reducer, not only the send:
                 // without the turn's signal the model kept being called after the send was gone.
                 signal: control.signal,
@@ -1066,6 +1089,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (stillCurrent()) setIsCompacting(false);
           }
         }
+        // Another session's messages whose permission class no longer matches the mode — the
+        // user switched it during the compaction above — are not delivered: the send is cancelled
+        // before its user message is recorded, they stay queued, and the next delivery refuses
+        // them with the interim reason (#620).
+        // TODO(#620): PR 5 (mode parity) pins a peer turn to the class it was delivered under, so
+        // a mode switched in the middle of the turn cannot run its request unasked either.
+        if (messageOptions?.stillDeliverable && !messageOptions.stillDeliverable()) {
+          agentSession.cancel('peer-class-changed');
+        }
       };
 
       const createUserMessage = () => {
@@ -1075,6 +1107,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // project command is repository-authored text, and for a builtin is Book's own.
         message.derivedContent = commandContext || messageOptions?.derived ? true : undefined;
         message.agentNotifications = messageOptions?.agentNotifications;
+        message.peerMessages = messageOptions?.peerMessages;
         message.attachments = messageOptions?.attachments;
         activeUserMessage = message;
         return message;
@@ -1116,6 +1149,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const projectPreparedSend = (
         prepared: Extract<Awaited<ReturnType<AgentSession['prepareSend']>>, { status: 'prepared' }>,
       ) => {
+        // The turn is committed: its user message is recorded. A turn the user started begins a
+        // fresh relay chain for what it sends (#620). A host-delivered turn does not: a peer
+        // turn sets its own chain when its batch is committed, and a notification turn (a
+        // background job's or an agent's completion, a delivery notice) keeps the chain of the
+        // turn that set it going, so a relay cannot restart itself through a completion.
+        if (!isHostDeliveredTurn({ kind: messageOptions?.kind })) messaging?.beginTurn();
+        messageOptions?.onRecorded?.();
         if (prepared.sessionName !== sessionNameRef.current) {
           sessionNameRef.current = prepared.sessionName;
           setSessionName(prepared.sessionName);
@@ -1171,12 +1211,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         mode: modeRef.current,
         sessionId: activeSessionId,
         source: 'tui',
-        resumedFromRunId:
-          messageOptions?.kind === 'agent-notification' ? undefined : resumedFromRunIdRef.current,
-        rootRunId:
-          messageOptions?.kind === 'agent-notification' ? messageOptions?.rootRunId : undefined,
-        parentRunId:
-          messageOptions?.kind === 'agent-notification' ? messageOptions?.parentRunId : undefined,
+        resumedFromRunId: isHostDeliveredTurn({ kind: messageOptions?.kind })
+          ? undefined
+          : resumedFromRunIdRef.current,
+        rootRunId: isHostDeliveredTurn({ kind: messageOptions?.kind })
+          ? messageOptions?.rootRunId
+          : undefined,
+        parentRunId: isHostDeliveredTurn({ kind: messageOptions?.kind })
+          ? messageOptions?.parentRunId
+          : undefined,
         sessionName: sessionNameRef.current,
         sessionNameSource: messageOptions?.sessionNameSource,
         sessionNameExact: messageOptions?.sessionNameExact,
@@ -1499,7 +1542,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           parentSessionId: activeSessionId,
         },
       });
-      if (messageOptions?.kind !== 'agent-notification' && sendResult.status !== 'rejected') {
+      // A host-delivered turn (a notification, a peer's message) never takes the resumed run's
+      // linkage: the user's own next prompt continues it.
+      if (
+        !isHostDeliveredTurn({ kind: messageOptions?.kind }) &&
+        sendResult.status !== 'rejected'
+      ) {
         resumedFromRunIdRef.current = undefined;
       }
 
@@ -1699,6 +1747,56 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         },
       );
       return didSendMessageComplete(result);
+    },
+    [sendMessage],
+  );
+
+  /**
+   * Deliver other sessions' messages (#620) as one `peer-message` turn. The batch is taken off the
+   * inbox's queue only once the turn's user message is recorded — a send the session cannot start,
+   * or one cancelled in its pre-turn compaction, leaves the messages queued for the next try — and
+   * its senders hear `delivered` then.
+   */
+  const sendPeerMessages = useCallback(
+    async (batch: PeerDeliveryBatch): Promise<boolean> => {
+      if (!messaging) return false;
+      if (!batch.turn) {
+        messaging.commitDelivery(batch);
+        return true;
+      }
+      let committed = false;
+      await sendMessage(batch.turn.display, undefined, {
+        contextMessage: batch.turn.context,
+        kind: 'peer-message',
+        peerMessages: batch.turn.peerMessages,
+        stillDeliverable: () => messaging.stillDeliverable(batch),
+        onRecorded: () => {
+          if (committed) return;
+          committed = true;
+          messaging.commitDelivery(batch);
+        },
+      });
+      return committed;
+    },
+    [sendMessage, messaging],
+  );
+
+  /**
+   * Tell the model what came of messages this session sent (#620): the `[Cross-session delivery
+   * notice]` text, as a host turn the transcript does not show; the human reads the warning row.
+   */
+  const sendPeerDeliveryNotice = useCallback(
+    async (notice: string): Promise<boolean> => {
+      // Told once the turn is recorded: a turn the user then cancels must not bring the notice back.
+      let accepted = false;
+      await sendMessage('Cross-session delivery notice.', undefined, {
+        contextMessage: notice,
+        kind: 'agent-notification',
+        onRecorded: () => {
+          accepted = true;
+        },
+      });
+      return accepted;
     },
     [sendMessage],
   );
@@ -2710,6 +2808,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     send,
     sendAgentCompletions,
     sendBackgroundShellCompletion,
+    sendPeerMessages,
+    sendPeerDeliveryNotice,
     startHostRun,
     setGoal,
     clearGoal,

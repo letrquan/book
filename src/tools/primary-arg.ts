@@ -1,3 +1,5 @@
+import { canonicalToolName } from './aliases.js';
+
 /**
  * Extract the primary argument from a tool call for display and rule matching.
  *
@@ -39,4 +41,31 @@ export function getPrimaryArg(args: Record<string, unknown>): string {
     return typeof v === 'string' ? v : '';
   }
   return '';
+}
+
+/**
+ * Tools whose primary argument is a named one rather than {@link getPrimaryArg}'s pick, keyed by
+ * tool, never by argument shape: `SessionSend`'s is its recipient, `to`, as typed (trimmed), so a
+ * rule names the session (`SessionSend(book-3f)`, `SessionSend(book-3f [a1b2c3])`), not the
+ * message text. Any other tool with a `to` keeps its primary argument.
+ */
+const NAMED_PRIMARY_ARGS: Readonly<Record<string, string>> = { SessionSend: 'to' };
+
+/** A call's primary argument for display and rule matching, given the tool it is for. */
+export function toolPrimaryArg(toolName: string, args: Record<string, unknown>): string {
+  const key = NAMED_PRIMARY_ARGS[canonicalToolName(toolName)];
+  const value = key !== undefined ? args[key] : undefined;
+  return typeof value === 'string' ? value.trim() : getPrimaryArg(args);
+}
+
+/**
+ * Whether a `SessionSend` call names its recipient by inbox — a `uds:` address, or a `[ref]` (six
+ * hex of the socket path) — rather than by name. Both derive from the pid-named socket, so a rule
+ * saved for one would outlive the session and could pre-approve a later one that reuses the pid:
+ * such a call is approved once, never remembered.
+ */
+export function namesSessionByAddress(toolName: string, args: Record<string, unknown>): boolean {
+  if (canonicalToolName(toolName) !== 'SessionSend') return false;
+  const to = toolPrimaryArg(toolName, args);
+  return to.startsWith('uds:') || /\s*\[[0-9a-fA-F]{6}\]$/.test(to);
 }

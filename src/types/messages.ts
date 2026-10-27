@@ -1,5 +1,6 @@
 import type { ConversationCheckpointV2 } from './sessions.js';
 import type { FileObservation, NestedToolInvocation, ToolCall, ToolResult } from './tools.js';
+import type { PeerPermissionClass } from './messaging.js';
 
 export interface Usage {
   promptTokens: number;
@@ -113,6 +114,27 @@ export interface AgentNotificationDisplay {
   durationMs?: number;
 }
 
+/**
+ * One cross-session message (#620) a `peer-message` turn delivered: what the transcript row shows,
+ * and the relay chain the session's next send continues. Every field but `attributed`, `body` and
+ * `receivedAt` is the sender's own word.
+ */
+export interface PeerMessageDisplay {
+  msgId?: string;
+  /** False when the content was not a well-formed envelope: then it names no sender at all. */
+  attributed: boolean;
+  /** The sender's reply address, `uds:<socket path>`. */
+  from?: string;
+  fromName?: string;
+  /** 6 hex of the sender's socket path, as `SessionList` prints it. */
+  ref?: string;
+  fromMode?: PeerPermissionClass;
+  hopChain?: string[];
+  /** The message text, with the sender's escapes kept. */
+  body: string;
+  receivedAt: number;
+}
+
 export type LocalCommandDisplay =
   ConfigCommandDisplay | ContextCommandDisplay | UsageCommandDisplay;
 
@@ -143,7 +165,8 @@ export interface Message {
    * `agent/compact.ts`). Same id and `content` as the original; the
    * provider-facing text may be clipped in `contextContent`.
    */
-  kind?: 'conversation' | 'checkpoint' | 'local' | 'agent-notification' | 'carried';
+  kind?:
+    'conversation' | 'checkpoint' | 'local' | 'agent-notification' | 'peer-message' | 'carried';
   /**
    * The content was produced by resolving something -- a slash command's body, a
    * delegated task prompt -- rather than typed by the user. The role still reads
@@ -159,6 +182,11 @@ export interface Message {
   hostNotice?: boolean;
   /** Structured display data for automatically delivered child completions. */
   agentNotifications?: AgentNotificationDisplay[];
+  /**
+   * On a `kind: 'peer-message'` turn: the messages other sessions sent, which the turn delivered.
+   * Not the user's words; the provider reads the turn's `contextContent`.
+   */
+  peerMessages?: PeerMessageDisplay[];
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
   /** UI-only subagent activity. Never serialized as provider tool calls. */

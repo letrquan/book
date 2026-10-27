@@ -8,7 +8,7 @@ import type {
   ToolResultStatus,
 } from '../types/tools.js';
 import { canonicalToolName } from './aliases.js';
-import { getPrimaryArg } from './primary-arg.js';
+import { toolPrimaryArg } from './primary-arg.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
 import { resolveBookHome } from '../book-home.js';
 
@@ -518,7 +518,7 @@ export function enrichToolResultPresentation(
   const name = canonicalToolName(toolName);
   const content = result.content;
   const explicitPresentation = result.presentation;
-  const target = explicitPresentation?.target ?? (getPrimaryArg(args) || undefined);
+  const target = explicitPresentation?.target ?? (toolPrimaryArg(name, args) || undefined);
   const metadata: string[] = explicitPresentation?.metadata
     ? [...explicitPresentation.metadata]
     : [];

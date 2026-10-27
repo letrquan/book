@@ -67,7 +67,7 @@ import { isSpendlessUsage } from './run-accounting.js';
 import { seedShellIds } from '../jobs/shell-ids.js';
 import { SessionRuntime, type SessionRuntimeOptions } from './runtime.js';
 import { createRunAmbientSnapshot } from './run-ambient.js';
-import { deriveSessionName } from './name.js';
+import { deriveSessionName, isHostDeliveredTurn } from './name.js';
 
 export type AgentLoopRunner = typeof runAgentLoop;
 
@@ -569,7 +569,7 @@ export class AgentSession {
               ? (attachment) =>
                   request.timelineStore!.readImageAttachment!(request.sessionId, attachment)
               : undefined,
-            skipUserPromptHooks: userMessage.kind === 'agent-notification',
+            skipUserPromptHooks: isHostDeliveredTurn(userMessage),
           },
           signal: control.signal,
           isCurrent: control.isCurrent,
@@ -1101,15 +1101,17 @@ export class AgentSession {
         derivedContent: request.userMessage.derivedContent,
         kind: request.userMessage.kind ?? 'conversation',
         agentNotifications: request.userMessage.agentNotifications,
+        peerMessages: request.userMessage.peerMessages,
         attachments: request.userMessage.attachments,
         fileObservations: request.userMessage.fileObservations,
       },
     } satisfies SessionRecord);
     if (request.timelineStore) request.onUserMessagePersisted?.();
 
-    // A completion notification is host-generated text, not something the user said: it
-    // never names a session, or renames one, whether or not the caller passed a name (#446).
-    if (request.userMessage.kind === 'agent-notification') {
+    // A completion notification is host-generated text, and another session's message is not the
+    // user's either: neither names a session, or renames one, whether or not the caller passed a
+    // name (#446).
+    if (isHostDeliveredTurn(request.userMessage)) {
       return { contextMessage, sessionName: request.sessionName, mentionNotices };
     }
     const sessionName =
