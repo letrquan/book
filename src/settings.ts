@@ -415,6 +415,12 @@ export const toolDiscoverySettingsSchema = z.object({
   schemaTokenBudget: z.number().int().min(1000).max(100000).default(8000),
   maxLoadedTools: z.number().int().min(1).max(100).default(15),
   searchLimit: z.number().int().min(1).max(5).default(5),
+  /**
+   * Activate a deferred tool before a turn's first model call when what the user typed asks for
+   * it: a URL activates `WebFetch`, search intent `WebSearch` (#619). It only loads authorized
+   * tools, so any layer may set it.
+   */
+  intentRouting: z.boolean().default(true),
 });
 
 export type ToolDiscoverySettings = z.infer<typeof toolDiscoverySettingsSchema>;
@@ -742,6 +748,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     schemaTokenBudget: 8000,
     maxLoadedTools: 15,
     searchLimit: 5,
+    intentRouting: true,
   },
   toolExecution: {
     maxConcurrent: 4,

@@ -12,6 +12,9 @@
     "scripts/prompt-eval.ts",
     "scripts/peer-awareness-eval.ts",
     "scripts/peer-awareness-eval.test.ts",
+    "scripts/tool-discovery-eval.ts",
+    "scripts/tool-discovery-eval-worker.ts",
+    "scripts/tool-discovery-eval.test.ts",
     "scripts/run-book-mock-provider.test.ts"
   ]
 }
