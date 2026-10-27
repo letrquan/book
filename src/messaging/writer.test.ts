@@ -10,6 +10,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { mkdtempSync, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AtomicJsonWriter } from '../agents/atomic-json.js';
 import { isolateBookHome } from '../test/isolated-book-home.js';
@@ -21,7 +23,14 @@ import {
   liveSessionsDir,
   readLiveSessionEntries,
 } from './registry.js';
-import { liveSessionStateOf, LiveSessionWriter, type LiveSessionWriterOptions } from './writer.js';
+import type { GitLocation } from './git-location.js';
+import {
+  EDIT_WRITE_INTERVAL_MS,
+  liveSessionStateOf,
+  LiveSessionWriter,
+  MAX_RECENT_EDITS,
+  type LiveSessionWriterOptions,
+} from './writer.js';
 
 const bookHome = isolateBookHome('book-live-writer-');
 const DOMAIN = 'linux:test-machine:pid:[4026531836]';
@@ -64,6 +73,7 @@ function createWriter(overrides: Partial<LiveSessionWriterOptions> = {}) {
     randomByte: () => 0x3f,
     atomicWriter: atomic,
     processEvents: events as unknown as LiveSessionWriterOptions['processEvents'],
+    gitLocation: async () => undefined,
     ...overrides,
   });
   return { writer, writes: atomic.writes, events };
@@ -570,5 +580,111 @@ describe('LiveSessionWriter', () => {
     await writer.start();
     expect(writer.current()).toMatchObject({ name: 'book-repo-40', nameSource: 'collision' });
     await writer.close();
+  });
+
+  describe('git location and recorded edits (#620 4b)', () => {
+    function worktree(branch = 'feat/x'): GitLocation {
+      const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-writer-worktree-')));
+      return { worktree: root, repository: join(root, '.git'), branch };
+    }
+
+    it('names its worktree, repository and branch, and edits relative to the worktree', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const location = worktree();
+      let clock = 10_000;
+      const { writer } = createWriter({ now: () => clock, gitLocation: async () => location });
+      await writer.start();
+      writer.recordEdits(join(location.worktree, 'src'), ['a.ts', join('..', 'README.md')]);
+      clock += EDIT_WRITE_INTERVAL_MS;
+      await vi.advanceTimersByTimeAsync(EDIT_WRITE_INTERVAL_MS);
+      await writer.flushed();
+
+      const record = readRecord(pathOf(writer));
+      expect(record).toMatchObject({
+        worktree: location.worktree,
+        repository: location.repository,
+        branch: 'feat/x',
+      });
+      expect(record.recentEdits?.map((edit) => edit.path)).toEqual(['src/a.ts', 'README.md']);
+      expect(JSON.stringify(record.recentEdits)).not.toContain(location.worktree);
+      await writer.close();
+      rmSync(location.worktree, { recursive: true, force: true });
+    });
+
+    it(`keeps ${MAX_RECENT_EDITS} edits, one per path, newest last, and never a path outside the worktree`, async () => {
+      const location = worktree();
+      const { writer } = createWriter({ gitLocation: async () => location });
+      await writer.start();
+      writer.recordEdits(
+        location.worktree,
+        Array.from({ length: 25 }, (_, index) => `f${index}.ts`),
+      );
+      writer.recordEdits(location.worktree, ['f10.ts', join('..', 'outside.ts')]);
+      await writer.flushed();
+
+      const paths = writer.recentEdits().map((edit) => edit.path);
+      expect(paths).toHaveLength(MAX_RECENT_EDITS - 1);
+      expect(paths.at(-1)).toBe('f10.ts');
+      expect(paths.filter((path) => path === 'f10.ts')).toHaveLength(1);
+      expect(paths.some((path) => path.includes('outside'))).toBe(false);
+      await writer.close();
+      rmSync(location.worktree, { recursive: true, force: true });
+    });
+
+    it('writes an edit at most once every 2 s, coalescing a burst, without holding back a status', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const location = worktree();
+      let clock = 10_000;
+      const { writer, writes } = createWriter({
+        now: () => clock,
+        gitLocation: async () => location,
+      });
+      await writer.start();
+      writer.recordEdits(location.worktree, ['a.ts']);
+      writer.recordEdits(location.worktree, ['b.ts']);
+      await writer.flushed();
+      expect(writes).toHaveLength(1);
+
+      clock += EDIT_WRITE_INTERVAL_MS;
+      await vi.advanceTimersByTimeAsync(EDIT_WRITE_INTERVAL_MS);
+      await writer.flushed();
+      expect(writes).toHaveLength(2);
+      expect(writes[1]!.recentEdits?.map((edit) => edit.path)).toEqual(['a.ts', 'b.ts']);
+
+      writer.setState({ status: 'busy' });
+      await writer.flushed();
+      expect(writes).toHaveLength(3);
+      await writer.close();
+      expect(vi.getTimerCount()).toBe(0);
+      rmSync(location.worktree, { recursive: true, force: true });
+    });
+
+    it('looks the branch up again when a turn ends, at most every 10 s', async () => {
+      const location = worktree('main');
+      let branch = 'main';
+      let lookups = 0;
+      let clock = 10_000;
+      const { writer } = createWriter({
+        now: () => clock,
+        gitLocation: async () => {
+          lookups++;
+          return { ...location, branch };
+        },
+      });
+      await writer.start();
+      branch = 'feat/y';
+      writer.setState({ status: 'busy' });
+      writer.setState({ status: 'idle' });
+      await writer.flushed();
+      expect(lookups).toBe(1);
+
+      clock += 10_000;
+      writer.setState({ status: 'busy' });
+      writer.setState({ status: 'idle' });
+      await vi.waitFor(() => expect(readRecord(pathOf(writer)).branch).toBe('feat/y'));
+      expect(lookups).toBe(2);
+      await writer.close();
+      rmSync(location.worktree, { recursive: true, force: true });
+    });
   });
 });

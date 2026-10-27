@@ -108,6 +108,7 @@ import { createInteractiveAgentSession } from '../../session/interactive-session
 import { isHostDeliveredTurn } from '../../session/name.js';
 import type { LiveSessionReporter } from '../../messaging/writer.js';
 import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/session-messaging.js';
+import type { PeerAwareness } from '../../messaging/peer-awareness.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
 import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
 import type { BackgroundShellRecord } from '../../types/runtime.js';
@@ -154,6 +155,8 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
   liveSession?: LiveSessionReporter;
   /** This process's messaging runtime (#620), when messaging is on; the TUI's host owns it. */
   messaging?: SessionMessaging;
+  /** This process's view of other live sessions (#620 PR 4); the TUI's host owns it. */
+  peerAwareness?: PeerAwareness;
   /**
    * Warnings about this launch, shown once as local rows after the loaded transcript. Not
    * persisted and not part of the model's context, so a resumed session shows the current
@@ -430,6 +433,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       additionalTools: session.additionalTools,
       liveSession: session.liveSession,
       messaging: session.messaging,
+      peerAwareness: session.peerAwareness,
     }),
   );
   // The session's `/goal` as the status line shows it. The runtime owns the goal and the loop
@@ -527,6 +531,25 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       mounted = false;
     };
   }, [lateStartupNotices, startupNoticeCount]);
+  // A live session in this worktree recorded an edit to a path this one edited too (#620 4e).
+  // Shown at once, mid-turn included, and kept in memory only, like the startup notices: a resumed
+  // session must not replay a warning about sessions that may be long gone.
+  const peerAwareness = session.peerAwareness;
+  useEffect(
+    () =>
+      peerAwareness?.subscribe((warning) => {
+        const notice = {
+          ...makeMessage('assistant', warning, undefined, false),
+          kind: 'local' as const,
+        };
+        setMessages((prev) => {
+          const next = [...prev, notice];
+          messagesRef.current = next;
+          return next;
+        });
+      }),
+    [peerAwareness],
+  );
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
   const sessionNameRef = useRef(session.sessionName);

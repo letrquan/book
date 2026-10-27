@@ -21,6 +21,7 @@ import { hostname } from 'node:os';
 import { basename, join } from 'node:path';
 import { z } from 'zod';
 import type { AtomicLockOwner } from '../agents/atomic-json.js';
+import { mapLimited } from '../async.js';
 import { resolveBookHome } from '../book-home.js';
 import type { ReadLiveSessionRecord } from '../types/messaging.js';
 import { isRecordProcessLive, type LivenessProbe } from './liveness.js';
@@ -40,6 +41,8 @@ export const ORPHAN_FILE_MAX_AGE_MS = 60 * 60 * 1000;
 
 /** Records checked at once: on macOS each check is a `ps` spawn. */
 const CHECK_CONCURRENCY = 8;
+/** A record file bigger than this is not read whole when a caller bounds the read. */
+export const MAX_RECORD_BYTES = 64 * 1024;
 
 const DOMAIN_TAG_LENGTH = 12;
 const RECORD_FILE = /^(\d+)(?:\.([0-9a-f]{12}))?\.json$/;
@@ -52,6 +55,14 @@ const KEY_FILE = /^(\d+)(?:\.([0-9a-f]{12}))?\.([0-9a-f]{64})\.key$/;
  * A record or key writer's lock (`<file>.lock`) or temp file (`<file>.<pid>.<instance>.<id>.tmp`).
  */
 const WRITER_FILE = /^\d+(?:\.[0-9a-f]{12})?(?:\.json|\.[0-9a-f]{64}\.key)\.(?:lock|[^/\\]+\.tmp)$/;
+
+/** A record file's pid and domain tag (`undefined` where it has none), or `undefined` if not one. */
+export function parseLiveSessionRecordName(
+  name: string,
+): { pid: number; tag: string | undefined } | undefined {
+  const match = RECORD_FILE.exec(name);
+  return match ? { pid: Number(match[1]), tag: match[2] } : undefined;
+}
 
 export function liveSessionsDir(home: string = resolveBookHome()): string {
   return join(home, 'live-sessions');
@@ -245,22 +256,16 @@ function parseRecord(
   return parsed.data as ReadLiveSessionRecord;
 }
 
-/** `fn` over `items`, at most `limit` at a time, results in input order. */
-async function mapLimited<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const index = next++;
-      results[index] = await fn(items[index]!);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
+/** The file's text, or a string no record parses from when it holds more than `maxBytes`. */
+async function readCapped(path: string, maxBytes: number): Promise<string> {
+  const handle = await open(path, 'r');
+  try {
+    const buffer = Buffer.alloc(maxBytes + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return bytesRead > maxBytes ? '' : buffer.subarray(0, bytesRead).toString('utf8');
+  } finally {
+    await handle.close();
+  }
 }
 
 async function listNames(dir: string): Promise<string[]> {
@@ -280,6 +285,8 @@ export async function readLiveSessionEntries(
   dir: string,
   /** The directory's listing, when the caller already has it. */
   listing?: readonly string[],
+  /** Read no more of a file than this; a longer one reads as torn. Unbounded by default. */
+  maxBytes?: number,
 ): Promise<LiveSessionEntry[]> {
   const files = (listing ?? (await listNames(dir)))
     .map((name) => ({ name, match: RECORD_FILE.exec(name) }))
@@ -290,7 +297,8 @@ export async function readLiveSessionEntries(
     const path = join(dir, name);
     let text: string;
     try {
-      text = await readFile(path, 'utf8');
+      text =
+        maxBytes === undefined ? await readFile(path, 'utf8') : await readCapped(path, maxBytes);
     } catch {
       // Removed between the listing and the read: its session just ended.
       return undefined;

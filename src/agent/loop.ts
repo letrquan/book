@@ -21,6 +21,8 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import { createProvider, type Provider } from '../provider/index.js';
 import { isTruncationFinishReason, TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
 import { buildMessages } from './context.js';
+import type { WorkspaceNoticeSources } from './session-state.js';
+import type { PeerAwarenessHandle } from '../types/messaging.js';
 import { renameToolUseBlocks, renderedToolCallIds, uniqueToolCallId } from './tool-call-ids.js';
 import type { PreparedToolCall, ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
@@ -320,6 +322,12 @@ export async function runAgentLoop(
     agentManager?: ToolContext['agentManager'];
     /** Mutable resources owned by the logical session. */
     runtime?: SessionRuntime;
+    /**
+     * The TUI host's view of other live sessions (#620 PR 4): the session-state peer lines, the
+     * peer a changed or stale file is attributed to, and this session's recorded edits. Root
+     * interactive runs only; a subagent or managed agent records and names no peer.
+     */
+    peerAwareness?: PeerAwarenessHandle;
     /** Frozen attribution for this root or linked child execution. */
     runContext?: AgentRunContext;
     /** Override user-local oversized tool-output storage (primarily for isolated hosts/tests). */
@@ -752,6 +760,7 @@ export async function runAgentLoop(
     tasks: runtime.tasks,
     backgroundShells: runtime.backgroundShells,
     fileObservationLedger: runtime.fileObservationLedger,
+    peerAwareness: options?.peerAwareness,
     currentMode: initialMode,
     userQuestionHandler: callbacks.onUserQuestionRequired,
     agentPath: options?.agentPath ?? [],
@@ -779,6 +788,13 @@ export async function runAgentLoop(
     isSubagent: options?.isSubagent,
   });
   toolContext.toolDiscovery = toolSurface;
+  // The session-state block's changed-on-disk and peer lines read these (#620 PR 4).
+  const workspaceNotices: WorkspaceNoticeSources = {
+    tracker: runtime.fileChanges,
+    ledger: runtime.fileObservationLedger,
+    peerAwareness: options?.peerAwareness,
+    secrets: toolContext.providerSecrets,
+  };
   // MEMORY.md was in the prompt, so the model has "read" it: seed the ledger and its first Edit
   // needs no Read. Only a whole index, and once per loaded snapshot: a cut one has to be Read, and
   // a later turn must not claim a file the model has not seen since it changed.
@@ -1348,6 +1364,7 @@ export async function runAgentLoop(
           planUnrestored: runtime.planUnrestored,
           runElapsedMs: clock.monotonicNowMs() - runStartedAt,
           outstandingAgents,
+          workspaceNotices,
         },
         runtime.agentContextCache,
         options?.resolveAttachment,
@@ -1370,6 +1387,7 @@ export async function runAgentLoop(
             planUnrestored: runtime.planUnrestored,
             runElapsedMs: clock.monotonicNowMs() - runStartedAt,
             outstandingAgents,
+            workspaceNotices,
           },
           runtime.agentContextCache,
           options?.resolveAttachment,
@@ -3155,6 +3173,18 @@ export async function runAgentLoop(
             runtime.agentContextCache.invalidateWorkspace(config.workspace);
           } else if (canonName.startsWith('Git')) {
             runtime.agentContextCache.invalidateGit(config.workspace);
+          }
+          // Every mutation tool reports its files here, so this is the one place an edit is
+          // recorded for peers (#620 4b): paths from the result, never from the model's text.
+          const mutations =
+            result.artifacts?.fileMutations ??
+            (result.artifacts?.fileMutation ? [result.artifacts.fileMutation] : []);
+          const edited = mutations.filter((mutation) => !mutation.memory);
+          if (edited.length > 0) {
+            options?.peerAwareness?.recordEdits(
+              config.workspace,
+              edited.map((mutation) => mutation.filePath),
+            );
           }
         }
 

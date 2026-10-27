@@ -14,6 +14,7 @@ export default mergeConfig(
         'src/agents/manager.test.ts',
         'src/jobs/shell-manager.test.ts',
         'src/messaging/inbox-transport.test.ts',
+        'src/messaging/peer-awareness-processes.test.ts',
         'src/messaging/session-delivery.test.ts',
         'src/rewind/snapshot-store.test.ts',
         'src/settings-cli.test.ts',
