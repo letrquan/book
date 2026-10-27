@@ -7,14 +7,15 @@ All notable changes to this project are documented in this file.
 ### Added
 
 - **Experimental: Sign in with ChatGPT, so a ChatGPT Plus or Pro plan can run Book** (#615,
-  #626, #627). `book auth login` (or `/login` in the TUI) signs in through OpenAI's Sign in with
+  #626, #627, #632). `book auth login` (or `/login` in the TUI) signs in through OpenAI's Sign in with
   ChatGPT for locally hosted apps, and a provider you declare with `type: "chatgpt"` then bills
   `chatgpt/<model>` requests to your plan. `book auth status` and `book doctor` report the sign-in;
   `book auth logout` (or `/logout`) revokes the refresh token and clears the local tokens. It is
   opt-in only: never auto-detected and never a default, nothing changes for API-key users, and
-  `/model` marks plan models experimental. A repository can never pick a plan model: a workspace
-  settings layer's or a legacy `.bookrc.json` `model` naming a `chatgpt` provider gives way to the
-  default with a notice. The sign-in uses a loopback callback with PKCE, state and nonce, checks the
+  `/model` marks plan models experimental. A repository can never pick a plan model: a session,
+  compaction, advisor or profile model that a workspace settings layer or a legacy `.bookrc.json`
+  names on a `chatgpt` provider gives way to your own choice or the default, with a notice. That
+  holds at launch and again when a mid-session `/login` adds the provider. The sign-in uses a loopback callback with PKCE, state and nonce, checks the
   ID token's signature, issuer, audience, expiry and nonce, and requires the plan-usage scope. Tokens
   live only in `<BOOK_HOME>/chatgpt-signin.json` (mode 0600, written atomically), refresh before
   expiry and once on a 401, and are serialised across processes. Print mode and the SDK never open a
@@ -51,6 +52,21 @@ All notable changes to this project are documented in this file.
   latest model request alone, the figure Book's compaction gate reads, so a four-request task
   reported about a quarter of its traffic. It is now the sum of the task's run records, child runs
   included. Token figures in edit-eval reports written before this fix don't compare with new ones.
+
+### Security
+
+- **`sandbox.filesystem.denyWrite` only removes write access and never makes a path visible**
+  (#625, #630). This is a behaviour change. Under bubblewrap, an entry outside the workspace and
+  the `allowWrite` roots used to be bound read-only into the sandbox, so it added read access. A
+  workspace settings layer may add `denyWrite` entries, so a repository's `denyWrite: ["~"]` exposed
+  the home directory, including Book's home and `~/.ssh`, and `["/"]` overlaid the host's `/proc`,
+  `/dev` and `/tmp`. Now an entry is bound read-only only inside a writable root, and a writable
+  root inside an entry is re-bound read-only. Anything else changes nothing, because it is already
+  invisible or read-only. You can no longer use `denyWrite` to expose a read-only directory outside
+  the workspace. Also, an entry at or above `.book`, or spelled through a symlink, no longer unmasks
+  `.book/settings.local.json`: the masks are applied after the `denyWrite` binds. The same rule fixes
+  the unreleased macOS backend (#624), where `denyWrite` granted reads and unix-socket connections
+  under the path.
 
 ## [0.4.0-beta.1] - 2026-10-24
 
