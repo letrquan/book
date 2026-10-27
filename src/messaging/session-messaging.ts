@@ -63,6 +63,7 @@ import {
   type IdleNoticeState,
   type IdleSubscription,
   type PeerIdleNoticeEvent,
+  type PeerNoticeSender,
 } from './idle-notify.js';
 import { sendToInbox } from './inbox-client.js';
 import { CLOSE_DRAIN_MS, InboxServer, type InboxServerOptions } from './inbox-server.js';
@@ -783,12 +784,20 @@ export class SessionMessaging implements SessionMessagingHandle {
         ...(detail !== undefined ? { detail } : {}),
         ...(notice.state === 'expired' ? { withinMs: this.idleLimits.ttlMs } : {}),
         toModel,
-        ...(toModel
-          ? { turnClass: peerTurnClass(this.mode, [{ senderMode, approved: false }]) }
-          : {}),
         chain: awaited.chain,
+        ...(notice.from !== undefined ? { sender: { from: notice.from, mode: senderMode } } : {}),
       },
     });
+  }
+
+  /**
+   * The class a turn carrying a notice from `sender` runs in now, as a message from it would, or
+   * undefined when the receive policy no longer accepts it: a notice waits for its turn, and the
+   * mode or `messaging.inbound` may change meanwhile, so it is judged again just before.
+   */
+  noticeTurnClass(sender: PeerNoticeSender): PeerPermissionClass | undefined {
+    if (this.judgeSender(sender.mode, sender.from).action !== 'accept') return undefined;
+    return peerTurnClass(this.mode, [{ senderMode: sender.mode, approved: false }]);
   }
 
   /**

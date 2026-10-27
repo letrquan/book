@@ -17,7 +17,6 @@
  * kept, as a `[Cross-session idle notice]`. The texts for both sides are here.
  */
 
-import type { PeerPermissionClass } from '../types/messaging.js';
 import { peerTextSpan } from './hold.js';
 import type { AssertedMode } from './receive-policy.js';
 
@@ -243,6 +242,12 @@ export function idleDetail(text: string | undefined): string | undefined {
   return span.length > 0 ? span : undefined;
 }
 
+/** Who a notice is from, as the receive policy judges a sender: its address and asserted class. */
+export interface PeerNoticeSender {
+  from: string;
+  mode: AssertedMode;
+}
+
 /** What a subscriber hears about one of its subscriptions. */
 export interface PeerIdleNoticeEvent {
   /** `name [ref]` of the session subscribed to, from this session's own record of the send. */
@@ -264,8 +269,11 @@ export interface PeerIdleNoticeEvent {
    * peer's words, and is for the model as a delivery receipt is.
    */
   toModel: boolean;
-  /** The class a model-bound notice's turn runs in, as a message from that session's would. */
-  turnClass?: PeerPermissionClass;
+  /**
+   * The notifier, for a notice in its words: the policy judges it again just before the notice's
+   * turn starts, since the mode or the settings may change while it waits.
+   */
+  sender?: PeerNoticeSender;
   /**
    * The relay chain the subscription was sent on. The turn the notice starts continues it, so a
    * subscription made from that turn counts one more hop, and a loop of them meets the relay limit.

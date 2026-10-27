@@ -761,7 +761,11 @@ delivered (N held)` row (name from the registry record advertising the frame's a
   gets a row. A notice reaches the model only when this session's own `judge` accepts the
   notifier, as a host-delivered `[Cross-session idle notice]` turn in the class a message from the
   notifier would get (`peerTurnClass`), which continues the relay the subscription was sent on
-  (`continueRelay`); a `dropped` receipt reaches it as a delivery receipt does. The notice text
+  (`continueRelay`); a `dropped` receipt reaches it as a delivery receipt does. Waiting notices are
+  told together, up to 10 a turn, continuing the longest relay among them, so re-subscribing from
+  many notices counts one hop rather than a branch each (security review). Each notifier is judged
+  again (`noticeTurnClass`) when the batch is built and when its turn starts (`stillDeliverable`):
+  one the policy no longer accepts is left out, its row the only trace. The notice text
   says the subscription was one-shot and does not suggest subscribing again. A subscription with
   no word for 12 h plus 5 min lapses locally, as a user-only row.
 

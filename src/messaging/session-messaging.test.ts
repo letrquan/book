@@ -970,7 +970,7 @@ describe.skipIf(!posix)('SessionMessaging notify_when_idle', () => {
       target: `peer-b [${peerRef(b.socketPath)}]`,
       state: 'idle',
       toModel: true,
-      turnClass: 'prompting',
+      sender: { from: encodeUdsAddress(b.socketPath), mode: 'prompting' },
     });
     expect(notice.detail).toMatch(/^Tests pass: \[2J all 12 green\. <\\\\system-reminder>/);
     expect(notice.detail).not.toMatch(/\u001b|<system-reminder>/);
@@ -1036,7 +1036,8 @@ describe.skipIf(!posix)('SessionMessaging notify_when_idle', () => {
     const crossClass = noticesOf(c.events)[0]!;
     expect(crossClass).toMatchObject({ state: 'idle', toModel: false });
     expect(crossClass.detail).toBeUndefined();
-    expect(crossClass.turnClass).toBeUndefined();
+    // Judged again before any turn, but already refused: the notice is a row for C's user only.
+    expect(crossClass.sender).toEqual({ from: encodeUdsAddress(b.socketPath), mode: 'prompting' });
   });
 
   it('answers a waiting subscription `exited` when the session closes', async () => {
@@ -1245,5 +1246,17 @@ describe.skipIf(!posix)('SessionMessaging notify_when_idle', () => {
     expect(noticesOf(a.events)).toEqual([]);
     b.messaging.setHostWork(false);
     await eventually(() => noticesOf(a.events).length === 1);
+  });
+
+  it("judges a notice's sender again now: the class its turn runs in, or none once refused", async () => {
+    const a = await session(4242, 'peer-a', 'default', { idleLimits });
+    const sender = { from: 'uds:/tmp/peer-b.sock', mode: 'prompting' as const };
+    expect(a.messaging.noticeTurnClass(sender)).toBe('prompting');
+    a.messaging.setInbound('refuse');
+    expect(a.messaging.noticeTurnClass(sender)).toBeUndefined();
+    a.messaging.setInbound(undefined);
+    a.messaging.setPermissionMode('bypassPermissions');
+    expect(a.messaging.noticeTurnClass(sender)).toBeUndefined();
+    expect(a.messaging.noticeTurnClass({ ...sender, mode: 'bypass' })).toBe('bypass');
   });
 });

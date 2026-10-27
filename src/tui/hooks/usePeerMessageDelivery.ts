@@ -1,25 +1,92 @@
 import { useEffect, useRef, useState } from 'react';
 import { humanReceiptLine, modelReceiptNotice } from '../../messaging/delivery.js';
 import { heldMessageLine, HoldRowLimiter, settledMessageLine } from '../../messaging/hold.js';
-import { idleNoticeHumanLine, idleNoticeModelText } from '../../messaging/idle-notify.js';
+import {
+  idleNoticeHumanLine,
+  idleNoticeModelText,
+  type PeerNoticeSender,
+} from '../../messaging/idle-notify.js';
+import { stricterClass } from '../../messaging/receive-policy.js';
 import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/session-messaging.js';
 import type { PeerPermissionClass } from '../../types/messaging.js';
 
 /** How long a delivery the session could not start waits before it is tried again. */
 const RETRY_MS = 1_000;
+/** Notices one turn tells the model at most; the rest wait for the next. */
+const MAX_NOTICES_PER_TURN = 10;
 
 /**
- * How a host notice turn shows and runs: its transcript row, the class a peer's words pin, and the
- * relay chain it continues.
+ * How a host notice turn shows and runs: its transcript row, the class a peer's words pin, the
+ * relay chain it continues, and whether it may still start when the send gets that far.
  */
 export interface PeerNoticeOptions {
   display?: string;
   peerTurnClass?: PeerPermissionClass;
   relayChain?: readonly string[];
+  stillDeliverable?: () => boolean;
 }
 
-interface PendingNotice extends PeerNoticeOptions {
+/** A notice waiting for its turn: its text, and, for one in a peer's words, who sent it. */
+interface PendingNotice {
   context: string;
+  display?: string;
+  relayChain?: readonly string[];
+  sender?: PeerNoticeSender;
+}
+
+/**
+ * The turn the waiting notices make now: the oldest {@link MAX_NOTICES_PER_TURN}, as one turn. A
+ * notice in a peer's words is judged again here, since the mode or the settings may have changed
+ * while it waited: one the receive policy no longer accepts is left out (its row is all the user
+ * gets), and the turn runs in the strictest class among the rest. The turn continues the longest
+ * relay among them, so a model re-subscribing from many notices at once counts one hop, not one
+ * branch each. `turn` is undefined when nothing is left to tell the model.
+ */
+function noticeTurn(
+  pending: readonly PendingNotice[],
+  messaging: SessionMessaging,
+): { taken: number; turn?: { context: string; options: PeerNoticeOptions } } {
+  const taken = pending.slice(0, MAX_NOTICES_PER_TURN);
+  const told: PendingNotice[] = [];
+  let peerTurnClass: PeerPermissionClass | undefined;
+  for (const notice of taken) {
+    if (!notice.sender) {
+      told.push(notice);
+      continue;
+    }
+    const turnClass = messaging.noticeTurnClass(notice.sender);
+    if (turnClass === undefined) continue;
+    told.push(notice);
+    peerTurnClass = stricterClass(peerTurnClass, turnClass);
+  }
+  if (told.length === 0) return { taken: taken.length };
+  let relayChain: readonly string[] | undefined;
+  for (const notice of told) {
+    if (notice.relayChain && notice.relayChain.length >= (relayChain?.length ?? 0)) {
+      relayChain = notice.relayChain;
+    }
+  }
+  const displays = new Set(told.map((notice) => notice.display));
+  const display = displays.size === 1 ? told[0]!.display : 'Cross-session notices.';
+  const senders = told.flatMap((notice) => (notice.sender ? [notice.sender] : []));
+  return {
+    taken: taken.length,
+    turn: {
+      context: told.map((notice) => notice.context).join('\n\n'),
+      options: {
+        ...(display !== undefined ? { display } : {}),
+        ...(peerTurnClass !== undefined ? { peerTurnClass } : {}),
+        ...(relayChain !== undefined ? { relayChain } : {}),
+        // Judged once more when the turn starts: a pre-turn compaction takes a while.
+        ...(senders.length > 0
+          ? {
+              stillDeliverable: () =>
+                senders.every((sender) => messaging.noticeTurnClass(sender) !== undefined),
+            }
+          : {}),
+      },
+    },
+  };
 }
 
 /**
@@ -34,11 +101,11 @@ interface PendingNotice extends PeerNoticeOptions {
  * rows for the human only: a held message never reaches the model until it is released (PR 5).
  *
  * An idle notice about a session this one subscribed to (PR 6) is a row for the human, and a turn
- * for the model too when the receive policy would accept a message from that session. The host
- * work that will start a turn — this hook's own notices, and the `pendingWork` the TUI names — is
+ * for the model too when the receive policy would accept a message from that session, then and
+ * again when its turn starts; waiting notices are told together, one turn for many. The host work
+ * that will start a turn — this hook's own notices, and the `pendingWork` the TUI names — is
  * reported to the runtime, which answers other sessions' idle subscriptions only while there is
- * none and the session's record says it is idle. The same idleness — nothing running, asked, queued or about to be delivered — is what
- * this session reports to the runtime, which answers the subscriptions other sessions made to it.
+ * none and the session's record says it is idle.
  */
 export function usePeerMessageDelivery(options: {
   messaging?: SessionMessaging;
@@ -83,10 +150,8 @@ export function usePeerMessageDelivery(options: {
           notices.current.push({
             context: idleNoticeModelText(event.notice),
             display: 'Cross-session idle notice.',
-            ...(event.notice.turnClass !== undefined
-              ? { peerTurnClass: event.notice.turnClass }
-              : {}),
             ...(event.notice.chain !== undefined ? { relayChain: event.notice.chain } : {}),
+            ...(event.notice.sender !== undefined ? { sender: event.notice.sender } : {}),
           });
         }
       }
@@ -97,15 +162,20 @@ export function usePeerMessageDelivery(options: {
   useEffect(() => {
     const current = latest.current;
     if (!current.messaging || current.blocked || inFlight.current || retryTimer.current) return;
-    const notice = notices.current[0];
     const batch = current.messaging.prepareDelivery();
-    if (!batch && notice === undefined) return;
+    if (!batch && notices.current.length === 0) return;
+    const told = batch ? undefined : noticeTurn(notices.current, current.messaging);
+    if (told && !told.turn) {
+      // Every notice taken is one the policy no longer accepts: nothing to start a turn for.
+      notices.current.splice(0, told.taken);
+      setTick((value) => value + 1);
+      return;
+    }
     inFlight.current = true;
-    const { context, ...noticeOptions } = notice ?? { context: '' };
     const work = batch
       ? current.deliver(batch)
-      : current.notify(context, noticeOptions).then((accepted) => {
-          if (accepted) notices.current.shift();
+      : current.notify(told!.turn!.context, told!.turn!.options).then((accepted) => {
+          if (accepted) notices.current.splice(0, told!.taken);
           return accepted;
         });
     void work

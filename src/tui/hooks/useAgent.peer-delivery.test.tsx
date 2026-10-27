@@ -389,5 +389,16 @@ describe('idle notices in the TUI (#620 PR 6)', () => {
       lastTurnReply([...turn, message('user', 'and now?'), message('assistant', '  ')]),
     ).toBeUndefined();
     expect(lastTurnReply([message('assistant', 'only a row', 'local')])).toBeUndefined();
+    // A row the loop writes for the host — a hook's block reason, a rejected tool batch — is not
+    // the model's reply either.
+    expect(
+      lastTurnReply([
+        ...turn,
+        {
+          ...message('assistant', 'Blocked by UserPromptSubmit hook: secret reason'),
+          hostNotice: true,
+        },
+      ]),
+    ).toBeUndefined();
   });
 });

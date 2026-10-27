@@ -134,7 +134,9 @@ export function lastTurnReply(messages: readonly Message[]): string | undefined 
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]!;
     if (message.kind === 'local' || message.kind === 'checkpoint') continue;
-    if (message.role !== 'assistant') return undefined;
+    // A row the loop writes for the host (a hook's block reason, a rejected tool batch) ends the
+    // turn without a reply of the model's, as `finalAnswerText` reads it.
+    if (message.role !== 'assistant' || message.hostNotice) return undefined;
     if (message.kind !== undefined && message.kind !== 'conversation') continue;
     if (message.content.trim() !== '') return message.content;
   }
@@ -1905,6 +1907,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         contextMessage: notice,
         kind: 'agent-notification',
         ...(options.peerTurnClass !== undefined ? { peerTurnClass: options.peerTurnClass } : {}),
+        ...(options.stillDeliverable ? { stillDeliverable: options.stillDeliverable } : {}),
         onRecorded: () => {
           accepted = true;
           // An idle notice's turn continues the relay its subscription was sent on.

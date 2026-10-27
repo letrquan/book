@@ -306,7 +306,7 @@ describe.skipIf(process.platform === 'win32')('cross-session delivery between pr
       state: 'idle',
       detail: 'Tests pass.',
       toModel: true,
-      turnClass: 'prompting',
+      sender: { mode: 'prompting' },
     });
 
     // A second idle spell sends nothing: the subscription was one-shot.

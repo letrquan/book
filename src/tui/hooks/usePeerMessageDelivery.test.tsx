@@ -19,6 +19,8 @@ function fakeMessaging() {
     },
     prepareDelivery: vi.fn(() => undefined),
     setHostWork: vi.fn(),
+    /** The class a notice's turn runs in now, or undefined once the policy no longer accepts it. */
+    noticeTurnClass: vi.fn((): 'prompting' | 'bypass' | undefined => 'prompting'),
     emit: (event: SessionMessagingEvent) => {
       for (const listener of listeners) listener(event);
     },
@@ -65,17 +67,24 @@ describe('usePeerMessageDelivery idle notices', () => {
     await settle();
     messaging.emit({
       type: 'idle-notice',
-      notice: notice({ detail: 'all green', turnClass: 'prompting' }),
+      notice: notice({ detail: 'all green', sender: { from: 'uds:/s/1.sock', mode: 'prompting' } }),
     });
     await settle();
     expect(notify).toHaveBeenCalledTimes(1);
     const [context, options] = notify.mock.calls[0] as unknown as [
       string,
-      { display: string; peerTurnClass: string },
+      { display: string; peerTurnClass: string; stillDeliverable: () => boolean },
     ];
     expect(context).toMatch(/^\[Cross-session idle notice\] peer-b \[a1b2c3\] is idle/);
     expect(context).toContain('«all green»');
-    expect(options).toEqual({ display: 'Cross-session idle notice.', peerTurnClass: 'prompting' });
+    expect(options).toMatchObject({
+      display: 'Cross-session idle notice.',
+      peerTurnClass: 'prompting',
+    });
+    // The turn judges the notifier once more when it starts.
+    expect(options.stillDeliverable()).toBe(true);
+    messaging.noticeTurnClass.mockReturnValue(undefined);
+    expect(options.stillDeliverable()).toBe(false);
     // The human reads the row: the notice turn's own is not shown.
     expect(warn).toHaveBeenCalledWith(
       expect.stringMatching(
@@ -91,6 +100,49 @@ describe('usePeerMessageDelivery idle notices', () => {
     await settle();
     expect(notify).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('shown to you only'));
+  });
+
+  it('delivers every queued idle notice in one turn, continuing the longest relay', async () => {
+    const { messaging, notify, view, props } = mount(true);
+    await settle();
+    const sender = { from: 'uds:/s/1.sock', mode: 'prompting' as const };
+    messaging.noticeTurnClass
+      .mockReturnValueOnce('bypass')
+      .mockReturnValueOnce('prompting')
+      .mockReturnValueOnce('bypass');
+    for (const chain of [['a'], ['a', 'a'], ['a']]) {
+      messaging.emit({
+        type: 'idle-notice',
+        notice: notice({ target: `peer-${chain.length}`, chain, sender }),
+      });
+    }
+    view.rerender(<Harness {...props} blocked={false} />);
+    await settle();
+    // One turn, not one each: a model re-subscribing from each notice would fan out otherwise.
+    expect(notify).toHaveBeenCalledTimes(1);
+    const [context, options] = notify.mock.calls[0] as unknown as [
+      string,
+      { relayChain: string[]; peerTurnClass: string; stillDeliverable: () => boolean },
+    ];
+    expect(context.match(/\[Cross-session idle notice\]/g)).toHaveLength(3);
+    expect(options.relayChain).toEqual(['a', 'a']);
+    expect(options.peerTurnClass).toBe('prompting');
+  });
+
+  it('judges a queued notice again before its turn: one the policy no longer accepts stays a row', async () => {
+    const { messaging, notify, warn, view, props } = mount(true);
+    await settle();
+    messaging.emit({
+      type: 'idle-notice',
+      notice: notice({ sender: { from: 'uds:/s/1.sock', mode: 'prompting' } }),
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    // The user set messaging.inbound to refuse while the notice waited.
+    messaging.noticeTurnClass.mockReturnValue(undefined);
+    view.rerender(<Harness {...props} blocked={false} />);
+    await settle();
+    expect(notify).not.toHaveBeenCalled();
+    expect(messaging.setHostWork).toHaveBeenLastCalledWith(false);
   });
 
   it('reports host work that will start a turn, and not a surface or an edit that blocks delivery', async () => {
