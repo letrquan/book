@@ -109,6 +109,7 @@ import { isHostDeliveredTurn } from '../../session/name.js';
 import type { LiveSessionReporter } from '../../messaging/writer.js';
 import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/session-messaging.js';
 import type { PeerAwareness } from '../../messaging/peer-awareness.js';
+import type { PeerPermissionClass } from '../../types/messaging.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
 import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
 import type { BackgroundShellRecord } from '../../types/runtime.js';
@@ -296,6 +297,8 @@ interface SendMessageOptions {
   onRecorded?: () => void;
   /** Checked once the pre-turn compaction is done: false cancels the send before it is recorded. */
   stillDeliverable?: () => boolean;
+  /** The class a `peer-message` turn was delivered in: the permission gate pins it (#620). */
+  peerTurnClass?: PeerPermissionClass;
   attachments?: Message['attachments'];
   /** Managed-continuation linkage back to the originating root and parent run. */
   rootRunId?: string;
@@ -579,6 +582,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   useEffect(() => {
     liveConfigRef.current = liveConfig;
   }, [liveConfig]);
+
+  // `messaging.inbound` as the settings now say it (#620): a change re-judges every held message.
+  const inboundSetting = liveConfig.settings.messaging.inbound;
+  useEffect(() => {
+    messaging?.setInbound(inboundSetting);
+  }, [messaging, inboundSetting]);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -1112,12 +1121,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (stillCurrent()) setIsCompacting(false);
           }
         }
-        // Another session's messages whose permission class no longer matches the mode — the
-        // user switched it during the compaction above — are not delivered: the send is cancelled
-        // before its user message is recorded, they stay queued, and the next delivery refuses
-        // them with the interim reason (#620).
-        // TODO(#620): PR 5 (mode parity) pins a peer turn to the class it was delivered under, so
-        // a mode switched in the middle of the turn cannot run its request unasked either.
+        // Another session's messages the receive policy no longer accepts — the user switched the
+        // mode during the compaction above — are not delivered: the send is cancelled before its
+        // user message is recorded, they stay queued, and the next delivery holds them for the
+        // user (#620). Once the turn starts, its class is pinned (`peerTurnClass`), so a mode
+        // switched in the middle of it cannot run the peer's request unasked either.
         if (messageOptions?.stillDeliverable && !messageOptions.stillDeliverable()) {
           agentSession.cancel('peer-class-changed');
         }
@@ -1563,6 +1571,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           modelOverride: commandContext?.modelOverride,
           commands: commandContext ? [commandContext.command] : undefined,
           parentSessionId: activeSessionId,
+          ...(messageOptions?.peerTurnClass !== undefined
+            ? { peerTurnClass: messageOptions.peerTurnClass }
+            : {}),
         },
       });
       // A host-delivered turn (a notification, a peer's message) never takes the resumed run's
@@ -1792,6 +1803,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         contextMessage: batch.turn.context,
         kind: 'peer-message',
         peerMessages: batch.turn.peerMessages,
+        peerTurnClass: batch.turnClass,
         stillDeliverable: () => messaging.stillDeliverable(batch),
         onRecorded: () => {
           if (committed) return;

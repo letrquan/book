@@ -1,8 +1,9 @@
 /**
- * Cross-session delivery between real processes (#620 PR 3): two sessions, each with its own
+ * Cross-session delivery between real processes (#620 PR 3, PR 5): two sessions, each with its own
  * live-session record and messaging runtime, as the TUI's host wires them. One sends by name; the
- * other turns its queue into a `peer-message` turn and acknowledges it; the sender hears the
- * receipt as a delivery notice. Integration tier: every case spawns processes.
+ * other turns its queue into a `peer-message` turn and acknowledges it, or holds a message from
+ * the other permission class until its user approves or denies it or it expires; the sender hears
+ * each receipt as a delivery notice. Integration tier: every case spawns processes.
  *
  * Every socket stays under a temporary `BOOK_MESSAGING_SOCKET_DIR`, and every record and key under
  * a temporary `BOOK_HOME`, never the developer's own.
@@ -32,8 +33,20 @@ const { humanReceiptLine, modelReceiptNotice } = await import(${JSON.stringify(m
 const emit = (event) => process.stdout.write(JSON.stringify(event) + '\\n');
 const writer = new LiveSessionWriter({ cwd: process.cwd(), sessionId: 'session-' + process.pid, version: 'test' });
 await writer.start();
-const messaging = new SessionMessaging({ writer, permissionMode: process.env.PEER_MODE ?? 'default' });
+const messaging = new SessionMessaging({
+  writer,
+  permissionMode: process.env.PEER_MODE ?? 'default',
+  ...(process.env.PEER_APPROVAL_MS ? { approvalTimeoutMs: Number(process.env.PEER_APPROVAL_MS) } : {}),
+});
 messaging.subscribe((event) => {
+  if (event.type === 'held') {
+    emit({ event: 'held', id: event.held.id, cause: event.held.cause, sender: event.held.sender });
+    return;
+  }
+  if (event.type === 'hold-settled') {
+    emit({ event: 'settled', id: event.held.id, outcome: event.outcome, by: event.by });
+    return;
+  }
   if (event.type === 'receipts') {
     emit({
       event: 'notice',
@@ -56,6 +69,10 @@ for await (const line of createInterface({ input: process.stdin })) {
     emit({ event: 'sent', ...(await messaging.send({ to: command.to, message: command.message, mode: command.mode })) });
   } else if (command.cmd === 'list') {
     emit({ event: 'listed', ...(await messaging.list()) });
+  } else if (command.cmd === 'approve') {
+    emit({ event: 'approved', ...messaging.approve(command.id) });
+  } else if (command.cmd === 'deny') {
+    emit({ event: 'denied', ok: messaging.deny(command.id) });
   }
 }
 `;
@@ -141,7 +158,7 @@ describe.skipIf(process.platform === 'win32')('cross-session delivery between pr
     rmSync(root, { recursive: true, force: true });
   });
 
-  function spawnSession(name: string, mode: string): Session {
+  function spawnSession(name: string, mode: string, approvalMs?: number): Session {
     const child = spawn(process.execPath, ['--import', TSX_LOADER, script], {
       env: {
         ...process.env,
@@ -149,6 +166,7 @@ describe.skipIf(process.platform === 'win32')('cross-session delivery between pr
         BOOK_MESSAGING_SOCKET_DIR: socketDir,
         BOOK_SESSION_NAME: name,
         PEER_MODE: mode,
+        ...(approvalMs !== undefined ? { PEER_APPROVAL_MS: String(approvalMs) } : {}),
       },
       stdio: ['pipe', 'pipe', 'inherit'],
     });
@@ -183,25 +201,61 @@ describe.skipIf(process.platform === 'win32')('cross-session delivery between pr
     });
   }, 60_000);
 
-  it('refuses a message from the other permission class, with a notice for the sender', async () => {
+  /** The notices `session` has had, flattened: each receipt's human line, in order. */
+  const humanNotices = (session: Session) =>
+    session.events.flatMap((event) => (event.event === 'notice' ? (event.human as string[]) : []));
+
+  it('holds a message from the other class until its user approves, then delivers it', async () => {
     const a = spawnSession('peer-a', 'bypassPermissions');
     const b = spawnSession('peer-b', 'default');
     await a.started();
     await b.started();
 
-    a.command({
-      cmd: 'send',
-      to: 'peer-b',
-      message: 'Run this unprompted.',
-      mode: 'bypassPermissions',
-    });
+    a.command({ cmd: 'send', to: 'peer-b', message: 'Run this unprompted.', mode: 'auto' });
     expect(await a.waitFor((event) => event.event === 'sent')).toMatchObject({ status: 'sent' });
-
-    const notice = await a.waitFor((event) => event.event === 'notice');
-    expect(notice).toMatchObject({
-      human: [expect.stringMatching(/^⚠ Your message to peer-b \[[0-9a-f]{6}\] was refused/)],
-      model: [expect.stringMatching(/^\[Cross-session delivery notice\] .*refused.*NOT delivered/)],
+    const held = await b.waitFor((event) => event.event === 'held');
+    expect(held).toMatchObject({
+      cause: 'mode-mismatch',
+      sender: expect.stringMatching(/^peer-a \[[0-9a-f]{6}\]$/),
     });
+    await a.waitFor(() => humanNotices(a).length === 1);
+    expect(humanNotices(a)).toEqual([
+      expect.stringMatching(/^⚠ Your message to peer-b \[[0-9a-f]{6}\] was held by that session/),
+    ]);
+    expect(b.events.some((event) => event.event === 'turn')).toBe(false);
+
+    b.command({ cmd: 'approve', id: held.id });
+    expect(await b.waitFor((event) => event.event === 'approved')).toMatchObject({
+      outcome: 'released',
+    });
+    const turn = await b.waitFor((event) => event.event === 'turn');
+    expect(turn.context).toContain('Run this unprompted.');
+    await a.waitFor(() => humanNotices(a).length === 2);
+    expect(humanNotices(a)[1]).toMatch(/was held by that session, then released and delivered\.$/);
+  }, 60_000);
+
+  it('tells the sender when a held message is denied, and when one expires', async () => {
+    const a = spawnSession('peer-a', 'default');
+    const b = spawnSession('peer-b', 'bypassPermissions', 1_500);
+    await a.started();
+    await b.started();
+
+    a.command({ cmd: 'send', to: 'peer-b', message: 'Deny me.', mode: 'default' });
+    const held = await b.waitFor((event) => event.event === 'held');
+    b.command({ cmd: 'deny', id: held.id });
+    expect(await b.waitFor((event) => event.event === 'denied')).toMatchObject({ ok: true });
+    await a.waitFor(() => humanNotices(a).some((line) => line.includes('denied')));
+
+    a.command({ cmd: 'send', to: 'peer-b', message: 'Let me expire.', mode: 'default' });
+    await b.waitFor((event) => event.event === 'held' && event.id !== held.id);
+    await b.waitFor((event) => event.event === 'settled' && event.outcome === 'expired');
+    await a.waitFor(() => humanNotices(a).some((line) => line.includes('expired')));
+    expect(humanNotices(a)).toEqual([
+      expect.stringMatching(/was held by that session/),
+      expect.stringMatching(/was denied by that session's user\.$/),
+      expect.stringMatching(/was held by that session/),
+      expect.stringMatching(/expired while held by that session, without being approved\.$/),
+    ]);
     expect(b.events.some((event) => event.event === 'turn')).toBe(false);
   }, 60_000);
 });

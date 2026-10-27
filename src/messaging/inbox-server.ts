@@ -20,8 +20,9 @@
  * closes the connection without a word. After it come `user` and `control` frames. A `user`
  * frame's content is parsed as an envelope (`envelope.ts`), whose relay chain the ingress guard
  * judges. An accepted one waits on the queue for the session to deliver it; a dropped one is
- * reported and receipted back to its sender (`ingress-guard.ts`); one whose sender's permission
- * class differs from this session's is refused with a receipt, until holding exists (#620 PR 5).
+ * reported and receipted back to its sender (`ingress-guard.ts`). The session's receive policy
+ * (`receive-policy.ts`) screens what the guard admits: it may hold a message for the user or
+ * refuse it instead of letting it queue (#620 PR 5).
  *
  * The token lives in this object and in the key file, nowhere else: it is never logged, put in an
  * error, written to the registry record or exported to a child process.
@@ -41,7 +42,6 @@ import type {
   InboxStartResult,
   PeerDropReason,
   PeerMessageReceipt,
-  PeerPermissionClass,
 } from '../types/messaging.js';
 import { deriveHopToken, parseEnvelope } from './envelope.js';
 import {
@@ -93,8 +93,8 @@ const SOCKET_NAME = /^(\d+)(?:-[0-9a-f]{8})?\.sock$/;
 const REAP_CONCURRENCY = 8;
 /** The sender key for a frame with no reply address: such senders share one bucket. */
 const ANONYMOUS_SENDER = '(no reply address)';
-/** The `reason` of a `refused` receipt for a message from the other permission class. */
-export const CROSS_CLASS_REFUSAL_REASON = 'permission class differs; holding is not available yet';
+/** How long a closing inbox waits for the receipts it is still sending: Claude Code's 750 ms. */
+export const CLOSE_DRAIN_MS = 750;
 
 type InboxLogger = { debug: (...args: unknown[]) => void; warn: (...args: unknown[]) => void };
 
@@ -125,13 +125,13 @@ export interface InboxServerOptions {
   /** Called with each drop the human should hear about (rate limited, `suppressed` counted). */
   onDropReport?: (report: DropReport) => void;
   /**
-   * This session's permission class now (D5). A message whose envelope names the other class —
-   * or names none, which counts as `prompting` — is refused on arrival. Absent, nothing is refused
-   * for its class.
+   * The session's receive policy, asked about each message the ingress guard admitted, before it
+   * is queued: `queue` lets it wait for delivery; `taken` means the session held or refused it,
+   * and answered its sender itself. Absent, every admitted message is queued.
    */
-  permissionClass?: () => PeerPermissionClass;
+  screen?: (message: AcceptedPeerMessage) => 'queue' | 'taken';
   /** Test seams for the limits. */
-  limits?: Partial<ConnectionLimits> & { receiptTrailMs?: number };
+  limits?: Partial<ConnectionLimits> & { receiptTrailMs?: number; closeDrainMs?: number };
 }
 
 interface ConnectionLimits {
@@ -139,7 +139,12 @@ interface ConnectionLimits {
   idleTimeoutMs: number;
   maxConnectionMs: number;
   maxConnections: number;
+  closeDrainMs: number;
 }
+
+/** What this session can tell a sender about its message. */
+export type AcknowledgedStatus =
+  'delivered' | 'refused' | 'held' | 'denied' | 'expired' | 'released';
 
 function errorCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | undefined)?.code;
@@ -222,6 +227,7 @@ export class InboxServer {
       idleTimeoutMs: options.limits?.idleTimeoutMs ?? IDLE_TIMEOUT_MS,
       maxConnectionMs: options.limits?.maxConnectionMs ?? MAX_CONNECTION_MS,
       maxConnections: options.limits?.maxConnections ?? MAX_CONNECTIONS,
+      closeDrainMs: options.limits?.closeDrainMs ?? CLOSE_DRAIN_MS,
     };
     this.guard = new IngressGuard(this.now);
     this.dropReports = new DropReportLimiter(this.now);
@@ -256,31 +262,52 @@ export class InboxServer {
     return this.queue.shift();
   }
 
+  /**
+   * Put a message the session held back on the delivery queue, behind what is already there, and
+   * wake the session as an arrival does. False, and nothing queued, when the queue is full.
+   */
+  enqueue(message: AcceptedPeerMessage): boolean {
+    if (this.closed || this.queue.length >= INGRESS_LIMITS.maxQueuedPeerMessages) return false;
+    this.queue.push(message);
+    this.options.onMessage?.(message);
+    return true;
+  }
+
   /** The receipts other sessions sent back, oldest first. */
   receivedReceipts(): readonly PeerMessageReceipt[] {
     return [...this.receipts];
   }
 
   /**
-   * Tell a message's sender what became of it: `delivered` once its turn starts, `refused` when
-   * this session will not deliver it. Sent in the background, only to a reply address the
-   * registry vouches for; a message with no reply address gets nothing.
+   * Tell a message's sender what became of it: `delivered` (or `released`, for one that was held)
+   * once its turn starts, `held` while it waits for the user, `denied`, `expired` or `refused` when
+   * this session will not deliver it. Sent in the background, only to a reply address the registry
+   * vouches for; a message with no reply address gets nothing.
    */
   acknowledge(
     message: AcceptedPeerMessage,
-    status: 'delivered' | 'refused',
+    status: AcknowledgedStatus,
     reason?: string,
+    options: { timeoutMs?: number } = {},
   ): void {
     const from = message.from;
     if (from === undefined || this.closed) return;
     this.track(
-      this.sendReceipt(from, {
-        type: 'control',
-        action: 'peer_message_status',
-        status,
-        ...(reason !== undefined ? { reason } : {}),
-        ...(message.msgId !== undefined ? { orig_msg_id: message.msgId } : {}),
-      }),
+      this.sendReceipt(
+        from,
+        {
+          type: 'control',
+          action: 'peer_message_status',
+          // Claude Code's wire has no `released` status: a held message delivered after all goes
+          // as `delivered` with a detail, which a Book sender reads back as `released`.
+          ...(status === 'released'
+            ? { status: 'delivered' as const, status_detail: 'released' }
+            : { status }),
+          ...(reason !== undefined ? { reason } : {}),
+          ...(message.msgId !== undefined ? { orig_msg_id: message.msgId } : {}),
+        },
+        options.timeoutMs,
+      ),
     );
   }
 
@@ -565,14 +592,9 @@ export class InboxServer {
       ...(frame.priority !== undefined ? { priority: frame.priority } : {}),
       receivedAt: this.now(),
     };
-    // Judged after the guard on purpose: a flood of messages this session refuses still spends
-    // the sender's tokens, so refusals (and their receipts) are rate limited like anything else.
-    const ownClass = this.options.permissionClass?.();
-    if (ownClass !== undefined && senderClassOf(message) !== ownClass) {
-      this.log.warn('peer message refused: permission class differs', { from: frame.from });
-      this.acknowledge(message, 'refused', CROSS_CLASS_REFUSAL_REASON);
-      return;
-    }
+    // Screened after the guard on purpose: a flood of messages this session holds or refuses still
+    // spends the sender's tokens, so those (and their receipts) are rate limited like anything else.
+    if (this.options.screen?.(message) === 'taken') return;
     this.queue.push(message);
     this.options.onMessage?.(message);
   }
@@ -620,7 +642,11 @@ export class InboxServer {
    * Send a receipt to the address a frame named, once that address passes
    * {@link vetReplyAddress}. Never to this inbox itself, and never in reply to a control frame.
    */
-  private async sendReceipt(from: string, frame: PeerMessageStatusFrame): Promise<void> {
+  private async sendReceipt(
+    from: string,
+    frame: PeerMessageStatusFrame,
+    timeoutMs?: number,
+  ): Promise<void> {
     const own = this.boundPath;
     const target = await this.vetReplyAddress(from);
     if (!target || !own || target === own) {
@@ -632,6 +658,7 @@ export class InboxServer {
       keysDir: this.keysDir,
       probe: this.probe,
       frame: { ...frame, from: encodeUdsAddress(own), msg_id: randomUUID() },
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     });
     this.log.debug('receipt sent', { status: result.status });
   }
@@ -699,7 +726,17 @@ export class InboxServer {
     this.closed = true;
     await this.starting;
     await this.teardown();
-    await Promise.allSettled([...this.outgoing]);
+    // The receipts still going out get a short budget, not a say over when the process exits: a
+    // peer that never answers would otherwise hold the close for the client's 5 s timeout.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled([...this.outgoing]),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, this.limits.closeDrainMs);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
   }
 
   private async teardown(): Promise<void> {
@@ -756,18 +793,14 @@ export async function inboxStartupNotices(start: Promise<InboxStartResult>): Pro
   );
 }
 
-/**
- * The permission class a message's sender asserted. A message with none — an unattributed one, or
- * an envelope without `from-mode` — counts as `prompting`, so it can never steer a bypass session.
- */
-export function senderClassOf(message: AcceptedPeerMessage): PeerPermissionClass {
-  return message.envelope?.attributes.fromMode ?? 'prompting';
-}
-
 function receiptOf(frame: PeerMessageStatusFrame, receivedAt: number): PeerMessageReceipt {
   return {
     status:
-      frame.status === 'expired' && frame.status_detail === 'refused' ? 'refused' : frame.status,
+      frame.status === 'expired' && frame.status_detail === 'refused'
+        ? 'refused'
+        : frame.status === 'delivered' && frame.status_detail === 'released'
+          ? 'released'
+          : frame.status,
     ...(frame.orig_msg_id !== undefined ? { origMsgId: frame.orig_msg_id } : {}),
     ...(frame.drop_reason !== undefined ? { dropReason: frame.drop_reason } : {}),
     ...(frame.dropped_msg_ids !== undefined ? { droppedMsgIds: frame.dropped_msg_ids } : {}),

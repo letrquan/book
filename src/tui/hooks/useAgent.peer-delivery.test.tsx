@@ -15,7 +15,7 @@ import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/sessio
  */
 
 const loopState = vi.hoisted(() => ({
-  calls: [] as Array<{ message: string; resumedFromRunId?: string }>,
+  calls: [] as Array<{ message: string; resumedFromRunId?: string; peerTurnClass?: string }>,
   usage: undefined as unknown,
 }));
 
@@ -28,9 +28,13 @@ vi.mock('../../agent/loop.js', () => ({
       history: unknown[],
       callbacks: { onUsage?: (usage: unknown) => void },
       _mode: unknown,
-      options: { runContext?: { resumedFromRunId?: string } },
+      options: { runContext?: { resumedFromRunId?: string }; peerTurnClass?: string },
     ) => {
-      loopState.calls.push({ message, resumedFromRunId: options?.runContext?.resumedFromRunId });
+      loopState.calls.push({
+        message,
+        resumedFromRunId: options?.runContext?.resumedFromRunId,
+        ...(options?.peerTurnClass ? { peerTurnClass: options.peerTurnClass } : {}),
+      });
       if (loopState.usage) callbacks.onUsage?.(loopState.usage);
       return history;
     },
@@ -81,6 +85,7 @@ function Harness({
 function fakeMessaging() {
   return {
     setPermissionMode: vi.fn(),
+    setInbound: vi.fn(),
     beginTurn: vi.fn(),
     commitDelivery: vi.fn(),
     stillDeliverable: vi.fn(() => true),
@@ -122,6 +127,8 @@ function fixture(messaging: ReturnType<typeof fakeMessaging>) {
 const batch: PeerDeliveryBatch = {
   count: 1,
   delivered: [],
+  diverted: new Map(),
+  turnClass: 'prompting',
   turn: {
     display: 'Message from peer-b [a1b2c3]:\nrun the tests',
     context: 'Another Book session sent a message:\n<cross-session-message>…',
@@ -176,6 +183,16 @@ describe('peer-message delivery in the TUI', () => {
     expect(messaging.commitDelivery).toHaveBeenCalledWith(batch);
     // A peer turn is not a turn the user started: its relay chain is not cleared.
     expect(messaging.beginTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands the turn's permission class to the loop, which pins it; other turns have none", async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(await latest!.sendPeerMessages({ ...batch, turnClass: 'bypass' })).toBe(true);
+    await latest!.send('the user types');
+    expect(loopState.calls.map((call) => call.peerTurnClass)).toEqual(['bypass', undefined]);
   });
 
   it('does not start a peer turn whose sender no longer matches the mode', async () => {

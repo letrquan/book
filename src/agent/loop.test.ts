@@ -28,7 +28,7 @@ import { toolSuccess } from '../tools/result.js';
 import { readToolUseRecords } from '../tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
-import type { AgentConfig } from '../types/runtime.js';
+import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import type { CompactRequestHints, CompactResult, PreparedCompaction } from '../types/sessions.js';
 import { terminalRecovery, type AgentTerminalOutcome } from '../types/terminal.js';
 import { createAgentRunContext } from '../types/runs.js';
@@ -2686,6 +2686,127 @@ describe('runAgentLoop streaming render callbacks', () => {
     );
 
     expect(permissionPrompts).toBe(1);
+  });
+});
+
+describe('a peer turn pinned to its permission class (#620 PR 5)', () => {
+  /** A provider that switches the host mode, then makes `calls` Echo calls, one per turn. */
+  function switchingRun(options: {
+    startMode: 'default' | 'bypassPermissions';
+    switchTo: 'default' | 'bypassPermissions' | 'plan';
+    peerTurnClass?: 'bypass' | 'prompting';
+    calls: number;
+  }) {
+    let providerTurn = 0;
+    let activeMode: string = options.startMode;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerTurn++;
+        if (providerTurn === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'switch_1', name: 'SwitchMode', arguments: {} },
+          };
+        } else if (providerTurn <= options.calls + 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: `echo_${providerTurn}`, name: 'Echo', arguments: { value: 'ok' } },
+          };
+        } else {
+          yield { type: 'text', content: 'done' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.register({
+      name: 'SwitchMode',
+      description: 'Switch the host permission mode',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        activeMode = options.switchTo;
+        return toolSuccess('switched');
+      },
+    });
+    registry.register({
+      name: 'Echo',
+      description: 'Echo value',
+      parameters: { type: 'object', properties: { value: { type: 'string' } } },
+      execute: async (args) => toolSuccess(String(args.value)),
+    });
+    const prompted: string[] = [];
+    const modeChanges: string[] = [];
+    const results: ToolResult[] = [];
+    const run = runAgentLoop(
+      defaultConfig({ maxTurns: options.calls + 2 }),
+      registry,
+      'a peer asked',
+      [],
+      noopCallbacks({
+        getMode: () => activeMode as PermissionMode,
+        onModeChange: (mode) => modeChanges.push(mode),
+        onToolResult: (result) => results.push(result),
+        onPermissionRequired: async (call) => {
+          prompted.push(call.name);
+          return 'allow';
+        },
+      }),
+      options.startMode,
+      {
+        provider,
+        isNewSession: false,
+        userMessageKind: 'peer-message',
+        ...(options.peerTurnClass ? { peerTurnClass: options.peerTurnClass } : {}),
+      },
+    );
+    return { run, prompted, modeChanges, results };
+  }
+
+  it('keeps asking when the user switches into the bypass class mid-turn, in later turns too', async () => {
+    const pinned = switchingRun({
+      startMode: 'default',
+      switchTo: 'bypassPermissions',
+      peerTurnClass: 'prompting',
+      calls: 2,
+    });
+    await pinned.run;
+    expect(pinned.prompted).toEqual(['SwitchMode', 'Echo', 'Echo']);
+    // The pin is the gate's alone: the session's own mode is left as the user set it.
+    expect(pinned.modeChanges).toEqual([]);
+
+    // Without the pin the same switch lets the calls run unasked, as it does for the user's turn.
+    const unpinned = switchingRun({
+      startMode: 'default',
+      switchTo: 'bypassPermissions',
+      calls: 2,
+    });
+    await unpinned.run;
+    expect(unpinned.prompted).toEqual(['SwitchMode']);
+  });
+
+  it('applies a stricter mode at once: a bypass turn switched to plan follows plan rules', async () => {
+    const pinned = switchingRun({
+      startMode: 'bypassPermissions',
+      switchTo: 'plan',
+      peerTurnClass: 'bypass',
+      calls: 1,
+    });
+    await pinned.run;
+    const echo = pinned.results.find((result) => result.toolCallId === 'echo_2');
+    expect(echo?.status).toBe('blocked');
+    expect(pinned.prompted).toEqual([]);
+  });
+
+  it('keeps a turn delivered in the bypass class unprompted in it', async () => {
+    const pinned = switchingRun({
+      startMode: 'bypassPermissions',
+      switchTo: 'bypassPermissions',
+      peerTurnClass: 'bypass',
+      calls: 1,
+    });
+    await pinned.run;
+    expect(pinned.prompted).toEqual([]);
   });
 });
 

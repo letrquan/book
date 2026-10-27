@@ -485,7 +485,12 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     // and `SessionSend` tools; nothing else does (D2, D3).
     const messaging =
       config.settings.messaging.enabled && process.platform !== 'win32'
-        ? new SessionMessaging({ writer: liveSession, permissionMode: mode })
+        ? new SessionMessaging({
+            writer: liveSession,
+            permissionMode: mode,
+            inbound: config.settings.messaging.inbound,
+            approvalTimeoutMs: config.settings.messaging.approvalTimeout,
+          })
         : undefined;
     const inboxStart = messaging?.start();
     // What this session knows of the other live sessions in its worktree (#620 PR 4): the peer

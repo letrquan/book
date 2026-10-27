@@ -22,7 +22,8 @@ import { createProvider, type Provider } from '../provider/index.js';
 import { isTruncationFinishReason, TRUNCATION_FINISH_REASONS } from '../provider/finish-reasons.js';
 import { buildMessages } from './context.js';
 import type { WorkspaceNoticeSources } from './session-state.js';
-import type { PeerAwarenessHandle } from '../types/messaging.js';
+import type { PeerAwarenessHandle, PeerPermissionClass } from '../types/messaging.js';
+import { peerTurnGateMode } from '../messaging/receive-policy.js';
 import { renameToolUseBlocks, renderedToolCallIds, uniqueToolCallId } from './tool-call-ids.js';
 import type { PreparedToolCall, ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
@@ -272,6 +273,13 @@ export async function runAgentLoop(
     userAttachments?: Message['attachments'];
     resolveAttachment?: (attachment: ImageAttachment) => Promise<Uint8Array> | Uint8Array;
     userMessageKind?: Message['kind'];
+    /**
+     * The permission class a `peer-message` turn was delivered in (#620). The gate applies it for
+     * the whole run: a host mode switched into the bypass class meanwhile is read as `default`
+     * (`peerTurnGateMode`), so another session's request keeps asking; a stricter mode applies
+     * as it is. Absent for every other turn.
+     */
+    peerTurnClass?: PeerPermissionClass;
     /** The prompt was resolved from a command or delegated, not typed by the user. */
     userMessageDerived?: boolean;
     /**
@@ -657,7 +665,7 @@ export async function runAgentLoop(
     timestamp: options?.userMessageTimestamp ?? Date.now(),
   });
 
-  const initialMode = mode as PermissionMode;
+  const initialMode = peerTurnGateMode(mode as PermissionMode, options?.peerTurnClass);
   // Read may open the memory directory and, below, every file this session clipped a result
   // into: a clip notice's "Full output: <path>" (#248). Never the whole tool-output directory,
   // which holds every project's clipped output. The earlier prompts' files come from the
@@ -1191,9 +1199,14 @@ export async function runAgentLoop(
      * instead of burning the remaining turns on ExitPlanMode retries.
      */
     let planStopRequested: { plan: string; message: string } | null = null;
+    // The one place the loop reads the host's mode, so the one place a peer turn's class pin
+    // applies: every gate, the mode a child agent inherits and the class a SessionSend asserts all
+    // read `currentMode`. The host's own mode is left as the user set it.
     const syncHostMode = (): void => {
       const hostMode = callbacks.getMode?.();
-      if (hostMode !== undefined) toolContext.currentMode = hostMode;
+      if (hostMode !== undefined) {
+        toolContext.currentMode = peerTurnGateMode(hostMode, options?.peerTurnClass);
+      }
       effectiveMode = toolContext.currentMode ?? effectiveMode;
     };
     const explorationRouting = new ExplorationRoutingTracker(

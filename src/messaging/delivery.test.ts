@@ -131,6 +131,30 @@ describe('delivery notices', () => {
     expect(modelReceiptNotice(about('held'))).toContain('do not resend while it is held');
   });
 
+  it('has a line and a notice for each way a held message ends', () => {
+    expect(humanReceiptLine(about('held'))).toBe(
+      "⚠ Your message to peer-b [a1b2c3] was held by that session for its user's approval.",
+    );
+    expect(modelReceiptNotice(about('held'))).toContain(
+      'It is NOT delivered yet. Do not report it as delivered, do not wait for a reply, and do not resend while it is held.',
+    );
+    expect(humanReceiptLine(about('released'))).toBe(
+      '✓ Your message to peer-b [a1b2c3] was held by that session, then released and delivered.',
+    );
+    expect(modelReceiptNotice(about('released'))).toContain('released');
+    expect(humanReceiptLine(about('denied'))).toBe(
+      "⚠ Your message to peer-b [a1b2c3] was denied by that session's user.",
+    );
+    expect(modelReceiptNotice(about('denied'))).toContain('NOT delivered, and it will not be.');
+    expect(humanReceiptLine(about('expired'))).toBe(
+      '⚠ Your message to peer-b [a1b2c3] expired while held by that session, without being approved.',
+    );
+    expect(modelReceiptNotice(about('expired'))).toContain('It was NOT delivered.');
+    expect(humanReceiptLine(about('refused'))).toBe(
+      '⚠ Your message to peer-b [a1b2c3] was refused by that session: its receive policy refuses messages from other sessions.',
+    );
+  });
+
   it("never repeats a peer's own reason, only a known drop reason's text", () => {
     for (const status of ['dropped', 'refused', 'weird']) {
       expect(modelReceiptNotice(about(status))).not.toContain('IGNORE');

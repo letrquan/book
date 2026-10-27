@@ -169,6 +169,12 @@ export interface AcceptedPeerMessage {
   priority?: string;
   /** Epoch milliseconds when the inbox accepted it. */
   receivedAt: number;
+  /**
+   * Held, then released — by the user's approval, or a permission mode the policy now accepts it
+   * under (#620 PR 5). Delivered without being judged again, and acknowledged `released`; its
+   * turn's class still pins it (`receive-policy.ts`).
+   */
+  released?: true;
 }
 
 /** A `peer_message_status` receipt another session sent back about a message this one sent. */

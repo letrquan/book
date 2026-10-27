@@ -2246,8 +2246,8 @@ describe('user-or-flag-only keys: messaging.enabled (#620)', () => {
   const off = { messaging: { enabled: false } };
 
   it('is off by default', () => {
-    expect(resolveWith({}).messaging).toEqual({ enabled: false });
-    expect(DEFAULT_SETTINGS.messaging).toEqual({ enabled: false });
+    expect(resolveWith({}).messaging).toEqual({ enabled: false, approvalTimeout: 300_000 });
+    expect(DEFAULT_SETTINGS.messaging).toEqual({ enabled: false, approvalTimeout: 300_000 });
   });
 
   it('is read from the user-global layer and from --settings', () => {
@@ -2281,5 +2281,69 @@ describe('user-or-flag-only keys: messaging.enabled (#620)', () => {
     expect(blockedConfigWritePath('messaging.enabled', true, 'local')).toBeDefined();
     expect(blockedConfigWritePath('messaging.enabled', true, 'project')).toBeDefined();
     expect(blockedConfigWritePath('messaging.enabled', true, 'user')).toBeUndefined();
+  });
+
+  describe('messaging.approvalTimeout (#620 PR 5)', () => {
+    const wait = (ms: number) => ({ messaging: { approvalTimeout: ms } });
+
+    it('is read from the user layer and --settings only', () => {
+      expect(resolveWith({ user: wait(60_000) }).messaging.approvalTimeout).toBe(60_000);
+      expect(
+        resolveWith({ user: wait(60_000), override: wait(120_000) }).messaging.approvalTimeout,
+      ).toBe(120_000);
+      // A repository cannot keep a peer's request waiting longer, nor change the wait at all.
+      expect(
+        resolveWith({ user: wait(60_000), project: wait(86_400_000), local: wait(10_000) })
+          .messaging.approvalTimeout,
+      ).toBe(60_000);
+      expect(ignoredWorkspaceUserOnlyKeys(wait(1_000_000))).toEqual([
+        { key: 'messaging.approvalTimeout', value: 1_000_000 },
+      ]);
+      expect(blockedConfigWritePath('messaging.approvalTimeout', 60_000, 'local')).toBeDefined();
+      expect(blockedConfigWritePath('messaging.approvalTimeout', 60_000, 'user')).toBeUndefined();
+    });
+  });
+
+  describe('messaging.inbound: tighten-only (#620 PR 5)', () => {
+    const inbound = (value: unknown) => ({ messaging: { inbound: value } });
+
+    it('is unset by default, so mode parity decides', () => {
+      expect(resolveWith({}).messaging.inbound).toBeUndefined();
+    });
+
+    it('is decided by the user layer, and by --settings over it', () => {
+      expect(resolveWith({ user: inbound('accept') }).messaging.inbound).toBe('accept');
+      expect(
+        resolveWith({ user: inbound('refuse'), override: inbound('accept') }).messaging.inbound,
+      ).toBe('accept');
+    });
+
+    it('lets the project and local layers tighten it', () => {
+      expect(
+        resolveWith({ user: inbound('accept'), project: inbound('hold') }).messaging.inbound,
+      ).toBe('hold');
+      expect(
+        resolveWith({ project: inbound('hold'), local: inbound('refuse') }).messaging.inbound,
+      ).toBe('refuse');
+      // `--settings` merges after them, and still cannot undo a tightening.
+      expect(
+        resolveWith({ project: inbound('refuse'), override: inbound('accept') }).messaging.inbound,
+      ).toBe('refuse');
+    });
+
+    it('ignores a repository trying to loosen it', () => {
+      expect(resolveWith({ project: inbound('accept') }).messaging.inbound).toBeUndefined();
+      expect(
+        resolveWith({ user: inbound('refuse'), project: inbound('hold'), local: inbound('accept') })
+          .messaging.inbound,
+      ).toBe('refuse');
+    });
+
+    it('reads an invalid value as hold instead of failing the launch', () => {
+      expect(resolveWith({ user: inbound('yolo') }).messaging.inbound).toBe('hold');
+      expect(resolveWith({ user: inbound('accept'), local: inbound(7) }).messaging.inbound).toBe(
+        'hold',
+      );
+    });
   });
 });

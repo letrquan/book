@@ -38,6 +38,7 @@ import { PlanApprovalActions, PlanApprovalDetails } from './components/PlanAppro
 import { AskUserQuestionWizard } from './components/AskUserQuestionWizard.js';
 import { McpElicitationForm } from './components/McpElicitationForm.js';
 import { McpServerApprovalPrompt } from './components/McpServerApprovalPrompt.js';
+import { PeerMessageApprovalPrompt } from './components/PeerMessageApprovalPrompt.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import { useManagedAgents } from './hooks/useManagedAgents.js';
@@ -66,6 +67,7 @@ import type { CommandContext } from '../types/commands.js';
 import type { RewindSnapshotStoreInterface, SessionStoreInterface } from '../types/sessions.js';
 import type { LiveSessionReporter } from '../messaging/writer.js';
 import type { SessionMessaging } from '../messaging/session-messaging.js';
+import { lateApprovalLine } from '../messaging/hold.js';
 import type { PeerAwareness } from '../messaging/peer-awareness.js';
 import type { SessionBootstrap } from '../session/resolve.js';
 import type { InkFlushSync } from '../cli/ink-renderer.js';
@@ -1229,24 +1231,29 @@ export function App({
     return () => mcp.setElicitationHandler(undefined);
   }, [mcp, elicitationHandler]);
   const pendingMcpApproval = mcpSnapshot.pendingApprovals[0];
-  // The trust prompt yields to every other modal surface and reappears once idle.
-  const showMcpApproval =
-    Boolean(pendingMcpApproval) &&
-    !ownsModalInput(
-      pendingPermission ?? childPermission ?? childQuestion,
-      pendingPlanApproval,
-      showModelPicker,
-      showSessionPicker,
-      pendingUserQuestion,
-      showEffortPicker,
-      showRewindPicker,
-      showConfigPicker,
-      showAgentProfilePicker,
-      showPermissionModePicker,
-      showSkills,
-      undefined,
-      pendingElicitation,
-    );
+  // The trust prompts below yield to every other modal surface and reappear once it closes.
+  const otherModalOwnsInput = ownsModalInput(
+    pendingPermission ?? childPermission ?? childQuestion,
+    pendingPlanApproval,
+    showModelPicker,
+    showSessionPicker,
+    pendingUserQuestion,
+    showEffortPicker,
+    showRewindPicker,
+    showConfigPicker,
+    showAgentProfilePicker,
+    showPermissionModePicker,
+    showSkills,
+    undefined,
+    pendingElicitation,
+  );
+  const showMcpApproval = Boolean(pendingMcpApproval) && !otherModalOwnsInput;
+  // A peer message the receive policy held for the user (#620), asked about after the MCP trust
+  // prompt. What it holds changes only with an event from the messaging runtime, which re-renders
+  // this component; `Later` is the one answer that does not, so it bumps this.
+  const [, setPeerHoldTick] = useState(0);
+  const pendingPeerApproval = session.messaging?.nextApproval();
+  const showPeerApproval = Boolean(pendingPeerApproval) && !showMcpApproval && !otherModalOwnsInput;
 
   // Surface connection outcomes as transcript notices once the turn is idle;
   // addLocalMessage drops messages mid-turn, so consumption waits for idle.
@@ -1300,6 +1307,7 @@ export function App({
     pendingElicitation ||
     childPermission ||
     childQuestion ||
+    showPeerApproval ||
     editingQueuedInput ||
     managedAgents.surface !== 'main',
   );
@@ -1674,7 +1682,7 @@ export function App({
         showAgentProfilePicker,
         showPermissionModePicker,
         showSkills,
-        showMcpApproval,
+        showMcpApproval || showPeerApproval,
         pendingElicitation,
       )
     ) {
@@ -2774,7 +2782,7 @@ export function App({
     showAgentProfilePicker,
     showPermissionModePicker,
     showSkills,
-    showMcpApproval,
+    showMcpApproval || showPeerApproval,
     pendingElicitation,
   );
 
@@ -2789,7 +2797,9 @@ export function App({
       pendingPlanApproval ??
       pendingUserQuestion ??
       pendingElicitation,
-    ) || showMcpApproval;
+    ) ||
+    showMcpApproval ||
+    showPeerApproval;
 
   // Whether the composer is taking keys at all. The transcript asks the same
   // question before it reads Ctrl+U and Ctrl+D as paging chords, so the answer
@@ -3513,6 +3523,36 @@ export function App({
                 onApprove={() => mcp.approve(pendingMcpApproval.name)}
                 onReject={() => mcp.reject(pendingMcpApproval.name)}
                 onDefer={() => mcp.defer(pendingMcpApproval.name)}
+                terminalWidth={termWidth}
+              />
+            ) : null}
+            {showPeerApproval && pendingPeerApproval && session.messaging ? (
+              <PeerMessageApprovalPrompt
+                key={pendingPeerApproval.id}
+                held={pendingPeerApproval}
+                remainingCount={session.messaging.heldList().length - 1}
+                onApprove={() => {
+                  // A release, a refusal or an expiry is told by the runtime's own row; only an
+                  // approval that could not release the message needs a word here.
+                  const result = session.messaging?.approve(pendingPeerApproval.id);
+                  if (result && result.outcome !== 'released') {
+                    addLocalMessage(
+                      lateApprovalLine(
+                        result.outcome === 'no-room' ? result.held : undefined,
+                        result.outcome,
+                      ),
+                    );
+                  }
+                }}
+                onDeny={() => {
+                  if (!session.messaging?.deny(pendingPeerApproval.id)) {
+                    addLocalMessage(lateApprovalLine(undefined, 'resolved'));
+                  }
+                }}
+                onDefer={() => {
+                  session.messaging?.defer(pendingPeerApproval.id);
+                  setPeerHoldTick((tick) => tick + 1);
+                }}
                 terminalWidth={termWidth}
               />
             ) : null}

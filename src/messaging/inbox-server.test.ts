@@ -20,12 +20,7 @@ import { isolateBookHome } from '../test/isolated-book-home.js';
 import type { AcceptedPeerMessage, PeerMessageReceipt } from '../types/messaging.js';
 import { renderEnvelope } from './envelope.js';
 import { classifySendError, findPeerKey, sendToInbox } from './inbox-client.js';
-import {
-  CROSS_CLASS_REFUSAL_REASON,
-  InboxServer,
-  inboxStartupNotices,
-  type InboxServerOptions,
-} from './inbox-server.js';
+import { InboxServer, inboxStartupNotices, type InboxServerOptions } from './inbox-server.js';
 import type { LivenessProbe } from './liveness.js';
 import { SendPacer } from './pacer.js';
 import { liveSessionKeyName, liveSessionRecordPath, liveSessionsDir } from './registry.js';
@@ -632,24 +627,58 @@ describe.skipIf(!posix)('envelopes, relay chains and permission classes', () => 
     ]);
   });
 
-  it('refuses a bypass sender while prompting, and a prompting or unmarked one while bypass', async () => {
-    let ownClass: 'bypass' | 'prompting' = 'prompting';
-    const { a, b, from, send } = await pair({ permissionClass: () => ownClass });
+  it('lets the receive policy take what the guard admitted, and queues the rest', async () => {
+    const screened: string[] = [];
+    let holdOrRefuse: (message: AcceptedPeerMessage) => void = () => undefined;
+    const { a, b, from, send } = await pair({
+      screen: (message) => {
+        screened.push(message.msgId ?? '');
+        if (message.envelope?.attributes.fromMode !== 'bypass') return 'queue';
+        holdOrRefuse(message);
+        return 'taken';
+      },
+    });
+    holdOrRefuse = (message) => a.inbox.acknowledge(message, 'held', 'mode-mismatch');
     await send(renderEnvelope({ from, fromMode: 'bypass' }, 'steer'), 'm1');
     await send(renderEnvelope({ from, fromMode: 'prompting' }, 'same class'), 'm2');
-    await send(renderEnvelope({ from }, 'no mode'), 'm3');
-    await eventually(() => b.receipts.length === 1 && a.messages.length === 2);
-    ownClass = 'bypass';
-    await send(renderEnvelope({ from, fromMode: 'prompting' }, 'steer back'), 'm4');
-    await send(renderEnvelope({ from }, 'no mode again'), 'm5');
-    await send('not an envelope at all', 'm6');
-    await send(renderEnvelope({ from, fromMode: 'bypass' }, 'same class too'), 'm7');
-    await eventually(() => b.receipts.length === 4 && a.messages.length === 3);
-    expect(a.messages.map((message) => message.msgId)).toEqual(['m2', 'm3', 'm7']);
+    // A loop the guard drops never reaches the policy.
+    await send(renderEnvelope({ from, hopChain: Array(10).fill(a.inbox.hopToken!) }, 'x'), 'm3');
+    await eventually(() => b.receipts.length === 2 && a.messages.length === 1);
+    expect(screened).toEqual(['m1', 'm2']);
+    expect(a.inbox.queued().map((message) => message.msgId)).toEqual(['m2']);
     expect(
-      b.receipts.map((receipt) => [receipt.status, receipt.origMsgId, receipt.reason]),
-    ).toEqual(['m1', 'm4', 'm5', 'm6'].map((id) => ['refused', id, CROSS_CLASS_REFUSAL_REASON]));
+      b.receipts
+        .map((receipt) => [receipt.status, receipt.origMsgId])
+        .sort((x, y) => (x[1]! < y[1]! ? -1 : 1)),
+    ).toEqual([
+      ['held', 'm1'],
+      ['dropped', 'm3'],
+    ]);
   });
+
+  it('queues a message the session releases, and refuses it when the queue is full', async () => {
+    const { a } = await pair();
+    const released = { content: 'held back', receivedAt: 1 };
+    expect(a.inbox.enqueue(released)).toBe(true);
+    expect(a.inbox.queued()).toEqual([released]);
+    expect(a.messages).toEqual([released]);
+    for (let index = 1; index < 50; index++)
+      a.inbox.enqueue({ content: `${index}`, receivedAt: 1 });
+    expect(a.inbox.enqueue({ content: 'one too many', receivedAt: 1 })).toBe(false);
+    expect(a.inbox.queued()).toHaveLength(50);
+  });
+
+  it.each(['held', 'denied', 'expired', 'released', 'refused'] as const)(
+    'sends the %s receipt when the session says so',
+    async (status) => {
+      const { a, b, from, send } = await pair();
+      await send(renderEnvelope({ from }, 'hello'), 'm1');
+      await eventually(() => a.messages.length === 1);
+      a.inbox.acknowledge(a.inbox.take()!, status, 'why');
+      await eventually(() => b.receipts.length === 1);
+      expect(b.receipts[0]).toMatchObject({ status, origMsgId: 'm1', reason: 'why' });
+    },
+  );
 
   it('sends a delivered receipt when the session acknowledges a message', async () => {
     const { a, b, from, send } = await pair();

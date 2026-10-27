@@ -652,20 +652,39 @@ after a failed run.
 ## Cross-session messaging (experimental)
 
 ```json
-{ "messaging": { "enabled": true } }
+{ "messaging": { "enabled": true, "inbound": "hold", "approvalTimeout": 300000 } }
 ```
 
 `messaging.enabled` (default `false`) gives each interactive TUI session an inbox that other Book
-sessions on the same machine can deliver messages to (#620). **It is not usable yet**: this
-release has the transport only, and the tools that send and the delivery into the conversation
-come later. Print mode, the SDK and agents never open an inbox, and on Windows the setting starts
-nothing yet.
+sessions on the same machine can deliver messages to, and the `SessionList` and `SessionSend`
+tools (#620; see [Features](features.md)). Print mode, the SDK and agents never open an inbox, and
+on Windows the setting starts nothing yet.
 
 The key is read **only from `~/.book/settings.json` (`<BOOK_HOME>/settings.json`) and a
 `--settings` file**. It loosens what a session lets in, and a clone can force-add its own
 `.book/settings.local.json`, so a value in either workspace file is ignored at any value, and
 `book doctor` names the file. `book config set --project`/`--local` and `/config` refuse to write
 it there.
+
+`messaging.inbound` decides what an arriving message gets:
+
+| Value    | What happens                                                                                 |
+| -------- | -------------------------------------------------------------------------------------------- |
+| unset    | Mode parity decides (the default): a message from the other permission class is held for you |
+| `accept` | Every message is delivered when the session is idle, whatever the sender's permission mode   |
+| `hold`   | Every message is held: a row shows it, it is not delivered, and it expires after the timeout |
+| `refuse` | Every message is refused, and its sender is told                                             |
+
+The user file and `--settings` decide it. `.book/settings.json` and `.book/settings.local.json`
+may only make it stricter (`accept`, then unset, then `hold`, then `refuse`): a repository can
+hold or refuse messages in its workspace, never let more in. A stricter workspace value wins even
+over `--settings`, and `book doctor` reports the result with the file it came from, and any
+workspace value that tried to loosen it. A value that is none of the three is read as `hold`,
+never as an error.
+
+`messaging.approvalTimeout` (milliseconds, default `300000`, 5 minutes; 10 s to 24 h) is how long a
+held message waits for your approval before it expires and its sender is told. Like
+`messaging.enabled`, it is read only from the user file and `--settings`.
 
 With it on, the inbox is a socket (`0600`) in a private directory (`0700`):
 `<BOOK_HOME>/socks/` when `BOOK_HOME` is set, otherwise `$XDG_RUNTIME_DIR/book-socks/` on Linux,
