@@ -585,6 +585,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const peerPinRef = useRef<PeerPermissionClass | undefined>(undefined);
   // The class of each background job a pinned run started: its completion carries the peer's
   // work on whenever it lands, after the user's own turn cleared the session's pin too.
+  // TODO(#620): accepted gaps (security review of #643): the map is in memory, so a persistent
+  // job's completion after a restart or `--resume` is unpinned; a pinned run that starts more than
+  // the shell manager's 20 retained terminal jobs loses the oldest before the diff; and the entry
+  // goes with the first completion delivered, so a later completion of the same id is unpinned.
   const pinnedJobsRef = useRef(new Map<string, PeerPermissionClass>());
   const timelineStore = session.timelineStore ?? session.store;
 

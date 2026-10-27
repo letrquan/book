@@ -521,6 +521,38 @@ describe('AgentManager lifecycle', () => {
     manager.dispose();
   });
 
+  it("runs a child a peer turn spawned in that turn's class, though it starts after a switch to bypass (#620)", async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    config.settings.agents.maxConcurrent = 1;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const modes: Record<string, string> = {};
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      permissionMode: 'default',
+      runLoop: async (_config, _registry, prompt, history, _callbacks, mode) => {
+        modes[prompt] = String(mode);
+        if (prompt === 'first') await gate;
+        return history;
+      },
+    });
+
+    await manager.spawn({ agent: 'explorer', prompt: 'first' });
+    // Both queue behind the first; the user then switches the session to bypass.
+    await manager.spawn({ agent: 'explorer', prompt: 'pinned', peerTurnClass: 'prompting' });
+    await manager.spawn({ agent: 'explorer', prompt: 'plain' });
+    manager.setPermissionMode('bypassPermissions');
+    release();
+    await manager.waitForIdle();
+    expect(modes).toEqual({ first: 'default', pinned: 'default', plain: 'bypassPermissions' });
+    manager.dispose();
+  });
+
   it('tracks resumed execution generations separately from cumulative usage', async () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });

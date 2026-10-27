@@ -14,16 +14,22 @@ import { PANEL_CHROME, frameGrid } from '../layout.js';
 
 interface PeerMessageApprovalPromptProps {
   held: HeldPeerMessage;
-  /** Other held messages besides this one. */
-  remainingCount: number;
+  /** Messages held from this message's sender, this one included: the sheet asks once per sender. */
+  fromSender: number;
+  /** Messages held from other senders. */
+  fromOthers: number;
   onApprove: () => void;
   onDeny: () => void;
+  /** Deny everything held from this sender, and refuse what it sends from the other class later. */
+  onDenyAllFromSender: () => void;
+  /** Deny everything held, from every sender. */
+  onDenyAll: () => void;
   onDefer: () => void;
   /** Terminal columns; the sheet's rule spans them. */
   terminalWidth?: number;
 }
 
-type OptionKey = 'approve' | 'deny' | 'later';
+type OptionKey = 'approve' | 'deny' | 'deny-sender' | 'deny-all' | 'later';
 
 /** How long the sheet ignores keys after it appears: a typed-ahead Enter must answer nothing. */
 export const PEER_APPROVAL_ARM_MS = 500;
@@ -45,9 +51,12 @@ function expiryTime(epochMs: number, now = Date.now()): string {
  */
 export function PeerMessageApprovalPrompt({
   held,
-  remainingCount,
+  fromSender,
+  fromOthers,
   onApprove,
   onDeny,
+  onDenyAllFromSender,
+  onDenyAll,
   onDefer,
   terminalWidth = 80,
 }: PeerMessageApprovalPromptProps) {
@@ -60,9 +69,15 @@ export function PeerMessageApprovalPrompt({
     },
     { key: 'deny', label: 'Deny', hint: 'not delivered; its sender is told' },
     {
+      key: 'deny-sender',
+      label: 'Deny all from this sender',
+      hint: 'and refuse what it sends from the other class from now on',
+    },
+    { key: 'deny-all', label: 'Deny all held', hint: 'from every sender' },
+    {
       key: 'later',
       label: 'Later',
-      hint: `asked again when idle; expires at ${expiryTime(held.expiresAt)}`,
+      hint: `everything from this sender; asked again when idle, expires at ${expiryTime(held.expiresAt)}`,
     },
   ];
   const [selected, setSelected, currentSelected] = useKeyState(options.length - 1);
@@ -71,6 +86,8 @@ export function PeerMessageApprovalPrompt({
   const decide = (key: OptionKey) => {
     if (key === 'approve') onApprove();
     else if (key === 'deny') onDeny();
+    else if (key === 'deny-sender') onDenyAllFromSender();
+    else if (key === 'deny-all') onDenyAll();
     else onDefer();
   };
 
@@ -88,7 +105,9 @@ export function PeerMessageApprovalPrompt({
 
   const width = frameGrid(Math.max(20, Math.floor(terminalWidth))).width;
   const contentWidth = Math.max(12, width - PANEL_CHROME);
-  const waiting = remainingCount > 0 ? ` · ${remainingCount} more held` : '';
+  const waiting =
+    (fromSender > 1 ? ` · ${fromSender} held from this sender` : '') +
+    (fromOthers > 0 ? ` · ${fromOthers} from others` : '');
   const choices: Choice[] = options.map((option) => ({
     label: option.label,
     detail: option.hint,

@@ -789,7 +789,8 @@ approve, and a turn a peer message starts is pinned to its permission class, as 
 completion and notice turns that carry its work on until the user's next turn, so switching into
 `bypassPermissions` or `auto` mid-turn never lets the peer's request run unasked; a pinned turn's
 `EnterPlanMode` and `ExitPlanMode` are refused, and so are a prompting-class one's `AgentSpawn`,
-`AgentPlan` and `AgentSend` (see [Features](features.md)).
+`AgentPlan` and `AgentSend`; a pinned turn's `AgentStop`, `AgentApply` and `AgentSend` ask in every
+mode, and a `Task` subagent it starts keeps its class (see [Features](features.md)).
 
 ## Hooks
 

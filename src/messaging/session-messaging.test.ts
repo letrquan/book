@@ -506,6 +506,64 @@ describe.skipIf(!posix)('SessionMessaging', () => {
     );
   });
 
+  it('asks once per sender for a flood, re-offers at most every 5 minutes, and denies it all at once', async () => {
+    let clock = Date.now();
+    const now = () => clock;
+    const a = await session(4242, 'peer-a', 'default', { now });
+    const b = await session(4343, 'peer-b', 'bypassPermissions', {
+      now,
+      approvalTimeoutMs: 3_600_000,
+    });
+    for (let index = 0; index < 100; index++) {
+      // One token of the sender's bucket refills every 2 s, at both ends.
+      clock += 2_000;
+      expect(await a.messaging.send({ to: 'peer-b', message: `flood ${index}` })).toMatchObject({
+        status: 'sent',
+      });
+    }
+    await eventually(() => b.messaging.heldList().length === 100, 15_000);
+    const first = b.messaging.nextApproval()!;
+    expect(b.messaging.heldFromSender(first)).toBe(100);
+    // Later puts the sender off, not one message: the next of its 100 is not offered.
+    b.messaging.defer(first.id);
+    expect(b.messaging.nextApproval()).toBeUndefined();
+    b.messaging.reofferDeferred();
+    expect(b.messaging.nextApproval()).toBe(first);
+    b.messaging.defer(first.id);
+    // An idle soon after offers nothing: at most once every 5 minutes.
+    b.messaging.reofferDeferred();
+    expect(b.messaging.nextApproval()).toBeUndefined();
+    clock += 5 * 60_000;
+    b.messaging.reofferDeferred();
+    expect(b.messaging.nextApproval()).toBe(first);
+
+    expect(b.messaging.denyAllFrom(first.id)).toBe(100);
+    expect(b.messaging.heldList()).toEqual([]);
+    expect(b.messaging.nextApproval()).toBeUndefined();
+    // That sender's next message from the other class is refused, not held again.
+    clock += 2_000;
+    await a.messaging.send({ to: 'peer-b', message: 'after deny-all' });
+    await eventually(() => statusesOf(a.events).includes('refused'), 5_000);
+    expect(b.messaging.heldList()).toEqual([]);
+    expect(statusesOf(a.events)).toContain('denied');
+  }, 60_000);
+
+  it('denies every held message from every sender at once', async () => {
+    const a = await session(4242, 'peer-a', 'default');
+    const c = await session(4444, 'peer-c', 'default');
+    const b = await session(4343, 'peer-b', 'bypassPermissions');
+    await a.messaging.send({ to: 'peer-b', message: 'from a' });
+    await c.messaging.send({ to: 'peer-b', message: 'from c' });
+    await eventually(() => b.messaging.heldList().length === 2);
+    expect(b.messaging.denyAll()).toBe(2);
+    expect(b.messaging.heldList()).toEqual([]);
+    await eventually(() => statusesOf(a.events).includes('denied'));
+    await eventually(() => statusesOf(c.events).includes('denied'));
+    // Deny all held blocks no one: the next message is held again.
+    await a.messaging.send({ to: 'peer-b', message: 'from a again' });
+    await eventually(() => b.messaging.heldList().length === 1);
+  });
+
   it('settles held messages as expired on close, within its budget', async () => {
     const a = await session(4242, 'peer-a', 'default');
     const b = await session(4343, 'peer-b', 'bypassPermissions');

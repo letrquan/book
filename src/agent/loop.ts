@@ -205,6 +205,12 @@ const PEER_TURN_AGENT_TOOLS: ReadonlySet<string> = new Set([
   'AgentSend',
 ]);
 
+/**
+ * The managed-agent tools that act on an existing agent — most likely the user's — which a peer
+ * turn's call asks for in every mode (#620). A prompting-class turn's AgentSend is refused first.
+ */
+const PEER_TURN_ASK_TOOLS: ReadonlySet<string> = new Set(['AgentStop', 'AgentApply', 'AgentSend']);
+
 /** Why a prompting-class peer turn's AgentSpawn, AgentPlan or AgentSend is refused (#620). */
 export const PEER_TURN_AGENT_REFUSAL =
   "a turn from another session cannot start or steer managed agents, which run at this session's own mode; ask your user";
@@ -799,6 +805,7 @@ export async function runAgentLoop(
     fileObservationLedger: runtime.fileObservationLedger,
     peerAwareness: options?.peerAwareness,
     currentMode: initialMode,
+    ...(options?.peerTurnClass !== undefined ? { peerTurnClass: options.peerTurnClass } : {}),
     userQuestionHandler: callbacks.onUserQuestionRequired,
     agentPath: options?.agentPath ?? [],
     availableTools: availableToolDefinitions,
@@ -3027,15 +3034,20 @@ export async function runAgentLoop(
         // can read, only the call's own exact rule vouches for it: a widened rung (`Bash(git *)`,
         // `Write(secrets/*)`) or a bare tool rule must not skip the prompt (review of #531).
         const exactSessionRuleOnly = compoundUnderPolicy || askRuleMatched;
+        // A peer turn's call that stops, steers or applies a managed agent asks in every mode,
+        // bypass included, past any rule: the agent is the user's, not the peer's (#620).
+        const peerMustAsk =
+          options?.peerTurnClass !== undefined && PEER_TURN_ASK_TOOLS.has(canonName);
         if (
-          (forceSkillPermission || toolPermissionRequired) &&
+          (forceSkillPermission || toolPermissionRequired || peerMustAsk) &&
           (persistentBackgroundShell ||
+            peerMustAsk ||
             !approveAllRules.some(
               (rule) =>
                 (!exactSessionRuleOnly || rule === ownRule) &&
                 permissionRuleMatchesCall(rule, call, process.platform, scanShell),
             )) &&
-          (!autoSafeTool || userRuleAsked || guardedReadInPlan) &&
+          (!autoSafeTool || userRuleAsked || guardedReadInPlan || peerMustAsk) &&
           (effectiveMode !== 'plan' || planReadOnly)
         ) {
           const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);
@@ -3052,6 +3064,7 @@ export async function runAgentLoop(
             const autoAllowed = ALWAYS_ALLOWED_TOOLS.has(canonName) || verdict.source === 'memory';
             if (
               !userRuleAsked &&
+              !peerMustAsk &&
               (forceSkillPermission || effectiveMode !== 'dontAsk' || autoAllowed) &&
               !persistentBackgroundShell
             ) {

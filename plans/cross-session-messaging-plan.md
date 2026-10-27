@@ -699,6 +699,9 @@ delivered (N held)` row (name from the registry record advertising the frame's a
   `DecisionSheet` like the MCP trust prompt (the permission card is untouched, so no README media
   change): Deliver now / Deny / Later, opening on Later with no letter keys, ignoring keys for
   500 ms after it appears, Esc = Later; it yields to every other modal and never blocks delivery.
+  The sheet asks once per sender, with a count, and offers "Deny all from this sender" (denied
+  receipts, and later parity holds from that address refused for the session) and "Deny all held";
+  Later defers the whole sender, its later messages included, and re-offers at most every 5 min.
   Later re-offers the message the next time the session goes idle after a turn; an approval that
   finds the queue full stays held and is re-offered once a delivery makes room; the status line
   shows `held N`. A `policy` hold is not offered: only a change of the setting releases it.
@@ -717,7 +720,11 @@ delivered (N held)` row (name from the registry record advertising the frame's a
   (`ToolContext.hostMode`) as the one to restore, so a peer turn never changes the session's mode.
   A prompting-class run's `AgentSpawn`, `AgentPlan` and `AgentSend` are refused: managed agents
   outlive the turn and run at the `AgentManager`'s shared mode, which the pin does not reach
-  (security review).
+  (security review). A pinned run's
+  `AgentStop`, `AgentApply` and `AgentSend` ask in every mode, past any rule; a managed agent a pinned
+  run spawns (`Task`, `AgentSpawn`) records `peerTurnClass` on its record and runs at
+  `peerTurnGateMode(manager mode, class)` when it starts, so a switch to bypass while it queues does
+  not reach it.
 - Print mode and the SDK still have no inbox (D3), so nothing is held there; their `--messaging`
   opt-in and stream-json `peer_message_hold` events stay in PR 7.
 

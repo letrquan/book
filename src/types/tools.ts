@@ -420,6 +420,12 @@ export interface ToolContext {
    * hand its pinned mode back to the session.
    */
   hostMode?: PermissionMode;
+  /**
+   * The class the run is pinned to when a peer's message started it or it carries a peer's work
+   * on (#620): a managed agent it spawns keeps that class, whatever the session's mode is when the
+   * agent starts.
+   */
+  peerTurnClass?: import('./messaging.js').PeerPermissionClass;
   /** Mode to restore after a tool-initiated plan-mode session exits. */
   previousMode?: PermissionMode;
   /** Plan text submitted by ExitPlanMode and awaiting host approval. */

@@ -2906,6 +2906,60 @@ describe('a peer turn pinned to its permission class (#620 PR 5)', () => {
     expect(await run('bypass')).toEqual(['success', 'success', 'success']);
   });
 
+  it("asks before a peer turn stops, steers or applies the user's agents, even in bypass", async () => {
+    const acting = ['AgentStop', 'AgentApply', 'AgentSend'];
+    const run = async (peerTurnClass?: 'bypass' | 'prompting') => {
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          const name = acting[providerTurn++];
+          if (name) {
+            yield { type: 'tool_call', toolCall: { id: `${name}_1`, name, arguments: {} } };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+      const registry = createRegistry();
+      for (const name of acting) {
+        registry.register({
+          name,
+          description: `stand-in for ${name}`,
+          parameters: { type: 'object', properties: {} },
+          execute: async () => toolSuccess('ran'),
+        });
+      }
+      const prompted: string[] = [];
+      await runAgentLoop(
+        defaultConfig({ maxTurns: 5 }),
+        registry,
+        'a peer asked',
+        [],
+        noopCallbacks({
+          getMode: () => 'bypassPermissions',
+          onPermissionRequired: async (call) => {
+            prompted.push(call.name);
+            return 'allow';
+          },
+        }),
+        'bypassPermissions',
+        {
+          provider,
+          isNewSession: false,
+          userMessageKind: 'peer-message',
+          ...(peerTurnClass ? { peerTurnClass } : {}),
+        },
+      );
+      return prompted;
+    };
+    expect(await run('bypass')).toEqual(acting);
+    // A prompting-class turn may not steer one at all (AgentSend is refused); the rest ask.
+    expect(await run('prompting')).toEqual(['AgentStop', 'AgentApply']);
+    expect(await run()).toEqual([]);
+  });
+
   it('keeps a turn delivered in the bypass class unprompted in it', async () => {
     const pinned = switchingRun({
       startMode: 'bypassPermissions',

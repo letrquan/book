@@ -3543,7 +3543,11 @@ export function App({
               <PeerMessageApprovalPrompt
                 key={pendingPeerApproval.id}
                 held={pendingPeerApproval}
-                remainingCount={session.messaging.heldList().length - 1}
+                fromSender={session.messaging.heldFromSender(pendingPeerApproval)}
+                fromOthers={
+                  session.messaging.heldList().length -
+                  session.messaging.heldFromSender(pendingPeerApproval)
+                }
                 onApprove={() => {
                   // A release, a refusal or an expiry is told by the runtime's own row; only an
                   // approval that could not release the message needs a word here.
@@ -3561,6 +3565,12 @@ export function App({
                   if (!session.messaging?.deny(pendingPeerApproval.id)) {
                     addLocalMessage(lateApprovalLine(undefined, 'resolved'));
                   }
+                }}
+                onDenyAllFromSender={() => {
+                  session.messaging?.denyAllFrom(pendingPeerApproval.id);
+                }}
+                onDenyAll={() => {
+                  session.messaging?.denyAll();
                 }}
                 onDefer={() => {
                   session.messaging?.defer(pendingPeerApproval.id);
