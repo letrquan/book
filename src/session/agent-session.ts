@@ -32,6 +32,7 @@ import type {
 } from '../types/sessions.js';
 import type { Message, Usage } from '../types/messages.js';
 import type { ActiveGoal } from '../types/goal.js';
+import type { PeerAwarenessHandle } from '../types/messaging.js';
 import { createGoal, restoreGoal } from '../agent/goal.js';
 import { createAgentRunContext, type AgentRunContext, type AgentRunSource } from '../types/runs.js';
 import {
@@ -362,6 +363,11 @@ export interface AgentSessionDependencies {
   sessionStartRunner?: typeof runSessionStart;
   sessionEndRunner?: typeof runSessionEnd;
   runtime?: SessionRuntime;
+  /**
+   * The TUI host's view of other live sessions (#620 PR 4), handed to every root run. It outlives
+   * `/clear` and `/resume`, which replace the runtime but not the process.
+   */
+  peerAwareness?: PeerAwarenessHandle;
   registryFactory?: (request: {
     config: AgentConfig;
     sessionId: string;
@@ -424,6 +430,7 @@ export class AgentSession {
   private lifecycleEnd?: Promise<void>;
   private runtime: SessionRuntime;
   private readonly registryFactory?: AgentSessionDependencies['registryFactory'];
+  private readonly peerAwareness?: PeerAwarenessHandle;
   /**
    * Every root this session has run, and where its spend is written (#336).
    *
@@ -449,6 +456,7 @@ export class AgentSession {
     this.sessionEndRunner = dependencies.sessionEndRunner ?? runSessionEnd;
     this.runtime = dependencies.runtime ?? new SessionRuntime();
     this.registryFactory = dependencies.registryFactory;
+    this.peerAwareness = dependencies.peerAwareness;
   }
 
   startSend(): AgentSessionOperation | null {
@@ -1624,6 +1632,7 @@ export class AgentSession {
             ...request.options,
             runtime,
             runContext,
+            ...(this.peerAwareness ? { peerAwareness: this.peerAwareness } : {}),
             resolveAttachment:
               request.options?.resolveAttachment ??
               (request.timelineStore?.readImageAttachment

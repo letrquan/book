@@ -53,6 +53,7 @@ import { resolveBookHome } from '../book-home.js';
 import { isReaderGoneError } from '../reader-gone.js';
 import { cleanupRunStatus } from '../run-status.js';
 import { inboxStartupNotices } from '../messaging/inbox-server.js';
+import { PeerAwareness } from '../messaging/peer-awareness.js';
 import { SessionMessaging } from '../messaging/session-messaging.js';
 import { LiveSessionWriter } from '../messaging/writer.js';
 import { getPackageVersion } from '../version-info.js';
@@ -487,6 +488,13 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         ? new SessionMessaging({ writer: liveSession, permissionMode: mode })
         : undefined;
     const inboxStart = messaging?.start();
+    // What this session knows of the other live sessions in its worktree (#620 PR 4): the peer
+    // lines and attributed notices the model reads, and the overlap warning the user sees. It reads
+    // the registry the writer keeps, so it works with messaging off.
+    const peerAwareness = new PeerAwareness({
+      writer: liveSession,
+      messaging: () => messaging?.available() ?? false,
+    });
     try {
       const rendererMode = resolveTuiRendererMode(process.env.BOOK_TUI_RENDERER, {
         isTTY: process.stdout.isTTY === true,
@@ -520,6 +528,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
             createdSessions,
             liveSession,
             messaging,
+            peerAwareness,
           },
           startupNotices: [...nodeNotices, ...providerNotices, ...instructionNotices],
           lateStartupNotices: inboxStart && inboxStartupNotices(inboxStart),
@@ -540,6 +549,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     } finally {
       app?.cleanup();
       restoreScreen();
+      peerAwareness.close();
       await liveSession.close();
       await messaging?.close();
       await mcpHost.dispose();

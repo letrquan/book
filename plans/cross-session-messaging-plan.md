@@ -593,47 +593,67 @@ Each PR is built by Book in print mode (`run-book` skill), watched in the real T
   - Two sessions with the same name produce "ask the user which one" instead.
   - The TUI completes `@` with live session names, after the file names.
 
-**PR 4: peer awareness and concurrent-edit notices.** Step 4a is CC parity. Steps 4b–4e are a
-**Book addition beyond CC parity** (§1.11a: CC has no same-worktree signal). The goal is that a
-weak model learns about a conflict from the harness, at the moment it matters, instead of having
-to think of asking.
+**PR 4: peer awareness and concurrent-edit notices** (shipped as below, 2026-10-27). Step 4a is
+CC parity. Steps 4b–4e are a **Book addition beyond CC parity** (§1.11a: CC has no same-worktree
+signal). The goal is that a weak model learns about a conflict from the harness, at the moment it
+matters, instead of having to think of asking. All of it works with `messaging.enabled` off.
 
-- **4a. Changed-on-disk notice**, CC's `edited_text_file`. It is useful without peers too: user
-  edits, linters, formatters.
-  - **When**: once per turn, before the model call. Files the model has observed, through
-    `file-provenance.ts` hashes, and that changed on disk get a meta note: "`<file>` changed on
-    disk since you last read it …". A diff snippet is included if it is short.
-  - **Placement**: it goes in `<session-state>`, the volatile zone, so the cached prefix is never
-    touched.
-  - **Bound**: at most 10 files per turn, all checked asynchronously.
-- **4b. Registry fields**:
-  - `worktree`: the `git rev-parse --show-toplevel` result, run asynchronously and cached.
-  - `branch`.
-  - `recentEdits`: up to 20 `{path relative to worktree, at}` entries, appended after every
-    successful mutation.
-  - Writes are throttled to one every 2 s. Paths only, never content.
-- **4c. Peer line in `<session-state>`**:
-  - When live peers share this worktree, add one line for at most 3 of them, for example:
-
-    ```
-    Other Book sessions in this worktree: book-36 (busy, branch feat/x; recorded edits: src/a.ts 2m ago)
-    ```
-
-  - The registry read is async and bounded: a directory listing plus at most 8 records.
-  - Peers on other worktrees of the same repository get a one-line count only.
-- **4d. Attributed staleness**:
-  - The 4a notice and the `stale_file_observation` error name the peer whose `recentEdits` holds
-    the path. They hedge, because `recentEdits` is the peer's own claim: "`book-36` recorded an
-    edit to `src/a.ts` 1m ago. Re-read it; if your changes overlap, coordinate with
-    `SessionSend` to `book-36`."
-  - When messaging is off, the line drops the `SessionSend` hint and suggests telling the user.
-- **4e. Human-visible warning**: the TUI shows a one-line warning when this session and a peer
-  both recorded edits to the same path within 10 min. It does not depend on what the model does.
-- **Eval**:
-  - Two sessions run scripted overlapping tasks on one worktree, with a weak and a strong model,
-    and 4c–4e off and then on.
-  - Measure: lost edits (one session overwrote the other's change), conflicts noticed,
-    coordination messages sent, and extra tokens.
+- **4a. Changed-on-disk notice**, CC's `edited_text_file` (`tools/file-changes.ts`, a
+  `FileChangeTracker` on the `SessionRuntime` beside the observation ledger).
+  - **When**: once per user turn, while the turn's `<session-state>` is rendered, and never on a
+    rebuild that reuses the memoized block (a change is reported once, so a read whose line never
+    rendered would lose it).
+  - **Which files**: the ledger's non-outline observations of this workspace, newest 256. Each is
+    `stat`ed; it is read and hashed only when its size or mtime moved since it was last judged. A
+    hash that differs from the observation's is a change; a missing file is "deleted or moved".
+  - **Bound**: 10 files a turn are named, newest observation first; any more are counted in one
+    line and marked reported, so a branch switch is one notice, not several turns of them. Checks
+    run 8 at a time. A file the stale-since-checkpoint line names is left to that line.
+  - **Repeats**: each (file, content hash) is reported once, committed only after the block is
+    rendered (a cancelled turn reports nothing), and forgotten when the file goes back to what the
+    model saw. The model's own edits re-observe the file and its ApplyPatch deletions drop the
+    observation, so they never count.
+  - **Snippet**: `observeFile` keeps the observed text of files up to 64 KiB (2 MiB in all, oldest
+    dropped). A change whose changed span is under 20 lines is shown as a diff of at most 20 lines,
+    provider keys redacted (current keys, before long lines are cut); anything longer, binary or
+    not remembered names the file only. A link is never followed: a file that became one, or sits
+    under a directory that did, is reported as changed and never read (security review).
+  - Runs wherever the loop runs (print mode and the SDK too); only the peer parts need the TUI.
+- **4b. Registry fields** (`messaging/writer.ts`, `git-location.ts`):
+  - `worktree` and `repository` (`git rev-parse --show-toplevel --git-common-dir`, real paths)
+    and `branch` (`git symbolic-ref --short -q HEAD`), through `openReadOnlyGit` (#574 hardening),
+    resolved at start beside the pid domain and looked up again when a turn ends, at most every
+    10 s. `repository` was added to tell "other worktree of this repository" from "unrelated".
+  - `recentEdits`: up to 20 `{path, at}`, one per path, newest last, relative to the worktree, from
+    the one seam every mutation tool reports through (`finalizeToolCall`'s `fileMutation(s)`),
+    memory files excluded, paths outside the worktree never written. Root interactive runs only.
+  - An edit's write waits until 2 s after the previous write (coalesced); a status change is not
+    held back. Old records without these fields still read.
+- **4c. Peer line** (`messaging/peer-awareness.ts`):
+  - One listing; up to 256 record files of this pid domain parsed (each capped at 64 KiB); only
+    those in this repository kept, and at most 8 of them liveness-checked, most recently written
+    first (review: a top-8-by-pid cut before the filter let unrelated sessions crowd out a peer).
+    `sweep: false`; a snapshot is reused for 1 s.
+  - Same worktree: up to 3 peers, most recently active first, with status, branch and up to 3 edits
+    from the last hour, then "and N more". Other worktrees of the same repository: a count only.
+  - Names go through `sanitizeEnvelopeName`, status through the `SessionList` row sanitizer, and
+    every peer string (branch, paths) is folded, capped and `neutralizeTags`'d when rendered. A
+    recorded edit with an absolute path or a `..` segment is dropped.
+- **4d. Attributed staleness**: the 4a line and the `stale_file_observation` refusal
+  (`requireFreshObservation`, so Write/Edit/MultiEdit/ApplyPatch/NotebookEdit all get it) name the
+  same-worktree peer whose newest recorded edit of the path is no older than this session's
+  observation. `name [ref]` and the `SessionSend` hint when both sessions have messaging; the
+  "tell the user" variant otherwise.
+- **4e. Overlap warning**: a `⚠` local row when this session and a live same-worktree peer both
+  recorded an edit to one path within 10 min: checked right after this session's edit, and every
+  15 s while its own edits are within the window. Once per (peer session, path) per 10 min; in
+  memory only, never persisted. Laid out by the existing local-event row (`AgentMessage`).
+- **Eval**: `scripts/peer-awareness-eval.ts`, mock mode, no cost: two sessions (real loop, tools,
+  writers and registry) with overlapping edits, 4c–4e off then on; a scripted weak model that
+  reacts only to a line naming another session. Mock result: off arm 1 lost edit, 0 conflicts
+  noticed; on arm 0 lost, 1 noticed, 2 overlap warnings, ~540 characters of peer lines. The
+  real-model runs (weak and strong model, same scenario, also measuring coordination messages and
+  extra tokens) wait for the owner's budget.
 
 **PR 5: receive policy and approval.**
 

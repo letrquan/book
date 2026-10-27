@@ -66,6 +66,7 @@ import type { CommandContext } from '../types/commands.js';
 import type { RewindSnapshotStoreInterface, SessionStoreInterface } from '../types/sessions.js';
 import type { LiveSessionReporter } from '../messaging/writer.js';
 import type { SessionMessaging } from '../messaging/session-messaging.js';
+import type { PeerAwareness } from '../messaging/peer-awareness.js';
 import type { SessionBootstrap } from '../session/resolve.js';
 import type { InkFlushSync } from '../cli/ink-renderer.js';
 import { displaySessionName } from '../session/name.js';
@@ -287,6 +288,8 @@ interface AppProps {
     liveSession?: LiveSessionReporter;
     /** This process's messaging runtime (#620), when messaging is on; started and closed by `cli/run.ts`. */
     messaging?: SessionMessaging;
+    /** This process's view of other live sessions (#620 PR 4), closed by `cli/run.ts`. */
+    peerAwareness?: PeerAwareness;
   };
   redrawViewport?: () => void;
   /**

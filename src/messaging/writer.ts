@@ -18,14 +18,18 @@ import { randomUUID } from 'node:crypto';
 import { unlinkSync } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import { hostname } from 'node:os';
+import { relative, resolve } from 'node:path';
 import { AtomicJsonWriter } from '../agents/atomic-json.js';
 import { resolveBookHome } from '../book-home.js';
 import { createDebugLogger } from '../debug-log.js';
+import { canonicalizePath, isOutside } from '../tools/path-utils.js';
 import type {
+  LiveSessionEdit,
   LiveSessionRecord,
   LiveSessionStatus,
   LiveSessionWaitingFor,
 } from '../types/messaging.js';
+import { resolveGitLocation, type GitLocation } from './git-location.js';
 import { createLivenessProbe, type LivenessProbe } from './liveness.js';
 import { deriveLiveSessionName } from './names.js';
 import {
@@ -44,6 +48,14 @@ const HEARTBEAT_JITTER = 0.2;
 /** The first retry of a failed write, doubled on each failure after it up to the cap. */
 const RETRY_BASE_MS = 1_000;
 const RETRY_MAX_MS = 60_000;
+/** Edits a record keeps: the newest, one per path. */
+export const MAX_RECENT_EDITS = 20;
+/** A write an edit asks for waits until this long after the previous write, coalescing a burst. */
+export const EDIT_WRITE_INTERVAL_MS = 2_000;
+/** The branch is looked up again when a turn ends, but no more often than this. */
+const GIT_REFRESH_MIN_MS = 10_000;
+/** A longer edited path is left out of the record rather than cut into a wrong one. */
+const MAX_EDIT_PATH_CHARS = 512;
 
 export interface LiveSessionState {
   status: LiveSessionStatus;
@@ -71,6 +83,14 @@ export interface LiveSessionReporter {
   setSessionId(sessionId: string): void;
 }
 
+/** The record's git fields and edits, as the next write would put them. */
+interface WorkFields {
+  worktree?: string;
+  repository?: string;
+  branch?: string;
+  recentEdits?: LiveSessionEdit[];
+}
+
 export interface LiveSessionWriterOptions {
   cwd: string;
   sessionId: string;
@@ -88,6 +108,11 @@ export interface LiveSessionWriterOptions {
   atomicWriter?: Pick<AtomicJsonWriter, 'writeAsync'>;
   /** Where the exit backstop is registered; a test passes an emitter of its own. */
   processEvents?: Pick<NodeJS.Process, 'once' | 'off'>;
+  /**
+   * Where the session works in git's terms: `null` outside a repository, a rejection when git
+   * could not say. `resolveGitLocation` unless a test stands in.
+   */
+  gitLocation?: (cwd: string, signal?: AbortSignal) => Promise<GitLocation | null>;
 }
 
 type RecordBase = Omit<
@@ -101,8 +126,8 @@ interface DesiredFields extends LiveSessionState {
   statusChangedAt: number;
 }
 
-function keyOf(fields: DesiredFields): string {
-  return JSON.stringify([fields.sessionId, fields.status, fields.waitingFor ?? null]);
+function keyOf(fields: DesiredFields, work: WorkFields): string {
+  return JSON.stringify([fields.sessionId, fields.status, fields.waitingFor ?? null, work]);
 }
 
 export class LiveSessionWriter implements LiveSessionReporter {
@@ -119,6 +144,7 @@ export class LiveSessionWriter implements LiveSessionReporter {
   private readonly instanceId = randomUUID();
   private readonly atomicWriter: Pick<AtomicJsonWriter, 'writeAsync'>;
   private readonly processEvents: Pick<NodeJS.Process, 'once' | 'off'>;
+  private readonly gitLocation: (cwd: string, signal?: AbortSignal) => Promise<GitLocation | null>;
   /** When the session was created, which is also when its first status took effect. */
   private readonly startedAt: number;
   /** Cancels a start still listing the registry when the session closes. */
@@ -127,6 +153,14 @@ export class LiveSessionWriter implements LiveSessionReporter {
   /** The inbox socket once it is bound and its key published; absent while messaging is off. */
   private messagingSocketPath?: string;
   private desired: DesiredFields;
+  private git?: GitLocation;
+  private gitRefresh?: Promise<void>;
+  private gitResolvedAt?: number;
+  /** This session's recent edits as canonical absolute paths, oldest first, one per path. */
+  private edits: Array<{ absolute: string; at: number }> = [];
+  /** When the last write was attempted: an edit's write waits {@link EDIT_WRITE_INTERVAL_MS}. */
+  private lastWriteAt?: number;
+  private editWrite?: NodeJS.Timeout;
   private base?: RecordBase;
   private written?: LiveSessionRecord;
   private writtenKey?: string;
@@ -167,6 +201,7 @@ export class LiveSessionWriter implements LiveSessionReporter {
           (owner.pid !== this.pid && this.probe.isAlive(owner.pid)),
       });
     this.processEvents = options.processEvents ?? process;
+    this.gitLocation = options.gitLocation ?? resolveGitLocation;
     this.startedAt = this.now();
     this.desired = {
       sessionId: options.sessionId,
@@ -222,12 +257,50 @@ export class LiveSessionWriter implements LiveSessionReporter {
       statusChangedAt: this.now(),
     };
     this.schedule();
+    if (state.status === 'idle') this.refreshGit();
   }
 
   setSessionId(sessionId: string): void {
     if (sessionId === this.desired.sessionId) return;
     this.desired = { ...this.desired, sessionId };
     this.schedule();
+  }
+
+  /** The worktree the record names, once git has answered; absent outside a repository. */
+  get location(): GitLocation | undefined {
+    return this.git;
+  }
+
+  /**
+   * Record this session's successful mutations (#620 4b): `paths` relative to `workspace`, as the
+   * tools' results report them. The write they cause waits until {@link EDIT_WRITE_INTERVAL_MS}
+   * after the previous one, so a burst of edits is one write. Paths outside the worktree are kept
+   * here but never written.
+   */
+  recordEdits(workspace: string, paths: readonly string[]): void {
+    if (this.closed || paths.length === 0) return;
+    const at = this.now();
+    for (const path of paths) {
+      const absolute = canonicalizePath(resolve(workspace, path));
+      this.edits = this.edits.filter((edit) => edit.absolute !== absolute);
+      this.edits.push({ absolute, at });
+    }
+    this.edits = this.edits.slice(-MAX_RECENT_EDITS);
+    this.scheduleEditWrite();
+  }
+
+  /** This session's recorded edits as the record holds them: worktree-relative, oldest first. */
+  recentEdits(): LiveSessionEdit[] {
+    const worktree = this.git?.worktree;
+    if (!worktree) return [];
+    const edits: LiveSessionEdit[] = [];
+    for (const edit of this.edits) {
+      if (edit.absolute === worktree || isOutside(worktree, edit.absolute)) continue;
+      const shown = relative(worktree, edit.absolute).replace(/\\/g, '/');
+      if (shown.length > MAX_EDIT_PATH_CHARS) continue;
+      edits.push({ path: shown, at: edit.at });
+    }
+    return edits;
   }
 
   /** Settles once the start and every write queued so far have landed or been dropped. */
@@ -253,11 +326,14 @@ export class LiveSessionWriter implements LiveSessionReporter {
     try {
       await ensureLiveSessionsDir(this.dir, this.platform);
       if (this.closed) return;
-      const [pidDomain, procStart] = await Promise.all([
+      const [pidDomain, procStart, git] = await Promise.all([
         this.probe.pidDomain(),
         this.probe.startToken(this.pid),
+        this.gitLocation(this.cwd, this.startAbort.signal).catch(() => null),
       ]);
       if (this.closed) return;
+      this.git = git ?? undefined;
+      this.gitResolvedAt = this.now();
       this.recordPath = liveSessionRecordPath(this.dir, this.pid, pidDomain);
       this.owned = true;
       const live = await listLiveSessions({
@@ -303,6 +379,58 @@ export class LiveSessionWriter implements LiveSessionReporter {
     this.armHeartbeat();
   }
 
+  /**
+   * Look the branch up again: a turn may have checked out another. Coalesced, and no more often
+   * than {@link GIT_REFRESH_MIN_MS}; the record is rewritten only if something moved.
+   */
+  private refreshGit(): void {
+    if (this.closed || !this.base || this.gitRefresh) return;
+    if (this.gitResolvedAt !== undefined && this.now() - this.gitResolvedAt < GIT_REFRESH_MIN_MS) {
+      return;
+    }
+    this.gitResolvedAt = this.now();
+    this.gitRefresh = this.gitLocation(this.cwd, this.startAbort.signal).then(
+      (git) => {
+        this.gitRefresh = undefined;
+        if (this.closed) return;
+        this.git = git ?? undefined;
+        this.schedule();
+      },
+      () => {
+        // A lookup that failed says nothing about where the session is: the last answer stands,
+        // and with it the worktree and edits peers read.
+        this.gitRefresh = undefined;
+      },
+    );
+  }
+
+  private scheduleEditWrite(): void {
+    if (this.closed || this.editWrite) return;
+    const wait =
+      this.lastWriteAt === undefined ? 0 : this.lastWriteAt + EDIT_WRITE_INTERVAL_MS - this.now();
+    if (wait <= 0) {
+      this.schedule();
+      return;
+    }
+    this.editWrite = setTimeout(() => {
+      this.editWrite = undefined;
+      this.schedule();
+    }, wait);
+    this.editWrite.unref?.();
+  }
+
+  private workFields(): WorkFields {
+    const git = this.git;
+    if (!git) return {};
+    const recentEdits = this.recentEdits();
+    return {
+      worktree: git.worktree,
+      repository: git.repository,
+      ...(git.branch !== undefined ? { branch: git.branch } : {}),
+      ...(recentEdits.length > 0 ? { recentEdits } : {}),
+    };
+  }
+
   private schedule(force = false): void {
     if (force) this.forced = true;
     if (this.closed || this.queued || !this.base) return;
@@ -319,8 +447,10 @@ export class LiveSessionWriter implements LiveSessionReporter {
     const path = this.recordPath;
     if (this.closed || !base || !path) return;
     const desired = this.desired;
-    const key = keyOf(desired);
+    const work = this.workFields();
+    const key = keyOf(desired, work);
     if (key === this.writtenKey && !force) return;
+    this.lastWriteAt = this.now();
     const written = this.written;
     // A flip that was coalesced away is not a change: the status a reader saw is still the one
     // it has been since it was written.
@@ -339,6 +469,7 @@ export class LiveSessionWriter implements LiveSessionReporter {
       ...(desired.waitingFor !== undefined ? { waitingFor: desired.waitingFor } : {}),
       statusUpdatedAt,
       updatedAt: this.now(),
+      ...work,
     };
     let landed = false;
     try {
@@ -389,7 +520,8 @@ export class LiveSessionWriter implements LiveSessionReporter {
     this.startAbort.abort();
     if (this.heartbeat) clearTimeout(this.heartbeat);
     if (this.retry) clearTimeout(this.retry);
-    this.heartbeat = this.retry = undefined;
+    if (this.editWrite) clearTimeout(this.editWrite);
+    this.heartbeat = this.retry = this.editWrite = undefined;
     await this.chain;
     this.processEvents.off('exit', this.removeOnExit);
     if (!this.owned || !this.recordPath) return;
@@ -408,6 +540,7 @@ export class LiveSessionWriter implements LiveSessionReporter {
     this.closed = true;
     if (this.heartbeat) clearTimeout(this.heartbeat);
     if (this.retry) clearTimeout(this.retry);
+    if (this.editWrite) clearTimeout(this.editWrite);
     if (!this.owned || !this.recordPath) return;
     try {
       unlinkSync(this.recordPath);

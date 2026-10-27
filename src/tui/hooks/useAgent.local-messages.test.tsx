@@ -5,6 +5,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultConfig } from '../../test/fixtures.js';
 import { SessionStore } from '../../session/store.js';
+import type { PeerAwareness } from '../../messaging/peer-awareness.js';
 
 /**
  * Local messages are how host-orchestrated work reports back — `/review` runs
@@ -218,5 +219,38 @@ describe('a mention left as written', () => {
     await tick();
 
     expect(localContents()).toEqual([]);
+  });
+});
+
+describe('peer overlap warnings (#620 4e)', () => {
+  it('shows a warning at once, mid-turn too, and never writes it to the session', async () => {
+    const { config, session } = fixture();
+    let warn: (warning: string) => void = () => {};
+    const peerAwareness = {
+      subscribe: (listener: (warning: string) => void) => {
+        warn = listener;
+        return () => {
+          warn = () => {};
+        };
+      },
+    } as unknown as PeerAwareness;
+    render(<Harness config={config} session={{ ...session, peerAwareness }} />);
+    await tick();
+
+    openTurnGate();
+    const sending = latest!.send('start a turn');
+    await waitFor(() => latest!.isThinking);
+    warn(
+      '⚠ book-36 also recorded an edit to src/a.ts just now, and this session edited it 1m ago.',
+    );
+    await waitFor(() => localContents().length > 0);
+    expect(localContents()).toEqual([
+      '⚠ book-36 also recorded an edit to src/a.ts just now, and this session edited it 1m ago.',
+    ]);
+
+    turnGate.release();
+    await sending;
+    const persisted = session.timelineStore.load(session.sessionId).transcript;
+    expect(JSON.stringify(persisted)).not.toContain('also recorded an edit');
   });
 });

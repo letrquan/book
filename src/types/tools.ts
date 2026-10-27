@@ -407,6 +407,11 @@ export interface ToolContext {
   shellManager?: import('../jobs/shell-manager.js').ShellJobManager;
   /** Runtime-only newest file observation per workspace/path. */
   fileObservationLedger?: Map<string, FileObservation>;
+  /**
+   * The interactive session's view of other live sessions (#620 PR 4): a stale-file refusal names
+   * the one that recorded an edit of the file. Absent outside the TUI.
+   */
+  peerAwareness?: import('./messaging.js').PeerAwarenessHandle;
   /** Live permission mode for the active agent loop; tools may update this. */
   currentMode?: PermissionMode;
   /** Mode to restore after a tool-initiated plan-mode session exits. */
