@@ -25,3 +25,10 @@ export const UNPROMPTED_READ_TOOLS: ReadonlySet<string> = new Set(['SessionList'
  * only in the modes that run everything, `auto` and `bypassPermissions`.
  */
 export const OUTWARD_FACING_TOOLS: ReadonlySet<string> = new Set(['SessionSend']);
+
+/**
+ * Tools a rule names by recipient: a call's `to` and a rule's pattern are both read as the
+ * recipient's name, its ` [ref]` left out (`canonicalRecipient`), so `SessionSend(book-3f)` and
+ * `SessionSend(book-3f [a1b2c3])` are one rule, and cover every spelling of that session.
+ */
+export const RECIPIENT_RULE_TOOLS: ReadonlySet<string> = new Set(['SessionSend']);

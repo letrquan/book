@@ -329,6 +329,19 @@ describe('SessionList and SessionSend permissions (D7)', () => {
     }
   });
 
+  it('reads a rule written with a ref as the rule on the name', async () => {
+    for (const mode of ['bypassPermissions', 'auto']) {
+      for (const to of ['peer-b', 'peer-b [a1b2c3]', 'uds:/tmp/socks/peer-b.sock']) {
+        const outcome = await run(mode, { deny: ['SessionSend(peer-b [a1b2c3])'], to });
+        expect(outcome.send?.structuredError?.code, `${mode} ${to}`).toBe('permission_denied');
+        expect(outcome.sends, `${mode} ${to}`).toEqual([]);
+      }
+    }
+    expect(
+      (await run('auto', { ask: ['SessionSend(peer-b [a1b2c3])'], to: 'peer-b' })).promptedFor,
+    ).toEqual(['SessionSend']);
+  });
+
   it('sends the model back to the name an ask rule matches, so the rule can ask (auto)', async () => {
     const spelled = await run('auto', {
       ask: ['SessionSend(peer-b)'],

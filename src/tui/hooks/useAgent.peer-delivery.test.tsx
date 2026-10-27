@@ -83,6 +83,7 @@ function fakeMessaging() {
     setPermissionMode: vi.fn(),
     beginTurn: vi.fn(),
     commitDelivery: vi.fn(),
+    stillDeliverable: vi.fn(() => true),
     available: () => true,
     list: async () => ({ peers: [] }),
     resolve: async () => ({ ok: false, problem: 'not_found', candidates: [] }),
@@ -174,6 +175,30 @@ describe('peer-message delivery in the TUI', () => {
     expect(messaging.commitDelivery).toHaveBeenCalledTimes(1);
     expect(messaging.commitDelivery).toHaveBeenCalledWith(batch);
     // A peer turn is not a turn the user started: its relay chain is not cleared.
+    expect(messaging.beginTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start a peer turn whose sender no longer matches the mode', async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // The user switched modes while the turn was being prepared.
+    messaging.stillDeliverable.mockReturnValue(false);
+    expect(await latest!.sendPeerMessages(batch)).toBe(false);
+    expect(messaging.commitDelivery).not.toHaveBeenCalled();
+    expect(loopState.calls).toHaveLength(0);
+  });
+
+  it('keeps the relay chain through a notification turn; only a turn the user starts resets it', async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await latest!.sendPeerMessages(batch);
+    expect(await latest!.sendPeerDeliveryNotice('[Cross-session delivery notice] …')).toBe(true);
+    expect(messaging.beginTurn).not.toHaveBeenCalled();
+    await latest!.send('my own prompt');
     expect(messaging.beginTurn).toHaveBeenCalledTimes(1);
   });
 

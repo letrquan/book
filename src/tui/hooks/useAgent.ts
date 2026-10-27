@@ -291,6 +291,8 @@ interface SendMessageOptions {
    * cancelled or superseded before then never calls it.
    */
   onRecorded?: () => void;
+  /** Checked once the pre-turn compaction is done: false cancels the send before it is recorded. */
+  stillDeliverable?: () => boolean;
   attachments?: Message['attachments'];
   /** Managed-continuation linkage back to the originating root and parent run. */
   rootRunId?: string;
@@ -1087,6 +1089,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (stillCurrent()) setIsCompacting(false);
           }
         }
+        // Another session's messages whose permission class no longer matches the mode — the
+        // user switched it during the compaction above — are not delivered: the send is cancelled
+        // before its user message is recorded, they stay queued, and the next delivery refuses
+        // them (#620).
+        if (messageOptions?.stillDeliverable && !messageOptions.stillDeliverable()) {
+          agentSession.cancel('peer-class-changed');
+        }
       };
 
       const createUserMessage = () => {
@@ -1138,9 +1147,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const projectPreparedSend = (
         prepared: Extract<Awaited<ReturnType<AgentSession['prepareSend']>>, { status: 'prepared' }>,
       ) => {
-        // The turn is committed: its user message is recorded. A turn no peer message started
-        // starts a fresh relay chain for what it sends (#620).
-        if (messageOptions?.kind !== 'peer-message') messaging?.beginTurn();
+        // The turn is committed: its user message is recorded. A turn the user started begins a
+        // fresh relay chain for what it sends (#620). A host-delivered turn does not: a peer
+        // turn sets its own chain when its batch is committed, and a notification turn (a
+        // background job's or an agent's completion, a delivery notice) keeps the chain of the
+        // turn that set it going, so a relay cannot restart itself through a completion.
+        if (!isHostDeliveredTurn({ kind: messageOptions?.kind })) messaging?.beginTurn();
         messageOptions?.onRecorded?.();
         if (prepared.sessionName !== sessionNameRef.current) {
           sessionNameRef.current = prepared.sessionName;
@@ -1755,6 +1767,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         contextMessage: batch.turn.context,
         kind: 'peer-message',
         peerMessages: batch.turn.peerMessages,
+        stillDeliverable: () => messaging.stillDeliverable(batch),
         onRecorded: () => {
           if (committed) return;
           committed = true;

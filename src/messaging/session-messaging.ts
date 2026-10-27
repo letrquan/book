@@ -331,6 +331,15 @@ export class SessionMessaging implements SessionMessagingHandle {
   }
 
   /**
+   * Whether every message a prepared batch delivers still matches this session's permission class:
+   * the mode may change while the turn is being prepared (a pre-turn compaction takes a while).
+   */
+  stillDeliverable(batch: PeerDeliveryBatch): boolean {
+    const ownClass = permissionClassOf(this.mode);
+    return batch.delivered.every((message) => senderClassOf(message) === ownClass);
+  }
+
+  /**
    * Take a prepared batch off the queue once its turn's user message is recorded (or at once, when
    * it has no turn): `delivered` receipts for the messages in the turn, `refused` for the rest.
    * The turn then continues the longest relay chain among its messages, the one nearest its limit.
