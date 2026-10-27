@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   mkdirSync,
   mkdtempSync,
@@ -16,6 +16,19 @@ import { FileChangeTracker, changeSnippet, MAX_CHANGED_FILES_PER_TURN } from './
 import { observeFile, requireFreshObservation } from './file-provenance.js';
 import { patchTools } from './patch.js';
 import type { SessionRuntime } from '../session/runtime.js';
+
+/** Every path the tracker opens to read, so a test can tell a cached verdict from a fresh read. */
+const opened = vi.hoisted(() => ({ paths: [] as string[] }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    open: (...args: Parameters<typeof actual.open>) => {
+      opened.paths.push(String(args[0]));
+      return actual.open(...args);
+    },
+  };
+});
 import type { PeerAwarenessHandle } from '../types/messaging.js';
 import type { FileObservation, ToolContext } from '../types/tools.js';
 
@@ -99,9 +112,9 @@ describe('changed-on-disk detection (#620 4a)', () => {
   it('reports a change again after the file went back to what the model saw in between', async () => {
     const file = write('a.ts', 'A\n');
     await observeFile(ctx, file, 'read');
-    // Every write lands on one mtime, as same-size writes inside a coarse mtime tick do (Windows,
-    // FAT, network filesystems): only the racy-clean rule can tell them apart.
-    const tick = new Date();
+    // Every write lands on one mtime, as same-size writes inside a coarse timestamp tick do. A tick
+    // ahead of the clock keeps each judgment inside the margin however slow the runner is.
+    const tick = new Date(Date.now() + 60_000);
     const rewrite = (text: string) => {
       writeFileSync(file, text);
       utimesSync(file, tick, tick);
@@ -127,6 +140,37 @@ describe('changed-on-disk detection (#620 4a)', () => {
     renameSync(staged, file);
 
     expect(await collect()).toHaveLength(1);
+  });
+
+  it('reads a file again only while its last change is too close to the judgment to trust', async () => {
+    // `now` judges at the instant of the write, however slow the runner; `later` an hour after it.
+    let writtenAt = 0;
+    const trackers = {
+      now: new FileChangeTracker({ now: () => writtenAt }),
+      later: new FileChangeTracker({ now: () => writtenAt + 60 * 60 * 1000 }),
+    };
+    for (const [name, judge] of Object.entries(trackers)) {
+      const judgeCtx: ToolContext = {
+        ...ctx,
+        fileObservationLedger: new Map(),
+        runtime: { fileChanges: judge } as unknown as SessionRuntime,
+      };
+      const file = write(`${name}.ts`, 'A\n');
+      await observeFile(judgeCtx, file, 'read');
+      writeFileSync(file, 'B\n');
+      writtenAt = Date.now();
+      const ledgerOf = judgeCtx.fileObservationLedger!;
+      opened.paths = [];
+
+      // Not committed, so the change is found again: from the cache, or from a second read.
+      expect((await judge.collect({ ledger: ledgerOf, workspace })).files).toHaveLength(1);
+      expect((await judge.collect({ ledger: ledgerOf, workspace })).files).toHaveLength(1);
+
+      const reads = opened.paths.filter((path) => path === file).length;
+      // Judged at once, the change is still inside the margin: read again. Judged an hour later,
+      // nothing has moved since a safe judgment: one read, then the cache.
+      expect(reads).toBe(name === 'now' ? 2 : 1);
+    }
   });
 
   it('keeps its memory budget exact for text that is not UTF-8', () => {

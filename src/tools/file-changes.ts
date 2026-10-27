@@ -6,15 +6,16 @@
  *
  * Judged against the observation ledger (`file-provenance.ts`), so the model's own edits — which
  * re-observe the file — never count. Each change is reported once. A file whose size, mtime and
- * inode have not moved since it was last judged is not read again, so a quiet turn costs one `stat`
- * per observed file — but only once its mtime is safely older than that judgment. A write landing
- * in the same mtime tick as the read (same-size edits on a coarse clock: Windows, FAT's 2 s, network
- * filesystems) leaves every stat field as it was, so a file modified that close to its judgment is
- * read again: git's "racily clean" rule.
+ * ctime have not moved since it was last judged is not read again, so a quiet turn costs one `stat`
+ * per observed file — but only once both times are safely older than that judgment. A write landing
+ * in the same timestamp tick as the read (a same-size edit on a coarse clock: up to FAT's 2 s) leaves
+ * every stat field as it was, so a file modified that close to its judgment is read again: git's
+ * "racily clean" rule. ctime is in the key because a tool that restores mtime (`cp -p`, `touch -r`,
+ * `rsync -t`) cannot restore it, and a rename into place gives the file its own.
  */
 
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, type Stats } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { mapLimited } from '../async.js';
@@ -44,8 +45,10 @@ const MAX_BASELINE_TOTAL_BYTES = 2 * 1024 * 1024;
 /** A bigger file is not read again to be judged: it goes unreported rather than cost a turn. */
 const MAX_JUDGED_BYTES = 16 * 1024 * 1024;
 /**
- * How much older than its judgment a file's mtime must be before that judgment is trusted without a
- * read: FAT's 2 s mtime granularity, which also covers clock skew with a network filesystem.
+ * How much older than its judgment a file's mtime and ctime must be before that judgment is trusted
+ * without a read: timestamp granularity up to FAT's 2 s. A filesystem whose clock lags this machine's
+ * by more (some network mounts) can still stamp a racy write as older, and then a same-size edit in
+ * that window goes unreported until the file changes again.
  */
 const RACY_MARGIN_MS = 2_000;
 /** Where the platform has it (not Windows), a read that refuses to follow a final link. */
@@ -92,8 +95,8 @@ interface Judged {
   observedSha: string;
   size: number;
   mtimeMs: number;
-  ino: number;
-  /** When the file was read for this verdict, by the wall clock mtimes are stamped with. */
+  ctimeMs: number;
+  /** When the file was read for this verdict, by the wall clock its times are stamped with. */
   judgedAt: number;
   /** The file's hash then, or `deleted`. */
   currentSha: string;
@@ -143,11 +146,17 @@ export function changeSnippet(
   return lines.map((line) => Array.from(line).slice(0, MAX_SNIPPET_LINE_CHARS).join(''));
 }
 
+export interface FileChangeTrackerOptions {
+  /** The wall clock a verdict is stamped with; a test moves it. */
+  now?: () => number;
+}
+
 /**
  * One session's memory of what it has reported. Lives on the session's runtime, beside the
  * observation ledger it reads, and is replaced with it on `/clear`.
  */
 export class FileChangeTracker {
+  private readonly now: () => number;
   private readonly judged = new Map<string, Judged>();
   /** The change last reported per key, so the same change is never reported twice. */
   private readonly reported = new Map<string, string>();
@@ -157,6 +166,10 @@ export class FileChangeTracker {
    */
   private readonly baselines = new Map<string, { sha256: string; text: string; bytes: number }>();
   private baselineBytes = 0;
+
+  constructor(options: FileChangeTrackerOptions = {}) {
+    this.now = options.now ?? Date.now;
+  }
 
   /** The bytes the remembered texts hold, against their 2 MiB budget. */
   get rememberedBytes(): number {
@@ -265,9 +278,9 @@ export class FileChangeTracker {
   }
 
   /**
-   * The file's current hash, from the last verdict when its size, mtime and inode have not moved
-   * and its mtime was safely older than that verdict, and its text when it is small enough to diff.
-   * `undefined` when it cannot be judged now.
+   * The file's current hash, from the last verdict when its size, mtime and ctime have not moved
+   * and both times were safely older than that verdict, and its text when it is small enough to
+   * diff. `undefined` when it cannot be judged now.
    *
    * A link is never followed. The observed path is the file's real one, so a link at it, or a
    * directory above it that became one, means something else stands there now: it is reported as
@@ -296,19 +309,26 @@ export class FileChangeTracker {
       last.observedSha === observation.sha256 &&
       last.size === info.size &&
       last.mtimeMs === info.mtimeMs &&
-      last.ino === info.ino &&
-      info.mtimeMs + RACY_MARGIN_MS <= last.judgedAt
+      last.ctimeMs === info.ctimeMs &&
+      // A file with no useful ctime (0, or constant) falls back to its mtime here. One stamped in
+      // the future (an archive from a timezone ahead) has a present ctime, so it is trusted once
+      // that is old enough, rather than read on every turn.
+      Math.max(info.mtimeMs, info.ctimeMs) + RACY_MARGIN_MS <= last.judgedAt
     ) {
       return { sha: last.currentSha };
     }
-    // Taken before the read: a write after this instant either moves the mtime past it or lands
+    // Taken before the read: a write after this instant either moves the times past it or lands
     // inside the margin, and either way the next turn reads the file again.
-    const judgedAt = Date.now();
+    const judgedAt = this.now();
     let bytes: Buffer;
+    let read: Stats;
     try {
       const handle = await open(absolutePath, constants.O_RDONLY | NO_FOLLOW);
       try {
-        if (!(await handle.stat()).isFile()) return { sha: REPLACED };
+        // The verdict is keyed on the stat of the handle the bytes come from, not the `lstat` above:
+        // a write between the two must not be cached under the times of the file it replaced.
+        read = await handle.stat();
+        if (!read.isFile()) return { sha: REPLACED };
         bytes = await handle.readFile();
       } finally {
         await handle.close();
@@ -319,9 +339,9 @@ export class FileChangeTracker {
     const sha = createHash('sha256').update(bytes).digest('hex');
     this.judged.set(key, {
       observedSha: observation.sha256,
-      size: info.size,
-      mtimeMs: info.mtimeMs,
-      ino: info.ino,
+      size: read.size,
+      mtimeMs: read.mtimeMs,
+      ctimeMs: read.ctimeMs,
       judgedAt,
       currentSha: sha,
     });
