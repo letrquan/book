@@ -20,11 +20,11 @@ export const SESSION_SEND_DESCRIPTION = `Send a message to another Book session 
 - Do not poll SessionList or send "are you done?" messages.`;
 
 /**
- * A refusal when a `deny` or `ask` rule names the session `to` resolved to by another spelling
- * than the call's. The loop matched the call's rules on `to` as written, before it was resolved:
- * `name [ref]`, a reply's `uds:` address or a stray space reach the same session as the name, and
- * must not slip past a rule that names it. A deny refuses; an ask the call's own spelling did not
- * raise sends the model back to the name, which the rule then asks about (except in
+ * A refusal when a `deny` or `ask` rule names the session `to` resolved to by another of its
+ * spellings. The loop matched the call's rules on `to` as written, before it was resolved, but the
+ * name, `name [ref]` and the `uds:` address of a reply all reach the same session, and a rule on
+ * any of them applies. A deny refuses; an ask the call's own spelling did not raise sends the
+ * model back with the spelling the rule names, which the loop then asks about (except in
  * `bypassPermissions`, where no ask rule asks). `to` is the argument exactly as the loop judged it.
  */
 export function ruleRefusal(
@@ -39,7 +39,7 @@ export function ruleRefusal(
   const label = foldControlCharacters(peerLabel(target));
   // The spellings that reach the session, each judged as the loop judges a call's `to`.
   const judged = getPrimaryArg({ to, message });
-  for (const spelling of [target.name, encodeUdsAddress(target.socketPath)]) {
+  for (const spelling of [target.name, peerLabel(target), encodeUdsAddress(target.socketPath)]) {
     if (getPrimaryArg({ to: spelling, message }) === judged) continue;
     const verdict = evaluatePermissionDetail('SessionSend', { to: spelling, message }, settings);
     if (verdict.decision === 'deny') {
@@ -59,7 +59,7 @@ export function ruleRefusal(
         {
           code: 'ask_rule_spelling',
           status: 'blocked',
-          remediation: `Call SessionSend again with \`to\` set to ${quoted(target.name)}, so the rule asks the user.`,
+          remediation: `Call SessionSend again with \`to\` set to ${quoted(spelling)}, so the rule asks the user.`,
         },
       );
     }
@@ -216,8 +216,9 @@ export function createSessionSendTool(messaging: SessionMessagingHandle): ToolDe
       const refusal = ruleRefusal(context, args.to as string, message, resolution.target);
       if (refusal) return refusal;
       const outcome = await messaging.send({
-        // The address the rules were just checked against, so the send cannot reach another.
-        to: encodeUdsAddress(resolution.target.socketPath),
+        to,
+        // The session the rules were just checked against: the send refuses any other.
+        target: resolution.target,
         message,
         ...(context.currentMode !== undefined ? { mode: context.currentMode } : {}),
       });

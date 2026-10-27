@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAgentLoop } from '../agent/loop.js';
-import { ALWAYS_ALLOWED_TOOLS } from '../permissions.js';
+import { ALWAYS_ALLOWED_TOOLS, permissionRuleForToolCall } from '../permissions.js';
 import type { Provider } from '../provider/index.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { isolateBookHome } from '../test/isolated-book-home.js';
@@ -165,14 +165,21 @@ describe('SessionSend results', () => {
 
   it("makes the recipient, not the message, the call's rule identity", () => {
     expect(getPrimaryArg({ to: 'book-3f', message: 'hello' })).toBe('book-3f');
-    // The same session however it is spelled with a ref: a rule names the session's name.
-    expect(getPrimaryArg({ to: ' book-3f [a1b2c3] ', message: 'hello' })).toBe('book-3f');
+    // A ref stays: `SessionSend(book-3f [a1b2c3])` is the rule for exactly that session.
+    expect(getPrimaryArg({ to: ' book-3f [a1b2c3] ', message: 'hello' })).toBe('book-3f [a1b2c3]');
+    expect(
+      permissionRuleForToolCall({
+        id: 'c',
+        name: 'SessionSend',
+        arguments: { to: 'book-3f [a1b2c3]', message: 'hello' },
+      }),
+    ).toBe('SessionSend(book-3f [a1b2c3])');
     expect(getPrimaryArg({ message: 'hello' })).toBe('hello');
   });
 });
 
 /** A handle that records every send. */
-function fakeMessaging(): SessionMessagingHandle & { sends: PeerSendRequest[] } {
+function fakeMessaging(sharedName = false): SessionMessagingHandle & { sends: PeerSendRequest[] } {
   const sends: PeerSendRequest[] = [];
   return {
     sends,
@@ -180,6 +187,13 @@ function fakeMessaging(): SessionMessagingHandle & { sends: PeerSendRequest[] } 
     list: async () => ({ self: row('me', { self: true }), peers: [row('peer-b')] }),
     resolve: async (to) => {
       const target = row('peer-b') as PeerSessionRow & { socketPath: string };
+      if (sharedName && to.trim() === 'peer-b') {
+        return {
+          ok: false,
+          problem: 'ambiguous',
+          candidates: [target, row('peer-b', { ref: 'ffffff' })],
+        };
+      }
       const spellings = ['peer-b', 'peer-b [a1b2c3]', encodeUdsAddress(target.socketPath)];
       return spellings.includes(to.trim())
         ? { ok: true, target }
@@ -249,9 +263,10 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       ask?: string[];
       allow?: string[];
       to?: string;
+      shared?: boolean;
     } = {},
   ) {
-    const messaging = fakeMessaging();
+    const messaging = fakeMessaging(options.shared);
     const registry = createDefaultRegistry();
     registry.registerAll([createSessionListTool(messaging), createSessionSendTool(messaging)]);
     const config = defaultConfig({ workspace, maxTurns: 2 });
@@ -337,9 +352,21 @@ describe('SessionList and SessionSend permissions (D7)', () => {
         expect(outcome.sends, `${mode} ${to}`).toEqual([]);
       }
     }
+    const spelled = await run('auto', { ask: ['SessionSend(peer-b [a1b2c3])'], to: 'peer-b' });
+    expect(spelled.send?.structuredError?.code).toBe('ask_rule_spelling');
+    expect(spelled.send?.structuredError?.remediation).toContain('"peer-b [a1b2c3]"');
     expect(
-      (await run('auto', { ask: ['SessionSend(peer-b [a1b2c3])'], to: 'peer-b' })).promptedFor,
+      (await run('auto', { ask: ['SessionSend(peer-b [a1b2c3])'], to: 'peer-b [a1b2c3]' }))
+        .promptedFor,
     ).toEqual(['SessionSend']);
+  });
+
+  it('lets an allow rule with a ref cover only that session', async () => {
+    const allow = ['SessionSend(peer-b [a1b2c3])'];
+    expect((await run('default', { allow, to: 'peer-b [a1b2c3]' })).promptedFor).toEqual([]);
+    expect((await run('default', { allow, to: 'peer-b [ffffff]' })).promptedFor).toEqual([
+      'SessionSend',
+    ]);
   });
 
   it('sends the model back to the name an ask rule matches, so the rule can ask (auto)', async () => {
@@ -351,26 +378,28 @@ describe('SessionList and SessionSend permissions (D7)', () => {
     expect(spelled.send?.structuredError?.code).toBe('ask_rule_spelling');
     expect(spelled.send?.structuredError?.remediation).toContain('"peer-b"');
     expect(spelled.sends).toEqual([]);
-    // The name, with a ref or without, is what the rule reads, so the loop asks itself.
-    for (const to of ['peer-b', 'peer-b [a1b2c3]']) {
-      const named = await run('auto', { ask: ['SessionSend(peer-b)'], to });
-      expect(named.promptedFor, to).toEqual(['SessionSend']);
-      expect(named.sends, to).toHaveLength(1);
+    const named = await run('auto', { ask: ['SessionSend(peer-b)'] });
+    expect(named.promptedFor).toEqual(['SessionSend']);
+    expect(named.sends).toHaveLength(1);
+  });
+
+  it('asks, despite an allow rule on the bare name, for a shared name or another spelling', async () => {
+    const allow = ['SessionSend(peer-b)'];
+    expect((await run('default', { allow })).promptedFor).toEqual([]);
+    // A shared name: the bare call is answered with the refs, and the `name [ref]` retry asks.
+    const shared = await run('default', { allow, shared: true });
+    expect(shared.send?.structuredError?.code).toBe('session_ambiguous');
+    expect(shared.sends).toEqual([]);
+    for (const to of ['peer-b [a1b2c3]', 'uds:/tmp/socks/peer-b.sock']) {
+      expect((await run('default', { allow, to })).promptedFor, to).toEqual(['SessionSend']);
     }
   });
 
-  it('lets an allow rule on the name cover `name [ref]`, and asks for an address it cannot read', async () => {
-    const allow = ['SessionSend(peer-b)'];
-    expect((await run('default', { allow, to: 'peer-b [a1b2c3]' })).promptedFor).toEqual([]);
-    expect((await run('default', { allow, to: 'uds:/tmp/socks/peer-b.sock' })).promptedFor).toEqual(
-      ['SessionSend'],
-    );
-  });
-
-  it('sends to the address it resolved and checked', async () => {
-    expect((await run('auto', { to: 'peer-b [a1b2c3]' })).sends[0].to).toBe(
-      'uds:/tmp/socks/peer-b.sock',
-    );
+  it('sends to the session it resolved and checked, and only to it', async () => {
+    expect((await run('auto', { to: 'peer-b [a1b2c3]' })).sends[0].target).toMatchObject({
+      socketPath: '/tmp/socks/peer-b.sock',
+      sessionId: 'session-peer-b',
+    });
   });
 
   it('is not offered to a skill or command whose allowed tools leave it out, nor to a child agent', async () => {

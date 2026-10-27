@@ -644,6 +644,11 @@ to think of asking.
 - A TUI approval overlay with a deadline (`messaging.approvalTimeout`, default 5 min). Print mode
   and the SDK expire held messages.
 - Settle held messages as expired on shutdown.
+- **Pin a peer turn to its class** (from PR 3's security review): a `peer-message` turn runs under
+  the permission class it was delivered in. A mode switched in the middle of the turn, into the
+  other class, must not let the peer's request run unasked; hold or end the turn instead. PR 3
+  checks the class on arrival, at delivery and again after the pre-turn compaction, but not
+  mid-turn (`TODO(#620)` in `useAgent.ts`).
 - If the overlay reuses the permission-prompt component, regenerate the README media.
 
 **PR 6: `notify_when_idle`.** Add `SessionSend {notify_when_idle: true}` and the idle notice, with

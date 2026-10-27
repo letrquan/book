@@ -7,7 +7,7 @@ import type { LiveSessionRecord } from '../types/messaging.js';
 import { peerRef } from './addressing.js';
 import { parseEnvelope, renderEnvelope } from './envelope.js';
 import { sendToInbox } from './inbox-client.js';
-import type { InboxServerOptions } from './inbox-server.js';
+import { CROSS_CLASS_REFUSAL_REASON, type InboxServerOptions } from './inbox-server.js';
 import type { LivenessProbe } from './liveness.js';
 import { liveSessionRecordPath, liveSessionsDir } from './registry.js';
 import {
@@ -193,13 +193,21 @@ describe.skipIf(!posix)('SessionMessaging', () => {
     const b = await session(4343, 'peer-b');
     await a.messaging.send({ to: 'peer-b', message: 'queued while default' });
     await eventually(() => b.messaging.inbox.queued().length === 1);
+    const prepared = b.messaging.prepareDelivery()!;
+    expect(b.messaging.stillDeliverable(prepared)).toBe(true);
+    // The mode changes while the turn is being prepared (a pre-turn compaction): the turn is not
+    // started, and the next delivery refuses the message.
     b.messaging.setPermissionMode('bypassPermissions');
+    expect(b.messaging.stillDeliverable(prepared)).toBe(false);
     const batch = b.messaging.prepareDelivery()!;
     expect(batch).toMatchObject({ count: 1, delivered: [] });
     expect(batch.turn).toBeUndefined();
     b.messaging.commitDelivery(batch);
     await eventually(() => receiptsOf(a.events).length === 1);
-    expect(receiptsOf(a.events)[0].receipt.status).toBe('refused');
+    expect(receiptsOf(a.events)[0].receipt).toMatchObject({
+      status: 'refused',
+      reason: CROSS_CLASS_REFUSAL_REASON,
+    });
   });
 
   /** Deliver everything queued at `to` as one turn, the way an idle TUI does. */
@@ -276,6 +284,56 @@ describe.skipIf(!posix)('SessionMessaging', () => {
       );
     }
   }, 30_000);
+
+  it('cuts a relay two auto sessions run through background completions', async () => {
+    // "Start `sleep 5` in the background; when it ends, message me and ask me to do the same."
+    // Each send happens in the turn a completion started, which keeps the relay chain of the turn
+    // that set the job going: the relay is still counted, and still cut.
+    const a = await session(4242, 'peer-a', 'auto');
+    const b = await session(4343, 'peer-b', 'auto');
+    a.messaging.beginTurn();
+    await a.messaging.send({ to: 'peer-b', message: 'start a job, then message me' });
+    let cut: unknown;
+    let sender = b;
+    let receiver = a;
+    for (let hop = 0; hop < 40 && cut === undefined; hop++) {
+      await deliverAll(sender, 1); // the peer turn: it starts the job
+      // ...and the job's completion turn, a host-delivered turn: no beginTurn().
+      const outcome = await sender.messaging.send({
+        to: receiver === a ? 'peer-a' : 'peer-b',
+        message: `job done ${hop}; start yours`,
+        mode: 'auto',
+      });
+      if (outcome.status !== 'sent') cut = outcome;
+      [sender, receiver] = [receiver, sender];
+    }
+    expect(cut).toMatchObject({ status: 'relay_limit' });
+  }, 30_000);
+
+  it('sends only to the session it resolved: a new session at that socket is gone', async () => {
+    const a = await session(4242, 'peer-a');
+    const b = await session(4343, 'peer-b');
+    const resolved = await a.messaging.resolve('peer-b');
+    if (!resolved.ok) throw new Error('peer-b did not resolve');
+    // The record at that socket now names another session (a restart that reused the path).
+    writeRecord(4343, 'peer-b', b.socketPath, { sessionId: 'someone-else' });
+    expect(
+      await a.messaging.send({ to: 'peer-b', message: 'hi', target: resolved.target }),
+    ).toMatchObject({ status: 'gone', target: { name: 'peer-b' } });
+    expect(b.messaging.inbox.queued()).toEqual([]);
+  });
+
+  it('answers a bare name another live session holds, even one with no inbox, with the refs', async () => {
+    const a = await session(4242, 'peer-a');
+    await session(4343, 'twin');
+    PIDS.push(5555);
+    try {
+      writeRecord(5555, 'twin');
+      expect(await a.messaging.resolve('twin')).toMatchObject({ ok: false, problem: 'ambiguous' });
+    } finally {
+      PIDS.pop();
+    }
+  });
 
   it('does not carry a chain into a later turn, to an unrelated session', async () => {
     const a = await session(4242, 'peer-a');

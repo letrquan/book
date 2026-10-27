@@ -22,6 +22,7 @@ import type {
   PeerSendOutcome,
   PeerSendRequest,
   PeerSessionListing,
+  PeerSessionRow,
   SessionMessagingHandle,
 } from '../types/messaging.js';
 import { peerLabel, peerSessionRow, resolvePeerAddress } from './addressing.js';
@@ -233,8 +234,17 @@ export class SessionMessaging implements SessionMessagingHandle {
       return { status: 'unavailable' };
     }
     const listing = await this.list();
-    const resolution = resolveIn(listing, request.to);
+    const resolution = request.target
+      ? sameSession(listing, request.target)
+      : resolveIn(listing, request.to);
     if (!resolution.ok) {
+      if (request.target && resolution.problem === 'not_found') {
+        return {
+          status: 'gone',
+          detail: 'the session at that address changed after it was resolved',
+          target: request.target,
+        };
+      }
       return {
         status: 'unresolved',
         problem: resolution.problem,
@@ -417,4 +427,20 @@ export class SessionMessaging implements SessionMessagingHandle {
 
 function resolveIn(listing: PeerSessionListing, to: string): PeerAddressResolution {
   return resolvePeerAddress(listing.self ? [listing.self, ...listing.peers] : listing.peers, to);
+}
+
+/** The live row at `target`'s socket, only while it is still the session `target` was resolved to. */
+function sameSession(
+  listing: PeerSessionListing,
+  target: Pick<PeerSessionRow, 'socketPath' | 'sessionId'>,
+): PeerAddressResolution {
+  const row = listing.peers.find(
+    (candidate) =>
+      candidate.socketPath !== undefined &&
+      candidate.socketPath === target.socketPath &&
+      candidate.sessionId === target.sessionId,
+  );
+  return row?.socketPath !== undefined
+    ? { ok: true, target: { ...row, socketPath: row.socketPath } }
+    : { ok: false, problem: 'not_found', candidates: [] };
 }

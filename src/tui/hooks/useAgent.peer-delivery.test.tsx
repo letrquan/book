@@ -197,6 +197,21 @@ describe('peer-message delivery in the TUI', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     await latest!.sendPeerMessages(batch);
     expect(await latest!.sendPeerDeliveryNotice('[Cross-session delivery notice] …')).toBe(true);
+    // A background job the peer turn started finishes: its completion turn keeps the chain too.
+    await latest!.sendBackgroundShellCompletion({
+      id: 'shell-1',
+      command: 'sleep 5',
+      effectiveCommand: 'sleep 5',
+      workdir: config.workspace,
+      status: 'exited',
+      output: '',
+      readOffset: 0,
+      truncatedBytes: 0,
+      exitCode: 0,
+      startedAt: Date.now() - 5_000,
+      finishedAt: Date.now(),
+    } as Parameters<NonNullable<typeof latest>['sendBackgroundShellCompletion']>[0]);
+    expect(loopState.calls).toHaveLength(3);
     expect(messaging.beginTurn).not.toHaveBeenCalled();
     await latest!.send('my own prompt');
     expect(messaging.beginTurn).toHaveBeenCalledTimes(1);

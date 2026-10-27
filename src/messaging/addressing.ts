@@ -73,7 +73,7 @@ function addressable(row: PeerSessionRow): row is PeerSessionRow & { socketPath:
 
 /**
  * The session `to` names among `rows` (this one's own included): by `uds:` address, by
- * `name [ref]`, or by a bare name only one session that can be messaged holds.
+ * `name [ref]`, or by a bare name no other live session holds.
  */
 export function resolvePeerAddress(
   rows: readonly PeerSessionRow[],
@@ -93,6 +93,13 @@ export function resolvePeerAddress(
   if (matches.length === 0) return { ok: false, problem: 'not_found', candidates: [] };
   const others = matches.filter((row) => !row.self);
   if (others.length === 0) return { ok: false, problem: 'self', candidates: matches };
+  // A bare name addresses a session only while no other live session holds it, inbox or not: a
+  // shared name is answered with the refs, and the `name [ref]` retry is what a rule on the bare
+  // name does not cover, so the permission check asks.
+  const bareName = !address.startsWith('uds:') && !NAME_WITH_REF.test(address);
+  if (bareName && others.length > 1) {
+    return { ok: false, problem: 'ambiguous', candidates: others };
+  }
   const reachable = others.filter(addressable);
   if (reachable.length === 0) return { ok: false, problem: 'no_inbox', candidates: others };
   if (reachable.length > 1) return { ok: false, problem: 'ambiguous', candidates: reachable };

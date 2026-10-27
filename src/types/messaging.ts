@@ -215,6 +215,12 @@ export interface PeerSendRequest {
   message: string;
   /** The sending loop's permission mode now: the envelope's `from-mode` follows it. */
   mode?: string;
+  /**
+   * The session `to` was resolved to, whose rules were checked. The send goes there or nowhere:
+   * a record at that socket with another session id is a different session, and the send is
+   * `gone` ("list again").
+   */
+  target?: PeerSessionRow & { socketPath: string };
 }
 
 /** Why a `to` names no session a message can go to. */

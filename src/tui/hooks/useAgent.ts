@@ -1092,7 +1092,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // Another session's messages whose permission class no longer matches the mode — the
         // user switched it during the compaction above — are not delivered: the send is cancelled
         // before its user message is recorded, they stay queued, and the next delivery refuses
-        // them (#620).
+        // them with the interim reason (#620).
+        // TODO(#620): PR 5 (mode parity) pins a peer turn to the class it was delivered under, so
+        // a mode switched in the middle of the turn cannot run its request unasked either.
         if (messageOptions?.stillDeliverable && !messageOptions.stillDeliverable()) {
           agentSession.cancel('peer-class-changed');
         }

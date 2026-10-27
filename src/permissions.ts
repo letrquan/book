@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'path';
 import type { ResolvedSettings } from './settings.js';
 import type { PermissionDecision, PermissionResult, ToolCall } from './types/tools.js';
 import { canonicalToolName } from './tools/aliases.js';
-import { canonicalRecipient, getPrimaryArg } from './tools/primary-arg.js';
+import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex, globWalkPlan } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
 import {
@@ -14,7 +14,7 @@ import {
   type ScanShell,
 } from './tools/shell-chaining.js';
 import { strictRmOfMarkdownUnder } from './tools/strict-rm.js';
-import { RECIPIENT_RULE_TOOLS, UNPROMPTED_READ_TOOLS } from './tools/tool-capabilities.js';
+import { UNPROMPTED_READ_TOOLS } from './tools/tool-capabilities.js';
 import {
   canonicalizePath,
   isBookLocalSettingsPath,
@@ -243,11 +243,7 @@ export function parseRule(rule: string): ParsedRule {
     // Malformed — treat as bare tool name.
     return { toolName, pattern: null };
   }
-  const written = rule.slice(parenIdx + 1, closeIdx).trim();
-  // A recipient's ref only disambiguates: the rule names the recipient (`canonicalRecipient`).
-  const pattern = RECIPIENT_RULE_TOOLS.has(canonicalToolName(toolName))
-    ? canonicalRecipient(written)
-    : written;
+  const pattern = rule.slice(parenIdx + 1, closeIdx).trim();
   return { toolName, pattern: pattern.length === 0 ? null : pattern };
 }
 
