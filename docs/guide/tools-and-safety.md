@@ -696,10 +696,11 @@ Permissions:
 | `auto`, `bypassPermissions` | runs          | runs          |
 
 `SessionSend` is outward-facing: no allow-set names it, so the ordinary flow decides it, and a rule
-names its recipient: `SessionSend(book-3f)`. A `deny` rule holds in every mode, `bypassPermissions`
-included, and a `deny` or `ask` rule on a name also covers the other spellings that reach that
-session (`book-3f [a1b2c3]`, its `from` address): the tool checks them once it has resolved `to`,
-refusing a denied one and sending the model back to the name for an ask. Print mode, the SDK,
+names its recipient by name: `SessionSend(book-3f)`. A call's `to` and a rule's pattern are both read
+with a trailing ` [ref]` left out, so `book-3f [a1b2c3]` meets the rule on `book-3f`, and two
+sessions that share a name share its rules. A `deny` rule holds in every mode, `bypassPermissions`
+included, and a `deny` or `ask` rule also covers the session's `from` address: the tool checks it
+once it has resolved `to`, refusing a denied one and sending the model back to the name for an ask. Print mode, the SDK,
 managed agents and `Task` subagents have neither tool, and a skill or command whose
 `allowed-tools` leaves `SessionSend` out does not get it. A turn another session's message
 started cannot write memory, since what it saved would load into every later session.
