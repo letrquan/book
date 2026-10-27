@@ -376,6 +376,14 @@ that cannot load it say so. Activations are logged under `BOOK_DEBUG` (`tools:di
 reason: `search`, `select`, `direct`, `route` for intent routing, or `host` for a tool Book loads
 itself (a skill's resource reader).
 
+**Measuring it.** `npm run eval:tools` runs five tasks that each need one deferred tool (fetch a URL,
+search the web, read git history, edit a notebook, search the session history) under three arms:
+`baseline` (direct calls off, no routing), `+direct` and `+routing`. Per task, arm and model it
+reports success, the turn of the first correct call, workarounds such as `curl` in `Bash`, wasted
+calls (ToolSearch misses, refusals, unknown tools), tokens and, on Anthropic, the cache-read ratio.
+`--mock` runs the matrix on scripted models with no key, and `--estimate` prices the real matrix from
+a mock run; `npm run eval:tools -- --help` lists the options.
+
 ## Permission rules and modes
 
 `permissions.allow`, `permissions.ask`, and `permissions.deny` are matched against every tool call.

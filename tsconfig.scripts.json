@@ -10,6 +10,9 @@
     "scripts/audit-gate.ts",
     "scripts/audit-gate.test.ts",
     "scripts/prompt-eval.ts",
+    "scripts/tool-discovery-eval.ts",
+    "scripts/tool-discovery-eval-worker.ts",
+    "scripts/tool-discovery-eval.test.ts",
     "scripts/run-book-mock-provider.test.ts"
   ]
 }
