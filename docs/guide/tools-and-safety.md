@@ -347,7 +347,9 @@ after the turn's request was built, such as `BashOutput` after a background `Bas
 same response, or `Write` after an approved `ExitPlanMode`. Authorization is `select:`'s too, so a
 tool outside the agent role, `allowed-tools`, the mode or the run's state is refused as
 `tool_not_active`, as before, and its schema is never shown; the refusal says which of those it is,
-and plan mode still refuses its mutating tools with its own message.
+and plan mode still refuses its mutating tools with its own message. A permission rule or a
+`PreToolUse` hook on `ToolSearch` itself does not gate a direct call: to keep a tool from running,
+deny that tool (or its arguments) or leave it out of `allowed-tools`, which every path obeys.
 
 Invalid arguments on a call to a tool the turn's request did not declare (called directly, or loaded
 by `select:` earlier in the same response) are refused with the tool's argument names and types, two
