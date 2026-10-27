@@ -198,6 +198,17 @@ function needsPermissionCheck(mode: string): boolean {
 export const PEER_TURN_MODE_REFUSAL =
   "a turn from another session cannot change this session's mode; ask your user";
 
+/** The managed-agent tools that start or steer an agent, which a prompting-class peer turn may not call. */
+const PEER_TURN_AGENT_TOOLS: ReadonlySet<string> = new Set([
+  'AgentSpawn',
+  'AgentPlan',
+  'AgentSend',
+]);
+
+/** Why a prompting-class peer turn's AgentSpawn, AgentPlan or AgentSend is refused (#620). */
+export const PEER_TURN_AGENT_REFUSAL =
+  "a turn from another session cannot start or steer managed agents, which run at this session's own mode; ask your user";
+
 function requiresToolPermission(mode: string, persistentBackgroundShell: boolean): boolean {
   return needsPermissionCheck(mode) || (persistentBackgroundShell && mode !== 'bypassPermissions');
 }
@@ -2741,6 +2752,16 @@ export async function runAgentLoop(
           toolResults[callIndex] = toolFailure(`SKIPPED: ${PEER_TURN_MODE_REFUSAL}`, {
             toolCallId: originalCall.id,
             code: 'peer_turn_mode_change',
+            status: 'blocked',
+          });
+          return undefined;
+        }
+        // Nor does a prompting-class one start or steer a managed agent: an agent outlives the
+        // turn and runs at the session's own mode, which the pin does not reach (#620).
+        if (options?.peerTurnClass === 'prompting' && PEER_TURN_AGENT_TOOLS.has(earlyName)) {
+          toolResults[callIndex] = toolFailure(`SKIPPED: ${PEER_TURN_AGENT_REFUSAL}`, {
+            toolCallId: originalCall.id,
+            code: 'peer_turn_agents',
             status: 'blocked',
           });
           return undefined;

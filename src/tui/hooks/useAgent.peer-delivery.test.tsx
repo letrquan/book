@@ -228,6 +228,37 @@ describe('peer-message delivery in the TUI', () => {
     ]);
   });
 
+  it('pins the completion of a background job a pinned turn started, after the user typed too', async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const shell = {
+      id: 'bg-peer',
+      title: 'peer job',
+      command: 'npm test',
+      status: 'completed',
+      exitCode: 0,
+      startedAt: Date.now() - 1000,
+      finishedAt: Date.now(),
+    } as unknown as Parameters<NonNullable<typeof latest>['sendBackgroundShellCompletion']>[0];
+    // The peer turn starts the job: it is listed only once that run has gone.
+    const list = vi
+      .spyOn(latest!.runtime.shellManager, 'list')
+      .mockReturnValueOnce([])
+      .mockReturnValue([shell]);
+    expect(await latest!.sendPeerMessages({ ...batch, turnClass: 'prompting' })).toBe(true);
+    list.mockReturnValue([shell]);
+    // The user's own turn clears the session's pin, but not the pin on the work the peer started.
+    await latest!.send('the user types');
+    expect(await latest!.sendBackgroundShellCompletion(shell)).toBe(true);
+    expect(loopState.calls.map((call) => call.peerTurnClass)).toEqual([
+      'prompting',
+      undefined,
+      'prompting',
+    ]);
+  });
+
   it('does not start a peer turn whose sender no longer matches the mode', async () => {
     const messaging = fakeMessaging();
     const { config, session } = fixture(messaging);

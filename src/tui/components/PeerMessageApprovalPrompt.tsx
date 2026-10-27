@@ -77,8 +77,10 @@ export function PeerMessageApprovalPrompt({
   useInput((_input, key) => {
     if (Date.now() - shownAt.current < PEER_APPROVAL_ARM_MS) return;
     if (key.escape) return onDefer();
-    if (key.upArrow) return setSelected((currentSelected() + options.length - 1) % options.length);
-    if (key.downArrow) return setSelected((currentSelected() + 1) % options.length);
+    // The arrows stop at the ends rather than wrap: from Later, one stray ↓ must not reach
+    // Deliver now.
+    if (key.upArrow) return setSelected(Math.max(0, currentSelected() - 1));
+    if (key.downArrow) return setSelected(Math.min(options.length - 1, currentSelected() + 1));
     // `currentSelected()`, not `selected`: a batched arrow and Enter must answer the row the arrow
     // moved to (see McpServerApprovalPrompt).
     if (key.return) return decide(options[currentSelected()].key);
@@ -111,6 +113,7 @@ export function PeerMessageApprovalPrompt({
           {held.claimedName !== undefined ? (
             <Text color={theme.inactive}> (peer claims name: {held.claimedName})</Text>
           ) : null}
+          <Text color={theme.inactive}> · address not verified</Text>
         </Text>
         <Text wrap="wrap">
           <Text color={theme.inactive}>{'message  '}</Text>

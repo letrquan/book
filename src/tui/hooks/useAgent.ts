@@ -301,7 +301,10 @@ interface SendMessageOptions {
   onRecorded?: () => void;
   /** Checked once the pre-turn compaction is done: false cancels the send before it is recorded. */
   stillDeliverable?: () => boolean;
-  /** The class a `peer-message` turn was delivered in: the permission gate pins it (#620). */
+  /**
+   * The class a `peer-message` turn was delivered in, or, for a host-delivered turn, the class of
+   * the pinned work it reports: the permission gate pins it (#620).
+   */
   peerTurnClass?: PeerPermissionClass;
   attachments?: Message['attachments'];
   /** Managed-continuation linkage back to the originating root and parent run. */
@@ -580,6 +583,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // completion, a delivery notice — carry its work on, so they inherit it, as they keep its relay
   // chain; only a turn the user starts clears it.
   const peerPinRef = useRef<PeerPermissionClass | undefined>(undefined);
+  // The class of each background job a pinned run started: its completion carries the peer's
+  // work on whenever it lands, after the user's own turn cleared the session's pin too.
+  const pinnedJobsRef = useRef(new Map<string, PeerPermissionClass>());
   const timelineStore = session.timelineStore ?? session.store;
 
   useEffect(() => interactions.subscribe(setInteractionSnapshot), [interactions]);
@@ -1146,8 +1152,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         messageOptions?.kind === 'peer-message'
           ? stricterClass(messageOptions.peerTurnClass ?? 'prompting', peerPinRef.current)
           : isHostDeliveredTurn({ kind: messageOptions?.kind })
-            ? peerPinRef.current
+            ? stricterClass(messageOptions?.peerTurnClass, peerPinRef.current)
             : undefined;
+      const jobsBefore =
+        runPeerClass !== undefined
+          ? new Set(
+              agentSession
+                .getRuntime()
+                .shellManager.list()
+                .map((job) => job.id),
+            )
+          : undefined;
 
       const createUserMessage = () => {
         const message = makeMessage('user', userMessage, messageOptions?.contextMessage, true);
@@ -1598,6 +1613,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           ...(runPeerClass !== undefined ? { peerTurnClass: runPeerClass } : {}),
         },
       });
+      if (jobsBefore && runPeerClass !== undefined) {
+        for (const job of agentSession.getRuntime().shellManager.list()) {
+          if (jobsBefore.has(job.id)) continue;
+          const pinned = pinnedJobsRef.current;
+          pinned.set(job.id, stricterClass(pinned.get(job.id), runPeerClass)!);
+        }
+      }
       // A host-delivered turn (a notification, a peer's message) never takes the resumed run's
       // linkage: the user's own next prompt continues it.
       if (
@@ -1885,10 +1907,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       ]
         .filter((line): line is string => line !== undefined)
         .join('\n');
+      const jobClass = pinnedJobsRef.current.get(shell.id);
       const result = await sendMessage(display, undefined, {
         contextMessage: context,
         kind: 'agent-notification',
+        ...(jobClass !== undefined ? { peerTurnClass: jobClass } : {}),
       });
+      if (didSendMessageComplete(result)) pinnedJobsRef.current.delete(shell.id);
       return didSendMessageComplete(result);
     },
     [agentSession, sendMessage],
