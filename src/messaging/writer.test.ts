@@ -73,7 +73,7 @@ function createWriter(overrides: Partial<LiveSessionWriterOptions> = {}) {
     randomByte: () => 0x3f,
     atomicWriter: atomic,
     processEvents: events as unknown as LiveSessionWriterOptions['processEvents'],
-    gitLocation: async () => undefined,
+    gitLocation: async () => null,
     ...overrides,
   });
   return { writer, writes: atomic.writes, events };
@@ -656,6 +656,45 @@ describe('LiveSessionWriter', () => {
       expect(writes).toHaveLength(3);
       await writer.close();
       expect(vi.getTimerCount()).toBe(0);
+      rmSync(location.worktree, { recursive: true, force: true });
+    });
+
+    it('records a file whose name starts with two dots', async () => {
+      const location = worktree();
+      const { writer } = createWriter({ gitLocation: async () => location });
+      await writer.start();
+      writer.recordEdits(location.worktree, ['..env.example']);
+
+      expect(writer.recentEdits().map((edit) => edit.path)).toEqual(['..env.example']);
+      await writer.close();
+      rmSync(location.worktree, { recursive: true, force: true });
+    });
+
+    it('keeps its worktree and edits when a later git lookup fails, and drops them outside git', async () => {
+      const location = worktree();
+      let lookup: () => Promise<GitLocation | null> = async () => location;
+      let clock = 10_000;
+      const { writer } = createWriter({ now: () => clock, gitLocation: () => lookup() });
+      await writer.start();
+      writer.recordEdits(location.worktree, ['a.ts']);
+
+      lookup = async () => {
+        throw new Error('git is briefly unavailable');
+      };
+      clock += 10_000;
+      writer.setState({ status: 'busy' });
+      writer.setState({ status: 'idle' });
+      await vi.waitFor(() => expect(writer.location).toBeDefined());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(writer.location).toEqual(location);
+      expect(writer.recentEdits().map((edit) => edit.path)).toEqual(['a.ts']);
+
+      lookup = async () => null;
+      clock += 10_000;
+      writer.setState({ status: 'busy' });
+      writer.setState({ status: 'idle' });
+      await vi.waitFor(() => expect(writer.location).toBeUndefined());
+      await writer.close();
       rmSync(location.worktree, { recursive: true, force: true });
     });
 

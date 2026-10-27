@@ -66,8 +66,13 @@ export interface CollectChangedFilesOptions {
 export interface ChangedObservedFiles {
   /** Newest observation first, at most the limit. */
   files: ChangedObservedFile[];
-  /** Changed files beyond the limit: counted, and marked reported like the rest. */
+  /** Changed files beyond the limit: counted only. */
   unlisted: number;
+  /**
+   * Mark every change found as reported. Called once the block naming them is rendered: a turn
+   * cancelled before that leaves them to be reported by the next one.
+   */
+  commit(): void;
 }
 
 interface Judged {
@@ -87,8 +92,14 @@ function looksBinary(bytes: Uint8Array): boolean {
 /**
  * The change as a diff of at most {@link MAX_CHANGE_SNIPPET_LINES} lines, or `undefined` when it
  * is longer. The changed span is measured first, so a large rewrite is never diffed at all.
+ * Provider keys are redacted from the whole diff before a long line is cut, so a key the cut
+ * would split cannot escape the redaction by half.
  */
-export function changeSnippet(before: string, after: string): string[] | undefined {
+export function changeSnippet(
+  before: string,
+  after: string,
+  secrets: readonly string[] = [],
+): string[] | undefined {
   const a = before.split('\n');
   const b = after.split('\n');
   let prefix = 0;
@@ -105,7 +116,7 @@ export function changeSnippet(before: string, after: string): string[] | undefin
   if (changed === 0 || changed >= MAX_CHANGE_SNIPPET_LINES) return undefined;
   const diff = renderDiff(before, after, 1);
   if (!diff) return undefined;
-  const lines = diff.split('\n');
+  const lines = redactSecrets(diff, secrets).split('\n');
   if (lines.length > MAX_CHANGE_SNIPPET_LINES) return undefined;
   return lines.map((line) => Array.from(line).slice(0, MAX_SNIPPET_LINE_CHARS).join(''));
 }
@@ -118,37 +129,58 @@ export class FileChangeTracker {
   private readonly judged = new Map<string, Judged>();
   /** The change last reported per key, so the same change is never reported twice. */
   private readonly reported = new Map<string, string>();
-  /** Text a file held when it was observed, by key, least recently observed first. */
-  private readonly baselines = new Map<string, { sha256: string; text: string }>();
+  /**
+   * Text a file held when it was observed, by key, least recently observed first, with the size of
+   * the bytes it was decoded from: what the budget counts, whatever the decoding made of them.
+   */
+  private readonly baselines = new Map<string, { sha256: string; text: string; bytes: number }>();
   private baselineBytes = 0;
+
+  /** The bytes the remembered texts hold, against their 2 MiB budget. */
+  get rememberedBytes(): number {
+    return this.baselineBytes;
+  }
 
   /**
    * Keep the text the model just observed, so a later change can be shown as a diff. Called by
    * `observeFile` with the bytes it hashed; a large or binary file is not kept.
    */
   remember(key: string, sha256: string, bytes: Uint8Array): void {
-    this.forget(key);
+    this.dropBaseline(key);
     if (bytes.byteLength > MAX_BASELINE_BYTES || looksBinary(bytes)) return;
-    this.baselines.set(key, { sha256, text: Buffer.from(bytes).toString('utf8') });
+    this.baselines.set(key, {
+      sha256,
+      text: Buffer.from(bytes).toString('utf8'),
+      bytes: bytes.byteLength,
+    });
     this.baselineBytes += bytes.byteLength;
     for (const [oldest, baseline] of this.baselines) {
       if (this.baselineBytes <= MAX_BASELINE_TOTAL_BYTES) break;
       this.baselines.delete(oldest);
-      this.baselineBytes -= Buffer.byteLength(baseline.text);
+      this.baselineBytes -= baseline.bytes;
     }
   }
 
-  private forget(key: string): void {
+  /**
+   * Forget a file this session's own tool deleted: its observation leaves the ledger with it, so
+   * there is nothing left to judge it against.
+   */
+  forget(key: string): void {
+    this.dropBaseline(key);
+    this.judged.delete(key);
+    this.reported.delete(key);
+  }
+
+  private dropBaseline(key: string): void {
     const baseline = this.baselines.get(key);
     if (!baseline) return;
     this.baselines.delete(key);
-    this.baselineBytes -= Buffer.byteLength(baseline.text);
+    this.baselineBytes -= baseline.bytes;
   }
 
   /**
    * The observed files that changed on disk since, newest observation first, at most `limit` of
-   * them named and the rest counted, each change once. Marks every change it finds as reported, so
-   * call it only for a block that renders.
+   * them named and the rest counted, each change once: `commit` marks them reported.
    */
   async collect(options: CollectChangedFilesOptions): Promise<ChangedObservedFiles> {
     const workspaceId = workspaceIdentity(options.workspace);
@@ -170,7 +202,12 @@ export class FileChangeTracker {
         if (options.signal?.aborted) return undefined;
         const absolutePath = resolve(root, observation.path);
         const current = await this.judge(key, absolutePath, observation);
-        if (!current || current.sha === observation.sha256) return undefined;
+        if (!current) return undefined;
+        if (current.sha === observation.sha256) {
+          // Back to what the model saw: a later change to any content is news again.
+          this.reported.delete(key);
+          return undefined;
+        }
         if (this.reported.get(key) === current.sha) return undefined;
         return { key, observation, absolutePath, current };
       },
@@ -179,14 +216,13 @@ export class FileChangeTracker {
     const changed = checked.filter(
       (entry): entry is NonNullable<typeof entry> => entry !== undefined,
     );
-    for (const { key, current } of changed) this.reported.set(key, current.sha);
     const limit = options.limit ?? MAX_CHANGED_FILES_PER_TURN;
     const files = changed.slice(0, limit).map(({ key, observation, absolutePath, current }) => {
       const deleted = current.sha === DELETED;
       const baseline = this.baselines.get(key);
       const snippet =
         !deleted && current.text !== undefined && baseline?.sha256 === observation.sha256
-          ? changeSnippet(baseline.text, current.text)
+          ? changeSnippet(baseline.text, current.text, options.secrets)
           : undefined;
       return {
         key,
@@ -194,12 +230,16 @@ export class FileChangeTracker {
         absolutePath,
         observedAt: observation.timestamp,
         ...(deleted ? { deleted: true as const } : {}),
-        ...(snippet
-          ? { snippet: redactSecrets(snippet.join('\n'), options.secrets ?? []).split('\n') }
-          : {}),
+        ...(snippet ? { snippet } : {}),
       };
     });
-    return { files, unlisted: Math.max(0, changed.length - limit) };
+    return {
+      files,
+      unlisted: Math.max(0, changed.length - limit),
+      commit: () => {
+        for (const { key, current } of changed) this.reported.set(key, current.sha);
+      },
+    };
   }
 
   /**

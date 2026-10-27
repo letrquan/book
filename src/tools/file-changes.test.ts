@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileChangeTracker, changeSnippet, MAX_CHANGED_FILES_PER_TURN } from './file-changes.js';
 import { observeFile, requireFreshObservation } from './file-provenance.js';
+import { patchTools } from './patch.js';
 import type { SessionRuntime } from '../session/runtime.js';
 import type { PeerAwarenessHandle } from '../types/messaging.js';
 import type { FileObservation, ToolContext } from '../types/tools.js';
@@ -38,7 +39,12 @@ function write(name: string, text: string): string {
 const lines = (count: number, tag = 'line') =>
   Array.from({ length: count }, (_, index) => `${tag} ${index + 1}`).join('\n') + '\n';
 
-const collect = async () => (await tracker.collect({ ledger, workspace })).files;
+/** One turn's check, its changes marked reported as a rendered block marks them. */
+const collect = async () => {
+  const changed = await tracker.collect({ ledger, workspace });
+  changed.commit();
+  return changed.files;
+};
 
 describe('changed-on-disk detection (#620 4a)', () => {
   it('reports an external edit of an observed file once, with a short diff', async () => {
@@ -65,6 +71,38 @@ describe('changed-on-disk detection (#620 4a)', () => {
     await observeFile(ctx, file, 'write');
 
     expect(await collect()).toEqual([]);
+  });
+
+  it("never reports a file the model's own ApplyPatch deleted", async () => {
+    const file = write('old.ts', 'gone soon\n');
+    await observeFile(ctx, file, 'read');
+
+    const result = await patchTools[0]!.execute(
+      { patch: '*** Begin Patch\n*** Delete File: old.ts\n*** End Patch' },
+      ctx,
+    );
+
+    expect(result.status).toBe('success');
+    expect(await collect()).toEqual([]);
+  });
+
+  it('reports a change again after the file went back to what the model saw in between', async () => {
+    const file = write('a.ts', 'A\n');
+    await observeFile(ctx, file, 'read');
+
+    writeFileSync(file, 'B\n');
+    expect(await collect()).toHaveLength(1);
+    writeFileSync(file, 'A\n');
+    expect(await collect()).toEqual([]);
+    writeFileSync(file, 'B\n');
+    expect(await collect()).toHaveLength(1);
+  });
+
+  it('keeps its memory budget exact for text that is not UTF-8', () => {
+    const latin1 = Buffer.alloc(1000, 0xe9);
+    tracker.remember('k', 'sha-1', latin1);
+    tracker.remember('k', 'sha-2', latin1);
+    expect(tracker.rememberedBytes).toBe(1000);
   });
 
   it('reports a second change of the same file, and a file put back says nothing', async () => {
@@ -94,7 +132,8 @@ describe('changed-on-disk detection (#620 4a)', () => {
       Array.from({ length: 10 }, (_, index) => `f${11 - index}.ts`),
     );
     expect(first.unlisted).toBe(2);
-    expect(await tracker.collect({ ledger, workspace })).toEqual({ files: [], unlisted: 0 });
+    first.commit();
+    expect(await tracker.collect({ ledger, workspace })).toMatchObject({ files: [], unlisted: 0 });
   });
 
   it('leaves the diff out when the change is long', async () => {
@@ -145,6 +184,17 @@ describe('changed-on-disk detection (#620 4a)', () => {
 
     expect(changed.snippet?.join('\n')).not.toContain(key);
     expect(changed.snippet?.join('\n')).toContain('+KEY=');
+  });
+
+  it('redacts a provider key before it cuts a long line, so no part of the key survives', async () => {
+    const key = 'sk-live-0123456789abcdef0123';
+    const file = write('long.ts', 'const a = 1;\n');
+    await observeFile(ctx, file, 'read');
+    writeFileSync(file, `const a = 1;\nconst k = '${'x'.repeat(140)}${key}';\n`);
+
+    const [changed] = (await tracker.collect({ ledger, workspace, secrets: [key] })).files;
+
+    expect(changed!.snippet?.join('\n')).not.toContain(key.slice(0, 8));
   });
 
   it('only diffs a change measured short, before diffing it', () => {

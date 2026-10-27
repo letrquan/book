@@ -609,8 +609,10 @@ matters, instead of having to think of asking. All of it works with `messaging.e
   - **Bound**: 10 files a turn are named, newest observation first; any more are counted in one
     line and marked reported, so a branch switch is one notice, not several turns of them. Checks
     run 8 at a time. A file the stale-since-checkpoint line names is left to that line.
-  - **Repeats**: each (file, content hash) is reported once. The model's own edits re-observe the
-    file, so they never count.
+  - **Repeats**: each (file, content hash) is reported once, committed only after the block is
+    rendered (a cancelled turn reports nothing), and forgotten when the file goes back to what the
+    model saw. The model's own edits re-observe the file and its ApplyPatch deletions drop the
+    observation, so they never count.
   - **Snippet**: `observeFile` keeps the observed text of files up to 64 KiB (2 MiB in all, oldest
     dropped). A change whose changed span is under 20 lines is shown as a diff of at most 20 lines,
     provider keys redacted; anything longer, binary or not remembered names the file only.
@@ -626,8 +628,10 @@ matters, instead of having to think of asking. All of it works with `messaging.e
   - An edit's write waits until 2 s after the previous write (coalesced); a status change is not
     held back. Old records without these fields still read.
 - **4c. Peer line** (`messaging/peer-awareness.ts`):
-  - One listing plus at most 8 record files of this pid domain (highest pids first), each read
-    capped at 64 KiB, liveness checked, `sweep: false`; a snapshot is reused for 1 s.
+  - One listing; up to 256 record files of this pid domain parsed (each capped at 64 KiB); only
+    those in this repository kept, and at most 8 of them liveness-checked, most recently written
+    first (review: a top-8-by-pid cut before the filter let unrelated sessions crowd out a peer).
+    `sweep: false`; a snapshot is reused for 1 s.
   - Same worktree: up to 3 peers, most recently active first, with status, branch and up to 3 edits
     from the last hour, then "and N more". Other worktrees of the same repository: a count only.
   - Names go through `sanitizeEnvelopeName`, status through the `SessionList` row sanitizer, and

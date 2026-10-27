@@ -204,6 +204,12 @@ export interface WorkspaceNoticeSources {
   secrets?: readonly string[];
 }
 
+export interface WorkspaceNotices {
+  notices: Pick<SessionStateInput, 'changedFiles' | 'changedFilesUnlisted' | 'peers'>;
+  /** Mark the changes reported: call it once the block carrying them is rendered and kept. */
+  commit(): void;
+}
+
 /**
  * The block's changed-on-disk notices (4a), each attributed to the peer whose recorded edit
  * matches it (4d), and the peer lines (4c). The two reads run side by side. A file the stale-since-
@@ -214,7 +220,7 @@ export async function collectWorkspaceNotices(
   sources: WorkspaceNoticeSources,
   staleFiles: readonly string[],
   signal?: AbortSignal,
-): Promise<Pick<SessionStateInput, 'changedFiles' | 'changedFilesUnlisted' | 'peers'>> {
+): Promise<WorkspaceNotices> {
   const [changed, snapshot] = await Promise.all([
     sources.tracker
       .collect({
@@ -225,7 +231,7 @@ export async function collectWorkspaceNotices(
         signal,
       })
       // A notice is a courtesy: a check that cannot run must never fail the turn.
-      .catch(() => ({ files: [], unlisted: 0 })),
+      .catch(() => ({ files: [], unlisted: 0, commit: () => {} })),
     sources.peerAwareness?.snapshot(),
   ]);
   const changedFiles = changed.files.map((file): ChangedFileNotice => {
@@ -238,9 +244,12 @@ export async function collectWorkspaceNotices(
     };
   });
   return {
-    ...(changedFiles.length > 0 ? { changedFiles } : {}),
-    ...(changed.unlisted > 0 ? { changedFilesUnlisted: changed.unlisted } : {}),
-    ...(snapshot?.notice ? { peers: snapshot.notice } : {}),
+    notices: {
+      ...(changedFiles.length > 0 ? { changedFiles } : {}),
+      ...(changed.unlisted > 0 ? { changedFilesUnlisted: changed.unlisted } : {}),
+      ...(snapshot?.notice ? { peers: snapshot.notice } : {}),
+    },
+    commit: changed.commit,
   };
 }
 

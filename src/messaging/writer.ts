@@ -18,11 +18,11 @@ import { randomUUID } from 'node:crypto';
 import { unlinkSync } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 import { AtomicJsonWriter } from '../agents/atomic-json.js';
 import { resolveBookHome } from '../book-home.js';
 import { createDebugLogger } from '../debug-log.js';
-import { canonicalizePath } from '../tools/path-utils.js';
+import { canonicalizePath, isOutside } from '../tools/path-utils.js';
 import type {
   LiveSessionEdit,
   LiveSessionRecord,
@@ -108,8 +108,11 @@ export interface LiveSessionWriterOptions {
   atomicWriter?: Pick<AtomicJsonWriter, 'writeAsync'>;
   /** Where the exit backstop is registered; a test passes an emitter of its own. */
   processEvents?: Pick<NodeJS.Process, 'once' | 'off'>;
-  /** Where the session works in git's terms; `resolveGitLocation` unless a test stands in. */
-  gitLocation?: (cwd: string, signal?: AbortSignal) => Promise<GitLocation | undefined>;
+  /**
+   * Where the session works in git's terms: `null` outside a repository, a rejection when git
+   * could not say. `resolveGitLocation` unless a test stands in.
+   */
+  gitLocation?: (cwd: string, signal?: AbortSignal) => Promise<GitLocation | null>;
 }
 
 type RecordBase = Omit<
@@ -141,10 +144,7 @@ export class LiveSessionWriter implements LiveSessionReporter {
   private readonly instanceId = randomUUID();
   private readonly atomicWriter: Pick<AtomicJsonWriter, 'writeAsync'>;
   private readonly processEvents: Pick<NodeJS.Process, 'once' | 'off'>;
-  private readonly gitLocation: (
-    cwd: string,
-    signal?: AbortSignal,
-  ) => Promise<GitLocation | undefined>;
+  private readonly gitLocation: (cwd: string, signal?: AbortSignal) => Promise<GitLocation | null>;
   /** When the session was created, which is also when its first status took effect. */
   private readonly startedAt: number;
   /** Cancels a start still listing the registry when the session closes. */
@@ -295,9 +295,8 @@ export class LiveSessionWriter implements LiveSessionReporter {
     if (!worktree) return [];
     const edits: LiveSessionEdit[] = [];
     for (const edit of this.edits) {
-      const path = relative(worktree, edit.absolute);
-      if (!path || path.startsWith('..') || isAbsolute(path)) continue;
-      const shown = path.replace(/\\/g, '/');
+      if (edit.absolute === worktree || isOutside(worktree, edit.absolute)) continue;
+      const shown = relative(worktree, edit.absolute).replace(/\\/g, '/');
       if (shown.length > MAX_EDIT_PATH_CHARS) continue;
       edits.push({ path: shown, at: edit.at });
     }
@@ -330,10 +329,10 @@ export class LiveSessionWriter implements LiveSessionReporter {
       const [pidDomain, procStart, git] = await Promise.all([
         this.probe.pidDomain(),
         this.probe.startToken(this.pid),
-        this.gitLocation(this.cwd, this.startAbort.signal),
+        this.gitLocation(this.cwd, this.startAbort.signal).catch(() => null),
       ]);
       if (this.closed) return;
-      this.git = git;
+      this.git = git ?? undefined;
       this.gitResolvedAt = this.now();
       this.recordPath = liveSessionRecordPath(this.dir, this.pid, pidDomain);
       this.owned = true;
@@ -390,12 +389,19 @@ export class LiveSessionWriter implements LiveSessionReporter {
       return;
     }
     this.gitResolvedAt = this.now();
-    this.gitRefresh = this.gitLocation(this.cwd, this.startAbort.signal).then((git) => {
-      this.gitRefresh = undefined;
-      if (this.closed) return;
-      this.git = git;
-      this.schedule();
-    });
+    this.gitRefresh = this.gitLocation(this.cwd, this.startAbort.signal).then(
+      (git) => {
+        this.gitRefresh = undefined;
+        if (this.closed) return;
+        this.git = git ?? undefined;
+        this.schedule();
+      },
+      () => {
+        // A lookup that failed says nothing about where the session is: the last answer stands,
+        // and with it the worktree and edits peers read.
+        this.gitRefresh = undefined;
+      },
+    );
   }
 
   private scheduleEditWrite(): void {

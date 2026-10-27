@@ -709,23 +709,32 @@ async function ensureSessionState(
   }
   if (!newest || newest.sessionState !== undefined) return;
 
-  const staleFiles = checkpoint
-    ? await collectStaleCheckpointFiles(config.workspace, checkpoint, observedSince)
-    : [];
-  const notices = workspaceNotices
-    ? await collectWorkspaceNotices(config.workspace, workspaceNotices, staleFiles, signal)
-    : {};
+  // The git line and the file checks are independent reads, so they run side by side.
+  const [git, files] = await Promise.all([
+    cache?.git(config.workspace, signal) ?? gitContext(config.workspace, signal),
+    (async () => {
+      const staleFiles = checkpoint
+        ? await collectStaleCheckpointFiles(config.workspace, checkpoint, observedSince)
+        : [];
+      const notices = workspaceNotices
+        ? await collectWorkspaceNotices(config.workspace, workspaceNotices, staleFiles, signal)
+        : undefined;
+      return { staleFiles, notices };
+    })(),
+  ]);
   newest.sessionState = renderSessionState({
     workspace: config.workspace,
     runElapsedMs,
-    git: await (cache?.git(config.workspace, signal) ?? gitContext(config.workspace, signal)),
+    git,
     planMode,
     planUnrestored,
     outstandingAgents,
     todos,
-    staleFiles,
-    ...notices,
+    staleFiles: files.staleFiles,
+    ...files.notices?.notices,
   });
+  // Only now are the changes reported: a turn cancelled above leaves them for the next block.
+  files.notices?.commit();
 }
 
 export async function buildMessages(

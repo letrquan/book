@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -174,7 +174,19 @@ describe('the peer line (#620 4c)', () => {
     expect(block.split('\n').filter((line) => line.startsWith('- injected'))).toEqual([]);
   });
 
-  it(`reads one listing and at most ${MAX_PEER_RECORDS} records, and sweeps nothing`, async () => {
+  it('finds a low-pid peer in this worktree among many unrelated live sessions', async () => {
+    for (let pid = 201; pid <= 210; pid++) {
+      peer(pid, { worktree: `/other/repo-${pid}`, repository: `/other/repo-${pid}/.git` });
+    }
+    peer(50, { recentEdits: [{ path: 'src/a.ts', at: NOW }] });
+
+    const { notice } = await awareness().snapshot();
+
+    expect(notice?.sameWorktree.map((note) => note.name)).toEqual(['book-50']);
+    expect(liveChecks).toBeLessThanOrEqual(MAX_PEER_RECORDS);
+  });
+
+  it(`liveness-checks at most ${MAX_PEER_RECORDS} matching records, and sweeps nothing`, async () => {
     for (let pid = 101; pid <= 112; pid++) peer(pid);
     alive.delete(112);
 
@@ -194,6 +206,10 @@ describe('the peer line (#620 4c)', () => {
         { path: 'C:\\x.ts', at: 3 },
         { path: '../up.ts', at: 3 },
         { path: 'a/../../up.ts', at: 3 },
+        { path: '\\\\attacker\\share\\x', at: 3 },
+        { path: '//attacker/share/x', at: 3 },
+        { path: '\\rooted.ts', at: 3 },
+        { path: '..env.example', at: 4 },
         { path: 'x'.repeat(600), at: 3 },
         { path: 'nan.ts', at: Number.NaN },
         'not an edit',
@@ -201,6 +217,7 @@ describe('the peer line (#620 4c)', () => {
       ]),
     ).toEqual([
       { path: 'newer.ts', at: 5 },
+      { path: '..env.example', at: 4 },
       { path: 'ok.ts', at: 2 },
     ]);
   });
@@ -225,6 +242,14 @@ describe('attribution (#620 4d)', () => {
     // An edit before this session's read is not what changed the file since.
     expect(snapshot.attribute(join(root, 'src', 'a.ts'), NOW - 30_000)).toBeUndefined();
     expect(snapshot.attribute(join(root, '..', 'outside.ts'), 0)).toBeUndefined();
+  });
+
+  it('attributes a file whose name starts with two dots', async () => {
+    peer(101, { recentEdits: [{ path: '..env.example', at: NOW }] });
+
+    const snapshot = await awareness().snapshot();
+
+    expect(snapshot.attribute(join(root, '..env.example'), 0)).toMatchObject({ peer: 'book-101' });
   });
 
   it('gives the SessionSend address only when both sessions have messaging', async () => {
@@ -287,6 +312,23 @@ describe('overlap warnings (#620 4e)', () => {
     peer(101, { recentEdits: [{ path: 'src/a.ts', at: clock }] });
     expect(await peers.checkOverlaps()).toHaveLength(1);
     expect(heard).toHaveLength(2);
+    peers.close();
+  });
+
+  it('runs a check asked for while another is running, once that one ends', async () => {
+    ownEdits = [{ path: 'src/b.ts', at: NOW }];
+    peer(101, { recentEdits: [{ path: 'src/a.ts', at: NOW }] });
+    const peers = awareness();
+    const heard: string[] = [];
+    peers.subscribe((warning) => heard.push(warning));
+
+    const running = peers.checkOverlaps();
+    ownEdits = [...ownEdits, { path: 'src/a.ts', at: NOW }];
+    expect(await peers.checkOverlaps()).toEqual([]);
+    await running;
+
+    await vi.waitFor(() => expect(heard).toHaveLength(1));
+    expect(heard[0]).toContain('src/a.ts');
     peers.close();
   });
 

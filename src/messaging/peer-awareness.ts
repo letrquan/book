@@ -17,11 +17,11 @@
  */
 
 import { readdir } from 'node:fs/promises';
-import { isAbsolute, relative } from 'node:path';
+import { relative } from 'node:path';
 import { mapLimited } from '../async.js';
 import { resolveBookHome } from '../book-home.js';
 import { foldControlCharacters } from '../control-characters.js';
-import { canonicalizePath } from '../tools/path-utils.js';
+import { canonicalizePath, isOutside } from '../tools/path-utils.js';
 import type {
   LiveSessionEdit,
   PeerAwarenessHandle,
@@ -43,7 +43,9 @@ import {
 } from './registry.js';
 import type { LiveSessionWriter } from './writer.js';
 
-/** Records one read takes, besides the listing. */
+/** Record files one read parses, at most: a record is a few hundred bytes. */
+const MAX_REGISTRY_FILES = 256;
+/** Records in this repository one read checks for liveness (on macOS, a `ps` spawn each). */
 export const MAX_PEER_RECORDS = 8;
 /** Peers the worktree line names; the rest are counted. */
 export const MAX_PEER_NOTES = 3;
@@ -106,11 +108,14 @@ export function validPeerEdits(value: unknown): LiveSessionEdit[] {
   const edits: LiveSessionEdit[] = [];
   for (const entry of value.slice(-MAX_PEER_EDITS)) {
     if (typeof entry !== 'object' || entry === null) continue;
-    const { path, at } = entry as { path?: unknown; at?: unknown };
-    if (typeof path !== 'string' || typeof at !== 'number' || !Number.isFinite(at)) continue;
+    const { path: raw, at } = entry as { path?: unknown; at?: unknown };
+    if (typeof raw !== 'string' || typeof at !== 'number' || !Number.isFinite(at)) continue;
+    // Separators are normalized first, so a `\\host\share` UNC path or a `\rooted` one is
+    // judged as the absolute path it is.
+    const path = raw.replace(/\\/g, '/');
     if (!path || path.length > MAX_PEER_PATH_CHARS || path.startsWith('/')) continue;
-    if (/^[A-Za-z]:/.test(path) || path.split(/[\\/]/).some((part) => part === '..')) continue;
-    edits.push({ path: path.replace(/\\/g, '/'), at });
+    if (/^[A-Za-z]:/.test(path) || path.split('/').some((part) => part === '..')) continue;
+    edits.push({ path, at });
   }
   return edits.sort((a, b) => b.at - a.at);
 }
@@ -123,9 +128,8 @@ function worktreePath(worktree: string, absolutePath: string): string | undefine
   } catch {
     return undefined;
   }
-  const path = relative(worktree, canonical);
-  if (!path || path.startsWith('..') || isAbsolute(path)) return undefined;
-  return path.replace(/\\/g, '/');
+  if (canonical === worktree || isOutside(worktree, canonical)) return undefined;
+  return relative(worktree, canonical).replace(/\\/g, '/');
 }
 
 export class PeerAwareness implements PeerAwarenessHandle {
@@ -141,6 +145,8 @@ export class PeerAwareness implements PeerAwarenessHandle {
   private readonly warned = new Map<string, number>();
   private poll?: NodeJS.Timeout;
   private checking = false;
+  /** A check was asked for while one ran: it runs again as soon as that one ends. */
+  private recheck = false;
   private closed = false;
 
   constructor(options: PeerAwarenessOptions) {
@@ -206,7 +212,11 @@ export class PeerAwareness implements PeerAwarenessHandle {
    * within {@link OVERLAP_WINDOW_MS}, once per (peer session, path) per window. Never rejects.
    */
   async checkOverlaps(): Promise<string[]> {
-    if (this.closed || this.checking) return [];
+    if (this.closed) return [];
+    if (this.checking) {
+      this.recheck = true;
+      return [];
+    }
     this.checking = true;
     try {
       const now = this.now();
@@ -241,6 +251,10 @@ export class PeerAwareness implements PeerAwarenessHandle {
       return [];
     } finally {
       this.checking = false;
+      if (this.recheck) {
+        this.recheck = false;
+        void this.checkOverlaps();
+      }
     }
   }
 
@@ -316,23 +330,30 @@ export class PeerAwareness implements PeerAwarenessHandle {
     const names = listing
       .map((name) => ({ name, parsed: parseLiveSessionRecordName(name) }))
       .filter(({ parsed }) => parsed && parsed.tag === tag && parsed.pid !== this.pid)
-      // Highest pids first: usually the newest sessions. A deterministic choice when there are
-      // more than the read takes.
       .sort((a, b) => b.parsed!.pid - a.parsed!.pid)
-      .slice(0, MAX_PEER_RECORDS)
+      .slice(0, MAX_REGISTRY_FILES)
       .map(({ name }) => name);
-    const entries = await readLiveSessionEntries(this.dir, names, MAX_RECORD_BYTES);
-    const live = await mapLimited(entries, MAX_PEER_RECORDS, async (entry) => {
-      const record = entry.record;
-      if (!record || record.pidDomain !== domain) return undefined;
-      return (await isRecordProcessLive(record, this.probe)) ? record : undefined;
-    });
+    // Every record is read (they are small) and judged by where it works before any liveness
+    // check, so sessions elsewhere on the machine cannot crowd out a peer in this worktree. Only
+    // the records in this repository are checked, the most recently written first.
+    const candidates = (await readLiveSessionEntries(this.dir, names, MAX_RECORD_BYTES))
+      .map((entry) => entry.record)
+      .filter(
+        (record): record is ReadLiveSessionRecord =>
+          record !== undefined &&
+          record.pidDomain === domain &&
+          (record.worktree === location.worktree || record.repository === location.repository),
+      )
+      .sort((a, b) => (b.updatedAt ?? b.startedAt) - (a.updatedAt ?? a.startedAt) || b.pid - a.pid)
+      .slice(0, MAX_PEER_RECORDS);
+    const live = await mapLimited(candidates, MAX_PEER_RECORDS, async (record) =>
+      (await isRecordProcessLive(record, this.probe)) ? record : undefined,
+    );
     const messagingHere = this.messaging();
     return live
       .filter((record): record is ReadLiveSessionRecord => record !== undefined)
       .flatMap((record) => {
         const sameWorktree = record.worktree === location.worktree;
-        if (!sameWorktree && record.repository !== location.repository) return [];
         const row = peerSessionRow(record, false);
         const messaging = messagingHere && row.ref !== undefined;
         return [

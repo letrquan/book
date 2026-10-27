@@ -140,6 +140,20 @@ export async function observeFile(
   return observation;
 }
 
+/**
+ * Forget the file a mutation of this session's own deleted (ApplyPatch's `*** Delete File`): the
+ * model knows it is gone, so it is neither a stale observation nor a change on disk (#620 4a). A
+ * later write creates it afresh.
+ */
+export function forgetObservation(ctx: ToolContext, absolutePath: string): void {
+  const key = observationKey(
+    workspaceIdentity(ctx.workspaceRoot),
+    observationPathFor(ctx.workspaceRoot, absolutePath),
+  );
+  ctx.fileObservationLedger?.delete(key);
+  ctx.runtime?.fileChanges.forget(key);
+}
+
 export async function requireFreshObservation(
   ctx: ToolContext,
   absolutePath: string,

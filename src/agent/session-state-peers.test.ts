@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildMessages, buildSystemPromptZones } from './context.js';
+import { buildMessages, buildSystemPromptZones, type AgentContextCache } from './context.js';
 import { runAgentLoop } from './loop.js';
 import { renderSessionState, type WorkspaceNoticeSources } from './session-state.js';
 import type { Provider } from '../provider/index.js';
@@ -106,6 +106,25 @@ describe('changed-on-disk and peer lines in <session-state> (#620 PR 4)', () => 
     const next = stateOf(second[3]!);
     expect(next).toContain('- b.ts changed on disk since you last read it.\n');
     expect(next).not.toContain('- a.ts changed on disk');
+  });
+
+  it('keeps a change unreported when the turn is cancelled before its block renders', async () => {
+    const config = defaultConfig({ workspace });
+    const a = await observe('a.ts', 'one\n');
+    writeFileSync(a, 'two\n');
+    const overrides = { workspaceNotices: sources() };
+    const aborted = {
+      git: async () => {
+        throw new Error('The operation was aborted');
+      },
+    } as unknown as AgentContextCache;
+
+    await expect(
+      buildMessages(config, [userMsg('go')], [], undefined, undefined, overrides, aborted),
+    ).rejects.toThrow('aborted');
+    const out = await buildMessages(config, [userMsg('go')], [], undefined, undefined, overrides);
+
+    expect(stateOf(out[1]!)).toContain('- a.ts changed on disk since you last read it.');
   });
 
   it('works without a peer handle, as print mode and the SDK run', async () => {
