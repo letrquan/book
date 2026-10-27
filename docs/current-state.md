@@ -1,6 +1,6 @@
 # Book Current State
 
-This is the implementation-backed product snapshot for Book as of 2026-10-25 (`0.4.0-beta.1` plus the
+This is the implementation-backed product snapshot for Book as of 2026-10-28 (`0.4.0-beta.1` plus the
 unreleased changes). Update this file when a user-facing surface changes; the README and
 [docs/guide/](guide/README.md) are the usage guide and this page is the status reference for roadmap
 and design documents.
@@ -15,6 +15,9 @@ subscription-auth/provider lines (being rewritten by the s23 sandbox and ChatGPT
 internals, managed agents, `/review` internals, background-job internals, and skills beyond what
 the CHANGELOG states. The earlier independent surface re-verification was 2026-08-26 (transcript
 and terminal interaction, reasoning/retry propagation, headless/stream-JSON framing).
+
+On 2026-10-28 only the system prompt version, tool discovery, cross-session messaging and peer
+awareness were checked, by reading `src/` on main at a8ad170d and the merged PRs; nothing was run.
 
 ## Release Identity
 
@@ -90,12 +93,18 @@ and terminal interaction, reasoning/retry propagation, headless/stream-JSON fram
   ChatGPT plan, with the OAuth tokens in `<BOOK_HOME>/chatgpt-signin.json` (0600). It is never
   auto-detected or a default. Anthropic stays API-key only: its terms forbid third-party apps from
   using Claude plan credentials.
-- System prompt v6 (`book-system-prompt-v6`): content split by volatility across a cached static
+- System prompt v8 (`book-system-prompt-v8`): content split by volatility across a cached static
   prefix, an uncached activation-class suffix, and a per-turn `<session-state>` block on the newest
   user turn; project instructions fenced and trust-labeled; three Anthropic cache breakpoints
-  (last tool, system, moving last message) so the conversation itself is cached.
+  (last tool, system, moving last message) so the conversation itself is cached. v7 (#623) made
+  the suffix's deferred-tool list name every authorized deferred tool and teach `ToolSearch`'s
+  `select:`, and v8 (#637) tells the model a listed tool can be called directly. The peer lines
+  and `@session` notes of cross-session messaging go in the `<session-state>` block, not the
+  system prompt, so they did not change the version.
 - File, patch, shell, Git, web, notebook, task, todo, plan, clarification, session-history, MCP,
-  tool-search, skill, and managed-agent tools, subject to capability and permission intersections.
+  tool-search, skill, and managed-agent tools, plus the `SessionList` and `SessionSend` session
+  tools in an interactive TUI with messaging on, subject to capability and permission
+  intersections.
 - MCP tools connect over stdio, Streamable HTTP, or legacy SSE. The interactive host prompts before
   using project declarations, answers server form elicitation, refreshes dynamic tool lists, and
   exposes `/mcp` plus `book mcp list|get|add|remove`; print/SDK modes use only user or
@@ -150,6 +159,20 @@ and terminal interaction, reasoning/retry propagation, headless/stream-JSON fram
   `.opencode/skills`, and `.book/skills`, with explicit activation, consent, resource bounds,
   capability intersections, lifecycle diagnostics, safe-boundary reload, `$name` mention
   autocomplete over invocable skills in the input bar, and `npm run eval:skills`.
+- Experimental cross-session messaging (#620), opt-in and off by default. `messaging.enabled` is
+  read only from the user-global settings file or `--settings`, never from a workspace layer. With
+  it on, each interactive TUI opens an authenticated inbox socket and its model gets the core
+  `SessionList` and `SessionSend` tools (`notify_when_idle` included). A message is delivered as a
+  turn of its own once the session is idle; one from the other permission class is held for the
+  user's approval (`messaging.inbound`, `messaging.approvalTimeout`); a delivered peer turn is
+  pinned to its permission class; and an `@name` mention of a live session adds a `SessionSend`
+  note to the turn. The inbox is TUI-only: print mode, the SDK, managed agents and subagents have
+  none, Windows is not supported, and a message is not read mid-turn. The live-session registry
+  it addresses (`<BOOK_HOME>/live-sessions/`) is written by every interactive TUI, messaging on or
+  off, and feeds peer awareness: the changed-on-disk notice (print mode and the SDK too), peer
+  lines for live sessions in the same worktree, attributed stale-file refusals, and the overlap
+  warning. See "Cross-session messaging" in [Configuration](guide/configuration.md) and the
+  [feature reference](guide/features.md).
 
 ## Current Defaults
 
@@ -202,8 +225,15 @@ and terminal interaction, reasoning/retry propagation, headless/stream-JSON fram
   `npm run eval:compact-replay`: see `plans/compaction-v3-plan.md` for the baseline and the v3
   run. History of the earlier design: `plans/carried-ledger-plan.md`,
   `plans/compaction-research-2026-09.md`.
-- Tool discovery: `auto`; the practical core stays loaded and `ToolSearch` activates deferred
-  authorized tools on the next turn.
+- Tool discovery: `auto`; the practical core stays loaded, and the system prompt names every
+  authorized deferred tool. `ToolSearch` loads tools by search or by `select:Name` for the next
+  turn, and a direct call to an authorized deferred tool that is not active runs just in time and
+  loads it. `toolDiscovery.intentRouting` (default `true`) loads `WebFetch` for a typed URL and
+  `WebSearch` for typed search words before the turn's first model call. A `permissions.deny` or
+  `ask` rule, or a `PreToolUse` or `PostToolUse` hook matcher, that names `ToolSearch` turns direct
+  calls and routing off. Every activation still changes the provider's tools array, so on
+  Anthropic it costs a cache write until stable tools land (#640). `npm run eval:tools` measures
+  discovery per arm.
 - Tool execution: serial by default; only the reviewed read-only/Git set is scheduled in bounded
   waves (`toolExecution.maxConcurrent`, default `4`).
 - Tool rows: transcripts show a tool's summary and result only. Call arguments are never rendered,
@@ -522,6 +552,26 @@ branch --set-upstream-to`, `git config`), for `Bash` and `Check` alike: git's ow
   `plan.status: not_applied` and exit code 0. The SDK `result` event does not carry that `plan`
   object yet — `query()` callers read the stop from the forwarded `tool_use` / `tool_result` pair —
   and `QueryOptions` does not surface `expandSlashCommands`.
+- Tool discovery is not finished (#619). Stable tools (PR 4, #640: a fixed tools array with
+  `tool_addition` messages on supported Anthropic models, append-only activation elsewhere) is an
+  open PR waiting on an owner probe. Retuning the core set and the budgets from
+  `npm run eval:tools` numbers (PR 5) has not started.
+- Cross-session messaging is not finished (#620 PR 7): a message waits for the turn in progress
+  to end (no mid-turn drain), print mode and the SDK have no inbox, and Windows has no transport.
+- Open follow-ups from building these features, #647–#658:
+  - security-relevant: #655 (a run that carries a peer's work, such as a pinned completion turn,
+    can still write memory without a prompt) and #657 (a model-invoked skill's `allowed-tools`
+    apply only from the next turn, so calls later in the same response escape them, in every host);
+  - messaging: #649 (invisible format characters survive in two paths), #650 (a background job's
+    completion can run unpinned after a restart, past 20 jobs, or on a second completion), #651
+    (the held-message sheet trusts an unverified `from`, and deny-all drops an approved message),
+    #653 (`SessionSend`'s address is not canonicalized before the permission gate), #654 (tag
+    neutralization misses fullwidth, lookalike, spaced and zero-width-split tags), and #658 (a
+    notice turn continues only the longest relay among the notices it tells);
+  - peer awareness: #648 (the changed-on-disk snippet read can still reach other bytes);
+  - elsewhere: #647 (the rewind and skills caches miss a same-size edit in one mtime tick), #652
+    (on macOS a sandboxed command may rename `$TMPDIR` and move Book's protected temp entries out
+    of the Seatbelt deny), and #656 (a tool-event hook with `"matcher": "*"` matches no tool).
 
 ## Verification
 
