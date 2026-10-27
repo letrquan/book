@@ -728,8 +728,46 @@ delivered (N held)` row (name from the registry record advertising the frame's a
 - Print mode and the SDK still have no inbox (D3), so nothing is held there; their `--messaging`
   opt-in and stream-json `peer_message_hold` events stay in PR 7.
 
-**PR 6: `notify_when_idle`.** Add `SessionSend {notify_when_idle: true}` and the idle notice, with
-CC's table limits, debounce and 12 h expiry.
+**PR 6: `notify_when_idle`** (shipped as below).
+
+- **Tool**: `SessionSend {to, message?, notify_when_idle?}`. With no `message` it is a pure
+  subscription (a `notify_when_idle {from, msg_id, from_mode, hop_chain}` control frame), paced
+  by the `SendPacer` as a message is; with one, the message goes first and the subscription only
+  once it went. Either counts a hop on the turn's relay and is refused locally at the relay limit
+  (`not_subscribed` / `relay_limit` for a pure one). Every request is sent and replaces the one
+  waiting on that session. The description carries CC's text, in Book's names.
+- **Receiver** (`messaging/idle-notify.ts`, owned by `SessionMessaging`): the inbox keys intake on
+  the decoded socket path, never the spelling; paces it per path with a guard of its own, which
+  also judges `hop_chain` (a repeated `msg_id` within 30 s is a duplicate, and ignored); vets at
+  most 8 at once; and takes a subscription only once `vetReplyAddress` passes (not its own). One it
+  does not keep — rate limited, vetting busy, a relay loop, or later evicted from a full table — is
+  answered with a `dropped` receipt (`drop_reason` `rate-limited`, `hop-loop`, `hop-runaway`,
+  `evicted`), coalesced as message drops are; an address that fails vetting hears nothing. The
+  table keeps 32, at most 4 per path. It fires after 750 ms of idle (a subscription to an idle
+  session included), held back while queued or held peer messages wait and judged again every
+  30 s; an unfired one expires after 12 h; `close()` answers every one `exited` inside the 750 ms
+  close drain. Idle has one definition: the status `interactive-session.ts` reports to the record
+  (`liveSessionStateOf`), told to the runtime too (`setSessionStatus`), and no host work that will
+  start a turn (`setHostWork`, from `usePeerMessageDelivery`: queued follow-ups, pending shell and
+  agent completions with their retries, and its own notices). Timers are unref'd.
+- **Notice**: a `peer_idle_notice` frame
+  (`{orig_msg_id, state: idle|exited|expired, finished_at?, detail?, from_mode}`), sent like a
+  receipt to the vetted `from`. `expired` is Book's addition (D1-a). `detail` is the model's own
+  reply in the newest turn (no host rows; secrets redacted by the TUI; folded, cut to 280
+  characters, then tags neutralized), included only when `judge` (the receive policy plus the
+  user's denied senders) would accept a message from the subscriber's asserted class now.
+- **Subscriber**: a notice or `dropped` receipt counts only if it names one of this session's
+  waiting subscriptions and comes from the session subscribed to, and only once. The user always
+  gets a row. A notice reaches the model only when this session's own `judge` accepts the
+  notifier, as a host-delivered `[Cross-session idle notice]` turn in the class a message from the
+  notifier would get (`peerTurnClass`), which continues the relay the subscription was sent on
+  (`continueRelay`); a `dropped` receipt reaches it as a delivery receipt does. Waiting notices are
+  told together, up to 10 a turn, continuing the longest relay among them, so re-subscribing from
+  many notices counts one hop rather than a branch each (security review). Each notifier is judged
+  again (`noticeTurnClass`) when the batch is built and when its turn starts (`stillDeliverable`):
+  one the policy no longer accepts is left out, its row the only trace. The notice text
+  says the subscription was one-shot and does not suggest subscribing again. A subscription with
+  no word for 12 h plus 5 min lapses locally, as a user-only row.
 
 **PR 7 and later**:
 

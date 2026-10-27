@@ -118,6 +118,8 @@ function fakeMessaging(held: HeldPeerMessage[]) {
     deliveryAttempts: 0,
     setPermissionMode: () => {},
     setInbound: () => {},
+    setHostWork: () => {},
+    setTurnTextSource: () => {},
     prepareDelivery: () => {
       runtime.deliveryAttempts++;
       return undefined;

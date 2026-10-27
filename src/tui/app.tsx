@@ -1329,6 +1329,12 @@ export function App({
     messaging: session.messaging,
     // The user's own queued follow-ups go first.
     blocked: queueDrainBlocked || queuedInputs.length > 0,
+    // What will start a turn of its own, a completion's retry included: the session is not idle
+    // for another session's notice while any waits (#620 PR 6).
+    pendingWork:
+      queuedInputs.length > 0 ||
+      backgroundShells.pendingAgentCompletions.length > 0 ||
+      managedAgents.pendingCompletions.length > 0,
     deliver: sendPeerMessages,
     notify: sendPeerDeliveryNotice,
     warn: addLocalMessage,
