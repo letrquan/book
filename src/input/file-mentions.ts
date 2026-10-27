@@ -15,8 +15,10 @@ export interface ActiveFileMention {
 }
 
 export interface FileMentionCandidate {
+  /** What the mention is completed to; for a session, its address (#620). */
   path: string;
-  kind: 'file' | 'directory';
+  /** A `session` is another live session, offered after the files (`session-mentions.ts`). */
+  kind: 'file' | 'directory' | 'session';
   desc: string;
 }
 

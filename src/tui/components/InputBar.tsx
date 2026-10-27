@@ -20,6 +20,11 @@ import {
   type FileMentionCandidate,
 } from '../../input/file-mentions.js';
 import {
+  getSessionMentionCandidates,
+  replaceActiveSessionMention,
+  type SessionMentionSource,
+} from '../../input/session-mentions.js';
+import {
   findActiveSkillMention,
   getSkillMentionCandidates,
   replaceActiveSkillMention,
@@ -132,6 +137,8 @@ interface InputBarProps {
   commands?: SlashCommand[];
   /** Discovered skills offered for explicit `$name` invocation. */
   skills?: Skill[];
+  /** The live sessions `@` offers after the files while messaging is on (#620). */
+  sessionMentions?: SessionMentionSource;
   /** Keyed request used by conversation rewind to restore a prior prompt draft. */
   draftRestore?: { key: number; value: string; attachments?: ImageAttachment[] };
 }
@@ -216,6 +223,7 @@ export function InputBar({
   awaitingAnswer = false,
   commands = [],
   skills = [],
+  sessionMentions,
   terminalWidth = 80,
   maxMenuRows = 8,
   compact = false,
@@ -370,9 +378,14 @@ export function InputBar({
     const controller = new AbortController();
     const query = fileMention.query;
     const timer = setTimeout(() => {
-      void getFileMentionCandidates(workspace, query, 50, controller.signal)
-        .then((candidates) => {
+      void Promise.all([
+        getFileMentionCandidates(workspace, query, 50, controller.signal),
+        getSessionMentionCandidates(sessionMentions, query),
+      ])
+        .then(([files, sessions]) => {
           if (controller.signal.aborted) return;
+          // Sessions after the files: a path is what `@` has always completed to.
+          const candidates = [...files, ...sessions];
           setFileCandidates(candidates);
           setFileSelected((selected) =>
             candidates.length === 0 ? 0 : Math.min(selected, candidates.length - 1),
@@ -392,7 +405,7 @@ export function InputBar({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [fileMention?.query, workspace]);
+  }, [fileMention?.query, workspace, sessionMentions]);
 
   menuVisibleRef.current = menuVisible;
   menuFilterRef.current = menuFilter;
@@ -436,7 +449,10 @@ export function InputBar({
       if (!mention || !selected) return false;
       if (mention.query !== fileMentionRef.current?.query) return false;
 
-      const nextValue = replaceActiveFileMention(currentValue, mention, selected.path);
+      const nextValue =
+        selected.kind === 'session'
+          ? replaceActiveSessionMention(currentValue, mention, selected.path)
+          : replaceActiveFileMention(currentValue, mention, selected.path);
       setValue(nextValue);
       const nextMention = findActiveFileMention(nextValue);
       setFileMention(nextMention);

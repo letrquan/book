@@ -435,6 +435,43 @@ export function mentionTokenRanges(input: string): Array<[number, number]> {
   return findMentionTokens(input).map((token) => [token.start, token.end]);
 }
 
+/** An at-sign token: its offsets, and the path (or session name) it spells. */
+export interface MentionTokenSpan {
+  start: number;
+  end: number;
+  path: string;
+}
+
+/**
+ * The at-sign tokens `expandUserInput` considers, outside fenced and inline code, without looking
+ * at the disk: the same tokens an `@session` mention is read from (#620), so the two never
+ * disagree about what was mentioned.
+ */
+export function mentionTokens(input: string): MentionTokenSpan[] {
+  return findMentionTokens(input).map(({ start, end, path }) => ({ start, end, path }));
+}
+
+/**
+ * Whether a mention names something on disk, a file or a directory, where expansion looks: the
+ * workspace and the `additionalDirectories` roots. An `@session` mention yields to it (#620), so
+ * `@reviewer` stays a mention of `reviewer/` whatever another session is called. A path that
+ * reaches a network share is never probed, and counts as named.
+ */
+export function mentionNamesPath(
+  workspace: string,
+  mentionPath: string,
+  additionalRoots: readonly string[] = [],
+): boolean {
+  const target = mentionTarget(workspace, mentionPath, additionalRoots);
+  if (!target) return false;
+  if (reachesUncPath(target.filePath)) return true;
+  try {
+    return statSync(target.filePath, { throwIfNoEntry: false }) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
 /** One `!cmd` line the user typed, with the span it occupies. */
 interface ShellLine {
   start: number;

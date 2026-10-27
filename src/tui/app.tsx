@@ -3647,6 +3647,7 @@ export function App({
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
               skills={skills}
+              sessionMentions={session.messaging}
               terminalWidth={termWidth}
               maxMenuRows={maxCommandMenuRows}
               compact={isNarrow || isTiny}

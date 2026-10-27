@@ -12,6 +12,7 @@ import {
   collectStaleCheckpointFiles,
   collectWorkspaceNotices,
   renderSessionState,
+  type TurnNotes,
   type WorkspaceNoticeSources,
 } from './session-state.js';
 import { reasoningReplayKeeps } from './reasoning-replay.js';
@@ -538,6 +539,12 @@ export interface SystemPromptOverrides {
    * once, and a read whose lines never render would lose it.
    */
   workspaceNotices?: WorkspaceNoticeSources;
+  /**
+   * Intent routing's notes about the user message the turn started from (#620's `@session`).
+   * Per-turn text: they render in that message's block when it is rendered, never in the cached
+   * prefix, and a rebuild reuses the block with them.
+   */
+  turnNotes?: TurnNotes;
 }
 
 /**
@@ -683,6 +690,7 @@ async function ensureSessionState(
   signal?: AbortSignal,
   cache?: AgentContextCache,
   workspaceNotices?: WorkspaceNoticeSources,
+  turnNotes?: TurnNotes,
 ): Promise<void> {
   let newest: Message | undefined;
   let checkpoint: Message | undefined;
@@ -732,6 +740,7 @@ async function ensureSessionState(
     todos,
     staleFiles: files.staleFiles,
     ...files.notices?.notices,
+    ...(turnNotes?.messageId === newest.id ? { notes: turnNotes.notes } : {}),
   });
   // Only now are the changes reported: a turn cancelled above leaves them for the next block.
   files.notices?.commit();
@@ -760,6 +769,7 @@ export async function buildMessages(
     signal,
     cache,
     systemOverrides?.workspaceNotices,
+    systemOverrides?.turnNotes,
   );
 
   messages.push({

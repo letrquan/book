@@ -33,6 +33,7 @@ import type {
 import type { Message, Usage } from '../types/messages.js';
 import type { ActiveGoal } from '../types/goal.js';
 import type { PeerAwarenessHandle } from '../types/messaging.js';
+import type { SessionMentionSource } from '../input/session-mentions.js';
 import { createGoal, restoreGoal } from '../agent/goal.js';
 import { createAgentRunContext, type AgentRunContext, type AgentRunSource } from '../types/runs.js';
 import {
@@ -368,6 +369,11 @@ export interface AgentSessionDependencies {
    * `/clear` and `/resume`, which replace the runtime but not the process.
    */
   peerAwareness?: PeerAwarenessHandle;
+  /**
+   * The messaging runtime a root run's `@session` mentions resolve against (#620): the TUI's, while
+   * messaging is on. Like `peerAwareness`, it outlives `/clear` and `/resume`.
+   */
+  sessionMentions?: SessionMentionSource;
   registryFactory?: (request: {
     config: AgentConfig;
     sessionId: string;
@@ -431,6 +437,7 @@ export class AgentSession {
   private runtime: SessionRuntime;
   private readonly registryFactory?: AgentSessionDependencies['registryFactory'];
   private readonly peerAwareness?: PeerAwarenessHandle;
+  private readonly sessionMentions?: SessionMentionSource;
   /**
    * Every root this session has run, and where its spend is written (#336).
    *
@@ -457,6 +464,7 @@ export class AgentSession {
     this.runtime = dependencies.runtime ?? new SessionRuntime();
     this.registryFactory = dependencies.registryFactory;
     this.peerAwareness = dependencies.peerAwareness;
+    this.sessionMentions = dependencies.sessionMentions;
   }
 
   startSend(): AgentSessionOperation | null {
@@ -1633,6 +1641,7 @@ export class AgentSession {
             runtime,
             runContext,
             ...(this.peerAwareness ? { peerAwareness: this.peerAwareness } : {}),
+            ...(this.sessionMentions ? { sessionMentions: this.sessionMentions } : {}),
             resolveAttachment:
               request.options?.resolveAttachment ??
               (request.timelineStore?.readImageAttachment

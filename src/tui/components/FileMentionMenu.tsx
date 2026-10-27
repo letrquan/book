@@ -19,10 +19,21 @@ interface FileMentionMenuProps {
 
 function fileBadge(item: FileMentionCandidate, compact: boolean): string {
   if (item.kind === 'directory') return compact ? ' [D]' : ' [Directory]';
+  if (item.kind === 'session') return compact ? ' [S]' : ' [Session]';
   return compact ? ' [F]' : ' [File]';
 }
 
-/** Workspace file picker for @ mentions. */
+/** The menu's count: its files, and its live sessions (#620) when it offers any. */
+function countMeta(items: FileMentionCandidate[]): string {
+  const sessions = items.filter((item) => item.kind === 'session').length;
+  const files = items.length - sessions;
+  const fileCount = `${files} ${files === 1 ? 'file' : 'files'}`;
+  return sessions > 0
+    ? `${fileCount} · ${sessions} ${sessions === 1 ? 'session' : 'sessions'}`
+    : fileCount;
+}
+
+/** Workspace file picker for @ mentions, with the live sessions after the files. */
 export function FileMentionMenu({
   items,
   filterText,
@@ -58,7 +69,7 @@ export function FileMentionMenu({
       marginX={frame.marginX}
       attached
       title={title}
-      meta={`${items.length} ${items.length === 1 ? 'file' : 'files'}${hiddenTotal > 0 ? ' · type to filter' : ''}`}
+      meta={`${countMeta(items)}${hiddenTotal > 0 ? ' · type to filter' : ''}`}
     >
       {items.length === 0 ? (
         <Text color={theme.subtle} dimColor>

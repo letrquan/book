@@ -586,7 +586,11 @@ Each PR is built by Book in print mode (`run-book` skill), watched in the real T
   these turns the way `compact.ts` already carries `agentNotifications`.
 - Receipts become the `[Cross-session delivery notice]` turns of §1.9.
 - The per-message wrapper text from §4.2, with idle and mid-turn variants.
-- **`@`-mention routing** (`src/input/file-mentions.ts` / `input-expansion.ts`):
+- **`@`-mention routing**, moved out of PR 3 and shipped on its own with #620's mention PR
+  (2026-10-27) as the `@session` router in `src/tools/intent-routing.ts` (#619's routing seam, now
+  with router notes): the note renders in the turn's `<session-state>` block, the tokens and the
+  file-precedence check come from `src/input/input-expansion.ts`, and the completion from
+  `src/input/session-mentions.ts`.
   - An `@name` or `@name [ref]` token that matches a live session, and not a file or directory,
     adds a meta note naming `SessionSend` and the exact `name [ref]`. The note also says not to
     send unless the user asked.

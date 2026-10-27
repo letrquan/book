@@ -851,6 +851,75 @@ describe('InputBar @ file mention menu', () => {
 
     expect(submitted).toEqual(['@src/app.ts ']);
   });
+
+  const peer = (name: string, ref: string) => ({
+    name,
+    ref,
+    socketPath: `/tmp/socks/${name}.sock`,
+    kind: 'interactive',
+    status: 'idle',
+    startedAt: 0,
+    sessionId: `session-${name}`,
+    pid: 1,
+    self: false,
+  });
+  const sessions = (available = true) => ({
+    available: () => available,
+    list: async () => ({
+      self: { ...peer('book-1', 'ffffff'), self: true },
+      peers: [peer('book-36', '825389')],
+    }),
+  });
+
+  it('offers live sessions after the files, labelled as sessions (#620)', async () => {
+    const ws = makeWorkspace();
+    writeFileSync(join(ws, 'book-notes.md'), 'x');
+    vi.stubEnv('BOOK_WORKSPACE', ws);
+
+    const view = render(inputBar(() => {}, { sessionMentions: sessions(), terminalWidth: 100 }));
+    await tick();
+
+    view.stdin.write('@book');
+    await tick(200);
+
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame).toContain('@book-notes.md');
+    expect(frame).toContain('@book-36');
+    expect(frame).toContain('[Session]');
+    expect(frame).not.toContain('@book-1');
+    expect(frame.indexOf('@book-notes.md')).toBeLessThan(frame.indexOf('@book-36'));
+  });
+
+  it('Tab completes a session mention by its address (#620)', async () => {
+    vi.stubEnv('BOOK_WORKSPACE', makeWorkspace());
+
+    const submitted: string[] = [];
+    const view = render(
+      inputBar((value) => submitted.push(value), { sessionMentions: sessions() }),
+    );
+    await tick();
+
+    view.stdin.write('ask @book-3');
+    await tick(200);
+    view.stdin.write('\t');
+    await tick(20);
+    view.stdin.write('\r');
+    await tick(200);
+
+    expect(submitted).toEqual(['ask @book-36 ']);
+  });
+
+  it('offers no session while messaging is unavailable (#620)', async () => {
+    vi.stubEnv('BOOK_WORKSPACE', makeWorkspace());
+
+    const view = render(inputBar(() => {}, { sessionMentions: sessions(false) }));
+    await tick();
+
+    view.stdin.write('@book');
+    await tick(200);
+
+    expect(stripAnsi(view.lastFrame())).not.toContain('@book-36');
+  });
 });
 
 // ---------------------------------------------------------------------------

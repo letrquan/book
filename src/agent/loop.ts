@@ -96,7 +96,13 @@ import {
   validateUserQuestionResponse,
 } from '../tools/ask-user-question.js';
 import { createToolSurface } from '../tools/catalog.js';
-import { routeTurnIntent } from '../tools/intent-routing.js';
+import {
+  routeTurnIntent,
+  turnIntentRouters,
+  type IntentRoutingRequest,
+} from '../tools/intent-routing.js';
+import type { SessionMentionSource } from '../input/session-mentions.js';
+import type { TurnNotes } from './session-state.js';
 import {
   enrichToolResultPresentation,
   boundToolResultOutput,
@@ -329,6 +335,11 @@ export async function runAgentLoop(
      * interactive runs only; a subagent or managed agent records and names no peer.
      */
     peerAwareness?: PeerAwarenessHandle;
+    /**
+     * The messaging runtime a typed `@session` mention resolves against (#620). Root interactive
+     * runs only, and only while messaging is on.
+     */
+    sessionMentions?: SessionMentionSource;
     /** Frozen attribution for this root or linked child execution. */
     runContext?: AgentRunContext;
     /** Override user-local oversized tool-output storage (primarily for isolated hosts/tests). */
@@ -1166,6 +1177,8 @@ export async function runAgentLoop(
     let lastWorkStateTurn = -1;
     /** Intent routing runs once, before the run's first model call (#619). */
     let intentRouted = false;
+    /** Its notes (#620's `@session`), for the block of the user message they were routed from. */
+    let turnNotes: TurnNotes | undefined;
     /** The turn these empty-completion retries were spent on, and how many of them. */
     let emptyResponseRetryTurn = -1;
     let emptyResponseRetries = 0;
@@ -1351,18 +1364,27 @@ export async function runAgentLoop(
         intentRouted = true;
         // After the mode and the skill restrictions are applied, so it activates only what this
         // surface authorizes. It reads what the user typed, never the prompt that text resolved
-        // to, and a hook's rewrite of it can only take a route away.
-        routeTurnIntent(
-          {
-            typedText: options?.typedText,
-            rewrittenPrompt,
-            kind: options?.userMessageKind,
-            isSubagent: options?.isSubagent,
-            config: effectiveConfig,
-            context: toolContext,
-          },
+        // to, and a hook's rewrite of it can only take a route or a note away.
+        const routing: IntentRoutingRequest = {
+          typedText: options?.typedText,
+          rewrittenPrompt,
+          kind: options?.userMessageKind,
+          isSubagent: options?.isSubagent,
+          config: effectiveConfig,
+          context: toolContext,
+        };
+        const { notes } = routeTurnIntent(
+          routing,
           toolSurface,
+          await turnIntentRouters(routing, toolSurface, options?.sessionMentions),
         );
+        // The message whose block `buildMessages` renders next: the newest user turn in context.
+        const routedMessage = [...newHistory]
+          .reverse()
+          .find((message) => message.role === 'user' && message.includeInContext);
+        if (notes.length > 0 && routedMessage) {
+          turnNotes = { messageId: routedMessage.id, notes };
+        }
       }
       const activeDefinitions = toolSurface.activeDefinitions();
       // Resolved once per turn. The session-state block is memoized on the newest
@@ -1388,6 +1410,7 @@ export async function runAgentLoop(
           runElapsedMs: clock.monotonicNowMs() - runStartedAt,
           outstandingAgents,
           workspaceNotices,
+          turnNotes,
         },
         runtime.agentContextCache,
         options?.resolveAttachment,
@@ -1411,6 +1434,7 @@ export async function runAgentLoop(
             runElapsedMs: clock.monotonicNowMs() - runStartedAt,
             outstandingAgents,
             workspaceNotices,
+            turnNotes,
           },
           runtime.agentContextCache,
           options?.resolveAttachment,
