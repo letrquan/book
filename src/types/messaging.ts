@@ -94,6 +94,7 @@ export type SocketDirRefusalReason =
   | 'parent-not-owner'
   | 'parent-writable'
   | 'too-long'
+  | 'temp-root'
   | 'unavailable';
 
 /**

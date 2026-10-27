@@ -466,7 +466,9 @@ The feature is live on this account: the tools are in this session.
   - sockets live in `$XDG_RUNTIME_DIR/book-socks/<pid>.sock`, or `<BOOK_HOME>/socks/` when
     `BOOK_HOME` is set (an explicit home isolates, so the runtime directory is not tried), falling
     back to `<os.tmpdir()>/book-socks-<uid>/<pid>.sock` when the path is over 103 bytes or a
-    directory is refused. At start an inbox reaps every Book socket in its directory that refuses
+    directory is refused. On macOS a runtime directory whose real path is inside a Seatbelt temp
+    root is passed over as well, because sandboxed commands can write there; Seatbelt denies them
+    the fallback by name (`book-socks` in `BOOK_TEMP_PREFIXES`). At start an inbox reaps every Book socket in its directory that refuses
     a connection, because a session killed by a signal leaves its socket behind. The connection
     decides, never the pid, so this is safe across pid namespaces;
   - directories are `0700` and vetted, the socket `0600`, the key `0600`.

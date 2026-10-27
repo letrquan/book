@@ -280,9 +280,10 @@ export class InboxServer {
       for (const skip of resolution.skipped) {
         this.log.warn('socket directory passed over', { dir: skip.dir, reason: skip.reason });
       }
-      // A path too long for a socket is ordinary (a deep BOOK_HOME); a refusal needs a fix.
+      // A path too long for a socket (a deep BOOK_HOME), or a macOS runtime directory in a temp
+      // root, is ordinary; a refusal needs a fix.
       const refusedDirs = resolution.skipped
-        .filter((skip) => skip.reason !== 'too-long')
+        .filter((skip) => skip.reason !== 'too-long' && skip.reason !== 'temp-root')
         .map((skip) => skip.message);
       if (this.closed) return this.fail('the session closed before the inbox started');
       this.vettedDirs.add(resolution.dir);

@@ -12,15 +12,18 @@
  * 2. `<BOOK_HOME>/socks/`, when `BOOK_HOME` is set, so an isolated home keeps its sockets too.
  * 3. `$XDG_RUNTIME_DIR/book-socks/`.
  * 4. `<os.tmpdir()>/book-socks-<uid>/`: the per-uid fallback, also used whenever an earlier
- *    choice is refused or its socket path would not fit in a `sun_path`.
+ *    choice is refused or its socket path would not fit in a `sun_path`, and on macOS in place of
+ *    a runtime directory inside a temp root sandboxed commands can write (Seatbelt denies them
+ *    the fallback by name, `BOOK_TEMP_PREFIXES`).
  *
  * Everything is asynchronous, and nothing is cached here: the inbox resolves once at start.
  */
 
 import { chmod, lstat, mkdir, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { resolveBookHome } from '../book-home.js';
+import { seatbeltTempRoots } from '../sandbox.js';
 import type { SocketDirRefusalReason, SocketDirSource } from '../types/messaging.js';
 
 /**
@@ -101,6 +104,11 @@ export interface VetSocketDirOptions extends SocketDirEnvironment {
    */
   create: boolean;
   platform?: NodeJS.Platform;
+  /**
+   * The temp directories a sandboxed command can write on macOS: the Seatbelt profile's own list
+   * (`seatbeltTempRoots`) unless a test pins it.
+   */
+  sandboxTempRoots?: readonly string[];
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -271,6 +279,18 @@ export type SocketDirResolution =
 export async function resolveSocketDir(options: VetSocketDirOptions): Promise<SocketDirResolution> {
   const skipped: SocketDirFallback[] = [];
   for (const candidate of socketDirCandidates(options)) {
+    if (candidate.source === 'xdg-runtime' && (options.platform ?? process.platform) === 'darwin') {
+      const root = await sandboxWritableRoot(dirname(candidate.dir), options);
+      if (root !== undefined) {
+        skipped.push({
+          dir: candidate.dir,
+          source: candidate.source,
+          reason: 'temp-root',
+          message: `${dirname(candidate.dir)} is inside ${root}, a temp directory sandboxed commands can write on macOS`,
+        });
+        continue;
+      }
+    }
     const verdict = await vetSocketDir(candidate.dir, options);
     if (verdict.ok) {
       return {
@@ -290,4 +310,26 @@ export async function resolveSocketDir(options: VetSocketDirOptions): Promise<So
     });
   }
   return { ok: false, skipped };
+}
+
+/**
+ * The Seatbelt temp root `dir` lies in, its symlinks resolved, or undefined. On macOS a sandboxed
+ * command may write anywhere in those roots except Book's own named entries, so a runtime
+ * directory set inside one (some nix and dotfile setups do) is not a place for the inbox; the
+ * per-uid fallback beside it is one of those named entries.
+ */
+async function sandboxWritableRoot(
+  dir: string,
+  options: VetSocketDirOptions,
+): Promise<string | undefined> {
+  let real: string;
+  try {
+    real = await realpath(dir);
+  } catch {
+    return undefined;
+  }
+  const roots = options.sandboxTempRoots ?? seatbeltTempRoots();
+  return roots.find(
+    (root) => real === root || real.startsWith(root.endsWith(sep) ? root : root + sep),
+  );
 }

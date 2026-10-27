@@ -238,6 +238,78 @@ describe.skipIf(!posix)('resolveSocketDir', () => {
     expect(resolution.skipped[0]!.message).toContain('is a symlink');
   });
 
+  describe('on macOS, a runtime directory sandboxed commands can write', () => {
+    function layout() {
+      const writable = scratch();
+      const outside = scratch();
+      const tmp = scratch();
+      mkdirSync(join(writable, 'run'), { mode: 0o700 });
+      mkdirSync(join(outside, 'run'), { mode: 0o700 });
+      return { writable, outside, tmp };
+    }
+
+    it('is passed over for the per-uid fallback when it is inside a Seatbelt temp root', async () => {
+      const { writable, tmp } = layout();
+      const resolution = await resolveSocketDir({
+        create: true,
+        env: { XDG_RUNTIME_DIR: join(writable, 'run') },
+        tmpdir: tmp,
+        uid,
+        platform: 'darwin',
+        sandboxTempRoots: [writable],
+      });
+      expect(resolution).toMatchObject({
+        ok: true,
+        source: 'tmp',
+        dir: join(tmp, `book-socks-${uid}`),
+        skipped: [{ source: 'xdg-runtime', reason: 'temp-root' }],
+      });
+      expect(() => lstatSync(join(writable, 'run', 'book-socks'))).toThrow();
+    });
+
+    it('is passed over when it only reaches a temp root through a symlink', async () => {
+      const { writable, outside, tmp } = layout();
+      symlinkSync(join(writable, 'run'), join(outside, 'link'));
+      const resolution = await resolveSocketDir({
+        create: true,
+        env: { XDG_RUNTIME_DIR: join(outside, 'link') },
+        tmpdir: tmp,
+        uid,
+        platform: 'darwin',
+        sandboxTempRoots: [writable],
+      });
+      expect(resolution).toMatchObject({
+        ok: true,
+        source: 'tmp',
+        skipped: [{ source: 'xdg-runtime', reason: 'temp-root' }],
+      });
+    });
+
+    it('is used when it lies outside every temp root, and on other platforms', async () => {
+      const { writable, outside, tmp } = layout();
+      expect(
+        await resolveSocketDir({
+          create: true,
+          env: { XDG_RUNTIME_DIR: join(outside, 'run') },
+          tmpdir: tmp,
+          uid,
+          platform: 'darwin',
+          sandboxTempRoots: [writable],
+        }),
+      ).toMatchObject({ ok: true, source: 'xdg-runtime', skipped: [] });
+      expect(
+        await resolveSocketDir({
+          create: true,
+          env: { XDG_RUNTIME_DIR: join(writable, 'run') },
+          tmpdir: tmp,
+          uid,
+          platform: 'linux',
+          sandboxTempRoots: [writable],
+        }),
+      ).toMatchObject({ ok: true, source: 'xdg-runtime', skipped: [] });
+    });
+  });
+
   it('never falls back from the test override', async () => {
     const root = scratch();
     writeFileSync(join(root, 'socks'), '');
