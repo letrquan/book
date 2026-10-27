@@ -495,10 +495,11 @@ export interface ToolDiscoveryContext {
   ): string[];
   /**
    * Activate selected definitions for the next provider request. The reason is logged: ToolSearch's
-   * query passes `search`, and anything else is the host loading a tool itself (a skill's resource
-   * reader), the default.
+   * query passes `search`, the pre-turn intent router `route`, and anything else is the host loading
+   * a tool itself (a skill's resource reader), the default. A `route` activation loads only tools
+   * that are not active, and none on a surface that admits no direct calls.
    */
-  activate(names: string[], reason?: 'search' | 'host'): string[];
+  activate(names: string[], reason?: 'search' | 'host' | 'route'): string[];
   /**
    * Activate exact tools by name (`select:A,B`) instead of ranking a query, reporting each name's
    * outcome. Optional so a discovery object built without it keeps working; ToolSearch then

@@ -672,11 +672,12 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
 
   /**
    * Load authorized tools for the next request, under the loaded-tool and schema budgets: the one
-   * way in for a search, `select:`, a direct call and the host alike. The reason is only logged.
+   * way in for a search, `select:`, a direct call, the intent router and the host alike. The reason
+   * is only logged.
    */
   const load = (
     names: string[],
-    reason: 'search' | 'select' | 'direct' | 'host',
+    reason: 'search' | 'select' | 'direct' | 'route' | 'host',
     available = authorized(),
   ): string[] => {
     const allowed = new Set(available.map((definition) => canonicalToolName(definition.name)));
@@ -701,8 +702,41 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     return loaded;
   };
 
-  const activate = (names: string[], reason: 'search' | 'host' = 'host'): string[] =>
-    load(names, reason);
+  /**
+   * Whether loading `names` beside every tool loaded now stays within the loaded-tool limit and the
+   * schema budget, so that it evicts nothing.
+   */
+  const fitsWithoutEviction = (names: string[]): boolean => {
+    trimLoaded();
+    const loaded = new Set([...state.loaded.keys(), ...names]);
+    if (loaded.size > config.settings.toolDiscovery.maxLoadedTools) return false;
+    let tokens = 0;
+    for (const name of loaded) tokens += tokensOf(byName.get(name)!);
+    return tokens <= effectiveBudget(config);
+  };
+
+  /**
+   * `route` is the pre-turn intent router (#619), which asks for the user's text rather than for
+   * the model, so it is opportunistic: it loads only authorized tools that are not active (a core
+   * tool never takes a loaded slot) and that fit without evicting a tool the model loaded, and
+   * none on a surface whose ToolSearch a rule or hook gates: there deferred tools load through
+   * ToolSearch alone, where that rule or hook sees them, exactly as a direct call is refused.
+   */
+  const activate = (names: string[], reason: 'search' | 'host' | 'route' = 'host'): string[] => {
+    if (reason !== 'route') return load(names, reason);
+    if (directCallsGated) return [];
+    const available = authorized();
+    const allowed = new Set(available.map((definition) => canonicalToolName(definition.name)));
+    const active = new Set(
+      currentDefinitions().map((definition) => canonicalToolName(definition.name)),
+    );
+    const fitting: string[] = [];
+    for (const name of new Set(names.map(canonicalToolName))) {
+      if (name === 'ToolSearch' || !allowed.has(name) || active.has(name)) continue;
+      if (fitsWithoutEviction([...fitting, name])) fitting.push(name);
+    }
+    return load(fitting, reason, available);
+  };
 
   /**
    * A tool's canonical name from a model-written one: exact first, then aliases, a provider prefix,

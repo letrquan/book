@@ -60,11 +60,16 @@ function parseArgs(argv: string[]): { model?: string; filter?: string } {
   return args;
 }
 
-async function runCommand(command: string, commandArgs: string[], cwd: string): Promise<void> {
-  await new Promise<void>((resolve) => {
+/** Run a command to completion: its exit code, or null when it could not start or was killed. */
+export async function runCommand(
+  command: string,
+  commandArgs: string[],
+  cwd: string,
+): Promise<number | null> {
+  return await new Promise<number | null>((resolve) => {
     const child = spawn(command, commandArgs, { cwd, stdio: 'ignore', shell: false });
-    child.once('error', () => resolve());
-    child.once('close', () => resolve());
+    child.once('error', () => resolve(null));
+    child.once('close', (code) => resolve(code));
   });
 }
 

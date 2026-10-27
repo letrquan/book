@@ -94,6 +94,7 @@ import {
   validateUserQuestionResponse,
 } from '../tools/ask-user-question.js';
 import { createToolSurface } from '../tools/catalog.js';
+import { routeTurnIntent } from '../tools/intent-routing.js';
 import {
   enrichToolResultPresentation,
   boundToolResultOutput,
@@ -480,6 +481,8 @@ export async function runAgentLoop(
   // UserPromptSubmit hook — can modify or block the user prompt.
   let effectivePrompt = userMessage;
   let displayPrompt = options?.displayMessage ?? userMessage;
+  /** Set when a hook rewrote the prompt: intent routing then keeps only routes it still asks for. */
+  let rewrittenPrompt: string | undefined;
   const userHookResults = options?.skipUserPromptHooks
     ? []
     : await runHooks(
@@ -509,6 +512,7 @@ export async function runAgentLoop(
     if (r.action === 'modify' && r.modifiedPrompt) {
       effectivePrompt = r.modifiedPrompt;
       displayPrompt = r.modifiedPrompt;
+      rewrittenPrompt = r.modifiedPrompt;
     }
   }
 
@@ -1144,6 +1148,8 @@ export async function runAgentLoop(
     const runStartedAt = clock.monotonicNowMs();
     /** Guards the periodic work-state message against a same-turn re-issue. */
     let lastWorkStateTurn = -1;
+    /** Intent routing runs once, before the run's first model call (#619). */
+    let intentRouted = false;
     /** The turn these empty-completion retries were spent on, and how many of them. */
     let emptyResponseRetryTurn = -1;
     let emptyResponseRetries = 0;
@@ -1325,6 +1331,23 @@ export async function runAgentLoop(
 
       toolContext.currentTurn = turn;
       syncSkillRestrictions(turn);
+      if (!intentRouted) {
+        intentRouted = true;
+        // After the mode and the skill restrictions are applied, so it activates only what this
+        // surface authorizes. It reads what the user typed, never the prompt that text resolved
+        // to, and a hook's rewrite of it can only take a route away.
+        routeTurnIntent(
+          {
+            typedText: options?.typedText,
+            rewrittenPrompt,
+            kind: options?.userMessageKind,
+            isSubagent: options?.isSubagent,
+            config: effectiveConfig,
+            context: toolContext,
+          },
+          toolSurface,
+        );
+      }
       const activeDefinitions = toolSurface.activeDefinitions();
       // Resolved once per turn. The session-state block is memoized on the newest
       // user message, so a rebuild below reuses these bytes rather than re-listing.
