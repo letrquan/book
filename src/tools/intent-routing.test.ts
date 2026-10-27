@@ -182,7 +182,7 @@ describe('routeTurnIntent', () => {
       { typedText: URL_TEXT, config, context: toolContext },
       discovery,
     );
-    expect(result).toEqual({ routes: [], activated: [] });
+    expect(result).toEqual({ routes: [], activated: [], notes: [] });
     expect(declared()).not.toContain('WebFetch');
   });
 

@@ -19,10 +19,19 @@ interface FileMentionMenuProps {
 
 function fileBadge(item: FileMentionCandidate, compact: boolean): string {
   if (item.kind === 'directory') return compact ? ' [D]' : ' [Directory]';
+  if (item.kind === 'session') return compact ? ' [S]' : ' [Session]';
   return compact ? ' [F]' : ' [File]';
 }
 
-/** Workspace file picker for @ mentions. */
+/** The menu's count: its live sessions (#620) when it offers any, then its files. */
+function countMeta(sessions: number, files: number): string {
+  const fileCount = `${files} ${files === 1 ? 'file' : 'files'}`;
+  return sessions > 0
+    ? `${sessions} ${sessions === 1 ? 'session' : 'sessions'} · ${fileCount}`
+    : fileCount;
+}
+
+/** Workspace file picker for @ mentions, with the live sessions it can name above the files. */
 export function FileMentionMenu({
   items,
   filterText,
@@ -49,7 +58,9 @@ export function FileMentionMenu({
 
   if (!visible) return null;
 
-  const title = filterText ? `Files matching “${filterText}”` : 'Files';
+  const sessions = items.filter((item) => item.kind === 'session').length;
+  const noun = sessions > 0 ? 'Mentions' : 'Files';
+  const title = filterText ? `${noun} matching “${filterText}”` : noun;
 
   // The hairline spans the terminal like the composer's; rows keep the panel measure.
   return (
@@ -58,7 +69,7 @@ export function FileMentionMenu({
       marginX={frame.marginX}
       attached
       title={title}
-      meta={`${items.length} ${items.length === 1 ? 'file' : 'files'}${hiddenTotal > 0 ? ' · type to filter' : ''}`}
+      meta={`${countMeta(sessions, items.length - sessions)}${hiddenTotal > 0 ? ' · type to filter' : ''}`}
     >
       {items.length === 0 ? (
         <Text color={theme.subtle} dimColor>

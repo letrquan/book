@@ -109,6 +109,7 @@ import { isHostDeliveredTurn } from '../../session/name.js';
 import type { LiveSessionReporter } from '../../messaging/writer.js';
 import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/session-messaging.js';
 import type { PeerAwareness } from '../../messaging/peer-awareness.js';
+import type { SessionMentionSource } from '../../input/session-mentions.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
 import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
 import type { BackgroundShellRecord } from '../../types/runtime.js';
@@ -155,6 +156,8 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
   liveSession?: LiveSessionReporter;
   /** This process's messaging runtime (#620), when messaging is on; the TUI's host owns it. */
   messaging?: SessionMessaging;
+  /** The live sessions `@session` mentions read (#620), when messaging is on. */
+  sessionMentions?: SessionMentionSource;
   /** This process's view of other live sessions (#620 PR 4); the TUI's host owns it. */
   peerAwareness?: PeerAwareness;
   /**
@@ -433,6 +436,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       additionalTools: session.additionalTools,
       liveSession: session.liveSession,
       messaging: session.messaging,
+      sessionMentions: session.sessionMentions,
       peerAwareness: session.peerAwareness,
     }),
   );

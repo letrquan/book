@@ -20,6 +20,11 @@ import {
   type FileMentionCandidate,
 } from '../../input/file-mentions.js';
 import {
+  replaceActiveSessionMention,
+  sessionMentionCandidates,
+  type SessionMentionSource,
+} from '../../input/session-mentions.js';
+import {
   findActiveSkillMention,
   getSkillMentionCandidates,
   replaceActiveSkillMention,
@@ -132,6 +137,8 @@ interface InputBarProps {
   commands?: SlashCommand[];
   /** Discovered skills offered for explicit `$name` invocation. */
   skills?: Skill[];
+  /** The live sessions `@` offers above the files, while a mention can lead to a send (#620). */
+  sessionMentions?: SessionMentionSource;
   /** Keyed request used by conversation rewind to restore a prior prompt draft. */
   draftRestore?: { key: number; value: string; attachments?: ImageAttachment[] };
 }
@@ -216,6 +223,7 @@ export function InputBar({
   awaitingAnswer = false,
   commands = [],
   skills = [],
+  sessionMentions,
   terminalWidth = 80,
   maxMenuRows = 8,
   compact = false,
@@ -310,6 +318,7 @@ export function InputBar({
   const fileMentionRef = useRef<ActiveFileMention | null>(null);
   const fileSelectedRef = useRef(0);
   const fileCandidatesRef = useRef<FileMentionCandidate[]>([]);
+  const [sessionCandidates, setSessionCandidates] = useState<FileMentionCandidate[]>([]);
 
   // Skill mention menu state
   const [skillMenuVisible, setSkillMenuVisible] = useState(false);
@@ -394,13 +403,37 @@ export function InputBar({
     };
   }, [fileMention?.query, workspace]);
 
+  // The live sessions a mention can name (#620), from the snapshot as it stands, so the files never
+  // wait on the registry; a snapshot older than a few seconds is read again, and the menu follows.
+  useEffect(() => {
+    const query = fileMention?.query;
+    if (query === undefined || !sessionMentions?.available()) {
+      setSessionCandidates([]);
+      return;
+    }
+    let current = true;
+    setSessionCandidates(sessionMentionCandidates(sessionMentions.peek(), query));
+    void sessionMentions.fresh().then((listing) => {
+      if (current && listing) setSessionCandidates(sessionMentionCandidates(listing, query));
+    });
+    return () => {
+      current = false;
+    };
+  }, [fileMention?.query, sessionMentions]);
+  // Sessions above the files when the typed name matches one; `@` alone offers a few first.
+  const mentionCandidates = useMemo(
+    () =>
+      sessionCandidates.length > 0 ? [...sessionCandidates, ...fileCandidates] : fileCandidates,
+    [fileCandidates, sessionCandidates],
+  );
+
   menuVisibleRef.current = menuVisible;
   menuFilterRef.current = menuFilter;
   menuSelectedRef.current = menuSelected;
   fileMenuVisibleRef.current = fileMenuVisible;
   fileMentionRef.current = fileMention;
   fileSelectedRef.current = fileSelected;
-  fileCandidatesRef.current = fileCandidates;
+  fileCandidatesRef.current = mentionCandidates;
   skillMenuVisibleRef.current = skillMenuVisible;
   skillMentionRef.current = skillMention;
   skillSelectedRef.current = skillSelected;
@@ -436,7 +469,10 @@ export function InputBar({
       if (!mention || !selected) return false;
       if (mention.query !== fileMentionRef.current?.query) return false;
 
-      const nextValue = replaceActiveFileMention(currentValue, mention, selected.path);
+      const nextValue =
+        selected.kind === 'session'
+          ? replaceActiveSessionMention(currentValue, mention, selected.path)
+          : replaceActiveFileMention(currentValue, mention, selected.path);
       setValue(nextValue);
       const nextMention = findActiveFileMention(nextValue);
       setFileMention(nextMention);
@@ -595,7 +631,7 @@ export function InputBar({
       if (key.downArrow) {
         setFileSelected((prev) => {
           const next = prev + 1;
-          return next >= fileCandidates.length ? 0 : next;
+          return next >= mentionCandidates.length ? 0 : next;
         });
         uiLog.event('input:Down', { action: 'file-menu-next-item' });
         return;
@@ -603,7 +639,7 @@ export function InputBar({
       if (key.upArrow) {
         setFileSelected((prev) => {
           const next = prev - 1;
-          return next < 0 ? Math.max(0, fileCandidates.length - 1) : next;
+          return next < 0 ? Math.max(0, mentionCandidates.length - 1) : next;
         });
         uiLog.event('input:Up', { action: 'file-menu-prev-item' });
         return;
@@ -934,7 +970,7 @@ export function InputBar({
     menuVisible ? Math.min(filteredCmds.length, maxMenuRows) : -1,
     skillMenuVisible && !menuVisible ? Math.min(skillCandidates.length, maxMenuRows) : -1,
     fileMenuVisible && !menuVisible && !skillMenuVisible
-      ? Math.min(fileCandidates.length, maxMenuRows)
+      ? Math.min(mentionCandidates.length, maxMenuRows)
       : -1,
     draftRows(value, inputWidth),
     attachments.length,
@@ -954,7 +990,7 @@ export function InputBar({
   }, [anyMenuOpen, onMenuOpenChange]);
 
   const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
-  const fileSelIdx = Math.max(0, Math.min(fileSelected, fileCandidates.length - 1));
+  const fileSelIdx = Math.max(0, Math.min(fileSelected, mentionCandidates.length - 1));
   const skillSelIdx = Math.max(0, Math.min(skillSelected, skillCandidates.length - 1));
 
   return (
@@ -980,7 +1016,7 @@ export function InputBar({
         screenReader={screenReader}
       />
       <FileMentionMenu
-        items={fileCandidates}
+        items={mentionCandidates}
         filterText={fileMention?.query ?? ''}
         selectedIndex={fileSelIdx}
         visible={fileMenuVisible && !menuVisible && !skillMenuVisible}

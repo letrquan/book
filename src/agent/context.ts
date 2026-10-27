@@ -732,6 +732,8 @@ async function ensureSessionState(
     todos,
     staleFiles: files.staleFiles,
     ...files.notices?.notices,
+    // Intent routing's notes about this message (#620): rendered with its block, and only there.
+    ...(newest.turnNotes?.length ? { notes: newest.turnNotes } : {}),
   });
   // Only now are the changes reported: a turn cancelled above leaves them for the next block.
   files.notices?.commit();
