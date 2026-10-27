@@ -6,7 +6,9 @@ import { runAgentLoop } from '../agent/loop.js';
 import {
   ALWAYS_ALLOWED_TOOLS,
   evaluatePermission,
+  missingRuleReason,
   permissionRuleForToolCall,
+  permissionRuleLadder,
 } from '../permissions.js';
 import type { Provider } from '../provider/index.js';
 import { defaultConfig } from '../test/fixtures.js';
@@ -186,19 +188,29 @@ describe('SessionSend results', () => {
     ).toBe('mcp__chat__send(hello)');
   });
 
+  it('saves a rule only for a bare name: a ref or an address names a pid-named socket', () => {
+    const call = (to: string) => ({
+      id: 'c',
+      name: 'SessionSend',
+      arguments: { to, message: 'hi' },
+    });
+    expect(permissionRuleForToolCall(call('book-3f'))).toBe('SessionSend(book-3f)');
+    expect(permissionRuleLadder(call('book-3f'))).toEqual(['SessionSend(book-3f)']);
+    for (const to of ['book-3f [a1b2c3]', 'uds:/tmp/socks/4242.sock']) {
+      // No rule, so no "Always allow": the call can be approved once, never persisted.
+      expect(permissionRuleForToolCall(call(to)), to).toBeUndefined();
+      expect(permissionRuleLadder(call(to)), to).toEqual([]);
+      expect(missingRuleReason(call(to)), to).toMatchObject({ sessionAddress: true });
+    }
+  });
+
   it("makes the recipient, not the message, SessionSend's rule identity", () => {
     expect(toolPrimaryArg('SessionSend', { to: 'book-3f', message: 'hello' })).toBe('book-3f');
     // A ref stays: `SessionSend(book-3f [a1b2c3])` is the rule for exactly that session.
     expect(toolPrimaryArg('SessionSend', { to: ' book-3f [a1b2c3] ', message: 'hello' })).toBe(
       'book-3f [a1b2c3]',
     );
-    expect(
-      permissionRuleForToolCall({
-        id: 'c',
-        name: 'SessionSend',
-        arguments: { to: 'book-3f [a1b2c3]', message: 'hello' },
-      }),
-    ).toBe('SessionSend(book-3f [a1b2c3])');
+
     expect(toolPrimaryArg('SessionSend', { message: 'hello' })).toBe('hello');
   });
 });
@@ -289,6 +301,7 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       allow?: string[];
       to?: string;
       shared?: boolean;
+      answer?: 'allow' | 'always';
     } = {},
   ) {
     const messaging = fakeMessaging(options.shared);
@@ -298,14 +311,19 @@ describe('SessionList and SessionSend permissions (D7)', () => {
     if (options.deny) config.settings.permissions.deny = options.deny;
     if (options.ask) config.settings.permissions.ask = options.ask;
     if (options.allow) config.settings.permissions.allow = options.allow;
-    const prompted = vi.fn(async () => 'allow' as const);
+    const prompted = vi.fn(async () => options.answer ?? ('allow' as const));
+    const persisted: string[] = [];
     const results: ToolResult[] = [];
     await runAgentLoop(
       config,
       registry,
       'message peer-b',
       [],
-      callbacks({ onPermissionRequired: prompted, onToolResult: (result) => results.push(result) }),
+      callbacks({
+        onPermissionRequired: prompted,
+        onToolResult: (result) => results.push(result),
+        onPersistPermissionRule: (rule) => persisted.push(rule),
+      }),
       mode,
       {
         provider: provider(options.to),
@@ -319,6 +337,7 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       list: byId('l1'),
       send: byId('s1'),
       sends: messaging.sends,
+      persisted,
       promptedFor: prompted.mock.calls.map(
         (call) => (call as unknown as [{ name: string }])[0].name,
       ),
@@ -396,6 +415,16 @@ describe('SessionList and SessionSend permissions (D7)', () => {
     const asked = await run('auto', { ask: ['SessionSend(peer-b [ffffff])'] });
     expect(asked.send?.structuredError?.code).toBe('ask_rule_spelling');
     expect(asked.sends).toEqual([]);
+  });
+
+  it('never persists an approval given on a ref or an address', async () => {
+    for (const to of ['peer-b [a1b2c3]', 'uds:/tmp/socks/peer-b.sock']) {
+      const outcome = await run('default', { to, answer: 'always' });
+      expect(outcome.promptedFor, to).toEqual(['SessionSend']);
+      expect(outcome.persisted, to).toEqual([]);
+      expect(outcome.sends, to).toHaveLength(1);
+    }
+    expect((await run('default', { answer: 'always' })).persisted).toEqual(['SessionSend(peer-b)']);
   });
 
   it('lets an allow rule with a ref cover only that session', async () => {

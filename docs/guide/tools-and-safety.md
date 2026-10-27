@@ -700,7 +700,9 @@ names its recipient: `SessionSend(book-3f)` for the session of that name, or
 `SessionSend(book-3f [a1b2c3])` for exactly that one (a pattern's brackets are literal). A bare name
 reaches a session only while no other live session holds it; a shared name is answered with the
 refs, and a `name [ref]` call is not covered by a rule on the bare name, so it asks. "Always allow"
-saves the spelling the call used. A `deny` or `ask` rule written with a ref binds every session of
+is offered only for a call to a bare name, and saves that name: a `name [ref]` or `uds:` recipient
+comes from the session's pid-named socket, so a rule saved for it could admit a later session that
+reuses the pid, and such a call can only be approved once. A `deny` or `ask` rule written with a ref binds every session of
 that name, which is stricter. A `deny` or `ask` rule applies however the call spells the
 session, `bypassPermissions` included for a deny: once it has resolved `to`, the tool checks the
 name, `name [ref]` and the session's `from` address, refusing a denied one and, for an ask, sending

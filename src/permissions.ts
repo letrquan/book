@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'path';
 import type { ResolvedSettings } from './settings.js';
 import type { PermissionDecision, PermissionResult, ToolCall } from './types/tools.js';
 import { canonicalToolName } from './tools/aliases.js';
-import { getPrimaryArg, toolPrimaryArg } from './tools/primary-arg.js';
+import { getPrimaryArg, namesSessionByAddress, toolPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex, globWalkPlan } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
 import {
@@ -450,6 +450,8 @@ export function permissionRuleForToolCall(call: ToolCall): string | undefined {
     return `Bash(${command})`;
   }
   if (toolName === 'WebSearch') return toolName;
+  // A session named by its inbox is approved once, never remembered (`namesSessionByAddress`).
+  if (namesSessionByAddress(toolName, call.arguments)) return undefined;
   const scope = ruleScopeOf(toolName, toolPrimaryArg(toolName, call.arguments));
   if (!scope || RULE_WILDCARD.test(scope.taken)) return undefined;
   return `${toolName}(${scope.pattern})`;
@@ -464,6 +466,11 @@ export interface MissingRuleReason {
    * or a `*` or `?` in another tool's argument.
    */
   wildcard: boolean;
+  /**
+   * A `SessionSend` to a session named by its inbox (`name [ref]`, `uds:`): a rule for it would
+   * outlive the session, so none is offered (`namesSessionByAddress`).
+   */
+  sessionAddress?: boolean;
 }
 
 /**
@@ -482,6 +489,9 @@ export function missingRuleReason(call: ToolCall): MissingRuleReason | undefined
         LINE_BREAK.test(command) || (command !== '' && !getPrimaryArg(call.arguments).trim()),
       wildcard: command.includes('*'),
     };
+  }
+  if (namesSessionByAddress(toolName, call.arguments)) {
+    return { lineBreak: false, wildcard: false, sessionAddress: true };
   }
   const scope = ruleScopeOf(toolName, toolPrimaryArg(toolName, call.arguments));
   return scope && RULE_WILDCARD.test(scope.taken)
