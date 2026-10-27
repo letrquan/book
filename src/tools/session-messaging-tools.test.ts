@@ -399,10 +399,14 @@ describe('SessionList and SessionSend permissions (D7)', () => {
     const spelled = await run('auto', { ask: ['SessionSend(peer-b [a1b2c3])'], to: 'peer-b' });
     expect(spelled.send?.structuredError?.code).toBe('ask_rule_spelling');
     expect(spelled.send?.structuredError?.remediation).toContain('"peer-b [a1b2c3]"');
-    expect(
-      (await run('auto', { ask: ['SessionSend(peer-b [a1b2c3])'], to: 'peer-b [a1b2c3]' }))
-        .promptedFor,
-    ).toEqual(['SessionSend']);
+    // The call the rule names is asked, and once approved it is sent.
+    const exact = await run('auto', {
+      ask: ['SessionSend(peer-b [a1b2c3])'],
+      to: 'peer-b [a1b2c3]',
+    });
+    expect(exact.promptedFor).toEqual(['SessionSend']);
+    expect(exact.send?.status).toBe('success');
+    expect(exact.sends).toHaveLength(1);
   });
 
   it('binds every session of the name with a deny or ask rule written with a ref', async () => {

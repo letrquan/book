@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { buildChildEnv } from './child-env.js';
 import type { HookEntry, HookEvent } from './settings.js';
-import { getPrimaryArg } from './tools/primary-arg.js';
+import { toolPrimaryArg } from './tools/primary-arg.js';
 import { parsePatch } from './tools/patch.js';
 import { runTaskkill, signalProcessGroup } from './jobs/process-tree.js';
 
@@ -221,8 +221,9 @@ function matchesHookMatcher(
       });
     }
 
-    // Extract primary arg from tool arguments using shared utility.
-    let primaryArg = getPrimaryArg(args);
+    // Extract primary arg from tool arguments using shared utility, the tool's own where it names
+    // one (`SessionSend` matches on its recipient).
+    let primaryArg = toolPrimaryArg(toolName, args);
 
     // Normalize leading ./ in paths.
     if (primaryArg.startsWith('./')) primaryArg = primaryArg.slice(2);

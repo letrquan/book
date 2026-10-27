@@ -408,6 +408,26 @@ describe('runHooks — matcher filtering', () => {
     expect(results.length).toBe(0);
   });
 
+  it("matches a SessionSend hook on the recipient, and any other tool's as before (#620)", async () => {
+    const hook = (matcher: string): HookEntry => ({
+      matcher,
+      command: process.platform === 'win32' ? 'exit 2' : 'exit 2',
+      env: {},
+    });
+    const send = ctx({
+      toolName: 'SessionSend',
+      toolArgs: { to: 'prod-3f', message: 'deploy now' },
+    });
+    expect(await runHooks([hook('SessionSend(prod-*)')], 'PreToolUse', send)).toHaveLength(1);
+    expect(await runHooks([hook('SessionSend(deploy*)')], 'PreToolUse', send)).toHaveLength(0);
+    // An MCP tool shaped like SessionSend keeps matching on its message.
+    const chat = ctx({
+      toolName: 'mcp__chat__send',
+      toolArgs: { to: 'bob', message: 'deploy now' },
+    });
+    expect(await runHooks([hook('mcp__chat__send(deploy*)')], 'PreToolUse', chat)).toHaveLength(1);
+  });
+
   it('runs hook with no matcher for all tool calls', async () => {
     const hook: HookEntry = {
       command: process.platform === 'win32' ? 'exit 2' : 'exit 2',

@@ -77,7 +77,19 @@ export function ruleRefusal(
         content: `A deny rule (${verdict.matchedRule}) names a session called ${quoted(target.name)}, as ${label} is.`,
       });
     }
-    if (verdict.source === 'ask' && context.currentMode !== 'bypassPermissions') {
+    // Not when this very call was asked, or when the ask names this session itself: then the rule
+    // was honoured above, and refusing would leave it impossible to satisfy.
+    const ownAsk = evaluatePermissionDetail(
+      'SessionSend',
+      { to: peerLabel(target), message },
+      settings,
+    );
+    if (
+      verdict.source === 'ask' &&
+      asked.source !== 'ask' &&
+      ownAsk.source !== 'ask' &&
+      context.currentMode !== 'bypassPermissions'
+    ) {
       return toolFailure(
         `An ask rule (${verdict.matchedRule}) names a session called ${quoted(target.name)}, as ${label} is, and no spelling of ${label} lets that rule ask.`,
         {
