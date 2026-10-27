@@ -29,8 +29,11 @@ export function getPrimaryArg(args: Record<string, unknown>): string {
   if (typeof args.path === 'string') return args.path;
   if (typeof args.agent === 'string') return args.agent;
   if (typeof args.skill === 'string') return args.skill;
-  // A message's recipient, not its text, is what a rule names: `SessionSend(book-3f)`.
-  if (typeof args.to === 'string' && typeof args.message === 'string') return args.to;
+  // A message's recipient, not its text, is what a rule names: `SessionSend(book-3f)`. The name is
+  // the address, and `book-3f [a1b2c3]` only disambiguates it, so the ref is left out.
+  if (typeof args.to === 'string' && typeof args.message === 'string') {
+    return args.to.trim().replace(/\s*\[[0-9a-fA-F]{6}\]$/, '');
+  }
   if (typeof args.message === 'string') return args.message;
   if (typeof args.url === 'string') return args.url;
   if (typeof args.query === 'string') return args.query;

@@ -25,7 +25,14 @@ import type {
   SessionMessagingHandle,
 } from '../types/messaging.js';
 import { peerLabel, peerSessionRow, resolvePeerAddress } from './addressing.js';
-import { buildPeerMessageTurn, type PeerMessageTurn, type ReceiptForSend } from './delivery.js';
+import {
+  buildPeerMessageTurn,
+  deliverySize,
+  MAX_DELIVERY_BYTES,
+  MAX_DELIVERY_MESSAGES,
+  type PeerMessageTurn,
+  type ReceiptForSend,
+} from './delivery.js';
 import { appendHop, permissionClassOf, renderEnvelope } from './envelope.js';
 import { sendToInbox } from './inbox-client.js';
 import {
@@ -34,7 +41,7 @@ import {
   senderClassOf,
   type InboxServerOptions,
 } from './inbox-server.js';
-import { touchLru } from './ingress-guard.js';
+import { countOwnHops, INGRESS_LIMITS, touchLru } from './ingress-guard.js';
 import { createLivenessProbe, type LivenessProbe } from './liveness.js';
 import { SendPacer } from './pacer.js';
 import { listLiveSessions, liveSessionsDir } from './registry.js';
@@ -44,8 +51,6 @@ import { decodeUdsAddress, encodeUdsAddress } from './wire.js';
 export const RECEIPT_BATCH_MS = 500;
 /** Sends remembered while their receipts may still come. */
 const MAX_OUTSTANDING_SENDS = 256;
-/** Sessions whose last delivered relay chain is remembered, for a send after it was compacted away. */
-const MAX_REMEMBERED_CHAINS = 16;
 /** Receipt statuses after which no other receipt about the message is expected. */
 const FINAL_STATUSES = new Set([
   'delivered',
@@ -109,7 +114,12 @@ export class SessionMessaging implements SessionMessagingHandle {
   private readonly log = createDebugLogger('messaging:session');
   private readonly listeners = new Set<(event: SessionMessagingEvent) => void>();
   private readonly outstanding = new Map<string, OutstandingSend>();
-  private readonly chains = new Map<string, string[]>();
+  /**
+   * The relay chain the current turn continues: the chain of the peer message(s) that started it,
+   * or none for a turn anything else started. Set and cleared as turns start, never carried into
+   * another turn, so a conversation the user drives starts every relay afresh.
+   */
+  private turnChain?: readonly string[];
   private pendingReceipts: ReceiptForSend[] = [];
   private receiptTimer?: ReturnType<typeof setTimeout>;
   private mode: string;
@@ -185,17 +195,30 @@ export class SessionMessaging implements SessionMessagingHandle {
     return () => this.listeners.delete(listener);
   }
 
+  /**
+   * The live sessions now. Read only: a listing never sweeps the registry (the writer's own reads
+   * and `book doctor` do), so the read-only tools change nothing on disk.
+   */
   async list(): Promise<PeerSessionListing> {
     const records = await listLiveSessions({
       dir: this.keysDir,
       probe: this.probe,
       ownPid: this.pid,
+      sweep: false,
     });
     const rows = records.map((record) => peerSessionRow(record, record.pid === this.pid));
     return {
       ...(rows.some((row) => row.self) ? { self: rows.find((row) => row.self) } : {}),
       peers: rows.filter((row) => !row.self).sort((a, b) => a.startedAt - b.startedAt),
     };
+  }
+
+  /**
+   * A turn starts that no peer message started (the user's, a notice's): what it sends starts a
+   * fresh relay chain.
+   */
+  beginTurn(): void {
+    this.turnChain = undefined;
   }
 
   async resolve(to: string): Promise<PeerAddressResolution> {
@@ -220,13 +243,26 @@ export class SessionMessaging implements SessionMessagingHandle {
       };
     }
     const target = resolution.target;
+    // Refused here rather than sent into a certain drop: the receiver drops a chain over 28 hops,
+    // or one that has passed through it 10 times, and this session's own count is what it knows.
+    const chain = [...(this.turnChain ?? []), hopToken];
+    if (
+      chain.length > INGRESS_LIMITS.maxChainLength ||
+      countOwnHops(chain, new Set([hopToken])) >= INGRESS_LIMITS.maxSelfHops
+    ) {
+      return {
+        status: 'relay_limit',
+        detail: `the relay is ${chain.length} hops long and has passed through this session ${countOwnHops(chain, new Set([hopToken]))} times`,
+        target,
+      };
+    }
     const ownAddress = encodeUdsAddress(own);
     const sessionId = this.writer.sessionId;
     const content = renderEnvelope(
       {
         from: ownAddress,
         fromSession: sessionId,
-        hopChain: appendHop(request.hopChain ?? this.chains.get(sessionId), hopToken),
+        hopChain: appendHop(this.turnChain, hopToken),
         fromName: listing.self?.name ?? this.writer.current()?.name,
         fromMode: permissionClassOf(request.mode ?? this.mode),
       },
@@ -265,31 +301,55 @@ export class SessionMessaging implements SessionMessagingHandle {
     const queued = this.inbox.queued();
     if (queued.length === 0) return undefined;
     const ownClass = permissionClassOf(this.mode);
-    const delivered = queued.filter((message) => senderClassOf(message) === ownClass);
+    // The oldest messages, up to 10 delivered and 64 KiB of content; the rest wait for the next
+    // idle turn. A first message over the byte cap goes alone, cut (`fitForDelivery`).
+    const delivered: AcceptedPeerMessage[] = [];
+    let bytes = 0;
+    let count = 0;
+    for (const message of queued) {
+      if (senderClassOf(message) !== ownClass) {
+        count++;
+        continue;
+      }
+      const size = deliverySize(message);
+      if (
+        delivered.length > 0 &&
+        (delivered.length >= MAX_DELIVERY_MESSAGES || bytes + size > MAX_DELIVERY_BYTES)
+      ) {
+        break;
+      }
+      delivered.push(message);
+      bytes += size;
+      count++;
+      if (size > MAX_DELIVERY_BYTES) break;
+    }
     return {
-      count: queued.length,
+      count,
       delivered,
       ...(delivered.length > 0 ? { turn: buildPeerMessageTurn(delivered) } : {}),
     };
   }
 
   /**
-   * Take a prepared batch off the queue, once its turn has started (or at once, when it has none):
-   * `delivered` receipts for the messages in the turn, `refused` for the rest.
+   * Take a prepared batch off the queue once its turn's user message is recorded (or at once, when
+   * it has no turn): `delivered` receipts for the messages in the turn, `refused` for the rest.
+   * The turn then continues the longest relay chain among its messages, the one nearest its limit.
    */
   commitDelivery(batch: PeerDeliveryBatch): void {
     const delivered = new Set(batch.delivered);
+    if (batch.turn) {
+      this.turnChain = batch.delivered
+        .map((message) => message.envelope?.attributes.hopChain ?? [])
+        .reduce<string[]>(
+          (longest, chain) => (chain.length >= longest.length ? chain : longest),
+          [],
+        );
+    }
     for (let index = 0; index < batch.count; index++) {
       const message = this.inbox.take();
       if (!message) break;
       if (delivered.has(message)) {
         this.inbox.acknowledge(message, 'delivered');
-        const chain = message.envelope?.attributes.hopChain;
-        if (chain) {
-          // The newest chain per session id, the most recent sessions kept.
-          this.chains.delete(this.writer.sessionId);
-          touchLru(this.chains, this.writer.sessionId, MAX_REMEMBERED_CHAINS, () => chain);
-        }
       } else {
         this.log.warn('peer message refused at delivery: permission class differs');
         this.inbox.acknowledge(message, 'refused', CROSS_CLASS_REFUSAL_REASON);

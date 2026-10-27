@@ -9,6 +9,9 @@ import type {
   PeerSessionRow,
   ReadLiveSessionRecord,
 } from '../types/messaging.js';
+import { foldControlCharacters } from '../control-characters.js';
+import { neutralizeTags } from '../prompt-tags.js';
+import { sanitizeEnvelopeName } from './envelope.js';
 import { socketPathHash } from './registry.js';
 import { decodeUdsAddress } from './wire.js';
 
@@ -17,7 +20,25 @@ export function peerRef(socketPath: string): string {
   return socketPathHash(socketPath).slice(0, 6);
 }
 
-/** A live record as a row, with its ref and socket only when it advertises an inbox. */
+/** Code points a record's free-text field keeps in a row. */
+const MAX_FIELD_CHARS = 64;
+
+/**
+ * A record's free-text field as a row shows it to the model. Another session wrote it, so its
+ * control characters are folded and its harness tags neutralized, as a message's body is.
+ */
+function recordField(value: string): string {
+  return neutralizeTags(
+    Array.from(foldControlCharacters(value)).slice(0, MAX_FIELD_CHARS).join(''),
+  );
+}
+
+/**
+ * A live record as a row, with its ref and socket only when it advertises an inbox. Every field
+ * another session wrote is sanitized here, once, so the listing, the address errors and the name
+ * this session puts in its envelopes all read the same safe text: the name as an envelope holds
+ * it (`sanitizeEnvelopeName`), the rest through {@link recordField}.
+ */
 export function peerSessionRow(record: ReadLiveSessionRecord, self: boolean): PeerSessionRow {
   const features = Array.isArray(record.features) ? record.features : [];
   const socketPath =
@@ -25,11 +46,13 @@ export function peerSessionRow(record: ReadLiveSessionRecord, self: boolean): Pe
       ? record.messagingSocketPath
       : undefined;
   return {
-    name: record.name,
+    name: sanitizeEnvelopeName(record.name) || 'unnamed',
     ...(socketPath !== undefined ? { ref: peerRef(socketPath), socketPath } : {}),
-    kind: typeof record.kind === 'string' ? record.kind : 'unknown',
-    status: typeof record.status === 'string' ? record.status : 'unknown',
-    ...(typeof record.waitingFor === 'string' ? { waitingFor: record.waitingFor } : {}),
+    kind: typeof record.kind === 'string' ? recordField(record.kind) : 'unknown',
+    status: typeof record.status === 'string' ? recordField(record.status) : 'unknown',
+    ...(typeof record.waitingFor === 'string'
+      ? { waitingFor: recordField(record.waitingFor) }
+      : {}),
     startedAt: record.startedAt,
     sessionId: record.sessionId,
     pid: record.pid,
@@ -43,7 +66,6 @@ export function peerLabel(row: Pick<PeerSessionRow, 'name' | 'ref'>): string {
 }
 
 const NAME_WITH_REF = /^(.*\S)\s*\[([0-9a-fA-F]{6})\]$/;
-
 
 function addressable(row: PeerSessionRow): row is PeerSessionRow & { socketPath: string } {
   return row.socketPath !== undefined;

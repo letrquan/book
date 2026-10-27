@@ -29,7 +29,13 @@ import { neutralizeTags } from '../prompt-tags.js';
 import { decodeUdsAddress, encodeUdsAddress } from './wire.js';
 
 export const ENVELOPE_TAG = 'cross-session-message';
-/** Hop tokens a chain keeps: the newest, once a relay grows past it. */
+/**
+ * Hop tokens a chain keeps: the newest, once a relay grows past it. Claude Code's constant, kept
+ * verbatim for interop even though a receiver drops any chain over 28 as a runaway
+ * (`INGRESS_LIMITS.maxChainLength`): a chain of 29 to 32 is still well-formed, and rejecting it as
+ * malformed would turn a counted drop into an unattributed delivery. A Book sender never sends one:
+ * `SessionMessaging.send` refuses locally before a chain would pass 28 (`relay_limit`).
+ */
 export const MAX_HOP_CHAIN = 32;
 /** Code points a name or session id keeps. */
 export const MAX_ENVELOPE_NAME_CHARS = 64;

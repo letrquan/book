@@ -16,14 +16,10 @@ function age(ms: number): string {
   return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
 }
 
-function label(row: PeerSessionRow): string {
-  return foldControlCharacters(peerLabel(row));
-}
-
 /** One row: `name [ref] · kind · status · started …`, and why a session cannot be messaged. */
 export function formatSessionRow(row: PeerSessionRow, now: number): string {
   const status = row.waitingFor ? `${row.status} (${row.waitingFor})` : row.status;
-  const parts = [label(row), row.kind, status, `started ${age(now - row.startedAt)}`];
+  const parts = [peerLabel(row), row.kind, status, `started ${age(now - row.startedAt)}`];
   if (row.socketPath === undefined) parts.push('no inbox (messaging is off there)');
   return parts.map(foldControlCharacters).join(' · ');
 }
@@ -35,7 +31,7 @@ export function formatSessionListing(
 ): string {
   const lines = [
     listing.self
-      ? `This session is \`${label(listing.self)}\`: a message to it would be a message to yourself.`
+      ? `This session is \`${foldControlCharacters(peerLabel(listing.self))}\`: a message to it would be a message to yourself.`
       : "This session's own record is not written yet, so peers cannot see it.",
     '',
   ];

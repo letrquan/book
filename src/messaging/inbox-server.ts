@@ -565,6 +565,8 @@ export class InboxServer {
       ...(frame.priority !== undefined ? { priority: frame.priority } : {}),
       receivedAt: this.now(),
     };
+    // Judged after the guard on purpose: a flood of messages this session refuses still spends
+    // the sender's tokens, so refusals (and their receipts) are rate limited like anything else.
     const ownClass = this.options.permissionClass?.();
     if (ownClass !== undefined && senderClassOf(message) !== ownClass) {
       this.log.warn('peer message refused: permission class differs', { from: frame.from });

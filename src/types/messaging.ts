@@ -215,8 +215,6 @@ export interface PeerSendRequest {
   message: string;
   /** The sending loop's permission mode now: the envelope's `from-mode` follows it. */
   mode?: string;
-  /** The relay chain of the last peer message in this conversation, which the send continues. */
-  hopChain?: readonly string[];
 }
 
 /** Why a `to` names no session a message can go to. */
@@ -230,6 +228,8 @@ export type PeerAddressResolution =
 export type PeerSendOutcome =
   | { status: 'sent'; target: PeerSessionRow; msgId: string }
   | { status: 'unavailable' }
+  /** Refused here: the relay this turn continues would be dropped as a loop or a runaway. */
+  | { status: 'relay_limit'; detail: string; target: PeerSessionRow }
   | { status: 'unresolved'; problem: PeerAddressProblem; to: string; candidates: PeerSessionRow[] }
   | {
       status: Exclude<InboxSendResult['status'], 'sent'>;

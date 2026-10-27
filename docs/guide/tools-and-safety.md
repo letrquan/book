@@ -711,7 +711,9 @@ What a send returns:
 - busy: try again shortly;
 - too large (over the 1 MiB line limit): put the content in a file and send its path;
 - paced (this session has sent that one as many messages as it accepts for now): batch what
-  remains into one message, never retry in a loop.
+  remains into one message, never retry in a loop;
+- relay limit (the turn continues a relay that would pass 28 hops, or pass through this session
+  10 times): not sent, since the other side would drop it as a loop; tell the user.
 
 A message that is dropped or refused later comes back as a `⚠` transcript row and a
 `[Cross-session delivery notice]` for the model, which tells it not to resend in a loop; a delivered

@@ -46,6 +46,43 @@ export function peerMessageGuidance(count: number, replyable: boolean): string {
   return `${subject} ${GUIDANCE_CORE}${reply}`;
 }
 
+/** Messages one `peer-message` turn delivers at most; the rest wait for the next idle turn. */
+export const MAX_DELIVERY_MESSAGES = 10;
+/**
+ * Bytes of message content one turn delivers at most. A single message over it is delivered
+ * alone, cut short with a note, so one large message cannot fill the context by itself.
+ */
+export const MAX_DELIVERY_BYTES = 64 * 1024;
+/** Room left under {@link MAX_DELIVERY_BYTES} for a cut message's attributes, header and guidance. */
+const DELIVERY_FRAMING_BYTES = 2 * 1024;
+
+/** How much of a turn's byte budget a message takes. */
+export function deliverySize(message: AcceptedPeerMessage): number {
+  return Buffer.byteLength(message.content, 'utf8');
+}
+
+/** `text` cut to at most `maxBytes` of UTF-8, never inside a character. */
+function cutUtf8(text: string, maxBytes: number): string {
+  return Buffer.from(text, 'utf8')
+    .subarray(0, maxBytes)
+    .toString('utf8')
+    .replace(/\uFFFD$/, '');
+}
+
+/**
+ * A message over {@link MAX_DELIVERY_BYTES} cut to fit one turn, with a note at the cut; any other
+ * message as it is. Only the delivered text is cut: the message the inbox holds is not changed.
+ */
+export function fitForDelivery(message: AcceptedPeerMessage): AcceptedPeerMessage {
+  const size = deliverySize(message);
+  if (size <= MAX_DELIVERY_BYTES) return message;
+  const note = `\n[… content truncated: the message was ${size} bytes, over the ${MAX_DELIVERY_BYTES / 1024} KiB one delivery takes; ask the sender to put it in a file and send its path …]`;
+  const room = MAX_DELIVERY_BYTES - DELIVERY_FRAMING_BYTES;
+  if (!message.envelope) return { ...message, content: `${cutUtf8(message.content, room)}${note}` };
+  const body = `${cutUtf8(message.envelope.body, room)}${note}`;
+  return { ...message, envelope: { ...message.envelope, body } };
+}
+
 /** A `peer-message` turn: the transcript's text, the model's, and the structured rows. */
 export interface PeerMessageTurn {
   display: string;
@@ -86,7 +123,8 @@ export function peerSenderLabel(display: PeerMessageDisplay): string {
 }
 
 /** The turn that delivers `messages`, oldest first. */
-export function buildPeerMessageTurn(messages: readonly AcceptedPeerMessage[]): PeerMessageTurn {
+export function buildPeerMessageTurn(queued: readonly AcceptedPeerMessage[]): PeerMessageTurn {
+  const messages = queued.map(fitForDelivery);
   const peerMessages = messages.map(displayOf);
   const blocks = messages.map((message) => {
     if (!message.envelope) {
@@ -108,17 +146,6 @@ export function buildPeerMessageTurn(messages: readonly AcceptedPeerMessage[]): 
     context: [...blocks, peerMessageGuidance(messages.length, replyable)].join('\n\n'),
     peerMessages,
   };
-}
-
-/** The relay chain the newest delivered message in `peerMessages` carried, if any did. */
-export function lastHopChain(
-  peerMessages: readonly PeerMessageDisplay[] | undefined,
-): string[] | undefined {
-  for (let index = (peerMessages?.length ?? 0) - 1; index >= 0; index--) {
-    const chain = peerMessages![index].hopChain;
-    if (chain !== undefined) return chain;
-  }
-  return undefined;
 }
 
 /** Statuses the model is not told about: a successful send already said what `delivered` would. */

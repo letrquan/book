@@ -105,6 +105,7 @@ import { normalizePersistedTodos } from '../../tools/todo.js';
 import { SessionRuntime } from '../../session/runtime.js';
 import { seedShellIds } from '../../jobs/shell-ids.js';
 import { createInteractiveAgentSession } from '../../session/interactive-session.js';
+import { isHostDeliveredTurn } from '../../session/name.js';
 import type { LiveSessionReporter } from '../../messaging/writer.js';
 import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/session-messaging.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
@@ -285,8 +286,11 @@ interface SendMessageOptions {
   kind?: Message['kind'];
   agentNotifications?: Message['agentNotifications'];
   peerMessages?: Message['peerMessages'];
-  /** Called once the send is accepted, before its turn is prepared: the turn has started. */
-  onAccepted?: () => void;
+  /**
+   * Called once the turn's user message is recorded: past the pre-turn compaction, so a send
+   * cancelled or superseded before then never calls it.
+   */
+  onRecorded?: () => void;
   attachments?: Message['attachments'];
   /** Managed-continuation linkage back to the originating root and parent run. */
   rootRunId?: string;
@@ -982,7 +986,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         operationIsCurrent = control.isCurrent;
         activeRunContext = control.runContext;
         activeSignal = control.signal;
-        messageOptions?.onAccepted?.();
         // The plan this turn started from, read from the runtime — the loop
         // mutates that array in place, so it is the plan the turn is actually
         // working through, not a render-old copy of it.
@@ -1135,6 +1138,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const projectPreparedSend = (
         prepared: Extract<Awaited<ReturnType<AgentSession['prepareSend']>>, { status: 'prepared' }>,
       ) => {
+        // The turn is committed: its user message is recorded. A turn no peer message started
+        // starts a fresh relay chain for what it sends (#620).
+        if (messageOptions?.kind !== 'peer-message') messaging?.beginTurn();
+        messageOptions?.onRecorded?.();
         if (prepared.sessionName !== sessionNameRef.current) {
           sessionNameRef.current = prepared.sessionName;
           setSessionName(prepared.sessionName);
@@ -1190,12 +1197,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         mode: modeRef.current,
         sessionId: activeSessionId,
         source: 'tui',
-        resumedFromRunId:
-          messageOptions?.kind === 'agent-notification' ? undefined : resumedFromRunIdRef.current,
-        rootRunId:
-          messageOptions?.kind === 'agent-notification' ? messageOptions?.rootRunId : undefined,
-        parentRunId:
-          messageOptions?.kind === 'agent-notification' ? messageOptions?.parentRunId : undefined,
+        resumedFromRunId: isHostDeliveredTurn({ kind: messageOptions?.kind })
+          ? undefined
+          : resumedFromRunIdRef.current,
+        rootRunId: isHostDeliveredTurn({ kind: messageOptions?.kind })
+          ? messageOptions?.rootRunId
+          : undefined,
+        parentRunId: isHostDeliveredTurn({ kind: messageOptions?.kind })
+          ? messageOptions?.parentRunId
+          : undefined,
         sessionName: sessionNameRef.current,
         sessionNameSource: messageOptions?.sessionNameSource,
         sessionNameExact: messageOptions?.sessionNameExact,
@@ -1518,7 +1528,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           parentSessionId: activeSessionId,
         },
       });
-      if (messageOptions?.kind !== 'agent-notification' && sendResult.status !== 'rejected') {
+      // A host-delivered turn (a notification, a peer's message) never takes the resumed run's
+      // linkage: the user's own next prompt continues it.
+      if (
+        !isHostDeliveredTurn({ kind: messageOptions?.kind }) &&
+        sendResult.status !== 'rejected'
+      ) {
         resumedFromRunIdRef.current = undefined;
       }
 
@@ -1724,8 +1739,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
   /**
    * Deliver other sessions' messages (#620) as one `peer-message` turn. The batch is taken off the
-   * inbox's queue only once the turn has started — a send the session cannot start now leaves the
-   * messages queued for the next try — and its senders hear `delivered` then.
+   * inbox's queue only once the turn's user message is recorded — a send the session cannot start,
+   * or one cancelled in its pre-turn compaction, leaves the messages queued for the next try — and
+   * its senders hear `delivered` then.
    */
   const sendPeerMessages = useCallback(
     async (batch: PeerDeliveryBatch): Promise<boolean> => {
@@ -1739,7 +1755,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         contextMessage: batch.turn.context,
         kind: 'peer-message',
         peerMessages: batch.turn.peerMessages,
-        onAccepted: () => {
+        onRecorded: () => {
           if (committed) return;
           committed = true;
           messaging.commitDelivery(batch);
@@ -1756,12 +1772,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
    */
   const sendPeerDeliveryNotice = useCallback(
     async (notice: string): Promise<boolean> => {
-      // Told once the turn starts: a turn the user then cancels must not bring the notice back.
+      // Told once the turn is recorded: a turn the user then cancels must not bring the notice back.
       let accepted = false;
       await sendMessage('Cross-session delivery notice.', undefined, {
         contextMessage: notice,
         kind: 'agent-notification',
-        onAccepted: () => {
+        onRecorded: () => {
           accepted = true;
         },
       });

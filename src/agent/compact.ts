@@ -1634,7 +1634,6 @@ export function isUserAuthored(message: Message): boolean {
   if (message.kind && message.kind !== 'conversation') return false;
   if (message.toolCalls?.length || message.toolResults?.length) return false;
   if (message.agentNotifications?.length) return false;
-  if (message.peerMessages?.length) return false;
   return true;
 }
 

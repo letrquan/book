@@ -1,8 +1,8 @@
 import { Box, Text } from 'ink';
 import React from 'react';
 import { useTheme } from '../theme.js';
-import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
-import { ItemMark } from './transcript-item.js';
+import { resultContentWidth, transcriptGrid } from '../layout.js';
+import { ItemMark, ResultBox } from './transcript-item.js';
 import { displayWidth } from './word-wrap.js';
 import { stripTerminalControls } from '../../control-characters.js';
 import { peerSenderLabel } from '../../messaging/delivery.js';
@@ -18,28 +18,37 @@ function shownBody(peer: PeerMessageDisplay): string {
   return stripTerminalControls(peer.body).replace(/\s+$/, '');
 }
 
-/** Rows a `peer-message` turn takes at `terminalWidth`, for the transcript's row estimate. */
+/** Rows `text` wraps to at `width` columns. */
+function wrappedRows(text: string, width: number): number {
+  return text
+    .split('\n')
+    .reduce((rows, line) => rows + Math.max(1, Math.ceil(displayWidth(line) / width)), 0);
+}
+
+/**
+ * Rows a `peer-message` turn takes at `terminalWidth`, for the transcript's row estimate: each
+ * heading on the content column after its mark, each body in the result column under it, the
+ * widths {@link PeerMessageRow} draws at.
+ */
 export function peerMessageRows(
   peers: readonly PeerMessageDisplay[],
   terminalWidth: number,
 ): number {
   const grid = transcriptGrid(terminalWidth);
-  return peers.reduce((rows, peer) => {
-    const heading = Math.max(1, Math.ceil(displayWidth(peerMessageHeading(peer)) / grid.content));
-    const body = shownBody(peer)
-      .split('\n')
-      .reduce(
-        (total, line) => total + Math.max(1, Math.ceil(displayWidth(line) / grid.content)),
-        0,
-      );
-    return rows + heading + body;
-  }, 0);
+  return peers.reduce(
+    (rows, peer) =>
+      rows +
+      wrappedRows(peerMessageHeading(peer), grid.content) +
+      wrappedRows(shownBody(peer), resultContentWidth(grid)),
+    0,
+  );
 }
 
 /**
  * Another session's message (#620), delivered as a turn: an item mark in the warning colour and
- * who it is from, then the message on the content column, dim. It is never drawn under the
- * prompt mark, which is the user's alone.
+ * who it is from, then the message hung under it on the result rail, dim, the way a call's result
+ * hangs under its heading. It is never drawn under the prompt mark, which is the user's alone.
+ * Every column comes from the transcript grid (`tui/layout.ts`).
  */
 export function PeerMessageRow({
   peers,
@@ -52,23 +61,34 @@ export function PeerMessageRow({
 }) {
   const theme = useTheme();
   const grid = transcriptGrid(terminalWidth);
+  if (screenReader) {
+    return (
+      <Box flexDirection="column">
+        {peers.map((peer, index) => (
+          <Text key={`${peer.msgId ?? 'peer'}-${index}`} wrap="wrap">
+            {`${peerMessageHeading(peer)}:\n${shownBody(peer)}`}
+          </Text>
+        ))}
+      </Box>
+    );
+  }
   return (
-    <Box flexDirection="column" width={grid.width - 1}>
+    <Box flexDirection="column">
       {peers.map((peer, index) => (
         <Box key={`${peer.msgId ?? 'peer'}-${index}`} flexDirection="column">
           <Box>
-            {screenReader ? null : <ItemMark state="pending" />}
+            <ItemMark state="pending" />
             <Box flexGrow={1} flexShrink={1}>
               <Text color={theme.warning} wrap="wrap">
                 {peerMessageHeading(peer)}
               </Text>
             </Box>
           </Box>
-          <Box marginLeft={screenReader ? 0 : CONTENT_COLUMN} width={grid.content}>
+          <ResultBox width={resultContentWidth(grid)}>
             <Text color={theme.subtle} wrap="wrap">
               {shownBody(peer)}
             </Text>
-          </Box>
+          </ResultBox>
         </Box>
       ))}
     </Box>
