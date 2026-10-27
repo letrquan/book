@@ -318,6 +318,45 @@ export function formatIgnoredWorkspaceSandboxKey(entry: IgnoredWorkspaceSandboxK
 }
 
 /**
+ * Settings read only from the user-global layer and an explicit `--settings` file, at any value.
+ *
+ * Each one loosens what a session lets in, and a clone can force-add `.book/settings.local.json`,
+ * so a workspace layer that sets one is ignored — the merge keeps what the trusted layers said —
+ * and reported by `book doctor`, with the file the value has to move to. Unlike the decisions in
+ * {@link WORKSPACE_FORBIDDEN_PATHS}, which a user never writes by hand, a user can easily put one
+ * of these in the wrong file, so they are reported rather than stripped in silence.
+ */
+const USER_OR_FLAG_ONLY_SETTING_PATHS: ReadonlyArray<readonly string[]> = [
+  // Cross-session messaging opens an inbox other sessions can write into (#620).
+  ['messaging', 'enabled'],
+];
+
+/** One user-or-flag-only key a workspace layer set, and the value it wrote. */
+export type IgnoredWorkspaceUserOnlyKey = IgnoredWorkspaceSandboxKey;
+
+/**
+ * The user-or-flag-only keys a workspace layer declares, with the values it wrote. Pure, and the
+ * one list `sanitizeLayer` deletes, `book doctor` reports and the settings writers refuse.
+ */
+export function ignoredWorkspaceUserOnlyKeys(settings: unknown): IgnoredWorkspaceUserOnlyKey[] {
+  if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) return [];
+  const ignored: IgnoredWorkspaceUserOnlyKey[] = [];
+  for (const path of USER_OR_FLAG_ONLY_SETTING_PATHS) {
+    const value = readPath(settings as Record<string, unknown>, path);
+    if (value !== undefined) ignored.push({ key: path.join('.'), value });
+  }
+  return ignored;
+}
+
+/** Whether a dotted settings path is, or holds, a user-or-flag-only key. */
+export function isUserOrFlagOnlySettingPath(path: string): boolean {
+  return USER_OR_FLAG_ONLY_SETTING_PATHS.some((parts) => {
+    const key = parts.join('.');
+    return key === path || key.startsWith(`${path}.`);
+  });
+}
+
+/**
  * Drop every loosening `sandbox.*` key from a workspace layer. Deleting rather
  * than overwriting is what makes the key harmless: the merge keeps whatever the
  * earlier, more trusted layer said.
@@ -343,6 +382,9 @@ function sanitizeLayer(
   delete sanitized.shell;
   // Nor may a workspace file widen the sandbox it is supposed to be confined by.
   applyIgnoredWorkspaceSandboxKeys(sanitized);
+  for (const entry of ignoredWorkspaceUserOnlyKeys(sanitized)) {
+    deletePath(sanitized as Record<string, unknown>, entry.key.split('.'));
+  }
   stripPaths(sanitized, WORKSPACE_FORBIDDEN_PATHS);
   return sanitized;
 }

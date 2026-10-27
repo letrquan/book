@@ -52,6 +52,7 @@ import { buildChildEnv } from '../child-env.js';
 import { resolveBookHome } from '../book-home.js';
 import { isReaderGoneError } from '../reader-gone.js';
 import { cleanupRunStatus } from '../run-status.js';
+import { InboxServer, inboxStartupNotices } from '../messaging/inbox-server.js';
 import { LiveSessionWriter } from '../messaging/writer.js';
 import { getPackageVersion } from '../version-info.js';
 
@@ -474,6 +475,18 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       version: getPackageVersion(),
     });
     void liveSession.start();
+    // Its inbox, when cross-session messaging is on (#620; never on Windows yet). Created right
+    // before the `try` whose `finally` closes it, and unref'd, so it can never hold the process
+    // open by itself. The record advertises it only once the socket and its key both exist, and a
+    // start that fails is one notice after the first frame, never a failed or delayed launch.
+    const inbox =
+      config.settings.messaging.enabled && process.platform !== 'win32'
+        ? new InboxServer({ sessionId: () => liveSession.sessionId })
+        : undefined;
+    const inboxStart = inbox?.start().then((result) => {
+      if (result.status === 'listening') liveSession.setMessagingSocket(result.socketPath);
+      return result;
+    });
     try {
       const rendererMode = resolveTuiRendererMode(process.env.BOOK_TUI_RENDERER, {
         isTTY: process.stdout.isTTY === true,
@@ -508,6 +521,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
             liveSession,
           },
           startupNotices: [...nodeNotices, ...providerNotices, ...instructionNotices],
+          lateStartupNotices: inboxStart && inboxStartupNotices(inboxStart),
         }),
         {
           exitOnCtrlC: false,
@@ -526,6 +540,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       app?.cleanup();
       restoreScreen();
       await liveSession.close();
+      await inbox?.close();
       await mcpHost.dispose();
       ephemeralRewind?.dispose();
     }

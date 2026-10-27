@@ -40,7 +40,7 @@ export interface SeatbeltRule {
   filters: readonly SeatbeltPathFilter[];
   /**
    * Narrow every filter to Book's own temporary entries below it: any path with
-   * a component named `book-rewind-*`, `book-index-*` or `book-config-preflight-*`.
+   * a component named `book-rewind-*`, `book-index-*`, `book-config-preflight-*` or `book-socks*`.
    * Used for the temp roots, which are writable here but private under
    * bubblewrap. The match is not anchored to the root, since the root is a
    * parameter and a regex cannot name one, so a deeper directory with such a
@@ -78,12 +78,20 @@ export interface RenderedSeatbeltProfile {
 /**
  * The prefixes of the temporary entries Book itself creates under `os.tmpdir()`
  * and later trusts: an ephemeral rewind store, a managed agent's scratch index,
- * the settings preflight copy. A sandboxed command that could rewrite one would
- * be writing into what the host does next. A new `mkdtemp` prefix in production
- * code belongs here; `sandbox-seatbelt.test.ts` checks the list against the
- * source.
+ * the settings preflight copy, the messaging inbox's socket directory
+ * (`book-socks-<uid>`, or `book-socks` under an `XDG_RUNTIME_DIR` set inside a
+ * temp root; #620). A sandboxed command that could rewrite one would be writing
+ * into what the host does next. A new `mkdtemp` prefix, or fixed `book-…` name,
+ * in production code belongs here; `sandbox-seatbelt.test.ts` checks the list
+ * against the source.
  */
-export const BOOK_TEMP_PREFIXES = ['book-rewind-', 'book-index-', 'book-config-preflight-'];
+export const BOOK_TEMP_PREFIXES = [
+  'book-rewind-',
+  'book-index-',
+  'book-config-preflight-',
+  // No dash, so it covers the runtime directory's `book-socks` too.
+  'book-socks',
+];
 
 // The prefixes are constants of this file, letters and `-` only, so they need no
 // regex escaping; a test pins that.

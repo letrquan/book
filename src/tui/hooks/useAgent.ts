@@ -156,6 +156,8 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
    * launch's and never an earlier one's.
    */
   startupNotices?: readonly string[];
+  /** Startup warnings that settle after the first frame, shown the same way once they do. */
+  lateStartupNotices?: Promise<readonly string[]>;
 }
 
 function providerIdFromSelection(selection: string): string | undefined {
@@ -487,6 +489,25 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // What the streaming message holds (see StreamOutput), tracked as events arrive.
   const streamOutputRef = useRef<StreamOutput>(freshStreamOutput());
   const messagesRef = useRef<Message[]>(messages);
+  // Startup warnings that settle after the first frame (#620): appended once, in memory only,
+  // like the ones known at launch.
+  const lateStartupNotices = session.lateStartupNotices;
+  const startupNoticeCount = session.startupNotices?.length ?? 0;
+  useEffect(() => {
+    if (!lateStartupNotices) return;
+    let mounted = true;
+    void lateStartupNotices.then((lines) => {
+      if (!mounted || lines.length === 0) return;
+      setMessages((prev) => {
+        const next = [...prev, ...startupNoticeMessages(lines, Date.now(), startupNoticeCount)];
+        messagesRef.current = next;
+        return next;
+      });
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [lateStartupNotices, startupNoticeCount]);
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
   const sessionNameRef = useRef(session.sessionName);

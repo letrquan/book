@@ -180,6 +180,74 @@ async function describeLiveSessions(): Promise<string> {
   }
 }
 
+/**
+ * Cross-session messaging (#620): whether it is on, where this machine's inbox would bind and
+ * whether that directory passes the checks, and any workspace layer that tried to turn it on.
+ * Nothing is created: a directory that does not exist yet is reported as such.
+ */
+async function describeMessaging(
+  enabled: boolean,
+  workspace: string,
+  noSettings: boolean | undefined,
+): Promise<string[]> {
+  const lines: string[] = [];
+  if (process.platform === 'win32') {
+    lines.push('Messaging: not supported on Windows yet');
+  } else if (!enabled) {
+    lines.push(
+      'Messaging: off (experimental; set messaging.enabled in ~/.book/settings.json to turn it on)',
+    );
+  } else {
+    lines.push('Messaging: on (experimental)');
+    const { resolveSocketDir } = await import('../messaging/socket-dir.js');
+    try {
+      const resolution = await resolveSocketDir({ create: false });
+      const passedOver = resolution.skipped.map(
+        (skip) => `; fell back from ${skip.dir}: ${skip.message}`,
+      );
+      if (!resolution.ok) {
+        lines.push(
+          `  Socket directory: [!] none usable${passedOver.join('')}; the TUI opens no inbox`,
+        );
+      } else {
+        const state = resolution.missing
+          ? 'not created yet; the TUI creates it 0700'
+          : resolution.loose
+            ? '[!] readable by other users; the TUI tightens it to 0700'
+            : 'vetted';
+        lines.push(`  Socket directory: ${resolution.dir} (${state})${passedOver.join('')}`);
+      }
+    } catch (error) {
+      lines.push(
+        `  Socket directory: [!] cannot be checked: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  if (!noSettings) {
+    const {
+      formatIgnoredWorkspaceSandboxKey,
+      ignoredWorkspaceUserOnlyKeys,
+      isUserSettingsFile,
+      loadSettingsFile,
+    } = await import('../settings-loader.js');
+    for (const [label, path] of await settingsLayers(workspace)) {
+      if (label === 'User' || isUserSettingsFile(path)) continue;
+      let document: unknown;
+      try {
+        document = loadSettingsFile(path);
+      } catch {
+        continue;
+      }
+      for (const entry of ignoredWorkspaceUserOnlyKeys(document)) {
+        lines.push(
+          `  Ignored from ${path}: ${formatIgnoredWorkspaceSandboxKey(entry)} — read only from ~/.book/settings.json or --settings`,
+        );
+      }
+    }
+  }
+  return lines;
+}
+
 export async function runDoctorCommand(
   workspace: string,
   options: { noSettings?: boolean } = {},
@@ -722,6 +790,13 @@ export async function runDoctorCommand(
   // The live-session registry the TUI writes (#620). Doctor only reports it: the directory is not
   // created, and records whose process is gone are not swept.
   console.log('Live sessions: ' + (await describeLiveSessions()));
+  for (const line of await describeMessaging(
+    settings.messaging.enabled,
+    config.workspace,
+    options.noSettings,
+  )) {
+    console.log(line);
+  }
   console.log();
 
   // Environment.

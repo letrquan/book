@@ -55,7 +55,13 @@ const LEGACY_NOTICE =
 const roots: string[] = [];
 let lastFrameText = '';
 
-function launch(options: { notices?: string[]; persisted?: Message[] } = {}) {
+function launch(
+  options: {
+    notices?: string[];
+    persisted?: Message[];
+    lateNotices?: Promise<readonly string[]>;
+  } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), 'book-startup-notices-'));
   roots.push(root);
   const workspace = join(root, 'workspace');
@@ -84,6 +90,7 @@ function launch(options: { notices?: string[]; persisted?: Message[] } = {}) {
         timelineStore: store,
       }}
       startupNotices={options.notices}
+      lateStartupNotices={options.lateNotices}
     />,
   );
   return { view, store, sessionId };
@@ -138,6 +145,25 @@ describe('App startupNotices', () => {
     await new Promise((resolve) => setTimeout(resolve, 60));
 
     expect(occurrences(words(view.lastFrame()), 'book trust provider evil')).toBe(1);
+  });
+
+  it('shows a notice that is known only after the first frame, once, and saves none of it', async () => {
+    let resolveLate!: (lines: readonly string[]) => void;
+    const lateNotices = new Promise<readonly string[]>((resolve) => (resolveLate = resolve));
+    const { view, store, sessionId } = launch({ notices: [PENDING_NOTICE], lateNotices });
+    await waitFor(() => words(view.lastFrame()).includes('book trust provider evil'));
+    expect(words(view.lastFrame())).not.toContain('inbox did not start');
+
+    resolveLate(['⚠  Cross-session messaging is on, but the inbox did not start: no socket.']);
+    await waitFor(() => words(view.lastFrame()).includes('inbox did not start'));
+    view.stdin.write('a');
+    await waitFor(() => (view.lastFrame() ?? '').includes('a'));
+    expect(occurrences(words(view.lastFrame()), 'inbox did not start')).toBe(1);
+    expect(occurrences(words(view.lastFrame()), 'book trust provider evil')).toBe(1);
+    const saved = store.load(sessionId);
+    expect(saved.transcript.map((message) => message.content).join('\n')).not.toContain(
+      'inbox did not start',
+    );
   });
 
   it('shows nothing extra without notices', async () => {

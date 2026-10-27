@@ -10,12 +10,14 @@ import {
   applySettingsEnvOverrides,
   startupAnimationEnvNote,
   ignoredWorkspaceSandboxKeys,
+  ignoredWorkspaceUserOnlyKeys,
   formatIgnoredWorkspaceSandboxKey,
   isUserSettingsFile,
   settingsLayerPaths,
   workspaceLayerThatEnabledSandbox,
 } from './settings-loader.js';
 import { hookFingerprint } from './hook-approvals.js';
+import { blockedConfigWritePath, blockedWorkspaceSettingWrite } from './settings-scope.js';
 import { collectWithheldProjectNotices } from './project-approval-notices.js';
 import { updateWorkspaceTrust } from './workspace-trust.js';
 import {
@@ -2215,5 +2217,69 @@ describe('a local advisorModel "off"', () => {
     writeLayer('settings.local.json', { advisorModel: 'local/adv' });
 
     expect(load().advisorModel).toBe('local/adv');
+  });
+});
+
+describe('user-or-flag-only keys: messaging.enabled (#620)', () => {
+  function resolveWith(layers: {
+    user?: object;
+    project?: object;
+    local?: object;
+    override?: object;
+  }): ResolvedSettings {
+    const paths = {
+      userSettingsPath: join(userDir, 'user.json'),
+      projectSettingsPath: join(dir, '.book', 'settings.json'),
+      localSettingsPath: join(dir, '.book', 'settings.local.json'),
+      trustStorePath: join(userDir, 'trust.json'),
+    };
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    if (layers.user) writeFileSync(paths.userSettingsPath, JSON.stringify(layers.user));
+    if (layers.project) writeFileSync(paths.projectSettingsPath, JSON.stringify(layers.project));
+    if (layers.local) writeFileSync(paths.localSettingsPath, JSON.stringify(layers.local));
+    const overridePath = layers.override ? join(userDir, 'override.json') : undefined;
+    if (overridePath) writeFileSync(overridePath, JSON.stringify(layers.override));
+    return resolveSettings(dir, overridePath, paths);
+  }
+
+  const on = { messaging: { enabled: true } };
+  const off = { messaging: { enabled: false } };
+
+  it('is off by default', () => {
+    expect(resolveWith({}).messaging).toEqual({ enabled: false });
+    expect(DEFAULT_SETTINGS.messaging).toEqual({ enabled: false });
+  });
+
+  it('is read from the user-global layer and from --settings', () => {
+    expect(resolveWith({ user: on }).messaging.enabled).toBe(true);
+    expect(resolveWith({ override: on }).messaging.enabled).toBe(true);
+    expect(resolveWith({ user: on, override: off }).messaging.enabled).toBe(false);
+  });
+
+  it("ignores a repository's force-added settings.local.json that turns it on", () => {
+    expect(resolveWith({ local: on }).messaging.enabled).toBe(false);
+    expect(resolveWith({ project: on }).messaging.enabled).toBe(false);
+  });
+
+  it('ignores a workspace layer that turns it off, too: the trusted layers decide', () => {
+    expect(resolveWith({ user: on, project: off, local: off }).messaging.enabled).toBe(true);
+  });
+
+  it('reports what a workspace layer set, with the value it wrote', () => {
+    expect(ignoredWorkspaceUserOnlyKeys(on)).toEqual([{ key: 'messaging.enabled', value: true }]);
+    expect(ignoredWorkspaceUserOnlyKeys({ messaging: {} })).toEqual([]);
+    expect(ignoredWorkspaceUserOnlyKeys(null)).toEqual([]);
+  });
+
+  it('is refused by the workspace writers, and written to the user layer', () => {
+    expect(blockedWorkspaceSettingWrite('messaging.enabled', true)).toContain(
+      'messaging.enabled is ignored when read from any file inside the workspace',
+    );
+    expect(blockedWorkspaceSettingWrite('messaging.enabled')).toBeDefined();
+    expect(blockedWorkspaceSettingWrite('messaging', { enabled: false })).toBeDefined();
+    expect(blockedWorkspaceSettingWrite('messaging', {})).toBeUndefined();
+    expect(blockedConfigWritePath('messaging.enabled', true, 'local')).toBeDefined();
+    expect(blockedConfigWritePath('messaging.enabled', true, 'project')).toBeDefined();
+    expect(blockedConfigWritePath('messaging.enabled', true, 'user')).toBeUndefined();
   });
 });

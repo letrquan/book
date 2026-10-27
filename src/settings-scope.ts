@@ -3,6 +3,8 @@ import { resolveBookHome } from './book-home.js';
 import {
   formatIgnoredWorkspaceSandboxKey,
   ignoredWorkspaceSandboxKeys,
+  ignoredWorkspaceUserOnlyKeys,
+  isUserOrFlagOnlySettingPath,
   type IgnoredWorkspaceSandboxKey,
   type WorkspaceLayerSandboxView,
 } from './settings-loader.js';
@@ -156,10 +158,33 @@ export function blockedWorkspaceSandboxSetting(path: string, value: unknown): st
  * blocks the tightening half of the surface on a guess.
  */
 export function blockedWorkspaceSettingWrite(path: string, value?: unknown): string | undefined {
-  const blocked = blockedWorkspaceSettingPath(path);
+  const blocked = blockedWorkspaceSettingPath(path) ?? blockedWorkspaceUserOnlySetting(path, value);
   if (blocked) return blocked;
   if (value === undefined) return alwaysRefusedWorkspaceSandboxPath(path);
   return blockedWorkspaceSandboxSetting(path, value);
+}
+
+/**
+ * The guidance for a write of a user-or-flag-only key (`messaging.enabled`) to a workspace layer,
+ * which the loader ignores at every value, or undefined if the write holds none. A whole-block
+ * write is judged by the block it stores; with no value in hand, by the path alone.
+ */
+function blockedWorkspaceUserOnlySetting(path: string, value: unknown): string | undefined {
+  let keys: string[];
+  if (value === undefined) {
+    keys = isUserOrFlagOnlySettingPath(path) ? [path] : [];
+  } else {
+    const document = path
+      .split('.')
+      .reduceRight<unknown>((nested, segment) => ({ [segment]: nested }), value);
+    keys = ignoredWorkspaceUserOnlyKeys(document).map((entry) => entry.key);
+  }
+  if (keys.length === 0) return undefined;
+  return (
+    `${keys.join(', ')} is ignored when read from any file inside the workspace: it loosens what ` +
+    `a session accepts, and a repository can ship its own .book/settings.local.json. ` +
+    TRUSTED_SETTINGS_LOCATION
+  );
 }
 /**
  * The sandbox keys a workspace layer may not supply at any value, for a caller

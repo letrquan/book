@@ -10,9 +10,11 @@ const STARTUP_NOTICE_ID_PREFIX = 'startup-notice-';
 export function startupNoticeMessages(
   lines: readonly string[],
   timestamp: number = Date.now(),
+  /** The first row's number: a later batch continues after the rows already shown. */
+  firstIndex = 0,
 ): Message[] {
   return lines.map((content, index) => ({
-    id: `${STARTUP_NOTICE_ID_PREFIX}${index}`,
+    id: `${STARTUP_NOTICE_ID_PREFIX}${firstIndex + index}`,
     role: 'assistant' as const,
     content,
     includeInContext: false,

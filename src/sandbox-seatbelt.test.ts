@@ -589,7 +589,7 @@ describe('renderSeatbeltProfile', () => {
     });
 
     expect(profile).toContain(
-      '(deny file-read* (require-all (subpath (param "P0")) (regex #"/(book-rewind-|book-index-|book-config-preflight-)[^/]*(/|$)")))',
+      '(deny file-read* (require-all (subpath (param "P0")) (regex #"/(book-rewind-|book-index-|book-config-preflight-|book-socks)[^/]*(/|$)")))',
     );
   });
 });
@@ -601,8 +601,8 @@ describe('BOOK_TEMP_PREFIXES', () => {
 
   /**
    * A temp entry Book trusts and this list does not name is one a sandboxed
-   * command on macOS can rewrite. Production code that adds a `mkdtemp` under
-   * `tmpdir()` has to add its prefix here.
+   * command on macOS can rewrite. Production code that adds a `mkdtemp`, or a
+   * fixed `book-…-${…}` name, under `tmpdir()` has to add its prefix here.
    */
   it('names every prefix production code creates under tmpdir()', () => {
     const sourceRoot = fileURLToPath(new URL('.', import.meta.url));
@@ -615,6 +615,12 @@ describe('BOOK_TEMP_PREFIXES', () => {
       // Whatever the root expression is (`tmpdir()`, a `temporaryRoot` defaulting to
       // it): a `book-` prefix handed to mkdtemp is one this list has to name.
       for (const match of text.matchAll(/mkdtemp(?:Sync)?\(\s*join\([^']*'(book-[^']*)'/g)) {
+        prefixes.add(match[1]);
+      }
+      // A fixed name under tmpdir() built from a template, such as the messaging inbox's
+      // `book-socks-${uid}` (#620): the part before the first substitution, less its dash, is
+      // the prefix, so the bare name (`$XDG_RUNTIME_DIR/book-socks`) is covered as well.
+      for (const match of text.matchAll(/tmpdir\(\)\s*,\s*`(book-[a-z-]*?)-?\$\{/g)) {
         prefixes.add(match[1]);
       }
     }

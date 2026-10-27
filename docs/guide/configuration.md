@@ -643,6 +643,35 @@ turn to re-read it. A later run of the same child does report back, because noth
 it. That covers an `AgentSend` follow-up, a re-run after Book restarts, and a queued message
 after a failed run.
 
+## Cross-session messaging (experimental)
+
+```json
+{ "messaging": { "enabled": true } }
+```
+
+`messaging.enabled` (default `false`) gives each interactive TUI session an inbox that other Book
+sessions on the same machine can deliver messages to (#620). **It is not usable yet**: this
+release has the transport only, and the tools that send and the delivery into the conversation
+come later. Print mode, the SDK and agents never open an inbox, and on Windows the setting starts
+nothing yet.
+
+The key is read **only from `~/.book/settings.json` (`<BOOK_HOME>/settings.json`) and a
+`--settings` file**. It loosens what a session lets in, and a clone can force-add its own
+`.book/settings.local.json`, so a value in either workspace file is ignored at any value, and
+`book doctor` names the file. `book config set --project`/`--local` and `/config` refuse to write
+it there.
+
+With it on, the inbox is a socket (`0600`) in a private directory (`0700`):
+`<BOOK_HOME>/socks/` when `BOOK_HOME` is set, otherwise `$XDG_RUNTIME_DIR/book-socks/` on Linux,
+falling back to `<tmp>/book-socks-<uid>/` when that path is too long for a socket or the directory
+is refused (a symlink, another user's, or inside a directory others can write without the sticky
+bit). macOS has no system runtime directory, so `XDG_RUNTIME_DIR` is not used there, and the
+sandbox keeps sandboxed commands out of `<tmp>/book-socks-<uid>/`. The key other sessions
+authenticate with is a `0600` file beside the session's record in
+`<BOOK_HOME>/live-sessions/`. Both go when the session ends. `book doctor` shows the socket
+directory and whether it passes those checks. A session whose inbox cannot start shows one notice
+and runs normally.
+
 ## Environment variables
 
 | Variable                                                                                          | Purpose                                                                                    |

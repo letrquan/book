@@ -135,6 +135,65 @@ describe('LiveSessionWriter', () => {
     await writer.close();
   });
 
+  it("writes exactly PR 1's fields, in order, while messaging is off (#620)", async () => {
+    const { writer } = createWriter();
+    await writer.start();
+    expect(Object.keys(readRecord(pathOf(writer)))).toEqual([
+      'pid',
+      'cwd',
+      'startedAt',
+      'procStart',
+      'pidDomain',
+      'version',
+      'protocol',
+      'features',
+      'kind',
+      'name',
+      'nameSource',
+      'sessionId',
+      'status',
+      'statusUpdatedAt',
+      'updatedAt',
+    ]);
+    expect(readRecord(pathOf(writer)).features).toEqual([]);
+  });
+
+  it('advertises the inbox once the host says its socket and key are ready', async () => {
+    const { writer, writes } = createWriter();
+    await writer.start();
+    const before = readRecord(pathOf(writer));
+    writer.setMessagingSocket('/run/user/1000/book-socks/4242.sock');
+    await writer.flushed();
+    const after = readRecord(pathOf(writer));
+    expect(after).toEqual({
+      ...before,
+      features: ['inbox'],
+      messagingSocketPath: '/run/user/1000/book-socks/4242.sock',
+      updatedAt: expect.any(Number),
+    });
+    expect(writes).toHaveLength(2);
+    // The same socket again changes nothing.
+    writer.setMessagingSocket('/run/user/1000/book-socks/4242.sock');
+    await writer.flushed();
+    expect(writes).toHaveLength(2);
+    await writer.close();
+  });
+
+  it('carries an inbox advertised before the first write into it', async () => {
+    const { writer, writes } = createWriter();
+    writer.setMessagingSocket('/s/4242.sock');
+    await writer.start();
+    expect(writes).toHaveLength(1);
+    expect(readRecord(pathOf(writer))).toMatchObject({
+      features: ['inbox'],
+      messagingSocketPath: '/s/4242.sock',
+    });
+    expect(writer.sessionId).toBe('session-1');
+    writer.setSessionId('session-2');
+    expect(writer.sessionId).toBe('session-2');
+    await writer.close();
+  });
+
   it('re-rolls a name a live session already holds', async () => {
     const dir = liveSessionsDir(bookHome());
     mkdirSync(dir, { recursive: true });

@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -1155,5 +1156,74 @@ describe('runDoctorCommand live sessions (#620)', () => {
     symlinkSync(target, join(bookHome(), 'live-sessions'));
     const output = await doctorOutput();
     expect(output).toContain('is a symlink; the TUI does not register there');
+  });
+});
+
+describe('runDoctorCommand messaging (#620)', () => {
+  const posix = process.platform !== 'win32';
+  let socketRoot: string;
+  let previousSocketDir: string | undefined;
+
+  beforeEach(() => {
+    socketRoot = mkdtempSync(join(posix ? '/tmp' : tmpdir(), 'bk-doctor-socks-'));
+    previousSocketDir = process.env.BOOK_MESSAGING_SOCKET_DIR;
+    process.env.BOOK_MESSAGING_SOCKET_DIR = join(socketRoot, 'socks');
+  });
+
+  afterEach(() => {
+    if (previousSocketDir === undefined) delete process.env.BOOK_MESSAGING_SOCKET_DIR;
+    else process.env.BOOK_MESSAGING_SOCKET_DIR = previousSocketDir;
+    rmSync(socketRoot, { recursive: true, force: true });
+  });
+
+  it.skipIf(!posix)('says messaging is off by default, and checks no directory', async () => {
+    const output = await doctorOutput();
+    expect(output).toContain('Messaging: off (experimental;');
+    expect(output).not.toContain('Socket directory:');
+  });
+
+  it.skipIf(!posix)(
+    'reports the socket directory when on, without creating it or printing the token',
+    async () => {
+      writeUserSettings({ messaging: { enabled: true } });
+      const dir = join(realpathSync(socketRoot), 'socks');
+      expect(await doctorOutput()).toContain(
+        `  Socket directory: ${dir} (not created yet; the TUI creates it 0700)`,
+      );
+      expect(existsSync(dir)).toBe(false);
+
+      const { InboxServer } = await import('../messaging/inbox-server.js');
+      const inbox = new InboxServer({ sessionId: () => 's1' });
+      const started = await inbox.start();
+      try {
+        expect(started.status).toBe('listening');
+        const token = (JSON.parse(readFileSync(inbox.keyPath!, 'utf8')) as { peerToken: string })
+          .peerToken;
+        const output = await doctorOutput();
+        expect(output).toContain(`  Socket directory: ${dir} (vetted)`);
+        expect(output).not.toContain(token);
+      } finally {
+        await inbox.close();
+      }
+    },
+  );
+
+  it.skipIf(!posix)('flags a socket directory it would refuse', async () => {
+    writeUserSettings({ messaging: { enabled: true } });
+    writeFileSync(join(socketRoot, 'socks'), '');
+    expect(await doctorOutput()).toMatch(
+      /Socket directory: \[!\] none usable; fell back from .*socks: .* is not a directory; remove it; the TUI opens no inbox/,
+    );
+  });
+
+  it('reports a workspace layer that tries to turn it on', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    const local = join(workspace, '.book', 'settings.local.json');
+    writeFileSync(local, JSON.stringify({ messaging: { enabled: true } }));
+    const output = await doctorOutput();
+    expect(output).toContain(
+      `  Ignored from ${local}: messaging.enabled=true — read only from ~/.book/settings.json or --settings`,
+    );
+    if (posix) expect(output).toContain('Messaging: off');
   });
 });

@@ -1150,7 +1150,8 @@ system`; the read-only git directory note is appended for it all the same.
 - **Temp directories** are the host's own, not a private `/tmp`: macOS tools write to the per-user
   temp directory whatever `TMPDIR` says (`mktemp`, and the `xcrun` shim behind `/usr/bin/git`), so a
   private one breaks them. `os.tmpdir()` and `/tmp` are therefore readable and writable, except
-  for Book's own entries in them (`book-rewind-*`, `book-index-*`, `book-config-preflight-*`) and a
+  for Book's own entries in them (`book-rewind-*`, `book-index-*`, `book-config-preflight-*`, and
+  the messaging inbox's `book-socks*`) and a
   `BOOK_HOME` placed there. Book's home is denied by path wherever it is, and a temp directory that
   is or contains the home directory is not used at all.
 - **Network** is the host's unless a domain rule is declared, in which case every socket is denied
