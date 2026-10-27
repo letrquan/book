@@ -124,11 +124,19 @@ import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
 import { startupNoticeMessages } from '../startup-notices.js';
 
-/** The newest reply the model gave, or undefined before its first. */
-export function lastAssistantText(messages: readonly Message[]): string | undefined {
+/**
+ * The model's own reply in the newest turn, for an idle notice's `detail` (#620 PR 6), or
+ * undefined when that turn produced no text. Only model text counts: the rows the host adds — a
+ * held peer message, a slash command's output, a notice, a checkpoint — are skipped, never read,
+ * and a turn whose start comes first ends the search.
+ */
+export function lastTurnReply(messages: readonly Message[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]!;
-    if (message.role === 'assistant' && message.content.trim() !== '') return message.content;
+    if (message.kind === 'local' || message.kind === 'checkpoint') continue;
+    if (message.role !== 'assistant') return undefined;
+    if (message.kind !== undefined && message.kind !== 'conversation') continue;
+    if (message.content.trim() !== '') return message.content;
   }
   return undefined;
 }
@@ -622,7 +630,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // read when the notice goes out, with the provider's secrets redacted.
   useEffect(() => {
     messaging?.setTurnTextSource(() => {
-      const text = lastAssistantText(messagesRef.current);
+      const text = lastTurnReply(messagesRef.current);
       return text && redactSecrets(text, collectProviderSecrets(liveConfigRef.current));
     });
   }, [messaging]);
@@ -1899,11 +1907,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         ...(options.peerTurnClass !== undefined ? { peerTurnClass: options.peerTurnClass } : {}),
         onRecorded: () => {
           accepted = true;
+          // An idle notice's turn continues the relay its subscription was sent on.
+          if (options.relayChain) messaging?.continueRelay(options.relayChain);
         },
       });
       return accepted;
     },
-    [sendMessage],
+    [sendMessage, messaging],
   );
 
   const sendBackgroundShellCompletion = useCallback(

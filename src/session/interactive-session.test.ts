@@ -213,6 +213,35 @@ describe('createInteractiveAgentSession', () => {
       }
     });
 
+    it('tells the messaging runtime the status the record reports, idle from the start', async () => {
+      const reporter = recordingReporter();
+      const statuses: string[] = [];
+      const messaging = {
+        available: () => true,
+        list: async () => ({ peers: [] }),
+        resolve: async () => ({
+          ok: false as const,
+          problem: 'not_found' as const,
+          candidates: [],
+        }),
+        send: async () => ({ status: 'unavailable' as const }),
+        setSessionStatus: (status: string) => statuses.push(status),
+      };
+      const session = createInteractiveAgentSession({ liveSession: reporter, messaging });
+      expect(statuses).toEqual(['idle']);
+      const answer = session.interactions.requestUserQuestion({
+        id: 'q-1',
+        questions: [],
+        source: { kind: 'root' },
+      });
+      session.interactions.cancelAll('test');
+      await answer;
+      // Every status the record was told, the runtime was told too, in the same order.
+      expect(statuses.slice(1)).toEqual(reporter.states.map((state) => state.status));
+      expect(statuses).toContain('waiting');
+      expect(statuses.at(-1)).toBe('idle');
+    });
+
     it('reports a question for the user as input needed', async () => {
       const reporter = recordingReporter();
       const session = createInteractiveAgentSession({ liveSession: reporter });

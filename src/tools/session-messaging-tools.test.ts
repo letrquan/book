@@ -529,7 +529,7 @@ describe('SessionSend notify_when_idle (#620 PR 6)', () => {
   const target = row('peer-b');
 
   it('subscribes without a message, and says exactly one notice will come', async () => {
-    const { sends, call } = handle(() => ({ status: 'subscribed', target, already: false }));
+    const { sends, call } = handle(() => ({ status: 'subscribed', target }));
     const result = await call({ to: 'peer-b', notify_when_idle: true });
     expect(sends).toEqual([expect.objectContaining({ to: 'peer-b', notifyWhenIdle: true })]);
     expect(sends[0]).not.toHaveProperty('message');
@@ -545,7 +545,7 @@ describe('SessionSend notify_when_idle (#620 PR 6)', () => {
       status: 'sent',
       target,
       msgId: 'm1',
-      idle: { status: 'subscribed', already: false },
+      idle: { status: 'subscribed' },
     }));
     const result = await call({ to: 'peer-b', message: 'run the tests', notify_when_idle: true });
     expect(sends[0]).toMatchObject({ message: 'run the tests', notifyWhenIdle: true });
@@ -555,7 +555,7 @@ describe('SessionSend notify_when_idle (#620 PR 6)', () => {
   });
 
   it('treats an empty message with notify_when_idle as a pure subscription, and refuses neither', async () => {
-    const { sends, call } = handle(() => ({ status: 'subscribed', target, already: false }));
+    const { sends, call } = handle(() => ({ status: 'subscribed', target }));
     await call({ to: 'peer-b', message: '  ', notify_when_idle: true });
     expect(sends[0]).not.toHaveProperty('message');
     for (const args of [
@@ -569,18 +569,40 @@ describe('SessionSend notify_when_idle (#620 PR 6)', () => {
     expect(sends).toHaveLength(1);
   });
 
-  it('says when a subscription already waits, and when one could not be made', () => {
-    expect(sessionSendResult({ status: 'subscribed', target, already: true }).content).toContain(
-      'that one notice answers this request too',
+  it('says a pure subscription failed as a subscription, never a message, with its detail folded', () => {
+    const result = sessionSendResult({
+      status: 'not_subscribed',
+      reason: 'busy',
+      detail: 'timed out\u001b[2J\nafter 5 s',
+      target,
+    });
+    expect(result.status).toBe('error');
+    expect(result.structuredError).toMatchObject({
+      code: 'subscription_failed',
+      retryable: true,
+      remediation: 'Try again shortly.',
+    });
+    expect(result.structuredError?.message).toMatch(
+      /^The subscription to peer-b \[a1b2c3\] could not be made \(busy: timed out\S* \[2J after 5 s\)\. No idle notice will come\.$/,
     );
+    expect(result.structuredError?.message).not.toMatch(/message|\u001b|\n/);
+    expect(
+      sessionSendResult({ status: 'not_subscribed', reason: 'relay_limit', detail: 'x', target })
+        .structuredError,
+    ).toMatchObject({
+      code: 'relay_limit',
+      remediation: expect.stringContaining('Do not subscribe again'),
+    });
     expect(
       sessionSendResult({
         status: 'sent',
         target,
         msgId: 'm1',
-        idle: { status: 'gone', detail: 'no live key' },
+        idle: { status: 'gone', detail: 'no live\u001b[2J key' },
       }).content,
-    ).toContain('The idle notice was not set up (gone: no live key); do not poll instead.');
+    ).toMatch(
+      /The idle notice was not set up \(gone: no live\S* \[2J key\); do not poll instead\.$/,
+    );
   });
 
   it('tells the model to subscribe rather than poll, in Claude Code’s terms', () => {

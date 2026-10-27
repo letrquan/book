@@ -129,15 +129,30 @@ function quoted(text: string): string {
   return JSON.stringify(foldControlCharacters(text));
 }
 
-/** What the result says of an idle subscription, after the target's label. */
+/** What a made subscription promises. */
+const SUBSCRIBED_SENTENCE =
+  'One [Cross-session idle notice] arrives when it next goes idle or exits (only your user sees it if this session would not accept a message from that one). Do not poll it meanwhile.';
+
+/** What the result of a message says of the subscription sent with it. */
 function idleSentence(idle: IdleSubscribeResult): string {
-  if (idle.status === 'subscribed') {
-    return idle.already
-      ? 'A notice this session asked it for is still waiting, and that one notice answers this request too: one [Cross-session idle notice] arrives when it next goes idle or exits.'
-      : 'One [Cross-session idle notice] arrives when it next goes idle or exits (only your user sees it if this session would not accept a message from that one). Do not poll it meanwhile.';
-  }
-  return `The idle notice was not set up (${idle.status}: ${idle.detail}); do not poll instead.`;
+  if (idle.status === 'subscribed') return SUBSCRIBED_SENTENCE;
+  return `The idle notice was not set up (${idle.status}: ${foldControlCharacters(idle.detail)}); do not poll instead.`;
 }
+
+/** What to do about a subscription that could not be made, by why. */
+const NOT_SUBSCRIBED_REMEDIATION: Record<
+  Extract<PeerSendOutcome, { status: 'not_subscribed' }>['reason'],
+  string
+> = {
+  relay_limit:
+    'Do not subscribe again, and do not try another route: tell your user the sessions have been passing requests back and forth, and let them decide.',
+  gone: 'Call SessionList again: the session may have ended or restarted.',
+  busy: 'Try again shortly.',
+  sender_paced:
+    'Do not retry in a loop: this session has asked that one for too much at once. Ask again later.',
+  message_too_large: 'Do not retry: the subscription frame was refused before it was sent.',
+  failed: 'Do not retry in a loop; tell your user if the notice matters.',
+};
 
 /** The tool result for what a send came to. */
 export function sessionSendResult(outcome: PeerSendOutcome): ToolResult {
@@ -156,9 +171,20 @@ export function sessionSendResult(outcome: PeerSendOutcome): ToolResult {
   }
   if (outcome.status === 'subscribed') {
     const target = foldControlCharacters(peerLabel(outcome.target));
-    return toolSuccess(
-      `Asked ${target} for an idle notice. ${idleSentence({ status: 'subscribed', already: outcome.already })}`,
-      { presentation: { kind: 'text', summary: `notify when ${target} is idle` } },
+    return toolSuccess(`Asked ${target} for an idle notice. ${SUBSCRIBED_SENTENCE}`, {
+      presentation: { kind: 'text', summary: `notify when ${target} is idle` },
+    });
+  }
+  if (outcome.status === 'not_subscribed') {
+    const target = foldControlCharacters(peerLabel(outcome.target));
+    return toolFailure(
+      `The subscription to ${target} could not be made (${outcome.reason}: ${foldControlCharacters(outcome.detail)}). No idle notice will come.`,
+      {
+        code: outcome.reason === 'relay_limit' ? 'relay_limit' : 'subscription_failed',
+        status: outcome.reason === 'relay_limit' ? 'blocked' : 'error',
+        retryable: outcome.reason === 'busy',
+        remediation: NOT_SUBSCRIBED_REMEDIATION[outcome.reason],
+      },
     );
   }
   if (outcome.status === 'relay_limit') {

@@ -247,18 +247,16 @@ export interface PeerSessionListing {
  * passed the inbox's vetting. `fromMode` is the class the subscriber asserted, unverified.
  */
 export interface IdleSubscriptionRequest {
+  /** The reply address, canonical: the vetted socket path, encoded once. */
   from: string;
   msgId: string;
   fromMode?: string;
-  receivedAt: number;
 }
 
 /** A `peer_idle_notice` another session sent about a subscription this one made (#620 PR 6). */
 export interface PeerIdleNoticeReceipt {
   origMsgId: string;
   state: 'idle' | 'exited' | 'expired';
-  /** When the session went idle or ended, in ms since the epoch, as the notifier says. */
-  finishedAt?: number;
   /** The notifier's summary of its last reply: peer text, sanitized again before anyone reads it. */
   detail?: string;
   fromMode?: string;
@@ -294,17 +292,22 @@ export type PeerAddressResolution =
   | { ok: true; target: PeerSessionRow & { socketPath: string } }
   | { ok: false; problem: PeerAddressProblem; candidates: PeerSessionRow[] };
 
-/** What became of a `notify_when_idle` request. */
+/** What became of a `notify_when_idle` request sent with a message. */
 export type IdleSubscribeResult =
-  /** `already`: one this session made is still waiting on that session, and its notice answers both. */
-  | { status: 'subscribed'; already: boolean }
-  | { status: Exclude<InboxSendResult['status'], 'sent'>; detail: string };
+  { status: 'subscribed' } | { status: Exclude<InboxSendResult['status'], 'sent'>; detail: string };
 
 export type PeerSendOutcome =
   /** The message went; `idle` says what became of the subscription asked for with it. */
   | { status: 'sent'; target: PeerSessionRow; msgId: string; idle?: IdleSubscribeResult }
-  /** A pure subscription, made (or one already waiting). */
-  | { status: 'subscribed'; target: PeerSessionRow; already: boolean }
+  /** A pure subscription went. */
+  | { status: 'subscribed'; target: PeerSessionRow }
+  /** A pure subscription did not go, and why: its own result, never a message's. */
+  | {
+      status: 'not_subscribed';
+      reason: Exclude<InboxSendResult['status'], 'sent'> | 'relay_limit';
+      detail: string;
+      target: PeerSessionRow;
+    }
   | { status: 'unavailable' }
   /** Refused here: the relay this turn continues would be dropped as a loop or a runaway. */
   | { status: 'relay_limit'; detail: string; target: PeerSessionRow }
@@ -326,6 +329,11 @@ export interface SessionMessagingHandle {
   /** The live session `to` names now, without sending anything. */
   resolve(to: string): Promise<PeerAddressResolution>;
   send(request: PeerSendRequest): Promise<PeerSendOutcome>;
+  /**
+   * The session's status, as its live-session record reports it (#620 PR 6): the runtime answers
+   * the idle subscriptions other sessions made from it. Absent on a stand-in that has none.
+   */
+  setSessionStatus?(status: LiveSessionStatus): void;
 }
 
 /** Another session's recorded edit of a changed or stale file: its own claim, so notices hedge. */

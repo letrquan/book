@@ -21,6 +21,7 @@ import type {
   IdleSubscribeResult,
   InboxStartResult,
   LiveSessionRecord,
+  LiveSessionStatus,
   PeerAddressResolution,
   PeerIdleNoticeReceipt,
   PeerMessageReceipt,
@@ -53,6 +54,8 @@ import {
 } from './hold.js';
 import {
   assertedClassOf,
+  EarliestDeadlineTimer,
+  EVICTED_DROP_REASON,
   IDLE_LIMITS,
   idleDetail,
   IdleSubscriptions,
@@ -181,6 +184,8 @@ interface AwaitedIdleNotice {
   socketPath: string;
   sessionId: string;
   label: string;
+  /** The relay chain it was sent on, which the turn its notice starts continues. */
+  chain: readonly string[];
   /** When this session gives up on the notice and says the subscription expired. */
   lapsesAt: number;
 }
@@ -254,9 +259,12 @@ export class SessionMessaging implements SessionMessagingHandle {
   private turnText?: () => string | undefined;
   /** The subscriptions this session made, by the `msg_id` their notice names. */
   private readonly awaitingIdle = new Map<string, AwaitedIdleNotice>();
-  private readonly idleLapseMs: number;
+  private readonly idleLimits: IdleLimits;
   /** One timer, for the earliest of this session's own subscriptions to lapse. */
-  private lapseTimer?: ReturnType<typeof setTimeout>;
+  private readonly lapses: EarliestDeadlineTimer;
+  /** The session's status as its record reports it, and whether host work waits to start a turn. */
+  private sessionStatus?: LiveSessionStatus;
+  private hostWork = false;
   private starting?: Promise<InboxStartResult>;
   private startFailed = false;
   private listening = false;
@@ -298,16 +306,21 @@ export class SessionMessaging implements SessionMessagingHandle {
         }),
       onIdleNotice: (notice) => this.noteIdleNotice(notice),
     });
+    this.idleLimits = { ...IDLE_LIMITS, ...options.idleLimits };
     this.idleSubscriptions = new IdleSubscriptions({
       now: this.now,
-      ...(options.idleLimits !== undefined ? { limits: options.idleLimits } : {}),
+      limits: this.idleLimits,
       // A turn follows queued messages, and held ones wait for the user: neither is idle yet.
       pending: () => this.inbox.queued().length > 0 || this.heldMessages.size > 0,
       notify: (subscriptions, state, finishedAt) =>
         this.answerIdleSubscriptions(subscriptions, state, finishedAt),
+      evict: (subscriptions) => {
+        for (const subscription of subscriptions) {
+          this.inbox.dropSubscription(subscription.from, subscription.msgId, EVICTED_DROP_REASON);
+        }
+      },
     });
-    const idleLimits = { ...IDLE_LIMITS, ...options.idleLimits };
-    this.idleLapseMs = idleLimits.ttlMs + idleLimits.lapseGraceMs;
+    this.lapses = new EarliestDeadlineTimer(this.now, () => this.lapseDue());
   }
 
   /** Bind the inbox, then advertise it in the record. Never rejects. */
@@ -336,8 +349,7 @@ export class SessionMessaging implements SessionMessagingHandle {
     this.receiptTimer = undefined;
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
     this.expiryTimer = undefined;
-    if (this.lapseTimer) clearTimeout(this.lapseTimer);
-    this.lapseTimer = undefined;
+    this.lapses.clear();
     this.awaitingIdle.clear();
     const undelivered = [
       ...[...this.heldMessages.values()].map((held) => held.message),
@@ -355,12 +367,27 @@ export class SessionMessaging implements SessionMessagingHandle {
   }
 
   /**
-   * Follow the session: idle once its turn is over with nothing queued — no turn running, nothing
-   * asked, nothing waiting to start one — busy otherwise. The TUI keeps it current; an idle session
-   * answers the subscriptions other sessions made to it.
+   * The session's status, as its live-session record reports it (`liveSessionStateOf`): what
+   * `SessionList` shows other sessions. With {@link setHostWork}, the one definition of idle the
+   * subscriptions other sessions made to this one are answered by.
    */
-  setIdle(idle: boolean): void {
-    this.idleSubscriptions.setIdle(idle);
+  setSessionStatus(status: LiveSessionStatus): void {
+    this.sessionStatus = status;
+    this.updateIdle();
+  }
+
+  /**
+   * Whether the host has work that will start a turn of its own: the user's queued follow-ups, a
+   * completion or notice waiting to be delivered (its retry included), or one being delivered.
+   */
+  setHostWork(pending: boolean): void {
+    this.hostWork = pending;
+    this.updateIdle();
+  }
+
+  /** Idle: the record says so, and nothing waits to start a turn; queued peer messages are judged at firing. */
+  private updateIdle(): void {
+    this.idleSubscriptions.setIdle(this.sessionStatus === 'idle' && !this.hostWork);
   }
 
   /**
@@ -535,6 +562,11 @@ export class SessionMessaging implements SessionMessagingHandle {
   /**
    * Send a message, ask for one idle notice (`notifyWhenIdle`), or both: the message first, and the
    * subscription only once it went. Without a `message`, the send is the subscription alone.
+   *
+   * Either counts one hop on the relay this turn continues, and either is refused here once that
+   * relay would be dropped as a loop: a subscription made from the notice of the last one continues
+   * its relay, so a model that keeps re-subscribing meets the limit. A pure subscription is paced
+   * as a message is; one sent with a message rides on that message's place.
    */
   async send(request: PeerSendRequest): Promise<PeerSendOutcome> {
     if (this.starting) await this.starting;
@@ -564,31 +596,29 @@ export class SessionMessaging implements SessionMessagingHandle {
     }
     const target = resolution.target;
     const ownAddress = encodeUdsAddress(own);
-    if (request.message === undefined) {
-      const idle = await this.subscribeIdle(target, ownAddress, request.mode);
-      return idle.status === 'subscribed'
-        ? { status: 'subscribed', target, already: idle.already }
-        : { status: idle.status, detail: idle.detail, target };
-    }
     // Refused here rather than sent into a certain drop: the receiver drops a chain over 28 hops,
     // or one that has passed through it 10 times, and this session's own count is what it knows.
     const chain = [...(this.turnChain ?? []), hopToken];
-    if (
-      chain.length > INGRESS_LIMITS.maxChainLength ||
-      countOwnHops(chain, new Set([hopToken])) >= INGRESS_LIMITS.maxSelfHops
-    ) {
-      return {
-        status: 'relay_limit',
-        detail: `the relay is ${chain.length} hops long and has passed through this session ${countOwnHops(chain, new Set([hopToken]))} times`,
-        target,
-      };
+    const ownHops = countOwnHops(chain, new Set([hopToken]));
+    if (chain.length > INGRESS_LIMITS.maxChainLength || ownHops >= INGRESS_LIMITS.maxSelfHops) {
+      const detail = `the relay is ${chain.length} hops long and has passed through this session ${ownHops} times`;
+      return request.message === undefined
+        ? { status: 'not_subscribed', reason: 'relay_limit', detail, target }
+        : { status: 'relay_limit', detail, target };
+    }
+    const hopChain = appendHop(this.turnChain, hopToken);
+    if (request.message === undefined) {
+      const idle = await this.subscribeIdle(target, ownAddress, request.mode, hopChain, true);
+      return idle.status === 'subscribed'
+        ? { status: 'subscribed', target }
+        : { status: 'not_subscribed', reason: idle.status, detail: idle.detail, target };
     }
     const sessionId = this.writer.sessionId;
     const content = renderEnvelope(
       {
         from: ownAddress,
         fromSession: sessionId,
-        hopChain: appendHop(this.turnChain, hopToken),
+        hopChain,
         fromName: listing.self?.name ?? this.writer.current()?.name,
         fromMode: permissionClassOf(request.mode ?? this.mode),
       },
@@ -618,22 +648,25 @@ export class SessionMessaging implements SessionMessagingHandle {
     }
     if (!request.notifyWhenIdle) return { status: 'sent', target, msgId };
     // After the message: the receiver queues it first, so it is not idle until that turn is over.
-    const idle = await this.subscribeIdle(target, ownAddress, request.mode);
+    const idle = await this.subscribeIdle(target, ownAddress, request.mode, hopChain, false);
     return { status: 'sent', target, msgId, idle };
   }
 
   /**
-   * Ask `target` for one idle notice. One subscription waits per session at a time: while one this
-   * session made is still waiting there, its one notice answers a second request too.
+   * Ask `target` for one idle notice. Every request is sent, and replaces any subscription this
+   * session is still waiting on there: the receiver may have dropped that one, or lost its notice,
+   * without a word, and a repeat must never be answered by a notice that may not come.
    */
   private async subscribeIdle(
     target: PeerSessionRow & { socketPath: string },
     ownAddress: string,
     mode: string | undefined,
+    chain: readonly string[],
+    paced: boolean,
   ): Promise<IdleSubscribeResult> {
-    for (const awaited of this.awaitingIdle.values()) {
+    for (const [msgId, awaited] of [...this.awaitingIdle]) {
       if (awaited.socketPath === target.socketPath && awaited.sessionId === target.sessionId) {
-        return { status: 'subscribed', already: true };
+        this.awaitingIdle.delete(msgId);
       }
     }
     const msgId = randomUUID();
@@ -642,25 +675,36 @@ export class SessionMessaging implements SessionMessagingHandle {
       socketPath: target.socketPath,
       sessionId: target.sessionId,
       label: peerLabel(target),
-      lapsesAt: this.now() + this.idleLapseMs,
+      chain,
+      lapsesAt: this.now() + this.idleLimits.ttlMs + this.idleLimits.lapseGraceMs,
     }));
-    this.scheduleLapse();
+    this.armLapses();
     const result = await sendToInbox({
       socketPath: target.socketPath,
       keysDir: this.keysDir,
       probe: this.probe,
+      ...(paced ? { pacer: this.pacer } : {}),
       frame: {
         type: 'control',
         action: 'notify_when_idle',
         from: ownAddress,
         msg_id: msgId,
         from_mode: permissionClassOf(mode ?? this.mode),
+        hop_chain: [...chain],
       },
     });
-    if (result.status === 'sent') return { status: 'subscribed', already: false };
+    if (result.status === 'sent') return { status: 'subscribed' };
     this.awaitingIdle.delete(msgId);
-    this.scheduleLapse();
+    this.armLapses();
     return { status: result.status, detail: result.detail };
+  }
+
+  /**
+   * The relay a host-delivered notice turn continues: the longer of the session's own and the one
+   * the notice's subscription was sent on. Called when the notice's turn is recorded.
+   */
+  continueRelay(chain: readonly string[]): void {
+    if (chain.length >= (this.turnChain?.length ?? 0)) this.turnChain = [...chain];
   }
 
   /**
@@ -705,20 +749,28 @@ export class SessionMessaging implements SessionMessagingHandle {
   }
 
   /**
-   * An idle notice about a subscription this session made. Only a notice naming one of this
-   * session's own subscriptions, from the session it was made to, counts, and only once: any other
-   * is dropped. Its model hears it when this session's receive policy would accept a message from
-   * the notifier, in a turn of that message's class; otherwise only the user sees it.
+   * The subscription a notice or receipt from `from` names, taken: only one this session made, to
+   * the session at that address, and only once. Undefined for anything else.
+   */
+  private takeAwaited(msgId: string, from: string | undefined): AwaitedIdleNotice | undefined {
+    const awaited = this.awaitingIdle.get(msgId);
+    if (!awaited || decodeUdsAddress(from) !== awaited.socketPath) return undefined;
+    this.awaitingIdle.delete(msgId);
+    this.armLapses();
+    return awaited;
+  }
+
+  /**
+   * An idle notice about a subscription this session made. Its model hears it when this session's
+   * receive policy would accept a message from the notifier, in a turn of that message's class;
+   * its user always sees it.
    */
   private noteIdleNotice(notice: PeerIdleNoticeReceipt): void {
-    const awaited = this.awaitingIdle.get(notice.origMsgId);
-    const fromPath = decodeUdsAddress(notice.from);
-    if (!awaited || fromPath === undefined || awaited.socketPath !== fromPath) {
+    const awaited = this.takeAwaited(notice.origMsgId, notice.from);
+    if (!awaited) {
       this.log.debug('idle notice ignored: not about a subscription this session made there');
       return;
     }
-    this.awaitingIdle.delete(notice.origMsgId);
-    this.scheduleLapse();
     if (this.closed) return;
     const senderMode = assertedClassOf(notice.fromMode);
     const toModel = this.judgeSender(senderMode, notice.from ?? '').action === 'accept';
@@ -729,23 +781,40 @@ export class SessionMessaging implements SessionMessagingHandle {
         target: awaited.label,
         state: notice.state,
         ...(detail !== undefined ? { detail } : {}),
+        ...(notice.state === 'expired' ? { withinMs: this.idleLimits.ttlMs } : {}),
         toModel,
         ...(toModel
           ? { turnClass: peerTurnClass(this.mode, [{ senderMode, approved: false }]) }
           : {}),
+        chain: awaited.chain,
       },
     });
   }
 
-  /** Arm the one timer for the earliest of this session's subscriptions to lapse, if any. */
-  private scheduleLapse(): void {
-    if (this.lapseTimer) clearTimeout(this.lapseTimer);
-    this.lapseTimer = undefined;
-    if (this.closed || this.awaitingIdle.size === 0) return;
-    let next = Infinity;
-    for (const awaited of this.awaitingIdle.values()) next = Math.min(next, awaited.lapsesAt);
-    this.lapseTimer = setTimeout(() => this.lapseDue(), Math.max(0, next - this.now()));
-    this.lapseTimer.unref?.();
+  /**
+   * A `dropped` receipt about subscriptions this session made: the session did not keep them. Told
+   * as a delivery receipt is, to the model as well as the user: the words are this session's own.
+   */
+  private noteDroppedSubscriptions(receipt: PeerMessageReceipt, ids: readonly string[]): void {
+    for (const id of ids) {
+      const awaited = this.takeAwaited(id, receipt.from);
+      if (!awaited || this.closed) continue;
+      this.emit({
+        type: 'idle-notice',
+        notice: {
+          target: awaited.label,
+          state: 'dropped',
+          ...(receipt.dropReason !== undefined ? { dropReason: receipt.dropReason } : {}),
+          toModel: true,
+          chain: awaited.chain,
+        },
+      });
+    }
+  }
+
+  private armLapses(): void {
+    if (this.closed) return;
+    this.lapses.arm([...this.awaitingIdle.values()].map((awaited) => awaited.lapsesAt));
   }
 
   /**
@@ -753,17 +822,21 @@ export class SessionMessaging implements SessionMessagingHandle {
    * given up here, and the user told: the model is not woken for a notice that never came.
    */
   private lapseDue(): void {
-    this.lapseTimer = undefined;
     const now = this.now();
     for (const [msgId, awaited] of [...this.awaitingIdle]) {
       if (awaited.lapsesAt > now) continue;
       this.awaitingIdle.delete(msgId);
       this.emit({
         type: 'idle-notice',
-        notice: { target: awaited.label, state: 'expired', toModel: false, lapsed: true },
+        notice: {
+          target: awaited.label,
+          state: 'lapsed',
+          withinMs: this.idleLimits.ttlMs + this.idleLimits.lapseGraceMs,
+          toModel: false,
+        },
       });
     }
-    this.scheduleLapse();
+    this.armLapses();
   }
 
   /**
@@ -1051,6 +1124,8 @@ export class SessionMessaging implements SessionMessagingHandle {
         ...(receipt.droppedMsgIds ?? []),
       ]),
     ];
+    // A drop receipt may name this session's subscriptions as well as, or instead of, its messages.
+    if (receipt.status === 'dropped') this.noteDroppedSubscriptions(receipt, ids);
     const matched = ids.filter((id) => {
       const send = this.outstanding.get(id);
       return send !== undefined && fromPath !== undefined && send.socketPath === fromPath;

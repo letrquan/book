@@ -8,10 +8,14 @@ import type { PeerPermissionClass } from '../../types/messaging.js';
 /** How long a delivery the session could not start waits before it is tried again. */
 const RETRY_MS = 1_000;
 
-/** How a host notice turn shows and runs: its transcript row, and the class a peer's words pin. */
+/**
+ * How a host notice turn shows and runs: its transcript row, the class a peer's words pin, and the
+ * relay chain it continues.
+ */
 export interface PeerNoticeOptions {
   display?: string;
   peerTurnClass?: PeerPermissionClass;
+  relayChain?: readonly string[];
 }
 
 interface PendingNotice extends PeerNoticeOptions {
@@ -30,12 +34,17 @@ interface PendingNotice extends PeerNoticeOptions {
  * rows for the human only: a held message never reaches the model until it is released (PR 5).
  *
  * An idle notice about a session this one subscribed to (PR 6) is a row for the human, and a turn
- * for the model too when the receive policy would accept a message from that session. The same idleness — nothing running, asked, queued or about to be delivered — is what
+ * for the model too when the receive policy would accept a message from that session. The host
+ * work that will start a turn — this hook's own notices, and the `pendingWork` the TUI names — is
+ * reported to the runtime, which answers other sessions' idle subscriptions only while there is
+ * none and the session's record says it is idle. The same idleness — nothing running, asked, queued or about to be delivered — is what
  * this session reports to the runtime, which answers the subscriptions other sessions made to it.
  */
 export function usePeerMessageDelivery(options: {
   messaging?: SessionMessaging;
   blocked: boolean;
+  /** Work that will start a turn of its own: queued follow-ups, completions waiting to be delivered. */
+  pendingWork: boolean;
   deliver: (batch: PeerDeliveryBatch) => Promise<boolean>;
   notify: (notice: string, options?: PeerNoticeOptions) => Promise<boolean>;
   warn: (line: string) => void;
@@ -77,6 +86,7 @@ export function usePeerMessageDelivery(options: {
             ...(event.notice.turnClass !== undefined
               ? { peerTurnClass: event.notice.turnClass }
               : {}),
+            ...(event.notice.chain !== undefined ? { relayChain: event.notice.chain } : {}),
           });
         }
       }
@@ -91,19 +101,13 @@ export function usePeerMessageDelivery(options: {
     const batch = current.messaging.prepareDelivery();
     if (!batch && notice === undefined) return;
     inFlight.current = true;
+    const { context, ...noticeOptions } = notice ?? { context: '' };
     const work = batch
       ? current.deliver(batch)
-      : current
-          .notify(notice!.context, {
-            ...(notice!.display !== undefined ? { display: notice!.display } : {}),
-            ...(notice!.peerTurnClass !== undefined
-              ? { peerTurnClass: notice!.peerTurnClass }
-              : {}),
-          })
-          .then((accepted) => {
-            if (accepted) notices.current.shift();
-            return accepted;
-          });
+      : current.notify(context, noticeOptions).then((accepted) => {
+          if (accepted) notices.current.shift();
+          return accepted;
+        });
     void work
       .catch(() => false)
       .then((accepted) => {
@@ -120,17 +124,17 @@ export function usePeerMessageDelivery(options: {
       });
   }, [options.blocked, messaging, tick]);
 
-  // After the delivery above, which may just have started a turn: idle only when nothing runs,
-  // nothing is asked or queued, and no delivery or notice is under way or waiting to be retried.
-  // Queued and held peer messages the runtime counts itself.
+  // After the delivery above, which may just have started a turn. Being blocked is not host work:
+  // the user looking at an agent's surface, or editing a queued input, starts nothing. Queued and
+  // held peer messages the runtime counts itself.
   useEffect(() => {
-    latest.current.messaging?.setIdle(
-      !latest.current.blocked &&
-        !inFlight.current &&
-        !retryTimer.current &&
-        notices.current.length === 0,
+    latest.current.messaging?.setHostWork(
+      latest.current.pendingWork ||
+        inFlight.current ||
+        retryTimer.current !== undefined ||
+        notices.current.length > 0,
     );
-  }, [options.blocked, messaging, tick]);
+  }, [options.pendingWork, messaging, tick]);
 
   useEffect(() => {
     mounted.current = true;

@@ -64,7 +64,7 @@ vi.mock('../../session/lifecycle.js', () => ({
   runSessionEnd: vi.fn(async () => {}),
 }));
 
-import { lastAssistantText, useAgent } from './useAgent.js';
+import { lastTurnReply, useAgent } from './useAgent.js';
 import type { Message } from '../../types/messages.js';
 
 isolateBookHome('book-use-agent-peer-delivery-home-');
@@ -88,6 +88,7 @@ function fakeMessaging() {
     setPermissionMode: vi.fn(),
     setInbound: vi.fn(),
     setTurnTextSource: vi.fn(),
+    continueRelay: vi.fn(),
     beginTurn: vi.fn(),
     commitDelivery: vi.fn(),
     stillDeliverable: vi.fn(() => true),
@@ -333,6 +334,7 @@ describe('idle notices in the TUI (#620 PR 6)', () => {
       await latest!.sendPeerDeliveryNotice('[Cross-session idle notice] peer-b [a1b2c3] is idle', {
         display: 'Cross-session idle notice.',
         peerTurnClass: 'prompting',
+        relayChain: ['aaaaaaaaaaaaaaaaaaaaaaaa'],
       }),
     ).toBe(true);
     // The model reads the notice; the row is what the transcript shows.
@@ -342,8 +344,9 @@ describe('idle notices in the TUI (#620 PR 6)', () => {
         peerTurnClass: 'prompting',
       },
     ]);
-    // A host turn: the relay chain is kept, as for a delivery notice.
+    // A host turn: the relay chain is kept, and continued with the subscription's.
     expect(messaging.beginTurn).not.toHaveBeenCalled();
+    expect(messaging.continueRelay).toHaveBeenCalledWith(['aaaaaaaaaaaaaaaaaaaaaaaa']);
   });
 
   it("gives the runtime this session's last reply for the notices it sends", async () => {
@@ -355,22 +358,36 @@ describe('idle notices in the TUI (#620 PR 6)', () => {
     expect(source()).toBeUndefined();
   });
 
-  it('reads the newest reply the model gave', () => {
-    const message = (role: Message['role'], content: string): Message => ({
+  it("reads only the model's own reply in the newest turn, never a row the host added", () => {
+    const message = (role: Message['role'], content: string, kind?: Message['kind']): Message => ({
       id: content,
       role,
       content,
       timestamp: 0,
-      includeInContext: true,
+      includeInContext: kind !== 'local',
+      ...(kind !== undefined ? { kind } : {}),
     });
+    const turn = [message('user', 'run the build'), message('assistant', 'The build is green.')];
+    expect(lastTurnReply(turn)).toBe('The build is green.');
+    // A held peer message's row, /cost output, a notice row and a checkpoint come after it.
     expect(
-      lastAssistantText([
-        message('assistant', 'first'),
-        message('user', 'go on'),
-        message('assistant', 'second'),
-        message('assistant', '  '),
+      lastTurnReply([
+        ...turn,
+        message(
+          'assistant',
+          '⚠ Held peer message — from peer-c [c0ffee]; preview: «secret plan»',
+          'local',
+        ),
+        message('user', '/cost', 'local'),
+        message('assistant', 'Total cost: $0.42', 'local'),
+        message('assistant', '◦ Cross-session idle notice: peer-d is idle.', 'local'),
+        message('assistant', 'Summary of the conversation so far', 'checkpoint'),
       ]),
-    ).toBe('second');
-    expect(lastAssistantText([message('user', 'hi')])).toBeUndefined();
+    ).toBe('The build is green.');
+    // A newest turn with no text of the model's says nothing, rather than an older turn's reply.
+    expect(
+      lastTurnReply([...turn, message('user', 'and now?'), message('assistant', '  ')]),
+    ).toBeUndefined();
+    expect(lastTurnReply([message('assistant', 'only a row', 'local')])).toBeUndefined();
   });
 });

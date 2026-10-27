@@ -6,8 +6,8 @@ import { usePeerMessageDelivery } from './usePeerMessageDelivery.js';
 
 /**
  * The TUI's half of `notify_when_idle` (#620 PR 6): an idle notice is a turn for the model only
- * when the runtime says the receive policy accepts its sender, and a row for the user otherwise;
- * and the session reports itself idle only while nothing runs, waits or is about to be delivered.
+ * when the runtime says the receive policy accepts its sender, and a row for the user always; and
+ * the host work that will start a turn is reported, while merely being blocked is not.
  */
 
 function fakeMessaging() {
@@ -18,7 +18,7 @@ function fakeMessaging() {
       return () => listeners.delete(listener);
     },
     prepareDelivery: vi.fn(() => undefined),
-    setIdle: vi.fn(),
+    setHostWork: vi.fn(),
     emit: (event: SessionMessagingEvent) => {
       for (const listener of listeners) listener(event);
     },
@@ -44,13 +44,14 @@ const notice = (extra: Partial<PeerIdleNoticeEvent>): PeerIdleNoticeEvent => ({
 afterEach(() => cleanup());
 
 describe('usePeerMessageDelivery idle notices', () => {
-  function mount(blocked = false) {
+  function mount(blocked = false, pendingWork = false) {
     const messaging = fakeMessaging();
     const notify = vi.fn(async () => true);
     const warn = vi.fn();
     const props = {
       messaging: messaging as unknown as SessionMessaging,
       blocked,
+      pendingWork,
       deliver: vi.fn(async () => true),
       notify,
       warn,
@@ -92,15 +93,17 @@ describe('usePeerMessageDelivery idle notices', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('shown to you only'));
   });
 
-  it('reports the session idle only while nothing blocks it and no notice waits', async () => {
-    const { messaging, view, props } = mount(true);
+  it('reports host work that will start a turn, and not a surface or an edit that blocks delivery', async () => {
+    // Blocked by the agents surface or a queued-input edit: nothing will start, so no host work.
+    const { messaging, view, props } = mount(true, false);
     await settle();
-    expect(messaging.setIdle).toHaveBeenLastCalledWith(false);
-    view.rerender(<Harness {...props} blocked={false} />);
+    expect(messaging.setHostWork).toHaveBeenLastCalledWith(false);
+    // A shell's or an agent's completion waiting to be delivered (or retried) will start a turn.
+    view.rerender(<Harness {...props} pendingWork={true} />);
     await settle();
-    expect(messaging.setIdle).toHaveBeenLastCalledWith(true);
-    view.rerender(<Harness {...props} blocked={true} />);
+    expect(messaging.setHostWork).toHaveBeenLastCalledWith(true);
+    view.rerender(<Harness {...props} pendingWork={false} />);
     await settle();
-    expect(messaging.setIdle).toHaveBeenLastCalledWith(false);
+    expect(messaging.setHostWork).toHaveBeenLastCalledWith(false);
   });
 });

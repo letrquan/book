@@ -84,7 +84,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   } else if (command.cmd === 'subscribe') {
     emit({ event: 'sent', ...(await messaging.send({ to: command.to, message: command.message, notifyWhenIdle: true })) });
   } else if (command.cmd === 'idle') {
-    messaging.setIdle(command.idle);
+    messaging.setSessionStatus(command.idle ? 'idle' : 'busy');
   } else if (command.cmd === 'close') {
     await messaging.close();
     await writer.close();
@@ -292,7 +292,7 @@ describe.skipIf(process.platform === 'win32')('cross-session delivery between pr
     a.command({ cmd: 'subscribe', to: 'peer-b', message: 'Run the tests, then tell me.' });
     expect(await a.waitFor((event) => event.event === 'sent')).toMatchObject({
       status: 'sent',
-      idle: { status: 'subscribed', already: false },
+      idle: { status: 'subscribed' },
     });
     await b.waitFor((event) => event.event === 'turn');
     await pause(600);
@@ -318,9 +318,7 @@ describe.skipIf(process.platform === 'win32')('cross-session delivery between pr
     // A new subscription, still waiting when B ends, is answered `exited`.
     b.command({ cmd: 'idle', idle: false });
     a.command({ cmd: 'subscribe', to: 'peer-b' });
-    expect(
-      await a.waitFor((event) => event.event === 'sent' && event.status === 'subscribed'),
-    ).toMatchObject({ already: false });
+    await a.waitFor((event) => event.event === 'sent' && event.status === 'subscribed');
     await pause(300);
     b.command({ cmd: 'close' });
     expect(

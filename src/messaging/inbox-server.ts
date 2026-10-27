@@ -100,8 +100,10 @@ const REAP_CONCURRENCY = 8;
 const ANONYMOUS_SENDER = '(no reply address)';
 /** How long a closing inbox waits for the receipts it is still sending: Claude Code's 750 ms. */
 export const CLOSE_DRAIN_MS = 750;
-/** `notify_when_idle` reply addresses being vetted at once; a subscription past it is ignored. */
+/** `notify_when_idle` reply addresses being vetted at once; a subscription past it is dropped. */
 export const MAX_PENDING_SUBSCRIPTION_VETS = 8;
+/** The `reason` of the receipt for a subscription this session did not keep. */
+const DROPPED_SUBSCRIPTION_REASON = 'the idle subscription was not kept';
 
 type InboxLogger = { debug: (...args: unknown[]) => void; warn: (...args: unknown[]) => void };
 
@@ -340,6 +342,25 @@ export class InboxServer {
         },
         options.timeoutMs,
       ),
+    );
+  }
+
+  /**
+   * Tell a subscriber the session did not keep its subscription — a full table pushed it out — with
+   * a `dropped` receipt about it, vetted and sent in the background like any other receipt.
+   */
+  dropSubscription(to: string, msgId: string, dropReason: string): void {
+    if (this.closed) return;
+    this.track(
+      this.sendControl(to, {
+        type: 'control',
+        action: 'peer_message_status',
+        status: 'dropped',
+        reason: DROPPED_SUBSCRIPTION_REASON,
+        orig_msg_id: msgId,
+        drop_reason: dropReason,
+        dropped_msg_ids: [],
+      }),
     );
   }
 
@@ -715,39 +736,72 @@ export class InboxServer {
    */
   private admitSubscription(frame: NotifyWhenIdleFrame): void {
     if (!this.options.onSubscribe || this.closed) return;
+    // Keyed on the path the address names, never its spelling: `uds:` addresses percent-decode, so
+    // one socket has many spellings, and each would otherwise get limits of its own.
+    const path = decodeUdsAddress(frame.from);
+    if (!path || !isAbsolute(path) || normalize(path) !== path) {
+      this.log.debug('idle subscription ignored', { reason: 'reply-address' });
+      return;
+    }
+    const from = encodeUdsAddress(path);
     const verdict = this.subscriptionGuard.admit({
-      senderKey: frame.from,
+      senderKey: path,
       body: frame.msg_id,
+      hopChain: frame.hop_chain,
+      ownTokens: new Set(this.ownHopToken !== undefined ? [this.ownHopToken] : []),
       queued: 0,
     });
     if (!verdict.admitted) {
-      this.log.debug('idle subscription ignored', { reason: verdict.reason });
+      // A repeated msg_id is the subscription already kept, not a new one to refuse.
+      if (verdict.reason !== 'duplicate')
+        this.dropSubscriptionFrame(from, frame.msg_id, verdict.reason);
       return;
     }
     if (this.vettingSubscriptions >= MAX_PENDING_SUBSCRIPTION_VETS) {
-      this.log.debug('idle subscription ignored', { reason: 'vetting-busy' });
+      this.dropSubscriptionFrame(from, frame.msg_id, 'rate-limited');
       return;
     }
     this.vettingSubscriptions++;
-    const receivedAt = this.now();
     this.track(
-      this.vetReplyAddress(frame.from)
+      this.vetReplyAddress(from)
         .then((target) => {
+          // An address that fails vetting is never written to, so it hears nothing.
           if (!target || target === this.boundPath || this.closed) {
             this.log.debug('idle subscription ignored', { reason: 'reply-address' });
             return;
           }
           this.options.onSubscribe?.({
-            from: frame.from,
+            from,
             msgId: frame.msg_id,
             ...(frame.from_mode !== undefined ? { fromMode: frame.from_mode } : {}),
-            receivedAt,
           });
         })
         .finally(() => {
           this.vettingSubscriptions--;
         }),
     );
+  }
+
+  /**
+   * A subscription the inbox did not take, receipted as a dropped message is: coalesced per
+   * address and reason, and at most 40 receipts a minute in all, so a flood of subscriptions
+   * cannot make this inbox vet and write to an address once per frame.
+   */
+  private dropSubscriptionFrame(from: string, msgId: string, reason: PeerDropReason): void {
+    this.log.debug('idle subscription dropped', { reason });
+    this.dropReceipts.note(from, reason, msgId, (droppedMsgIds) => {
+      this.track(
+        this.sendControl(from, {
+          type: 'control',
+          action: 'peer_message_status',
+          status: 'dropped',
+          reason: DROPPED_SUBSCRIPTION_REASON,
+          orig_msg_id: msgId,
+          drop_reason: reason,
+          dropped_msg_ids: droppedMsgIds,
+        }),
+      );
+    });
   }
 
   /**
@@ -908,12 +962,9 @@ export async function inboxStartupNotices(start: Promise<InboxStartResult>): Pro
 }
 
 function idleNoticeOf(frame: PeerIdleNoticeFrame, receivedAt: number): PeerIdleNoticeReceipt {
-  const finishedAt =
-    typeof frame.finished_at === 'string' ? Date.parse(frame.finished_at) : frame.finished_at;
   return {
     origMsgId: frame.orig_msg_id,
     state: frame.state,
-    ...(finishedAt !== undefined && Number.isFinite(finishedAt) ? { finishedAt } : {}),
     ...(frame.detail !== undefined ? { detail: frame.detail } : {}),
     ...(frame.from_mode !== undefined ? { fromMode: frame.from_mode } : {}),
     ...(frame.from !== undefined ? { from: frame.from } : {}),

@@ -75,6 +75,11 @@ export const notifyWhenIdleFrameSchema = z.looseObject({
   from: z.string(),
   msg_id: z.string(),
   from_mode: z.string().optional(),
+  /**
+   * Book's addition (D1-a): the relay chain the subscription continues, as a message's envelope
+   * carries it, so a subscription counts as a hop and a loop of them meets the relay limit.
+   */
+  hop_chain: z.array(z.string().max(64)).max(64).optional(),
   session_id: z.string().optional(),
 });
 
