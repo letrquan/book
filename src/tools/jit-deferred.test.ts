@@ -553,6 +553,85 @@ describe('the schema budget on a just-in-time call (#619)', () => {
   });
 });
 
+describe('a rule or hook on ToolSearch itself (#619, decision c)', () => {
+  // Whoever wrote one meant to gate the deferred catalog, so the surface admits no direct call
+  // and the model goes through ToolSearch, where the rule or hook applies, as before #619.
+  it.each([
+    ['a deny rule', { deny: ['ToolSearch'] }],
+    ['an ask rule', { ask: ['ToolSearch'] }],
+    ['an ask rule with a pattern', { ask: ['ToolSearch(select:*)'] }],
+    ['a deny rule written with spaces', { deny: [' ToolSearch '] }],
+  ] as const)('%s restores the not-active refusal', async (_name, rules) => {
+    const { surface, registry, context, ran } = setup({
+      configure: (config) => {
+        config.settings.permissions.deny = [...('deny' in rules ? rules.deny : [])];
+        config.settings.permissions.ask = [...('ask' in rules ? rules.ask : [])];
+      },
+    });
+
+    const result = await registry.execute({ id: 'log-1', name: 'GitLog', arguments: {} }, context);
+
+    expect(surface.admitDirect?.('GitLog')).toBeUndefined();
+    expect(result.structuredError?.code).toBe('tool_not_active');
+    expect(result.structuredError?.remediation).toBe(
+      'Call ToolSearch to discover it or use an authorized active tool.',
+    );
+    expect(ran).toEqual([]);
+  });
+
+  it.each([['ToolSearch'], ['ToolSearch(select:*)']])(
+    'a PreToolUse hook matching %s restores it',
+    async (matcher) => {
+      const { surface } = setup({
+        configure: (config) => {
+          config.settings.hooks.PreToolUse = [{ command: 'exit 0', matcher, env: {} }];
+        },
+      });
+
+      expect(surface.admitDirect?.('GitLog')).toBeUndefined();
+    },
+  );
+
+  it.each([
+    ['no matcher, which runs on every call', undefined],
+    ['another tool', 'Bash'],
+  ])('a PreToolUse hook with %s does not', (_name, matcher) => {
+    const { surface } = setup({
+      configure: (config) => {
+        config.settings.hooks.PreToolUse = [
+          { command: 'exit 0', env: {}, ...(matcher ? { matcher } : {}) },
+        ];
+        // A rule on another tool, or an allow rule on ToolSearch, gates nothing either.
+        config.settings.permissions.deny = ['Bash(rm *)'];
+        config.settings.permissions.allow = ['ToolSearch'];
+      },
+    });
+
+    expect(surface.admitDirect?.('GitLog')).toEqual({ loaded: true });
+  });
+
+  it('lists the deferred tools without offering direct calls', () => {
+    const gated = setup({
+      configure: (config) => {
+        config.settings.permissions.deny = ['ToolSearch'];
+      },
+    }).surface.catalogSummary();
+    const open = setup().surface.catalogSummary();
+
+    expect(gated).not.toContain('directly');
+    expect(gated).toContain('Loaded tools are callable on the next turn.');
+    expect(
+      setup({
+        configure: (config) => {
+          config.settings.permissions.deny = ['ToolSearch'];
+        },
+      }).surface.admitsDirectCalls?.(),
+    ).toBe(false);
+    expect(setup().surface.admitsDirectCalls?.()).toBe(true);
+    expect(gated.split('\n').slice(1, -1)).toEqual(open.split('\n').slice(1, -1));
+  });
+});
+
 describe('the deferred tool list across a direct admission (#619)', () => {
   it('is byte-identical before and after the admission', async () => {
     const { surface, registry, context } = setup();

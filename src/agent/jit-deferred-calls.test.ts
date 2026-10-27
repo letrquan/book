@@ -520,6 +520,93 @@ describe('what a direct call gets (#619)', () => {
   });
 });
 
+describe('a rule or hook on ToolSearch itself gates discovery again (#619, decision c)', () => {
+  const gated = (configure: Case['configure']): Case['configure'] => configure;
+  it.each([
+    [
+      'deny: ["ToolSearch"]',
+      gated((config) => {
+        config.settings.permissions.deny = ['ToolSearch'];
+      }),
+    ],
+    [
+      'ask: ["ToolSearch"]',
+      gated((config) => {
+        config.settings.permissions.ask = ['ToolSearch'];
+      }),
+    ],
+    [
+      'a PreToolUse hook on ToolSearch',
+      gated((config) => {
+        config.settings.hooks.PreToolUse = [{ command: 'exit 0', matcher: 'ToolSearch', env: {} }];
+      }),
+    ],
+  ])('%s: a direct call is refused toward ToolSearch, as before #619', async (_name, configure) => {
+    for (const mode of ['default', 'bypassPermissions'] as const) {
+      for (const tool of ['GitLog', 'WebFetch', 'mcp__demo__lookup']) {
+        let remediation: string | undefined;
+        const outcome = await run({ mode, call: CALLS[tool], configure }, 'direct', (result) => {
+          if (result.toolCallId === 'target') remediation = result.structuredError?.remediation;
+        });
+        expect(outcome, `${mode} ${tool}`).toEqual({
+          asked: 0,
+          status: 'blocked',
+          code: 'tool_not_active',
+          ran: false,
+          declaredNext: false,
+        });
+        expect(remediation).toBe(
+          'Call ToolSearch to discover it or use an authorized active tool.',
+        );
+      }
+    }
+  });
+
+  it('a hook with no matcher keeps direct calls, and sees the direct call', async () => {
+    const hooked: string[] = [];
+    const config = defaultConfig({ workspace, maxTurns: 2 });
+    config.settings.hooks.PreToolUse = [{ command: 'exit 0', env: {} }];
+    let turn = 0;
+    const ran: string[] = [];
+    let status: string | undefined;
+    await runAgentLoop(
+      config,
+      stubbedRegistry(ran),
+      'go',
+      [],
+      {
+        onText: () => {},
+        onToolCall: () => {},
+        onToolResult: (result) => (status = result.status),
+        onError: () => {},
+        onTurnStart: () => {},
+        onDone: () => {},
+        onPermissionRequired: async () => 'allow',
+        onHookEvent: (event, payload) => {
+          if (event === 'PreToolUse') hooked.push(String(payload.toolName));
+        },
+      },
+      'default',
+      {
+        provider: {
+          id: 'scripted',
+          stream: async function* () {
+            if (turn++ === 0)
+              yield { type: 'tool_call', toolCall: { id: 'log-1', name: 'GitLog', arguments: {} } };
+            else yield { type: 'text', content: 'done' };
+            yield { type: 'done' };
+          },
+        } as unknown as Provider,
+        isNewSession: false,
+      },
+    );
+
+    expect(status).toBe('success');
+    expect(ran).toEqual(['GitLog']);
+    expect(hooked).toEqual(['GitLog']);
+  });
+});
+
 describe('just-in-time calls in the loop (#619)', () => {
   it('admits two parallel-safe deferred tools in one execution wave', async () => {
     const ran: string[] = [];

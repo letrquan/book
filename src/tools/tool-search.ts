@@ -7,7 +7,12 @@ import type {
 } from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
 
-function selectionLine(selection: ToolSelection): string {
+/** The budget refusals' note that a direct call still runs the tool, where the surface admits one. */
+function directCallNote(discovery: ToolDiscoveryContext, text: string): string {
+  return discovery.admitsDirectCalls?.() ? text : '';
+}
+
+function selectionLine(selection: ToolSelection, direct: string): string {
   switch (selection.status) {
     case 'loaded':
       return `${selection.name} [${selection.category}${selection.namespace ? `:${selection.namespace}` : ''}] - ${selection.summary}`;
@@ -20,7 +25,7 @@ function selectionLine(selection: ToolSelection): string {
     case 'unauthorized':
       return `${selection.name}: not authorized in this context (role, mode or capability rules), so it cannot be loaded.`;
     case 'budget':
-      return `${selection.name}: does not fit within the configured loaded-tool and schema budgets; a direct call still runs it, without loading its schema.`;
+      return `${selection.name}: does not fit within the configured loaded-tool and schema budgets${direct}.`;
   }
 }
 
@@ -42,14 +47,18 @@ function selectTools(list: string, discovery: ToolDiscoveryContext): ToolResult 
   }
   const selections = discovery.select(names);
   const loaded = selections.filter((selection) => selection.status === 'loaded');
-  const content = selections.map(selectionLine).join('\n');
+  const direct = directCallNote(
+    discovery,
+    '; a direct call still runs it, without loading its schema',
+  );
+  const content = selections.map((selection) => selectionLine(selection, direct)).join('\n');
   const data = { query: `select:${names.join(',')}`, selections };
   if (loaded.length === 0 && !selections.some((selection) => selection.status === 'active')) {
     const budget = selections.some((selection) => selection.status === 'budget');
     return toolFailure(content, {
       code: budget ? 'tool_discovery_budget_exceeded' : 'tool_not_found',
       remediation: budget
-        ? 'Select fewer or smaller tools, or ask the host to increase the tool discovery budget; a direct call still runs a tool that does not fit, without loading its schema.'
+        ? `Select fewer or smaller tools, or ask the host to increase the tool discovery budget${directCallNote(discovery, '; a direct call still runs a tool that does not fit, without loading its schema')}.`
         : 'Use the names in the deferred tool list, or search by capability.',
       data,
     });
@@ -71,7 +80,7 @@ export const toolSearchTools: ToolDefinition[] = [
   {
     name: 'ToolSearch',
     description:
-      'Load deferred tools\' schemas; they are declared from the next model turn. A tool the deferred tool list names can also be called directly without loading it first; pass "select:Name1,Name2" to load exact tools by those names when their arguments are unclear (aliases and any letter case work), or describe a capability, product, server, or action to search: a search returns at most five concise matches. Has no external side effects.',
+      'Load deferred tools\' schemas; they are declared from the next model turn, and the deferred tool list says when a tool it names can also be called directly without loading it first. Pass "select:Name1,Name2" to load exact tools by those names (aliases and any letter case work), or describe a capability, product, server, or action to search: a search returns at most five concise matches. Has no external side effects.',
     parameters: {
       type: 'object',
       properties: {
@@ -182,8 +191,7 @@ export const toolSearchTools: ToolDefinition[] = [
           `Matching tools could not fit within the configured loaded-tool and schema budgets: ${query}`,
           {
             code: 'tool_discovery_budget_exceeded',
-            remediation:
-              'Use a narrower query or ask the host to increase the tool discovery budget; a direct call still runs a matching tool, without loading its schema.',
+            remediation: `Use a narrower query or ask the host to increase the tool discovery budget${directCallNote(context.toolDiscovery, '; a direct call still runs a matching tool, without loading its schema')}.`,
             data: { query, matches: resolvedMatches },
           },
         );

@@ -539,6 +539,12 @@ export interface ToolDiscoveryContext {
    */
   admitDirect?(name: string): { loaded: boolean } | undefined;
   /**
+   * Whether this surface admits direct calls at all: not when a permission rule or a PreToolUse
+   * hook targets ToolSearch itself, which then gates every deferred tool as it did before #619.
+   * Optional; without it no text offers a direct call.
+   */
+  admitsDirectCalls?(): boolean;
+  /**
    * Why a registered tool is not active, for its refusal: outside the role or the capability rules,
    * outside what the mode or the runtime offers right now, or authorized but not loaded. Optional;
    * without it the registry tells only `isAuthorized`'s two answers apart.

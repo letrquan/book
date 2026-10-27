@@ -250,6 +250,30 @@ function effectiveBudget(config: AgentConfig): number {
   return Math.min(configured, Math.max(1000, Math.floor(resolveContextLimit(config) * 0.05)));
 }
 
+/**
+ * Whether a rule or hook the user wrote targets ToolSearch itself: a `permissions.deny` or `ask`
+ * rule on it, or a PreToolUse hook whose matcher names it. Whoever wrote one meant to gate the
+ * deferred catalog, so such a surface admits no direct call (#619): the model loads deferred tools
+ * through ToolSearch as before, and the rule or hook judges that call. A hook with no matcher runs
+ * on every call, the direct one included, so it gates nothing; an allow rule gates nothing either.
+ * The tool is read as a permission rule (`parseRule`) and a hook matcher (`matchesHookMatcher`)
+ * read it: the text before any `(`, trimmed, compared exactly, which is the only spelling either
+ * matches ToolSearch with. It depends on settings alone, so it is decided once per surface.
+ */
+function toolSearchIsGated(config: AgentConfig): boolean {
+  const namesToolSearch = (text: string): boolean => {
+    const paren = text.indexOf('(');
+    return (paren === -1 ? text : text.slice(0, paren)).trim() === 'ToolSearch';
+  };
+  const { permissions, hooks } = config.settings;
+  return (
+    [...(permissions?.deny ?? []), ...(permissions?.ask ?? [])].some(namesToolSearch) ||
+    (hooks?.PreToolUse ?? []).some(
+      (entry) => Boolean(entry.matcher) && namesToolSearch(entry.matcher!),
+    )
+  );
+}
+
 interface SurfaceOptions {
   config: AgentConfig;
   context: ToolContext;
@@ -407,6 +431,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     ? { clock: 0, loaded: new Map() }
     : (context.runtime?.toolDiscoveryState ?? { clock: 0, loaded: new Map() });
   let activeSnapshot = new Set<string>();
+  const directCallsGated = toolSearchIsGated(config);
   // The tools a direct call admitted just in time this request (#619), with whether the budget let
   // their schema load. Separate from the snapshot, which a search rebuilds mid-request: an
   // admission lasts until the loop builds the next request's definitions.
@@ -784,6 +809,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
    * just not loaded.
    */
   const admitDirect = (name: string): { loaded: boolean } | undefined => {
+    if (directCallsGated) return undefined;
     const canonical = canonicalToolName(name);
     const earlier = admitted.get(canonical);
     if (earlier !== undefined) return { loaded: earlier };
@@ -882,10 +908,16 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
         });
         return `${key}: ${entries.join('; ')}`;
       });
+    // A surface whose ToolSearch a rule or hook gates offers no direct calls, so its text is the
+    // one from before them.
     return [
-      `${deferred.length} authorized tools are deferred: their schemas are not loaded yet, but you can call any tool listed here directly by name, and the call loads it. When you are unsure of a tool's arguments, load its schema first with ToolSearch: query "select:Name1,Name2" loads those exact tools (aliases and any letter case are accepted), and any other query searches by capability. A loaded tool's schema is declared from the next turn.`,
+      directCallsGated
+        ? `${deferred.length} authorized tools are deferred: a tool's schema is loaded only once you select or search for it, and one already loaded is callable now. Load tools with ToolSearch: query "select:Name1,Name2" loads those exact tools (aliases and any letter case are accepted), and any other query searches by capability. Loaded tools are callable on the next turn.`
+        : `${deferred.length} authorized tools are deferred: their schemas are not loaded yet, but you can call any tool listed here directly by name, and the call loads it. When you are unsure of a tool's arguments, load its schema first with ToolSearch: query "select:Name1,Name2" loads those exact tools (aliases and any letter case are accepted), and any other query searches by capability. A loaded tool's schema is declared from the next turn.`,
       ...lines,
-      'Call ToolSearch when neither the active tools nor this list cover the task.',
+      directCallsGated
+        ? 'Call ToolSearch when the active tools do not cover the task.'
+        : 'Call ToolSearch when neither the active tools nor this list cover the task.',
     ].join('\n');
   };
 
@@ -900,6 +932,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     isActive,
     isAuthorized,
     admitDirect,
+    admitsDirectCalls: () => !directCallsGated,
     whyInactive,
     wasDeclared,
     canExecute,
