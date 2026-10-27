@@ -589,7 +589,7 @@ describe('renderSeatbeltProfile', () => {
     });
 
     expect(profile).toContain(
-      '(deny file-read* (require-all (subpath (param "P0")) (regex #"/(book-rewind-|book-index-|book-config-preflight-|book-socks-)[^/]*(/|$)")))',
+      '(deny file-read* (require-all (subpath (param "P0")) (regex #"/(book-rewind-|book-index-|book-config-preflight-|book-socks)[^/]*(/|$)")))',
     );
   });
 });
@@ -618,8 +618,9 @@ describe('BOOK_TEMP_PREFIXES', () => {
         prefixes.add(match[1]);
       }
       // A fixed name under tmpdir() built from a template, such as the messaging inbox's
-      // `book-socks-${uid}` (#620): the part before the first substitution is the prefix.
-      for (const match of text.matchAll(/tmpdir\(\)\s*,\s*`(book-[a-z-]*-)\$\{/g)) {
+      // `book-socks-${uid}` (#620): the part before the first substitution, less its dash, is
+      // the prefix, so the bare name (`$XDG_RUNTIME_DIR/book-socks`) is covered as well.
+      for (const match of text.matchAll(/tmpdir\(\)\s*,\s*`(book-[a-z-]*?)-?\$\{/g)) {
         prefixes.add(match[1]);
       }
     }
