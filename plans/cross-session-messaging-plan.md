@@ -659,21 +659,74 @@ matters, instead of having to think of asking. All of it works with `messaging.e
   real-model runs (weak and strong model, same scenario, also measuring coordination messages and
   extra tokens) wait for the owner's budget.
 
-**PR 5: receive policy and approval.**
+**PR 5: receive policy and approval** (shipped as below, 2026-10-27).
 
-- Setting `messaging.inbound: accept | hold | refuse`. User-global and `--settings` decide; project
-  and local settings can only tighten; an invalid value is `hold`.
-- Mode parity uses the §4.1 D5 mapping.
-- Held buffer of 100. Re-evaluate held messages on a mode change (the Shift+Tab mode cycle).
-- A TUI approval overlay with a deadline (`messaging.approvalTimeout`, default 5 min). Print mode
-  and the SDK expire held messages.
-- Settle held messages as expired on shutdown.
-- **Pin a peer turn to its class** (from PR 3's security review): a `peer-message` turn runs under
-  the permission class it was delivered in. A mode switched in the middle of the turn, into the
-  other class, must not let the peer's request run unasked; hold or end the turn instead. PR 3
-  checks the class on arrival, at delivery and again after the pre-turn compaction, but not
-  mid-turn (`TODO(#620)` in `useAgent.ts`).
-- If the overlay reuses the permission-prompt component, regenerate the README media.
+- **Policy** (`messaging/receive-policy.ts`, pure): `messaging.inbound` decides first (`refuse`,
+  `hold` with cause `policy`, `accept`); unset, mode parity with the D5 classes: the same asserted
+  class is accepted, the other is held (`mode-mismatch`), none is held by a bypass-class receiver
+  (`no-mode-asserted`) and accepted by a prompting one. A receiver mode outside the six, or an
+  opening tag claiming a `from-mode` no class has (it fails the envelope round trip, so it is read
+  from the raw tag), is held (`mode-unknown`). The ingress guard runs first; the inbox's `screen`
+  hook replaced PR 3's interim cross-class refusal. Every queued message, a released one included,
+  is judged again when a delivery is prepared and once more at commit (never by a verdict from
+  before the pre-turn compaction): one no longer accepted is held or refused, and one accepted
+  again stays queued. A user's approval answers a parity hold or `inbound: hold`, never `refuse`;
+  a release by a mode change answers nothing the policy now says.
+- **Settings**: `messaging.inbound` is decided by the user file then `--settings`; the project and
+  local layers may only tighten it (accept < unset < hold < refuse, so a workspace `accept` is a
+  loosening and ignored), even over `--settings`. An invalid value is `hold` (the schema accepts
+  any value; nothing fails the launch). One pure resolver serves the loader and `book doctor`,
+  which labels a tightened result with its file and reports a workspace value that tried to loosen
+  it. `messaging.approvalTimeout` (ms, default 300000, 10 s–24 h) joined
+  `USER_OR_FLAG_ONLY_SETTING_PATHS`. The TUI follows a live change of `inbound`
+  (`SessionMessaging.setInbound`), which re-judges every held message.
+- **Held buffer** (`SessionMessaging`): 100, the oldest expired (`room`) with a receipt; one unref'd
+  timer for the earliest deadline; every held message re-judged on a mode change (released ones go
+  on the delivery queue, or stay held while it is full; a changed cause is re-announced). On close,
+  every undelivered message (held, released, queued) gets an `expired` receipt before the inbox
+  closes, a frame screened while closing a `refused` one, and the close waits at most 750 ms
+  (`CLOSE_DRAIN_MS`) for the receipts going out, each of which also times out then. Senders are
+  named from one registry listing per 2 s, shared by a burst of holds.
+- **Receipts**: `held` on hold, `denied`, `expired`, `refused`, and `released` at delivery for a
+  message that was held. CC's wire has no `released`: it goes as `delivered` with
+  `status_detail: "released"`, read back as `released` (older Book senders see `delivered`). The
+  sender texts are PR 3's; `refused` now names the receive policy.
+- **TUI**: a `⚠ Held peer message — from <name [ref]> (peer claims name: X); preview: «…» — not
+delivered (N held)` row (name from the registry record advertising the frame's address; every
+  peer span folded to one line, invisible characters dropped, harness tags neutralized, `«»`
+  replaced, 120 characters; the sender's registry name too, and `sanitizeEnvelopeName` strips
+  `«»`, the dashes and the row marks). Parity holds get `PeerMessageApprovalPrompt`, a
+  `DecisionSheet` like the MCP trust prompt (the permission card is untouched, so no README media
+  change): Deliver now / Deny / Later, opening on Later with no letter keys, ignoring keys for
+  500 ms after it appears, Esc = Later; it yields to every other modal and never blocks delivery.
+  The sheet asks once per sender, with a count, and offers "Deny all from this sender" (denied
+  receipts, and later parity holds from that address refused for the session) and "Deny all held";
+  Later defers the whole sender, its later messages included, and re-offers at most every 5 min.
+  Later re-offers the message the next time the session goes idle after a turn; an approval that
+  finds the queue full stays held and is re-offered once a delivery makes room; the status line
+  shows `held N`. A `policy` hold is not offered: only a change of the setting releases it.
+  Settled holds get a row each (at most 20 rows a minute); an approval that finds the message
+  settled gets a follow-up (a policy turned to `refuse` refuses held messages at once, with a row,
+  so "policy now refuse" is that row).
+- **Pin**: `runAgentLoop`'s `peerTurnClass` option, set from the batch: the stricter of the
+  receiver's class and each sender's asserted one, and always prompting for a message the user
+  approved. `syncHostMode`, the one place the loop reads the host's mode, applies
+  `peerTurnGateMode`: a bypass-class host mode is read as `default` for the whole run; a stricter
+  mode applies at once. Child agents, `SessionSend`'s `from-mode` and every gate read the pinned
+  mode. The TUI keeps a session-level pin a peer turn sets and host-delivered turns (completions,
+  notices) inherit, cleared only by a turn the user starts; a background job a pinned run starts
+  keeps the run's class for its own completion turn, whenever it lands. A pinned run's
+  `EnterPlanMode` and `ExitPlanMode` are refused, and `EnterPlanMode` records the host's own mode
+  (`ToolContext.hostMode`) as the one to restore, so a peer turn never changes the session's mode.
+  A prompting-class run's `AgentSpawn`, `AgentPlan` and `AgentSend` are refused: managed agents
+  outlive the turn and run at the `AgentManager`'s shared mode, which the pin does not reach
+  (security review). A pinned run's
+  `AgentStop`, `AgentApply` and `AgentSend` ask in every mode, past any rule; a managed agent a pinned
+  run spawns (`Task`, `AgentSpawn`) records `peerTurnClass` on its record and runs at
+  `peerTurnGateMode(manager mode, class)` when it starts, so a switch to bypass while it queues does
+  not reach it.
+- Print mode and the SDK still have no inbox (D3), so nothing is held there; their `--messaging`
+  opt-in and stream-json `peer_message_hold` events stay in PR 7.
 
 **PR 6: `notify_when_idle`.** Add `SessionSend {notify_when_idle: true}` and the idle notice, with
 CC's table limits, debounce and 12 h expiry.

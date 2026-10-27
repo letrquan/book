@@ -414,6 +414,18 @@ export interface ToolContext {
   peerAwareness?: import('./messaging.js').PeerAwarenessHandle;
   /** Live permission mode for the active agent loop; tools may update this. */
   currentMode?: PermissionMode;
+  /**
+   * The host's own mode, as the user set it, when the loop reads a peer turn's class pin into
+   * `currentMode` (#620): what entering plan mode records to restore, so a pinned turn can never
+   * hand its pinned mode back to the session.
+   */
+  hostMode?: PermissionMode;
+  /**
+   * The class the run is pinned to when a peer's message started it or it carries a peer's work
+   * on (#620): a managed agent it spawns keeps that class, whatever the session's mode is when the
+   * agent starts.
+   */
+  peerTurnClass?: import('./messaging.js').PeerPermissionClass;
   /** Mode to restore after a tool-initiated plan-mode session exits. */
   previousMode?: PermissionMode;
   /** Plan text submitted by ExitPlanMode and awaiting host approval. */

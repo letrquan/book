@@ -775,17 +775,22 @@ What a send returns:
 - relay limit (the turn continues a relay that would pass 28 hops, or pass through this session
   10 times): not sent, since the other side would drop it as a loop; tell the user.
 
-A message that is dropped or refused later comes back as a `⚠` transcript row and a
-`[Cross-session delivery notice]` for the model, which tells it not to resend in a loop; a delivered
-one is a `✓` row only. The notice's text is Book's, one per status: what the other session said
+A message that is dropped, held, denied, expired or refused later comes back as a `⚠` transcript
+row and a `[Cross-session delivery notice]` for the model, which tells it not to resend in a loop
+(and, while it is held, not to wait for a reply); a delivered one is a `✓` row only. The notice's text is Book's, one per status: what the other session said
 about its reason is never repeated.
 
 On the receiving side, the message's text never reaches the prompt as markup: the `<` of every tag
 Book's prompts are built from (`session-state`, `project-instructions`, `system-reminder`, the
 envelope's own `cross-session-message`, and the rest of the list in `src/prompt-tags.ts`) is
 rewritten as `<\\`, also when a JSON string spells it with escapes such as `\u003c` or `\/`. A
-message whose permission class differs from the receiving session's is refused for now (see
-[Features](features.md)).
+message whose permission class differs from the receiving session's is held for its user to
+approve, and a turn a peer message starts is pinned to its permission class, as are the
+completion and notice turns that carry its work on until the user's next turn, so switching into
+`bypassPermissions` or `auto` mid-turn never lets the peer's request run unasked; a pinned turn's
+`EnterPlanMode` and `ExitPlanMode` are refused, and so are a prompting-class one's `AgentSpawn`,
+`AgentPlan` and `AgentSend`; a pinned turn's `AgentStop`, `AgentApply` and `AgentSend` ask in every
+mode, and a `Task` subagent it starts keeps its class (see [Features](features.md)).
 
 ## Hooks
 

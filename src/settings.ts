@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { INBOUND_SETTINGS } from './types/messaging.js';
 
 /**
  * Permission rule: "Tool" or "Tool(specifier)" where specifier is a glob pattern
@@ -327,14 +328,31 @@ export const memorySettingsSchema = z.object({
   autoSave: z.boolean().default(true),
 });
 
+/** How long a held peer message waits for the user's approval by default: 5 minutes. */
+export const DEFAULT_MESSAGING_APPROVAL_TIMEOUT_MS = 5 * 60_000;
+
 /**
- * Cross-session messaging (#620), experimental and off by default. `enabled` loosens what a
- * session accepts, so it is read only from the user-global layer and `--settings`: a workspace
- * layer that sets it is ignored and reported (`USER_OR_FLAG_ONLY_SETTING_PATHS`).
+ * Cross-session messaging (#620), experimental and off by default. `enabled` and
+ * `approvalTimeout` loosen what a session accepts, so they are read only from the user-global
+ * layer and `--settings`: a workspace layer that sets one is ignored and reported
+ * (`USER_OR_FLAG_ONLY_SETTING_PATHS`). `inbound` is decided by those layers too, and a workspace
+ * layer may only make it stricter (`resolveInboundSetting`).
  */
 export const messagingSettingsSchema = z.object({
   /** The interactive TUI opens an inbox socket other Book sessions on this machine can reach. */
   enabled: z.boolean().default(false),
+  /**
+   * What arriving messages get: `accept`, `hold` (for the user) or `refuse`. Unset, mode parity
+   * decides. Any other value is read as `hold`, never as an error: the policy fails closed.
+   */
+  inbound: z.enum(INBOUND_SETTINGS).optional().catch('hold'),
+  /** Milliseconds a held message waits for approval before it expires (10 s to 24 h). */
+  approvalTimeout: z
+    .number()
+    .int()
+    .min(10_000)
+    .max(86_400_000)
+    .default(DEFAULT_MESSAGING_APPROVAL_TIMEOUT_MS),
 });
 
 export type MessagingSettings = z.infer<typeof messagingSettingsSchema>;
@@ -722,6 +740,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   },
   messaging: {
     enabled: false,
+    approvalTimeout: DEFAULT_MESSAGING_APPROVAL_TIMEOUT_MS,
   },
   agents: {
     mode: 'adaptive',

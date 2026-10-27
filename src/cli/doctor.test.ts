@@ -1226,4 +1226,31 @@ describe('runDoctorCommand messaging (#620)', () => {
     );
     if (posix) expect(output).toContain('Messaging: off');
   });
+
+  it.skipIf(!posix)('labels messaging.inbound with the layer that decided it', async () => {
+    writeUserSettings({ messaging: { enabled: true } });
+    expect(await doctorOutput()).toContain('  Inbound: unset (mode parity decides');
+
+    writeUserSettings({ messaging: { enabled: true, inbound: 'accept' } });
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    const project = join(workspace, '.book', 'settings.json');
+    writeFileSync(project, JSON.stringify({ messaging: { inbound: 'hold' } }));
+    expect(await doctorOutput()).toContain(`  Inbound: hold (tightened by ${project})`);
+
+    writeFileSync(project, JSON.stringify({ messaging: { inbound: 'accept' } }));
+    writeUserSettings({ messaging: { enabled: true, inbound: 'nope' } });
+    const output = await doctorOutput();
+    expect(output).toMatch(
+      / {2}Inbound: hold \(from .*settings\.json; the value set is not accept/,
+    );
+  });
+
+  it('reports a workspace layer that tries to loosen messaging.inbound', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    const local = join(workspace, '.book', 'settings.local.json');
+    writeFileSync(local, JSON.stringify({ messaging: { inbound: 'accept' } }));
+    expect(await doctorOutput()).toContain(
+      `  Ignored from ${local}: messaging.inbound="accept" — a workspace layer may only make it stricter`,
+    );
+  });
 });

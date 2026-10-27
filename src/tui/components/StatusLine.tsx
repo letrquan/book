@@ -54,6 +54,8 @@ interface StatusLineProps {
   agentCount?: number;
   activeAgentCount?: number;
   needsInputAgentCount?: number;
+  /** Peer messages held for the user's approval (#620): `held N` while there are any. */
+  heldPeerMessageCount?: number;
   /**
    * Epoch milliseconds at which the session's `/goal` was set, while one is active.
    * Draws `◎ /goal active (<elapsed>)` after the permission mode and keeps it counting.
@@ -174,6 +176,7 @@ export function StatusLine({
   agentCount = 0,
   activeAgentCount = 0,
   needsInputAgentCount = 0,
+  heldPeerMessageCount = 0,
   goalSetAt,
   turnCount = 0,
   stepLabel,
@@ -241,6 +244,10 @@ export function StatusLine({
     // Beside the mode: both say how the session is running, so a goal outranks the branch
     // and the model, which only say where and on what.
     if (goalChip) segments.push({ text: goalChip, color: theme.brand });
+    // Held peer messages wait on the user, so they rank with the mode, not with the metadata.
+    if (heldPeerMessageCount > 0) {
+      segments.push({ text: `held ${heldPeerMessageCount}`, color: theme.warning });
+    }
 
     if (gitBranch && gitBranch !== '?') {
       const dirty = Boolean(gitStatus && gitStatus !== CLEAN_TREE);
@@ -286,6 +293,7 @@ export function StatusLine({
     effort,
     taskCount,
     needsInputAgentCount,
+    heldPeerMessageCount,
     goalChip,
     theme.brand,
     theme.inactive,

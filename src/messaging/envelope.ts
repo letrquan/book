@@ -45,8 +45,10 @@ const ENVELOPE = new RegExp(
 );
 const ATTRIBUTE = / ([a-z-]+)="([^"]*)"/g;
 // Format and control characters, surrogates and the line and paragraph separators (Claude Code's
-// set), and the characters that would break the attribute or read as markup.
-const NAME_STRIPPED = /[\p{Cf}\p{Cc}\p{Cs}\p{Zl}\p{Zp}"<>&]/gu;
+// set), the characters that would break the attribute or read as markup, and the glyphs the TUI's
+// held-message rows are built from (`«»`, the dashes, the marks), so a name cannot draw a row's
+// structure (#620 PR 5).
+const NAME_STRIPPED = /[\p{Cf}\p{Cc}\p{Cs}\p{Zl}\p{Zp}"<>&«»—–·•●✓⚠›]/gu;
 
 /** The permission class of a mode (D5): `bypass` for `bypassPermissions` and `auto`. */
 export function permissionClassOf(mode: string | undefined): PeerPermissionClass {

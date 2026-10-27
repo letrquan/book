@@ -37,6 +37,7 @@ import {
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 import { normalizeRemovedSettings } from './settings-removed.js';
 import { parseEnvBoolean } from './env-boolean.js';
+import { resolveInboundSetting } from './messaging/receive-policy.js';
 
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
 
@@ -329,6 +330,8 @@ export function formatIgnoredWorkspaceSandboxKey(entry: IgnoredWorkspaceSandboxK
 const USER_OR_FLAG_ONLY_SETTING_PATHS: ReadonlyArray<readonly string[]> = [
   // Cross-session messaging opens an inbox other sessions can write into (#620).
   ['messaging', 'enabled'],
+  // How long a held message waits for approval: a longer wait keeps a peer's request around.
+  ['messaging', 'approvalTimeout'],
 ];
 
 /** One user-or-flag-only key a workspace layer set, and the value it wrote. */
@@ -716,6 +719,22 @@ export function resolveSettingsWithProviderGate(
 
   // Layer 4 (optional): Ad-hoc override (--settings flag)
   if (override) resolved = mergeLayer(resolved, override, 'trusted');
+
+  // `messaging.inbound` is the trusted layers' to decide, and a workspace layer's only to tighten
+  // (#620). The merge let the last layer win, so it is set again from the layers themselves.
+  const inbound = resolveInboundSetting([
+    { label: 'user', path: userPath, trusted: true, value: user?.messaging?.inbound },
+    { label: 'project', path: projectPath, trusted: false, value: project?.messaging?.inbound },
+    { label: 'local', path: localPath, trusted: false, value: local?.messaging?.inbound },
+    {
+      label: 'flag',
+      path: overridePath ?? '',
+      trusted: true,
+      value: override?.messaging?.inbound,
+    },
+  ]);
+  if (inbound.value !== undefined) resolved.messaging.inbound = inbound.value;
+  else delete resolved.messaging.inbound;
 
   // Trust decisions come from outside the workspace, so a repository cannot
   // ship its own. Layers the user controls may still carry them — the global

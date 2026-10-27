@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { humanReceiptLine, modelReceiptNotice } from '../../messaging/delivery.js';
+import { heldMessageLine, HoldRowLimiter, settledMessageLine } from '../../messaging/hold.js';
 import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/session-messaging.js';
 
 /** How long a delivery the session could not start waits before it is tried again. */
@@ -13,7 +14,8 @@ const RETRY_MS = 1_000;
  * follow-ups sent first — and start a turn of their own then, as a managed agent's completion
  * does. A message never interrupts a turn (draining at a tool round comes later, #620 PR 7).
  * A receipt's line for the human is written when the batch arrives; its notice for the model
- * waits its turn like a message.
+ * waits its turn like a message. A message the receive policy holds, and how a held one ends, are
+ * rows for the human only: a held message never reaches the model until it is released (PR 5).
  */
 export function usePeerMessageDelivery(options: {
   messaging?: SessionMessaging;
@@ -26,6 +28,7 @@ export function usePeerMessageDelivery(options: {
   const latest = useRef(options);
   latest.current = options;
   const notices = useRef<string[]>([]);
+  const holdRows = useRef(new HoldRowLimiter());
   const inFlight = useRef(false);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const mounted = useRef(true);
@@ -40,6 +43,13 @@ export function usePeerMessageDelivery(options: {
           .map(modelReceiptNotice)
           .filter((line): line is string => line !== undefined);
         if (notice.length > 0) notices.current.push(notice.join('\n'));
+      } else if (event.type === 'held' || event.type === 'hold-settled') {
+        const row = holdRows.current.admit(
+          event.type === 'held'
+            ? heldMessageLine(event.held, event.count)
+            : settledMessageLine(event.held, event.outcome, event.by),
+        );
+        if (row !== undefined) latest.current.warn(row);
       }
       setTick((current) => current + 1);
     });
