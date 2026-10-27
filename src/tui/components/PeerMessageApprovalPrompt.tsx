@@ -1,4 +1,5 @@
 import { Box, Text, useInput } from 'ink';
+import { useRef } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import {
@@ -24,12 +25,13 @@ interface PeerMessageApprovalPromptProps {
 
 type OptionKey = 'approve' | 'deny' | 'later';
 
-/** The clock time a held message expires at, as the sheet names it. */
-function clockTime(epochMs: number): string {
+/** How long the sheet ignores keys after it appears: a typed-ahead Enter must answer nothing. */
+export const PEER_APPROVAL_ARM_MS = 500;
+
+/** When a held message expires, as the sheet names it: the time, and the date when it is far off. */
+function expiryTime(epochMs: number, now = Date.now()): string {
   const date = new Date(epochMs);
-  return [date.getHours(), date.getMinutes(), date.getSeconds()]
-    .map((part) => String(part).padStart(2, '0'))
-    .join(':');
+  return epochMs - now > 12 * 60 * 60_000 ? date.toLocaleString() : date.toLocaleTimeString();
 }
 
 /**
@@ -37,8 +39,9 @@ function clockTime(epochMs: number): string {
  * it, or decide later. Everything the peer wrote is shown as sanitized spans (`peerTextSpan`), so
  * its text cannot draw a choice or a hint of its own.
  *
- * "Later" is the choice the sheet opens on, and no letter key answers it: a sheet that appears
- * under a typed-ahead Enter, or a word that starts with `y`, must never deliver anything.
+ * "Later" is the choice the sheet opens on, no letter key answers it, and it ignores every key for
+ * {@link PEER_APPROVAL_ARM_MS} after it appears: a sheet that appears under a typed-ahead Enter,
+ * or a word that starts with `y`, must never deliver anything.
  */
 export function PeerMessageApprovalPrompt({
   held,
@@ -56,9 +59,14 @@ export function PeerMessageApprovalPrompt({
       hint: 'as a peer turn, under prompting-mode rules',
     },
     { key: 'deny', label: 'Deny', hint: 'not delivered; its sender is told' },
-    { key: 'later', label: 'Later', hint: `stays held; expires at ${clockTime(held.expiresAt)}` },
+    {
+      key: 'later',
+      label: 'Later',
+      hint: `asked again when idle; expires at ${expiryTime(held.expiresAt)}`,
+    },
   ];
   const [selected, setSelected, currentSelected] = useKeyState(options.length - 1);
+  const shownAt = useRef(Date.now());
 
   const decide = (key: OptionKey) => {
     if (key === 'approve') onApprove();
@@ -67,6 +75,7 @@ export function PeerMessageApprovalPrompt({
   };
 
   useInput((_input, key) => {
+    if (Date.now() - shownAt.current < PEER_APPROVAL_ARM_MS) return;
     if (key.escape) return onDefer();
     if (key.upArrow) return setSelected((currentSelected() + options.length - 1) % options.length);
     if (key.downArrow) return setSelected((currentSelected() + 1) % options.length);

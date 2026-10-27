@@ -31,6 +31,14 @@ describe('plan mode tools', () => {
     expect(context.previousMode).toBe('default');
   });
 
+  it("EnterPlanMode records the host's own mode, never a peer turn's pinned one (#620)", async () => {
+    const context = ctx({ currentMode: 'default', hostMode: 'bypassPermissions' });
+
+    await tool('EnterPlanMode').execute({}, context);
+
+    expect(context.previousMode).toBe('bypassPermissions');
+  });
+
   it('EnterPlanMode is idempotent when already in plan mode', async () => {
     const context = ctx({ currentMode: 'plan', previousMode: 'accept-edits' });
 

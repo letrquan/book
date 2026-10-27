@@ -1253,11 +1253,21 @@ export function App({
   );
   const showMcpApproval = Boolean(pendingMcpApproval) && !otherModalOwnsInput;
   // A peer message the receive policy held for the user (#620), asked about after the MCP trust
-  // prompt. What it holds changes only with an event from the messaging runtime, which re-renders
-  // this component; `Later` is the one answer that does not, so it bumps this.
+  // prompt. It does not hold up delivery: an approval that found the queue full is offered again
+  // once a delivery makes room. What it holds changes only with an event from the messaging
+  // runtime, which re-renders this component; `Later` is the one answer that does not, so it
+  // bumps this.
   const [, setPeerHoldTick] = useState(0);
   const pendingPeerApproval = session.messaging?.nextApproval();
   const showPeerApproval = Boolean(pendingPeerApproval) && !showMcpApproval && !otherModalOwnsInput;
+  // A message put off with Later is asked about again each time the session goes idle after a
+  // turn, once: the user said "not now", not "never".
+  const peerSessionBusy = isThinking || sendInFlight;
+  const peerSessionWasBusy = useRef(peerSessionBusy);
+  useEffect(() => {
+    if (peerSessionWasBusy.current && !peerSessionBusy) session.messaging?.reofferDeferred();
+    peerSessionWasBusy.current = peerSessionBusy;
+  }, [peerSessionBusy, session.messaging]);
 
   // Surface connection outcomes as transcript notices once the turn is idle;
   // addLocalMessage drops messages mid-turn, so consumption waits for idle.
@@ -1311,7 +1321,6 @@ export function App({
     pendingElicitation ||
     childPermission ||
     childQuestion ||
-    showPeerApproval ||
     editingQueuedInput ||
     managedAgents.surface !== 'main',
   );
@@ -3797,6 +3806,7 @@ export function App({
                     ).length
                   : 0
               }
+              heldPeerMessageCount={session.messaging?.heldList().length ?? 0}
               goalSetAt={activeGoal?.setAt}
               turnCount={turnCount}
               terminalWidth={termWidth}

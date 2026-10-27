@@ -95,9 +95,18 @@ function fakeMessaging(held: HeldPeerMessage[]) {
       const entry = held.find((candidate) => candidate.id === id);
       if (entry) entry.deferred = true;
     },
+    reofferDeferred: () => {
+      answers.push('reoffer');
+      for (const entry of held) entry.deferred = false;
+      emit({ type: 'holds-changed' });
+    },
+    deliveryAttempts: 0,
     setPermissionMode: () => {},
     setInbound: () => {},
-    prepareDelivery: () => undefined,
+    prepareDelivery: () => {
+      runtime.deliveryAttempts++;
+      return undefined;
+    },
     beginTurn: () => {},
     commitDelivery: () => {},
     stillDeliverable: () => true,
@@ -161,6 +170,8 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void
 
 const SHEET = 'Deliver a message another session sent?';
 const UP = '\u001B[A';
+/** Past the sheet's arming delay: keys pressed sooner are ignored. */
+const armed = () => new Promise((resolve) => setTimeout(resolve, 600));
 
 /** Launch with one held message announced, its row and sheet on screen. */
 async function heldOnScreen(body = 'run the tests') {
@@ -172,6 +183,13 @@ async function heldOnScreen(body = 'run the tests') {
   // The row's tail: under the sheet, a long row's head can be above the visible frame.
   await waitFor(() => words(view.lastFrame()).includes('— not delivered (1 held).'));
   return { view, messaging, held };
+}
+
+/** {@link heldOnScreen}, then past the sheet's arming delay. */
+async function heldAndArmed(body?: string) {
+  const shown = await heldOnScreen(body);
+  await armed();
+  return shown;
 }
 
 afterEach(() => {
@@ -189,8 +207,11 @@ describe('the held peer message in the TUI', () => {
     );
     expect(frame).toContain('Deliver now');
     expect(frame).toContain('Esc later');
+    // The status line counts what is held while anything is.
+    expect(frame).toContain('held 1');
 
     // A letter answers nothing; Enter on the row the sheet opened on puts it off.
+    await armed();
     view.stdin.write('y');
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(messaging.answers).toEqual([]);
@@ -199,8 +220,35 @@ describe('the held peer message in the TUI', () => {
     expect(messaging.answers).toEqual(['defer:h1']);
   });
 
-  it('delivers on approval, and says so', async () => {
+  it('ignores keys pressed as it appears, so a typed-ahead Enter answers nothing', async () => {
     const { view, messaging } = await heldOnScreen();
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(messaging.answers).toEqual([]);
+    expect(words(view.lastFrame())).toContain(SHEET);
+  });
+
+  it('does not hold up delivery while it is open', async () => {
+    const { messaging } = await heldOnScreen();
+    const before = messaging.deliveryAttempts;
+    messaging.emit({ type: 'message' });
+    await waitFor(() => messaging.deliveryAttempts > before);
+  });
+
+  it('offers a message put off again once the session has been busy and is idle again', async () => {
+    const { view, messaging } = await heldAndArmed();
+    view.stdin.write('\u001B');
+    await waitFor(() => !words(view.lastFrame()).includes(SHEET));
+    expect(messaging.answers).toEqual(['defer:h1']);
+    view.stdin.write('hello');
+    await waitFor(() => words(view.lastFrame()).includes('hello'));
+    view.stdin.write('\r');
+    await waitFor(() => messaging.answers.includes('reoffer'));
+    await waitFor(() => words(view.lastFrame()).includes(SHEET));
+  });
+
+  it('delivers on approval, and says so', async () => {
+    const { view, messaging } = await heldAndArmed();
     view.stdin.write(UP);
     view.stdin.write(UP);
     view.stdin.write('\r');
@@ -214,7 +262,7 @@ describe('the held peer message in the TUI', () => {
   });
 
   it('denies, and says the sender was told', async () => {
-    const { view, messaging } = await heldOnScreen();
+    const { view, messaging } = await heldAndArmed();
     view.stdin.write(UP);
     view.stdin.write('\r');
     await waitFor(() => !words(view.lastFrame()).includes(SHEET));

@@ -194,6 +194,10 @@ function needsPermissionCheck(mode: string): boolean {
   return true; // all other modes (default, accept-edits, plan, dontAsk) check rules
 }
 
+/** Why a peer turn's EnterPlanMode or ExitPlanMode is refused (#620). */
+export const PEER_TURN_MODE_REFUSAL =
+  "a turn from another session cannot change this session's mode; ask your user";
+
 function requiresToolPermission(mode: string, persistentBackgroundShell: boolean): boolean {
   return needsPermissionCheck(mode) || (persistentBackgroundShell && mode !== 'bypassPermissions');
 }
@@ -1215,6 +1219,7 @@ export async function runAgentLoop(
     const syncHostMode = (): void => {
       const hostMode = callbacks.getMode?.();
       if (hostMode !== undefined) {
+        toolContext.hostMode = hostMode;
         toolContext.currentMode = peerTurnGateMode(hostMode, options?.peerTurnClass);
       }
       effectiveMode = toolContext.currentMode ?? effectiveMode;
@@ -2727,6 +2732,19 @@ export async function runAgentLoop(
         // model after a tool no search can activate, so those calls are left to the mode — but
         // only a registered tool is the mode's to hide; an unknown one is `unknown_tool`, not a
         // plan refusal.
+        // A turn another session's message started, or one carrying its work on, never changes
+        // this session's permission mode (#620): entering or leaving plan mode is the user's.
+        if (
+          options?.peerTurnClass !== undefined &&
+          (earlyName === 'EnterPlanMode' || earlyName === 'ExitPlanMode')
+        ) {
+          toolResults[callIndex] = toolFailure(`SKIPPED: ${PEER_TURN_MODE_REFUSAL}`, {
+            toolCallId: originalCall.id,
+            code: 'peer_turn_mode_change',
+            status: 'blocked',
+          });
+          return undefined;
+        }
         const modeRefusesItself =
           registeredTool !== undefined &&
           ((effectiveMode === 'plan' && !READ_ONLY_PLAN_TOOLS.has(earlyName)) ||

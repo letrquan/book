@@ -40,8 +40,10 @@ export interface HeldPeerMessage {
   readonly claimedName?: string;
   /** The body as one capped span. */
   readonly preview: string;
-  /** The user chose "Later": the approval sheet does not offer it again. */
+  /** The user chose "Later": the approval sheet offers it again when the session is next idle. */
   deferred: boolean;
+  /** Approved while the delivery queue was full: offered again once it has room. */
+  awaitingRoom?: boolean;
 }
 
 /** How a held message was settled. */
@@ -128,7 +130,7 @@ export function lateApprovalLine(
   outcome: 'no-room' | 'resolved',
 ): string {
   return outcome === 'no-room'
-    ? `⚠ Not released yet: the delivery queue is full. The peer message from ${held?.sender ?? 'that session'} stays held; approve it again once the queue drains.`
+    ? `⚠ Not released yet: the delivery queue is full. The peer message from ${held?.sender ?? 'that session'} stays held, and is offered again once there is room.`
     : '⚠ That held peer message was already settled (expired, refused, released or denied) before the approval.';
 }
 

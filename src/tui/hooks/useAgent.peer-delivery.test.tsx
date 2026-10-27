@@ -127,7 +127,7 @@ function fixture(messaging: ReturnType<typeof fakeMessaging>) {
 const batch: PeerDeliveryBatch = {
   count: 1,
   delivered: [],
-  diverted: new Map(),
+  withheld: [],
   turnClass: 'prompting',
   turn: {
     display: 'Message from peer-b [a1b2c3]:\nrun the tests',
@@ -193,6 +193,39 @@ describe('peer-message delivery in the TUI', () => {
     expect(await latest!.sendPeerMessages({ ...batch, turnClass: 'bypass' })).toBe(true);
     await latest!.send('the user types');
     expect(loopState.calls.map((call) => call.peerTurnClass)).toEqual(['bypass', undefined]);
+  });
+
+  it("keeps a peer turn's pin on the turns that carry its work on, until the user's next turn", async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // A peer turn pinned to prompting starts a background shell; its completion is a turn of its
+    // own, which must not run unasked in the bypass session.
+    expect(await latest!.sendPeerMessages({ ...batch, turnClass: 'prompting' })).toBe(true);
+    const shell = {
+      id: 'bg-1',
+      title: 'tests',
+      command: 'npm test',
+      status: 'completed',
+      exitCode: 0,
+      startedAt: Date.now() - 1000,
+      finishedAt: Date.now(),
+    } as unknown as Parameters<NonNullable<typeof latest>['sendBackgroundShellCompletion']>[0];
+    expect(await latest!.sendBackgroundShellCompletion(shell)).toBe(true);
+    expect(await latest!.sendPeerDeliveryNotice('[Cross-session delivery notice] …')).toBe(true);
+    // A bypass-class peer turn after it cannot loosen the standing pin.
+    expect(await latest!.sendPeerMessages({ ...batch, turnClass: 'bypass' })).toBe(true);
+    await latest!.send('the user types');
+    expect(await latest!.sendBackgroundShellCompletion(shell)).toBe(true);
+    expect(loopState.calls.map((call) => call.peerTurnClass)).toEqual([
+      'prompting',
+      'prompting',
+      'prompting',
+      'prompting',
+      undefined,
+      undefined,
+    ]);
   });
 
   it('does not start a peer turn whose sender no longer matches the mode', async () => {

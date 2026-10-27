@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { requiresToolPermission, runAgentLoop } from './loop.js';
+import { PEER_TURN_MODE_REFUSAL, requiresToolPermission, runAgentLoop } from './loop.js';
 import * as asyncModule from '../async.js';
 import {
   applyCompactResult,
@@ -23,6 +23,7 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 import type { Message, Usage } from '../types/messages.js';
 import { askUserQuestionTools } from '../tools/ask-user-question.js';
+import { planModeTools } from '../tools/plan-mode.js';
 import { fileTools } from '../tools/file.js';
 import { toolSuccess } from '../tools/result.js';
 import { readToolUseRecords } from '../tool-telemetry.js';
@@ -2796,6 +2797,59 @@ describe('a peer turn pinned to its permission class (#620 PR 5)', () => {
     const echo = pinned.results.find((result) => result.toolCallId === 'echo_2');
     expect(echo?.status).toBe('blocked');
     expect(pinned.prompted).toEqual([]);
+  });
+
+  it("refuses a peer turn's plan-mode tools: it never changes this session's mode", async () => {
+    let providerTurn = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerTurn++;
+        if (providerTurn === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'enter_1', name: 'EnterPlanMode', arguments: {} },
+          };
+        } else if (providerTurn === 2) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'exit_1', name: 'ExitPlanMode', arguments: { plan: 'do it' } },
+          };
+        } else {
+          yield { type: 'text', content: 'done' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    for (const tool of planModeTools) registry.register(tool);
+    const modeChanges: string[] = [];
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 4 }),
+      registry,
+      'a peer asked for a plan',
+      [],
+      noopCallbacks({
+        getMode: () => 'bypassPermissions',
+        onModeChange: (mode) => modeChanges.push(mode),
+        onToolResult: (result) => results.push(result),
+        onPlanApprovalRequired: async () => 'approve',
+      }),
+      'bypassPermissions',
+      {
+        provider,
+        isNewSession: false,
+        userMessageKind: 'peer-message',
+        peerTurnClass: 'prompting',
+      },
+    );
+    expect(results.map((result) => [result.toolCallId, result.status])).toEqual([
+      ['enter_1', 'blocked'],
+      ['exit_1', 'blocked'],
+    ]);
+    expect(results[0].structuredError?.message).toContain(PEER_TURN_MODE_REFUSAL);
+    expect(modeChanges).toEqual([]);
   });
 
   it('keeps a turn delivered in the bypass class unprompted in it', async () => {

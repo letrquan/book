@@ -15,13 +15,16 @@
  * switching the mode mid-turn cannot let the peer's request run unasked.
  */
 
-import type { AcceptedPeerMessage, PeerPermissionClass } from '../types/messaging.js';
+import {
+  INBOUND_SETTINGS,
+  type AcceptedPeerMessage,
+  type InboundSetting,
+  type PeerPermissionClass,
+} from '../types/messaging.js';
 import type { PermissionMode } from '../types/runtime.js';
 import { ENVELOPE_TAG, permissionClassOf } from './envelope.js';
 
-/** `messaging.inbound`, from loosest to strictest. */
-export const INBOUND_SETTINGS = ['accept', 'hold', 'refuse'] as const;
-export type InboundSetting = (typeof INBOUND_SETTINGS)[number];
+export { INBOUND_SETTINGS, type InboundSetting };
 
 /**
  * How strict each setting is. Unset sits between `accept` and `hold`: it means the parity policy
@@ -112,20 +115,33 @@ export function evaluateReceivePolicy(input: {
     : { action: 'hold', cause: 'mode-mismatch' };
 }
 
+/** The stricter of two classes: `prompting` unless both are `bypass`. Undefined is no say. */
+export function stricterClass(
+  left: PeerPermissionClass | undefined,
+  right: PeerPermissionClass | undefined,
+): PeerPermissionClass | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return left === 'bypass' && right === 'bypass' ? 'bypass' : 'prompting';
+}
+
 /**
- * The class a `peer-message` turn runs in: `bypass` only when this session is in the bypass class
- * and every message the turn delivers asserted it too. A message the user approved across the
- * classes, or one that asserted nothing, makes the turn `prompting`: approving a delivery is not
- * approving the peer's request unasked.
+ * The class a `peer-message` turn runs in: the stricter of this session's class at delivery and
+ * each delivered message's own. A message's own class is the one its sender asserted (none, or
+ * one no class has, counts as `prompting`), and always `prompting` for a message the user
+ * approved: approving a delivery is not approving the peer's request unasked, whatever either
+ * session's mode is by the time it is delivered.
  */
 export function peerTurnClass(
   receiverMode: string,
-  senders: readonly AssertedMode[],
+  messages: ReadonlyArray<{ senderMode: AssertedMode; approved: boolean }>,
 ): PeerPermissionClass {
-  return receiverClassOf(receiverMode) === 'bypass' &&
-    senders.every((sender) => sender === 'bypass')
-    ? 'bypass'
-    : 'prompting';
+  let turn: PeerPermissionClass = receiverClassOf(receiverMode) ?? 'prompting';
+  for (const { senderMode, approved } of messages) {
+    const own: PeerPermissionClass = !approved && senderMode === 'bypass' ? 'bypass' : 'prompting';
+    turn = stricterClass(turn, own)!;
+  }
+  return turn;
 }
 
 /**

@@ -70,7 +70,8 @@ async function enterPlanMode(
     );
   }
 
-  ctx.previousMode = mode;
+  // The host's own mode, not a peer turn's pinned one: approving the plan restores this (#620).
+  ctx.previousMode = ctx.hostMode ?? mode;
   ctx.currentMode = 'plan';
   ctx.pendingPlanApproval = undefined;
   return ok(

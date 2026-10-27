@@ -170,12 +170,17 @@ export interface AcceptedPeerMessage {
   /** Epoch milliseconds when the inbox accepted it. */
   receivedAt: number;
   /**
-   * Held, then released — by the user's approval, or a permission mode the policy now accepts it
-   * under (#620 PR 5). Delivered without being judged again, and acknowledged `released`; its
-   * turn's class still pins it (`receive-policy.ts`).
+   * Held, then let go (#620 PR 5): `approved` by the user, or `released` because the policy accepts
+   * it under the session's mode now. Either way it is judged again at delivery, where an approval
+   * still answers a parity hold or `inbound: hold`, never `refuse`; it is acknowledged `released`,
+   * and an approved message's turn runs in the prompting class (`receive-policy.ts`).
    */
-  released?: true;
+  release?: 'approved' | 'released';
 }
+
+/** `messaging.inbound`, from loosest to strictest (#620 PR 5). */
+export const INBOUND_SETTINGS = ['accept', 'hold', 'refuse'] as const;
+export type InboundSetting = (typeof INBOUND_SETTINGS)[number];
 
 /** A `peer_message_status` receipt another session sent back about a message this one sent. */
 export interface PeerMessageReceipt {

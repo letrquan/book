@@ -785,9 +785,10 @@ Book's prompts are built from (`session-state`, `project-instructions`, `system-
 envelope's own `cross-session-message`, and the rest of the list in `src/prompt-tags.ts`) is
 rewritten as `<\\`, also when a JSON string spells it with escapes such as `\u003c` or `\/`. A
 message whose permission class differs from the receiving session's is held for its user to
-approve, and a turn a peer message starts is pinned to its permission class, so switching into
-`bypassPermissions` or `auto` mid-turn never lets the peer's request run unasked (see
-[Features](features.md)).
+approve, and a turn a peer message starts is pinned to its permission class, as are the
+completion and notice turns that carry its work on until the user's next turn, so switching into
+`bypassPermissions` or `auto` mid-turn never lets the peer's request run unasked; a pinned turn's
+`EnterPlanMode` and `ExitPlanMode` are refused (see [Features](features.md)).
 
 ## Hooks
 

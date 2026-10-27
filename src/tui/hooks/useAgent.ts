@@ -110,6 +110,7 @@ import type { LiveSessionReporter } from '../../messaging/writer.js';
 import type { PeerDeliveryBatch, SessionMessaging } from '../../messaging/session-messaging.js';
 import type { PeerAwareness } from '../../messaging/peer-awareness.js';
 import type { PeerPermissionClass } from '../../types/messaging.js';
+import { stricterClass } from '../../messaging/receive-policy.js';
 import type { SessionMentionSource } from '../../input/session-mentions.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
 import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
@@ -575,6 +576,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // Plan-handoff request captured from the loop's onPlanHandoff callback, consumed
   // once the plan-approving send settles.
   const pendingHandoffRef = useRef<{ plan: string; mode: PermissionMode } | null>(null);
+  // The permission class pin a peer turn set (#620). The host-delivered turns after it — a
+  // completion, a delivery notice — carry its work on, so they inherit it, as they keep its relay
+  // chain; only a turn the user starts clears it.
+  const peerPinRef = useRef<PeerPermissionClass | undefined>(undefined);
   const timelineStore = session.timelineStore ?? session.store;
 
   useEffect(() => interactions.subscribe(setInteractionSnapshot), [interactions]);
@@ -1135,6 +1140,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         }
       };
 
+      // The class this run is pinned to: a peer turn's own, made no looser by a pin still standing,
+      // or the standing pin for a turn that carries a peer's work on. A user's turn has none.
+      const runPeerClass =
+        messageOptions?.kind === 'peer-message'
+          ? stricterClass(messageOptions.peerTurnClass ?? 'prompting', peerPinRef.current)
+          : isHostDeliveredTurn({ kind: messageOptions?.kind })
+            ? peerPinRef.current
+            : undefined;
+
       const createUserMessage = () => {
         const message = makeMessage('user', userMessage, messageOptions?.contextMessage, true);
         message.kind = messageOptions?.kind ?? 'conversation';
@@ -1188,8 +1202,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // fresh relay chain for what it sends (#620). A host-delivered turn does not: a peer
         // turn sets its own chain when its batch is committed, and a notification turn (a
         // background job's or an agent's completion, a delivery notice) keeps the chain of the
-        // turn that set it going, so a relay cannot restart itself through a completion.
-        if (!isHostDeliveredTurn({ kind: messageOptions?.kind })) messaging?.beginTurn();
+        // turn that set it going, so a relay cannot restart itself through a completion. The
+        // peer pin follows the same rule: a peer turn sets it, and only the user's turn clears it.
+        if (!isHostDeliveredTurn({ kind: messageOptions?.kind })) {
+          messaging?.beginTurn();
+          peerPinRef.current = undefined;
+        } else if (messageOptions?.kind === 'peer-message') {
+          peerPinRef.current = runPeerClass;
+        }
         messageOptions?.onRecorded?.();
         if (prepared.sessionName !== sessionNameRef.current) {
           sessionNameRef.current = prepared.sessionName;
@@ -1575,9 +1595,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           modelOverride: commandContext?.modelOverride,
           commands: commandContext ? [commandContext.command] : undefined,
           parentSessionId: activeSessionId,
-          ...(messageOptions?.peerTurnClass !== undefined
-            ? { peerTurnClass: messageOptions.peerTurnClass }
-            : {}),
+          ...(runPeerClass !== undefined ? { peerTurnClass: runPeerClass } : {}),
         },
       });
       // A host-delivered turn (a notification, a peer's message) never takes the resumed run's

@@ -262,12 +262,25 @@ export class InboxServer {
     return this.queue.shift();
   }
 
+  /** Take one message off the queue, wherever it is; false when it is not queued. */
+  remove(message: AcceptedPeerMessage): boolean {
+    const index = this.queue.indexOf(message);
+    if (index < 0) return false;
+    this.queue.splice(index, 1);
+    return true;
+  }
+
+  /** Whether the delivery queue is full: an arrival would be dropped, a release refused. */
+  get queueFull(): boolean {
+    return this.queue.length >= INGRESS_LIMITS.maxQueuedPeerMessages;
+  }
+
   /**
    * Put a message the session held back on the delivery queue, behind what is already there, and
    * wake the session as an arrival does. False, and nothing queued, when the queue is full.
    */
   enqueue(message: AcceptedPeerMessage): boolean {
-    if (this.closed || this.queue.length >= INGRESS_LIMITS.maxQueuedPeerMessages) return false;
+    if (this.closed || this.queueFull) return false;
     this.queue.push(message);
     this.options.onMessage?.(message);
     return true;

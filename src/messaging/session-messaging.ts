@@ -91,6 +91,8 @@ export type SessionMessagingEvent =
   | { type: 'receipts'; receipts: ReceiptForSend[] }
   /** A message was held, or a held one's cause changed: `count` are held now. */
   | { type: 'held'; held: HeldPeerMessage; count: number }
+  /** What the approval sheet can offer changed: a message put off, or room for one. */
+  | { type: 'holds-changed' }
   | {
       type: 'hold-settled';
       held: HeldPeerMessage;
@@ -114,6 +116,7 @@ export type HeldApproval =
 /** The `reason` of the receipts this session sends about the messages its policy takes. */
 const RECEIPT_REASONS = {
   refused: 'the receive policy refuses peer messages',
+  closing: 'the session is closing',
   denied: 'denied by the user',
   expired: {
     timeout: 'not approved in time',
@@ -161,13 +164,11 @@ export interface PeerDeliveryBatch {
   readonly count: number;
   readonly delivered: readonly AcceptedPeerMessage[];
   /**
-   * The queued messages the policy no longer accepts — the mode changed since they arrived — and
-   * what each becomes when the batch is committed: held again, or refused.
+   * The queued messages the policy did not accept when the batch was prepared — the mode or the
+   * settings changed since they arrived. Each is judged again when the batch is committed: held,
+   * refused, or left queued when the policy accepts it by then.
    */
-  readonly diverted: ReadonlyMap<
-    AcceptedPeerMessage,
-    Exclude<ReceiveVerdict, { action: 'accept' }>
-  >;
+  readonly withheld: readonly AcceptedPeerMessage[];
   /**
    * The permission class the turn runs in (`peerTurnClass`). The permission gate holds the turn
    * to it for the whole run, whatever the mode is switched to meanwhile.
@@ -176,6 +177,10 @@ export interface PeerDeliveryBatch {
 }
 
 const ACCEPT: ReceiveVerdict = { action: 'accept' };
+/** How long one registry listing names the senders of held messages. */
+const SENDER_LISTING_MAX_AGE_MS = 2_000;
+/** Characters of a sender's `name [ref]` a held row shows. */
+const SENDER_LABEL_CHARS = 80;
 
 export class SessionMessaging implements SessionMessagingHandle {
   readonly inbox: InboxServer;
@@ -206,6 +211,8 @@ export class SessionMessaging implements SessionMessagingHandle {
   private readonly heldMessages = new Map<string, HeldPeerMessage>();
   /** One timer, for the earliest deadline among the held messages. */
   private expiryTimer?: ReturnType<typeof setTimeout>;
+  /** The listing held messages' senders are named from (`senderListing`). */
+  private senderNames?: { readAt: number; listing: Promise<PeerSessionListing | undefined> };
   private starting?: Promise<InboxStartResult>;
   private startFailed = false;
   private listening = false;
@@ -256,9 +263,10 @@ export class SessionMessaging implements SessionMessagingHandle {
   }
 
   /**
-   * Settle every held message as `expired`, then close the inbox. The receipts go out before the
-   * inbox closes, since a closed one sends nothing, and get {@link CLOSE_DRAIN_MS} together: a
-   * sender that never answers cannot hold the exit up.
+   * Settle every message that was never delivered — held, released or queued — as `expired`, then
+   * close the inbox. The receipts go out before the inbox closes, since a closed one sends
+   * nothing, and get {@link CLOSE_DRAIN_MS} together: a sender that never answers cannot hold the
+   * exit up.
    */
   async close(): Promise<void> {
     this.closed = true;
@@ -267,8 +275,12 @@ export class SessionMessaging implements SessionMessagingHandle {
     this.receiptTimer = undefined;
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
     this.expiryTimer = undefined;
-    for (const held of this.heldMessages.values()) {
-      this.inbox.acknowledge(held.message, 'expired', RECEIPT_REASONS.expired.shutdown, {
+    const undelivered = [
+      ...[...this.heldMessages.values()].map((held) => held.message),
+      ...this.inbox.queued(),
+    ];
+    for (const message of undelivered) {
+      this.inbox.acknowledge(message, 'expired', RECEIPT_REASONS.expired.shutdown, {
         timeoutMs: this.closeDrainMs,
       });
     }
@@ -310,26 +322,45 @@ export class SessionMessaging implements SessionMessagingHandle {
 
   /**
    * The held message to ask the user about next: the oldest the parity rules held that the user
-   * has not put off. One `messaging.inbound: hold` held is not offered: the user's setting holds
-   * it, and only a change of that setting releases it.
+   * has not put off, and, while the delivery queue is full, not one whose approval found it full.
+   * One `messaging.inbound: hold` held is not offered: the user's setting holds it, and only a
+   * change of that setting releases it.
    */
   nextApproval(): HeldPeerMessage | undefined {
+    const full = this.inbox.queueFull;
     for (const held of this.heldMessages.values()) {
-      if (isParityHold(held.cause) && !held.deferred) return held;
+      if (!isParityHold(held.cause) || held.deferred || (held.awaitingRoom && full)) continue;
+      return held;
     }
     return undefined;
   }
 
   /**
    * The user approved a held message: it joins the delivery queue, to be delivered as a peer turn
-   * when the session is next idle, and its sender hears `released` then. A late approval says why
-   * it could not: the queue is full, or the message is already settled.
+   * when the session is next idle, and its sender hears `released` then. One the queue has no
+   * room for stays held and is offered again once it has; one already settled says so.
    */
   approve(id: string): HeldApproval {
     const held = this.heldMessages.get(id);
     if (!held) return { outcome: 'resolved' };
-    if (!this.release(held, 'approval')) return { outcome: 'no-room', held };
+    if (!this.release(held, 'approval')) {
+      held.awaitingRoom = true;
+      return { outcome: 'no-room', held };
+    }
     return { outcome: 'released', held };
+  }
+
+  /**
+   * The session went idle: every held message the user put off is offered again, once. A message
+   * put off again stays put off until the next time.
+   */
+  reofferDeferred(): void {
+    let any = false;
+    for (const held of this.heldMessages.values()) {
+      any ||= held.deferred;
+      held.deferred = false;
+    }
+    if (any) this.emit({ type: 'holds-changed' });
   }
 
   /** The user denied a held message: its sender hears `denied`. False when it was already settled. */
@@ -340,7 +371,7 @@ export class SessionMessaging implements SessionMessagingHandle {
     return true;
   }
 
-  /** The user put a held message off: it stays held until its deadline, and is not offered again. */
+  /** The user put a held message off: it stays held, and is offered again when the session is next idle. */
   defer(id: string): void {
     const held = this.heldMessages.get(id);
     if (held) held.deferred = true;
@@ -459,9 +490,9 @@ export class SessionMessaging implements SessionMessagingHandle {
 
   /**
    * The turn the queued messages make now, without taking them: a send the TUI cannot start yet
-   * must leave them queued. A message the policy would no longer accept — the mode may have
-   * changed since it arrived — is not in the turn: it is held again (or refused) when the batch is
-   * committed. A released one is delivered without being judged again.
+   * must leave them queued. Every queued message is judged again, a released one included: one
+   * the policy would no longer accept — the mode or the settings may have changed since — is not
+   * in the turn, and is judged once more when the batch is committed.
    */
   prepareDelivery(): PeerDeliveryBatch | undefined {
     const queued = this.inbox.queued();
@@ -469,13 +500,13 @@ export class SessionMessaging implements SessionMessagingHandle {
     // The oldest messages, up to 10 delivered and 64 KiB of content; the rest wait for the next
     // idle turn. A first message over the byte cap goes alone, cut (`fitForDelivery`).
     const delivered: AcceptedPeerMessage[] = [];
-    const diverted = new Map<AcceptedPeerMessage, Exclude<ReceiveVerdict, { action: 'accept' }>>();
+    const withheld: AcceptedPeerMessage[] = [];
     let bytes = 0;
     let count = 0;
     for (const message of queued) {
-      const verdict = message.released ? ACCEPT : this.judge(message);
+      const verdict = this.deliveryVerdict(message);
       if (verdict.action !== 'accept') {
-        diverted.set(message, verdict);
+        withheld.push(message);
         count++;
         continue;
       }
@@ -494,8 +525,14 @@ export class SessionMessaging implements SessionMessagingHandle {
     return {
       count,
       delivered,
-      diverted,
-      turnClass: peerTurnClass(this.mode, delivered.map(assertedModeOf)),
+      withheld,
+      turnClass: peerTurnClass(
+        this.mode,
+        delivered.map((message) => ({
+          senderMode: assertedModeOf(message),
+          approved: message.release === 'approved',
+        })),
+      ),
       ...(delivered.length > 0 ? { turn: buildPeerMessageTurn(delivered) } : {}),
     };
   }
@@ -505,9 +542,7 @@ export class SessionMessaging implements SessionMessagingHandle {
    * while the turn is being prepared (a pre-turn compaction takes a while).
    */
   stillDeliverable(batch: PeerDeliveryBatch): boolean {
-    return batch.delivered.every(
-      (message) => message.released || this.judge(message).action === 'accept',
-    );
+    return batch.delivered.every((message) => this.deliveryVerdict(message).action === 'accept');
   }
 
   /**
@@ -526,17 +561,33 @@ export class SessionMessaging implements SessionMessagingHandle {
           [],
         );
     }
-    for (let index = 0; index < batch.count; index++) {
-      const message = this.inbox.take();
-      if (!message) break;
-      if (delivered.has(message)) {
-        this.inbox.acknowledge(message, message.released ? 'released' : 'delivered');
-        continue;
-      }
-      const verdict = batch.diverted.get(message);
-      if (verdict?.action === 'hold') this.hold(message, verdict.cause);
+    for (const message of delivered) {
+      if (!this.inbox.remove(message)) continue;
+      this.inbox.acknowledge(message, message.release ? 'released' : 'delivered');
+    }
+    // Judged now, not by the verdict from when the batch was prepared: a pre-turn compaction can
+    // take long enough for the mode or the settings to change again.
+    for (const message of batch.withheld) {
+      const verdict = this.deliveryVerdict(message);
+      if (verdict.action === 'accept' || !this.inbox.remove(message)) continue;
+      if (verdict.action === 'hold') this.hold(message, verdict.cause);
       else this.refuse(message);
     }
+    // Taking messages off the queue may make room for an approval that found it full.
+    if (!this.inbox.queueFull && this.heldList().some((held) => held.awaitingRoom)) {
+      this.emit({ type: 'holds-changed' });
+    }
+  }
+
+  /**
+   * The verdict at delivery: the policy's, judged again for every queued message. The user's
+   * approval answers a parity hold and `inbound: hold`, never `inbound: refuse`; a release by a
+   * mode change answers nothing the policy now says.
+   */
+  private deliveryVerdict(message: AcceptedPeerMessage): ReceiveVerdict {
+    const verdict = this.judge(message);
+    if (message.release !== 'approved' || verdict.action === 'accept') return verdict;
+    return verdict.action === 'refuse' ? verdict : ACCEPT;
   }
 
   /** The policy's verdict on a message now. */
@@ -550,6 +601,10 @@ export class SessionMessaging implements SessionMessagingHandle {
 
   /** The inbox asks about each admitted message: queue it, or hold or refuse it here. */
   private screen(message: AcceptedPeerMessage): 'queue' | 'taken' {
+    if (this.closed) {
+      this.refuse(message, RECEIPT_REASONS.closing);
+      return 'taken';
+    }
     const verdict = this.judge(message);
     if (verdict.action === 'accept') return 'queue';
     if (verdict.action === 'hold') this.hold(message, verdict.cause);
@@ -557,9 +612,9 @@ export class SessionMessaging implements SessionMessagingHandle {
     return 'taken';
   }
 
-  private refuse(message: AcceptedPeerMessage): void {
-    this.log.warn('peer message refused by the receive policy', { from: message.from });
-    this.inbox.acknowledge(message, 'refused', RECEIPT_REASONS.refused);
+  private refuse(message: AcceptedPeerMessage, reason: string = RECEIPT_REASONS.refused): void {
+    this.log.warn('peer message refused', { from: message.from, reason });
+    this.inbox.acknowledge(message, 'refused', reason);
   }
 
   /**
@@ -567,7 +622,10 @@ export class SessionMessaging implements SessionMessagingHandle {
    * to make room. The row names the sender once the registry is read; until then, by its ref.
    */
   private hold(message: AcceptedPeerMessage, cause: HoldCause): void {
-    if (this.closed) return;
+    if (this.closed) {
+      this.refuse(message, RECEIPT_REASONS.closing);
+      return;
+    }
     for (const oldest of this.heldMessages.values()) {
       if (this.heldMessages.size < this.holdCapacity) break;
       this.settle(oldest, 'expired', 'room');
@@ -596,20 +654,36 @@ export class SessionMessaging implements SessionMessagingHandle {
     });
   }
 
-  /** `name [ref]` of the live session whose record advertises the address the frame named. */
+  /**
+   * `name [ref]` of the live session whose record advertises the address the frame named, as a
+   * span: that session wrote its own name, so it is sanitized like any other peer text.
+   */
   private async nameSender(held: HeldPeerMessage, path: string | undefined): Promise<void> {
     if (path === undefined) return;
-    try {
-      const row = (await this.list()).peers.find((candidate) => candidate.socketPath === path);
-      if (row) held.sender = peerLabel(row);
-    } catch {
-      // The ref stands.
+    const listing = await this.senderListing();
+    const row = listing?.peers.find((candidate) => candidate.socketPath === path);
+    if (row) held.sender = peerTextSpan(peerLabel(row), SENDER_LABEL_CHARS);
+  }
+
+  /**
+   * One registry listing for naming the senders of held messages, read at most every
+   * {@link SENDER_LISTING_MAX_AGE_MS} and shared by every hold meanwhile: a burst of holds costs
+   * one scan, not one each.
+   */
+  private senderListing(): Promise<PeerSessionListing | undefined> {
+    if (this.senderNames && this.now() - this.senderNames.readAt < SENDER_LISTING_MAX_AGE_MS) {
+      return this.senderNames.listing;
     }
+    const readAt = this.now();
+    const listing = this.list().catch(() => undefined);
+    this.senderNames = { readAt, listing };
+    return listing;
   }
 
   /** Release a held message onto the delivery queue; false, and still held, when it is full. */
   private release(held: HeldPeerMessage, by: HoldSettledBy): boolean {
-    if (!this.inbox.enqueue({ ...held.message, released: true })) return false;
+    const release = by === 'approval' ? 'approved' : 'released';
+    if (!this.inbox.enqueue({ ...held.message, release })) return false;
     this.settle(held, 'released', by);
     return true;
   }

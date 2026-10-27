@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { INBOUND_SETTINGS } from './messaging/receive-policy.js';
+import { INBOUND_SETTINGS } from './types/messaging.js';
 
 /**
  * Permission rule: "Tool" or "Tool(specifier)" where specifier is a glob pattern

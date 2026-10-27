@@ -9,6 +9,7 @@ import {
   peerTurnGateMode,
   receiverClassOf,
   resolveInboundSetting,
+  stricterClass,
   type InboundLayer,
 } from './receive-policy.js';
 
@@ -200,14 +201,34 @@ describe('resolveInboundSetting: tighten-only across the four layers', () => {
 });
 
 describe('the peer turn class pin', () => {
-  it('is bypass only when the receiver and every sender are bypass', () => {
-    expect(peerTurnClass('bypassPermissions', ['bypass', 'bypass'])).toBe('bypass');
-    expect(peerTurnClass('auto', ['bypass'])).toBe('bypass');
-    expect(peerTurnClass('bypassPermissions', ['bypass', 'prompting'])).toBe('prompting');
-    expect(peerTurnClass('bypassPermissions', [undefined])).toBe('prompting');
-    expect(peerTurnClass('bypassPermissions', ['unknown'])).toBe('prompting');
-    expect(peerTurnClass('default', ['bypass'])).toBe('prompting');
-    expect(peerTurnClass('mystery', ['bypass'])).toBe('prompting');
+  it('is the stricter of the receiver and every sender, and prompting for an approval', () => {
+    const accepted = (senderMode: 'bypass' | 'prompting' | 'unknown' | undefined) => ({
+      senderMode,
+      approved: false,
+    });
+    expect(peerTurnClass('bypassPermissions', [accepted('bypass'), accepted('bypass')])).toBe(
+      'bypass',
+    );
+    expect(peerTurnClass('auto', [accepted('bypass')])).toBe('bypass');
+    expect(peerTurnClass('bypassPermissions', [accepted('bypass'), accepted('prompting')])).toBe(
+      'prompting',
+    );
+    expect(peerTurnClass('bypassPermissions', [accepted(undefined)])).toBe('prompting');
+    expect(peerTurnClass('bypassPermissions', [accepted('unknown')])).toBe('prompting');
+    expect(peerTurnClass('default', [accepted('bypass')])).toBe('prompting');
+    expect(peerTurnClass('mystery', [accepted('bypass')])).toBe('prompting');
+    // Approved across the classes, then the mode switched to bypass before delivery: still asks.
+    expect(peerTurnClass('bypassPermissions', [{ senderMode: 'bypass', approved: true }])).toBe(
+      'prompting',
+    );
+  });
+
+  it('combines two classes into the stricter, an absent one having no say', () => {
+    expect(stricterClass('bypass', 'bypass')).toBe('bypass');
+    expect(stricterClass('bypass', 'prompting')).toBe('prompting');
+    expect(stricterClass(undefined, 'bypass')).toBe('bypass');
+    expect(stricterClass('prompting', undefined)).toBe('prompting');
+    expect(stricterClass(undefined, undefined)).toBeUndefined();
   });
 
   it('runs a bypass-class mode as default under a prompting pin, and leaves every other mode', () => {
