@@ -68,6 +68,8 @@ export interface SessionStateInput {
   changedFilesUnlisted?: number;
   /** Other live Book sessions in this worktree and repository (#620 4c). */
   peers?: PeerSessionsNotice;
+  /** Notes intent routing wrote about what the user typed this turn (#620's `@session`). */
+  notes?: readonly string[];
 }
 
 function changedFileLines(
@@ -186,6 +188,7 @@ export function renderSessionState(input: SessionStateInput): string {
         ]
       : []),
     ...(input.peers ? peerLines(input.peers) : []),
+    ...(input.notes ?? []).map((note) => `- ${note}`),
     ...changedFileLines(input.changedFiles ?? [], input.changedFilesUnlisted ?? 0, input.workspace),
     ...outstandingAgentLines(input.outstandingAgents ?? []),
     ...todoLines(input.todos ?? []),

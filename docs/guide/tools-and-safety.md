@@ -368,9 +368,10 @@ schema budgets beside the tools already loaded is not routed, and nor is one a `
 rule refuses outright (`WebFetch` or `WebFetch(*)`). Only text you typed routes: a command's body, an
 inlined file, an agent's completion notice and a subagent's task never do, a `UserPromptSubmit` hook
 that rewrites the prompt can take a route away but never add one, and nothing routes where direct
-calls are off. Routing runs no tool and adds no prompt text, so the system prompt and the
+calls are off. Routing runs no tool and adds no system-prompt text, so the system prompt and the
 deferred-tool list are the same with it or without it; the request's tools array gains the tool, as
-after a search. `toolDiscovery.intentRouting: false` turns it off.
+after a search. With messaging on, an `@session` mention routes a note instead of a tool, in the turn's
+`<session-state>` block (see [Features](features.md)). `toolDiscovery.intentRouting: false` turns it off.
 
 Invalid arguments on a call to a tool the turn's request did not declare (called directly, or loaded
 by `select:` earlier in the same response) are refused with the tool's argument names and types, two

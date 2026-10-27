@@ -55,6 +55,7 @@ import { cleanupRunStatus } from '../run-status.js';
 import { inboxStartupNotices } from '../messaging/inbox-server.js';
 import { PeerAwareness } from '../messaging/peer-awareness.js';
 import { SessionMessaging } from '../messaging/session-messaging.js';
+import { SessionMentionSnapshot } from '../input/session-mentions.js';
 import { LiveSessionWriter } from '../messaging/writer.js';
 import { getPackageVersion } from '../version-info.js';
 
@@ -493,6 +494,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           })
         : undefined;
     const inboxStart = messaging?.start();
+    // The registry as `@session` mentions read it (#620): `@` completion and a turn's mention notes
+    // share one snapshot, read again only when a mention needs it.
+    const sessionMentions = messaging && new SessionMentionSnapshot(messaging);
     // What this session knows of the other live sessions in its worktree (#620 PR 4): the peer
     // lines and attributed notices the model reads, and the overlap warning the user sees. It reads
     // the registry the writer keeps, so it works with messaging off.
@@ -533,6 +537,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
             createdSessions,
             liveSession,
             messaging,
+            sessionMentions,
             peerAwareness,
           },
           startupNotices: [...nodeNotices, ...providerNotices, ...instructionNotices],

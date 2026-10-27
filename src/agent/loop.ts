@@ -97,7 +97,12 @@ import {
   validateUserQuestionResponse,
 } from '../tools/ask-user-question.js';
 import { createToolSurface } from '../tools/catalog.js';
-import { routeTurnIntent } from '../tools/intent-routing.js';
+import {
+  routeTurnIntent,
+  turnIntentRouters,
+  type IntentRoutingRequest,
+} from '../tools/intent-routing.js';
+import type { SessionMentionSource } from '../input/session-mentions.js';
 import {
   enrichToolResultPresentation,
   boundToolResultOutput,
@@ -337,6 +342,11 @@ export async function runAgentLoop(
      * interactive runs only; a subagent or managed agent records and names no peer.
      */
     peerAwareness?: PeerAwarenessHandle;
+    /**
+     * The messaging runtime a typed `@session` mention resolves against (#620). Root interactive
+     * runs only, and only while messaging is on.
+     */
+    sessionMentions?: SessionMentionSource;
     /** Frozen attribution for this root or linked child execution. */
     runContext?: AgentRunContext;
     /** Override user-local oversized tool-output storage (primarily for isolated hosts/tests). */
@@ -1364,18 +1374,28 @@ export async function runAgentLoop(
         intentRouted = true;
         // After the mode and the skill restrictions are applied, so it activates only what this
         // surface authorizes. It reads what the user typed, never the prompt that text resolved
-        // to, and a hook's rewrite of it can only take a route away.
-        routeTurnIntent(
-          {
-            typedText: options?.typedText,
-            rewrittenPrompt,
-            kind: options?.userMessageKind,
-            isSubagent: options?.isSubagent,
-            config: effectiveConfig,
-            context: toolContext,
-          },
+        // to, and a hook's rewrite of it can only take a route or a note away.
+        const routing: IntentRoutingRequest = {
+          typedText: options?.typedText,
+          rewrittenPrompt,
+          kind: options?.userMessageKind,
+          isSubagent: options?.isSubagent,
+          config: effectiveConfig,
+          context: toolContext,
+        };
+        const { notes } = routeTurnIntent(
+          routing,
           toolSurface,
+          await turnIntentRouters(routing, toolSurface, options?.sessionMentions, { signal }),
         );
+        // A note (#620) rides on the message whose block `buildMessages` renders next, the newest
+        // user turn in context, and renders with that block.
+        for (let index = newHistory.length - 1; notes.length > 0 && index >= 0; index--) {
+          const message = newHistory[index];
+          if (message.role !== 'user' || !message.includeInContext) continue;
+          message.turnNotes = notes;
+          break;
+        }
       }
       const activeDefinitions = toolSurface.activeDefinitions();
       // Resolved once per turn. The session-state block is memoized on the newest

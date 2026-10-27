@@ -69,6 +69,8 @@ import type { LiveSessionReporter } from '../messaging/writer.js';
 import type { SessionMessaging } from '../messaging/session-messaging.js';
 import { lateApprovalLine } from '../messaging/hold.js';
 import type { PeerAwareness } from '../messaging/peer-awareness.js';
+import type { SessionMentionSource } from '../input/session-mentions.js';
+import { sessionMentionsOffered } from '../tools/intent-routing.js';
 import type { SessionBootstrap } from '../session/resolve.js';
 import type { InkFlushSync } from '../cli/ink-renderer.js';
 import { displaySessionName } from '../session/name.js';
@@ -290,6 +292,8 @@ interface AppProps {
     liveSession?: LiveSessionReporter;
     /** This process's messaging runtime (#620), when messaging is on; started and closed by `cli/run.ts`. */
     messaging?: SessionMessaging;
+    /** The live sessions `@session` mentions read (#620), when messaging is on. */
+    sessionMentions?: SessionMentionSource;
     /** This process's view of other live sessions (#620 PR 4), closed by `cli/run.ts`. */
     peerAwareness?: PeerAwareness;
   };
@@ -3687,6 +3691,11 @@ export function App({
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
               skills={skills}
+              sessionMentions={
+                session.sessionMentions && sessionMentionsOffered(mode, liveConfig)
+                  ? session.sessionMentions
+                  : undefined
+              }
               terminalWidth={termWidth}
               maxMenuRows={maxCommandMenuRows}
               compact={isNarrow || isTiny}
