@@ -358,12 +358,18 @@ export async function runDoctorCommand(
   console.log('Settings layers:');
   const { existsSync } = await import('fs');
   const { join } = await import('path');
-  const { isUserSettingsFile } = await import('../settings-loader.js');
+  const { isShippedUserSettingsFile, isUserSettingsFile } = await import('../settings-loader.js');
+  const userShipped = isShippedUserSettingsFile(config.workspace);
   for (const [label, path] of await settingsLayers(config.workspace)) {
     const marker = options.noSettings ? '[-]' : existsSync(path) ? '[x]' : '[ ]';
-    // At `$HOME` the project file is the user file, and the loader reads it once (#429).
+    // At `$HOME` the project file is the user file, and the loader reads it once (#429), as User
+    // unless the workspace's repository tracks it; it is then read as Project.
     const note =
-      label === 'Project' && isUserSettingsFile(path) ? ' (the User file; read once, as User)' : '';
+      label === 'User' && userShipped
+        ? ' (tracked by the workspace repository; not read as User)'
+        : label === 'Project' && isUserSettingsFile(path, config.workspace)
+          ? ' (the User file; read once, as User)'
+          : '';
     console.log('  ' + marker + ' ' + label + ': ' + path + note);
   }
   // Everything below is resolved from defaults in this mode. Saying so once
@@ -386,7 +392,9 @@ export async function runDoctorCommand(
   const { loadSettingsFile } = await import('../settings-loader.js');
   const { partitionProjectAllowRules } = await import('../permission-approvals.js');
   const projectPath = join(config.workspace, '.book', 'settings.json');
-  const projectSettings = isUserSettingsFile(projectPath) ? null : loadSettingsFile(projectPath);
+  const projectSettings = isUserSettingsFile(projectPath, config.workspace)
+    ? null
+    : loadSettingsFile(projectPath);
   const projectAllow = partitionProjectAllowRules(
     projectSettings?.permissions?.allow ?? [],
     perms.projectAllowRules,
@@ -682,7 +690,11 @@ export async function runDoctorCommand(
     const layers = (await settingsLayers(config.workspace)).map(([label, path]) => ({
       label,
       path,
-      document: label === 'Project' && isUserSettingsFile(path) ? null : loadSettingsFile(path),
+      document:
+        (label === 'Project' && isUserSettingsFile(path, config.workspace)) ||
+        (label === 'User' && userShipped)
+          ? null
+          : loadSettingsFile(path),
     }));
     // The user-global layer is read here even though nothing about it is
     // reported: it is the baseline for what a workspace layer turned *on*, and

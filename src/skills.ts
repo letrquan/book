@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { parseFrontmatter } from './frontmatter.js';
 import { resolveBookHome } from './book-home.js';
+import { shippedHomeFiles } from './book-home-files.js';
 import { isUserHome, tryRealPath } from './repo-containment.js';
 import type { SkillActivation, SkillExecution } from './settings.js';
 import { createUncGuard, reachesUncPath, type UncGuard } from './unc-path.js';
@@ -209,6 +210,11 @@ export function skillRoots(
     const home = options.homeDir ?? homedir();
     const bookHome =
       options.bookHomeDir ?? (options.homeDir ? join(home, '.book') : resolveBookHome());
+    const bookSkills = join(bookHome, 'skills');
+    // A Book home skills directory the workspace's repository ships files in is the repository's
+    // (`book-home-files.ts`): a project root when it is one, never a user root.
+    const bookSkillsShipped =
+      shippedHomeFiles(workspace, bookHome)?.shipsAnyUnder(bookSkills) ?? false;
     roots.push(
       { path: join(home, '.claude', 'skills'), source: 'user', kind: 'claude' },
       { path: join(home, '.agents', 'skills'), source: 'user', kind: 'agents' },
@@ -221,7 +227,9 @@ export function skillRoots(
               kind: 'opencode' as const,
             },
           ]),
-      { path: join(bookHome, 'skills'), source: 'user', kind: 'book' },
+      ...(bookSkillsShipped
+        ? []
+        : [{ path: bookSkills, source: 'user' as const, kind: 'book' as const }]),
     );
   }
 

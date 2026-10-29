@@ -3,6 +3,7 @@ import { join, extname } from 'path';
 import { parseFrontmatter } from '../frontmatter.js';
 import type { SlashCommand } from '../types/commands.js';
 import { resolveBookHome } from '../book-home.js';
+import { shippedHomeFiles } from '../book-home-files.js';
 import {
   formatSkippedNotice,
   projectContainmentRoot,
@@ -64,7 +65,9 @@ export interface CommandInspection {
  * repository). That covers a linked `.book` or `.book/commands` directory, and the file is read
  * from the real path that was checked. User commands are the user's own and are never checked,
  * and neither are the entries of the project directory when it is the user directory (the
- * workspace is the home directory).
+ * workspace is the home directory). A user directory the workspace's repository ships files in
+ * (`book-home-files.ts`) is the repository's: it is not read as the user's, and when it is also
+ * the project directory it is read, and checked, as that.
  *
  * Search order (project wins on name collision):
  *   1. ~/.book/commands/*.md  (user)
@@ -73,9 +76,11 @@ export interface CommandInspection {
 export function inspectCommands(workspace: string): CommandInspection {
   const userDir = join(resolveBookHome(), 'commands');
   const projectDir = join(workspace, '.book', 'commands');
+  const userShipped = shippedHomeFiles(workspace)?.shipsAnyUnder(userDir) ?? false;
   const userReal = tryRealPath(userDir);
   const projectReal = tryRealPath(projectDir);
   const projectIsUserDir =
+    !userShipped &&
     userReal !== undefined &&
     projectReal !== undefined &&
     !isOutside(userReal, projectReal) &&
@@ -88,7 +93,7 @@ export function inspectCommands(workspace: string): CommandInspection {
   const skipped: SkippedProjectFile[] = [];
 
   // User commands first (lowest priority).
-  for (const dir of [userDir, projectDir]) {
+  for (const dir of userShipped ? [projectDir] : [userDir, projectDir]) {
     // A `.book` committed as a link to a network share is not listed: listing it would reach the
     // host (#567).
     if (dir === projectDir && reachesUncPath(dir)) continue;
@@ -126,7 +131,7 @@ export function inspectCommands(workspace: string): CommandInspection {
           continue;
         }
       }
-      const source = dir === userDir ? 'user' : 'project';
+      const source = dir === userDir && !userShipped ? 'user' : 'project';
       const cmd = loadCommandFile(fullPath, source, readFrom);
       if (cmd) {
         byName.set(cmd.name, cmd); // project overrides user via set

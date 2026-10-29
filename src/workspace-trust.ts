@@ -24,11 +24,17 @@
  * decisions recorded", which withholds the gated input rather than releasing
  * it. Writes refuse to touch a store they could not parse, so a corrupt or
  * newer-versioned file is reported rather than silently overwritten.
+ *
+ * `<BOOK_HOME>` itself can lie inside the workspace's repository (a checkout at
+ * the home directory). A store that repository tracks there is its content, not
+ * the user's decisions (`book-home-files.ts`): it reads as no decisions, and
+ * writes refuse it with the remedy. An untracked store there is the user's.
  */
 import { existsSync, readFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import { z } from 'zod';
 import { resolveBookHome } from './book-home.js';
+import { shippedHomeFiles } from './book-home-files.js';
 import { writeFileAtomic } from './settings-repository.js';
 import {
   mcpProjectServerChoiceSchema,
@@ -108,6 +114,21 @@ export function defaultTrustStorePath(home?: string): string {
   return home ? join(home, '.book', 'trust.json') : join(resolveBookHome(), 'trust.json');
 }
 
+/**
+ * Whether the store at `storePath` (`<BOOK_HOME>/trust.json`) is a file the repository
+ * `workspace` belongs to ships under Book's home.
+ */
+function isShippedStore(workspace: string, storePath: string): boolean {
+  return shippedHomeFiles(workspace, dirname(storePath))?.ships(storePath) ?? false;
+}
+
+function shippedStoreError(storePath: string): string {
+  return (
+    `${storePath} is tracked by the workspace's repository, so Book does not record decisions ` +
+    'in it. Set BOOK_HOME to a directory outside the repository.'
+  );
+}
+
 function workspaceKey(workspace: string): string {
   const absolute = resolve(workspace);
   // Windows paths are case-insensitive: without folding, `D:\repo` and `d:\repo`
@@ -169,6 +190,7 @@ export function loadWorkspaceTrust(
   workspace: string,
   storePath: string = defaultTrustStorePath(),
 ): WorkspaceTrust {
+  if (isShippedStore(workspace, storePath)) return emptyWorkspaceTrust();
   const { store } = readRawStore(storePath);
   const parsed = workspaceTrustSchema.safeParse(store.workspaces[workspaceKey(workspace)] ?? {});
   return parsed.success ? parsed.data : emptyWorkspaceTrust();
@@ -183,6 +205,8 @@ export function updateWorkspaceTrust(
   mutate: (trust: WorkspaceTrust) => void,
   storePath: string = defaultTrustStorePath(),
 ): { ok: boolean; error?: string } {
+  if (isShippedStore(workspace, storePath))
+    return { ok: false, error: shippedStoreError(storePath) };
   const { store, unreadable } = readRawStore(storePath);
   if (unreadable) return { ok: false, error: unreadable };
 
