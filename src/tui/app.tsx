@@ -33,6 +33,7 @@ import { RewindPicker } from './components/RewindPicker.js';
 import { TranscriptView, type TranscriptScrollRequest } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
 import { HelpPanel } from './components/HelpPanel.js';
+import { ReportSheet, type ReportSheetContent } from './components/ReportSheet.js';
 import { KeyValueList, SoftPanel } from './components/chrome.js';
 import { PlanApprovalActions, PlanApprovalDetails } from './components/PlanApprovalButtons.js';
 import { AskUserQuestionWizard } from './components/AskUserQuestionWizard.js';
@@ -201,8 +202,13 @@ function containsDraftInput(input: string): boolean {
  * They are all the same kind of surface — a pinned block of text the user opened
  * deliberately and expects Esc to close — so they share one slot rather than a
  * boolean each.
+ *
+ * `report` is a lookup command's answer (`/context`, `/cost`, `/diff`, …), held in
+ * `reportSheet`. It is the one kind the next submission also closes: its figures
+ * describe the moment it was asked in.
  */
-type ReferencePanel = 'help' | 'status' | 'permissions' | 'shortcuts' | 'steps' | 'tasks';
+type ReferencePanel =
+  'help' | 'status' | 'permissions' | 'shortcuts' | 'steps' | 'tasks' | 'report';
 
 /**
  * Which setting the one model picker is choosing a model for.
@@ -498,6 +504,15 @@ export function App({
   // slot makes that impossible rather than merely discouraged, and gives Esc a
   // single thing to close.
   const [referencePanel, setReferencePanel] = useState<ReferencePanel | null>(null);
+  const [reportSheet, setReportSheet] = useState<ReportSheetContent | null>(null);
+  const shownReportSheet = referencePanel === 'report' ? reportSheet : null;
+  const openReportSheet = useCallback((sheet: ReportSheetContent) => {
+    setReportSheet(sheet);
+    setReferencePanel('report');
+  }, []);
+  // Counts submissions, so an answer that arrives after the user has moved on (`/diff` reads
+  // git asynchronously) is dropped rather than opened over whatever they asked for next.
+  const submissionSeqRef = useRef(0);
   const showHelp = referencePanel === 'help';
   const showShortcuts = referencePanel === 'shortcuts';
   const showStatus = referencePanel === 'status';
@@ -2018,6 +2033,7 @@ export function App({
           ? agentTodos.map((todo) => [todo.status, todo.content, todo.activeForm ?? ''])
           : [],
         referencePanel === 'tasks' ? tasks.map((task) => [task.id, task.status, task.subject]) : [],
+        shownReportSheet ? [shownReportSheet.title, shownReportSheet.content] : [],
         showHelp,
         showStatus,
         showPermissions,
@@ -2043,6 +2059,7 @@ export function App({
       referencePanel,
       agentTodos,
       tasks,
+      shownReportSheet,
       showHelp,
       showStatus,
       showPermissions,
@@ -2119,6 +2136,9 @@ export function App({
     async (value: string, attachments: ImageAttachment[] = []) => {
       // Nothing is submitted once an exit has started: SessionEnd is running.
       if (exitStartedRef.current) return;
+      submissionSeqRef.current += 1;
+      // A lookup's answer is stale once the user moves on; asking again opens a fresh one.
+      setReferencePanel((current) => (current === 'report' ? null : current));
       if (attachments.length > 0 && liveConfig.modelInfo?.vision === false) {
         addLocalMessage(`${liveConfig.model} does not support image input.`);
         setDraftRestore((current) => ({
@@ -2302,7 +2322,14 @@ export function App({
           return;
         }
         if (effect?.type === 'local-message') {
-          if (effect.display) addLocalMessage(effect.content, effect.display);
+          if (effect.sheet) {
+            // A lookup, not an event: a sheet Esc closes, never stored as conversation.
+            openReportSheet({
+              title: effect.sheet.title,
+              content: effect.content,
+              display: effect.display,
+            });
+          } else if (effect.display) addLocalMessage(effect.content, effect.display);
           else addLocalMessage(effect.content);
           if (effect.refreshMemory) refreshMemoryContext();
           return;
@@ -2441,19 +2468,22 @@ export function App({
         }
         if (effect?.type === 'show-diff') {
           // What `GitDiff` shows, read the same way.
+          const submission = submissionSeqRef.current;
           void readOnlyGit(READ_ONLY_GIT_ARGS.GitDiff, {
             workspaceRoot: config.workspace,
             env: process.env as Record<string, string>,
           }).then((result) => {
+            if (submission !== submissionSeqRef.current) return;
             // `readOnlyGit` reports empty output as `(no output)`.
             const diff = result.output.trim();
-            addLocalMessage(
-              result.error
+            openReportSheet({
+              title: 'Diff',
+              content: result.error
                 ? `✕ ${result.error}`
                 : diff && diff !== '(no output)'
                   ? diff
-                  : '(no changes)',
-            );
+                  : 'No unstaged changes.',
+            });
           });
           return;
         }
@@ -2999,6 +3029,14 @@ export function App({
                     width={panelGrid(termWidth).width}
                     onUpdateStatus={updateTaskStatus}
                     onRemove={removeTask}
+                  />
+                )}
+                {shownReportSheet && (
+                  <ReportSheet
+                    sheet={shownReportSheet}
+                    terminalWidth={termWidth}
+                    reducedMotion={motionDisabled}
+                    screenReader={screenReader}
                   />
                 )}
                 {showHelp && (

@@ -92,6 +92,8 @@ function config(): AgentConfig {
 function agentState(sessionId: string, addLocalMessage: ReturnType<typeof vi.fn>) {
   return {
     messages: [],
+    contextHistory: [],
+    compactBoundaries: [],
     isThinking: false,
     streamingMessageId: null,
     error: null,
@@ -169,13 +171,32 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+const SAMPLE_DIFF = [
+  'diff --git a/a.txt b/a.txt',
+  'index ce01362..94954ab 100644',
+  '--- a/a.txt',
+  '+++ b/a.txt',
+  '@@ -1 +1,2 @@',
+  ' hello',
+  '+world',
+].join('\n');
+
+function frameOf(view: ReturnType<typeof render>): string {
+  return (view.lastFrame() ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+async function renderApp(addLocalMessage = vi.fn()) {
+  useAgentMock.mockReturnValue(agentState('session-a', addLocalMessage));
+  useTasksMock.mockReturnValue({ tasks: [], refresh: vi.fn() });
+  const view = render(<App config={config()} session={session} />);
+  await settle();
+  return { view, addLocalMessage };
+}
+
 describe('/diff', () => {
-  it('reads the diff the way GitDiff does, in the workspace', async () => {
-    const addLocalMessage = vi.fn();
-    useAgentMock.mockReturnValue(agentState('session-a', addLocalMessage));
-    useTasksMock.mockReturnValue({ tasks: [], refresh: vi.fn() });
-    const view = render(<App config={config()} session={session} />);
-    await settle();
+  it('reads the diff the way GitDiff does, in the workspace, into a sheet', async () => {
+    readOnlyGitMock.mockResolvedValueOnce({ success: true, output: `${SAMPLE_DIFF}\n` });
+    const { view, addLocalMessage } = await renderApp();
 
     await submit(view, '/diff');
 
@@ -183,19 +204,103 @@ describe('/diff', () => {
     const [args, ctx] = readOnlyGitMock.mock.calls[0]!;
     expect(args).toEqual(READ_ONLY_GIT_ARGS.GitDiff);
     expect(ctx).toMatchObject({ workspaceRoot: '/tmp/book' });
-    expect(addLocalMessage).toHaveBeenCalledWith('diff --git a/a.txt b/a.txt');
+    const frame = frameOf(view);
+    expect(frame).toContain('Diff');
+    expect(frame).toContain('world');
+    expect(frame).toContain('1 file · +1 −0 · Esc to close');
+    // A lookup is not conversation: nothing reaches the transcript or the session file.
+    expect(addLocalMessage).not.toHaveBeenCalled();
   });
 
   it('says so when there is nothing to show', async () => {
     readOnlyGitMock.mockResolvedValueOnce({ success: true, output: '(no output)' });
-    const addLocalMessage = vi.fn();
-    useAgentMock.mockReturnValue(agentState('session-a', addLocalMessage));
-    useTasksMock.mockReturnValue({ tasks: [], refresh: vi.fn() });
-    const view = render(<App config={config()} session={session} />);
-    await settle();
+    const { view, addLocalMessage } = await renderApp();
 
     await submit(view, '/diff');
 
-    expect(addLocalMessage).toHaveBeenCalledWith('(no changes)');
+    expect(frameOf(view)).toContain('No unstaged changes.');
+    expect(addLocalMessage).not.toHaveBeenCalled();
+  });
+
+  it('closes on Esc', async () => {
+    readOnlyGitMock.mockResolvedValueOnce({ success: true, output: SAMPLE_DIFF });
+    const { view } = await renderApp();
+
+    await submit(view, '/diff');
+    expect(frameOf(view)).toContain('Esc to close');
+
+    view.stdin.write('\x1b');
+    await settle();
+    expect(frameOf(view)).not.toContain('Esc to close');
+    expect(frameOf(view)).not.toContain('world');
+  });
+
+  it('closes when the next prompt is sent', async () => {
+    readOnlyGitMock.mockResolvedValueOnce({ success: true, output: SAMPLE_DIFF });
+    const { view } = await renderApp();
+
+    await submit(view, '/diff');
+    expect(frameOf(view)).toContain('Esc to close');
+
+    await submit(view, 'thanks');
+    expect(sendMock).toHaveBeenCalled();
+    expect(frameOf(view)).not.toContain('Esc to close');
+  });
+
+  it('drops a diff that arrives after the user has moved on', async () => {
+    let finish: (value: { success: boolean; output: string }) => void = () => {};
+    readOnlyGitMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { view } = await renderApp();
+
+    await submit(view, '/diff');
+    await submit(view, 'thanks');
+    finish({ success: true, output: SAMPLE_DIFF });
+    await settle();
+
+    expect(frameOf(view)).not.toContain('Esc to close');
+  });
+});
+
+describe('lookup commands', () => {
+  it('open /context in a sheet instead of the transcript', async () => {
+    const { view, addLocalMessage } = await renderApp();
+
+    await submit(view, '/context');
+
+    // The test config runs with a screen reader on, so the sheet carries the text report.
+    expect(frameOf(view)).toContain('Model context budget');
+    expect(addLocalMessage).not.toHaveBeenCalled();
+
+    view.stdin.write('\x1b');
+    await settle();
+    expect(frameOf(view)).not.toContain('Model context budget');
+  });
+
+  it('open /cost in a sheet instead of the transcript', async () => {
+    const { view, addLocalMessage } = await renderApp();
+
+    await submit(view, '/cost');
+
+    const frame = frameOf(view);
+    expect(frame).toContain('Cost');
+    expect(frame).toContain('Esc to close');
+    expect(addLocalMessage).not.toHaveBeenCalled();
+  });
+
+  it('replace one another in the one sheet', async () => {
+    readOnlyGitMock.mockResolvedValueOnce({ success: true, output: SAMPLE_DIFF });
+    const { view } = await renderApp();
+
+    await submit(view, '/diff');
+    expect(frameOf(view)).toContain('world');
+    await submit(view, '/cost');
+
+    const frame = frameOf(view);
+    expect(frame).toContain('Cost');
+    expect(frame).not.toContain('world');
   });
 });

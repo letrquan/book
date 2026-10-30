@@ -108,6 +108,16 @@ All notable changes to this project are documented in this file.
   model on five tasks, with a no-key `--mock` mode and an `--estimate` of a real run's cost.
   `SYSTEM_PROMPT_VERSION` is now `book-system-prompt-v8`.
 
+### Changed
+
+- **Lookup commands open in a sheet Esc closes, not in the transcript.** `/cost`, `/usage`
+  (`/stats`), `/context`, `/diff`, `/mcp`, `/skills status`, `/memory` (status) and
+  `/release-notes` used to append their report to the conversation, where it stayed, stacked under
+  every later report and was replayed on resume. They now open in the reference-sheet slot `/help`
+  and `/status` use: one at a time, closed by Esc or by sending the next prompt, and never written
+  to the session file. `/diff` keeps its coloured diff and ends with a `2 files · +11 −10` summary,
+  which is the part of a long diff the view shows first. Print mode and the SDK are unchanged.
+
 ### Fixed
 
 - **`npm run eval:edit` counts every token a task spent** (#631). Each task's `totalTokens` was the

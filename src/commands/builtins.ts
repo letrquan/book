@@ -140,6 +140,13 @@ export type BuiltinCommandEffect =
       type: 'local-message';
       content: string;
       display?: LocalCommandDisplay;
+      /**
+       * A point-in-time lookup (`/context`, `/cost`, …) rather than an event. The interactive
+       * host shows it in a reference sheet under this title, which Esc or the next prompt
+       * closes, and keeps it out of the conversation and the session file: its figures are
+       * stale by the next turn. A host with no sheet prints `content` as before.
+       */
+      sheet?: { title: string };
       refreshMemory?: boolean;
       /**
        * The command rejected its own invocation (bad flag, bad argument). An
@@ -538,6 +545,7 @@ function memoryCommandEffect(
         settings: context.runtimeConfig.settings,
         sessionDriver: context.runtimeConfig.sessionDriver,
       }),
+      sheet: { title: 'Memory' },
     };
   }
   if (rawArguments === 'path') {
@@ -666,6 +674,7 @@ function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffec
       billScope(context),
       billableLeadCost(context),
     ),
+    sheet: { title: 'Usage' },
     display: {
       kind: 'usage',
       model: context.runtimeConfig.model,
@@ -714,6 +723,7 @@ function contextCommandEffect(context: BuiltinCommandContext): BuiltinCommandEff
   return {
     type: 'local-message',
     content: buildContextReport(context.messages, ambient),
+    sheet: { title: 'Context' },
     display: {
       kind: 'context',
       model: ambient.model,
@@ -1016,7 +1026,11 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     argumentHint: '[status]',
     execute: ({ rawArguments }, context) =>
       !rawArguments || rawArguments === 'status'
-        ? { type: 'local-message', content: buildMcpStatusReport(context.mcpSnapshot) }
+        ? {
+            type: 'local-message',
+            content: buildMcpStatusReport(context.mcpSnapshot),
+            sheet: { title: 'MCP servers' },
+          }
         : { type: 'local-message', content: 'Usage: /mcp [status]' },
   },
   {
@@ -1031,6 +1045,7 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
         billScope(context),
         billableLeadCost(context),
       ),
+      sheet: { title: 'Cost' },
     }),
   },
   {
@@ -1039,7 +1054,11 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     argumentHint: '[status]',
     execute: ({ rawArguments }, context) =>
       rawArguments === 'status'
-        ? { type: 'local-message', content: buildSkillReport(context.skillSnapshot) }
+        ? {
+            type: 'local-message',
+            content: buildSkillReport(context.skillSnapshot),
+            sheet: { title: 'Skills' },
+          }
         : rawArguments
           ? { type: 'local-message', content: 'Usage: /skills [status]' }
           : { type: 'show-modal', modal: 'skills' },
@@ -1187,6 +1206,7 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     execute: () => ({
       type: 'local-message',
       content: buildReleaseNotesReport(),
+      sheet: { title: 'Release notes' },
     }),
   },
   {
