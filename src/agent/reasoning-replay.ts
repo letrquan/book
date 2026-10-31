@@ -23,10 +23,12 @@ export const TURN_REASONING_REPLAY_STRIDE = 4;
  */
 function firstReplayedStepIndex(history: readonly Message[]): number {
   // One backward pass: the turn's step count and the message that opened the
-  // turn. A host-written user message (`derivedContent`: the `[continuation]`
-  // resume, the completion gate, the `[work-state]` refresh) does not open a
-  // turn, so a run keeps its chain of thought across them; a turn a later user
-  // message closed is not replayed at all.
+  // turn. A message the user did not type afresh does not open a turn: a
+  // host-written one (`derivedContent`: the `[continuation]` resume, the
+  // completion gate, the `[work-state]` refresh), and a steer (`steered`), which
+  // the user sent into a run that was already going. A run keeps its chain of
+  // thought across both; a turn a later user message closed is not replayed at
+  // all.
   let steps = 0;
   let turnStart = -1;
   for (let index = history.length - 1; index >= 0; index -= 1) {
@@ -36,7 +38,7 @@ function firstReplayedStepIndex(history: readonly Message[]): number {
       steps += 1;
       continue;
     }
-    if (candidate.role === 'user' && !candidate.derivedContent) {
+    if (candidate.role === 'user' && !candidate.derivedContent && !candidate.steered) {
       turnStart = index;
       break;
     }

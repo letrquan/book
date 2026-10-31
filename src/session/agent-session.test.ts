@@ -2985,8 +2985,10 @@ describe('AgentSession.prepareSteer — a mid-run steer (#661)', () => {
     expect(input).toMatchObject({
       id: 'steer-1',
       displayMessage: 'update @notes.md',
-      typedText: 'update @notes.md',
     });
+    // The display message is what the user typed, and what routing reads: a steer invokes no
+    // `$skill`, so it carries no separate typed text (#661 review).
+    expect('typedText' in input).toBe(false);
     // The model reads the inlined file; the transcript keeps what the user typed.
     expect(input.content).toContain('NOTE BODY');
     expect(input.content).not.toBe('update @notes.md');

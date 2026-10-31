@@ -9,7 +9,7 @@ export interface SteeringInboxHandle extends SteeringInbox {
   push(input: SteeredInput): void;
   /** Drop everything pending: the host withdrew its steers, or the run is gone. */
   clear(): void;
-  /** What is queued, oldest first, without consuming it. */
+  /** A snapshot of what is queued, oldest first, without consuming it. */
   pending(): readonly SteeredInput[];
 }
 
@@ -32,6 +32,9 @@ export function createSteeringInbox(): SteeringInboxHandle {
       queue = [];
       return taken;
     },
+    requeue(inputs) {
+      if (inputs.length > 0) queue = [...inputs, ...queue];
+    },
     hasPending() {
       return queue.length > 0;
     },
@@ -39,7 +42,9 @@ export function createSteeringInbox(): SteeringInboxHandle {
       queue = [];
     },
     pending() {
-      return queue;
+      // A copy: the host renders this while the loop may push or drain, and a live array would
+      // let one mutate the other's view.
+      return [...queue];
     },
   };
 }

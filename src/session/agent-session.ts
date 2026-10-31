@@ -50,7 +50,7 @@ import type {
 } from '../types/tools.js';
 import { resolveAdditionalRoots } from '../additional-roots.js';
 import { expandUserInputDetailed, formatRefusedMentionNotice } from '../input/input-expansion.js';
-import { observationKey } from '../tools/file-provenance.js';
+import { recordFileObservations } from '../tools/file-provenance.js';
 import { createDebugLogger } from '../debug-log.js';
 import { AgentInteractionController } from './agent-interactions.js';
 import {
@@ -123,12 +123,19 @@ export interface AgentSessionRunRequest {
   maxBudgetUsd?: number;
   source?: AgentRunSource;
   resumedFromRunId?: string;
-  options?: Omit<AgentLoopOptions, 'signal' | 'steering'>;
+  options?: Omit<AgentLoopOptions, 'signal' | 'steering' | 'steeringHost'>;
   /**
    * Steers the host queued while this run is going. The loop drains them at its next boundary,
    * and at a turn's end they continue the same run.
    */
   steering?: SteeringInbox;
+  /**
+   * Whether this session can hand a running loop messages (see
+   * {@link AgentLoopRunner}'s `steeringHost`). The host sets it on every run of such a session,
+   * including a run it starts for a notification, so the cached prefix stays the same between
+   * them.
+   */
+  steeringHost?: boolean;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
 }
@@ -285,9 +292,12 @@ export interface AgentSessionSendRequest {
     | 'userAttachments'
     | 'resolveAttachment'
     | 'typedText'
+    | 'steeringHost'
   >;
   /** See {@link AgentSessionRunRequest.steering}. */
   steering?: SteeringInbox;
+  /** See {@link AgentSessionRunRequest.steeringHost}. */
+  steeringHost?: boolean;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
   beforePrepare?: (control: AgentSessionSendControl) => void | Promise<void>;
@@ -616,6 +626,7 @@ export class AgentSession {
           signal: control.signal,
           isCurrent: control.isCurrent,
           steering: request.steering,
+          steeringHost: request.steeringHost,
         });
         const outcome = runOutcome ?? this.snapshot.terminal;
         if (!outcome) {
@@ -1126,10 +1137,10 @@ export class AgentSession {
     request.userMessage.contextContent =
       contextMessage === request.displayMessage ? undefined : contextMessage;
     request.userMessage.fileObservations = expansion?.observations ?? [];
-    const observationLedger = (request.runtime ?? this.runtime).fileObservationLedger;
-    for (const observation of request.userMessage.fileObservations) {
-      observationLedger.set(observationKey(observation.workspaceId, observation.path), observation);
-    }
+    recordFileObservations(
+      (request.runtime ?? this.runtime).fileObservationLedger,
+      request.userMessage.fileObservations,
+    );
     request.timelineStore?.append(request.sessionId, {
       type: 'user',
       eventId: request.userMessage.id,
@@ -1206,9 +1217,8 @@ export class AgentSession {
       input: {
         id,
         content: expansion.text,
+        // What the user typed is also what routing reads: a steer never invokes a `$skill`.
         displayMessage: request.displayMessage,
-        // `$skill` is never invoked for a steer, but routing still reads what the user typed.
-        typedText: request.displayMessage,
         attachments: request.attachments,
         fileObservations: expansion.observations,
         timestamp: Date.now(),
@@ -1733,6 +1743,7 @@ export class AgentSession {
                     request.timelineStore!.readImageAttachment!(request.sessionId, attachment)
                 : undefined),
             ...(request.steering ? { steering: request.steering } : {}),
+            ...(request.steeringHost ? { steeringHost: true } : {}),
             signal: request.signal,
           },
         );

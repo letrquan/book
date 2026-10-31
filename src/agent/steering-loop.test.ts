@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAgentLoop } from './loop.js';
@@ -8,18 +8,27 @@ import { createDefaultRegistry, createRegistry } from '../tools/registry.js';
 import { todoTools } from '../tools/todo.js';
 import { toolSuccess } from '../tools/result.js';
 import { observationKey } from '../tools/file-provenance.js';
+import { createSessionListTool } from '../tools/session-list.js';
+import { createSessionSendTool } from '../tools/session-send.js';
+import { SessionMentionSnapshot } from '../input/session-mentions.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { createScriptedProvider, sseResponse } from '../test/scripted-provider.js';
 import { AgentSession } from '../session/agent-session.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { SessionStore } from '../session/store.js';
 import { createSessionFixture, type SessionFixture } from '../test/session-fixture.js';
+import { createAgentRunContext } from '../types/runs.js';
 import type { AgentSessionRunCallbacks } from '../session/agent-session.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { AgentTerminalOutcome } from '../types/terminal.js';
 import type { ImageAttachment, Message, SteeredInput } from '../types/messages.js';
 import type { FileObservation, ToolResult } from '../types/tools.js';
+import type {
+  PeerSessionListing,
+  PeerSessionRow,
+  SessionMessagingHandle,
+} from '../types/messaging.js';
 import type { HookEntry } from '../settings.js';
 
 /**
@@ -250,7 +259,6 @@ describe('steering into the loop', () => {
         inbox.push(
           steer('steer-1', 'rename it\n\n[file: src/a.ts]\nconst a = 1;', {
             displayMessage: 'rename it',
-            typedText: 'rename it',
           }),
         );
         return toolSuccess('tool finished');
@@ -517,7 +525,6 @@ describe('what a steer means to the run (#661)', () => {
         inbox.push(
           steer('steer-1', 'REWRITE-ME: rename it', {
             displayMessage: 'REWRITE-ME: rename it',
-            typedText: 'REWRITE-ME: rename it',
           }),
         );
         return toolSuccess('tool finished');
@@ -603,11 +610,7 @@ describe('what a steer means to the run (#661)', () => {
       description: 'Queues a steer with a URL while it runs.',
       parameters: { type: 'object', properties: {} },
       execute: async (): Promise<ToolResult> => {
-        inbox.push(
-          steer('steer-1', 'also read https://example.com/notes.txt', {
-            typedText: 'also read https://example.com/notes.txt',
-          }),
-        );
+        inbox.push(steer('steer-1', 'also read https://example.com/notes.txt'));
         return toolSuccess('tool finished');
       },
     });
@@ -741,6 +744,348 @@ describe('what a steer means to the run (#661)', () => {
       { type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' } },
       { type: 'text', text: expect.stringContaining('<session-state>') },
     ]);
+  });
+});
+
+describe('steering keeps what it takes (#661 review)', () => {
+  /** Poll a condition the loop reaches on its own schedule, so the test never sleeps blindly. */
+  async function waitFor(condition: () => boolean, what: string): Promise<void> {
+    const deadline = Date.now() + 5_000;
+    while (!condition()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  /**
+   * A `UserPromptSubmit` hook that stalls on a prompt holding `marker` — leaving `signal` behind
+   * once it has started — and continues instantly for every other prompt.
+   */
+  function hookThatWaits(signal: string, marker: string): HookEntry {
+    const file = join(hookDir, `wait-${marker.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.mjs`);
+    writeFileSync(
+      file,
+      [
+        "import { writeFileSync } from 'node:fs';",
+        "let raw = '';",
+        'for await (const chunk of process.stdin) raw += chunk;',
+        `if (!String(JSON.parse(raw).user_prompt).includes(${JSON.stringify(marker)})) process.exit(0);`,
+        `writeFileSync(${JSON.stringify(signal)}, 'running');`,
+        // Never answer: only the run's cancellation ends this hook. The interval is what keeps
+        // Node from exiting on an otherwise idle event loop while the promise stays pending.
+        'await new Promise(() => setInterval(() => {}, 60_000));',
+      ].join('\n'),
+    );
+    return { command: `node "${file}"`, env: {} };
+  }
+
+  it('puts every steer it took back when the run is cancelled during a hook', async () => {
+    const inbox = createSteeringInbox();
+    const registry = createRegistry();
+    registry.register({
+      name: 'SlowTool',
+      description: 'Queues three steers a hook will stall on.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (): Promise<ToolResult> => {
+        inbox.push(steer('steer-1', 'WAIT-FOR-ME: first'));
+        inbox.push(steer('steer-2', 'WAIT-FOR-ME: second'));
+        inbox.push(steer('steer-3', 'WAIT-FOR-ME: third'));
+        return toolSuccess('tool finished');
+      },
+    });
+    const provider = createScriptedProvider(toolStep('tool-1', 'SlowTool'), textStep('Done.'));
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const signalFile = join(scratch('book-steering-hook-wait-'), 'running');
+    const controller = new AbortController();
+    const appended: Message[] = [];
+    const config = defaultConfig();
+    config.maxTurns = 4;
+    config.settings.hooks.UserPromptSubmit = [hookThatWaits(signalFile, 'WAIT-FOR-ME')];
+    const run = runAgentLoop(
+      config,
+      registry,
+      'start',
+      [],
+      loopCallbacks({ onUserMessageAppended: (message: Message) => appended.push(message) }),
+      'auto',
+      {
+        isNewSession: false,
+        runtime: new SessionRuntime(),
+        steering: inbox,
+        signal: controller.signal,
+      },
+    );
+
+    await waitFor(() => existsSync(signalFile), "the first steer's hook to start");
+    controller.abort();
+    const history = await run;
+
+    // Everything the drain took and did not append is back, in the order the user sent it, so the
+    // host can deliver each as its own turn. Nothing of it was appended.
+    expect(inbox.pending().map((entry) => entry.id)).toEqual(['steer-1', 'steer-2', 'steer-3']);
+    expect(appended).toHaveLength(0);
+    expect(history.some((message) => message.id.startsWith('steer-'))).toBe(false);
+  });
+
+  it('leaves a steer pending when the budget refuses the request it would join', async () => {
+    // The tool-step drain is the one door a steer can come in by that no turn-end gate guards:
+    // it appends, and the request that would answer it is then refused for money. The drain asks
+    // the same budget check the request does, so the steer waits for the host instead.
+    const inbox = createSteeringInbox();
+    const registry = createRegistry();
+    registry.register({
+      name: 'SpendTool',
+      description: 'Queues a steer after spending the run out.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (): Promise<ToolResult> => {
+        inbox.push(steer('steer-1', 'one more thing'));
+        return toolSuccess('tool finished');
+      },
+    });
+    const provider = createScriptedProvider(
+      sseResponse([
+        JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'tool-1',
+                    function: { name: 'SpendTool', arguments: '{}' },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        // $5 of input at gpt-5's rate, against a one-tenth-of-a-cent budget.
+        JSON.stringify({
+          choices: [],
+          model: 'gpt-5',
+          usage: { prompt_tokens: 1_000_000, completion_tokens: 1, total_tokens: 1_000_001 },
+        }),
+      ]),
+      textStep('This second request must not happen.'),
+    );
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const runtime = new SessionRuntime();
+    const runContext = createAgentRunContext({
+      sessionId: 'steering-budget',
+      runId: 'steering-budget-run',
+      source: 'headless',
+      startedAt: 1,
+    });
+    runtime.runAccounting.startRoot(runContext, 0.001);
+
+    let outcome: AgentTerminalOutcome | undefined;
+    const config = defaultConfig({ model: 'gpt-5' });
+    config.maxTurns = 4;
+    const history = await runAgentLoop(
+      config,
+      registry,
+      'start',
+      [],
+      loopCallbacks({ onTerminal: (value: AgentTerminalOutcome) => (outcome = value) }),
+      'auto',
+      { isNewSession: false, runtime, runContext, steering: inbox },
+    );
+
+    // The budget ended the run exactly as it would have; the steer was never appended for a
+    // request that never went out.
+    expect(provider.requests).toHaveLength(1);
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'budget_exceeded' });
+    expect(inbox.pending().map((entry) => entry.id)).toEqual(['steer-1']);
+    expect(history.some((message) => message.id === 'steer-1')).toBe(false);
+  });
+
+  it('promises mid-run messages only in a run whose host can steer', async () => {
+    // The cached prefix must be the same on every run of a steerable session — including the run
+    // started for a notification — so the host sets the option, and only the host does.
+    const line = 'The user can send messages while you work';
+    const send = async (steeringHost: boolean | undefined) => {
+      const provider = createScriptedProvider(textStep('Done.'));
+      vi.stubGlobal('fetch', provider.fetch);
+      const config = defaultConfig();
+      config.maxTurns = 2;
+      await runAgentLoop(config, createRegistry(), 'start', [], loopCallbacks(), 'auto', {
+        isNewSession: false,
+        runtime: new SessionRuntime(),
+        ...(steeringHost !== undefined ? { steeringHost } : {}),
+      });
+      const body = provider.requests[0]?.init?.body;
+      if (typeof body !== 'string') throw new Error('request has no recorded body');
+      return JSON.stringify((JSON.parse(body) as { messages: unknown }).messages);
+    };
+
+    expect(await send(undefined)).not.toContain(line);
+    expect(await send(false)).not.toContain(line);
+    expect(await send(true)).toContain(line);
+  });
+
+  const peer = (name: string): PeerSessionRow => ({
+    name,
+    ref: '825389',
+    socketPath: `/tmp/socks/${name}.sock`,
+    kind: 'interactive',
+    status: 'idle',
+    startedAt: 0,
+    sessionId: `session-${name}`,
+    pid: 1,
+    self: false,
+  });
+
+  const PEERS: PeerSessionListing = {
+    self: { ...peer('book-1'), self: true, ref: 'ffffff' },
+    peers: [peer('book-36'), peer('book-37')],
+  };
+
+  /** A messaging handle whose peers list and resolve, so `@name` mentions earn their note. */
+  function notesMessaging(): SessionMessagingHandle {
+    return {
+      available: () => true,
+      list: async () => PEERS,
+      resolve: async (to) => {
+        const target = PEERS.peers.find((row) => row.name === to.trim()) as
+          (PeerSessionRow & { socketPath: string }) | undefined;
+        return target ? { ok: true, target } : { ok: false, problem: 'not_found', candidates: [] };
+      },
+      send: async () => ({ status: 'unavailable' }),
+    };
+  }
+
+  /** A registry that offers the messaging tools, plus the tool a note-bearing test registers. */
+  function notesRegistry(handle: SessionMessagingHandle) {
+    const registry = createDefaultRegistry();
+    registry.registerAll([createSessionListTool(handle), createSessionSendTool(handle)]);
+    return registry;
+  }
+
+  /** The user turns one recorded request sent, as text, block and all. */
+  function requestUserTexts(provider: ReturnType<typeof createScriptedProvider>, index: number) {
+    return requestMessages(provider, index)
+      .filter((message) => message.role === 'user')
+      .map((message) => JSON.stringify(message.content));
+  }
+
+  function mentions(texts: string[], name: string): boolean {
+    return texts.some((text) => text.includes(`@-mentioned the Book session \\"${name}`));
+  }
+
+  it('keeps both notes when the run prompt and a steer land on the same turn', async () => {
+    // The steer is appended by the first drain, so it — not the run's prompt — is the newest user
+    // turn whose block renders. The prompt's note must ride along rather than be overwritten.
+    const inbox = createSteeringInbox();
+    inbox.push(steer('steer-1', 'then ask @book-37 to review it'));
+    const handle = notesMessaging();
+    const snapshot = new SessionMentionSnapshot(handle);
+    await snapshot.fresh();
+    const provider = createScriptedProvider(textStep('Asked both.'));
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const config = defaultConfig();
+    config.maxTurns = 4;
+    await runAgentLoop(
+      config,
+      notesRegistry(handle),
+      'ask @book-36 to run the tests',
+      [],
+      loopCallbacks(),
+      'default',
+      {
+        isNewSession: false,
+        runtime: new SessionRuntime(),
+        steering: inbox,
+        sessionMentions: snapshot,
+        typedText: 'ask @book-36 to run the tests',
+      },
+    );
+
+    const first = requestUserTexts(provider, 0);
+    expect(mentions(first, 'book-36')).toBe(true);
+    expect(mentions(first, 'book-37')).toBe(true);
+  });
+
+  it('keeps both steers’ notes when two are drained into one turn', async () => {
+    const inbox = createSteeringInbox();
+    const handle = notesMessaging();
+    const snapshot = new SessionMentionSnapshot(handle);
+    await snapshot.fresh();
+    const registry = notesRegistry(handle);
+    registry.register({
+      name: 'SlowTool',
+      description: 'Queues two steers, each naming a session.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (): Promise<ToolResult> => {
+        inbox.push(steer('steer-1', 'ask @book-36 to run the tests'));
+        inbox.push(steer('steer-2', 'ask @book-37 to review it'));
+        return toolSuccess('tool finished');
+      },
+    });
+    const provider = createScriptedProvider(
+      toolStep('tool-1', 'SlowTool'),
+      textStep('Asked both.'),
+    );
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const config = defaultConfig();
+    config.maxTurns = 4;
+    await runAgentLoop(
+      config,
+      registry,
+      'start',
+      [],
+      loopCallbacks({ onPermissionRequired: async () => 'allow' }),
+      'default',
+      {
+        isNewSession: false,
+        runtime: new SessionRuntime(),
+        steering: inbox,
+        sessionMentions: snapshot,
+      },
+    );
+
+    // The request that carries the steers: the second is the newest user turn, and the first's
+    // note has to join it rather than vanish.
+    const second = requestUserTexts(provider, 1);
+    expect(mentions(second, 'book-36')).toBe(true);
+    expect(mentions(second, 'book-37')).toBe(true);
+  });
+
+  it('keeps a turn-end steer’s note when a work-state refresh follows it', async () => {
+    // The refresh is appended after the steer at the next turn's start, so the steer is no longer
+    // the newest user turn — its note still has to reach the block the request renders.
+    const inbox = createSteeringInbox();
+    const handle = notesMessaging();
+    const snapshot = new SessionMentionSnapshot(handle);
+    await snapshot.fresh();
+    const provider = createScriptedProvider(() => {
+      // The user spoke while this answer was being written.
+      inbox.push(steer('steer-1', 'also ask @book-36 to run the tests'));
+      return textStep('I have finished.');
+    }, textStep('Asked.'));
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const runtime = new SessionRuntime({
+      todos: [{ content: 'finish the task', status: 'pending' }],
+    });
+    const config = defaultConfig();
+    config.maxTurns = 4;
+    config.settings.continuation.enabled = true;
+    config.settings.continuation.planRefreshTurns = 1;
+    await runAgentLoop(config, notesRegistry(handle), 'start', [], loopCallbacks(), 'default', {
+      isNewSession: false,
+      runtime,
+      steering: inbox,
+      sessionMentions: snapshot,
+    });
+
+    // The refresh is the newest user turn of the second request, and it carries the steer's note.
+    const second = requestUserTexts(provider, 1);
+    expect(second.some((text) => text.includes('[work-state]'))).toBe(true);
+    expect(mentions(second, 'book-36')).toBe(true);
   });
 });
 

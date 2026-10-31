@@ -31,10 +31,11 @@ export interface SteeredInput {
   id: string;
   /** The text the model reads. */
   content: string;
-  /** What the user typed, when `content` is not it. */
+  /**
+   * What the user typed, when `content` is not it. It is also what intent routing reads: a
+   * steer never invokes a `$name` skill, so there is no separate typed text.
+   */
   displayMessage?: string;
-  /** What the user typed, for `$name` skill invocation; never the expanded prompt. */
-  typedText?: string;
   attachments?: Message['attachments'];
   fileObservations?: Message['fileObservations'];
   timestamp: number;
@@ -50,6 +51,12 @@ export interface SteeredInput {
 export interface SteeringInbox {
   /** Everything pending, oldest first; empties the inbox. */
   take(): SteeredInput[];
+  /**
+   * Put back steers the loop took but did not deliver, at the front and in order. The loop
+   * requeues them when the run is cancelled before it could append them, so they are again what
+   * the next drain sees — never lost between the inbox and history.
+   */
+  requeue(inputs: readonly SteeredInput[]): void;
   /** Whether a steer is waiting. */
   hasPending(): boolean;
 }
