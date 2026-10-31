@@ -9,10 +9,12 @@ import { READ_ONLY_GIT_ARGS } from '../tools/git.js';
 /** `/diff` shows what the `GitDiff` tool would, read the same way. */
 
 const useAgentMock = vi.fn();
-const readOnlyGitMock = vi.fn(async (..._args: unknown[]) => ({
-  success: true,
-  output: 'diff --git a/a.txt b/a.txt\n',
-}));
+const readOnlyGitMock = vi.fn(
+  async (..._args: unknown[]): Promise<{ success: boolean; output: string; error?: string }> => ({
+    success: true,
+    output: 'diff --git a/a.txt b/a.txt\n',
+  }),
+);
 const useTasksMock = vi.fn();
 const sendMock = vi.fn(async (..._args: unknown[]) => ({
   status: 'completed' as const,
@@ -185,6 +187,9 @@ function frameOf(view: ReturnType<typeof render>): string {
   return (view.lastFrame() ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
 }
 
+/** The dialog's last line, its keys, in the composer's place. */
+const DIALOG_KEYS = 'Esc to close';
+
 async function renderApp(addLocalMessage = vi.fn()) {
   useAgentMock.mockReturnValue(agentState('session-a', addLocalMessage));
   useTasksMock.mockReturnValue({ tasks: [], refresh: vi.fn() });
@@ -194,7 +199,7 @@ async function renderApp(addLocalMessage = vi.fn()) {
 }
 
 describe('/diff', () => {
-  it('reads the diff the way GitDiff does, in the workspace, into a sheet', async () => {
+  it('reads the diff the way GitDiff does, in the workspace, into a dialog', async () => {
     readOnlyGitMock.mockResolvedValueOnce({ success: true, output: `${SAMPLE_DIFF}\n` });
     const { view, addLocalMessage } = await renderApp();
 
@@ -207,7 +212,8 @@ describe('/diff', () => {
     const frame = frameOf(view);
     expect(frame).toContain('Diff');
     expect(frame).toContain('world');
-    expect(frame).toContain('1 file · +1 −0 · Esc to close');
+    expect(frame).toContain('1 file · +1 −0');
+    expect(frame.indexOf(DIALOG_KEYS)).toBeGreaterThan(frame.indexOf('world'));
     // A lookup is not conversation: nothing reaches the transcript or the session file.
     expect(addLocalMessage).not.toHaveBeenCalled();
   });
@@ -222,29 +228,37 @@ describe('/diff', () => {
     expect(addLocalMessage).not.toHaveBeenCalled();
   });
 
+  it("gives git's reason alone when git refuses, not the usage text after it", async () => {
+    readOnlyGitMock.mockResolvedValueOnce({
+      success: false,
+      output: '',
+      error: [
+        'warning: Not a git repository. Use --no-index to compare two paths outside a working tree',
+        'usage: git diff --no-index [<options>] <path> <path> [<pathspec>...]',
+        '',
+        '    --[no-]quiet          disable all output of the program',
+      ].join('\n'),
+    });
+    const { view } = await renderApp();
+
+    await submit(view, '/diff');
+
+    const frame = frameOf(view);
+    expect(frame).toContain('✕ warning: Not a git repository.');
+    expect(frame).not.toContain('usage: git diff');
+  });
+
   it('closes on Esc', async () => {
     readOnlyGitMock.mockResolvedValueOnce({ success: true, output: SAMPLE_DIFF });
     const { view } = await renderApp();
 
     await submit(view, '/diff');
-    expect(frameOf(view)).toContain('Esc to close');
+    expect(frameOf(view)).toContain(DIALOG_KEYS);
 
     view.stdin.write('\x1b');
     await settle();
-    expect(frameOf(view)).not.toContain('Esc to close');
+    expect(frameOf(view)).not.toContain(DIALOG_KEYS);
     expect(frameOf(view)).not.toContain('world');
-  });
-
-  it('closes when the next prompt is sent', async () => {
-    readOnlyGitMock.mockResolvedValueOnce({ success: true, output: SAMPLE_DIFF });
-    const { view } = await renderApp();
-
-    await submit(view, '/diff');
-    expect(frameOf(view)).toContain('Esc to close');
-
-    await submit(view, 'thanks');
-    expect(sendMock).toHaveBeenCalled();
-    expect(frameOf(view)).not.toContain('Esc to close');
   });
 
   it('drops a diff that arrives after the user has moved on', async () => {
@@ -261,17 +275,17 @@ describe('/diff', () => {
     finish({ success: true, output: SAMPLE_DIFF });
     await settle();
 
-    expect(frameOf(view)).not.toContain('Esc to close');
+    expect(frameOf(view)).not.toContain(DIALOG_KEYS);
   });
 });
 
 describe('lookup commands', () => {
-  it('open /context in a sheet instead of the transcript', async () => {
+  it('open /context in a dialog instead of the transcript', async () => {
     const { view, addLocalMessage } = await renderApp();
 
     await submit(view, '/context');
 
-    // The test config runs with a screen reader on, so the sheet carries the text report.
+    // The test config runs with a screen reader on, so the dialog carries the text report.
     expect(frameOf(view)).toContain('Model context budget');
     expect(addLocalMessage).not.toHaveBeenCalled();
 
@@ -280,27 +294,78 @@ describe('lookup commands', () => {
     expect(frameOf(view)).not.toContain('Model context budget');
   });
 
-  it('open /cost in a sheet instead of the transcript', async () => {
+  it('open /cost in a dialog instead of the transcript', async () => {
     const { view, addLocalMessage } = await renderApp();
 
     await submit(view, '/cost');
 
     const frame = frameOf(view);
     expect(frame).toContain('Cost');
-    expect(frame).toContain('Esc to close');
+    expect(frame).toContain(DIALOG_KEYS);
     expect(addLocalMessage).not.toHaveBeenCalled();
   });
 
-  it('replace one another in the one sheet', async () => {
+  it('open one after another, once Esc has closed the first', async () => {
     readOnlyGitMock.mockResolvedValueOnce({ success: true, output: SAMPLE_DIFF });
     const { view } = await renderApp();
 
     await submit(view, '/diff');
     expect(frameOf(view)).toContain('world');
+    view.stdin.write('\x1b');
+    await settle();
     await submit(view, '/cost');
 
     const frame = frameOf(view);
     expect(frame).toContain('Cost');
     expect(frame).not.toContain('world');
+  });
+});
+
+describe('the dialog', () => {
+  it('puts the prompt away under it and gives it back with the draft', async () => {
+    const { view } = await renderApp();
+
+    view.stdin.write('keep this draft');
+    await settle(75);
+    expect(frameOf(view)).toContain('keep this draft');
+
+    view.stdin.write('\x1f'); // Ctrl+/: the shortcuts, which open over a draft.
+    await settle();
+    expect(frameOf(view)).toContain('Keyboard shortcuts');
+    expect(frameOf(view)).not.toContain('keep this draft');
+
+    view.stdin.write('\x1b');
+    await settle();
+    expect(frameOf(view)).not.toContain(DIALOG_KEYS);
+    expect(frameOf(view)).toContain('keep this draft');
+  });
+
+  it('closes on Esc while a turn runs, and the turn keeps running', async () => {
+    const addLocalMessage = vi.fn();
+    const { view } = await renderApp(addLocalMessage);
+
+    await submit(view, '/cost');
+    const busy = { ...agentState('session-a', addLocalMessage), isThinking: true };
+    useAgentMock.mockReturnValue(busy);
+    view.rerender(<App config={config()} session={session} />);
+    await settle();
+    expect(frameOf(view)).toContain(DIALOG_KEYS);
+
+    view.stdin.write('\x1b');
+    await settle();
+    expect(frameOf(view)).not.toContain(DIALOG_KEYS);
+    expect(busy.cancel).not.toHaveBeenCalled();
+  });
+
+  it('opens every reference panel the same way, not only a lookup', async () => {
+    const { view } = await renderApp();
+
+    await submit(view, '/help');
+    expect(frameOf(view)).toContain('Commands');
+    expect(frameOf(view)).toContain(DIALOG_KEYS);
+
+    view.stdin.write('\x1b');
+    await settle();
+    expect(frameOf(view)).not.toContain(DIALOG_KEYS);
   });
 });

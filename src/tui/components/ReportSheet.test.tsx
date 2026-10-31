@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import type { ContextCommandDisplay } from '../../types/messages.js';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
-import { diffSummary, ReportSheet, type ReportSheetContent } from './ReportSheet.js';
+import { diffSummary, ReportBody, type ReportSheetContent } from './ReportSheet.js';
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
@@ -11,7 +11,7 @@ function stripAnsi(value: string | undefined): string {
 function frame(sheet: ReportSheetContent, screenReader: boolean): string {
   const view = render(
     <ThemeContext.Provider value={DEFAULT_THEME}>
-      <ReportSheet sheet={sheet} terminalWidth={100} reducedMotion screenReader={screenReader} />
+      <ReportBody sheet={sheet} terminalWidth={100} screenReader={screenReader} />
     </ThemeContext.Provider>,
   );
   return stripAnsi(view.lastFrame());
@@ -58,37 +58,36 @@ afterEach(() => {
   cleanup();
 });
 
-describe('ReportSheet', () => {
-  it('heads a figure sheet with its title and close hint', () => {
+// The dialog carries the title and the keys (`Dialog.test.tsx`); these are the bodies under them.
+describe('ReportBody', () => {
+  it("lays out a figure report under its subtitle, with no rule of the panel's own", () => {
     const shown = frame(
       { title: 'Context', content: 'Context report', display: contextDisplay },
       false,
     );
-    expect(shown).toContain('§ Context');
-    expect(shown).toContain('Esc to close');
-    expect(shown).not.toContain('/context');
+    expect(shown.split('\n')[0]).toContain('claude-sonnet-5');
+    expect(shown).not.toContain('§');
+    expect(shown).not.toContain('Esc');
   });
 
-  it('keeps the title and close hint for a screen reader, with the text report as the body', () => {
+  it('gives a screen reader the text report', () => {
     const shown = frame(
       { title: 'Context', content: 'Context report text', display: contextDisplay },
       true,
     );
-    expect(shown).toContain('Context');
-    expect(shown).toContain('Esc to close');
     expect(shown).toContain('Context report text');
   });
 
-  it('shows a text report under its title', () => {
+  it('shows a text report as written', () => {
     const shown = frame({ title: 'Cost', content: '120 tokens (100 in, 20 out)' }, false);
-    expect(shown).toContain('§ Cost');
-    expect(shown).toContain('Esc to close');
     expect(shown).toContain('120 tokens (100 in, 20 out)');
+    expect(shown).not.toContain('Esc');
   });
 
-  it('ends a diff with its summary, the part of a long diff the view shows', () => {
-    const lines = frame({ title: 'Diff', content: DIFF }, false).trimEnd().split('\n');
-    expect(lines.at(-1)?.trim()).toBe('2 files · +2 −1 · Esc to close');
+  it('heads a diff with its summary, as Claude Code heads its diff dialog', () => {
+    const lines = frame({ title: 'Diff', content: DIFF }, false).split('\n');
+    expect(lines[0]?.trim()).toBe('2 files · +2 −1');
+    expect(lines.join('\n')).toContain('added');
   });
 });
 

@@ -40,6 +40,11 @@ interface WorkingIndicatorProps {
   screenReader?: boolean;
   /** The plan step in flight, for the activity wording. */
   activeStep?: string;
+  /**
+   * An open dialog has Esc: it closes the dialog before it cancels anything, so the row must not
+   * offer Esc as the way to cancel.
+   */
+  escClosesDialog?: boolean;
 }
 
 function useElapsedSeconds(active: boolean, disabled: boolean): number {
@@ -151,6 +156,7 @@ export function WorkingIndicator({
   reducedMotion = false,
   screenReader = false,
   activeStep,
+  escClosesDialog = false,
 }: WorkingIndicatorProps) {
   const theme = useTheme();
   const motionDisabled = reducedMotion || screenReader;
@@ -205,7 +211,7 @@ export function WorkingIndicator({
           ? 'Compact'
           : 'Compacting';
     const percent = `${String(compactProgress).padStart(3, ' ')}%`;
-    const hint = isCompacting && width >= 52 ? ' · Esc to cancel' : '';
+    const hint = isCompacting && width >= 52 && !escClosesDialog ? ' · Esc to cancel' : '';
     const barWidth = Math.max(
       1,
       Math.min(
@@ -240,7 +246,7 @@ export function WorkingIndicator({
       ? ' · answer the question above'
       : pendingPermission
         ? ' · Esc to deny'
-        : isThinking || isCompacting
+        : (isThinking || isCompacting) && !escClosesDialog
           ? ' · Esc to cancel'
           : '';
   // Rolls up to `4m 8s` / `1h 2m 3s` past a minute, matching subagent rows,

@@ -110,13 +110,21 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
-- **Lookup commands open in a sheet Esc closes, not in the transcript.** `/cost`, `/usage`
-  (`/stats`), `/context`, `/diff`, `/mcp`, `/skills status`, `/memory` (status) and
+- **Lookups and reference sheets open as a dialog, the way Claude Code shows them.** `/cost`,
+  `/usage` (`/stats`), `/context`, `/diff`, `/mcp`, `/skills status`, `/memory` (status) and
   `/release-notes` used to append their report to the conversation, where it stayed, stacked under
-  every later report and was replayed on resume. They now open in the reference-sheet slot `/help`
-  and `/status` use: one at a time, closed by Esc or by sending the next prompt, and never written
-  to the session file. `/diff` keeps its coloured diff and ends with a `2 files · +11 −10` summary,
-  which is the part of a long diff the view shows first. Print mode and the SDK are unchanged.
+  every later report and was replayed on resume; `/help`, `/status`, `/permissions` and the
+  shortcuts (`Ctrl+/`) sat in the transcript with a grey "Esc to close" at the far end of their
+  rule, which was easy to miss. All of them now open in the composer's place at the foot of the
+  screen: an edge across the screen, the title, the body, and `Esc to close` right under it, with
+  the prompt and the status line put away until Esc closes the dialog and gives them back, draft
+  included. Esc closes a dialog before it cancels anything, so a turn running behind one keeps
+  running. A body taller than the screen opens at its top and scrolls inside the dialog (`↑/↓`,
+  PgUp/PgDn, Home/End), and the keys say so. Nothing is written to the transcript or the session
+  file. `/diff` heads its coloured diff with a `2 files · +11 −10` summary, and outside a git
+  repository says git's reason in one line instead of its whole usage text. The steps (`Ctrl+T`)
+  and your task list (`/task`) stay above the prompt as before. Print mode and the SDK are
+  unchanged.
 
 ### Fixed
 

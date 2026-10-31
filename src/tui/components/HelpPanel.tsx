@@ -2,7 +2,6 @@ import { Box, Text } from 'ink';
 import { useTheme } from '../theme.js';
 import { SHEET_COLUMN_GAP, sheetContentWidth } from '../layout.js';
 import { builtinHelpGroups, type HelpEntry, type HelpGroup } from '../help-catalog.js';
-import { SoftPanel } from './chrome.js';
 import { displayWidth, padDisplay, truncateDisplay } from './word-wrap.js';
 
 /**
@@ -80,20 +79,9 @@ function GroupBlock({
   );
 }
 
-/**
- * /help: every built-in command, generated from the command registry and set
- * in groups, with the name in ink and its syntax and description quiet, in
- * aligned columns. Custom commands follow in their own group. From a
- * 92-column terminal the groups flow into two columns, so the list fits on
- * one screen.
- */
-export function HelpPanel({
-  width,
-  customCommands = [],
-}: {
-  width: number;
-  customCommands?: ReadonlyArray<{ name: string; description: string; argumentHint?: string }>;
-}) {
+type CustomCommands = ReadonlyArray<{ name: string; description: string; argumentHint?: string }>;
+
+function helpGroups(customCommands: CustomCommands): HelpGroup[] {
   const groups = builtinHelpGroups();
   if (customCommands.length > 0) {
     groups.push({
@@ -105,7 +93,30 @@ export function HelpPanel({
       })),
     });
   }
-  const count = groups.reduce((sum, group) => sum + group.entries.length, 0);
+  return groups;
+}
+
+/** How many commands /help lists, built-in and custom: the note on its title. */
+export function helpCommandCount(customCommands: CustomCommands = []): number {
+  return helpGroups(customCommands).reduce((sum, group) => sum + group.entries.length, 0);
+}
+
+/**
+ * /help: every built-in command, generated from the command registry and set
+ * in groups, with the name in ink and its syntax and description quiet, in
+ * aligned columns. Custom commands follow in their own group. From a
+ * 92-column terminal the groups flow into two columns, so the list fits on
+ * one screen. `width` is the sheet's, chrome included: the dialog's own padding
+ * stands in for the sheet's.
+ */
+export function HelpBody({
+  width,
+  customCommands = [],
+}: {
+  width: number;
+  customCommands?: CustomCommands;
+}) {
+  const groups = helpGroups(customCommands);
   const contentWidth = sheetContentWidth(width, 20);
   const twoColumns = contentWidth >= TWO_COLUMN_MIN;
   const columnWidth = twoColumns ? Math.floor((contentWidth - SHEET_COLUMN_GAP) / 2) : contentWidth;
@@ -136,17 +147,15 @@ export function HelpPanel({
     ));
   };
   return (
-    <SoftPanel title="Commands" meta={`${count} · Esc to close`} width={width}>
-      <Box columnGap={SHEET_COLUMN_GAP}>
-        <Box flexDirection="column" width={columnWidth}>
-          {column(left)}
-        </Box>
-        {twoColumns ? (
-          <Box flexDirection="column" width={columnWidth}>
-            {column(right)}
-          </Box>
-        ) : null}
+    <Box columnGap={SHEET_COLUMN_GAP}>
+      <Box flexDirection="column" width={columnWidth}>
+        {column(left)}
       </Box>
-    </SoftPanel>
+      {twoColumns ? (
+        <Box flexDirection="column" width={columnWidth}>
+          {column(right)}
+        </Box>
+      ) : null}
+    </Box>
   );
 }
