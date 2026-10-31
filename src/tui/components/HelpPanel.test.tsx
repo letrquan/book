@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { builtinHelpGroups } from '../help-catalog.js';
-import { HelpPanel } from './HelpPanel.js';
+import { Box } from 'ink';
+import { HelpBody, helpCommandCount } from './HelpPanel.js';
 import { KeyValueList } from './chrome.js';
 import { displayWidth } from './word-wrap.js';
 
@@ -19,12 +20,22 @@ function lines(element: React.ReactElement): string[] {
 
 afterEach(() => cleanup());
 
-describe('HelpPanel', () => {
-  it('heads the list with a ruled title that counts the commands', () => {
+/** The list inside the two columns of padding a dialog gives its body. */
+function HelpPanel(props: Parameters<typeof HelpBody>[0]) {
+  return (
+    <Box paddingX={2} width={props.width}>
+      <HelpBody {...props} />
+    </Box>
+  );
+}
+
+describe('HelpBody', () => {
+  it('counts the commands it lists, custom ones included', () => {
     const count = builtinHelpGroups().reduce((sum, group) => sum + group.entries.length, 0);
-    const head = lines(<HelpPanel width={96} />).find((line) => line.startsWith('─'));
-    expect(head).toMatch(new RegExp(`^─ § Commands ─+ ${count} · Esc to close ─$`));
-    expect(displayWidth(head!)).toBe(96);
+    expect(helpCommandCount()).toBe(count);
+    expect(helpCommandCount([{ name: 'ship', description: 'Tag and push a release' }])).toBe(
+      count + 1,
+    );
   });
 
   it('sets the groups as headings and stays inside its width', () => {

@@ -121,11 +121,17 @@ groups, with its visible aliases, followed by your custom commands. `/release-no
 installed version's changes from the CHANGELOG that ships with Book, one line each.
 
 In the TUI the lookups (`/cost`, `/usage`, `/context`, `/diff`, `/mcp`, `/skills status`,
-`/memory` or `/memory status`, and `/release-notes`) open in a sheet above the composer, as `/help`
-and `/status` do, rather than in the transcript. One sheet shows at a time, so asking for another
-report replaces it. Esc closes it, and so does sending your next prompt, since its figures describe
-the moment you asked. A report is not stored in the session, so it does not come back on resume.
-Print mode and the SDK print the same text as before.
+`/memory` or `/memory status`, and `/release-notes`) open as a dialog, the way Claude Code shows its
+own, and so do `/help`, `/status`, `/permissions` and the shortcuts (`Ctrl+/`). The dialog takes the
+composer's place at the foot of the screen, with an edge across the screen, its title, the body,
+and `Esc to close` right under it; the prompt and the status line are put away until it closes.
+Esc closes it and gives them back, your draft included. Esc closes a dialog before it cancels
+anything, so a turn running behind one keeps running. A body taller than the screen opens at its
+top and scrolls inside the dialog with `↑/↓`, PgUp/PgDn and Home/End, and the keys under it say
+so. A report is not stored in the session, so it does not come back on resume; its figures describe
+the moment you asked. The steps (`Ctrl+T`) and your task list (`/task`) stay above the prompt
+instead, since they follow the work while it runs. Print mode and the SDK print the same text as
+before.
 
 `/cost` and `/usage` (alias `/stats`) bill the whole session, not the last request: every response
 is accumulated from the first turn of the current session, and the total survives a send, a

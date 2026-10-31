@@ -674,7 +674,8 @@ describe('idle Ctrl+C exit confirmation', () => {
     press(view, '/status');
     await waitForFrame(view, '> /status');
     press(view, '\r');
-    await waitForFrame(view, '§ Session');
+    // The status dialog, in the composer's place.
+    await waitForFrame(view, 'Esc to close');
 
     expect(frameOf(view)).not.toContain('Editing queued input');
     await armExit(view);
@@ -691,12 +692,16 @@ describe('idle Ctrl+C exit confirmation', () => {
     press(view, '/status');
     await waitForFrame(view, '> /status');
     press(view, '\r');
-    await waitForFrame(view, '§ Session');
+    await waitForFrame(view, 'Esc to close');
     await waitForFrame(view, 'Queue paused');
     rerenderWith({ isThinking: false });
 
     expect(frameOf(view)).not.toContain('Editing queued input');
     expect(state.send).not.toHaveBeenCalled();
+
+    // The dialog has the keys until Esc closes it and gives the composer back.
+    press(view, '\u001b');
+    await waitForFrameWithout(view, 'Esc to close');
 
     // What the notice says resumes it: Up recalls the input, Enter sends it.
     press(view, '\x1b[A');

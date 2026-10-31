@@ -305,12 +305,33 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
 const CTRL_U = String.fromCharCode(0x15);
 
 /**
- * The /help sheet's head. The command menu that opens while `/help` is typed
- * has a `§ Commands` rule of its own, so waiting for that text alone returned
- * before Enter had been handled, and the next write was read in the same chunk
- * as the Enter, which Ink then dropped.
+ * The /help dialog's title row. The command menu that opens while `/help` is
+ * typed has a `§ Commands` rule of its own, so waiting for that text alone
+ * returned before Enter had been handled, and the next write was read in the
+ * same chunk as the Enter, which Ink then dropped. The menu's rule runs on in
+ * `─` after the title; the dialog's title row runs on in spaces to its count.
  */
-const HELP_PANEL = /§ Commands ─+ \d+ · Esc to close/;
+const HELP_PANEL = /§ Commands +\d+ commands/;
+
+/**
+ * A page of the transcript to scroll, from a command that prints into it: the
+ * settings keys `/config --help` lists. (`/help` opens a dialog instead, in the
+ * composer's place, so it puts nothing in the transcript.)
+ */
+const LONG_TRANSCRIPT_COMMAND = '/config --help';
+const LONG_TRANSCRIPT_TEXT = 'Supported keys:';
+
+/**
+ * Prints that page. `submit` proves a bare command read by the command menu's
+ * highlighted row, which a command with arguments never gets; the composer's
+ * own echo is the proof here, and Enter follows in a chunk of its own.
+ */
+async function printLongTranscript(session: TuiSession): Promise<void> {
+  session.sendKey(LONG_TRANSCRIPT_COMMAND);
+  await session.waitFor(`> ${LONG_TRANSCRIPT_COMMAND}`);
+  session.sendKey('\r');
+  await session.waitFor(LONG_TRANSCRIPT_TEXT);
+}
 
 // ANSI escape sequences for common keys.
 const keys = {
@@ -463,12 +484,12 @@ describe('TUI slash commands', () => {
     expect(output).toContain('Ask me anything');
   }, 30_000);
 
-  it('/help toggle hides the help panel', async () => {
-    // Full-frame rendering makes the post-toggle terminal state directly assertable.
+  it('/help closes on Esc and gives the prompt back', async () => {
+    // Full-frame rendering makes the post-close terminal state directly assertable.
     const live = (session = await startAndWait({ BOOK_TUI_RENDERER: 'safe' }));
     await submitInteractive(live, '/help');
     await live.waitFor(HELP_PANEL);
-    await submitInteractive(live, '/help');
+    live.sendKey(keys.escape);
     // Read the replayed screen, not the byte stream: the panel's rows are still
     // in the stream's history after the redraw that removed them.
     const deadline = Date.now() + 8000;
@@ -648,8 +669,7 @@ describe('TUI keyboard input', () => {
     'keyboard scrolling reaches transcript history promptly',
     async () => {
       session = await startAndWait();
-      await submitInteractive(session, '/help');
-      await session.waitFor(HELP_PANEL);
+      await printLongTranscript(session);
 
       const startedAt = performance.now();
       session.sendKey(keys.ctrlU);
@@ -669,8 +689,7 @@ describe('TUI keyboard input', () => {
     'safe rendering keeps the final input frame visible after deep scrolling',
     async () => {
       session = await startAndWait({ BOOK_TUI_RENDERER: 'safe' });
-      await submitInteractive(session, '/help');
-      await session.waitFor(HELP_PANEL);
+      await printLongTranscript(session);
 
       session.sendKey('INPUT_FOOTER_SENTINEL');
       await session.waitFor('INPUT_FOOTER_SENTINEL');

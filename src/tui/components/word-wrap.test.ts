@@ -259,6 +259,8 @@ describe('status glyph widths agree with the renderer', () => {
       '⏺',
       '⎿',
       '⌘',
+      // A dialog's edge (`DIALOG_EDGE`), repeated across the screen.
+      '▔',
     ]) {
       expect(displayWidth(glyph), `${glyph} (U+${glyph.codePointAt(0)!.toString(16)})`).toBe(1);
     }

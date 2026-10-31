@@ -32,9 +32,10 @@ import { SessionPicker } from './components/SessionPicker.js';
 import { RewindPicker } from './components/RewindPicker.js';
 import { TranscriptView, type TranscriptScrollRequest } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
-import { HelpPanel } from './components/HelpPanel.js';
-import { ReportSheet, type ReportSheetContent } from './components/ReportSheet.js';
-import { KeyValueList, SoftPanel } from './components/chrome.js';
+import { HelpBody, helpCommandCount } from './components/HelpPanel.js';
+import { ReportBody, type ReportSheetContent } from './components/ReportSheet.js';
+import { Dialog, DIALOG_CHROME_ROWS } from './components/Dialog.js';
+import { KeyValueList } from './components/chrome.js';
 import { PlanApprovalActions, PlanApprovalDetails } from './components/PlanApprovalButtons.js';
 import { AskUserQuestionWizard } from './components/AskUserQuestionWizard.js';
 import { McpElicitationForm } from './components/McpElicitationForm.js';
@@ -209,6 +210,39 @@ function containsDraftInput(input: string): boolean {
  */
 type ReferencePanel =
   'help' | 'status' | 'permissions' | 'shortcuts' | 'steps' | 'tasks' | 'report';
+
+/** What the composer calls an open reference panel: the title its own rule carries. */
+function referencePanelTitle(panel: ReferencePanel, report: ReportSheetContent | null): string {
+  switch (panel) {
+    case 'help':
+      return 'Commands';
+    case 'status':
+      return 'Session';
+    case 'permissions':
+      return 'Permissions';
+    case 'shortcuts':
+      return 'Keyboard shortcuts';
+    case 'steps':
+      return 'Steps';
+    case 'tasks':
+      return 'Tasks';
+    case 'report':
+      return report?.title ?? 'Report';
+  }
+}
+
+/**
+ * The panels that open as a dialog in the composer's place, as Claude Code shows `/help`, `/status`
+ * and its other reference dialogs. The steps and the task list stay where they are, above the
+ * prompt: they follow the work while it runs, rather than being looked up and put away.
+ */
+const DIALOG_PANELS: ReadonlySet<ReferencePanel> = new Set<ReferencePanel>([
+  'help',
+  'status',
+  'permissions',
+  'shortcuts',
+  'report',
+]);
 
 /**
  * Which setting the one model picker is choosing a model for.
@@ -1738,6 +1772,14 @@ export function App({
       return;
     }
 
+    // A dialog stands in the composer's place, as it does in Claude Code, and Esc closes it before
+    // it means anything else: a turn running behind the dialog keeps running.
+    if (key.escape && referencePanel && DIALOG_PANELS.has(referencePanel)) {
+      uiLog.event('input:Escape', { action: 'close-dialog', panel: referencePanel });
+      setReferencePanel(null);
+      return;
+    }
+
     if (transcriptMode === 'detailed') {
       const transcriptAction = getTranscriptShortcutAction(transcriptMode, input, key);
       if (transcriptAction === 'exit-detailed') {
@@ -2476,10 +2518,13 @@ export function App({
             if (submission !== submissionSeqRef.current) return;
             // `readOnlyGit` reports empty output as `(no output)`.
             const diff = result.output.trim();
+            // git's reason is its first line. Outside a repository the rest is the whole usage
+            // text of `git diff --no-index`, which filled the sheet and pushed the reason off it.
+            const reason = result.error?.split('\n').find((line) => line.trim() !== '');
             openReportSheet({
               title: 'Diff',
               content: result.error
-                ? `✕ ${result.error}`
+                ? `✕ ${reason?.trim() ?? result.error}`
                 : diff && diff !== '(no output)'
                   ? diff
                   : 'No unstaged changes.',
@@ -2853,12 +2898,14 @@ export function App({
   // Whether the composer is taking keys at all. The transcript asks the same
   // question before it reads Ctrl+U and Ctrl+D as paging chords, so the answer
   // is named once here instead of being restated in two places that could drift.
+  // A reference dialog, shown in the composer's place unless a prompt or a picker has the keys; it
+  // comes back once they are done with them.
+  const shownDialog = referencePanel && DIALOG_PANELS.has(referencePanel) && !modalOwnsInput;
+
   const composerAcceptsInput = !(
     modalOwnsInput ||
-    // The rules sheet is a list, not a page of text: while it is up
-    // it takes the arrows, so the composer must not also read them
-    // as history navigation. Esc closes it, as it does every panel.
-    showPermissions ||
+    // The composer is put away while a dialog is up, and the dialog takes the arrows to scroll.
+    shownDialog ||
     transcriptMode === 'detailed' ||
     managedAgents.surface === 'tasks' ||
     detailTaskPickerOpen
@@ -2873,6 +2920,18 @@ export function App({
   // paging. `pagerChordsAvailable` is that rule as one function, so it cannot be
   // restated — and read backwards — at a second call site.
   const pagerChordsFree = pagerChordsAvailable({ composerAcceptsInput, sheetEditorFocused });
+
+  // The most rows a dialog's body may take before it scrolls: the screen, less the transcript's last
+  // rows over it, the dialog's own chrome, and what can still stand under it (the working row, a
+  // notice, the job panel). Its keys must stay on screen, or the dialog says nothing of how to leave.
+  const jobRowsUnderDialog =
+    managedAgentUiEnabled && managedAgents.summaries.length + backgroundShells.shells.length > 0
+      ? managedAgents.summaries.length + backgroundShells.shells.length + 2
+      : 0;
+  const dialogBodyRows = Math.max(
+    3,
+    termHeight - 1 - 2 - DIALOG_CHROME_ROWS - 3 - jobRowsUnderDialog,
+  );
 
   const pickerOwnsTranscript =
     showModelPicker ||
@@ -2937,7 +2996,7 @@ export function App({
           <TranscriptView
             key={sessionId}
             width={termWidth}
-            isActive={!pickerOwnsTranscript && managedAgents.surface !== 'tasks'}
+            isActive={!pickerOwnsTranscript && managedAgents.surface !== 'tasks' && !shownDialog}
             followRequestKey={followRequestKey}
             layoutRevision={transcriptLayoutRevision}
             pagerChordsAvailable={pagerChordsFree}
@@ -3031,61 +3090,6 @@ export function App({
                     onRemove={removeTask}
                   />
                 )}
-                {shownReportSheet && (
-                  <ReportSheet
-                    sheet={shownReportSheet}
-                    terminalWidth={termWidth}
-                    reducedMotion={motionDisabled}
-                    screenReader={screenReader}
-                  />
-                )}
-                {showHelp && (
-                  <HelpPanel width={panelGrid(termWidth).width} customCommands={commands} />
-                )}
-                {showStatus && (
-                  <SoftPanel title="Session" meta="Esc to close" width={panelGrid(termWidth).width}>
-                    <KeyValueList
-                      width={panelContentWidth(termWidth)}
-                      rows={[
-                        { key: 'model', value: liveConfig.modelSelection ?? liveConfig.model },
-                        { key: 'auth', value: liveConfig.apiKey ? 'API key' : 'none' },
-                        { key: 'session', value: displaySessionName(sessionName) },
-                        { key: 'workspace', value: config.workspace },
-                        { key: 'mode', value: mode },
-                        { key: 'turn', value: `${currentTurn}` },
-                        { key: 'tokens used', value: `${tokenCount}` },
-                        { key: 'max tokens', value: String(config.maxTokens) },
-                        {
-                          key: 'max turns',
-                          value:
-                            config.maxTurns == null || config.maxTurns <= 0
-                              ? 'unlimited'
-                              : String(config.maxTurns),
-                        },
-                        {
-                          key: 'tasks',
-                          value: `${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`,
-                        },
-                      ]}
-                    />
-                  </SoftPanel>
-                )}
-                {showPermissions && (
-                  <SoftPanel
-                    title="Permissions"
-                    meta="Esc to close"
-                    width={panelGrid(termWidth).width}
-                  >
-                    <PermissionsPanel
-                      mode={mode}
-                      permissions={liveConfig.settings.permissions}
-                      onRemove={removePermissionRule}
-                      active={!modalOwnsInput}
-                      terminalWidth={termWidth}
-                      screenReader={screenReader}
-                    />
-                  </SoftPanel>
-                )}
                 {pendingPlanApproval ? (
                   <PlanApprovalDetails
                     plan={pendingPlanApproval.plan}
@@ -3093,19 +3097,6 @@ export function App({
                     terminalWidth={termWidth}
                   />
                 ) : null}
-                {showShortcuts && (
-                  <SoftPanel
-                    title="Keyboard shortcuts"
-                    meta="Esc to close"
-                    width={panelGrid(termWidth).width}
-                  >
-                    <KeyValueList
-                      keys="ink"
-                      rows={SHORTCUT_ROWS}
-                      width={panelContentWidth(termWidth)}
-                    />
-                  </SoftPanel>
-                )}
               </Box>
             </ToolExpandTargetContext.Provider>
           </TranscriptView>
@@ -3678,7 +3669,75 @@ export function App({
                   ? foldControlCharacters(activeStep.activeForm || activeStep.content)
                   : undefined
               }
+              escClosesDialog={Boolean(shownDialog)}
             />
+          ) : null}
+
+          {/* A reference dialog takes the composer's place, as Claude Code's do: the prompt and the
+              status line are put away under it, and come back when Esc closes it. */}
+          {shownDialog ? (
+            <Dialog
+              key={referencePanel}
+              title={referencePanelTitle(referencePanel, reportSheet)}
+              meta={
+                referencePanel === 'help' ? `${helpCommandCount(commands)} commands` : undefined
+              }
+              terminalWidth={termWidth}
+              maxBodyRows={dialogBodyRows}
+              scrollable={referencePanel !== 'permissions'}
+              screenReader={screenReader}
+              onLayoutChange={bumpFooterLayout}
+            >
+              {referencePanel === 'report' && reportSheet ? (
+                <ReportBody
+                  sheet={reportSheet}
+                  terminalWidth={termWidth}
+                  screenReader={screenReader}
+                />
+              ) : referencePanel === 'help' ? (
+                <HelpBody width={panelGrid(termWidth).width} customCommands={commands} />
+              ) : referencePanel === 'status' ? (
+                <KeyValueList
+                  width={panelContentWidth(termWidth)}
+                  rows={[
+                    { key: 'model', value: liveConfig.modelSelection ?? liveConfig.model },
+                    { key: 'auth', value: liveConfig.apiKey ? 'API key' : 'none' },
+                    { key: 'session', value: displaySessionName(sessionName) },
+                    { key: 'workspace', value: config.workspace },
+                    { key: 'mode', value: mode },
+                    { key: 'turn', value: `${currentTurn}` },
+                    { key: 'tokens used', value: `${tokenCount}` },
+                    { key: 'max tokens', value: String(config.maxTokens) },
+                    {
+                      key: 'max turns',
+                      value:
+                        config.maxTurns == null || config.maxTurns <= 0
+                          ? 'unlimited'
+                          : String(config.maxTurns),
+                    },
+                    {
+                      key: 'tasks',
+                      value: `${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`,
+                    },
+                  ]}
+                />
+              ) : referencePanel === 'permissions' ? (
+                <PermissionsPanel
+                  mode={mode}
+                  permissions={liveConfig.settings.permissions}
+                  onRemove={removePermissionRule}
+                  active={!modalOwnsInput}
+                  terminalWidth={termWidth}
+                  screenReader={screenReader}
+                />
+              ) : (
+                <KeyValueList
+                  keys="ink"
+                  rows={SHORTCUT_ROWS}
+                  width={panelContentWidth(termWidth)}
+                />
+              )}
+            </Dialog>
           ) : null}
 
           {/* Input bar — above the status line. Command menu is built into InputBar. */}
@@ -3686,7 +3745,7 @@ export function App({
             flexDirection="column"
             flexShrink={0}
             width={termWidth}
-            marginTop={messages.length > 0 ? 1 : 0}
+            marginTop={messages.length > 0 && !shownDialog ? 1 : 0}
           >
             <QueuedInputPreview
               items={queuedInputs}
@@ -3705,66 +3764,68 @@ export function App({
                 exitStarted ? 'info' : ctrlCExitHintVisible || queueNotice ? 'warning' : flash?.tone
               }
             />
-            <InputBar
-              key={sessionId}
-              onLayoutChange={bumpFooterLayout}
-              onMenuOpenChange={trackComposerMenu}
-              onSubmit={handleSubmit}
-              onPasteImage={pasteClipboardImage}
-              submissionMode={
-                exitStarted
-                  ? 'blocked'
-                  : managedAgents.surface === 'detail'
-                    ? 'submit'
-                    : isThinking || sendInFlight
-                      ? 'queue'
-                      : isCompacting || isRewinding || isResolvingCommand
-                        ? 'blocked'
-                        : 'submit'
-              }
-              mode={mode}
-              onCycleMode={cycleMode}
-              canSubmitWhileBusy={canSubmitWhileParentBusy}
-              canQueueWhileBusy={canQueueWhileParentBusy}
-              onQueue={enqueueFollowUp}
-              onRecallQueued={
-                managedAgents.surface === 'main' && !exitStarted ? recallQueuedInput : undefined
-              }
-              onDraftChange={(value, attachments) => {
-                draftRef.current = value;
-                draftAttachmentsRef.current = attachments ?? [];
-              }}
-              onCycleAgentFocus={cycleAgentFocus}
-              onFocusBackgroundTask={() => {
-                if (managedAgents.surface === 'detail') {
-                  if (!managedAgentUiEnabled) return false;
-                  setDetailTaskPickerAgentId(undefined);
-                  setDetailTaskPickerOpen(true);
-                  return true;
+            <Box display={shownDialog ? 'none' : 'flex'} flexDirection="column">
+              <InputBar
+                key={sessionId}
+                onLayoutChange={bumpFooterLayout}
+                onMenuOpenChange={trackComposerMenu}
+                onSubmit={handleSubmit}
+                onPasteImage={pasteClipboardImage}
+                submissionMode={
+                  exitStarted
+                    ? 'blocked'
+                    : managedAgents.surface === 'detail'
+                      ? 'submit'
+                      : isThinking || sendInFlight
+                        ? 'queue'
+                        : isCompacting || isRewinding || isResolvingCommand
+                          ? 'blocked'
+                          : 'submit'
                 }
-                const firstJobId =
-                  managedAgents.summaries[0]?.agentId ?? backgroundShells.shells[0]?.id;
-                if (!managedAgentUiEnabled || !firstJobId) return false;
-                selectBackgroundJob(firstJobId);
-                managedAgents.setSurface('tasks');
-                return true;
-              }}
-              inputSuppressed={!composerAcceptsInput}
-              awaitingAnswer={awaitingAnswer}
-              onGlobalShortcut={handleGlobalShortcut}
-              commands={commands}
-              skills={skills}
-              sessionMentions={
-                session.sessionMentions && sessionMentionsOffered(mode, liveConfig)
-                  ? session.sessionMentions
-                  : undefined
-              }
-              terminalWidth={termWidth}
-              maxMenuRows={maxCommandMenuRows}
-              compact={isNarrow || isTiny}
-              screenReader={screenReader}
-              draftRestore={draftRestore}
-            />
+                mode={mode}
+                onCycleMode={cycleMode}
+                canSubmitWhileBusy={canSubmitWhileParentBusy}
+                canQueueWhileBusy={canQueueWhileParentBusy}
+                onQueue={enqueueFollowUp}
+                onRecallQueued={
+                  managedAgents.surface === 'main' && !exitStarted ? recallQueuedInput : undefined
+                }
+                onDraftChange={(value, attachments) => {
+                  draftRef.current = value;
+                  draftAttachmentsRef.current = attachments ?? [];
+                }}
+                onCycleAgentFocus={cycleAgentFocus}
+                onFocusBackgroundTask={() => {
+                  if (managedAgents.surface === 'detail') {
+                    if (!managedAgentUiEnabled) return false;
+                    setDetailTaskPickerAgentId(undefined);
+                    setDetailTaskPickerOpen(true);
+                    return true;
+                  }
+                  const firstJobId =
+                    managedAgents.summaries[0]?.agentId ?? backgroundShells.shells[0]?.id;
+                  if (!managedAgentUiEnabled || !firstJobId) return false;
+                  selectBackgroundJob(firstJobId);
+                  managedAgents.setSurface('tasks');
+                  return true;
+                }}
+                inputSuppressed={!composerAcceptsInput}
+                awaitingAnswer={awaitingAnswer}
+                onGlobalShortcut={handleGlobalShortcut}
+                commands={commands}
+                skills={skills}
+                sessionMentions={
+                  session.sessionMentions && sessionMentionsOffered(mode, liveConfig)
+                    ? session.sessionMentions
+                    : undefined
+                }
+                terminalWidth={termWidth}
+                maxMenuRows={maxCommandMenuRows}
+                compact={isNarrow || isTiny}
+                screenReader={screenReader}
+                draftRestore={draftRestore}
+              />
+            </Box>
           </Box>
 
           {managedAgentUiEnabled &&
@@ -3829,8 +3890,8 @@ export function App({
             />
           ) : null}
 
-          {/* Status line — stable footer */}
-          <Box flexShrink={0} width={termWidth}>
+          {/* Status line — stable footer, put away under a dialog as Claude Code puts its own. */}
+          <Box flexShrink={0} width={termWidth} display={shownDialog ? 'none' : 'flex'}>
             <StatusLine
               gitBranch={gitStatus.branch}
               gitStatus={gitStatus.status}

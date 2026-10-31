@@ -1199,32 +1199,43 @@ describe('App effort command', () => {
   // The reference sheets used to be four independent booleans, so two open
   // panels pinned enough chrome above the composer to push the conversation off
   // a short terminal, and nothing but retyping the command closed either one.
-  // `/status` stands in for the group here because `/help` runs taller than the
-  // test terminal, so its own title scrolls out of the last frame.
-  it('closes the open reference panel on Esc', async () => {
+  // They now open one at a time as a dialog in the composer's place, as Claude
+  // Code's do. The test config runs with a screen reader on, so the dialog reads
+  // as plain lines and ends with its keys.
+  it('closes the open reference dialog on Esc', async () => {
     const { view } = renderIdle();
     await submit(view, '/status');
-    expect(stripAnsi(view.lastFrame() ?? '')).toContain('§ Session');
+    expect(stripAnsi(view.lastFrame() ?? '')).toContain('max turns');
 
     view.stdin.write('\u001b');
     await new Promise((resolve) => setTimeout(resolve, 75));
-    expect(stripAnsi(view.lastFrame() ?? '')).not.toContain('§ Session');
+    const frame = stripAnsi(view.lastFrame() ?? '');
+    expect(frame).not.toContain('max turns');
+    expect(frame).not.toContain('Esc to close');
   });
 
-  it('shows one reference panel at a time', async () => {
+  it('takes the keys while it is open: a command typed then does not reach the prompt', async () => {
     const { view } = renderIdle();
     await submit(view, '/status');
     await submit(view, '/permissions');
 
-    const frame = stripAnsi(view.lastFrame() ?? '');
-    expect(frame).toContain('§ Permissions');
-    expect(frame).not.toContain('§ Session');
+    let frame = stripAnsi(view.lastFrame() ?? '');
+    expect(frame).toContain('max turns');
+    expect(frame).not.toContain('No rules yet');
+
+    view.stdin.write('\u001b');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    await submit(view, '/permissions');
+    frame = stripAnsi(view.lastFrame() ?? '');
+    expect(frame).toContain('No rules yet');
+    expect(frame).not.toContain('max turns');
   });
 
-  it('states how to close on the panel itself', async () => {
+  it('says how to close it right under the body, where the prompt was', async () => {
     const { view } = renderIdle();
     await submit(view, '/status');
-    expect(stripAnsi(view.lastFrame() ?? '')).toMatch(/─ § Session ─+ Esc to close ─/);
+    const frame = stripAnsi(view.lastFrame() ?? '');
+    expect(frame.indexOf('Esc to close')).toBeGreaterThan(frame.indexOf('max turns'));
   });
 });
 

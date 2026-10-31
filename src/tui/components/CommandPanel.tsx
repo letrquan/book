@@ -23,11 +23,14 @@ import { padDisplay, truncateDisplay, wordWrap } from './word-wrap.js';
 interface CommandPanelProps {
   display: LocalCommandDisplay;
   fallback: string;
-  /** The rule's note once the figures are in; the command that printed it when absent. */
-  meta?: string;
   terminalWidth?: number;
   reducedMotion?: boolean;
   screenReader?: boolean;
+  /**
+   * Leave the rule off: the panel is the body of a dialog that carries its own title. The subtitle
+   * stays, as the body's first line.
+   */
+  bare?: boolean;
 }
 
 interface ConfigEntry {
@@ -129,29 +132,27 @@ function PanelHeader({
   command,
   title,
   subtitle,
-  meta,
   width,
   step,
 }: {
   command: string;
   title: string;
   subtitle: string;
-  meta?: string;
   width: number;
   step: number;
 }) {
   const theme = useTheme();
   const ready = step >= REVEAL_STEPS;
   // The same head as every other reference panel: a rule led by a section sign.
-  // Once the figures have finished arriving the note says how to close the sheet,
-  // or, where the host gave no such note, names the command that printed it.
+  // The note names the command that printed it once the figures have finished
+  // arriving; how to close a sheet is said at the composer, not here.
   return (
     <Box flexDirection="column">
       <SheetRule
         mark={SECTION_SIGN}
         label={title}
         tone={theme.text}
-        meta={ready ? (meta ?? command) : 'reading…'}
+        meta={ready ? command : 'reading…'}
         width={width}
       />
       <Box paddingX={2}>
@@ -619,13 +620,14 @@ function UsagePanelBody({
 export function CommandPanel({
   display,
   fallback,
-  meta,
   terminalWidth = 80,
   reducedMotion = false,
   screenReader = false,
+  bare = false,
 }: CommandPanelProps) {
   const motionDisabled = reducedMotion || screenReader;
   const step = useStaggeredReveal(REVEAL_STEPS, true, 55, motionDisabled);
+  const theme = useTheme();
 
   if (screenReader) {
     return (
@@ -660,10 +662,15 @@ export function CommandPanel({
           };
 
   return (
-    // No top margin of its own: ChatPanel spaces every slash-command entry.
-    <Box width={panelWidth} flexDirection="column">
-      <PanelHeader {...header} meta={meta} width={panelWidth} step={step} />
-      <Box flexDirection="column" paddingX={2} marginTop={1}>
+    // No top margin of its own: ChatPanel spaces every slash-command entry. Bare, the dialog's
+    // padding stands in for the panel's, so the body keeps the width it has inside the panel.
+    <Box width={bare ? contentWidth : panelWidth} flexDirection="column">
+      {bare ? (
+        <Text color={theme.subtle}>{truncateDisplay(header.subtitle, contentWidth)}</Text>
+      ) : (
+        <PanelHeader {...header} width={panelWidth} step={step} />
+      )}
+      <Box flexDirection="column" paddingX={bare ? 0 : 2} marginTop={1}>
         {display.kind === 'config' ? (
           <ConfigPanelBody data={display} contentWidth={contentWidth} narrow={narrow} step={step} />
         ) : display.kind === 'context' ? (
