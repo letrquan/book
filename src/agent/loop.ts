@@ -5,6 +5,7 @@ import type {
   ImageAttachment,
   Message,
   ProviderMessageMetadata,
+  SteeringInbox,
   Usage,
 } from '../types/messages.js';
 import type { ProviderMessage, ProviderResponseMetadata } from '../types/providers.js';
@@ -66,7 +67,7 @@ import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { realWorkspaceRoot } from '../tools/path-utils.js';
 import { memoryWriteScope } from '../memory-store.js';
-import { observeFile } from '../tools/file-provenance.js';
+import { observeFile, recordFileObservations } from '../tools/file-provenance.js';
 import { homeGuards, resolveAdditionalRoots, rootHoldsHome } from '../additional-roots.js';
 import { invalidPatternRefusal, outsideWorkspaceRefusal } from './refusal-remedies.js';
 import {
@@ -376,6 +377,19 @@ export async function runAgentLoop(
     toolTelemetryRoot?: string;
     /** User-global store for learned context window ceilings (primarily for isolated tests). */
     modelWindowStore?: ModelWindowStore;
+    /**
+     * Steers the host queued while this run is going. Drained after a tool step and, at a
+     * turn's end, kept as a reason to continue the same run instead of stopping. The TUI queues
+     * follow-ups itself and passes none.
+     */
+    steering?: SteeringInbox;
+    /**
+     * Whether this run's host can hand the loop messages while it works. A host that can deliver
+     * steers sets it on every run of the session, including the runs it starts for a
+     * notification, so the cached prefix does not flip between them; print mode, the SDK and
+     * subagents never do.
+     */
+    steeringHost?: boolean;
     provider?: Provider;
   },
 ): Promise<Message[]> {
@@ -525,43 +539,69 @@ export async function runAgentLoop(
     ).catch((err) => console.warn('SessionStart hook failed:', err));
   }
 
+  /**
+   * One `UserPromptSubmit` pass over a prompt: a block, or the prompt every rewrite left behind.
+   * The run's own prompt and each steer go through it, so a hook sees and decides both the same
+   * way; only the outcome's handling differs — a blocked prompt ends the run, a blocked steer is
+   * dropped with a notice and the run goes on.
+   */
+  const submitUserPrompt = async (
+    prompt: string,
+  ): Promise<
+    | { outcome: 'blocked'; message?: string }
+    | { outcome: 'passed'; prompt: string; rewrittenPrompt?: string }
+  > => {
+    const results = await runHooks(
+      config.settings.hooks.UserPromptSubmit,
+      'UserPromptSubmit',
+      { workspace: config.workspace, event: 'UserPromptSubmit', userPrompt: prompt },
+      { onHookEvent: callbacks.onHookEvent, signal },
+    );
+    const blocked = results.find((result) => result.action === 'block');
+    if (blocked)
+      return { outcome: 'blocked', ...(blocked.message ? { message: blocked.message } : {}) };
+    // A rewrite is the prompt, and the last one wins, as a chain of hooks decides it.
+    let effective = prompt;
+    let rewritten: string | undefined;
+    for (const result of results) {
+      if (result.action === 'modify' && result.modifiedPrompt) {
+        effective = result.modifiedPrompt;
+        rewritten = result.modifiedPrompt;
+      }
+    }
+    return {
+      outcome: 'passed',
+      prompt: effective,
+      ...(rewritten !== undefined ? { rewrittenPrompt: rewritten } : {}),
+    };
+  };
+
   // UserPromptSubmit hook — can modify or block the user prompt.
-  let effectivePrompt = userMessage;
-  let displayPrompt = options?.displayMessage ?? userMessage;
-  /** Set when a hook rewrote the prompt: intent routing then keeps only routes it still asks for. */
-  let rewrittenPrompt: string | undefined;
-  const userHookResults = options?.skipUserPromptHooks
-    ? []
-    : await runHooks(
-        config.settings.hooks.UserPromptSubmit,
-        'UserPromptSubmit',
-        { workspace: config.workspace, event: 'UserPromptSubmit', userPrompt: userMessage },
-        { onHookEvent: callbacks.onHookEvent, signal },
-      );
-  for (const r of userHookResults) {
-    if (r.action === 'block') {
-      newHistory.push({
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: `[UserPromptSubmit hook blocked the prompt${r.message ? `: ${r.message}` : ''}]`,
-        hostNotice: true,
-        includeInContext: false,
-        timestamp: Date.now(),
-      });
-      finishTerminal(
-        createTerminalOutcome('failed', 'blocked_by_policy', {
-          partialOutput: false,
-          message: r.message ?? 'The prompt was blocked by a user hook.',
-        }),
-      );
-      return newHistory;
-    }
-    if (r.action === 'modify' && r.modifiedPrompt) {
-      effectivePrompt = r.modifiedPrompt;
-      displayPrompt = r.modifiedPrompt;
-      rewrittenPrompt = r.modifiedPrompt;
-    }
+  const submitted = options?.skipUserPromptHooks
+    ? { outcome: 'passed' as const, prompt: userMessage }
+    : await submitUserPrompt(userMessage);
+  if (submitted.outcome === 'blocked') {
+    newHistory.push({
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content: `[UserPromptSubmit hook blocked the prompt${submitted.message ? `: ${submitted.message}` : ''}]`,
+      hostNotice: true,
+      includeInContext: false,
+      timestamp: Date.now(),
+    });
+    finishTerminal(
+      createTerminalOutcome('failed', 'blocked_by_policy', {
+        partialOutput: false,
+        message: submitted.message ?? 'The prompt was blocked by a user hook.',
+      }),
+    );
+    return newHistory;
   }
+  const effectivePrompt = submitted.prompt;
+  const displayPrompt = submitted.rewrittenPrompt ?? options?.displayMessage ?? userMessage;
+  /** Set when a hook rewrote the prompt: intent routing then keeps only routes it still asks for. */
+  const rewrittenPrompt: string | undefined =
+    'rewrittenPrompt' in submitted ? submitted.rewrittenPrompt : undefined;
 
   const skillRegistry = ownsRuntime
     ? runtime.skills(config.workspace, config.settings.skills)
@@ -1204,6 +1244,151 @@ export async function runAgentLoop(
     const runStartedAt = clock.monotonicNowMs();
     /** Guards the periodic work-state message against a same-turn re-issue. */
     let lastWorkStateTurn = -1;
+    /**
+     * Whether the USD budget allows the request about to be sent. A run with no accounting root
+     * enforces none; a spent one refuses its next request, which is the one reason a steer has
+     * to wait for the host instead of being appended and never answered.
+     */
+    const budgetCheckForNextRequest = () =>
+      options?.runContext
+        ? runtime.runAccounting.checkBeforeModelCall(
+            options.runContext.rootRunId,
+            effectiveConfig.model,
+          )
+        : { allowed: true, status: 'within' as const };
+
+    /**
+     * Put routing notes on the newest user turn in context, after any notes it already holds.
+     *
+     * Notes render only with that turn's `<session-state>` block, so every routed input's notes
+     * have to land there: the run's prompt, and each steer drained into the same request. They
+     * are appended, never assigned: a steer followed by a work-state refresh is no longer the
+     * newest user turn, and its note still has to ride the block the request renders.
+     */
+    const appendTailNotes = (notes: readonly string[]): void => {
+      if (notes.length === 0) return;
+      for (let index = newHistory.length - 1; index >= 0; index--) {
+        const message = newHistory[index];
+        if (message.role !== 'user' || !message.includeInContext) continue;
+        message.turnNotes = [...(message.turnNotes ?? []), ...notes];
+        return;
+      }
+    };
+
+    /**
+     * Route one delivered user input (#619): the run's own prompt once, and each steer drained
+     * into a turn. Callers apply the turn's skill restrictions first, so a route activates only
+     * what this turn authorizes, and the notes join the newest user turn of the request that
+     * will carry every one of them.
+     */
+    const routeTurn = async (input: {
+      typedText?: string;
+      rewrittenPrompt?: string;
+      kind?: Message['kind'];
+    }): Promise<void> => {
+      const routing: IntentRoutingRequest = {
+        typedText: input.typedText,
+        rewrittenPrompt: input.rewrittenPrompt,
+        kind: input.kind,
+        isSubagent: options?.isSubagent,
+        config: effectiveConfig,
+        context: toolContext,
+      };
+      const { notes } = routeTurnIntent(
+        routing,
+        toolSurface,
+        await turnIntentRouters(routing, toolSurface, options?.sessionMentions, { signal }),
+      );
+      appendTailNotes(notes);
+    };
+    /**
+     * Steers drained into history whose intent routing still has to run, with the text it
+     * reads and a hook's rewrite when one replaced the prompt.
+     *
+     * Routing runs after `syncSkillRestrictions` for the turn that will send the steer, so
+     * delivery only records them; the turn's routing block consumes them. That covers a
+     * steer drained at the turn-end gate too: it is routed on the next iteration.
+     */
+    const steersAwaitingRouting: Array<{
+      message: Message;
+      typedText: string;
+      rewrittenPrompt?: string;
+    }> = [];
+    /**
+     * Move every steer the host queued into history, as the user's own turns.
+     *
+     * One helper for both drain points so a steer always lands the same way: `content` is the
+     * display text, `contextContent` carries the expanded prompt only when it differs, and the
+     * message is never `derivedContent` — these are the user's words, not the agent's.
+     *
+     * Each steer runs `UserPromptSubmit` here, at delivery, the way the run's own prompt does
+     * before its first request: a `block` drops that steer with a notice and the run goes on,
+     * and a `modify` is the text both the model and the transcript get. The hooks run even for
+     * a run that skips its prompt's (`skipUserPromptHooks` is for host notification runs), and
+     * a steer is always the user's own words.
+     *
+     * A steer appended before a cancel stays appended, as the cancelled run's own prompt does:
+     * the host decides what to show for it. Every steer still waiting — the one whose hook was
+     * running, and those after it — goes back to the front of the inbox in order, so the host
+     * can deliver it as its own turn. The caller's abort check is not redundant with the loop's
+     * own: the boundary's compaction awaits a summarizer call and does not re-test the signal
+     * before this drain point.
+     */
+    const appendSteers = async (reason: 'tool-step' | 'turn-end'): Promise<number> => {
+      if (signal?.aborted) return 0;
+      const steers = options?.steering?.take() ?? [];
+      let delivered = 0;
+      for (let index = 0; index < steers.length; index++) {
+        const steer = steers[index];
+        let passed: Awaited<ReturnType<typeof submitUserPrompt>>;
+        try {
+          passed = await submitUserPrompt(steer.content);
+        } catch (error) {
+          // A cancelled hook rejects with the abort reason. The run is ending, so stop draining
+          // rather than let that rejection surface as a run failure — and never append a steer
+          // nothing will answer.
+          if (signal?.aborted) {
+            options?.steering?.requeue(steers.slice(index));
+            return delivered;
+          }
+          throw error;
+        }
+        if (passed.outcome === 'blocked') {
+          callbacks.onNotice?.(
+            `UserPromptSubmit hook blocked a message sent during the run${passed.message ? `: ${passed.message}` : ''}`,
+          );
+          continue;
+        }
+        const content = passed.rewrittenPrompt ?? steer.displayMessage ?? steer.content;
+        const message: Message = {
+          id: steer.id,
+          role: 'user',
+          content,
+          contextContent: passed.prompt === content ? undefined : passed.prompt,
+          includeInContext: true,
+          kind: 'conversation',
+          steered: true,
+          attachments: steer.attachments,
+          fileObservations: steer.fileObservations,
+          timestamp: steer.timestamp,
+        };
+        // An `@file` mention counts as observed once the model is about to see it, not when
+        // the user typed it: until now nothing had sent the inlined text anywhere.
+        recordFileObservations(runtime.fileObservationLedger, message.fileObservations);
+        newHistory.push(message);
+        callbacks.onUserMessageAppended?.(message);
+        steersAwaitingRouting.push({
+          message,
+          typedText: steer.displayMessage ?? steer.content,
+          ...(passed.rewrittenPrompt !== undefined
+            ? { rewrittenPrompt: passed.rewrittenPrompt }
+            : {}),
+        });
+        delivered++;
+      }
+      if (delivered > 0) log.info('steers appended', { reason, turn, count: delivered });
+      return delivered;
+    };
     /** Intent routing runs once, before the run's first model call (#619). */
     let intentRouted = false;
     /** The turn these empty-completion retries were spent on, and how many of them. */
@@ -1247,12 +1432,10 @@ export async function runAgentLoop(
     );
 
     // maxTurns undefined/0 = unlimited; otherwise stop once the cap is hit.
-    while (
-      retrySameTurn ||
-      config.maxTurns == null ||
-      config.maxTurns <= 0 ||
-      turn < config.maxTurns
-    ) {
+    /** Whether a turn after `current` may run (`maxTurns` nil or non-positive: always). */
+    const hasTurnLeft = (current: number): boolean =>
+      config.maxTurns == null || config.maxTurns <= 0 || current < config.maxTurns;
+    while (retrySameTurn || hasTurnLeft(turn)) {
       if (signal?.aborted) break;
       syncHostMode();
 
@@ -1391,6 +1574,16 @@ export async function runAgentLoop(
         }
       }
 
+      // Drain point 1: a steer that arrived while the last step's tools ran. It must land after
+      // the assistant message carrying their results — draining between the calls of one batch
+      // would split a tool call from its result. A re-issue is still that same step.
+      //
+      // This iteration is the turn the request is sent for, so `hasTurnLeft` cannot refuse it;
+      // the budget can, and a steer appended for a refused request is one nothing will answer.
+      if (!reissuedThisTurn && budgetCheckForNextRequest().allowed) {
+        await appendSteers('tool-step');
+      }
+
       toolContext.currentTurn = turn;
       syncSkillRestrictions(turn);
       if (!intentRouted) {
@@ -1398,27 +1591,27 @@ export async function runAgentLoop(
         // After the mode and the skill restrictions are applied, so it activates only what this
         // surface authorizes. It reads what the user typed, never the prompt that text resolved
         // to, and a hook's rewrite of it can only take a route or a note away.
-        const routing: IntentRoutingRequest = {
+        await routeTurn({
           typedText: options?.typedText,
           rewrittenPrompt,
           kind: options?.userMessageKind,
-          isSubagent: options?.isSubagent,
-          config: effectiveConfig,
-          context: toolContext,
-        };
-        const { notes } = routeTurnIntent(
-          routing,
-          toolSurface,
-          await turnIntentRouters(routing, toolSurface, options?.sessionMentions, { signal }),
-        );
-        // A note (#620) rides on the message whose block `buildMessages` renders next, the newest
-        // user turn in context, and renders with that block.
-        for (let index = newHistory.length - 1; notes.length > 0 && index >= 0; index--) {
-          const message = newHistory[index];
-          if (message.role !== 'user' || !message.includeInContext) continue;
-          message.turnNotes = notes;
-          break;
-        }
+        });
+      }
+      // A steer drained into this turn routes here, after the turn's skill restrictions the way
+      // the run's own prompt does. Its notes join the newest user turn, which is the one whose
+      // block this request renders: with two steers drained together, the second is newest, and
+      // a work-state refresh after a turn-end steer supersedes both.
+      while (steersAwaitingRouting.length > 0) {
+        const {
+          message,
+          typedText: steerText,
+          rewrittenPrompt: steerRewrite,
+        } = steersAwaitingRouting.shift()!;
+        await routeTurn({
+          typedText: steerText,
+          rewrittenPrompt: steerRewrite,
+          kind: message.kind ?? 'conversation',
+        });
       }
       const activeDefinitions = toolSurface.activeDefinitions();
       // Resolved once per turn. The session-state block is memoized on the newest
@@ -1438,6 +1631,7 @@ export async function runAgentLoop(
           dynamicPolicy: dynamicPolicy(turn),
           hideAgents: options?.hideAgents,
           isSubagent: options?.isSubagent,
+          steeringHost: options?.steeringHost,
           toolCatalogSummary: toolSurface.catalogSummary(),
           planMode: effectiveMode === 'plan',
           planUnrestored: runtime.planUnrestored,
@@ -1461,6 +1655,7 @@ export async function runAgentLoop(
             dynamicPolicy: dynamicPolicy(turn),
             hideAgents: options?.hideAgents,
             isSubagent: options?.isSubagent,
+            steeringHost: options?.steeringHost,
             toolCatalogSummary: toolSurface.catalogSummary(),
             planMode: effectiveMode === 'plan',
             planUnrestored: runtime.planUnrestored,
@@ -1727,21 +1922,18 @@ export async function runAgentLoop(
         }
         callbacks.onUsage?.(turnUsage, metadata);
       };
-      if (options?.runContext) {
-        const budget = runtime.runAccounting.checkBeforeModelCall(
-          options.runContext.rootRunId,
-          effectiveConfig.model,
-        );
-        if (!budget.allowed) {
-          const reason = budget.status === 'exceeded' ? 'budget_exceeded' : 'budget_unverifiable';
-          const outcome = createTerminalOutcome('failed', reason, {
-            partialOutput: hasPartialOutput(),
-            message: budget.message,
-          });
-          callbacks.onError(budget.message ?? 'Run budget cannot be enforced.');
-          finishTerminal(outcome);
-          return newHistory;
-        }
+      // The one budget check before a request: the turn-end gate and the tool-step drain ask the
+      // same predicate, so a steer is never appended for a request this would refuse.
+      const budget = budgetCheckForNextRequest();
+      if (!budget.allowed) {
+        const reason = budget.status === 'exceeded' ? 'budget_exceeded' : 'budget_unverifiable';
+        const outcome = createTerminalOutcome('failed', reason, {
+          partialOutput: hasPartialOutput(),
+          message: budget.message,
+        });
+        callbacks.onError(budget.message ?? 'Run budget cannot be enforced.');
+        finishTerminal(outcome);
+        return newHistory;
       }
       sentSystemPrompt = systemPromptText(messages);
       const stream = provider.stream(effectiveConfig, messages, activeDefinitions, {
@@ -3833,6 +4025,30 @@ export async function runAgentLoop(
       }
 
       if (toolCalls.length === 0 || signal?.aborted || handoffRequested || planStopRequested) {
+        // A steer appended here has to be answered, so it is appended only when another turn
+        // will actually send it. The one check before a request is the USD budget below; the
+        // loop's own condition is `hasTurnLeft`. Both are the loop's, not this gate's copies:
+        // what refuses the next request is exactly what keeps a steer pending for the host.
+        //
+        // The user spoke while this turn was being written: their words outrank the model's
+        // "I'm done", so append them and keep the same run going. This is not a host
+        // continuation — the user has spoken — so the brake's counters start over. The turn
+        // still counts against `maxTurns` and the run's budget like any other.
+        if (
+          toolCalls.length === 0 &&
+          !signal?.aborted &&
+          !handoffRequested &&
+          !planStopRequested &&
+          hasTurnLeft(turn) &&
+          options?.steering?.hasPending() &&
+          budgetCheckForNextRequest().allowed &&
+          (await appendSteers('turn-end')) > 0
+        ) {
+          continuationCount = 0;
+          continuationWitnesses.length = 0;
+          log.info('steers at turn end; continuing run', { turn });
+          continue;
+        }
         // The turn produced no tool calls. Historically that ended the run, making
         // one user message the whole run — a model that says "I've finished"
         // stopped there with half its plan outstanding. Ask whether there is

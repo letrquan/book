@@ -124,7 +124,9 @@ function regularUserContent(content: ProviderMessage['content']): string | Anthr
   );
 }
 
-function isToolResultContent(content: AnthropicMessage['content']): boolean {
+function isToolResultContent(
+  content: AnthropicMessage['content'],
+): content is AnthropicContentBlock[] {
   return Array.isArray(content) && content[0]?.type === 'tool_result';
 }
 
@@ -325,10 +327,18 @@ export function convertMessages(messages: ProviderMessage[]): {
           anthropicMessages.push({ role: 'user', content: [block] });
         }
       } else {
-        // Regular user message — merge with previous if it's also a plain user message
+        // Regular user message — merge with the previous user message, whatever it holds. Two
+        // consecutive user messages are not a conversation to the API, and a steer (#661) lands
+        // right after a step's tool results: its text belongs in that same message, after them.
         const last = anthropicMessages[anthropicMessages.length - 1];
         const nextContent = regularUserContent(msg.content);
-        if (last?.role === 'user' && !isToolResultContent(last.content)) {
+        if (last?.role === 'user' && isToolResultContent(last.content)) {
+          const nextBlocks =
+            typeof nextContent === 'string'
+              ? [{ type: 'text' as const, text: nextContent }]
+              : nextContent;
+          last.content.push(...nextBlocks);
+        } else if (last?.role === 'user') {
           if (typeof last.content === 'string' && typeof nextContent === 'string') {
             last.content = last.content + '\n\n' + nextContent;
           } else {

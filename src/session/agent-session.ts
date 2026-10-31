@@ -30,7 +30,7 @@ import type {
   TurnCheckpointRecordData,
   UsageRecordData,
 } from '../types/sessions.js';
-import type { Message, Usage } from '../types/messages.js';
+import type { Message, SteeredInput, SteeringInbox, Usage } from '../types/messages.js';
 import type { ActiveGoal } from '../types/goal.js';
 import type { PeerAwarenessHandle } from '../types/messaging.js';
 import type { SessionMentionSource } from '../input/session-mentions.js';
@@ -50,7 +50,7 @@ import type {
 } from '../types/tools.js';
 import { resolveAdditionalRoots } from '../additional-roots.js';
 import { expandUserInputDetailed, formatRefusedMentionNotice } from '../input/input-expansion.js';
-import { observationKey } from '../tools/file-provenance.js';
+import { recordFileObservations } from '../tools/file-provenance.js';
 import { createDebugLogger } from '../debug-log.js';
 import { AgentInteractionController } from './agent-interactions.js';
 import {
@@ -123,7 +123,19 @@ export interface AgentSessionRunRequest {
   maxBudgetUsd?: number;
   source?: AgentRunSource;
   resumedFromRunId?: string;
-  options?: Omit<AgentLoopOptions, 'signal'>;
+  options?: Omit<AgentLoopOptions, 'signal' | 'steering' | 'steeringHost'>;
+  /**
+   * Steers the host queued while this run is going. The loop drains them at its next boundary,
+   * and at a turn's end they continue the same run.
+   */
+  steering?: SteeringInbox;
+  /**
+   * Whether this session can hand a running loop messages (see
+   * {@link AgentLoopRunner}'s `steeringHost`). The host sets it on every run of such a session,
+   * including a run it starts for a notification, so the cached prefix stays the same between
+   * them.
+   */
+  steeringHost?: boolean;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
 }
@@ -212,6 +224,23 @@ export interface AgentSessionRecordUserRequest {
   onUserMessagePersisted?: () => void;
 }
 
+export interface AgentSessionPrepareSteerRequest {
+  /** What the user typed, before any `@file` expansion; also what the transcript shows. */
+  displayMessage: string;
+  attachments?: Message['attachments'];
+  config: AgentConfig;
+  signal?: AbortSignal;
+  /** Identity for the delivered turn and its session record; minted when omitted. */
+  id?: string;
+}
+
+export interface AgentSessionPrepareSteerResult {
+  /** Ready for the host to push into the running loop's inbox, or queue if the run ended. */
+  input: SteeredInput;
+  /** One per mention left as written, for the host to show beside the steer. */
+  mentionNotices: string[];
+}
+
 export interface AgentSessionSendControl {
   signal?: AbortSignal;
   isCurrent: () => boolean;
@@ -255,6 +284,7 @@ export interface AgentSessionSendRequest {
   options?: Omit<
     AgentLoopOptions,
     | 'signal'
+    | 'steering'
     | 'displayMessage'
     | 'userMessageId'
     | 'userMessageTimestamp'
@@ -262,7 +292,12 @@ export interface AgentSessionSendRequest {
     | 'userAttachments'
     | 'resolveAttachment'
     | 'typedText'
+    | 'steeringHost'
   >;
+  /** See {@link AgentSessionRunRequest.steering}. */
+  steering?: SteeringInbox;
+  /** See {@link AgentSessionRunRequest.steeringHost}. */
+  steeringHost?: boolean;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
   beforePrepare?: (control: AgentSessionSendControl) => void | Promise<void>;
@@ -590,6 +625,8 @@ export class AgentSession {
           },
           signal: control.signal,
           isCurrent: control.isCurrent,
+          steering: request.steering,
+          steeringHost: request.steeringHost,
         });
         const outcome = runOutcome ?? this.snapshot.terminal;
         if (!outcome) {
@@ -1100,10 +1137,10 @@ export class AgentSession {
     request.userMessage.contextContent =
       contextMessage === request.displayMessage ? undefined : contextMessage;
     request.userMessage.fileObservations = expansion?.observations ?? [];
-    const observationLedger = (request.runtime ?? this.runtime).fileObservationLedger;
-    for (const observation of request.userMessage.fileObservations) {
-      observationLedger.set(observationKey(observation.workspaceId, observation.path), observation);
-    }
+    recordFileObservations(
+      (request.runtime ?? this.runtime).fileObservationLedger,
+      request.userMessage.fileObservations,
+    );
     request.timelineStore?.append(request.sessionId, {
       type: 'user',
       eventId: request.userMessage.id,
@@ -1140,6 +1177,54 @@ export class AgentSession {
     }
 
     return { contextMessage, sessionName, mentionNotices };
+  }
+
+  /**
+   * Prepare a mid-run steer (#661) from what the user typed.
+   *
+   * A steer is the user's own words, so its `@file` mentions expand here exactly as the prompt
+   * that starts a run does in `recordUserMessage`: the model reads the inlined text, the
+   * transcript keeps what the user typed, and the files inlined are registered as observed when
+   * the loop delivers the steer, not when it is prepared.
+   *
+   * Nothing else of a turn happens here, deliberately (decision D7): no session record, because
+   * the loop's `onUserMessageAppended` writes it at delivery; no rewind checkpoint, because a
+   * steer is not a point the session can be rewound to; and no `$skill`, because an activation
+   * frame belongs to the turn that invoked it and a steer starts no turn.
+   */
+  async prepareSteer(
+    request: AgentSessionPrepareSteerRequest,
+  ): Promise<AgentSessionPrepareSteerResult> {
+    const id = request.id ?? crypto.randomUUID();
+    const expansion = await expandUserInputDetailed(
+      request.displayMessage,
+      request.config.workspace,
+      {
+        expandShell: false,
+        signal: request.signal,
+        sourceRef: id,
+        // The roots Read serves besides the workspace, resolved as the loop does, and only for
+        // text that can hold a mention at all.
+        additionalRoots: request.displayMessage.includes('@')
+          ? resolveAdditionalRoots(
+              request.config.workspace,
+              request.config.settings.additionalDirectories,
+            )
+          : [],
+      },
+    );
+    return {
+      input: {
+        id,
+        content: expansion.text,
+        // What the user typed is also what routing reads: a steer never invokes a `$skill`.
+        displayMessage: request.displayMessage,
+        attachments: request.attachments,
+        fileObservations: expansion.observations,
+        timestamp: Date.now(),
+      },
+      mentionNotices: expansion.refused.map(formatRefusedMentionNotice),
+    };
   }
 
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {
@@ -1597,12 +1682,13 @@ export class AgentSession {
         },
         /**
          * Persist a user message the loop authored rather than the host — a
-         * continuation, a work-state refresh. Hosts write the user message before
-         * `send`, so nothing else records these and a resumed session would show
+         * continuation, a work-state refresh, or a steer the host handed the
+         * running loop. Hosts write the message that starts a run before `send`,
+         * so nothing else records these and a resumed session would show
          * assistant turns answering questions that were never asked.
          *
          * `UserPromptSubmit` hooks and memory capture are deliberately skipped:
-         * this is the agent talking to itself, not a person submitting a prompt.
+         * this is the loop appending to its own history, not a new submission.
          */
         onUserMessageAppended: (message) => {
           if (request.isCurrent?.() === false) return;
@@ -1613,11 +1699,18 @@ export class AgentSession {
             data: {
               id: message.id,
               content: message.content,
+              // A steered turn is the user's own words: its prompt, any attachment
+              // and observation, and the display text the transcript shows all
+              // have to survive the reload in place.
+              contextContent: message.contextContent,
               kind: message.kind ?? 'conversation',
               includeInContext: message.includeInContext ?? true,
               // A host-appended prompt stays host-written across a reload: the ledger,
-              // Carried Turns key on it.
+              // Carried Turns key on it. A steer carries no mark, by construction.
               derivedContent: message.derivedContent,
+              steered: message.steered,
+              attachments: message.attachments,
+              fileObservations: message.fileObservations,
             },
           } satisfies SessionRecord);
         },
@@ -1649,6 +1742,8 @@ export class AgentSession {
                 ? (attachment) =>
                     request.timelineStore!.readImageAttachment!(request.sessionId, attachment)
                 : undefined),
+            ...(request.steering ? { steering: request.steering } : {}),
+            ...(request.steeringHost ? { steeringHost: true } : {}),
             signal: request.signal,
           },
         );

@@ -92,6 +92,21 @@ export function supersedesObservation(
 }
 
 /**
+ * File an input's observations in the ledger: the files an inline `@mention` put in a prompt or a
+ * steer count as observed once the model is about to read that text, so a later mutation of one
+ * needs no new Read. One copy for both the host's own prompt (`AgentSession.recordUserMessage`)
+ * and a steer the loop delivers, which must land the same way.
+ */
+export function recordFileObservations(
+  ledger: Map<string, FileObservation> | undefined,
+  observations: readonly FileObservation[] | undefined,
+): void {
+  for (const observation of observations ?? []) {
+    ledger?.set(observationKey(observation.workspaceId, observation.path), observation);
+  }
+}
+
+/**
  * Rebuild a resumed session's ledger from its transcript under
  * `supersedesObservation`, so it ends where the live ledger did: an outline is
  * still only an outline after a resume, and a Read is still a Read.

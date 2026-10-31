@@ -986,9 +986,28 @@ describe('buildMessages', () => {
     expect(zones.cachedPrefix).toContain('- The Bash tool runs ');
     expect(zones.cachedPrefix).toContain('sandbox');
     expect(zones.cachedPrefix).toContain('A denied tool call means the user declined it');
+    expect(zones.cachedPrefix).not.toContain('The user can send messages while you work');
     expect(zones.cachedPrefix).toContain('Hook output attached to a tool result');
     expect(zones.cachedPrefix).toContain('<session-state> block emitted by the host');
     expect(zones.cachedPrefix).toContain('Your training data has a cutoff');
+  });
+
+  it('promises mid-run messages only to a host that can steer', async () => {
+    // Print mode, the SDK and subagents pass no `steeringHost`, so the line must not appear
+    // where nothing can deliver a steer. A steerable session passes it on every run, and the
+    // two prefixes differ in that one line and nothing else.
+    const plain = await buildSystemPromptZones(config, []);
+    const steering = await buildSystemPromptZones(config, [], { steeringHost: true });
+
+    expect(plain.cachedPrefix).not.toContain('The user can send messages while you work');
+    expect(steering.cachedPrefix).toContain(
+      '- The user can send messages while you work; they arrive as user turns between your tool calls. When two conflict, the newest wins; otherwise your work and final answer must honor every request since the run began.',
+    );
+    expect(
+      steering.cachedPrefix.replace(/^- The user can send messages while you work.*\n/m, ''),
+    ).toBe(plain.cachedPrefix);
+    // Nothing about it is activation-class: the dynamic zone is unchanged.
+    expect(steering.dynamicSuffix).toBe(plain.dynamicSuffix);
   });
 
   it('keeps machine-identifying data out of the workspace context', async () => {

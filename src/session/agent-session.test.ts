@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -2955,6 +2955,100 @@ describe('AgentSession.recordUserMessage — one pass over what the user typed',
 
     expect(message.contextContent).toContain('NOTE BODY');
     expect(message.fileObservations?.map((observation) => observation.path)).toEqual(['notes.md']);
+  });
+});
+
+describe('AgentSession.prepareSteer — a mid-run steer (#661)', () => {
+  let workspaces: string[] = [];
+
+  afterEach(() => {
+    for (const dir of workspaces) rmSync(dir, { recursive: true, force: true });
+    workspaces = [];
+  });
+
+  function workspaceWith(files: Record<string, string>): string {
+    const dir = mkdtempSync(join(tmpdir(), 'book-prepare-steer-'));
+    workspaces.push(dir);
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+    return dir;
+  }
+
+  it('expands an @file mention into the prompt and keeps the typed text as the display message', async () => {
+    const workspace = workspaceWith({ 'notes.md': 'NOTE BODY' });
+
+    const { input, mentionNotices } = await new AgentSession().prepareSteer({
+      id: 'steer-1',
+      displayMessage: 'update @notes.md',
+      config: defaultConfig({ workspace }),
+    });
+
+    expect(input).toMatchObject({
+      id: 'steer-1',
+      displayMessage: 'update @notes.md',
+    });
+    // The display message is what the user typed, and what routing reads: a steer invokes no
+    // `$skill`, so it carries no separate typed text (#661 review).
+    expect('typedText' in input).toBe(false);
+    // The model reads the inlined file; the transcript keeps what the user typed.
+    expect(input.content).toContain('NOTE BODY');
+    expect(input.content).not.toBe('update @notes.md');
+    // The observation is filed now, but only the loop's delivery puts it in the ledger.
+    expect(input.fileObservations).toEqual([
+      expect.objectContaining({
+        path: 'notes.md',
+        operation: 'mention',
+        sourceRef: 'steer-1',
+      }),
+    ]);
+    expect(mentionNotices).toEqual([]);
+  });
+
+  it('runs no shell line, and inlines nothing for a mention that names nothing (D7)', async () => {
+    const workspace = workspaceWith({});
+
+    const { input, mentionNotices } = await new AgentSession().prepareSteer({
+      displayMessage: 'see @missing.txt\n!echo SHOULD-NOT-RUN',
+      config: defaultConfig({ workspace }),
+    });
+
+    expect(input.content).toBe('see @missing.txt\n!echo SHOULD-NOT-RUN');
+    expect(input.fileObservations).toEqual([]);
+    expect(mentionNotices).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'reports a mention whose real path is outside the workspace',
+    async () => {
+      const parent = workspaceWith({});
+      const workspace = join(parent, 'ws');
+      mkdirSync(workspace);
+      mkdirSync(join(parent, 'outside'));
+      writeFileSync(join(parent, 'outside', 'secret.txt'), 'SECRET');
+      symlinkSync(join('..', 'outside', 'secret.txt'), join(workspace, 'secret.txt'));
+
+      const { input, mentionNotices } = await new AgentSession().prepareSteer({
+        displayMessage: 'read @secret.txt',
+        config: defaultConfig({ workspace }),
+      });
+
+      expect(input.content).toBe('read @secret.txt');
+      expect(input.fileObservations).toEqual([]);
+      expect(mentionNotices).toEqual([
+        '⚠  Left @secret.txt as written: it is outside the workspace and additionalDirectories.',
+      ]);
+    },
+  );
+
+  it('mints an identity when the host does not give one', async () => {
+    const workspace = workspaceWith({});
+
+    const { input } = await new AgentSession().prepareSteer({
+      displayMessage: 'just do it',
+      config: defaultConfig({ workspace }),
+    });
+
+    expect(input.id).toBeTruthy();
+    expect(input.content).toBe('just do it');
   });
 });
 

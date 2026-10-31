@@ -112,6 +112,31 @@ describe('chatCompletionStream request body', () => {
     expect(capturedBody.stream).toBe(true);
   });
 
+  it('keeps a user message that follows tool output right after it', async () => {
+    // OpenAI allows a user turn after tool output; a steer (#661) arrives that way, so the
+    // adapter must neither reorder it nor fold it into the tool message.
+    const stream = chatCompletionStream(
+      config,
+      [
+        { role: 'user', content: 'go' },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            { id: 'call-1', type: 'function', function: { name: 'Read', arguments: '{}' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'call-1', content: 'file body' },
+        { role: 'user', content: 'also rename the caller' },
+      ],
+      [],
+    );
+    await drain(stream);
+    const sent = capturedBody.messages as Array<{ role: string; content: unknown }>;
+    expect(sent.map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'user']);
+    expect(sent.at(-1)).toEqual({ role: 'user', content: 'also rename the caller' });
+  });
+
   it('includes stream_options.include_usage so usage is reported', async () => {
     const stream = chatCompletionStream(config, [{ role: 'user', content: 'hi' }], []);
     await drain(stream);

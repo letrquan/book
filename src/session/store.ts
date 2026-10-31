@@ -515,6 +515,8 @@ export class SessionStore {
         providerMetadata?: Message['providerMetadata'];
         contextContent?: string;
         derivedContent?: boolean;
+        /** A user turn the host steered into a running loop, rather than the one that started it. */
+        steered?: boolean;
         complete?: boolean;
         toolCalls?: Message['toolCalls'];
         toolResults?: PersistedToolResult[];
@@ -668,7 +670,10 @@ export class SessionStore {
 
       if (record.type === 'user') {
         let targetId = checkpointByUserEventId.get(eventId);
-        if (!targetId) {
+        // Plan decision D7: a steer is not a rewind point. It belongs to the target of the run's
+        // prompt before it, so without a checkpoint of its own it mints none — not even the
+        // legacy target a prompt that captured no snapshot gets.
+        if (!targetId && data.steered !== true) {
           targetId = `user:${eventId}`;
           // Nothing records this prompt as typed: a print-mode turn's may be a command's body, and
           // print mode runs no `!` line in any of it. A rewind lists it but never puts it back in
@@ -692,7 +697,7 @@ export class SessionStore {
             activeTargetTail,
             count,
           });
-        } else if (data.attachments?.length) {
+        } else if (data.attachments?.length && targetId) {
           const target = targets.get(targetId);
           if (target && !target.attachments?.length) target.attachments = data.attachments;
         }
@@ -703,6 +708,7 @@ export class SessionStore {
           content: data.content ?? '',
           contextContent: data.contextContent,
           derivedContent: data.derivedContent,
+          steered: data.steered,
           includeInContext: data.includeInContext ?? true,
           kind: (data.kind as Message['kind']) ?? 'conversation',
           agentNotifications: data.agentNotifications,
@@ -714,7 +720,7 @@ export class SessionStore {
         transcript.push(message);
         if (message.includeInContext) contextHistory.push(message);
         activeEventTail = appendReplayLink(activeEventTail, eventId);
-        activeTargetTail = appendReplayLink(activeTargetTail, targetId);
+        if (targetId) activeTargetTail = appendReplayLink(activeTargetTail, targetId);
       } else if (record.type === 'local') {
         count++;
         transcript.push({

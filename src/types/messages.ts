@@ -18,6 +18,49 @@ export interface ProviderMessageMetadata {
   anthropicContentBlocks?: Array<Record<string, unknown>>;
 }
 
+/**
+ * A user message a host hands a running agent loop, delivered at the loop's next boundary
+ * instead of waiting for the run to end.
+ *
+ * `content` is what the model receives; `displayMessage` is what the user typed when the two
+ * differ (the run's prompt carries an expanded `@file` mention, for example), so the transcript
+ * shows their own words.
+ */
+export interface SteeredInput {
+  /** Host-assigned identity, carried onto the appended message and its session record. */
+  id: string;
+  /** The text the model reads. */
+  content: string;
+  /**
+   * What the user typed, when `content` is not it. It is also what intent routing reads: a
+   * steer never invokes a `$name` skill, so there is no separate typed text.
+   */
+  displayMessage?: string;
+  attachments?: Message['attachments'];
+  fileObservations?: Message['fileObservations'];
+  timestamp: number;
+}
+
+/**
+ * The host's queue of steers for one running loop.
+ *
+ * The loop drains it only at a tool-step or turn boundary, never between the calls of one
+ * batch: a steer taken mid-batch would put a user turn between a tool call and its result in
+ * the provider request.
+ */
+export interface SteeringInbox {
+  /** Everything pending, oldest first; empties the inbox. */
+  take(): SteeredInput[];
+  /**
+   * Put back steers the loop took but did not deliver, at the front and in order. The loop
+   * requeues them when the run is cancelled before it could append them, so they are again what
+   * the next drain sees — never lost between the inbox and history.
+   */
+  requeue(inputs: readonly SteeredInput[]): void;
+  /** Whether a steer is waiting. */
+  hasPending(): boolean;
+}
+
 /** A session-owned image referenced by a user message. */
 export interface ImageAttachment {
   id: string;
@@ -179,6 +222,12 @@ export interface Message {
    * that means "the user's own words" must check this too.
    */
   derivedContent?: boolean;
+  /**
+   * A user turn the host handed the loop while the run was already going (a steer), not the
+   * message that started it. The turn is the user's own words, so it never carries
+   * `derivedContent`; it is persisted so a resumed session renders it in place.
+   */
+  steered?: boolean;
   /**
    * An assistant-role message the host wrote rather than the model: the notice for a
    * prompt a `UserPromptSubmit` hook refused, or a tool batch rejected before it ran.

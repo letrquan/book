@@ -579,6 +579,81 @@ describe('SessionStore', () => {
     expect(reader.listSnapshotReferences('/proj')).toEqual(new Set(['snapshot-1']));
   });
 
+  it('lists one rewind target per run, not one per steer (#661 D7)', () => {
+    // A steer is part of the run the user's prompt started: rewinding to the run's target brings
+    // back the whole exchange, so a steer must not mint a target of its own. Both prompts here are
+    // legacy records — no checkpoint — which is exactly the path that used to list every user
+    // record.
+    const writer = new SessionStore(dir);
+    const id = writer.create({ cwd: '/proj' });
+    writer.append(id, { type: 'user', timestamp: 1, data: { content: 'rename the module' } });
+    writer.append(id, {
+      type: 'user',
+      timestamp: 2,
+      data: { content: 'and update the tests', steered: true },
+    });
+    writer.append(id, {
+      type: 'assistant',
+      timestamp: 3,
+      data: { content: 'done', complete: true },
+    });
+    writer.append(id, { type: 'user', timestamp: 4, data: { content: 'now the docs' } });
+
+    const loaded = new SessionStore(dir).load(id);
+
+    // Newest first. The steer belongs to the target of the run before it, and the next run's
+    // prompt is the only other target.
+    expect(loaded.rewindTargets.map((target) => target.prompt)).toEqual([
+      'now the docs',
+      'rename the module',
+    ]);
+    expect(loaded.rewindTargets.every((target) => target.codeAvailable === false)).toBe(true);
+    // The steer is still history: it is only the rewind list that skips it.
+    expect(loaded.history.map((message) => message.content)).toContain('and update the tests');
+    expect(
+      loaded.history.find((message) => message.content === 'and update the tests')?.steered,
+    ).toBe(true);
+  });
+
+  it('keeps a steer under the checkpoint of the run it belongs to', () => {
+    // The live path: the host writes a checkpoint for the run's own prompt, then the steer's
+    // record. The steer adds none, and does not become a target after a reload.
+    const writer = new SessionStore(dir);
+    const id = writer.create({ cwd: '/proj' });
+    writer.append(id, {
+      type: 'turn_checkpoint',
+      timestamp: 1,
+      data: {
+        version: 1,
+        checkpointId: 'checkpoint-1',
+        userEventId: 'user-1',
+        prompt: 'rename the module',
+        checkpoint: { snapshotId: 'snapshot-1' },
+      },
+    });
+    writer.append(id, {
+      type: 'user',
+      eventId: 'user-1',
+      timestamp: 1,
+      data: { content: 'rename the module' },
+    });
+    writer.append(id, {
+      type: 'user',
+      timestamp: 2,
+      data: { content: 'and update the tests', steered: true },
+    });
+    writer.append(id, {
+      type: 'assistant',
+      timestamp: 3,
+      data: { content: 'done', complete: true },
+    });
+
+    const loaded = new SessionStore(dir).load(id);
+
+    expect(loaded.rewindTargets.map((target) => target.id)).toEqual(['checkpoint-1']);
+    expect(loaded.rewindTargets[0].prompt).toBe('rename the module');
+  });
+
   it('finds most recent session in a cwd (--continue)', () => {
     const s = new SessionStore(dir);
     const a = s.create({ cwd: '/proj' });

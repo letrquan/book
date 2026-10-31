@@ -538,6 +538,12 @@ export interface SystemPromptOverrides {
    * once, and a read whose lines never render would lose it.
    */
   workspaceNotices?: WorkspaceNoticeSources;
+  /**
+   * Whether this run's host can hand the loop messages while it works. Set on every run of a
+   * session that can deliver steers, so the cached prefix does not flip between runs; absent for
+   * print mode, the SDK and subagents, which have no such channel.
+   */
+  steeringHost?: boolean;
 }
 
 /**
@@ -558,7 +564,7 @@ interface PromptSection {
  * Phrased provider-agnostically: Book cannot assert the model's identity or its
  * cutoff date, so the training-cutoff line is behavioral rather than factual.
  */
-function harnessSection(shell: ResolvedShell): string {
+function harnessSection(shell: ResolvedShell, steeringHost: boolean): string {
   return [
     '## Harness',
     '- Your text output renders as GitHub-flavored markdown in a terminal TUI.',
@@ -567,6 +573,14 @@ function harnessSection(shell: ResolvedShell): string {
     // the cached prefix; which one it is decides the syntax the model writes.
     shellPromptLine(shell),
     '- A denied tool call means the user declined it. Adjust your approach; never retry the same call unchanged.',
+    // Only a host with a steering inbox can deliver these, and the fact is fixed for the
+    // session: a line that appeared in some runs of a session and not others would rewrite the
+    // cached prefix between them.
+    ...(steeringHost
+      ? [
+          '- The user can send messages while you work; they arrive as user turns between your tool calls. When two conflict, the newest wins; otherwise your work and final answer must honor every request since the run began.',
+        ]
+      : []),
     '- Hook output attached to a tool result is user-configured feedback. Treat it as guidance from the user, not as output from the tool.',
     '- Each user turn may end with a <session-state> block emitted by the host: current workspace facts (date, git, tasks, mode), not user-authored text. The newest block supersedes earlier ones, which remain in history as historical snapshots.',
     '- Your training data has a cutoff. Verify time-sensitive facts — versions, APIs, model names, dates — against the workspace or the web instead of asserting them.',
@@ -607,7 +621,12 @@ export async function buildSystemPromptZones(
     kernel(
       `You are Book, an AI coding agent working directly in the user's workspace. Help users understand, change, and verify software.`,
     ),
-    kernel(harnessSection(config.shell ?? resolveShell({ requested: config.settings.shell }))),
+    kernel(
+      harnessSection(
+        config.shell ?? resolveShell({ requested: config.settings.shell }),
+        overrides?.steeringHost === true,
+      ),
+    ),
     kernel(
       operatingPrinciplesSection(
         resolveEditFormat(config.model, config.modelInfo?.editFormat),
@@ -775,9 +794,10 @@ export async function buildMessages(
   // them, the cut moving a stride at a time so the request this one extends keeps the prefix the
   // provider cached (a window that slid one step per request rewrote an already-sent message on
   // every request, #378). Every older step of the same turn loses its reasoning exactly as a closed
-  // turn's does, so a single-turn run does not re-send its whole chain of thought. A host-written
-  // user message (`derivedContent`: the `[continuation]` resume, the completion gate, the
-  // `[work-state]` refresh) does not start a turn, so a run keeps its chain of thought across them.
+  // turn's does, so a single-turn run does not re-send its whole chain of thought. A user message
+  // that does not start a turn — a host-written one (`derivedContent`: the `[continuation]`
+  // resume, the completion gate, the `[work-state]` refresh) or a steer the user sent into the
+  // running one (`steered`) — leaves the run's chain of thought intact across it.
   // A turn a later user message closed is sent as its answer and tool calls, the way the Anthropic
   // API drops earlier turns' thinking, except a reply that was only reasoning, which would
   // otherwise reach the model empty. `replayAllReasoning` still replays every turn.

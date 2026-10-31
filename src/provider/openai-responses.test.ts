@@ -411,6 +411,28 @@ describe('toResponsesInput', () => {
     expect(input).toEqual([{ type: 'function_call', call_id: 'c', name: 'Glob', arguments: '{}' }]);
   });
 
+  it('keeps a user message the model must answer after the tool output it follows', () => {
+    // A steer (#661) is a user turn after tool output; Responses takes it as its own item.
+    const { input } = toResponsesInput([
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call_1', type: 'function', function: { name: 'Read', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_1', content: 'file body' },
+      { role: 'user', content: 'also rename the caller' },
+    ]);
+    expect(input).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: 'go' }] },
+      { type: 'function_call', call_id: 'call_1', name: 'Read', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_1', output: 'file body' },
+      { role: 'user', content: [{ type: 'input_text', text: 'also rename the caller' }] },
+    ]);
+  });
+
   it('serializes images as input_image data URLs, in user turns and tool results', () => {
     const { input } = toResponsesInput([
       {

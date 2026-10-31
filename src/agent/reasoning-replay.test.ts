@@ -100,4 +100,30 @@ describe('reasoningReplayKeeps', () => {
 
     expect(keptSteps(history)).toEqual([4, 5]);
   });
+
+  it("keeps a run's chain of thought across a steer (#661)", () => {
+    // The user sent this into the run that was already going, so it must not close the turn the
+    // way their next prompt does: the steps before it keep the window and stride the same way.
+    const history: Message[] = [
+      ...singleTurn(6),
+      { ...userMsg('also rename the caller'), id: 'u-steer', steered: true },
+      step(6, 'after the steer'),
+    ];
+
+    expect(keptSteps(history)).toEqual([4, 5, 6]);
+  });
+
+  it('still closes the turn at the next prompt after a steer (#661)', () => {
+    // A steer leaves the turn open for the run it joined, not forever: the user's next prompt is
+    // a new turn, and every step of the old one loses its reasoning.
+    const history: Message[] = [
+      ...singleTurn(6),
+      { ...userMsg('also rename the caller'), id: 'u-steer', steered: true },
+      step(6, 'after the steer'),
+      { ...userMsg('now the docs'), id: 'u2' },
+      step(7, 'newer thought'),
+    ];
+
+    expect(keptSteps(history)).toEqual([7]);
+  });
 });
