@@ -120,6 +120,13 @@ directory holds no memory files. `/help` is generated from the command registry:
 groups, with its visible aliases, followed by your custom commands. `/release-notes` lists the
 installed version's changes from the CHANGELOG that ships with Book, one line each.
 
+In the TUI the lookups (`/cost`, `/usage`, `/context`, `/diff`, `/mcp`, `/skills status`,
+`/memory` or `/memory status`, and `/release-notes`) open in a sheet above the composer, as `/help`
+and `/status` do, rather than in the transcript. One sheet shows at a time, so asking for another
+report replaces it. Esc closes it, and so does sending your next prompt, since its figures describe
+the moment you asked. A report is not stored in the session, so it does not come back on resume.
+Print mode and the SDK print the same text as before.
+
 `/cost` and `/usage` (alias `/stats`) bill the whole session, not the last request: every response
 is accumulated from the first turn of the current session, and the total survives a send, a
 compaction (the summarizer spends too, and is included) and a `/rewind`. It is reset by `/clear`,

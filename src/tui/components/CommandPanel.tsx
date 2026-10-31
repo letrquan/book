@@ -23,6 +23,8 @@ import { padDisplay, truncateDisplay, wordWrap } from './word-wrap.js';
 interface CommandPanelProps {
   display: LocalCommandDisplay;
   fallback: string;
+  /** The rule's note once the figures are in; the command that printed it when absent. */
+  meta?: string;
   terminalWidth?: number;
   reducedMotion?: boolean;
   screenReader?: boolean;
@@ -127,27 +129,29 @@ function PanelHeader({
   command,
   title,
   subtitle,
+  meta,
   width,
   step,
 }: {
   command: string;
   title: string;
   subtitle: string;
+  meta?: string;
   width: number;
   step: number;
 }) {
   const theme = useTheme();
   const ready = step >= REVEAL_STEPS;
   // The same head as every other reference panel: a rule led by a section sign.
-  // The note names the command that printed it (this is a transcript entry, not
-  // an overlay Esc could close) once the figures have finished arriving.
+  // Once the figures have finished arriving the note says how to close the sheet,
+  // or, where the host gave no such note, names the command that printed it.
   return (
     <Box flexDirection="column">
       <SheetRule
         mark={SECTION_SIGN}
         label={title}
         tone={theme.text}
-        meta={ready ? command : 'reading…'}
+        meta={ready ? (meta ?? command) : 'reading…'}
         width={width}
       />
       <Box paddingX={2}>
@@ -615,6 +619,7 @@ function UsagePanelBody({
 export function CommandPanel({
   display,
   fallback,
+  meta,
   terminalWidth = 80,
   reducedMotion = false,
   screenReader = false,
@@ -657,7 +662,7 @@ export function CommandPanel({
   return (
     // No top margin of its own: ChatPanel spaces every slash-command entry.
     <Box width={panelWidth} flexDirection="column">
-      <PanelHeader {...header} width={panelWidth} step={step} />
+      <PanelHeader {...header} meta={meta} width={panelWidth} step={step} />
       <Box flexDirection="column" paddingX={2} marginTop={1}>
         {display.kind === 'config' ? (
           <ConfigPanelBody data={display} contentWidth={contentWidth} narrow={narrow} step={step} />

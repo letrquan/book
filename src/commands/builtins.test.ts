@@ -119,7 +119,11 @@ describe('built-in command contract', () => {
           },
         }),
       ),
-    ).toEqual({ type: 'local-message', content: expect.stringContaining('github') });
+    ).toEqual({
+      type: 'local-message',
+      content: expect.stringContaining('github'),
+      sheet: { title: 'MCP servers' },
+    });
     expect(registry.execute('mcp', 'unknown', context())).toEqual({
       type: 'local-message',
       content: 'Usage: /mcp [status]',
@@ -138,7 +142,11 @@ describe('built-in command contract', () => {
           },
         }),
       ),
-    ).toEqual({ type: 'local-message', content: expect.stringContaining('Catalog: catalog') });
+    ).toEqual({
+      type: 'local-message',
+      content: expect.stringContaining('Catalog: catalog'),
+      sheet: { title: 'Skills' },
+    });
     expect(registry.execute('providers', 'unexpected', context())).toEqual({
       type: 'local-message',
       content: 'Usage: /providers',
@@ -188,15 +196,23 @@ describe('built-in command contract', () => {
     expect(registry.execute('usage', '', context())).toEqual(
       expect.objectContaining({
         type: 'local-message',
+        sheet: { title: 'Usage' },
         display: expect.objectContaining({ kind: 'usage' }),
       }),
     );
     expect(registry.execute('context', '', context())).toEqual(
       expect.objectContaining({
         type: 'local-message',
+        sheet: { title: 'Context' },
         display: expect.objectContaining({ kind: 'context' }),
       }),
     );
+    // Lookups open a sheet in the TUI; the events that change state stay in the transcript.
+    expect(registry.execute('cost', '', context())).toMatchObject({ sheet: { title: 'Cost' } });
+    expect(registry.execute('release-notes', '', context())).toMatchObject({
+      sheet: { title: 'Release notes' },
+    });
+    expect(registry.execute('mcp', 'unknown', context())).not.toHaveProperty('sheet');
   });
 
   it('reports the context window compaction acts on, not max output tokens', () => {
