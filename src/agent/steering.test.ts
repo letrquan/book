@@ -81,6 +81,28 @@ describe('steering inbox', () => {
     expect(inbox.pending().map((entry) => entry.id)).toEqual(['a']);
   });
 
+  it('removes one pending steer by id and leaves the rest in place', () => {
+    const inbox = createSteeringInbox();
+    inbox.push(steer('first'));
+    inbox.push(steer('second'));
+    inbox.push(steer('third'));
+
+    inbox.remove('second');
+
+    expect(inbox.pending().map((entry) => entry.id)).toEqual(['first', 'third']);
+  });
+
+  it('removing an id the loop already drained changes nothing', () => {
+    const inbox = createSteeringInbox();
+    inbox.push(steer('taken'));
+    inbox.take();
+    inbox.push(steer('later'));
+
+    inbox.remove('taken');
+
+    expect(inbox.pending().map((entry) => entry.id)).toEqual(['later']);
+  });
+
   it('hands `pending` a copy, so a caller cannot mutate the queue through it', () => {
     const inbox = createSteeringInbox();
     inbox.push(steer('a'));

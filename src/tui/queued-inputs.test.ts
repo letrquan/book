@@ -21,6 +21,17 @@ describe('queued inputs', () => {
     expect(full.queue).toEqual(two.queue);
   });
 
+  it('puts a recalled input back in written order, not behind what was queued after it', () => {
+    // #661: a steer is written before the follow-ups the user queued later, so recalling it and
+    // pressing Enter must not move it behind them.
+    const steer = createQueuedInput('steer', 'session', { id: 'steer', createdAt: 10 });
+    const later = createQueuedInput('later', 'session', { id: 'later', createdAt: 20 });
+
+    const reinserted = enqueueQueuedInput([later], steer, 4);
+
+    expect(reinserted.queue.map((item) => item.value)).toEqual(['steer', 'later']);
+  });
+
   it('recalls the newest non-dispatching item and preserves its identity', () => {
     const queue = [
       createQueuedInput('first', 'session', { id: 'first', createdAt: 1 }),

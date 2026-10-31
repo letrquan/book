@@ -103,8 +103,10 @@ read from strings only; its source is public and was not consulted.
 - **Editing**: Up recalls the newest pending steer, as it recalls a queued input today.
 - **If the model ends the run** while a steer is pending, the run continues with the steer
   (D3).
-- **If the run is cancelled** with steers undelivered, they move to the end-of-run queue in its
-  paused state (D6). The existing "Queue paused" notice says what to do.
+- **If the run is cancelled** with steers undelivered, they return to the composer, oldest first,
+  ahead of any queued follow-ups (D6). A steer is the user's most recent words and the earliest
+  they would have been answered, so it is the first thing to edit rather than a paused queue to
+  resume.
 
 ### 3.2 The loop: a steering inbox
 
@@ -171,6 +173,10 @@ read from strings only; its source is public and was not consulted.
 
 ### 3.4 Keys (D2, D4)
 
+PR 2 ships the first two rows only. There is no send-now key in it: a steer lands after the tool
+call in flight, which is the whole delivery path PR 1 built, and the chord below arrives with the
+per-request abort in PR 3.
+
 | Action                       | Proposal                                                                 | Note                                                                                                                                                                                                       |
 | ---------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Steer                        | Enter while busy                                                         | Flip `resolveSubmissionAction` from `queue` to `steer` for plain prompts.                                                                                                                                  |
@@ -209,7 +215,7 @@ read from strings only; its source is public and was not consulted.
    - Enter steers; Tab queues.
    - The two-section preview; Up recalls and edits a pending steer.
    - Delivered steers render as transcript rows.
-   - Cancel moves undelivered steers to the paused queue.
+   - Cancel restores undelivered steers to the composer, ahead of the queued follow-ups.
    - Docs: the keys and queue sections of the guide, `CHANGELOG.md`, and the README if the preview
      appears there.
    - Watched in the real TUI with the run-book PTY driver and a mock provider whose tool sleeps.
@@ -239,18 +245,19 @@ read from strings only; its source is public and was not consulted.
 ## 6. Owner decisions
 
 Decided 2026-10-31: the owner took every recommendation, and chose Book to write the code (D9).
+Superseded while building PR 2: D6 now restores undelivered steers to the composer, not a paused queue.
 
-|     | Question                                                                                        | Decision                                                                                                                       |
-| --- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| D1  | Enter while the agent works: steer (Claude Code, Codex) or keep queueing?                       | Steer                                                                                                                          |
-| D2  | Key that queues for the end of the run                                                          | Tab with text (Codex)                                                                                                          |
-| D3  | A steer pending when the model ends the run: continue the same run, or start a new one?         | Continue the same run                                                                                                          |
-| D4  | Send-now key: enable the kitty protocol for Ctrl+Enter, and which always-available chord?       | Chord first, Claude Code's `ctrl+x ctrl+s` (neither key is bound in Book's TUI today; PR 3 confirms). Kitty is its own change. |
-| D5  | Send now while tools run: wait for the batch, or move a long Bash to the background or kill it? | Wait (v1)                                                                                                                      |
-| D6  | Undelivered steers on cancel: paused queue, back into the composer, or dropped?                 | Paused queue                                                                                                                   |
-| D7  | Hooks, `@file` expansion and intent routing on steers? `$skill` and rewind points in v1?        | Hooks, expansion and routing yes; `$skill` and rewind no                                                                       |
-| D8  | Add the kernel line (bumps `SYSTEM_PROMPT_VERSION`)?                                            | Yes                                                                                                                            |
-| D9  | Who codes: Claude agents or Book                                                                | Book (built by running Book, per the run-book skill)                                                                           |
+|     | Question                                                                                        | Decision                                                                                                                                                   |
+| --- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Enter while the agent works: steer (Claude Code, Codex) or keep queueing?                       | Steer                                                                                                                                                      |
+| D2  | Key that queues for the end of the run                                                          | Tab with text (Codex)                                                                                                                                      |
+| D3  | A steer pending when the model ends the run: continue the same run, or start a new one?         | Continue the same run                                                                                                                                      |
+| D4  | Send-now key: enable the kitty protocol for Ctrl+Enter, and which always-available chord?       | Chord first, Claude Code's `ctrl+x ctrl+s` (neither key is bound in Book's TUI today; PR 3 confirms). Kitty is its own change.                             |
+| D5  | Send now while tools run: wait for the batch, or move a long Bash to the background or kill it? | Wait (v1)                                                                                                                                                  |
+| D6  | Undelivered steers on cancel: paused queue, back into the composer, or dropped?                 | **Replaced in PR 2**: back into the composer, oldest first, ahead of queued follow-ups. A paused queue made the user resume a run they had just cancelled. |
+| D7  | Hooks, `@file` expansion and intent routing on steers? `$skill` and rewind points in v1?        | Hooks, expansion and routing yes; `$skill` and rewind no                                                                                                   |
+| D8  | Add the kernel line (bumps `SYSTEM_PROMPT_VERSION`)?                                            | Yes                                                                                                                                                        |
+| D9  | Who codes: Claude agents or Book                                                                | Book (built by running Book, per the run-book skill)                                                                                                       |
 
 ## 7. Unknowns
 
