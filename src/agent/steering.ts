@@ -9,6 +9,11 @@ export interface SteeringInboxHandle extends SteeringInbox {
   push(input: SteeredInput): void;
   /** Drop everything pending: the host withdrew its steers, or the run is gone. */
   clear(): void;
+  /**
+   * Take one pending steer out by id: the user recalled it with Up to edit, and a steer they are
+   * editing must not also be delivered where it was. A no-op when the loop already drained it.
+   */
+  remove(id: string): void;
   /** A snapshot of what is queued, oldest first, without consuming it. */
   pending(): readonly SteeredInput[];
 }
@@ -40,6 +45,9 @@ export function createSteeringInbox(): SteeringInboxHandle {
     },
     clear() {
       queue = [];
+    },
+    remove(id) {
+      queue = queue.filter((entry) => entry.id !== id);
     },
     pending() {
       // A copy: the host renders this while the loop may push or drain, and a live array would

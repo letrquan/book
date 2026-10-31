@@ -78,7 +78,7 @@ interface InputBarProps {
    */
   onMenuOpenChange?: (open: boolean) => void;
   onPasteImage?: () => Promise<ImageAttachment | null>;
-  submissionMode: 'submit' | 'queue' | 'blocked';
+  submissionMode: 'submit' | 'steer' | 'queue' | 'blocked';
   mode: PermissionMode;
   onCycleMode: () => void;
   terminalWidth?: number;
@@ -108,6 +108,16 @@ interface InputBarProps {
   canSubmitWhileBusy?: (value: string) => boolean;
   /** Allows conversational input to be queued while the parent is running. */
   canQueueWhileBusy?: (value: string) => boolean;
+  /**
+   * Whether Enter on this draft can reach the running turn (#661). A plain prompt can; a slash
+   * command, a `!` shell line and anything else keeps the busy rules it has today.
+   */
+  canSteerWhileBusy?: (value: string) => boolean;
+  /**
+   * Hands the draft to the running turn, which delivers it after the current tool call. Resolves
+   * false when the run ended first, so the composer queues the text instead of dropping it.
+   */
+  onSteer?: (value: string, attachments?: ImageAttachment[]) => Promise<boolean> | boolean;
   /** Receives accepted queued input. Return false when the queue is full. */
   onQueue?: (value: string, attachments?: ImageAttachment[]) => boolean;
   /** Recalls the newest queued input when the composer is empty. */
@@ -213,6 +223,8 @@ export function InputBar({
   onCycleMode,
   canSubmitWhileBusy,
   canQueueWhileBusy,
+  canSteerWhileBusy,
+  onSteer,
   onQueue,
   onRecallQueued,
   onDraftChange,
@@ -342,12 +354,29 @@ export function InputBar({
     [commands, menuFilter],
   );
   const resolveSubmissionAction = useCallback(
-    (candidate: string): 'submit' | 'queue' | 'blocked' => {
+    (candidate: string): 'submit' | 'steer' | 'queue' | 'blocked' => {
       if (submissionMode === 'submit' || canSubmitWhileBusy?.(candidate)) return 'submit';
-      if (submissionMode === 'queue' && (canQueueWhileBusy?.(candidate) ?? true)) return 'queue';
+      if (
+        submissionMode === 'steer' &&
+        onSteer &&
+        (canSteerWhileBusy?.(candidate) ?? false) &&
+        (canQueueWhileBusy?.(candidate) ?? true)
+      ) {
+        return 'steer';
+      }
+      // Enter queued everything it could while the agent was busy before steering existed, and
+      // that does not change for a draft that cannot steer (#661): a `!` shell line, a slash
+      // command the busy rules allow through, or whatever the host's steer gate refuses. Only
+      // the lines the queue refuses too are blocked.
+      if (
+        (submissionMode === 'steer' || submissionMode === 'queue') &&
+        (canQueueWhileBusy?.(candidate) ?? true)
+      ) {
+        return 'queue';
+      }
       return 'blocked';
     },
-    [canQueueWhileBusy, canSubmitWhileBusy, submissionMode],
+    [canQueueWhileBusy, canSteerWhileBusy, canSubmitWhileBusy, onSteer, submissionMode],
   );
   const workspace = process.env.BOOK_WORKSPACE || process.cwd();
 
@@ -506,6 +535,35 @@ export function InputBar({
     [],
   );
 
+  /**
+   * Hands the draft to the follow-up queue and clears the composer.
+   *
+   * Shared by Enter in queue mode and by Tab while the agent is busy (#661): Tab is how a prompt
+   * waits for the end of the run while Enter steers into it.
+   */
+  const queueDraft = useCallback(
+    (normalized: string): boolean => {
+      const accepted =
+        attachmentsRef.current.length > 0
+          ? (onQueue?.(normalized, attachmentsRef.current) ?? false)
+          : (onQueue?.(normalized) ?? false);
+      uiLog.event('submit:text', {
+        result: accepted ? 'queued' : 'queue-full',
+        len: normalized.length,
+      });
+      if (!accepted) return false;
+      setHistory((h) => [normalized, ...h].slice(0, 100));
+      setHistoryIndex(-1);
+      const cmdName = extractCommandName(normalized);
+      if (cmdName) recordCommandUse(cmdName);
+      setValue('');
+      setAttachments([]);
+      setAttachmentError(undefined);
+      return true;
+    },
+    [onQueue, setAttachments, setHistory, setHistoryIndex, setValue],
+  );
+
   useInput((_input, key) => {
     // TranscriptView owns mouse reports. Drop them before menu/history routing
     // so wheel movement, clicks, and drags cannot reach the prompt draft.
@@ -658,6 +716,21 @@ export function InputBar({
       }
       setValue(normalizeInput(suggestion));
       uiLog.event('input:Tab', { action: 'accept-suggestion' });
+      return;
+    }
+    // Tab with a draft while the agent is busy queues it for the end of the run (#661): Enter
+    // steers into the running turn, Tab is the way to wait. A menu keeps its own Tab above, and a
+    // line the busy rules do not queue (a slash command) is left to its own Enter rules. A draft
+    // of only whitespace has nothing to queue, and Tab leaves it where it is.
+    if (key.tab && valueRef.current && (submissionMode === 'steer' || submissionMode === 'queue')) {
+      const queuedValue = normalizeInput(valueRef.current);
+      if (
+        queuedValue.trim() &&
+        (canQueueWhileBusy?.(queuedValue) ?? true) &&
+        queueDraft(queuedValue)
+      ) {
+        uiLog.event('input:Tab', { action: 'queue-draft' });
+      }
       return;
     }
     // Ctrl+J / Shift+Enter insert a newline without submitting. InputBox does
@@ -888,18 +961,25 @@ export function InputBar({
         return;
       }
       if (action === 'queue') {
-        const accepted =
-          attachmentsRef.current.length > 0
-            ? (onQueue?.(normalized, attachmentsRef.current) ?? false)
-            : (onQueue?.(normalized) ?? false);
-        uiLog.event('submit:text', {
-          result: accepted ? 'queued' : 'queue-full',
-          len: normalized.length,
-        });
-        if (!accepted) return;
-      } else {
-        uiLog.event('submit:text', { result: 'submitted', len: normalized.length });
+        queueDraft(normalized);
+        return;
       }
+      if (action === 'steer') {
+        uiLog.event('submit:text', { result: 'steered', len: normalized.length });
+        setHistory((h) => [normalized, ...h].slice(0, 100));
+        setHistoryIndex(-1);
+        const cmdName = extractCommandName(normalized);
+        if (cmdName) recordCommandUse(cmdName);
+        const steeredAttachments = attachmentsRef.current;
+        setValue('');
+        setAttachments([]);
+        setAttachmentError(undefined);
+        // The host queues the text itself when the run ended before the steer landed, so the
+        // composer clears either way: the words are never lost between the two.
+        void onSteer?.(normalized, steeredAttachments.length > 0 ? steeredAttachments : undefined);
+        return;
+      }
+      uiLog.event('submit:text', { result: 'submitted', len: normalized.length });
       setHistory((h) => [normalized, ...h].slice(0, 100));
       setHistoryIndex(-1);
 
@@ -907,10 +987,8 @@ export function InputBar({
       const cmdName = extractCommandName(normalized);
       if (cmdName) recordCommandUse(cmdName);
 
-      if (action === 'submit') {
-        if (attachmentsRef.current.length > 0) onSubmit(normalized, attachmentsRef.current);
-        else onSubmit(normalized);
-      }
+      if (attachmentsRef.current.length > 0) onSubmit(normalized, attachmentsRef.current);
+      else onSubmit(normalized);
       setValue('');
       setAttachments([]);
       setAttachmentError(undefined);
@@ -919,8 +997,9 @@ export function InputBar({
       acceptSelectedFileMention,
       acceptSelectedSkillMention,
       commands,
-      onQueue,
+      onSteer,
       onSubmit,
+      queueDraft,
       resolveSubmissionAction,
       submissionMode,
       pasteImage,
@@ -955,15 +1034,19 @@ export function InputBar({
       : compact
         ? 'Esc closes'
         : 'Esc closes this'
-    : submissionMode === 'queue'
+    : submissionMode === 'steer'
       ? compact
-        ? 'Enter queues'
-        : 'Type a follow-up; Enter queues it'
-      : submissionMode === 'blocked'
+        ? 'Enter steers · Tab queues'
+        : 'Enter sends after the current tool call · Tab queues'
+      : submissionMode === 'queue'
         ? compact
-          ? 'Please wait...'
-          : 'Input is temporarily unavailable'
-        : suggestion;
+          ? 'Enter queues'
+          : 'Type a follow-up; Enter queues it'
+        : submissionMode === 'blocked'
+          ? compact
+            ? 'Please wait...'
+            : 'Input is temporarily unavailable'
+          : suggestion;
 
   // Everything that changes how many rows the composer takes.
   const layoutShape = [

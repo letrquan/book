@@ -3,6 +3,7 @@ import { cleanup, render } from 'ink-testing-library';
 import chalk from 'chalk';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { QueuedInputPreview } from './QueuedInputPreview.js';
+import type { QueuedInput } from '../queued-inputs.js';
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
@@ -56,3 +57,51 @@ describe('QueuedInputPreview notes', () => {
     expect(stripAnsi(frame(<QueuedInputPreview items={[]} terminalWidth={80} />))).toBe('');
   });
 });
+
+describe('QueuedInputPreview steers', () => {
+  const steer = (id: string, value: string): QueuedInput => ({
+    id,
+    sessionId: 'session-1',
+    value,
+    createdAt: 1,
+  });
+
+  it('lists waiting steers above the follow-ups the run will send afterwards', () => {
+    const text = stripAnsi(
+      frame(
+        <QueuedInputPreview
+          items={[queued('q1', 'queued follow-up')]}
+          steers={[steer('s1', 'steer now')]}
+          terminalWidth={80}
+        />,
+      ),
+    );
+    expect(text).toContain('Sends after the current tool call (1)');
+    expect(text).toContain('steer now');
+    expect(text).toContain('Queued for when this run ends (1)');
+    expect(text).toContain('queued follow-up');
+    // In delivery order: the steer goes to the running loop before the run ends.
+    expect(text.indexOf('Sends after')).toBeLessThan(text.indexOf('Queued for when'));
+  });
+
+  it('shares one three-row budget between the two sections and counts the rest', () => {
+    const text = stripAnsi(
+      frame(
+        <QueuedInputPreview
+          items={[queued('q1', 'queued one'), queued('q2', 'queued two')]}
+          steers={[steer('s1', 'steer one'), steer('s2', 'steer two')]}
+          terminalWidth={80}
+        />,
+      ),
+    );
+    expect(text).toContain('steer one');
+    expect(text).toContain('steer two');
+    expect(text).toContain('queued one');
+    expect(text).not.toContain('queued two');
+    expect(text).toContain('... 1 more');
+  });
+});
+
+function queued(id: string, value: string): QueuedInput {
+  return { id, sessionId: 'session-1', value, createdAt: 1 };
+}
