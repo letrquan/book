@@ -585,7 +585,8 @@ output.
   },
   "ui": {
     "showThinking": true,
-    "startupAnimation": true
+    "startupAnimation": true,
+    "startupAnimationStyle": "scan"
   },
   "toolDiscovery": {
     "mode": "auto",
@@ -732,6 +733,12 @@ and runs normally.
 variable as its source, and the settings a provider removal re-reads keep it. It is never written
 into a settings file, so `/config` says the variable decides at every launch when the row is toggled
 while it is set — the saved value applies once it is unset.
+
+`ui.startupAnimationStyle` picks which splash plays when `ui.startupAnimation` is on: `scan` (the
+default) draws a pixel-art open book on a dot field and reads it top to bottom with a scan line,
+then locks it in corner brackets in the theme's brand colour, stamps the BOOK wordmark beneath and
+dissolves into the title page; `fire` plays the original PSX DOOM-style fire. Both last about three
+seconds, and Esc or any typed key skips them.
 
 `WebFetch` requires HTTPS by default, validates DNS results and the address used by the network
 connection, blocks private/special-use destinations, and stops on cross-origin redirects so the

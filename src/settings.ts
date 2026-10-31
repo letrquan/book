@@ -532,8 +532,10 @@ export type WorkspaceProviderChoice = z.infer<typeof workspaceProviderChoiceSche
 export const uiSettingsSchema = z.object({
   /** Show provider-native and embedded model reasoning in the interactive transcript. */
   showThinking: z.boolean().default(true),
-  /** Play the full-screen fire sequence on a newly created interactive startup session. */
+  /** Play the full-screen startup splash on a newly created interactive startup session. */
   startupAnimation: z.boolean().default(true),
+  /** Which splash plays: `scan` (a book read by a scan line) or `fire` (the PSX DOOM fire). */
+  startupAnimationStyle: z.enum(['scan', 'fire']).default('scan'),
 });
 
 export type UiSettings = z.infer<typeof uiSettingsSchema>;
@@ -710,7 +712,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   workspaceProviders: {},
   env: {},
   provider: {},
-  ui: { showThinking: true, startupAnimation: true },
+  ui: { showThinking: true, startupAnimation: true, startupAnimationStyle: 'scan' },
   skills: { enabled: true, overrides: {}, execution: {} },
   retry: {
     maxAttempts: 10,

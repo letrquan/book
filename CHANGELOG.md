@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **A new startup splash: the book scan.** A newly created interactive session now opens on a
+  pixel-art open book over a rippling dot field. A scan line reads it top to bottom (a stipple
+  below the line, solid pages above, a percentage readout riding beside it), corner brackets close
+  in and lock in the theme's brand colour, the lines of code on the pages light up as if read, the
+  BOOK wordmark is stamped beneath and the tagline decodes out of scrambled characters before the
+  picture dissolves into the title page. `ui.startupAnimationStyle: "fire"` brings back the fire;
+  `ui.startupAnimation: false` and `BOOK_STARTUP_ANIMATION=0` still turn the splash off.
 - **Experimental: Sign in with ChatGPT, so a ChatGPT Plus or Pro plan can run Book** (#615,
   #626, #627, #632). `book auth login` (or `/login` in the TUI) signs in through OpenAI's Sign in with
   ChatGPT for locally hosted apps, and a provider you declare with `type: "chatgpt"` then bills

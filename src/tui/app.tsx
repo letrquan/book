@@ -17,6 +17,7 @@ import { QueuedInputPreview, type FlashNotice } from './components/QueuedInputPr
 import { StatusLine } from './components/StatusLine.js';
 import { WorkingIndicator } from './components/WorkingIndicator.js';
 import { StartupFire } from './components/StartupFire.js';
+import { StartupScan } from './components/StartupScan.js';
 import { CompactDiffCard } from './components/CompactDiffCard.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
@@ -2963,11 +2964,19 @@ export function App({
       <AppProviders theme={currentTheme.tokens} density={density}>
         <GlobalKeyHandler onInput={forwardInput} />
         <ErrorBoundary resumeCommand={resumeCommand} onExit={exitFromCrash}>
-          <StartupFire
-            width={termWidth}
-            height={Math.max(1, termHeight - 1)}
-            onComplete={() => setStartupFireActive(false)}
-          />
+          {config.settings.ui.startupAnimationStyle === 'fire' ? (
+            <StartupFire
+              width={termWidth}
+              height={Math.max(1, termHeight - 1)}
+              onComplete={() => setStartupFireActive(false)}
+            />
+          ) : (
+            <StartupScan
+              width={termWidth}
+              height={Math.max(1, termHeight - 1)}
+              onComplete={() => setStartupFireActive(false)}
+            />
+          )}
         </ErrorBoundary>
       </AppProviders>
     );
