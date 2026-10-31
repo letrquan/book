@@ -30,7 +30,7 @@ import type {
   TurnCheckpointRecordData,
   UsageRecordData,
 } from '../types/sessions.js';
-import type { Message, Usage } from '../types/messages.js';
+import type { Message, SteeringInbox, Usage } from '../types/messages.js';
 import type { ActiveGoal } from '../types/goal.js';
 import type { PeerAwarenessHandle } from '../types/messaging.js';
 import type { SessionMentionSource } from '../input/session-mentions.js';
@@ -123,7 +123,12 @@ export interface AgentSessionRunRequest {
   maxBudgetUsd?: number;
   source?: AgentRunSource;
   resumedFromRunId?: string;
-  options?: Omit<AgentLoopOptions, 'signal'>;
+  options?: Omit<AgentLoopOptions, 'signal' | 'steering'>;
+  /**
+   * Steers the host queued while this run is going. The loop drains them at its next boundary,
+   * and at a turn's end they continue the same run.
+   */
+  steering?: SteeringInbox;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
 }
@@ -255,6 +260,7 @@ export interface AgentSessionSendRequest {
   options?: Omit<
     AgentLoopOptions,
     | 'signal'
+    | 'steering'
     | 'displayMessage'
     | 'userMessageId'
     | 'userMessageTimestamp'
@@ -263,6 +269,8 @@ export interface AgentSessionSendRequest {
     | 'resolveAttachment'
     | 'typedText'
   >;
+  /** See {@link AgentSessionRunRequest.steering}. */
+  steering?: SteeringInbox;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
   beforePrepare?: (control: AgentSessionSendControl) => void | Promise<void>;
@@ -590,6 +598,7 @@ export class AgentSession {
           },
           signal: control.signal,
           isCurrent: control.isCurrent,
+          steering: request.steering,
         });
         const outcome = runOutcome ?? this.snapshot.terminal;
         if (!outcome) {
@@ -1597,12 +1606,13 @@ export class AgentSession {
         },
         /**
          * Persist a user message the loop authored rather than the host — a
-         * continuation, a work-state refresh. Hosts write the user message before
-         * `send`, so nothing else records these and a resumed session would show
+         * continuation, a work-state refresh, or a steer the host handed the
+         * running loop. Hosts write the message that starts a run before `send`,
+         * so nothing else records these and a resumed session would show
          * assistant turns answering questions that were never asked.
          *
          * `UserPromptSubmit` hooks and memory capture are deliberately skipped:
-         * this is the agent talking to itself, not a person submitting a prompt.
+         * this is the loop appending to its own history, not a new submission.
          */
         onUserMessageAppended: (message) => {
           if (request.isCurrent?.() === false) return;
@@ -1613,11 +1623,18 @@ export class AgentSession {
             data: {
               id: message.id,
               content: message.content,
+              // A steered turn is the user's own words: its prompt, any attachment
+              // and observation, and the display text the transcript shows all
+              // have to survive the reload in place.
+              contextContent: message.contextContent,
               kind: message.kind ?? 'conversation',
               includeInContext: message.includeInContext ?? true,
               // A host-appended prompt stays host-written across a reload: the ledger,
-              // Carried Turns key on it.
+              // Carried Turns key on it. A steer carries no mark, by construction.
               derivedContent: message.derivedContent,
+              steered: message.steered,
+              attachments: message.attachments,
+              fileObservations: message.fileObservations,
             },
           } satisfies SessionRecord);
         },
@@ -1649,6 +1666,7 @@ export class AgentSession {
                 ? (attachment) =>
                     request.timelineStore!.readImageAttachment!(request.sessionId, attachment)
                 : undefined),
+            ...(request.steering ? { steering: request.steering } : {}),
             signal: request.signal,
           },
         );

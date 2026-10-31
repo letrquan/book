@@ -5,6 +5,7 @@ import type {
   ImageAttachment,
   Message,
   ProviderMessageMetadata,
+  SteeringInbox,
   Usage,
 } from '../types/messages.js';
 import type { ProviderMessage, ProviderResponseMetadata } from '../types/providers.js';
@@ -376,6 +377,12 @@ export async function runAgentLoop(
     toolTelemetryRoot?: string;
     /** User-global store for learned context window ceilings (primarily for isolated tests). */
     modelWindowStore?: ModelWindowStore;
+    /**
+     * Steers the host queued while this run is going. Drained after a tool step and, at a
+     * turn's end, kept as a reason to continue the same run instead of stopping. The TUI queues
+     * follow-ups itself and passes none.
+     */
+    steering?: SteeringInbox;
     provider?: Provider;
   },
 ): Promise<Message[]> {
@@ -1204,6 +1211,41 @@ export async function runAgentLoop(
     const runStartedAt = clock.monotonicNowMs();
     /** Guards the periodic work-state message against a same-turn re-issue. */
     let lastWorkStateTurn = -1;
+    /**
+     * Move every steer the host queued into history, as the user's own turns.
+     *
+     * One helper for both drain points so a steer always lands the same way: `content` is the
+     * display text, `contextContent` carries the expanded prompt only when it differs, and the
+     * message is never `derivedContent` — these are the user's words, not the agent's.
+     *
+     * A cancelled run drains nothing: the host moves what is still pending to its queue, and a
+     * steer appended after the cancel would look answered when nothing will answer it. The check
+     * is not redundant with the loop's own: the boundary's compaction awaits a summarizer call
+     * and does not re-test the signal before this drain point.
+     */
+    const appendSteers = (reason: 'tool-step' | 'turn-end'): number => {
+      if (signal?.aborted) return 0;
+      const steers = options?.steering?.take() ?? [];
+      for (const steer of steers) {
+        const content = steer.displayMessage ?? steer.content;
+        const message: Message = {
+          id: steer.id,
+          role: 'user',
+          content,
+          contextContent: steer.content === content ? undefined : steer.content,
+          includeInContext: true,
+          kind: 'conversation',
+          steered: true,
+          attachments: steer.attachments,
+          fileObservations: steer.fileObservations,
+          timestamp: steer.timestamp,
+        };
+        newHistory.push(message);
+        callbacks.onUserMessageAppended?.(message);
+      }
+      if (steers.length > 0) log.info('steers appended', { reason, turn, count: steers.length });
+      return steers.length;
+    };
     /** Intent routing runs once, before the run's first model call (#619). */
     let intentRouted = false;
     /** The turn these empty-completion retries were spent on, and how many of them. */
@@ -1390,6 +1432,11 @@ export async function runAgentLoop(
           log.debug('work-state refresh appended', { turn });
         }
       }
+
+      // Drain point 1: a steer that arrived while the last step's tools ran. It must land after
+      // the assistant message carrying their results — draining between the calls of one batch
+      // would split a tool call from its result. A re-issue is still that same step.
+      if (!reissuedThisTurn) appendSteers('tool-step');
 
       toolContext.currentTurn = turn;
       syncSkillRestrictions(turn);
@@ -3833,6 +3880,23 @@ export async function runAgentLoop(
       }
 
       if (toolCalls.length === 0 || signal?.aborted || handoffRequested || planStopRequested) {
+        // The user spoke while this turn was being written: their words outrank the model's
+        // "I'm done", so append them and keep the same run going. This is not a host
+        // continuation — the user has spoken — so the brake's counters start over. The turn
+        // still counts against `maxTurns` and the run's budget like any other.
+        if (
+          toolCalls.length === 0 &&
+          !signal?.aborted &&
+          !handoffRequested &&
+          !planStopRequested &&
+          options?.steering?.hasPending() &&
+          appendSteers('turn-end') > 0
+        ) {
+          continuationCount = 0;
+          continuationWitnesses.length = 0;
+          log.info('steers at turn end; continuing run', { turn });
+          continue;
+        }
         // The turn produced no tool calls. Historically that ended the run, making
         // one user message the whole run — a model that says "I've finished"
         // stopped there with half its plan outstanding. Ask whether there is

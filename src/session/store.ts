@@ -515,6 +515,8 @@ export class SessionStore {
         providerMetadata?: Message['providerMetadata'];
         contextContent?: string;
         derivedContent?: boolean;
+        /** A user turn the host steered into a running loop, rather than the one that started it. */
+        steered?: boolean;
         complete?: boolean;
         toolCalls?: Message['toolCalls'];
         toolResults?: PersistedToolResult[];
@@ -703,6 +705,7 @@ export class SessionStore {
           content: data.content ?? '',
           contextContent: data.contextContent,
           derivedContent: data.derivedContent,
+          steered: data.steered,
           includeInContext: data.includeInContext ?? true,
           kind: (data.kind as Message['kind']) ?? 'conversation',
           agentNotifications: data.agentNotifications,
