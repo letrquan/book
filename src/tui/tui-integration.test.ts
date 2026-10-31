@@ -309,9 +309,11 @@ const CTRL_U = String.fromCharCode(0x15);
  * typed has a `§ Commands` rule of its own, so waiting for that text alone
  * returned before Enter had been handled, and the next write was read in the
  * same chunk as the Enter, which Ink then dropped. The menu's rule runs on in
- * `─` after the title; the dialog's title row runs on in spaces to its count.
+ * `─` after the title; the dialog's title row runs on in blanks to its count,
+ * which ConPTY sends as a cursor move rather than spaces, so the stripped
+ * stream may hold none of them.
  */
-const HELP_PANEL = /§ Commands +\d+ commands/;
+const HELP_PANEL = /§ Commands\s*\d+ commands/;
 
 /**
  * A page of the transcript to scroll, from a command that prints into it: the
