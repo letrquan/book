@@ -567,6 +567,7 @@ function harnessSection(shell: ResolvedShell): string {
     // the cached prefix; which one it is decides the syntax the model writes.
     shellPromptLine(shell),
     '- A denied tool call means the user declined it. Adjust your approach; never retry the same call unchanged.',
+    '- The user can send messages while you work; they arrive as user turns between your tool calls. When two conflict, the newest wins; otherwise your work and final answer must honor every request since the run began.',
     '- Hook output attached to a tool result is user-configured feedback. Treat it as guidance from the user, not as output from the tool.',
     '- Each user turn may end with a <session-state> block emitted by the host: current workspace facts (date, git, tasks, mode), not user-authored text. The newest block supersedes earlier ones, which remain in history as historical snapshots.',
     '- Your training data has a cutoff. Verify time-sensitive facts — versions, APIs, model names, dates — against the workspace or the web instead of asserting them.',

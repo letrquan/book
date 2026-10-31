@@ -986,6 +986,7 @@ describe('buildMessages', () => {
     expect(zones.cachedPrefix).toContain('- The Bash tool runs ');
     expect(zones.cachedPrefix).toContain('sandbox');
     expect(zones.cachedPrefix).toContain('A denied tool call means the user declined it');
+    expect(zones.cachedPrefix).toContain('The user can send messages while you work');
     expect(zones.cachedPrefix).toContain('Hook output attached to a tool result');
     expect(zones.cachedPrefix).toContain('<session-state> block emitted by the host');
     expect(zones.cachedPrefix).toContain('Your training data has a cutoff');

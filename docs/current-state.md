@@ -93,14 +93,15 @@ awareness were checked, by reading `src/` on main at a8ad170d and the merged PRs
   ChatGPT plan, with the OAuth tokens in `<BOOK_HOME>/chatgpt-signin.json` (0600). It is never
   auto-detected or a default. Anthropic stays API-key only: its terms forbid third-party apps from
   using Claude plan credentials.
-- System prompt v8 (`book-system-prompt-v8`): content split by volatility across a cached static
+- System prompt v9 (`book-system-prompt-v9`): content split by volatility across a cached static
   prefix, an uncached activation-class suffix, and a per-turn `<session-state>` block on the newest
   user turn; project instructions fenced and trust-labeled; three Anthropic cache breakpoints
   (last tool, system, moving last message) so the conversation itself is cached. v7 (#623) made
   the suffix's deferred-tool list name every authorized deferred tool and teach `ToolSearch`'s
   `select:`, and v8 (#637) tells the model a listed tool can be called directly. The peer lines
   and `@session` notes of cross-session messaging go in the `<session-state>` block, not the
-  system prompt, so they did not change the version.
+  system prompt, so they did not change the version. v9 (#661) tells the model that user messages
+  arrive as user turns between its tool calls during a run.
 - File, patch, shell, Git, web, notebook, task, todo, plan, clarification, session-history, MCP,
   tool-search, skill, and managed-agent tools, plus the `SessionList` and `SessionSend` session
   tools in an interactive TUI with messaging on, subject to capability and permission

@@ -1,9 +1,13 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runAgentLoop } from './loop.js';
 import { createSteeringInbox } from './steering.js';
-import { createRegistry } from '../tools/registry.js';
+import { createDefaultRegistry, createRegistry } from '../tools/registry.js';
 import { todoTools } from '../tools/todo.js';
 import { toolSuccess } from '../tools/result.js';
+import { observationKey } from '../tools/file-provenance.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { createScriptedProvider, sseResponse } from '../test/scripted-provider.js';
 import { AgentSession } from '../session/agent-session.js';
@@ -15,7 +19,8 @@ import type { ToolRegistry } from '../tools/registry.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { AgentTerminalOutcome } from '../types/terminal.js';
 import type { ImageAttachment, Message, SteeredInput } from '../types/messages.js';
-import type { ToolResult } from '../types/tools.js';
+import type { FileObservation, ToolResult } from '../types/tools.js';
+import type { HookEntry } from '../settings.js';
 
 /**
  * Steering, from the loop's side (#661).
@@ -59,6 +64,14 @@ function requestMessages(provider: ReturnType<typeof createScriptedProvider>, in
   return (JSON.parse(body) as { messages: Array<{ role: string; content: unknown }> }).messages;
 }
 
+/** The tool names a recorded request declared, in the order it sent them. */
+function requestToolNames(provider: ReturnType<typeof createScriptedProvider>, index: number) {
+  const body = provider.requests[index]?.init?.body;
+  if (typeof body !== 'string') throw new Error(`request ${index} has no recorded body`);
+  const sent = (JSON.parse(body) as { tools?: Array<{ function?: { name?: string } }> }).tools;
+  return (sent ?? []).map((tool) => tool.function?.name ?? '');
+}
+
 function isUserMessage(raw: { role: string; content: unknown }, text: string): boolean {
   return (
     raw.role === 'user' &&
@@ -80,8 +93,43 @@ function loopCallbacks(overrides: Partial<AgentLoopCallbacks> = {}): AgentLoopCa
   } as unknown as AgentLoopCallbacks;
 }
 
+const scratchDirs: string[] = [];
+
+/** A directory this suite owns, removed after it, for hook scripts and steer workspaces. */
+function scratch(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  scratchDirs.push(dir);
+  return dir;
+}
+
+const hookDir = scratch('book-steering-hooks-');
+
+/**
+ * A `UserPromptSubmit` hook that answers with `response` only for a prompt holding `marker`, and
+ * otherwise continues. Matching on the prompt leaves the run's own opening prompt alone, so a test
+ * pins what happens to the steer and nothing else.
+ */
+function hookWhenPromptHolds(marker: string, response: Record<string, unknown>): HookEntry {
+  const file = join(hookDir, `${marker.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.mjs`);
+  writeFileSync(
+    file,
+    [
+      "let raw = '';",
+      'for await (const chunk of process.stdin) raw += chunk;',
+      `const matches = String(JSON.parse(raw).user_prompt).includes(${JSON.stringify(marker)});`,
+      `const answer = matches ? ${JSON.stringify(JSON.stringify(response))} : '{"action":"continue"}';`,
+      'process.stdout.write(answer);',
+    ].join('\n'),
+  );
+  return { command: `node "${file}"`, env: {} };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+afterAll(() => {
+  for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
 });
 
 describe('steering into the loop', () => {
@@ -376,6 +424,326 @@ describe('steering into the loop', () => {
   });
 });
 
+describe('what a steer means to the run (#661)', () => {
+  it.each([false, true])(
+    'drops a blocked steer, tells the user, and keeps the run going (skipUserPromptHooks: %s)',
+    async (skipUserPromptHooks) => {
+      const inbox = createSteeringInbox();
+      const registry = createRegistry();
+      const runtime = new SessionRuntime();
+      const observation: FileObservation = {
+        path: 'src/b.ts',
+        workspaceId: 'workspace-1',
+        sha256: 'sha',
+        byteSize: 1,
+        operation: 'mention',
+        sourceRef: 'steer-1',
+        timestamp: 1,
+      };
+      registry.register({
+        name: 'SlowTool',
+        description: 'Queues a steer a hook will block.',
+        parameters: { type: 'object', properties: {} },
+        execute: async (): Promise<ToolResult> => {
+          inbox.push(
+            steer('steer-1', 'BLOCKED-BY-POLICY: deploy to production', {
+              fileObservations: [observation],
+            }),
+          );
+          return toolSuccess('tool finished');
+        },
+      });
+      const provider = createScriptedProvider(toolStep('tool-1', 'SlowTool'), textStep('Done.'));
+      vi.stubGlobal('fetch', provider.fetch);
+
+      const notices: string[] = [];
+      const appended: Message[] = [];
+      const config = defaultConfig();
+      config.maxTurns = 4;
+      config.settings.hooks.UserPromptSubmit = [
+        hookWhenPromptHolds('BLOCKED-BY-POLICY', {
+          action: 'block',
+          message: 'the deploy policy forbids it',
+        }),
+      ];
+      const history = await runAgentLoop(
+        config,
+        registry,
+        'start',
+        [],
+        loopCallbacks({
+          onNotice: (notice: string) => notices.push(notice),
+          onUserMessageAppended: (message: Message) => appended.push(message),
+        }),
+        'auto',
+        {
+          isNewSession: false,
+          runtime,
+          steering: inbox,
+          skipUserPromptHooks,
+        },
+      );
+
+      // The step's batch is answered; the blocked steer mints no request of its own. The hooks
+      // run for a steer even when the run skipped its own prompt's: a steer is always the
+      // user's own words.
+      expect(provider.requests).toHaveLength(2);
+      expect(notices).toEqual([
+        'UserPromptSubmit hook blocked a message sent during the run: the deploy policy forbids it',
+      ]);
+      expect(
+        requestMessages(provider, 1).some((message) => isUserMessage(message, 'BLOCKED-BY-POLICY')),
+      ).toBe(false);
+      expect(appended.some((message) => message.id === 'steer-1')).toBe(false);
+      expect(history.some((message) => message.id === 'steer-1')).toBe(false);
+      expect(inbox.hasPending()).toBe(false);
+      // A dropped steer's file is never observed: the model never saw its text.
+      expect(
+        runtime.fileObservationLedger.has(
+          observationKey(observation.workspaceId, observation.path),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it('delivers a hook rewrite as both the model prompt and the transcript text', async () => {
+    const inbox = createSteeringInbox();
+    const registry = createRegistry();
+    registry.register({
+      name: 'SlowTool',
+      description: 'Queues a steer a hook will rewrite.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (): Promise<ToolResult> => {
+        inbox.push(
+          steer('steer-1', 'REWRITE-ME: rename it', {
+            displayMessage: 'REWRITE-ME: rename it',
+            typedText: 'REWRITE-ME: rename it',
+          }),
+        );
+        return toolSuccess('tool finished');
+      },
+    });
+    const provider = createScriptedProvider(toolStep('tool-1', 'SlowTool'), textStep('Renamed.'));
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const appended: Message[] = [];
+    const config = defaultConfig();
+    config.maxTurns = 4;
+    config.settings.hooks.UserPromptSubmit = [
+      hookWhenPromptHolds('REWRITE-ME', {
+        action: 'modify',
+        prompt: 'rename the caller instead',
+      }),
+    ];
+    await runAgentLoop(
+      config,
+      registry,
+      'start',
+      [],
+      loopCallbacks({ onUserMessageAppended: (message: Message) => appended.push(message) }),
+      'auto',
+      { isNewSession: false, runtime: new SessionRuntime(), steering: inbox },
+    );
+
+    // The rewrite is the prompt: it is what the model reads and what the transcript shows, with
+    // no second, unrewritten text behind it.
+    const steered = appended.find((message) => message.id === 'steer-1');
+    expect(steered).toMatchObject({ content: 'rename the caller instead', steered: true });
+    expect(steered?.contextContent).toBeUndefined();
+    const second = requestMessages(provider, 1);
+    expect(second.some((message) => isUserMessage(message, 'rename the caller instead'))).toBe(
+      true,
+    );
+    expect(second.some((message) => isUserMessage(message, 'REWRITE-ME'))).toBe(false);
+  });
+
+  it('ends the run normally when every steer at the turn end was blocked', async () => {
+    const inbox = createSteeringInbox();
+    const provider = createScriptedProvider(() => {
+      // The user spoke while this answer was being written; a hook then refuses the message.
+      inbox.push(steer('steer-1', 'BLOCKED-BY-POLICY: one more thing'));
+      return textStep('I have finished.');
+    }, textStep('This second request must not happen.'));
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const notices: string[] = [];
+    let outcome: AgentTerminalOutcome | undefined;
+    const config = defaultConfig();
+    config.maxTurns = 4;
+    config.settings.hooks.UserPromptSubmit = [
+      hookWhenPromptHolds('BLOCKED-BY-POLICY', { action: 'block', message: 'not now' }),
+    ];
+    const history = await runAgentLoop(
+      config,
+      createRegistry(),
+      'start',
+      [],
+      loopCallbacks({
+        onNotice: (notice: string) => notices.push(notice),
+        onTerminal: (value: AgentTerminalOutcome) => (outcome = value),
+      }),
+      'auto',
+      { isNewSession: false, runtime: new SessionRuntime(), steering: inbox },
+    );
+
+    // No steer survived its hooks, so the ordinary continuation decision ran and ended the run.
+    expect(provider.requests).toHaveLength(1);
+    expect(notices).toEqual([
+      'UserPromptSubmit hook blocked a message sent during the run: not now',
+    ]);
+    expect(outcome).toMatchObject({ status: 'completed', reason: 'normal_completion' });
+    expect(history.some((message) => message.id === 'steer-1')).toBe(false);
+  });
+
+  it('routes a steer by its typed text, so a URL in a correction loads WebFetch', async () => {
+    const inbox = createSteeringInbox();
+    const registry = createDefaultRegistry();
+    registry.register({
+      name: 'SlowTool',
+      description: 'Queues a steer with a URL while it runs.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (): Promise<ToolResult> => {
+        inbox.push(
+          steer('steer-1', 'also read https://example.com/notes.txt', {
+            typedText: 'also read https://example.com/notes.txt',
+          }),
+        );
+        return toolSuccess('tool finished');
+      },
+    });
+    const provider = createScriptedProvider(toolStep('tool-1', 'SlowTool'), textStep('Read it.'));
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const config = defaultConfig();
+    config.maxTurns = 4;
+    await runAgentLoop(config, registry, 'start', [], loopCallbacks(), 'auto', {
+      isNewSession: false,
+      runtime: new SessionRuntime(),
+      steering: inbox,
+    });
+
+    // Nothing about the run's own prompt asks for WebFetch; only the steer does.
+    expect(requestToolNames(provider, 0)).not.toContain('WebFetch');
+    expect(requestToolNames(provider, 1)).toContain('WebFetch');
+  });
+
+  it('registers a steer’s file observations when it is delivered, not while it waits', async () => {
+    const observation: FileObservation = {
+      path: 'src/a.ts',
+      workspaceId: 'workspace-1',
+      sha256: 'sha',
+      byteSize: 1,
+      operation: 'mention',
+      sourceRef: 'steer-1',
+      timestamp: 1,
+    };
+    const key = observationKey(observation.workspaceId, observation.path);
+    const runtime = new SessionRuntime();
+    const inbox = createSteeringInbox();
+    const registry = createRegistry();
+    let observedWhilePending: boolean | undefined;
+    registry.register({
+      name: 'SlowTool',
+      description: 'Queues a steer that mentions a file.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (): Promise<ToolResult> => {
+        inbox.push(steer('steer-1', 'rename it', { fileObservations: [observation] }));
+        observedWhilePending = runtime.fileObservationLedger.has(key);
+        return toolSuccess('tool finished');
+      },
+    });
+    const provider = createScriptedProvider(toolStep('tool-1', 'SlowTool'), textStep('Renamed.'));
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const appended: Message[] = [];
+    const config = defaultConfig();
+    config.maxTurns = 4;
+    await runAgentLoop(
+      config,
+      registry,
+      'start',
+      [],
+      loopCallbacks({ onUserMessageAppended: (message: Message) => appended.push(message) }),
+      'auto',
+      { isNewSession: false, runtime, steering: inbox },
+    );
+
+    expect(observedWhilePending).toBe(false);
+    expect(runtime.fileObservationLedger.get(key)).toEqual(observation);
+    expect(appended.find((message) => message.id === 'steer-1')?.fileObservations).toEqual([
+      observation,
+    ]);
+  });
+
+  it('leaves a steer pending when maxTurns leaves no turn to answer it', async () => {
+    const inbox = createSteeringInbox();
+    const provider = createScriptedProvider(() => {
+      inbox.push(steer('steer-1', 'one more thing'));
+      return textStep('I have finished.');
+    }, textStep('This second request must not happen.'));
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const config = defaultConfig();
+    config.maxTurns = 1;
+    const history = await runAgentLoop(
+      config,
+      createRegistry(),
+      'start',
+      [],
+      loopCallbacks(),
+      'auto',
+      { isNewSession: false, runtime: new SessionRuntime(), steering: inbox },
+    );
+
+    // The run would end before sending the steer, so it stays for the host to send as its own turn.
+    expect(provider.requests).toHaveLength(1);
+    expect(inbox.hasPending()).toBe(true);
+    expect(inbox.take().map((entry) => entry.id)).toEqual(['steer-1']);
+    expect(history.some((message) => message.id === 'steer-1')).toBe(false);
+  });
+
+  it('sends a steer’s image attachment as an image part in the next request', async () => {
+    const attachment: ImageAttachment = {
+      id: 'image-1',
+      sha256: 'sha',
+      storageKey: 'image-1.png',
+      mediaType: 'image/png',
+      byteSize: 3,
+    };
+    const inbox = createSteeringInbox();
+    const registry = createRegistry();
+    registry.register({
+      name: 'SlowTool',
+      description: 'Queues a steer carrying a screenshot.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (): Promise<ToolResult> => {
+        inbox.push(steer('steer-1', 'what is in this screenshot?', { attachments: [attachment] }));
+        return toolSuccess('tool finished');
+      },
+    });
+    const provider = createScriptedProvider(toolStep('tool-1', 'SlowTool'), textStep('A cat.'));
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const config = defaultConfig();
+    config.maxTurns = 4;
+    await runAgentLoop(config, registry, 'start', [], loopCallbacks(), 'auto', {
+      isNewSession: false,
+      runtime: new SessionRuntime(),
+      steering: inbox,
+      // What `AgentSession` passes: a reader for the attachment's bytes.
+      resolveAttachment: () => Uint8Array.from([1, 2, 3]),
+    });
+
+    const second = requestMessages(provider, 1);
+    const steered = second.find((message) => isUserMessage(message, 'what is in this screenshot?'));
+    expect(steered?.content).toEqual([
+      { type: 'text', text: 'what is in this screenshot?' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' } },
+      { type: 'text', text: expect.stringContaining('<session-state>') },
+    ]);
+  });
+});
+
 describe('steering persistence', () => {
   let fixture: SessionFixture | undefined;
 
@@ -450,6 +818,63 @@ describe('steering persistence', () => {
     // In place: right after the assistant answer being written when it arrived.
     expect(transcript[steerIndex - 1].role).toBe('assistant');
     expect(loaded.contextHistory.some((message) => message.id === 'steer-1')).toBe(true);
+  });
+
+  it('persists a hook’s rewrite in place of the text the user typed', async () => {
+    fixture = createSessionFixture('book-steering-hook-');
+    const sessionId = fixture.store.create({ cwd: fixture.root });
+    fixture.store.append(sessionId, {
+      type: 'user',
+      eventId: 'prompt-1',
+      timestamp: 10,
+      data: { id: 'prompt-1', content: 'start', kind: 'conversation' },
+    });
+
+    const inbox = createSteeringInbox();
+    const provider = createScriptedProvider(() => {
+      inbox.push(
+        steer('steer-1', 'REWRITE-ME: fix the name', {
+          displayMessage: 'REWRITE-ME: fix the name',
+        }),
+      );
+      return textStep('Starting.');
+    }, textStep('Fixed with the rewrite.'));
+    vi.stubGlobal('fetch', provider.fetch);
+
+    const config = defaultConfig();
+    config.maxTurns = 4;
+    config.settings.hooks.UserPromptSubmit = [
+      hookWhenPromptHolds('REWRITE-ME', { action: 'modify', prompt: 'fix the caller name' }),
+    ];
+    await new AgentSession().run({
+      config,
+      registry: createRegistry(),
+      prompt: 'start',
+      history: [],
+      sessionId,
+      timelineStore: fixture.store,
+      steering: inbox,
+      callbacks: {
+        onEvent: () => {},
+        onTurnStart: () => {},
+      } satisfies AgentSessionRunCallbacks,
+    });
+
+    // The rewrite is what the user's message was, so it is what a resumed session shows.
+    const records = fixture.store.readRecords(sessionId);
+    const steeredRecord = records.find(
+      (record) => record.type === 'user' && (record.data as { id?: string }).id === 'steer-1',
+    );
+    expect(steeredRecord).toMatchObject({
+      type: 'user',
+      data: { id: 'steer-1', content: 'fix the caller name', steered: true },
+    });
+    expect((steeredRecord?.data as { contextContent?: string }).contextContent).toBeUndefined();
+    const loaded = new SessionStore(fixture.root)
+      .load(sessionId)
+      .transcript.find((message) => message.id === 'steer-1');
+    expect(loaded).toMatchObject({ role: 'user', content: 'fix the caller name', steered: true });
+    expect(loaded?.derivedContent).toBeUndefined();
   });
 
   it('persists a steered turn’s display text, prompt, attachments and observations', async () => {

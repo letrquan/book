@@ -129,6 +129,101 @@ describe('convertMessages', () => {
     expect(out.systemZones).toBeUndefined();
     expect(out.system).toBe('flat instructions');
   });
+
+  // A steer (#661) — like the periodic work-state refresh — lands right after the tool results of
+  // the step it interrupted. Anthropic rejects two consecutive user messages, so the text belongs
+  // in the same message, after the `tool_result` blocks.
+  it('appends a plain user message that follows tool results to the same message', () => {
+    const out = convertMessages([
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name: 'Read', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'file body' },
+      { role: 'user', content: 'also rename the caller' },
+    ]);
+
+    expect(out.messages).toEqual([
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '' },
+          { type: 'tool_use', id: 'call-1', name: 'Read', input: {} },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'call-1', content: 'file body' },
+          { type: 'text', text: 'also rename the caller' },
+        ],
+      },
+    ]);
+  });
+
+  it('appends a following user message’s images after the tool results too', () => {
+    const out = convertMessages([
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name: 'Read', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'file body' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'compare it with this screenshot' },
+          { type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' },
+        ],
+      },
+    ]);
+
+    expect(out.messages.at(-1)).toEqual({
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'call-1', content: 'file body' },
+        { type: 'text', text: 'compare it with this screenshot' },
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' },
+        },
+      ],
+    });
+  });
+
+  it('keeps appending plain user messages that follow one another after tool results', () => {
+    // A steer and then the host's work-state refresh can both land before the next request; the
+    // API still gets one user message, with each text after the results.
+    const out = convertMessages([
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name: 'Read', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'file body' },
+      { role: 'user', content: 'also rename the caller' },
+      { role: 'user', content: '[work-state] The plan restated.' },
+    ]);
+
+    expect(out.messages).toHaveLength(2);
+    expect(out.messages.at(-1)).toEqual({
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'call-1', content: 'file body' },
+        { type: 'text', text: 'also rename the caller' },
+        { type: 'text', text: '[work-state] The plan restated.' },
+      ],
+    });
+  });
 });
 
 afterEach(() => {
@@ -735,6 +830,35 @@ describe('Anthropic cache breakpoint placement', () => {
       false,
       true,
     ]);
+  });
+
+  it('moves the breakpoint onto a steer’s text merged after tool results', async () => {
+    const body = await captureRequestBody(patchTools, [
+      { role: 'system', content: zones },
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name: 'ApplyPatch', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'applied' },
+      { role: 'user', content: 'also rename the caller' },
+    ]);
+    const sent = body.messages as Array<{ role: string; content: unknown }>;
+
+    // One user message, and the moving marker is on the newest block of it.
+    expect(sent).toHaveLength(3);
+    expect(sent.at(-1)?.content).toEqual([
+      { type: 'tool_result', tool_use_id: 'call-1', content: 'applied' },
+      {
+        type: 'text',
+        text: 'also rename the caller',
+        cache_control: { type: 'ephemeral' },
+      },
+    ]);
+    expect(countCacheBreakpoints(body)).toBe(3);
   });
 
   it('still sends one cached system block when the dynamic suffix is empty', async () => {
