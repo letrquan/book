@@ -294,10 +294,10 @@ async function startIdleApp(overrides: Record<string, unknown> = {}, appConfig =
   return { view, state, rerenderWith };
 }
 
-function startupFireConfig(): AgentConfig {
-  const fireConfig = config();
-  fireConfig.accessibility = { screenReader: false, reducedMotion: false };
-  return fireConfig;
+function startupSplashConfig(): AgentConfig {
+  const splashConfig = config();
+  splashConfig.accessibility = { screenReader: false, reducedMotion: false };
+  return splashConfig;
 }
 
 /** Press Ctrl+C and wait for the exit hint it arms. */
@@ -439,9 +439,9 @@ describe('idle Ctrl+C exit confirmation', () => {
     expect(state.endCurrentSession).not.toHaveBeenCalled();
   });
 
-  it('requires two presses from the startup-fire splash', async () => {
-    const fireConfig = startupFireConfig();
-    const { view, state } = await startIdleApp({ liveConfig: fireConfig }, fireConfig);
+  it('requires two presses from the startup splash', async () => {
+    const splashConfig = startupSplashConfig();
+    const { view, state } = await startIdleApp({ liveConfig: splashConfig }, splashConfig);
 
     await armExit(view);
     expect(state.endCurrentSession).not.toHaveBeenCalled();
@@ -451,16 +451,16 @@ describe('idle Ctrl+C exit confirmation', () => {
     await waitUntil(() => expect(state.endCurrentSession).toHaveBeenCalledWith('exit'));
   });
 
-  it('exits on the second press when a modal is waiting behind the startup-fire splash', async () => {
-    const fireConfig = startupFireConfig();
+  it('exits on the second press when a modal is waiting behind the startup splash', async () => {
+    const splashConfig = startupSplashConfig();
     const { view, state } = await startIdleApp(
       {
-        liveConfig: fireConfig,
+        liveConfig: splashConfig,
         pendingPermission: {
           toolCall: { id: 'call-1', name: 'Bash', arguments: { command: 'ls' } },
         },
       },
-      fireConfig,
+      splashConfig,
     );
 
     await armExit(view);
@@ -773,20 +773,20 @@ describe('idle Ctrl+C exit confirmation', () => {
   // #268 item 6: an exit ended the UI but not the work under it, so approving a permission
   // prompt while a slow SessionEnd ran still ran the tool.
   it('an exit cancels the work still running, such as a pending permission prompt', async () => {
-    const fireConfig = startupFireConfig();
+    const splashConfig = startupSplashConfig();
     const endCurrentSession = vi
       .fn<(reason: string) => Promise<void>>()
       .mockImplementationOnce(() => new Promise<void>(() => {}))
       .mockResolvedValue(undefined);
     const { view, state } = await startIdleApp(
       {
-        liveConfig: fireConfig,
+        liveConfig: splashConfig,
         endCurrentSession,
         pendingPermission: {
           toolCall: { id: 'call-1', name: 'Bash', arguments: { command: 'ls' } },
         },
       },
-      fireConfig,
+      splashConfig,
     );
 
     await armExit(view);
@@ -826,14 +826,14 @@ describe('idle Ctrl+C exit confirmation', () => {
     } as unknown as AgentRecord;
     managedAgentManagerMock.list.mockResolvedValue([child]);
     try {
-      const fireConfig = startupFireConfig();
+      const splashConfig = startupSplashConfig();
       const endCurrentSession = vi
         .fn<(reason: string) => Promise<void>>()
         .mockImplementationOnce(() => new Promise<void>(() => {}))
         .mockResolvedValue(undefined);
       const { view } = await startIdleApp(
-        { liveConfig: fireConfig, endCurrentSession },
-        fireConfig,
+        { liveConfig: splashConfig, endCurrentSession },
+        splashConfig,
       );
 
       await armExit(view);

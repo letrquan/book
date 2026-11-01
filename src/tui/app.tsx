@@ -16,7 +16,6 @@ import { InputBar } from './components/InputBar.js';
 import { QueuedInputPreview, type FlashNotice } from './components/QueuedInputPreview.js';
 import { StatusLine } from './components/StatusLine.js';
 import { WorkingIndicator } from './components/WorkingIndicator.js';
-import { StartupFire } from './components/StartupFire.js';
 import { StartupAssemble } from './components/StartupAssemble.js';
 import { CompactDiffCard } from './components/CompactDiffCard.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
@@ -180,7 +179,7 @@ export function ownsModalInput(
   );
 }
 
-export function shouldPlayStartupFire(config: AgentConfig, session: SessionBootstrap): boolean {
+export function shouldPlayStartupSplash(config: AgentConfig, session: SessionBootstrap): boolean {
   return Boolean(
     config.settings.ui.startupAnimation &&
     !config.accessibility.screenReader &&
@@ -530,8 +529,8 @@ export function App({
   // existed with no consumer before the status line was reworked.
   const gitStatus = useGitStatus(config.workspace);
 
-  const [startupFireActive, setStartupFireActive] = useState(() =>
-    shouldPlayStartupFire(config, session),
+  const [startupSplashActive, setStartupSplashActive] = useState(() =>
+    shouldPlayStartupSplash(config, session),
   );
   // The four reference sheets share one slot. They were four independent
   // booleans, so `/help` then `/status` pinned 43 rows of chrome above the
@@ -1708,20 +1707,20 @@ export function App({
       uiLog.event('input:Ctrl+C', { action: 'noop-exiting' });
       return;
     }
-    if (startupFireActive) {
+    if (startupSplashActive) {
       if (key.ctrl && input === 'c') {
         // The idle decision. Arming dismisses the splash so the hint shows; an exit leaves it up.
-        if (!exitOrArmOnCtrlC('startup-fire')) setStartupFireActive(false);
+        if (!exitOrArmOnCtrlC('startup-splash')) setStartupSplashActive(false);
         return;
       }
       if (key.escape) {
-        uiLog.event('input:Escape', { action: 'skip-startup-fire' });
-        setStartupFireActive(false);
+        uiLog.event('input:Escape', { action: 'skip-startup-splash' });
+        setStartupSplashActive(false);
         return;
       }
       const draftInput = stripSgrMouseSequences(input);
       if (!key.ctrl && !key.meta && containsDraftInput(draftInput)) {
-        uiLog.event('input:printable', { action: 'skip-startup-fire' });
+        uiLog.event('input:printable', { action: 'skip-startup-splash' });
         // React may deliver several stdin chunks before the splash dismissal commits.
         startupDraftRef.current += draftInput;
         const startupDraft = startupDraftRef.current;
@@ -1729,7 +1728,7 @@ export function App({
           key: (current?.key ?? 0) + 1,
           value: startupDraft,
         }));
-        setStartupFireActive(false);
+        setStartupSplashActive(false);
         return;
       }
       return;
@@ -2959,24 +2958,16 @@ export function App({
   // way, latch included, so the session still ends cleanly and only once.
   const exitFromCrash = exitOnce;
 
-  if (startupFireActive) {
+  if (startupSplashActive) {
     return (
       <AppProviders theme={currentTheme.tokens} density={density}>
         <GlobalKeyHandler onInput={forwardInput} />
         <ErrorBoundary resumeCommand={resumeCommand} onExit={exitFromCrash}>
-          {config.settings.ui.startupAnimationStyle === 'fire' ? (
-            <StartupFire
-              width={termWidth}
-              height={Math.max(1, termHeight - 1)}
-              onComplete={() => setStartupFireActive(false)}
-            />
-          ) : (
-            <StartupAssemble
-              width={termWidth}
-              height={Math.max(1, termHeight - 1)}
-              onComplete={() => setStartupFireActive(false)}
-            />
-          )}
+          <StartupAssemble
+            width={termWidth}
+            height={Math.max(1, termHeight - 1)}
+            onComplete={() => setStartupSplashActive(false)}
+          />
         </ErrorBoundary>
       </AppProviders>
     );

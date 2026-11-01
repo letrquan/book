@@ -115,7 +115,7 @@ export function buildTuiChildEnv(
  */
 async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiSession> {
   const testRoot = mkdtempSync(join(tmpdir(), 'book-tui-'));
-  // The startup fire animation delays the input bar past waitFor timeouts on
+  // The startup animation delays the input bar past waitFor timeouts on
   // loaded runners; these tests need a deterministic boot straight to the UI.
   mkdirSync(join(testRoot, '.book'), { recursive: true });
   writeFileSync(

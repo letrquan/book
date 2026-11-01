@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { act } from 'react';
-import { App, ownsModalInput, providerRemovalMessage, shouldPlayStartupFire } from './app.js';
+import { App, ownsModalInput, providerRemovalMessage, shouldPlayStartupSplash } from './app.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { AgentRecord } from '../agents/types.js';
 import type { SlashCommand } from '../types/commands.js';
@@ -175,7 +175,7 @@ function stripAnsi(value: string | undefined): string {
 /**
  * Wait for a frame containing `text`, then return it.
  *
- * Dismissing the startup fire and restoring the typed draft take two committed
+ * Dismissing the startup splash and restoring the typed draft take two committed
  * renders (App drops the splash and mounts InputBar; InputBar's mount effect
  * applies `draftRestore`). A fixed sleep turns "Ink had not repainted yet" into
  * a failure on a loaded machine, so the wait adapts while the assertion at the
@@ -203,25 +203,25 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe('startup fire eligibility', () => {
+describe('startup splash eligibility', () => {
   it('plays only for a newly created, empty startup session with motion enabled', () => {
     const startupConfig = config();
     startupConfig.accessibility = { screenReader: false, reducedMotion: false };
 
-    expect(shouldPlayStartupFire(startupConfig, testSession)).toBe(true);
+    expect(shouldPlayStartupSplash(startupConfig, testSession)).toBe(true);
     expect(
-      shouldPlayStartupFire(
+      shouldPlayStartupSplash(
         { ...startupConfig, accessibility: { screenReader: false, reducedMotion: true } },
         testSession,
       ),
     ).toBe(false);
     expect(
-      shouldPlayStartupFire(startupConfig, { ...testSession, source: 'resume', created: false }),
+      shouldPlayStartupSplash(startupConfig, { ...testSession, source: 'resume', created: false }),
     ).toBe(false);
     expect(
-      shouldPlayStartupFire(startupConfig, { ...testSession, source: 'clear', created: true }),
+      shouldPlayStartupSplash(startupConfig, { ...testSession, source: 'clear', created: true }),
     ).toBe(false);
-    expect(shouldPlayStartupFire(startupConfig, { ...testSession, history: [{} as never] })).toBe(
+    expect(shouldPlayStartupSplash(startupConfig, { ...testSession, history: [{} as never] })).toBe(
       false,
     );
 
@@ -232,7 +232,7 @@ describe('startup fire eligibility', () => {
         ui: { ...startupConfig.settings.ui, startupAnimation: false },
       },
     };
-    expect(shouldPlayStartupFire(animationDisabled, testSession)).toBe(false);
+    expect(shouldPlayStartupSplash(animationDisabled, testSession)).toBe(false);
   });
 });
 
@@ -244,7 +244,7 @@ describe('App session commands', () => {
     await new Promise((resolve) => setTimeout(resolve, 75));
   };
 
-  it('forwards typed input unchanged when it skips the startup fire', async () => {
+  it('forwards typed input unchanged when it skips the startup splash', async () => {
     const startupConfig = config();
     startupConfig.accessibility = { screenReader: false, reducedMotion: false };
     const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
@@ -362,7 +362,7 @@ describe('App session commands', () => {
     expect(await frameContaining(view, 'CHILD_MOUSE_OUTPUT')).toContain('CHILD_MOUSE_OUTPUT');
   });
 
-  it('ignores mouse reports while the startup fire is active', async () => {
+  it('ignores mouse reports while the startup splash is active', async () => {
     const startupConfig = config();
     startupConfig.accessibility = { screenReader: false, reducedMotion: false };
     const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
@@ -389,7 +389,7 @@ describe('App session commands', () => {
     expect(frame).not.toContain('[<64;13;20M');
   });
 
-  it('accumulates paste chunks received before the startup fire rerenders', async () => {
+  it('accumulates paste chunks received before the startup splash rerenders', async () => {
     const startupConfig = config();
     startupConfig.accessibility = { screenReader: false, reducedMotion: false };
     const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };

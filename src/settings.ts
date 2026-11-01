@@ -534,8 +534,6 @@ export const uiSettingsSchema = z.object({
   showThinking: z.boolean().default(true),
   /** Play the full-screen startup splash on a newly created interactive startup session. */
   startupAnimation: z.boolean().default(true),
-  /** Which splash plays: `assemble` (a book gathered from a dot field) or `fire` (the PSX DOOM fire). */
-  startupAnimationStyle: z.enum(['assemble', 'fire']).default('assemble'),
 });
 
 export type UiSettings = z.infer<typeof uiSettingsSchema>;
@@ -712,7 +710,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   workspaceProviders: {},
   env: {},
   provider: {},
-  ui: { showThinking: true, startupAnimation: true, startupAnimationStyle: 'assemble' },
+  ui: { showThinking: true, startupAnimation: true },
   skills: { enabled: true, overrides: {}, execution: {} },
   retry: {
     maxAttempts: 10,

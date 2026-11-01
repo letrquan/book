@@ -9,7 +9,6 @@
  * pure function of (width, height, tick, theme), which keeps every frame testable.
  */
 import type { ThemeTokens } from '../types/theme.js';
-import { hashNoise } from './startup-fire.js';
 
 export interface StartupAssembleRun {
   text: string;
@@ -84,6 +83,21 @@ function easeOut(t: number): number {
 
 function easeInOut(t: number): number {
   return t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+}
+
+function mixSeed(seed: number): number {
+  let value = seed >>> 0;
+  value ^= value << 13;
+  value ^= value >>> 17;
+  value ^= value << 5;
+  return value >>> 0;
+}
+
+/** A deterministic 32-bit hash of its arguments: the splash's only source of randomness. */
+export function hashNoise(...values: number[]): number {
+  let hash = 0x9e3779b9;
+  for (const value of values) hash = mixSeed(hash ^ Math.imul(value | 0, 0x85ebca6b));
+  return hash >>> 0;
 }
 
 function unit(...values: number[]): number {

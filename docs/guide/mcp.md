@@ -89,7 +89,7 @@ Writes use an atomic sibling-file replacement, and malformed or non-object
 invalid setting path; provider secrets are redacted.
 
 Inside the TUI, `/config` opens a visual settings menu. Use it to change the main model, compact
-strategy, compact model, advisor model, effort, model memory writes, startup fire, or the model
+strategy, compact model, advisor model, effort, model memory writes, startup animation, or the model
 assigned to each managed-agent profile. Choosing a row opens that setting's picker and returns to the menu on
 the same row when it closes, so one `/config` covers as many settings as you want to change.
 
@@ -109,7 +109,7 @@ Naming a scope that setting already uses is the same request as naming none. Nam
 one is a request to write that one file, and the reply then says the change waits for the next
 start — because that is what a file write on its own does — and warns when a later-resolved layer
 still decides the value.
-The startup fire plays only for a new, empty launch session and is skipped automatically for
+The startup animation plays only for a new, empty launch session and is skipped automatically for
 screen-reader or reduced-motion mode. Press Esc to skip it. `BOOK_STARTUP_ANIMATION` (`0`, `false`,
 `off`, `no` to turn it off; `1`, `true`, `on`, `yes` to turn it on) outranks `ui.startupAnimation`
 from every settings layer, as `BOOK_MODEL` does for `model`, so a script that drives Book needs no
