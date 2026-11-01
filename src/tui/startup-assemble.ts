@@ -115,7 +115,7 @@ export function layoutStartupAssemble(width: number, terminalHeight: number): As
   const safeWidth = Math.max(1, Math.floor(width));
   const rows = Math.max(1, Math.floor(terminalHeight));
   const pixelHeight = rows * 2;
-  let markHeight = Math.min(36, Math.max(6, Math.floor(pixelHeight * 0.4)));
+  let markHeight = Math.min(22, Math.max(6, Math.floor(pixelHeight * 0.28)));
   let markWidth = Math.round(markHeight * 1.9);
   const widthBudget = Math.max(10, safeWidth - 14);
   if (markWidth > widthBudget) {
@@ -123,12 +123,19 @@ export function layoutStartupAssemble(width: number, terminalHeight: number): As
     markHeight = Math.max(6, Math.round(markWidth / 1.9));
   }
   const centerX = Math.floor(safeWidth / 2);
-  const top = Math.max(2, Math.round(pixelHeight * 0.36 - markHeight / 2));
   const left = centerX - Math.floor(markWidth / 2);
-  const centerY = top + markHeight / 2;
-  // Below the book's bottom bracket, on an even row so the 5-pixel letters start a cell.
-  const bracketBottom = Math.ceil(centerY + (markHeight / 2) * 1.22 + 3);
-  const wordTop = bracketBottom + 2 + ((bracketBottom + 2) % 2);
+  const halfH = markHeight / 2;
+  // Lay the group out from a top of 0 — locked brackets, book, wordmark, tagline — then centre
+  // it above the hint row. The shift is even, so the wordmark keeps starting on a cell boundary.
+  const bracketTop = -Math.round(halfH * 1.1 + 3) + Math.round(halfH);
+  const bracketBottom = Math.ceil(halfH + halfH * 1.22 + 3);
+  const wordTop0 = bracketBottom + 2 + ((bracketBottom + 2) % 2);
+  const groupBottom = (Math.floor((wordTop0 + 5) / 2) + 1) * 2 + 1;
+  const free = pixelHeight - 2 - (groupBottom - bracketTop);
+  const shift = Math.max(2 - bracketTop, bracketTop * -1 + Math.floor(free / 2));
+  const top = Math.max(2, shift - (shift % 2));
+  const centerY = top + halfH;
+  const wordTop = wordTop0 + top;
   const taglineRow = Math.floor((wordTop + 5) / 2) + 1;
   return {
     width: safeWidth,
