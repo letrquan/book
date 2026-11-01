@@ -78,6 +78,12 @@ export interface ProviderStreamOptions {
   onStreamStall?: (countdownMs: number) => void;
   onStreamResume?: () => void;
   maxOutputTokens?: number;
+  /**
+   * Deferred tools this request offers first (#619), after its last message: set only on a stable
+   * request, whose `tools` mark the deferred ones, and read only by the Anthropic client, which
+   * records the ones it sent in the reply's `providerMetadata.toolAdditions`.
+   */
+  toolAdditions?: readonly string[];
 }
 
 export interface AgentLoopCallbacks {

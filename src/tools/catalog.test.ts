@@ -224,12 +224,12 @@ describe('tool surface discovery', () => {
       definitions: [definition('Read'), definition('BestTool'), definition('SecondTool')],
     });
 
-    expect(surface.activate(['BestTool', 'SecondTool'])).toEqual(['BestTool']);
+    expect(surface.activate(['BestTool', 'SecondTool'], 'search')).toEqual(['BestTool']);
     expect(surface.activeDefinitions().map((tool) => tool.name)).toContain('BestTool');
     expect(surface.activeDefinitions().map((tool) => tool.name)).not.toContain('SecondTool');
   });
 
-  it('refreshes loaded-tool recency when an activated tool executes', () => {
+  it('keeps every loaded tool once the loaded-tool cap is reached (#619)', () => {
     const runtimeConfig = config();
     runtimeConfig.settings.toolDiscovery.mode = 'deferred';
     runtimeConfig.settings.toolDiscovery.maxLoadedTools = 2;
@@ -243,15 +243,17 @@ describe('tool surface discovery', () => {
         definition('ThirdTool'),
       ],
     });
-    surface.activate(['FirstTool', 'SecondTool']);
+    surface.activate(['FirstTool', 'SecondTool'], 'search');
     surface.activeDefinitions();
     expect(surface.canExecute({ id: 'second', name: 'SecondTool', arguments: {} })).toBe(true);
 
-    surface.activate(['ThirdTool']);
+    // Evicting the least recently used tool would rewrite the request's tools mid-session: the
+    // new activation is refused instead.
+    expect(surface.activate(['ThirdTool'], 'search')).toEqual([]);
     const active = surface.activeDefinitions().map((tool) => tool.name);
+    expect(active).toContain('FirstTool');
     expect(active).toContain('SecondTool');
-    expect(active).toContain('ThirdTool');
-    expect(active).not.toContain('FirstTool');
+    expect(active).not.toContain('ThirdTool');
   });
 
   it('keeps smaller recent tools when an oversized schema cannot fit the budget', () => {
@@ -271,7 +273,7 @@ describe('tool surface discovery', () => {
       definitions: [definition('Read'), huge, definition('SmallTool')],
     });
 
-    expect(surface.activate(['HugeTool', 'SmallTool'])).toEqual(['SmallTool']);
+    expect(surface.activate(['HugeTool', 'SmallTool'], 'search')).toEqual(['SmallTool']);
     expect(surface.activeDefinitions().map((tool) => tool.name)).toContain('SmallTool');
   });
 
@@ -293,7 +295,7 @@ describe('tool surface discovery', () => {
         config: undeclared,
         context: context(),
         definitions: [definition('Read'), bulky],
-      }).activate(['BulkyTool']),
+      }).activate(['BulkyTool'], 'search'),
     ).toEqual([]);
 
     // And declaring the window no longer costs you catalog room relative to staying
@@ -307,7 +309,7 @@ describe('tool surface discovery', () => {
         config: declared,
         context: context(),
         definitions: [definition('Read'), bulky],
-      }).activate(['BulkyTool']),
+      }).activate(['BulkyTool'], 'search'),
     ).toEqual(['BulkyTool']);
   });
 
@@ -329,8 +331,8 @@ describe('tool surface discovery', () => {
       definitions: [definition('Read'), definition('SmallTool'), huge],
     });
 
-    surface.activate(['SmallTool']);
-    expect(surface.activate(['HugeTool'])).toEqual([]);
+    surface.activate(['SmallTool'], 'search');
+    expect(surface.activate(['HugeTool'], 'search')).toEqual([]);
     expect(surface.activeDefinitions().map((tool) => tool.name)).toContain('SmallTool');
   });
 

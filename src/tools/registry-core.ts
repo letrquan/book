@@ -27,8 +27,11 @@ export interface PreparedToolCall {
   call: ToolCall;
   tool: ToolDefinition;
   timeoutMs: number;
-  /** A just-in-time call whose schema the budget kept out (#619): its result says it is not loaded. */
-  unloaded?: boolean;
+  /**
+   * A just-in-time call the budgets kept from loading (#619), and why: its schema alone exceeds the
+   * schema budget, or the loaded tools fill the budgets. Its result says it is not loaded.
+   */
+  unloaded?: 'schema' | 'full';
 }
 
 export type PrepareToolCallResult =
@@ -1007,7 +1010,11 @@ export function createRegistry() {
           call: normalizedCall,
           tool,
           timeoutMs: toolTimeoutMs,
-          ...(admission?.loaded === false ? { unloaded: true } : {}),
+          ...(admission?.loaded === false
+            ? {
+                unloaded: context.toolDiscovery?.unloadedReason?.(normalizedCall.name) ?? 'schema',
+              }
+            : {}),
         },
       };
     },
@@ -1020,10 +1027,14 @@ export function createRegistry() {
       // Only a call that ran says it ran; a refused or failed one says only that it is not loaded.
       const withNotice = (result: ToolResult): ToolResult => {
         if (!prepared.unloaded) return result;
+        const why =
+          prepared.unloaded === 'full'
+            ? 'the loaded tools already fill the tool discovery budgets until the conversation is compacted'
+            : 'its schema alone is larger than the tool discovery budget';
         const notice =
           result.status === 'success'
-            ? `${tool.name} ran without being loaded: its schema alone is larger than the tool discovery budget, so it is not declared next turn either; call it directly again when you need it.`
-            : `${tool.name} is not loaded: its schema alone is larger than the tool discovery budget.`;
+            ? `${tool.name} ran without being loaded: ${why}, so it is not declared next turn either; call it directly again when you need it.`
+            : `${tool.name} is not loaded: ${why}.`;
         return { ...result, content: result.content ? `${result.content}\n\n${notice}` : notice };
       };
       const retries = tool.idempotent ? maxRetries : 0;

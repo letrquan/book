@@ -324,6 +324,12 @@ export interface ToolDefinition {
   ignoredArguments?: readonly string[];
   catalog?: ToolCatalogMetadata;
   policy?: ToolPolicy;
+  /**
+   * Declared to the provider but kept out of the model's context until an addition offers it
+   * (#619). Set only on the copies a stable request declares; a provider that does not keep
+   * `tools[]` stable never receives it.
+   */
+  deferLoading?: boolean;
   /** When true, the tool is safe to retry once on transient failure (Read, Grep, WebFetch, etc.). */
   idempotent?: boolean;
   /**
@@ -557,6 +563,12 @@ export interface ToolDiscoveryContext {
    */
   admitDirect?(name: string): { loaded: boolean } | undefined;
   /**
+   * Why a tool `admitDirect` admitted without loading it is not loaded: its schema alone is larger
+   * than the schema budget, or the loaded tools already fill the budgets, since nothing is evicted
+   * mid-session (#619). Optional; without it the schema is named.
+   */
+  unloadedReason?(name: string): 'schema' | 'full';
+  /**
    * Whether this surface admits direct calls at all: not when a permission rule or a PreToolUse
    * hook targets ToolSearch itself, which then gates every deferred tool as it did before #619.
    * Optional; without it no text offers a direct call.
@@ -585,7 +597,48 @@ export interface ToolDiscoveryContext {
 }
 
 export interface ToolDiscoveryState {
-  /** Monotonic access counter used for deterministic LRU eviction. */
+  /** Monotonic access counter: a loaded tool's last activation or call. */
   clock: number;
+  /**
+   * The loaded deferred tools, in the order they loaded: that is the order they are appended to a
+   * request's tools, and nothing is evicted mid-session (#619), so the order never changes.
+   */
   loaded: Map<string, number>;
+  /**
+   * The newest compaction checkpoint the loaded set was last reset at (#619). A history whose
+   * newest checkpoint differs is a reset point, where the provider's cache is rebuilt anyway.
+   */
+  resetAt?: string;
+  /**
+   * The model and the schema budget of the last request: a change of model, or a smaller budget,
+   * is a reset point too.
+   */
+  model?: string;
+  budget?: number;
+  /**
+   * Loaded by the host rather than the model: a skill's resource reader, or a runtime tool such as
+   * `BashOutput` once the runtime first offers it. They always load, and the budgets leave them out.
+   */
+  hostLoaded?: Set<string>;
+  /** Whether tools are deferred, decided once and kept until a reset point. */
+  deferredMode?: boolean;
+  /** `clock` when the last request was built, and when the last one answered was. */
+  builtAt?: number;
+  answeredAt?: number;
+}
+
+/**
+ * What one provider request declares (#619), as one value: `tools` is the request's tools array.
+ * On a stable request it declares every authorized tool, the fixed core first and the rest after,
+ * each in catalog order, those after marked `deferLoading`, so it changes only with authorization;
+ * a deferred tool reaches the model through an addition, and `additions` are the ones no message in
+ * the history has offered yet, which this request offers after its last message. Elsewhere `tools`
+ * is the core in catalog order, then the loaded tools in the order they loaded, and `additions` is
+ * empty. `shown` is what the model sees with its schema, which the request's size is estimated
+ * from.
+ */
+export interface ToolRequest {
+  tools: ToolDefinition[];
+  shown: ToolDefinition[];
+  additions: string[];
 }

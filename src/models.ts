@@ -290,6 +290,30 @@ export function hasDeclaredContextWindow(
 }
 
 /**
+ * Claude models that take mid-conversation tool changes (#619): a `role: "system"` message whose
+ * `tool_addition` block offers a tool declared in `tools` with `defer_loading: true`, behind the
+ * `mid-conversation-tool-changes-2026-07-01` beta. The list is the claude-api skill's
+ * (`shared/tool-use-concepts.md` § Mid-conversation tool changes, `shared/platform-availability.md`):
+ * Opus 5, Opus 5.5, Opus 4.8, Fable 5 and 5.1, Mythos 5 and 5.1, and Sonnet 5.5, not Sonnet 5.
+ * Exact ids after `normalizeModelName`, never a prefix: `claude-sonnet-5` is the front of
+ * `claude-sonnet-5-5`. Whether the endpoint takes the beta is the provider's question, not this one.
+ */
+const MID_CONVERSATION_TOOL_CHANGE_MODELS = new Set([
+  'claude-opus-5',
+  'claude-opus-5-5',
+  'claude-opus-4-8',
+  'claude-fable-5',
+  'claude-fable-5-1',
+  'claude-mythos-5',
+  'claude-mythos-5-1',
+  'claude-sonnet-5-5',
+]);
+
+export function supportsMidConversationToolChanges(model: string): boolean {
+  return MID_CONVERSATION_TOOL_CHANGE_MODELS.has(normalizeModelName(model));
+}
+
+/**
  * How capable a Claude model is as an advisor, higher is stronger: Claude Code's
  * advisor ranking. Only models in this table are compared; for any other id the
  * rank is unknown and `/advisor` says nothing about relative strength.

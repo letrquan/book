@@ -593,6 +593,7 @@ output.
     "schemaTokenBudget": 8000,
     "maxLoadedTools": 15,
     "searchLimit": 5,
+    "stableTools": "auto",
     "intentRouting": true
   },
   "toolExecution": {
@@ -624,6 +625,16 @@ Three memory keys were removed with the approval inbox, the external-content qua
 when what you typed asks for it: a URL loads `WebFetch`, search intent `WebSearch` (see
 [Tool discovery](tools-and-safety.md#tool-discovery)). It only loads tools the run already
 authorizes, so any settings layer may set it.
+
+`toolDiscovery.maxLoadedTools` and `toolDiscovery.schemaTokenBudget` cap the deferred tools
+loaded at once, counting only those the mode and restrictions authorize. Nothing loaded is evicted
+mid-session, so once they are full a further load is refused until the next compaction, change of
+model or `/clear` (see "Tool discovery" in
+[Tools and safety](tools-and-safety.md#tool-discovery)). `toolDiscovery.stableTools` is `auto` (the
+default) or `off`: `auto` keeps the tools array fixed on the Anthropic API for models that take
+mid-conversation tool changes, declaring deferred tools with `defer_loading` and offering a loaded
+one with a `tool_addition` message, so loading a tool keeps the prompt cache; `off` sends the
+growing array every other provider gets.
 
 `agents.checkTimeoutMs` caps one `Check` run (default 120 s, maximum 2 h). A check that exceeds it
 is killed and reported as `check_timed_out` — explicitly _not_ as a failing check, so an agent does

@@ -434,6 +434,13 @@ export const toolDiscoverySettingsSchema = z.object({
   maxLoadedTools: z.number().int().min(1).max(100).default(15),
   searchLimit: z.number().int().min(1).max(5).default(5),
   /**
+   * Stable tools on Anthropic (#619): on a model and endpoint that take mid-conversation tool
+   * changes, `tools[]` declares every authorized tool from the first request and a loaded one is
+   * offered by a `tool_addition` message, so an activation keeps the prompt cache. `off` is the
+   * kill switch for that beta request shape; activation stays append-only either way.
+   */
+  stableTools: z.enum(['auto', 'off']).default('auto'),
+  /**
    * Activate a deferred tool before a turn's first model call when what the user typed asks for
    * it: a URL activates `WebFetch`, search intent `WebSearch` (#619). It only loads authorized
    * tools, so any layer may set it.
@@ -767,6 +774,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     schemaTokenBudget: 8000,
     maxLoadedTools: 15,
     searchLimit: 5,
+    stableTools: 'auto',
     intentRouting: true,
   },
   toolExecution: {

@@ -13,7 +13,7 @@ import type { AgentConfig } from '../types/runtime.js';
 import type { ProviderMessage, ProviderStreamEvent } from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
 import { createProvider } from './port.js';
-export { createProvider, isAnthropicProvider } from './port.js';
+export { createProvider, isAnthropicProvider, keepsToolsStable } from './port.js';
 export type { Provider, ProviderStreamOptions } from './port.js';
 
 export async function* chatCompletionStream(

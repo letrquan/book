@@ -79,7 +79,7 @@ describe('deferred tool list (#619)', () => {
     }
   });
 
-  it('is byte-identical after an activation and after an eviction', () => {
+  it('is byte-identical after an activation, a refused one and a reset point', () => {
     const runtimeConfig = config();
     runtimeConfig.settings.toolDiscovery.maxLoadedTools = 1;
     const surface = createToolSurface({
@@ -88,11 +88,25 @@ describe('deferred tool list (#619)', () => {
       definitions: createDefaultRegistry().getDefinitions(),
     });
     const before = surface.catalogSummary();
-    surface.activate(['WebFetch']);
-    surface.activeDefinitions();
+    surface.activate(['WebFetch'], 'search');
+    surface.prepareRequest([]);
+    surface.markAnswered();
     expect(surface.catalogSummary()).toBe(before);
-    surface.activate(['GitLog']);
-    expect(surface.activeDefinitions().map((entry) => entry.name)).not.toContain('WebFetch');
+    // Nothing is evicted mid-session any more (#619): a full set refuses the next activation.
+    expect(surface.activate(['GitLog'], 'search')).toEqual([]);
+    expect(surface.activeDefinitions().map((entry) => entry.name)).toContain('WebFetch');
+    expect(surface.catalogSummary()).toBe(before);
+    // A compaction checkpoint is the reset point that unloads it: the model saw it declared.
+    const checkpoint = {
+      id: 'c1',
+      role: 'user' as const,
+      kind: 'checkpoint' as const,
+      content: 'summary',
+      includeInContext: true,
+      timestamp: 0,
+    };
+    const reset = surface.prepareRequest([checkpoint]).tools.map((entry) => entry.name);
+    expect(reset).not.toContain('WebFetch');
     expect(surface.catalogSummary()).toBe(before);
   });
 
