@@ -1,9 +1,9 @@
 /**
- * The "scan" startup splash: a pixel-art open book on a dim dot field, read top to bottom by a
- * scan line. Below the line the book is only a sparse stipple; above it the pages are solid. When
- * the sweep lands, corner brackets close in and lock in the theme's brand colour, the code lines on
- * the pages light up as if read, the BOOK wordmark is stamped beneath, and the whole picture
- * dissolves into the title page.
+ * The "assemble" startup splash: a pixel-art open book gathered out of a dim dot field. Dots lift
+ * off the field and stream inward on curving paths, landing as the book's pixels from the spine
+ * outward while corner brackets close in. When the last pixel lands the brackets lock in the
+ * theme's brand colour, the code lines on the pages light up as if read, the BOOK wordmark is
+ * stamped beneath, and the whole picture dissolves into the title page.
  *
  * Pixels are drawn two to a cell with half blocks, so they come out roughly square. Everything is a
  * pure function of (width, height, tick, theme), which keeps every frame testable.
@@ -11,7 +11,7 @@
 import type { ThemeTokens } from '../types/theme.js';
 import { hashNoise } from './startup-fire.js';
 
-export interface StartupScanRun {
+export interface StartupAssembleRun {
   text: string;
   color?: string;
   backgroundColor?: string;
@@ -19,19 +19,20 @@ export interface StartupScanRun {
   dimColor?: boolean;
 }
 
-export type StartupScanPhase = 'boot' | 'scan' | 'lock' | 'read' | 'dissolve';
+export type StartupAssemblePhase = 'boot' | 'gather' | 'read' | 'dissolve';
 
-export interface StartupScanFrame {
-  rows: StartupScanRun[][];
-  phase: StartupScanPhase;
+export interface StartupAssembleFrame {
+  rows: StartupAssembleRun[][];
+  phase: StartupAssemblePhase;
 }
 
 /** Ticks of the `cinematic` UI clock (50 ms): about three seconds. */
-export const STARTUP_SCAN_TOTAL_TICKS = 64;
-const FADE_IN_END = 6;
-const SCAN_START = 4;
-const SCAN_END = 28;
-const LOCK = 33;
+export const STARTUP_ASSEMBLE_TOTAL_TICKS = 64;
+const FADE_IN_END = 4;
+const GATHER_START = 2;
+/** Every pixel has landed by this tick; the brackets lock on it. */
+export const STARTUP_ASSEMBLE_LOCK_TICK = 33;
+const LOCK = STARTUP_ASSEMBLE_LOCK_TICK;
 const DISSOLVE_START = 54;
 
 const TAGLINE = 'Your coding workspace, indexed.';
@@ -58,7 +59,7 @@ interface CellStyle {
   dimColor?: boolean;
 }
 
-export interface ScanLayout {
+export interface AssembleLayout {
   width: number;
   pixelHeight: number;
   /** The book's bounding box, in pixels. */
@@ -77,6 +78,10 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function easeOut(t: number): number {
+  return 1 - (1 - t) ** 3;
+}
+
 function easeInOut(t: number): number {
   return t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
 }
@@ -85,15 +90,14 @@ function unit(...values: number[]): number {
   return hashNoise(...values) / 0x1_0000_0000;
 }
 
-export function phaseForScan(tick: number): StartupScanPhase {
-  if (tick < SCAN_START) return 'boot';
-  if (tick < SCAN_END) return 'scan';
-  if (tick < LOCK) return 'lock';
+export function phaseForAssemble(tick: number): StartupAssemblePhase {
+  if (tick < GATHER_START) return 'boot';
+  if (tick < LOCK) return 'gather';
   if (tick < DISSOLVE_START) return 'read';
   return 'dissolve';
 }
 
-export function layoutStartupScan(width: number, terminalHeight: number): ScanLayout {
+export function layoutStartupAssemble(width: number, terminalHeight: number): AssembleLayout {
   const safeWidth = Math.max(1, Math.floor(width));
   const rows = Math.max(1, Math.floor(terminalHeight));
   const pixelHeight = rows * 2;
@@ -127,7 +131,7 @@ export function layoutStartupScan(width: number, terminalHeight: number): ScanLa
 }
 
 /** What the open book holds at pixel (x, y): 0 nothing, 1 cover, 2 ink, 3 paper. */
-export function bookPixel(layout: ScanLayout, x: number, y: number): 0 | 1 | 2 | 3 {
+export function bookPixel(layout: AssembleLayout, x: number, y: number): 0 | 1 | 2 | 3 {
   const halfW = layout.markWidth / 2;
   const halfH = layout.markHeight / 2;
   const u = (x + 0.5 - (layout.left + halfW)) / halfW;
@@ -164,11 +168,54 @@ export function bookPixel(layout: ScanLayout, x: number, y: number): 0 | 1 | 2 |
   return t >= start && t <= Math.max(start + 0.1, end) ? 2 : 3;
 }
 
-function scanRow(layout: ScanLayout, tick: number): number {
-  const from = layout.top - 2;
-  const to = layout.top + layout.markHeight + 2;
-  const t = easeInOut(clamp01((tick - SCAN_START) / (SCAN_END - SCAN_START)));
-  return Math.round(from + (to - from) * t);
+/**
+ * The tick a book pixel lands on. The spine fills first and the outer edges last, with a little
+ * jitter so the pages fill in grain rather than in rings.
+ */
+export function arrivalTick(layout: AssembleLayout, x: number, y: number): number {
+  const u = (x + 0.5 - layout.centerX) / (layout.markWidth / 2);
+  const v = (y + 0.5 - layout.centerY) / (layout.markHeight / 2);
+  const radial = Math.min(1.2, Math.hypot(u, v * 0.8));
+  return GATHER_START + 12 + Math.floor(radial * 11 + unit(x, y, 31) * 4);
+}
+
+function flightTicks(x: number, y: number): number {
+  return 9 + (hashNoise(x, y, 37) % 5);
+}
+
+/**
+ * Where a book pixel is while it flies in, or undefined before it lifts off. It starts on a dot
+ * of the field and curves in, all pixels turning the same way so the gathering reads as a swirl.
+ */
+function flightPosition(
+  layout: AssembleLayout,
+  x: number,
+  y: number,
+  tick: number,
+): [number, number] | undefined {
+  const landAt = arrivalTick(layout, x, y);
+  const flight = flightTicks(x, y);
+  const launch = landAt - flight;
+  if (tick < launch || tick >= landAt) return undefined;
+  const rows = layout.pixelHeight / 2;
+  // A dot of the field, in cells, then in pixels.
+  const cellY = (hashNoise(x, y, 43) % Math.max(1, Math.floor(rows / 2))) * 2;
+  const offset = ((cellY / 2) % 2) * 3;
+  const sites = Math.max(1, Math.floor((layout.width - offset) / 6));
+  const cellX = (hashNoise(x, y, 47) % sites) * 6 + offset;
+  const sx = cellX;
+  const sy = cellY * 2;
+  const t = (tick - launch) / flight;
+  const e = easeOut(t);
+  const dx = x - sx;
+  const dy = y - sy;
+  const bend = Math.sin(Math.PI * t) * 0.35 * (1 - e * 0.5);
+  return [Math.round(sx + dx * e - dy * bend), Math.round(sy + dy * e + dx * bend * 0.5)];
+}
+
+/** How far the gathering has come: 0 before the first dot lifts, 1 when the last lands. */
+function gatherProgress(tick: number): number {
+  return clamp01((tick - GATHER_START) / (LOCK - GATHER_START));
 }
 
 function toneColor(tone: Tone, accent: string): string | undefined {
@@ -185,8 +232,8 @@ function sameStyle(left: CellStyle, right: CellStyle): boolean {
   );
 }
 
-function toRuns(cells: CellStyle[]): StartupScanRun[] {
-  const runs: StartupScanRun[] = [];
+function toRuns(cells: CellStyle[]): StartupAssembleRun[] {
+  const runs: StartupAssembleRun[] = [];
   for (const cell of cells) {
     const previous = runs.at(-1);
     if (previous && sameStyle(previous, cell)) previous.text += cell.text;
@@ -195,18 +242,16 @@ function toRuns(cells: CellStyle[]): StartupScanRun[] {
   return runs;
 }
 
-function paintPixels(layout: ScanLayout, tick: number): Uint8Array {
+function paintPixels(layout: AssembleLayout, tick: number): Uint8Array {
   const { width, pixelHeight } = layout;
   const pixels = new Uint8Array(width * pixelHeight);
   const set = (x: number, y: number, tone: Tone) => {
     if (x < 0 || y < 0 || x >= width || y >= pixelHeight) return;
     pixels[y * width + x] = tone;
   };
-  const phase = phaseForScan(tick);
-  const scanY = scanRow(layout, tick);
-  const fade = clamp01(tick / FADE_IN_END);
+  const phase = phaseForAssemble(tick);
   const dissolve = clamp01(
-    (tick - DISSOLVE_START) / (STARTUP_SCAN_TOTAL_TICKS - DISSOLVE_START - 2),
+    (tick - DISSOLVE_START) / (STARTUP_ASSEMBLE_TOTAL_TICKS - DISSOLVE_START - 2),
   );
   // The code lines light up left to right once the brackets lock.
   const readX =
@@ -214,37 +259,36 @@ function paintPixels(layout: ScanLayout, tick: number): Uint8Array {
     layout.markWidth * clamp01((tick - LOCK + 1) / 9) * 1.05 -
     layout.markWidth * 0.02;
 
+  const flying: number[] = [];
   for (let y = layout.top - 1; y <= layout.top + layout.markHeight + 3; y++) {
     for (let x = layout.left; x < layout.left + layout.markWidth; x++) {
       const kind = bookPixel(layout, x, y);
       if (kind === 0) continue;
-      if (y < scanY) {
-        const ink: Tone = phase !== 'scan' && x <= readX ? 4 : 2;
-        set(x, y, kind === 3 ? 3 : kind === 2 ? ink : 2);
-      } else if (kind === 3 && x % 2 === 0 && y % 2 === 0 && unit(x, y, tick >> 2) < 0.82 * fade) {
-        // Not yet read: a sparse stipple of the paper.
-        set(x, y, 2);
+      const landAt = arrivalTick(layout, x, y);
+      if (tick >= landAt) {
+        // A pixel flashes white the tick it lands, then takes its own tone.
+        const ink: Tone = phase !== 'gather' && x <= readX ? 4 : 2;
+        const tone: Tone = tick === landAt ? 3 : kind === 3 ? 3 : kind === 2 ? ink : 2;
+        set(x, y, tone);
+        continue;
       }
+      const position = flightPosition(layout, x, y, tick);
+      if (position) flying.push(position[0], position[1]);
     }
+  }
+  // In flight a pixel is mid grey, and never covers one that has landed.
+  for (let index = 0; index < flying.length; index += 2) {
+    const fx = flying[index];
+    const fy = flying[index + 1];
+    if (fx < 0 || fy < 0 || fx >= width || fy >= pixelHeight) continue;
+    if (!pixels[fy * width + fx]) pixels[fy * width + fx] = 2;
   }
 
   const halfW = layout.markWidth / 2;
   const halfH = layout.markHeight / 2;
-  if (phase === 'boot' || phase === 'scan') {
-    const reach = Math.round(halfW * 1.06);
-    const lineLeft = layout.centerX - reach;
-    const lineRight = layout.centerX + reach;
-    for (let x = lineLeft; x <= lineRight; x++) set(x, scanY, 3);
-    for (let dy = -3; dy <= 3; dy++) {
-      set(lineLeft - 2, scanY + dy, 3);
-      set(lineRight + 2, scanY + dy, 3);
-    }
-  }
-
-  // Corner brackets close in after the sweep and lock in the brand colour.
-  if (tick >= SCAN_START) {
-    const close = easeInOut(clamp01((tick - SCAN_END) / (LOCK - SCAN_END)));
-    const spread = 1.24 - 0.14 * close;
+  // Corner brackets close in as the book gathers and lock in the brand colour.
+  if (tick >= GATHER_START) {
+    const spread = 1.5 - 0.4 * easeInOut(gatherProgress(tick));
     const bx = Math.round(halfW * spread + 2);
     const by = Math.round(halfH * spread + 3);
     const arm = Math.max(3, Math.round(halfW * 0.2));
@@ -325,20 +369,20 @@ function shiftRow(row: CellStyle[], offset: number): CellStyle[] {
   return row.map((_, x) => row[x - offset] ?? { text: ' ' });
 }
 
-export function composeStartupScanFrame(
+export function composeStartupAssembleFrame(
   width: number,
   terminalHeight: number,
   tick: number,
   theme: ThemeTokens,
-): StartupScanFrame {
-  const layout = layoutStartupScan(width, terminalHeight);
+): StartupAssembleFrame {
+  const layout = layoutStartupAssemble(width, terminalHeight);
   const height = Math.max(1, Math.floor(terminalHeight));
   const accent = theme.brand;
-  const phase = phaseForScan(tick);
+  const phase = phaseForAssemble(tick);
   const pixels = paintPixels(layout, tick);
   const fade = clamp01(tick / FADE_IN_END);
   const dissolve = clamp01(
-    (tick - DISSOLVE_START) / (STARTUP_SCAN_TOTAL_TICKS - DISSOLVE_START - 2),
+    (tick - DISSOLVE_START) / (STARTUP_ASSEMBLE_TOTAL_TICKS - DISSOLVE_START - 2),
   );
   const cy = layout.centerY / 2;
 
@@ -354,23 +398,14 @@ export function composeStartupScanFrame(
       if (bottom) return { text: '▄', color: bottom };
       if (!dotAt(x, y)) return { text: ' ' };
       // The dot field fades in, ripples out from the book, and dissolves with it.
+      // Dots lift off the field to become the book, thinning it as the gathering runs.
       if (unit(x, y, 3) > fade || unit(x, y, 5) < dissolve) return { text: ' ' };
+      if (unit(x, y, 9) < gatherProgress(tick) * 0.55) return { text: ' ' };
       const distance = Math.hypot(x - layout.centerX, (y - cy) * 2);
       const lit = phase !== 'dissolve' && Math.sin(distance / 3 - tick * 0.45) > 0.86;
       return { text: '·', color: lit ? DOT_LIT : DOT_DIM };
     }),
   );
-
-  // A readout rides the scan line.
-  if (phase === 'scan') {
-    const scanY = scanRow(layout, tick);
-    const percent = Math.round(clamp01((scanY - layout.top) / (layout.markHeight + 2)) * 100);
-    const label = `${String(percent).padStart(3, '0')}%`;
-    const column = layout.centerX + Math.round((layout.markWidth / 2) * 1.24) + 6;
-    if (column + label.length < layout.width) {
-      writeText(cells, Math.floor(scanY / 2), column, label, () => ({ color: RAMP[2] }));
-    }
-  }
 
   // The tagline decodes out of scrambled characters, left to right.
   const taglineStart = LOCK + WORD.length * 2;
@@ -388,12 +423,8 @@ export function composeStartupScanFrame(
     });
   }
 
-  // Glitch: the scan line tears now and then, and the lock lands with a jolt.
+  // Glitch: the lock lands with a jolt.
   const torn = new Set<number>();
-  if (phase === 'scan' && hashNoise(tick, 41) % 4 === 0) {
-    const scanCell = Math.floor(scanRow(layout, tick) / 2);
-    for (let dy = -1; dy <= 1; dy++) torn.add(scanCell + dy);
-  }
   if (tick === LOCK || tick === LOCK + 1) {
     const count = 3 + (hashNoise(tick, 5) % 3);
     for (let index = 0; index < count; index++) {

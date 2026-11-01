@@ -1,47 +1,47 @@
 import { Box, Text } from 'ink';
 import { useEffect, useRef, useState } from 'react';
 import { createRenderDebugLogger } from '../../debug-log.js';
-import { composeStartupScanFrame, STARTUP_SCAN_TOTAL_TICKS } from '../startup-scan.js';
+import { composeStartupAssembleFrame, STARTUP_ASSEMBLE_TOTAL_TICKS } from '../startup-assemble.js';
 import { useTheme } from '../theme.js';
 import { useUiClock } from '../ui-clock.js';
 
-const scanLog = createRenderDebugLogger('tui:startup-scan');
+const assembleLog = createRenderDebugLogger('tui:startup-assemble');
 
-interface StartupScanProps {
+interface StartupAssembleProps {
   width: number;
   height: number;
   onComplete: () => void;
 }
 
-export function StartupScan({ width, height, onComplete }: StartupScanProps) {
+export function StartupAssemble({ width, height, onComplete }: StartupAssembleProps) {
   const theme = useTheme();
   const safeWidth = Math.max(1, Math.floor(width));
   const safeHeight = Math.max(1, Math.floor(height));
   const [tick, setTick] = useState(0);
   const tickRef = useRef(0);
   const completedRef = useRef(false);
-  const clock = useUiClock('cinematic', tick < STARTUP_SCAN_TOTAL_TICKS);
+  const clock = useUiClock('cinematic', tick < STARTUP_ASSEMBLE_TOTAL_TICKS);
 
   useEffect(() => {
-    scanLog.event('start', { width: safeWidth, height: safeHeight });
-    return () => scanLog.event('stop', { tick: tickRef.current });
+    assembleLog.event('start', { width: safeWidth, height: safeHeight });
+    return () => assembleLog.event('stop', { tick: tickRef.current });
     // Only log the lifecycle, not every animation tick.
   }, []);
 
   useEffect(() => {
-    if (tickRef.current >= STARTUP_SCAN_TOTAL_TICKS) return;
+    if (tickRef.current >= STARTUP_ASSEMBLE_TOTAL_TICKS) return;
     tickRef.current += 1;
     setTick(tickRef.current);
   }, [clock]);
 
   useEffect(() => {
-    if (tick < STARTUP_SCAN_TOTAL_TICKS || completedRef.current) return;
+    if (tick < STARTUP_ASSEMBLE_TOTAL_TICKS || completedRef.current) return;
     completedRef.current = true;
-    scanLog.event('complete', { width: safeWidth, height: safeHeight });
+    assembleLog.event('complete', { width: safeWidth, height: safeHeight });
     onComplete();
   }, [onComplete, safeHeight, safeWidth, tick]);
 
-  const frame = composeStartupScanFrame(safeWidth, safeHeight, tick, theme);
+  const frame = composeStartupAssembleFrame(safeWidth, safeHeight, tick, theme);
   return (
     <Box flexDirection="column" width={safeWidth} height={safeHeight} overflow="hidden">
       {frame.rows.map((runs, rowIndex) => (
