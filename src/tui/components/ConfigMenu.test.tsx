@@ -240,7 +240,7 @@ describe('ConfigMenu', () => {
     expect(onToggleThinking).toHaveBeenCalledOnce();
   });
 
-  it('shows and toggles startup fire from the keyboard shortcut', () => {
+  it('shows and toggles the startup animation from the keyboard shortcut', () => {
     const onToggleStartupAnimation = vi.fn();
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>
@@ -261,9 +261,9 @@ describe('ConfigMenu', () => {
       </ThemeContext.Provider>,
     );
 
-    expect(view.lastFrame()).toContain('Startup fire');
+    expect(view.lastFrame()).toContain('Startup animation');
     expect(view.lastFrame()).toContain('off');
-    view.stdin.write('f');
+    view.stdin.write('t');
     expect(onToggleStartupAnimation).toHaveBeenCalledOnce();
   });
 
@@ -292,7 +292,7 @@ describe('ConfigMenu', () => {
       ['V', 'Advisor'],
       ['E', 'Effort'],
       ['I', 'Show thinking'],
-      ['F', 'Startup fire'],
+      ['T', 'Startup animation'],
       ['P', 'Default permissions'],
       ['A', 'Subagent profiles'],
       ['S', 'Skills'],
@@ -325,11 +325,11 @@ describe('ConfigMenu', () => {
       </ThemeContext.Provider>,
     );
 
-    // `f` acts on "Startup fire", five rows below the cursor's start. Enter must
+    // `t` acts on "Startup animation", five rows below the cursor's start. Enter must
     // then repeat that row rather than opening the model picker the cursor
     // began on — otherwise the change happened somewhere the user was not
     // looking.
-    view.stdin.write('f');
+    view.stdin.write('t');
     view.stdin.write('\r');
     expect(onToggleStartupAnimation).toHaveBeenCalledTimes(2);
   });
