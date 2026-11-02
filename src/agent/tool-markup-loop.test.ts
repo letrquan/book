@@ -12,7 +12,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runAgentLoop } from './loop.js';
 import { finalAnswerText } from './final-answer.js';
+import { createSteeringInbox, type SteeringInboxHandle } from './steering.js';
 import { createDefaultRegistry, createRegistry } from '../tools/registry.js';
+import { SessionRuntime } from '../session/runtime.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { terminalRecovery, type AgentTerminalOutcome } from '../types/terminal.js';
 import type { AgentLoopCallbacks, ProviderStreamEvent } from '../types/providers.js';
@@ -314,5 +316,128 @@ describe('a reply that is tool-call markup (#667)', () => {
       expect(seen.outcomes[0]).toMatchObject({ status: 'completed', reason: 'normal_completion' });
       expect(finalAnswerText(seen.history)).toBe(text);
     });
+  });
+});
+
+describe('a reply that is tool-call markup, beside send-now (#661)', () => {
+  type StreamScript = (signal: AbortSignal | undefined) => AsyncGenerator<ProviderStreamEvent>;
+
+  /** A provider whose request `n` runs script `n`, and which hands each script its request's abort. */
+  function abortAware(...scripts: StreamScript[]): { provider: Provider; requests: number[] } {
+    const requests: number[] = [];
+    const provider = {
+      id: 'scripted',
+      stream: (
+        _config: unknown,
+        _messages: unknown,
+        _tools: unknown,
+        options?: { signal?: AbortSignal },
+      ) => {
+        const script = scripts.shift();
+        if (!script) throw new Error('Scripted provider has no request left');
+        requests.push(requests.length + 1);
+        return script(options?.signal);
+      },
+    } as unknown as Provider;
+    return { provider, requests };
+  }
+
+  function abortOf(signal: AbortSignal | undefined): Promise<void> {
+    return new Promise((resolve) => {
+      if (!signal) return;
+      if (signal.aborted) return resolve();
+      signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+  }
+
+  /** The user types a correction and presses the send-now chord. */
+  function sendNow(inbox: SteeringInboxHandle, id: string, content: string): void {
+    inbox.push({ id, content, timestamp: 1_700_000_000_000 });
+    inbox.requestNow();
+  }
+
+  async function runWithSteering(inbox: SteeringInboxHandle, provider: Provider) {
+    const errors: string[] = [];
+    const outcomes: AgentTerminalOutcome[] = [];
+    let discards = 0;
+    const history = await runAgentLoop(
+      defaultConfig(),
+      createRegistry(),
+      'start',
+      [],
+      callbacks({
+        onError: (error) => errors.push(error),
+        onTerminal: (outcome) => outcomes.push(outcome),
+        onAttemptDiscarded: () => discards++,
+      }),
+      'auto',
+      { isNewSession: false, runtime: new SessionRuntime(), steering: inbox, provider },
+    );
+    return { history, errors, outcomes, discards };
+  }
+
+  it('does not take a reply that send-now cut off for a finished answer', async () => {
+    const inbox = createSteeringInbox();
+    // A block with no closing tag is what the markup check reads, but this reply never finished:
+    // the user stopped it, and what it said stays as the user read it.
+    const cutOff =
+      '<｜DSML｜ calls>\n<｜DSML｜ invoke name="Grep">\n<｜DSML｜ parameter name="pattern" string="true">que';
+    const { provider, requests } = abortAware(
+      async function* (signal) {
+        yield { type: 'text', content: cutOff };
+        sendNow(inbox, 'steer-1', 'stop and say hi');
+        await abortOf(signal);
+      },
+      async function* () {
+        yield { type: 'text', content: 'hi' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    );
+
+    const seen = await runWithSteering(inbox, provider);
+
+    // The stopped request and the one that answers the steer: no re-ask in between.
+    expect(requests).toHaveLength(2);
+    expect(seen.discards).toBe(0);
+    expect(seen.errors).toEqual([]);
+    expect(seen.outcomes[0]).toMatchObject({ status: 'completed', reason: 'normal_completion' });
+    expect(finalAnswerText(seen.history)).toBe('hi');
+    expect(inbox.hasPending()).toBe(false);
+  });
+
+  it('keeps the steer through the re-ask of a reply that had already finished', async () => {
+    const inbox = createSteeringInbox();
+    // The reply is whole when send-now is pressed, so it is judged like any other and re-asked.
+    // The send-now still stands, so it stops the re-ask at once, and the steer goes with the
+    // request after it: three requests, and the steer is not lost on the way.
+    const { provider, requests } = abortAware(
+      async function* () {
+        yield { type: 'text', content: DSML };
+        yield { type: 'done', finishReasons: ['stop'] };
+        sendNow(inbox, 'steer-1', 'also check the cache');
+      },
+      async function* () {
+        yield { type: 'text', content: 'The cache is fine.' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+      async function* () {
+        yield { type: 'text', content: 'The cache is fine.' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    );
+
+    const seen = await runWithSteering(inbox, provider);
+
+    expect(requests).toHaveLength(3);
+    expect(seen.errors).toEqual([]);
+    expect(seen.outcomes[0]).toMatchObject({ status: 'completed', reason: 'normal_completion' });
+    expect(seen.history.some((message) => message.content.includes('DSML'))).toBe(false);
+    expect(
+      seen.history.some(
+        (message) => message.steered && message.content.includes('check the cache'),
+      ),
+    ).toBe(true);
+    expect(finalAnswerText(seen.history)).toBe('The cache is fine.');
+    expect(inbox.hasPending()).toBe(false);
   });
 });
