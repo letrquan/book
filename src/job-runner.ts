@@ -80,6 +80,9 @@ let state: PersistentShellState = {
   parentSessionId: spec.parentSessionId,
   rootRunId: spec.rootRunId,
   parentRunId: spec.parentRunId,
+  // The record outlives the spec, which is removed once the job ends: a completion read after a
+  // restart takes its pin from here (#650).
+  peerTurnClass: spec.peerTurnClass,
   outputPath: spec.outputPath,
   controlPath: spec.controlPath,
   completionSequence: 0,

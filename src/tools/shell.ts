@@ -342,6 +342,7 @@ async function bashForeground(
           parentSessionId: ctx.parentSessionId,
           rootRunId: ctx.runContext?.rootRunId,
           parentRunId: ctx.runContext?.runId,
+          ...(ctx.peerTurnClass !== undefined ? { peerTurnClass: ctx.peerTurnClass } : {}),
         });
       } catch {
         // A manager that cannot take it leaves the process to the caller, which is the old
@@ -565,6 +566,8 @@ async function bashBackground(
       parentSessionId: ctx.parentSessionId,
       rootRunId: ctx.runContext?.rootRunId,
       parentRunId: ctx.runContext?.runId,
+      // A pinned run's job keeps the run's class for every completion of its own (#650).
+      ...(ctx.peerTurnClass !== undefined ? { peerTurnClass: ctx.peerTurnClass } : {}),
     });
     return ok(
       [

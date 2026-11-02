@@ -3,6 +3,7 @@ import type { CompactStrategy, ProviderModelConfig, ResolvedSettings } from '../
 import type { LoadedMemoryContext } from '../memory-store.js';
 import type { ModelWindowStore } from '../model-window-store.js';
 import type { WorkspaceProviderGate } from '../provider-approvals.js';
+import type { PeerPermissionClass } from './messaging.js';
 
 export type PermissionMode =
   'default' | 'auto' | 'plan' | 'accept-edits' | 'dontAsk' | 'bypassPermissions';
@@ -178,6 +179,13 @@ export interface BackgroundShellRecord {
   sandboxed?: boolean;
   /** The sandbox's git-dir mode (issue 373): true = every git dir of the workspace read-only. */
   gitDirReadOnly?: boolean;
+  /**
+   * The class of the pinned run that started the job (#620, #650): a peer's turn, or a turn that
+   * carried its work on. Every completion of the job runs pinned to it, whenever it lands; a
+   * persistent job keeps it in its record, so a restart or `--resume` does not drop it. Absent for
+   * a job the user's own run started.
+   */
+  peerTurnClass?: PeerPermissionClass;
 }
 
 export interface BackgroundShellStore {

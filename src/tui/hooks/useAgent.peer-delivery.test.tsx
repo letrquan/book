@@ -231,34 +231,43 @@ describe('peer-message delivery in the TUI', () => {
     ]);
   });
 
-  it('pins the completion of a background job a pinned turn started, after the user typed too', async () => {
+  it('pins every completion of a background job a pinned turn started, from the job itself (#650)', async () => {
     const messaging = fakeMessaging();
     const { config, session } = fixture(messaging);
     render(<Harness config={config} session={session} />);
     await new Promise((resolve) => setTimeout(resolve, 30));
+    // The job records the class of the run that started it; no peer turn ran in this process, as
+    // after a restart or `--resume`.
     const shell = {
       id: 'bg-peer',
       title: 'peer job',
       command: 'npm test',
-      status: 'completed',
+      status: 'exited',
       exitCode: 0,
       startedAt: Date.now() - 1000,
       finishedAt: Date.now(),
+      peerTurnClass: 'prompting',
     } as unknown as Parameters<NonNullable<typeof latest>['sendBackgroundShellCompletion']>[0];
-    // The peer turn starts the job: it is listed only once that run has gone.
-    const list = vi
-      .spyOn(latest!.runtime.shellManager, 'list')
-      .mockReturnValueOnce([])
-      .mockReturnValue([shell]);
-    expect(await latest!.sendPeerMessages({ ...batch, turnClass: 'prompting' })).toBe(true);
-    list.mockReturnValue([shell]);
+    expect(await latest!.sendBackgroundShellCompletion(shell)).toBe(true);
+    // A second completion of the same job is pinned too.
+    expect(await latest!.sendBackgroundShellCompletion(shell)).toBe(true);
     // The user's own turn clears the session's pin, but not the pin on the work the peer started.
     await latest!.send('the user types');
     expect(await latest!.sendBackgroundShellCompletion(shell)).toBe(true);
+    // A job the user's own run started names no class: its completion is not pinned.
+    expect(
+      await latest!.sendBackgroundShellCompletion({
+        ...shell,
+        id: 'bg-mine',
+        peerTurnClass: undefined,
+      }),
+    ).toBe(true);
     expect(loopState.calls.map((call) => call.peerTurnClass)).toEqual([
+      'prompting',
       'prompting',
       undefined,
       'prompting',
+      undefined,
     ]);
   });
 

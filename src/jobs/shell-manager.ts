@@ -14,9 +14,11 @@ import type {
   BackgroundShellStore,
   CommandExecution,
 } from '../types/runtime.js';
+import type { PeerPermissionClass } from '../types/messaging.js';
 import {
   ensurePersistentJobPaths,
   listPersistentStates,
+  persistedPeerTurnClass,
   persistentJobPaths,
   readJsonFile,
   removePersistentJobFiles,
@@ -84,6 +86,8 @@ export interface ShellStartOptions {
   parentSessionId?: string;
   rootRunId?: string;
   parentRunId?: string;
+  /** The class of the pinned run starting the job (#650), kept on its record for its completions. */
+  peerTurnClass?: PeerPermissionClass;
 }
 
 /**
@@ -112,6 +116,7 @@ export interface ShellAdoptOptions {
   parentSessionId?: string;
   rootRunId?: string;
   parentRunId?: string;
+  peerTurnClass?: PeerPermissionClass;
 }
 
 export interface ShellOutputResult {
@@ -344,6 +349,7 @@ export class ShellJobManager {
       parentSessionId: options.parentSessionId,
       rootRunId: options.rootRunId,
       parentRunId: options.parentRunId,
+      ...(options.peerTurnClass !== undefined ? { peerTurnClass: options.peerTurnClass } : {}),
     };
     this.store.shells.set(id, shell);
 
@@ -427,6 +433,7 @@ export class ShellJobManager {
       parentSessionId: options.parentSessionId,
       rootRunId: options.rootRunId,
       parentRunId: options.parentRunId,
+      ...(options.peerTurnClass !== undefined ? { peerTurnClass: options.peerTurnClass } : {}),
     };
     this.store.shells.set(id, shell);
     // Deliberately not `unref()`ing the process or its streams the way `start()` does. This one
@@ -677,6 +684,7 @@ export class ShellJobManager {
       parentSessionId: options.parentSessionId,
       rootRunId: options.rootRunId,
       parentRunId: options.parentRunId,
+      ...(options.peerTurnClass !== undefined ? { peerTurnClass: options.peerTurnClass } : {}),
       token,
       tokenHash,
       recordPath,
@@ -734,6 +742,7 @@ export class ShellJobManager {
       parentSessionId: options.parentSessionId,
       rootRunId: options.rootRunId,
       parentRunId: options.parentRunId,
+      ...(options.peerTurnClass !== undefined ? { peerTurnClass: options.peerTurnClass } : {}),
       persistentRecordPath: recordPath,
       persistentControlPath: controlPath,
       persistentOutputPath: outputPath,
@@ -938,6 +947,9 @@ export class ShellJobManager {
       parentSessionId: state.parentSessionId,
       rootRunId: state.rootRunId,
       parentRunId: state.parentRunId,
+      // From the record, or kept from this process when the record does not name one: a pin set
+      // here is never dropped by a read (#650).
+      peerTurnClass: persistedPeerTurnClass(state.peerTurnClass) ?? shell.peerTurnClass,
       completionSequence: state.completionSequence,
       // Only this process raises these two, and it raises them after it has already offered the
       // completion. A record that has not caught up — because the write failed, or because the
