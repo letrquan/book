@@ -3757,20 +3757,30 @@ export async function runAgentLoop(
           }
         }
 
-        const postHookResults = await runHooks(
-          config.settings.hooks.PostToolUse,
-          'PostToolUse',
-          {
-            workspace: config.workspace,
-            event: 'PostToolUse',
-            toolName: canonName,
-            toolArgs: call.arguments,
-            toolOutput: toolResultSucceeded(result)
-              ? result.content
-              : (toolResultErrorMessage(result) ?? ''),
-          },
-          { onHookEvent: callbacks.onHookEvent, signal },
-        );
+        // A cancelled run still owes the host and the history this call's result (#669): its row
+        // reads `Running…` until one arrives, and a step missing from history is missing on
+        // resume. `runHooks` throws the abort reason before it looks at anything, so a run
+        // cancelled during the call skips the hooks rather than lose the result, and one cancelled
+        // while they run keeps the result they had not changed yet.
+        const postHookResults = signal?.aborted
+          ? []
+          : await runHooks(
+              config.settings.hooks.PostToolUse,
+              'PostToolUse',
+              {
+                workspace: config.workspace,
+                event: 'PostToolUse',
+                toolName: canonName,
+                toolArgs: call.arguments,
+                toolOutput: toolResultSucceeded(result)
+                  ? result.content
+                  : (toolResultErrorMessage(result) ?? ''),
+              },
+              { onHookEvent: callbacks.onHookEvent, signal },
+            ).catch((error: unknown) => {
+              if (signal?.aborted) return [];
+              throw error;
+            });
         for (const hookResult of postHookResults) {
           if (hookResult.action === 'modify' && hookResult.modifiedOutput !== undefined) {
             result = replaceToolResult(result, { content: hookResult.modifiedOutput });

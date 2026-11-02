@@ -7,6 +7,7 @@ import type {
   ElicitationHandler,
   ElicitationResponse,
   NestedToolInvocation,
+  ToolCall,
   ToolDefinition,
   ToolResult,
   PermissionDecision,
@@ -45,6 +46,7 @@ import {
 import { collectProviderSecrets, redactSecrets } from '../../provider-secrets.js';
 import type { ProviderResponseMetadata } from '../../types/providers.js';
 import type { Todo } from '../../tools/todo.js';
+import { toolFailure } from '../../tools/result.js';
 import type { AgentConfig } from '../../types/runtime.js';
 import {
   compactionPlacement,
@@ -52,6 +54,7 @@ import {
   makeMessage,
   removeTrailingEmptyAssistantPlaceholder,
   resetStreamedContent,
+  settleOpenToolCalls,
   type StreamOutput,
 } from './streaming-state.js';
 import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-log.js';
@@ -370,6 +373,18 @@ interface ActiveSteering {
   dropped: boolean;
   /** The send returned: the leftovers were read once, and nothing may push into it again. */
   settled: boolean;
+}
+
+/**
+ * The result a call gets when its run was cancelled before the call reported back (#669): it reads
+ * the way the loop words a cancelled call.
+ */
+function interruptedToolResult(call: ToolCall): ToolResult {
+  return toolFailure('CANCELLED: Agent execution was interrupted', {
+    toolCallId: call.id,
+    code: 'cancelled',
+    status: 'cancelled',
+  });
 }
 
 /** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
@@ -1209,12 +1224,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const stillCurrent = () =>
         sessionGenerationRef.current === generation && operationIsCurrent();
       let activeAccumulator: MessageAccumulator | null = null;
+      /** Every message this send streams into, for settling the calls a cancel left open. */
+      const runMessageIds = new Set<string>();
       // A fresh streaming message for the turn's next output: at each turn after the first, and
       // after a compaction that committed behind output the same turn then continues.
       const openStreamingMessage = (reason: 'new-turn' | 'after-compaction') => {
         activeAccumulator?.stop();
         uiLog.event('accumulator:stopped', { reason });
         const next = makeMessage('assistant', '', undefined, true);
+        runMessageIds.add(next.id);
         streamingIdRef.current = next.id;
         streamOutputRef.current = freshStreamOutput();
         setStreamingMessageId(next.id);
@@ -1473,6 +1491,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         operationIsCurrent = control.isCurrent;
         // Render the user's message immediately and stream into a fresh placeholder.
         placeholder = makeMessage('assistant', '', undefined, true);
+        runMessageIds.add(placeholder.id);
         streamingIdRef.current = placeholder.id;
         streamOutputRef.current = freshStreamOutput();
         setStreamingMessageId(placeholder.id);
@@ -1941,6 +1960,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         accumulatorRef.current?.stop();
         uiLog.event('accumulator:stopped', { reason: 'done' });
         if (accumulatorRef.current === activeAccumulator) accumulatorRef.current = null;
+        // A run cancelled while a call ran can end before the call's result arrives (#669), and
+        // its row would say `Running…` for good. After the final flush, so a result that did
+        // arrive is the one shown.
+        if (sendResult.status === 'cancelled') {
+          setMessages((prev) => {
+            const next = settleOpenToolCalls(prev, runMessageIds, interruptedToolResult);
+            messagesRef.current = next;
+            return next;
+          });
+        }
         finalizeStreamingMessages();
         streamingIdRef.current = null;
         setStreamingMessageId(null);
