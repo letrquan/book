@@ -100,6 +100,32 @@ describe('QueuedInputPreview steers', () => {
     expect(text).not.toContain('queued two');
     expect(text).toContain('... 1 more');
   });
+
+  it('offers send-now only while steers are waiting (#661)', () => {
+    const withSteer = stripAnsi(
+      frame(
+        <QueuedInputPreview
+          items={[]}
+          steers={[steer('s1', 'stop and say hi')]}
+          terminalWidth={80}
+        />,
+      ),
+    );
+    expect(withSteer).toContain('Sends after the current tool call (1) · Ctrl+X Ctrl+S sends now');
+
+    const queueOnly = stripAnsi(
+      frame(<QueuedInputPreview items={[queued('q1', 'later')]} terminalWidth={80} />),
+    );
+    expect(queueOnly).not.toContain('Ctrl+X Ctrl+S');
+  });
+
+  it('drops the send-now key rather than wrap the header on a narrow terminal', () => {
+    const text = stripAnsi(
+      frame(<QueuedInputPreview items={[]} steers={[steer('s1', 'narrow')]} terminalWidth={50} />),
+    );
+    expect(text).toContain('Sends after the current tool call (1)');
+    expect(text).not.toContain('Ctrl+X');
+  });
 });
 
 function queued(id: string, value: string): QueuedInput {

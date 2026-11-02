@@ -2,8 +2,9 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
-import { InputBar } from './InputBar.js';
+import { InputBar, SEND_NOW_CHORD_MS } from './InputBar.js';
 import type { ImageAttachment } from '../../types/messages.js';
+import type { Skill } from '../../skills.js';
 
 /**
  * Steering in the composer (#661): while a user-started run is going, Enter hands the draft to
@@ -235,5 +236,146 @@ describe('InputBar steering', () => {
 
     expect(onCycleAgentFocus).toHaveBeenCalledTimes(1);
     expect(onQueue).not.toHaveBeenCalled();
+  });
+});
+
+/** Ctrl+X then Ctrl+S, as a terminal sends them. */
+const CTRL_X = '\x18';
+const CTRL_S = '\x13';
+
+describe('InputBar send-now chord (#661)', () => {
+  function steeringBar(props: Partial<React.ComponentProps<typeof InputBar>> = {}) {
+    return inputBar(() => {}, {
+      submissionMode: 'steer',
+      onSteer: vi.fn(async () => true),
+      onQueue: vi.fn(() => true),
+      canSteerWhileBusy: (value) => !value.startsWith('/') && !value.startsWith('!'),
+      canQueueWhileBusy: (value) => !value.startsWith('/'),
+      ...props,
+    });
+  }
+
+  it('hands a draft that would steer to send-now and clears the composer', async () => {
+    const onSendNow = vi.fn();
+    const onSteer = vi.fn(async () => true);
+    const view = render(steeringBar({ onSendNow, onSteer }));
+
+    view.stdin.write('stop and say hi');
+    await tick();
+    view.stdin.write(CTRL_X);
+    await tick();
+    view.stdin.write(CTRL_S);
+    await tick(20);
+
+    expect(onSendNow).toHaveBeenCalledWith('stop and say hi', undefined);
+    // Send-now steers the draft itself: it does not also go through Enter's steer.
+    expect(onSteer).not.toHaveBeenCalled();
+    expect(stripAnsi(view.lastFrame())).not.toContain('stop and say hi');
+  });
+
+  it('asks for the waiting steers to go now from an empty composer', async () => {
+    const onSendNow = vi.fn();
+    const view = render(steeringBar({ onSendNow }));
+
+    view.stdin.write(CTRL_X);
+    await tick();
+    view.stdin.write(CTRL_S);
+    await tick(20);
+
+    expect(onSendNow).toHaveBeenCalledTimes(1);
+    expect(onSendNow).toHaveBeenCalledWith();
+  });
+
+  it('lets any other key cancel the chord and then do what it always did', async () => {
+    const onSendNow = vi.fn();
+    const view = render(steeringBar({ onSendNow }));
+
+    view.stdin.write(CTRL_X);
+    await tick();
+    view.stdin.write('x');
+    await tick();
+    view.stdin.write(CTRL_S);
+    await tick(20);
+
+    expect(onSendNow).not.toHaveBeenCalled();
+    // The key that broke the chord was typed as usual.
+    expect(stripAnsi(view.lastFrame())).toMatch(/^> x/m);
+  });
+
+  it('does nothing on Ctrl+S alone, or on a Ctrl+S that comes too late', async () => {
+    const onSendNow = vi.fn();
+    const view = render(steeringBar({ onSendNow }));
+
+    view.stdin.write(CTRL_S);
+    await tick(20);
+    expect(onSendNow).not.toHaveBeenCalled();
+
+    const now = vi.spyOn(Date, 'now');
+    try {
+      now.mockReturnValue(1_000_000);
+      view.stdin.write(CTRL_X);
+      await tick();
+      now.mockReturnValue(1_000_000 + SEND_NOW_CHORD_MS + 1);
+      view.stdin.write(CTRL_S);
+      await tick(20);
+    } finally {
+      now.mockRestore();
+    }
+    expect(onSendNow).not.toHaveBeenCalled();
+  });
+
+  it('leaves a draft that would not steer where it is', async () => {
+    const onSendNow = vi.fn();
+    const view = render(steeringBar({ onSendNow }));
+
+    view.stdin.write('!ls');
+    await tick();
+    view.stdin.write(CTRL_X);
+    await tick();
+    view.stdin.write(CTRL_S);
+    await tick(20);
+
+    expect(onSendNow).not.toHaveBeenCalled();
+    expect(stripAnsi(view.lastFrame())).toContain('!ls');
+  });
+
+  it('does nothing while a completion menu is open', async () => {
+    // Enter would take the selected `$skill` first; the chord would send the half-typed name.
+    const skill = {
+      id: 'agents:/skills/wayfinder/SKILL.md',
+      version: 'unversioned',
+      descriptorDigest: 'descriptor',
+      resourceDigest: 'resources',
+      name: 'wayfinder',
+      description: 'Plan a huge chunk of work',
+      metadata: {},
+      lifetime: 'run',
+      path: '/skills/wayfinder/SKILL.md',
+      rootPath: '/skills/wayfinder',
+      source: 'user',
+      rootKind: 'agents',
+      activation: 'manual',
+      execution: 'inherit',
+      invocationCount: 0,
+      entryByteSize: 0,
+      entryMtimeMs: 0,
+      resources: [],
+      issues: [],
+      valid: true,
+      shadowed: [],
+    } as Skill;
+    const onSendNow = vi.fn();
+    const view = render(steeringBar({ onSendNow, skills: [skill] }));
+
+    view.stdin.write('use $way');
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('$wayfinder');
+    view.stdin.write(CTRL_X);
+    await tick();
+    view.stdin.write(CTRL_S);
+    await tick(20);
+
+    expect(onSendNow).not.toHaveBeenCalled();
+    expect(stripAnsi(view.lastFrame())).toContain('use $way');
   });
 });

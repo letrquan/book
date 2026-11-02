@@ -3,8 +3,9 @@ import type { ToolResult } from '../types/tools.js';
 /**
  * Error codes only the registry and the loop produce, and only before a tool ran: an
  * unknown or inactive tool, arguments the run's allowed-tools rules do not cover,
- * arguments that never parsed, and a call cancelled before it started (an abort, or a
- * stream that ended first). A tool never returns one of these itself.
+ * arguments that never parsed, a call cancelled before it started (an abort, or a
+ * stream that ended first), and a call in a reply the user's send-now stopped (#661).
+ * A tool never returns one of these itself.
  *
  * {@link refusedBeforeRun} also reads the registry's own `preExecution` flag, which is
  * what decides the codes a tool does return — `invalid_arguments` above all, because
@@ -17,6 +18,7 @@ const PRE_EXECUTION_ONLY_CODES: ReadonlySet<string> = new Set([
   'arguments_not_allowed',
   'invalid_json_arguments',
   'cancelled_before_start',
+  'superseded_by_user',
 ]);
 
 /**
