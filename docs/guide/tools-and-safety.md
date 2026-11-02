@@ -767,7 +767,8 @@ name, `name [ref]` and the session's `from` address, refusing a denied one and, 
 the model back with the spelling the rule names. Print mode, the SDK,
 managed agents and `Task` subagents have neither tool, and a skill or command whose
 `allowed-tools` leaves `SessionSend` out does not get it. A turn another session's message
-started cannot write memory, since what it saved would load into every later session.
+started cannot write memory, and neither can a completion or notice turn pinned to its class,
+since what it saved would load into every later session.
 
 What a send returns:
 

@@ -772,7 +772,12 @@ delivered (N held)` row (name from the registry record advertising the frame's a
 
 **PR 7 and later**:
 
-- a mid-turn drain at the tool-round boundary (a new `runAgentLoop` seam);
+- a mid-turn drain at the tool-round boundary (a new `runAgentLoop` seam). Requirement (#655): once
+  a peer message is drained into a running user turn, the run carries the peer's words, so it sets
+  `peerTurnClass` (or a dedicated "carries peer text" flag) on the run and drops
+  `toolContext.memoryWrite` for the rest of it, as a run that starts with a class never gets one.
+  The drain test shows that run cannot write memory without a prompt once a peer message is
+  drained into it, while the user's own turn before the drain still writes memory unprompted;
 - the print-mode/SDK inbox (`--messaging`), with stream-json `peer_message_hold` events;
 - Windows named pipes;
 - the CC interop adapter, if D1-b is chosen;
