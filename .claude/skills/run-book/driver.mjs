@@ -268,7 +268,7 @@ const BIN = (() => {
   return bin && /[\\/]/.test(bin) ? resolve(bin) : bin;
 })();
 
-// The startup fire animation delays the first render past short waits, so the driver
+// The startup animation delays the first render past short waits, so the driver
 // turns it off, and `--startup-animation` turns it on, for driving the splash itself.
 // Both go through `BOOK_STARTUP_ANIMATION` in the env below, which outranks every
 // settings file: the workspace's own `.book/settings.json` is never written, a value an

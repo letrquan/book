@@ -118,7 +118,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   // than using it has to switch it off — and a settings layer is the wrong place
   // to say so, since Book reads one and a driver would have to merge whatever the
   // user passes. The variable outranks every layer, as `BOOK_MODEL` does for
-  // `model`, and lands on the resolved settings so `shouldPlayStartupFire` and
+  // `model`, and lands on the resolved settings so `shouldPlayStartupSplash` and
   // `/config` read the same value.
   settings = applySettingsEnvOverrides(settings);
 

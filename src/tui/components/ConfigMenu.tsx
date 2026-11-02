@@ -60,7 +60,7 @@ const ROWS = [
   { row: 'advisor', key: 'v' },
   { row: 'effort', key: 'e' },
   { row: 'thinking', key: 'i' },
-  { row: 'startup-animation', key: 'f' },
+  { row: 'startup-animation', key: 't' },
   { row: 'permission-mode', key: 'p' },
   { row: 'agents', key: 'a' },
   { row: 'skills', key: 's' },
@@ -173,9 +173,9 @@ export function ConfigMenu({
       description: 'Display the model reasoning in the transcript',
     },
     'startup-animation': {
-      label: 'Startup fire',
+      label: 'Startup animation',
       value: startupAnimation ? 'on' : 'off',
-      description: 'Burn the terminal into the Book welcome screen',
+      description: 'Gather the Book welcome screen out of a dot field',
     },
     'permission-mode': {
       label: 'Default permissions',

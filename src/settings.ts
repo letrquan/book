@@ -532,7 +532,7 @@ export type WorkspaceProviderChoice = z.infer<typeof workspaceProviderChoiceSche
 export const uiSettingsSchema = z.object({
   /** Show provider-native and embedded model reasoning in the interactive transcript. */
   showThinking: z.boolean().default(true),
-  /** Play the full-screen fire sequence on a newly created interactive startup session. */
+  /** Play the full-screen startup splash on a newly created interactive startup session. */
   startupAnimation: z.boolean().default(true),
 });
 
