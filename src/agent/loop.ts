@@ -1168,6 +1168,13 @@ export async function runAgentLoop(
     let retrySameTurn = false;
     /** True while replaying a turn, so its messages do not reuse the host's id. */
     let reissuedThisTurn = false;
+    /**
+     * Send-now stopped a reply and kept it as written (#661). The next drain point owes it the
+     * steer it was stopped for; when that steer is not delivered after all — a UserPromptSubmit
+     * hook blocked it — the request would end on the stopped reply, which is assistant prefill
+     * that Anthropic refuses while thinking is on. A host continuation takes the steer's place.
+     */
+    let stoppedReplyAwaitsSteer = false;
     /** Turn re-sends spent on transport faults; bounded by retry.streamReissueAttempts. */
     let streamReissues = 0;
     /** Continuations after an output cap; budgeted separately from transport faults. */
@@ -1581,8 +1588,30 @@ export async function runAgentLoop(
       // This iteration is the turn the request is sent for, so `hasTurnLeft` cannot refuse it;
       // the budget can, and a steer appended for a refused request is one nothing will answer.
       if (!reissuedThisTurn && budgetCheckForNextRequest().allowed) {
-        await appendSteers('tool-step');
+        const delivered = await appendSteers('tool-step');
+        if (
+          stoppedReplyAwaitsSteer &&
+          delivered === 0 &&
+          !signal?.aborted &&
+          newHistory.at(-1)?.role === 'assistant'
+        ) {
+          const resume: Message = {
+            id: crypto.randomUUID(),
+            role: 'user',
+            content:
+              '[continuation] Your previous message was interrupted before it finished. Continue from exactly where you stopped. Do not restart or repeat what you already wrote.',
+            includeInContext: true,
+            kind: 'conversation',
+            // Host-authored: neither the ledger nor Carried Turns may treat this as the user's
+            // own words.
+            derivedContent: true,
+            timestamp: Date.now(),
+          };
+          newHistory.push(resume);
+          callbacks.onUserMessageAppended?.(resume);
+        }
       }
+      stoppedReplyAwaitsSteer = false;
 
       toolContext.currentTurn = turn;
       syncSkillRestrictions(turn);
@@ -1936,8 +1965,14 @@ export async function runAgentLoop(
         return newHistory;
       }
       sentSystemPrompt = systemPromptText(messages);
+      /**
+       * This request's own abort, for send-now (#661): it stops the model mid-reply and nothing
+       * else. The run's signal still cancels everything, and the provider stops on either, the
+       * same way it stops for a cancel.
+       */
+      const step = new AbortController();
       const stream = provider.stream(effectiveConfig, messages, activeDefinitions, {
-        signal,
+        signal: signal ? AbortSignal.any([signal, step.signal]) : step.signal,
         onRetry: (attempt, max, delayMs) => {
           if (options?.runContext) {
             runtime.runAccounting.markUsageUnknown(
@@ -1963,8 +1998,19 @@ export async function runAgentLoop(
       let streamUpstreamStatus: number | undefined;
       let streamDone = false;
 
+      // Heard only while this request streams: send-now during a tool step changes nothing (D5),
+      // because the steer lands right after the tools anyway. A request that stands from before
+      // this one started fires at once.
+      const steering = options?.steering;
+      const stopHearingSendNow =
+        steering?.onRequestNow(() => {
+          if (steering.hasPending()) step.abort('steer');
+        }) ?? (() => {});
       try {
         for await (const event of stream) {
+          // Send-now stopped this request: what arrives after it is not the reply the user read,
+          // and a provider that keeps streaming past the abort cannot hold the loop either.
+          if (step.signal.aborted) break;
           // The retry label a re-sent turn left up ends with the answer, not with
           // the run: the host is told the stream resumed on the first content of
           // the retried attempt.
@@ -2042,7 +2088,7 @@ export async function runAgentLoop(
               rawToolCallIds.map((raw, i) => ({ raw, id: toolCalls[i].id })),
             );
           }
-          if (signal?.aborted) break;
+          if (signal?.aborted || step.signal.aborted) break;
         }
       } catch (e) {
         // Abort looks like an AbortError; keep whatever content we have and stop.
@@ -2056,9 +2102,21 @@ export async function runAgentLoop(
           }
           break;
         }
-        streamError = e instanceof Error ? e.message : String(e);
-        streamErrorCode = 'provider_error';
+        // A provider that throws on send-now's abort has not failed: the step branch below
+        // settles the request.
+        if (!step.signal.aborted) {
+          streamError = e instanceof Error ? e.message : String(e);
+          streamErrorCode = 'provider_error';
+        }
+      } finally {
+        stopHearingSendNow();
       }
+      /**
+       * Send-now stopped this request before it finished (#661), and the run was not cancelled.
+       * A reply that ended in the meantime is a reply like any other, and its steer is drained at
+       * the next boundary as usual.
+       */
+      const stepAborted = !streamDone && step.signal.aborted && !signal?.aborted;
 
       assistantContent = textBuffer;
       // Resolved once, here, because the split below and the classification that
@@ -2087,10 +2145,13 @@ export async function runAgentLoop(
         // interrupt ends the run as `caller_cancelled` and every other stream
         // error is a fault to re-send rather than a reply the provider meant to
         // leave unfinished, so neither may have answer text moved into reasoning.
+        //
+        // A reply send-now stopped is cut short the same way, and its reasoning is dropped below
+        // with the rest of its unsigned reasoning.
         const streamDropped =
           !streamDone && !signal?.aborted && streamErrorCode === 'transport_interrupted';
         const inline = separateInlineReasoning(assistantContent, {
-          truncated: truncatedFinish || streamDropped,
+          truncated: truncatedFinish || streamDropped || stepAborted,
         });
         if (inline.found) {
           reasoningContent = [reasoningContent, inline.reasoning].filter(Boolean).join('\n\n');
@@ -2103,12 +2164,68 @@ export async function runAgentLoop(
         runtime.runAccounting.markUsageUnknown(
           options.runContext,
           responseMetadata ?? { provider: provider.id, requestedModel: effectiveConfig.model },
-          signal?.aborted
+          signal?.aborted || stepAborted
             ? 'cancelled_provider_attempt_usage'
             : streamError
               ? 'provider_attempt_usage'
               : 'provider_usage',
         );
+      }
+
+      if (stepAborted) {
+        // Send-now (#661): not a cancel and not a fault, so none of the retries and error paths
+        // below apply. What the model wrote stays as the user read it, the calls it streamed are
+        // settled without running, and the loop goes on: the next boundary appends the steer.
+        //
+        // Its reasoning is dropped. It has no signature — that arrives with the terminal event this
+        // request never got, along with the provider metadata a signed thinking block would ride
+        // in — and Anthropic cannot replay a thinking block without one. Half a thought is not
+        // worth replaying as text either: the model thinks again with the steer in front of it.
+        if (heldText) {
+          assistantOutputProduced = true;
+          callbacks.onText(heldText);
+          heldText = '';
+        }
+        const supersededResults = toolCalls.map<ToolResult>((call, callIndex) => {
+          const result = toolFailure('SUPERSEDED: the user sent a message before this call ran', {
+            toolCallId: call.id,
+            code: 'superseded_by_user',
+            status: 'cancelled',
+          });
+          callbacks.onToolResult(result);
+          const nestedTraceId = nestedTraceIds[callIndex];
+          if (nestedTraceId && options?.nestedToolObserver) {
+            options.nestedToolObserver.onToolResult(nestedTraceId, result);
+          }
+          return result;
+        });
+        if (assistantContent.length > 0 || toolCalls.length > 0) {
+          assistantOutputProduced = true;
+          const stoppedMessage: Message = {
+            // The host's row for this turn: a stopped reply is persisted under it, as any reply is.
+            id:
+              (reissuedThisTurn ? undefined : options?.assistantMessageId?.(turn)) ??
+              crypto.randomUUID(),
+            role: 'assistant',
+            content: assistantContent,
+            includeInContext: true,
+            kind: 'conversation',
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            toolResults: supersededResults.length > 0 ? supersededResults : undefined,
+            timestamp: Date.now(),
+          };
+          newHistory.push(stoppedMessage);
+          callbacks.onAssistantMessageComplete?.(stoppedMessage);
+          // A reply with calls ends on their results; one without ends on the reply itself.
+          stoppedReplyAwaitsSteer = toolCalls.length === 0;
+        }
+        pendingTurn = undefined;
+        log.info('send-now stopped the model request', {
+          turn,
+          contentLen: assistantContent.length,
+          toolCallCount: toolCalls.length,
+        });
+        continue;
       }
 
       if (!streamError && streamDone && finishReason) {

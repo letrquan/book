@@ -700,6 +700,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     readPendingSteers();
     return taken;
   }, [readPendingSteers]);
+  /**
+   * Send-now (#661): ask the running loop to stop the model request in flight, so the pending
+   * steers go at once instead of after the current tool call. Nothing happens without a pending
+   * steer, and a running tool is never stopped: the loop listens only while the model writes.
+   */
+  const requestSteerNow = useCallback((): boolean => {
+    const active = steeringRef.current;
+    if (!active || active.dropped || !active.inbox.hasPending()) return false;
+    uiLog.event('steer:send-now', { pending: active.inbox.pending().length });
+    active.inbox.requestNow();
+    return true;
+  }, []);
   /** Drop every pending steer without returning it: a session switch discards them, as it does the queue. */
   const dropSteers = useCallback(() => {
     const active = steeringRef.current;
@@ -3179,6 +3191,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     takeSteers,
     /** Discard pending steers: a session switch, which drops queued inputs too. */
     dropSteers,
+    /** Send-now: stop the model request in flight so the pending steers go at once. */
+    requestSteerNow,
     sendAgentCompletions,
     sendBackgroundShellCompletion,
     sendPeerMessages,

@@ -113,3 +113,71 @@ describe('steering inbox', () => {
     expect(inbox.pending().map((entry) => entry.id)).toEqual(['a']);
   });
 });
+
+describe('send-now on the inbox (#661)', () => {
+  it('tells its listeners only while a steer is pending', () => {
+    const inbox = createSteeringInbox();
+    const heard: string[] = [];
+    inbox.onRequestNow(() => heard.push('now'));
+
+    // Nothing to send: the chord does nothing.
+    inbox.requestNow();
+    expect(heard).toEqual([]);
+
+    inbox.push(steer('a'));
+    inbox.requestNow();
+    expect(heard).toEqual(['now']);
+  });
+
+  it('stops telling a listener once it unsubscribes', () => {
+    const inbox = createSteeringInbox();
+    const heard: string[] = [];
+    const unsubscribe = inbox.onRequestNow(() => heard.push('now'));
+    inbox.push(steer('a'));
+
+    unsubscribe();
+    inbox.requestNow();
+
+    expect(heard).toEqual([]);
+  });
+
+  it('keeps a request standing for a listener that subscribes after it, until the loop takes the steers', () => {
+    // The loop listens only while a model request streams. A send-now made between two requests
+    // still has to stop the next one, or the words wait for the next tool step after all.
+    const inbox = createSteeringInbox();
+    inbox.push(steer('a'));
+    inbox.requestNow();
+
+    const early: string[] = [];
+    inbox.onRequestNow(() => early.push('now'));
+    expect(early).toEqual(['now']);
+
+    // Taking the steers answers the request: the next request carries them.
+    inbox.take();
+    inbox.push(steer('b'));
+    const late: string[] = [];
+    inbox.onRequestNow(() => late.push('now'));
+    expect(late).toEqual([]);
+  });
+
+  it('lets a request lapse when nothing is left to send', () => {
+    const recalled = createSteeringInbox();
+    recalled.push(steer('a'));
+    recalled.requestNow();
+    // Up took the only steer back for editing.
+    recalled.remove('a');
+    recalled.push(steer('b'));
+    const afterRecall: string[] = [];
+    recalled.onRequestNow(() => afterRecall.push('now'));
+    expect(afterRecall).toEqual([]);
+
+    const cleared = createSteeringInbox();
+    cleared.push(steer('a'));
+    cleared.requestNow();
+    cleared.clear();
+    cleared.push(steer('b'));
+    const afterClear: string[] = [];
+    cleared.onRequestNow(() => afterClear.push('now'));
+    expect(afterClear).toEqual([]);
+  });
+});

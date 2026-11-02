@@ -118,6 +118,12 @@ interface InputBarProps {
    * false when the run ended first, so the composer queues the text instead of dropping it.
    */
   onSteer?: (value: string, attachments?: ImageAttachment[]) => Promise<boolean> | boolean;
+  /**
+   * Send-now (#661), the chord Ctrl+X then Ctrl+S: a draft that would steer is handed over as
+   * `value` first; with an empty composer only the steers already waiting go. The host then asks
+   * the running turn to stop the model request in flight so they are delivered at once.
+   */
+  onSendNow?: (value?: string, attachments?: ImageAttachment[]) => unknown;
   /** Receives accepted queued input. Return false when the queue is full. */
   onQueue?: (value: string, attachments?: ImageAttachment[]) => boolean;
   /** Recalls the newest queued input when the composer is empty. */
@@ -159,6 +165,9 @@ interface InputBarProps {
 function normalizeInput(value: string): string {
   return value.normalize('NFC');
 }
+
+/** How long Ctrl+X waits for the Ctrl+S that completes the send-now chord (#661). */
+export const SEND_NOW_CHORD_MS = 1500;
 
 function getFilteredCommands(commands: SlashCommand[], filter: string): CommandItem[] {
   if (!filter) {
@@ -225,6 +234,7 @@ export function InputBar({
   canQueueWhileBusy,
   canSteerWhileBusy,
   onSteer,
+  onSendNow,
   onQueue,
   onRecallQueued,
   onDraftChange,
@@ -564,15 +574,87 @@ export function InputBar({
     [onQueue, setAttachments, setHistory, setHistoryIndex, setValue],
   );
 
+  /**
+   * Hands the draft to the running turn and clears the composer: Enter, and the send-now chord
+   * (#661). The host queues the text itself when the run ended before the steer landed, so the
+   * composer clears either way: the words are never lost between the two.
+   */
+  const handOffSteer = useCallback(
+    (normalized: string, deliver: (value: string, attachments?: ImageAttachment[]) => unknown) => {
+      setHistory((h) => [normalized, ...h].slice(0, 100));
+      setHistoryIndex(-1);
+      const cmdName = extractCommandName(normalized);
+      if (cmdName) recordCommandUse(cmdName);
+      const steeredAttachments = attachmentsRef.current;
+      setValue('');
+      setAttachments([]);
+      setAttachmentError(undefined);
+      void deliver(normalized, steeredAttachments.length > 0 ? steeredAttachments : undefined);
+    },
+    [setAttachments, setHistory, setHistoryIndex, setValue],
+  );
+
+  /** Close every composer menu: the draft they were completing has been sent. */
+  const dismissMenus = useCallback(() => {
+    setMenuVisible(false);
+    selectMenuItem(0);
+    setFileMenuVisible(false);
+    setFileMention(null);
+    setFileCandidates([]);
+    setFileSelected(0);
+    setSkillMenuVisible(false);
+    setSkillMention(null);
+    setSkillSelected(0);
+  }, [selectMenuItem]);
+
+  /** When Ctrl+X armed the send-now chord. Any key but Ctrl+S disarms it. */
+  const sendNowArmedAtRef = useRef<number | undefined>(undefined);
+  /**
+   * The send-now chord completed (#661). A draft goes only if Enter would steer it: a slash
+   * command, a `!` line or a draft the run cannot take keeps its own rules, and the chord does
+   * nothing. An empty composer sends the steers already waiting, if there are any.
+   */
+  const sendNow = useCallback(() => {
+    if (!onSendNow) return;
+    const normalized = normalizeInput(valueRef.current);
+    if (!normalized.trim() && attachmentsRef.current.length === 0) {
+      uiLog.event('input:Ctrl+X Ctrl+S', { action: 'send-now', draft: false });
+      onSendNow();
+      return;
+    }
+    if (resolveSubmissionAction(normalized) !== 'steer') {
+      uiLog.event('input:Ctrl+X Ctrl+S', { action: 'noop', reason: 'draft-does-not-steer' });
+      return;
+    }
+    uiLog.event('input:Ctrl+X Ctrl+S', { action: 'send-now', draft: true, len: normalized.length });
+    dismissMenus();
+    handOffSteer(normalized, onSendNow);
+  }, [dismissMenus, handOffSteer, onSendNow, resolveSubmissionAction]);
+
   useInput((_input, key) => {
     // TranscriptView owns mouse reports. Drop them before menu/history routing
     // so wheel movement, clicks, and drags cannot reach the prompt draft.
     if (_input.startsWith('[<') || _input.startsWith('\x1b[<')) return;
 
+    // The send-now chord, Ctrl+X then Ctrl+S (#661). Ctrl+X alone shows nothing; any other key
+    // cancels the chord and then does what it always did.
+    const chord = key.ctrl && !key.meta ? _input.toLowerCase() : undefined;
+    if (chord !== 'x' && chord !== 's') sendNowArmedAtRef.current = undefined;
+
     // While a modal (permission prompt) owns the keyboard, ignore all keys —
     // PermissionButtons handles them. Without this, Ink fires every `useInput`
     // handler on every keypress, so Enter/Tab/Esc would double-fire.
     if (inputSuppressed) return;
+    if (chord === 'x') {
+      sendNowArmedAtRef.current = Date.now();
+      return;
+    }
+    if (chord === 's') {
+      const armedAt = sendNowArmedAtRef.current;
+      sendNowArmedAtRef.current = undefined;
+      if (armedAt !== undefined && Date.now() - armedAt <= SEND_NOW_CHORD_MS) sendNow();
+      return;
+    }
     if (key.meta && _input.toLowerCase() === 'v') {
       pasteImage();
       return;
@@ -936,15 +1018,7 @@ export function InputBar({
       }
 
       // Dismiss menus on submit.
-      setMenuVisible(false);
-      selectMenuItem(0);
-      setFileMenuVisible(false);
-      setFileMention(null);
-      setFileCandidates([]);
-      setFileSelected(0);
-      setSkillMenuVisible(false);
-      setSkillMention(null);
-      setSkillSelected(0);
+      dismissMenus();
 
       const normalized = normalizeInput(val);
       if (!normalized.trim() && attachmentsRef.current.length === 0) {
@@ -966,17 +1040,7 @@ export function InputBar({
       }
       if (action === 'steer') {
         uiLog.event('submit:text', { result: 'steered', len: normalized.length });
-        setHistory((h) => [normalized, ...h].slice(0, 100));
-        setHistoryIndex(-1);
-        const cmdName = extractCommandName(normalized);
-        if (cmdName) recordCommandUse(cmdName);
-        const steeredAttachments = attachmentsRef.current;
-        setValue('');
-        setAttachments([]);
-        setAttachmentError(undefined);
-        // The host queues the text itself when the run ended before the steer landed, so the
-        // composer clears either way: the words are never lost between the two.
-        void onSteer?.(normalized, steeredAttachments.length > 0 ? steeredAttachments : undefined);
+        handOffSteer(normalized, (value, attachments) => onSteer?.(value, attachments));
         return;
       }
       uiLog.event('submit:text', { result: 'submitted', len: normalized.length });
@@ -997,6 +1061,8 @@ export function InputBar({
       acceptSelectedFileMention,
       acceptSelectedSkillMention,
       commands,
+      dismissMenus,
+      handOffSteer,
       onSteer,
       onSubmit,
       queueDraft,

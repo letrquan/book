@@ -590,6 +590,9 @@ const KEYS = {
   'ctrl-j': '\x0a',
   'ctrl-t': '\x14',
   'ctrl-u': '\x15',
+  // The send-now chord (#661) is Ctrl+X then Ctrl+S: `key ctrl-x ctrl-s`.
+  'ctrl-x': '\x18',
+  'ctrl-s': '\x13',
   home: '\x1b[H',
   end: '\x1b[F',
   pageup: '\x1b[5~',
