@@ -14,6 +14,15 @@ model read it. Recording it is not a rewind point — `/rewind` targets the prom
 run — and a run with a steer pending when the model would otherwise answer continues the same run
 instead of starting a new one.
 
+**Ctrl+X then Ctrl+S sends a steer now**, without waiting for the tool call. When the model is in
+the middle of writing, the chord stops that one model request: what it already wrote stays in the
+transcript as a reply like any other, the steer follows it, and the next request answers it in the
+same run. With a draft in the composer, the chord steers it first; with an empty composer, it sends
+the steers already waiting, and the list above the composer names the chord while any are. It never
+stops a running tool: during a tool call the steer goes right after it, as it would anyway. Calls
+the stopped reply had streamed but not run are settled as superseded, and reasoning it had not
+finished is dropped, since a thinking block cannot be sent back without its signature.
+
 **Tab with text in the composer queues it for the end of the run** instead, the same list with the
 follow-ups it already held, now under "Queued for when this run ends (n)". Tab on an empty prompt
 still cycles agent focus; the two never compete because the queue key needs a draft.

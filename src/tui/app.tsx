@@ -388,6 +388,7 @@ const NO_RECENT_SESSIONS: readonly never[] = [];
  *   Ctrl+E   — expand the current tool output
  *   Ctrl+L   — redraw
  *   Ctrl+J   — insert newline
+ *   Ctrl+X Ctrl+S — send a steer now, stopping the model request in flight (#661)
  *   PgUp/PgDn, Ctrl+U/Ctrl+D — scroll transcript
  *   Ctrl+Home/Ctrl+End — jump to transcript start/latest
  *   Mouse wheel — scroll transcript
@@ -452,6 +453,7 @@ export function App({
     recallSteer,
     takeSteers,
     dropSteers,
+    requestSteerNow,
     sendAgentCompletions,
     sendBackgroundShellCompletion,
     sendPeerMessages,
@@ -2916,6 +2918,19 @@ export function App({
     },
     [endQueuedEdit, enqueueFollowUp, steer],
   );
+  /**
+   * Send-now, Ctrl+X then Ctrl+S (#661): a draft the composer handed over joins the running turn
+   * first, then the model request in flight is stopped so every waiting steer goes at once. The
+   * request is made only after the steer is in: it does nothing while nothing is pending. A tool
+   * that is running is never stopped; the steers then go right after it, as they would anyway.
+   */
+  const handleSendNow = useCallback(
+    async (value?: string, attachments?: ImageAttachment[]) => {
+      if (value !== undefined && !(await handleSteer(value, attachments))) return;
+      if (requestSteerNow()) uiLog.event('submit:send-now', { draft: value !== undefined });
+    },
+    [handleSteer, requestSteerNow],
+  );
 
   // Ctrl+U and Ctrl+D scroll the transcript half a page, but only when the
   // composer had no draft to edit. The composer is the only thing that knows
@@ -3967,6 +3982,7 @@ export function App({
                 canQueueWhileBusy={canQueueWhileParentBusy}
                 canSteerWhileBusy={canSteerWhileParentBusy}
                 onSteer={handleSteer}
+                onSendNow={handleSendNow}
                 onQueue={enqueueFollowUp}
                 onRecallQueued={
                   managedAgents.surface === 'main' && !exitStarted ? recallQueuedInput : undefined
@@ -4171,6 +4187,10 @@ const SHORTCUT_ROWS: ReadonlyArray<{ key: string; value: string }> = [
   {
     key: 'Enter / Tab',
     value: 'While Book works: steer after the current tool call / queue for the end of the run',
+  },
+  {
+    key: 'Ctrl+X Ctrl+S',
+    value: 'While Book writes: send the steer now instead of after the current tool call',
   },
   { key: 'Ctrl+/', value: 'Toggle this reference' },
   { key: '@path', value: 'Expand file contents' },

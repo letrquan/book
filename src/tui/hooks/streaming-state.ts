@@ -47,6 +47,45 @@ export function removeTrailingEmptyAssistantPlaceholder(messages: Message[]): Me
 }
 
 /**
+ * Give every tool call in the `ids` messages that never got a result the one `settle` builds,
+ * nested calls included (#669).
+ *
+ * A row with no result reads `Running…`. A cancelled run can end before a call's result reaches
+ * the host, and the row would then claim the call is still going long after it stopped.
+ */
+export function settleOpenToolCalls(
+  messages: Message[],
+  ids: ReadonlySet<string>,
+  settle: (call: ToolCall) => ToolResult,
+): Message[] {
+  let next: Message[] | undefined;
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (!ids.has(message.id)) continue;
+    const answered = new Set((message.toolResults ?? []).map((result) => result.toolCallId));
+    const open = (message.toolCalls ?? []).filter((call) => !answered.has(call.id));
+    const nested = message.nestedToolInvocations;
+    const nestedOpen = nested?.some((invocation) => !invocation.result) ?? false;
+    if (open.length === 0 && !nestedOpen) continue;
+    next ??= messages.slice();
+    next[index] = {
+      ...message,
+      ...(open.length > 0
+        ? { toolResults: [...(message.toolResults ?? []), ...open.map(settle)] }
+        : {}),
+      ...(nested && nestedOpen
+        ? {
+            nestedToolInvocations: nested.map((invocation) =>
+              invocation.result ? invocation : { ...invocation, result: settle(invocation.call) },
+            ),
+          }
+        : {}),
+    };
+  }
+  return next ?? messages;
+}
+
+/**
  * Clear the text and reasoning streamed into a message, keeping the message.
  *
  * Used when the loop abandons an attempt and retries the same turn: the deltas
