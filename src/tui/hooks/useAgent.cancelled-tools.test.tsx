@@ -11,15 +11,17 @@ import type { Message } from '../../types/messages.js';
 import type { ToolCall, ToolResult } from '../../types/tools.js';
 
 /**
- * Esc while a tool runs (#669): when the run settles as cancelled, no row of it may go on saying
- * `Running…`. A call whose result never reached the transcript reads as interrupted; a call whose
- * result did arrive keeps it.
+ * Esc while a tool runs (#669): once the run is over, no row of it may go on saying `Running…`.
+ * A call whose result never reached the transcript reads as interrupted; a call whose result did
+ * arrive keeps it.
  */
 
 const loopState = vi.hoisted(() => ({
   runs: 0,
   /** The cancelled result the loop reports before it returns; none when unset. */
   reported: undefined as ToolResult | undefined,
+  /** The loop fails in its tool step instead of waiting for a cancel. */
+  fails: false,
 }));
 
 vi.mock('../../agent/loop.js', () => ({
@@ -36,6 +38,7 @@ vi.mock('../../agent/loop.js', () => ({
       loopState.runs++;
       // The model calls a command, which is still running when the user presses Esc.
       callbacks.onToolCall({ id: 'call-1', name: 'Bash', arguments: { command: 'sleep 10' } });
+      if (loopState.fails) throw new Error('disk full while bounding the output');
       await new Promise<void>((resolve) => {
         if (options.signal?.aborted) resolve();
         options.signal?.addEventListener('abort', () => resolve(), { once: true });
@@ -112,6 +115,7 @@ afterEach(() => {
   latest = undefined;
   loopState.runs = 0;
   loopState.reported = undefined;
+  loopState.fails = false;
   vi.clearAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -155,5 +159,21 @@ describe('tool rows of a cancelled run (#669)', () => {
     expect(commandRow()!.toolResults!.map((r) => r.structuredError?.message)).toEqual([
       'Command cancelled',
     ]);
+  });
+
+  it('settles a call that never reported back when the run fails instead', async () => {
+    loopState.fails = true;
+    const { config, session } = fixture();
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const result = await latest!.send('start the run');
+
+    expect(result.status).toBe('failed');
+    await waitFor(() => (commandRow()?.toolResults?.length ?? 0) > 0);
+    expect(commandRow()!.toolResults![0]).toMatchObject({ toolCallId: 'call-1' });
+    expect(commandRow()!.toolResults![0]!.structuredError?.message).toBe(
+      'INTERRUPTED: the run ended before this call reported a result',
+    );
   });
 });

@@ -4,6 +4,7 @@ import { render, cleanup } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { InputBar, SEND_NOW_CHORD_MS } from './InputBar.js';
 import type { ImageAttachment } from '../../types/messages.js';
+import type { Skill } from '../../skills.js';
 
 /**
  * Steering in the composer (#661): while a user-started run is going, Enter hands the draft to
@@ -336,5 +337,45 @@ describe('InputBar send-now chord (#661)', () => {
 
     expect(onSendNow).not.toHaveBeenCalled();
     expect(stripAnsi(view.lastFrame())).toContain('!ls');
+  });
+
+  it('does nothing while a completion menu is open', async () => {
+    // Enter would take the selected `$skill` first; the chord would send the half-typed name.
+    const skill = {
+      id: 'agents:/skills/wayfinder/SKILL.md',
+      version: 'unversioned',
+      descriptorDigest: 'descriptor',
+      resourceDigest: 'resources',
+      name: 'wayfinder',
+      description: 'Plan a huge chunk of work',
+      metadata: {},
+      lifetime: 'run',
+      path: '/skills/wayfinder/SKILL.md',
+      rootPath: '/skills/wayfinder',
+      source: 'user',
+      rootKind: 'agents',
+      activation: 'manual',
+      execution: 'inherit',
+      invocationCount: 0,
+      entryByteSize: 0,
+      entryMtimeMs: 0,
+      resources: [],
+      issues: [],
+      valid: true,
+      shadowed: [],
+    } as Skill;
+    const onSendNow = vi.fn();
+    const view = render(steeringBar({ onSendNow, skills: [skill] }));
+
+    view.stdin.write('use $way');
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('$wayfinder');
+    view.stdin.write(CTRL_X);
+    await tick();
+    view.stdin.write(CTRL_S);
+    await tick(20);
+
+    expect(onSendNow).not.toHaveBeenCalled();
+    expect(stripAnsi(view.lastFrame())).toContain('use $way');
   });
 });

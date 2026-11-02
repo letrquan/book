@@ -8,7 +8,11 @@ import type {
   SteeringInbox,
   Usage,
 } from '../types/messages.js';
-import type { ProviderMessage, ProviderResponseMetadata } from '../types/providers.js';
+import type {
+  ProviderMessage,
+  ProviderResponseMetadata,
+  ProviderStreamEvent,
+} from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
 import type {
   ToolCall,
@@ -138,7 +142,7 @@ import {
 } from '../types/terminal.js';
 import type { AgentRunContext } from '../types/runs.js';
 import type { CompactRequestHints, CompactResult, PreparedCompaction } from '../types/sessions.js';
-import { delay } from '../async.js';
+import { delay, onAbort as listenForAbort } from '../async.js';
 import {
   buildProgressWitness,
   decideContinuation,
@@ -246,6 +250,22 @@ function systemPromptText(messages: readonly ProviderMessage[]): string {
     return content.map((part) => (part.type === 'text' ? part.text : '')).join('');
   }
   return [content.cachedPrefix, content.dynamicSuffix].filter(Boolean).join('\n\n');
+}
+
+/**
+ * A user turn the host writes to carry a run on (`[continuation] …`). Marked host-authored: neither
+ * the ledger nor Carried Turns may treat it as the user's own words, and it ends no answer.
+ */
+function hostContinuation(content: string): Message {
+  return {
+    id: crypto.randomUUID(),
+    role: 'user',
+    content,
+    includeInContext: true,
+    kind: 'conversation',
+    derivedContent: true,
+    timestamp: Date.now(),
+  };
 }
 
 const AGENT_TERMINAL_STATUSES = new Set(['completed', 'failed', 'stopped', 'interrupted']);
@@ -1595,18 +1615,9 @@ export async function runAgentLoop(
           !signal?.aborted &&
           newHistory.at(-1)?.role === 'assistant'
         ) {
-          const resume: Message = {
-            id: crypto.randomUUID(),
-            role: 'user',
-            content:
-              '[continuation] Your previous message was interrupted before it finished. Continue from exactly where you stopped. Do not restart or repeat what you already wrote.',
-            includeInContext: true,
-            kind: 'conversation',
-            // Host-authored: neither the ledger nor Carried Turns may treat this as the user's
-            // own words.
-            derivedContent: true,
-            timestamp: Date.now(),
-          };
+          const resume = hostContinuation(
+            '[continuation] Your previous message was interrupted before it finished. Continue from exactly where you stopped. Do not restart or repeat what you already wrote.',
+          );
           newHistory.push(resume);
           callbacks.onUserMessageAppended?.(resume);
         }
@@ -1897,6 +1908,22 @@ export async function runAgentLoop(
       const rawToolCallIds: string[] = [];
       let usedToolCallIds: Set<string> | undefined;
       const nestedTraceIds: string[] = [];
+      /**
+       * Settle every call this reply streamed that will never run: one result each, told to the
+       * host and to a nested observer as a run result is. A call left without one keeps its row
+       * saying it is running, and would make every later request malformed — Anthropic refuses a
+       * `tool_use` with no `tool_result`.
+       */
+      const settleUnrunCalls = (message: string, code: string): ToolResult[] =>
+        toolCalls.map((call, callIndex) => {
+          const result = toolFailure(message, { toolCallId: call.id, code, status: 'cancelled' });
+          callbacks.onToolResult(result);
+          const nestedTraceId = nestedTraceIds[callIndex];
+          if (nestedTraceId && options?.nestedToolObserver) {
+            options.nestedToolObserver.onToolResult(nestedTraceId, result);
+          }
+          return result;
+        });
       let turnUsage: Usage | null = null;
       let responseMetadata: ProviderResponseMetadata | undefined;
       let assistantProviderMetadata: ProviderMessageMetadata | undefined;
@@ -1968,11 +1995,12 @@ export async function runAgentLoop(
       /**
        * This request's own abort, for send-now (#661): it stops the model mid-reply and nothing
        * else. The run's signal still cancels everything, and the provider stops on either, the
-       * same way it stops for a cancel.
+       * same way it stops for a cancel. Only a run with a steering inbox has one.
        */
-      const step = new AbortController();
+      const steering = options?.steering;
+      const step = steering ? new AbortController() : undefined;
       const stream = provider.stream(effectiveConfig, messages, activeDefinitions, {
-        signal: signal ? AbortSignal.any([signal, step.signal]) : step.signal,
+        signal: step ? (signal ? AbortSignal.any([signal, step.signal]) : step.signal) : signal,
         onRetry: (attempt, max, delayMs) => {
           if (options?.runContext) {
             runtime.runAccounting.markUsageUnknown(
@@ -2000,17 +2028,57 @@ export async function runAgentLoop(
 
       // Heard only while this request streams: send-now during a tool step changes nothing (D5),
       // because the steer lands right after the tools anyway. A request that stands from before
-      // this one started fires at once.
-      const steering = options?.steering;
+      // this one started fires at once. It is declined when no turn or budget is left to answer
+      // the steer, the two things the turn-end drain asks too: stopping the reply then would only
+      // cut it short.
       const stopHearingSendNow =
-        steering?.onRequestNow(() => {
-          if (steering.hasPending()) step.abort('steer');
-        }) ?? (() => {});
+        step && steering
+          ? steering.onRequestNow(() => {
+              if (
+                steering.hasPending() &&
+                hasTurnLeft(turn) &&
+                budgetCheckForNextRequest().allowed
+              ) {
+                step.abort('steer');
+              }
+            })
+          : () => {};
+      /**
+       * Settles when send-now stops this request. Each event is raced against it, so a provider
+       * that ignores the abort cannot hold the loop, whether it keeps streaming or goes quiet.
+       */
+      let stopWaitingForStep = () => {};
+      const stepStopped = step
+        ? new Promise<null>((resolve) => {
+            stopWaitingForStep = listenForAbort(step.signal, () => resolve(null));
+          })
+        : undefined;
+      /** The provider finished by itself, so there is nothing left to close. */
+      let streamEnded = false;
+      /** Send-now stopped this request while its provider had nothing to say. */
+      let leftProviderWaiting = false;
       try {
-        for await (const event of stream) {
-          // Send-now stopped this request: what arrives after it is not the reply the user read,
-          // and a provider that keeps streaming past the abort cannot hold the loop either.
-          if (step.signal.aborted) break;
+        while (true) {
+          // Send-now stopped this request: what arrives after it is not the reply the user read.
+          if (step?.signal.aborted) break;
+          const pending = stream.next();
+          let next: IteratorResult<ProviderStreamEvent> | null;
+          if (stepStopped) {
+            // A request left waiting is never read again, so how it ends is nobody's concern.
+            pending.catch(() => {});
+            next = await Promise.race([stepStopped, pending]);
+          } else {
+            next = await pending;
+          }
+          if (next === null) {
+            leftProviderWaiting = true;
+            break;
+          }
+          if (next.done) {
+            streamEnded = true;
+            break;
+          }
+          const event = next.value;
           // The retry label a re-sent turn left up ends with the answer, not with
           // the run: the host is told the stream resumed on the first content of
           // the retried attempt.
@@ -2088,7 +2156,7 @@ export async function runAgentLoop(
               rawToolCallIds.map((raw, i) => ({ raw, id: toolCalls[i].id })),
             );
           }
-          if (signal?.aborted || step.signal.aborted) break;
+          if (signal?.aborted || step?.signal.aborted) break;
         }
       } catch (e) {
         // Abort looks like an AbortError; keep whatever content we have and stop.
@@ -2104,19 +2172,26 @@ export async function runAgentLoop(
         }
         // A provider that throws on send-now's abort has not failed: the step branch below
         // settles the request.
-        if (!step.signal.aborted) {
+        if (!step?.signal.aborted) {
           streamError = e instanceof Error ? e.message : String(e);
           streamErrorCode = 'provider_error';
         }
       } finally {
         stopHearingSendNow();
+        stopWaitingForStep();
+        if (!streamEnded) {
+          // What `for await` does on an early exit: let the provider release its reader. A
+          // provider send-now left waiting is not waited for, since it may never wake.
+          const closing = stream.return(undefined).catch(() => undefined);
+          if (!leftProviderWaiting) await closing;
+        }
       }
       /**
        * Send-now stopped this request before it finished (#661), and the run was not cancelled.
        * A reply that ended in the meantime is a reply like any other, and its steer is drained at
        * the next boundary as usual.
        */
-      const stepAborted = !streamDone && step.signal.aborted && !signal?.aborted;
+      const stepAborted = !streamDone && step?.signal.aborted === true && !signal?.aborted;
 
       assistantContent = textBuffer;
       // Resolved once, here, because the split below and the classification that
@@ -2174,32 +2249,26 @@ export async function runAgentLoop(
 
       if (stepAborted) {
         // Send-now (#661): not a cancel and not a fault, so none of the retries and error paths
-        // below apply. What the model wrote stays as the user read it, the calls it streamed are
-        // settled without running, and the loop goes on: the next boundary appends the steer.
+        // below apply. What the model wrote stays as the user read it, and the loop goes on: the
+        // next boundary appends the steer.
         //
-        // Its reasoning is dropped. It has no signature — that arrives with the terminal event this
-        // request never got, along with the provider metadata a signed thinking block would ride
-        // in — and Anthropic cannot replay a thinking block without one. Half a thought is not
-        // worth replaying as text either: the model thinks again with the steer in front of it.
+        // Nothing signed survives the stop. A reply's signatures and native blocks arrive with the
+        // terminal event this request never got, so its reasoning is dropped — Anthropic cannot
+        // replay a thinking block without its signature, and half a thought is not worth replaying
+        // as text. The calls it streamed leave it too: they are settled for the host without
+        // running, but kept they would be a `tool_use` replayed without the thinking block that
+        // came before it, which Anthropic refuses while thinking is on. The model reads the steer
+        // and calls again if it still wants to.
         if (heldText) {
           assistantOutputProduced = true;
           callbacks.onText(heldText);
           heldText = '';
         }
-        const supersededResults = toolCalls.map<ToolResult>((call, callIndex) => {
-          const result = toolFailure('SUPERSEDED: the user sent a message before this call ran', {
-            toolCallId: call.id,
-            code: 'superseded_by_user',
-            status: 'cancelled',
-          });
-          callbacks.onToolResult(result);
-          const nestedTraceId = nestedTraceIds[callIndex];
-          if (nestedTraceId && options?.nestedToolObserver) {
-            options.nestedToolObserver.onToolResult(nestedTraceId, result);
-          }
-          return result;
-        });
-        if (assistantContent.length > 0 || toolCalls.length > 0) {
+        settleUnrunCalls(
+          'SUPERSEDED: the user sent a message before this call ran',
+          'superseded_by_user',
+        );
+        if (assistantContent.length > 0) {
           assistantOutputProduced = true;
           const stoppedMessage: Message = {
             // The host's row for this turn: a stopped reply is persisted under it, as any reply is.
@@ -2210,14 +2279,11 @@ export async function runAgentLoop(
             content: assistantContent,
             includeInContext: true,
             kind: 'conversation',
-            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-            toolResults: supersededResults.length > 0 ? supersededResults : undefined,
             timestamp: Date.now(),
           };
           newHistory.push(stoppedMessage);
           callbacks.onAssistantMessageComplete?.(stoppedMessage);
-          // A reply with calls ends on their results; one without ends on the reply itself.
-          stoppedReplyAwaitsSteer = toolCalls.length === 0;
+          stoppedReplyAwaitsSteer = true;
         }
         pendingTurn = undefined;
         log.info('send-now stopped the model request', {
@@ -2644,22 +2710,10 @@ export async function runAgentLoop(
           // malformed — Anthropic rejects a `tool_use` with no `tool_result`.
           // Persisting one would carry that past a `--resume` and wedge the
           // session for good, so it is settled here the way an abort settles it.
-          const abandonedResults = toolCalls.map<ToolResult>((call, callIndex) => {
-            const result = toolFailure(
-              'INTERRUPTED: the provider stream ended before this tool ran',
-              {
-                toolCallId: call.id,
-                code: 'cancelled_before_start',
-                status: 'cancelled',
-              },
-            );
-            callbacks.onToolResult(result);
-            const nestedTraceId = nestedTraceIds[callIndex];
-            if (nestedTraceId && options?.nestedToolObserver) {
-              options.nestedToolObserver.onToolResult(nestedTraceId, result);
-            }
-            return result;
-          });
+          const abandonedResults = settleUnrunCalls(
+            'INTERRUPTED: the provider stream ended before this tool ran',
+            'cancelled_before_start',
+          );
           const partialMessage: Message = {
             id:
               (reissuedThisTurn ? undefined : options?.assistantMessageId?.(turn)) ??
@@ -2798,20 +2852,11 @@ export async function runAgentLoop(
             // `streamError` and then dropped, because this branch returns before
             // `callbacks.onError`.
             if (newHistory.at(-1)?.role === 'assistant') {
-              const resume: Message = {
-                id: crypto.randomUUID(),
-                role: 'user',
-                content:
-                  recovery === 'continue'
-                    ? '[continuation] Your previous message was cut off at the output limit. Continue from exactly where you stopped. Do not restart or repeat what you already wrote.'
-                    : '[continuation] The connection dropped before your previous message finished. Continue from exactly where you stopped. Do not restart or repeat what you already wrote.',
-                includeInContext: true,
-                kind: 'conversation',
-                // Host-authored: neither the ledger nor Carried Turns may treat
-                // this as the user's own words.
-                derivedContent: true,
-                timestamp: Date.now(),
-              };
+              const resume = hostContinuation(
+                recovery === 'continue'
+                  ? '[continuation] Your previous message was cut off at the output limit. Continue from exactly where you stopped. Do not restart or repeat what you already wrote.'
+                  : '[continuation] The connection dropped before your previous message finished. Continue from exactly where you stopped. Do not restart or repeat what you already wrote.',
+              );
               newHistory.push(resume);
               callbacks.onUserMessageAppended?.(resume);
             }
@@ -2849,19 +2894,10 @@ export async function runAgentLoop(
       // ended unexpectedly — keep what we have and finish.
       if (!streamDone && signal?.aborted) {
         flushReasoning();
-        const cancelledResults = toolCalls.map<ToolResult>((call, callIndex) => {
-          const result = toolFailure('CANCELLED: Agent execution was interrupted', {
-            toolCallId: call.id,
-            code: 'cancelled_before_start',
-            status: 'cancelled',
-          });
-          callbacks.onToolResult(result);
-          const nestedTraceId = nestedTraceIds[callIndex];
-          if (nestedTraceId && options?.nestedToolObserver) {
-            options.nestedToolObserver.onToolResult(nestedTraceId, result);
-          }
-          return result;
-        });
+        const cancelledResults = settleUnrunCalls(
+          'CANCELLED: Agent execution was interrupted',
+          'cancelled_before_start',
+        );
         if (assistantContent.length > 0 || reasoningContent.length > 0 || toolCalls.length > 0) {
           assistantOutputProduced = true;
           const cancelledMessage: Message = {
@@ -3759,13 +3795,17 @@ export async function runAgentLoop(
 
         // A cancelled run still owes the host and the history this call's result (#669): its row
         // reads `Running…` until one arrives, and a step missing from history is missing on
-        // resume. `runHooks` throws the abort reason before it looks at anything, so a run
-        // cancelled during the call skips the hooks rather than lose the result, and one cancelled
-        // while they run keeps the result they had not changed yet.
-        const postHookResults = signal?.aborted
-          ? []
-          : await runHooks(
-              config.settings.hooks.PostToolUse,
+        // resume. `runHooks` throws the abort reason before it looks at anything, so a cancel that
+        // lands before or during the PostToolUse hooks is caught here rather than lose the result.
+        // Those hooks may be what rewrites or scrubs a call's output before anyone sees it, though,
+        // so a call whose hooks a cancel skipped publishes and keeps none of its output.
+        const postHooks = config.settings.hooks.PostToolUse;
+        let postHookResults: Awaited<ReturnType<typeof runHooks>> = [];
+        let postHooksSkipped = signal?.aborted === true;
+        if (!postHooksSkipped) {
+          try {
+            postHookResults = await runHooks(
+              postHooks,
               'PostToolUse',
               {
                 workspace: config.workspace,
@@ -3777,10 +3817,18 @@ export async function runAgentLoop(
                   : (toolResultErrorMessage(result) ?? ''),
               },
               { onHookEvent: callbacks.onHookEvent, signal },
-            ).catch((error: unknown) => {
-              if (signal?.aborted) return [];
-              throw error;
-            });
+            );
+          } catch (error) {
+            if (!signal?.aborted) throw error;
+            postHooksSkipped = true;
+          }
+        }
+        if (postHooksSkipped && postHooks.length > 0) {
+          result = toolFailure(
+            "CANCELLED: the run was cancelled before this call's PostToolUse hooks ran, so its output is withheld. The call itself may have completed.",
+            { toolCallId: call.id, code: 'cancelled', status: 'cancelled' },
+          );
+        }
         for (const hookResult of postHookResults) {
           if (hookResult.action === 'modify' && hookResult.modifiedOutput !== undefined) {
             result = replaceToolResult(result, { content: hookResult.modifiedOutput });

@@ -387,6 +387,15 @@ function interruptedToolResult(call: ToolCall): ToolResult {
   });
 }
 
+/** The result a call gets when its run ended any other way before the call reported back. */
+function unansweredToolResult(call: ToolCall): ToolResult {
+  return toolFailure('INTERRUPTED: the run ended before this call reported a result', {
+    toolCallId: call.id,
+    code: 'cancelled',
+    status: 'cancelled',
+  });
+}
+
 /** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
 const HANDOFF_DISPLAY_MESSAGE = 'Implementing the approved plan with a fresh context.';
 
@@ -1960,16 +1969,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         accumulatorRef.current?.stop();
         uiLog.event('accumulator:stopped', { reason: 'done' });
         if (accumulatorRef.current === activeAccumulator) accumulatorRef.current = null;
-        // A run cancelled while a call ran can end before the call's result arrives (#669), and
-        // its row would say `Running…` for good. After the final flush, so a result that did
-        // arrive is the one shown.
-        if (sendResult.status === 'cancelled') {
-          setMessages((prev) => {
-            const next = settleOpenToolCalls(prev, runMessageIds, interruptedToolResult);
-            messagesRef.current = next;
-            return next;
-          });
-        }
+        // No row of this run may go on saying `Running…` once the run is over (#669): a cancel can
+        // end it before a call's result reaches the host, and so can a run that fails in its tool
+        // step. After the final flush, so a result that did arrive is the one shown.
+        const settle =
+          sendResult.status === 'cancelled' ? interruptedToolResult : unansweredToolResult;
+        setMessages((prev) => {
+          const next = settleOpenToolCalls(prev, runMessageIds, settle);
+          if (next === prev) return prev;
+          messagesRef.current = next;
+          return next;
+        });
         finalizeStreamingMessages();
         streamingIdRef.current = null;
         setStreamingMessageId(null);

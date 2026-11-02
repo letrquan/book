@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runAgentLoop } from './loop.js';
 import { createRegistry } from '../tools/registry.js';
-import { toolFailure } from '../tools/result.js';
+import { toolFailure, toolSuccess } from '../tools/result.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
@@ -9,6 +12,7 @@ import type { AgentLoopCallbacks, ProviderStreamEvent } from '../types/providers
 import type { AgentTerminalOutcome } from '../types/terminal.js';
 import type { Message } from '../types/messages.js';
 import type { ToolResult } from '../types/tools.js';
+import type { HookEntry } from '../settings.js';
 
 /**
  * A run cancelled while a tool runs (#669): the tool stops, and its cancelled result still reaches
@@ -16,6 +20,42 @@ import type { ToolResult } from '../types/tools.js';
  * first, so the result was never published — the transcript row kept saying `Running…` — and the
  * step never reached the history.
  */
+
+const scratchDirs: string[] = [];
+
+afterAll(() => {
+  for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
+});
+
+/** A PostToolUse hook that would scrub the output, if it ever finished: it takes `delayMs`. */
+function scrubbingHook(delayMs: number): HookEntry {
+  const dir = mkdtempSync(join(tmpdir(), 'book-cancelled-tool-hooks-'));
+  scratchDirs.push(dir);
+  const file = join(dir, 'scrub.mjs');
+  writeFileSync(
+    file,
+    [
+      "let raw = '';",
+      'for await (const chunk of process.stdin) raw += chunk;',
+      `setTimeout(() => process.stdout.write('{"action":"modify","modifiedOutput":"scrubbed"}'), ${delayMs});`,
+    ].join('\n'),
+  );
+  return { command: `node "${file}"`, env: {} };
+}
+
+/** The model calls `Bash` once; the run never gets a second request. */
+function oneCallProvider(): Provider {
+  return {
+    id: 'scripted',
+    stream: async function* (): AsyncGenerator<ProviderStreamEvent> {
+      yield {
+        type: 'tool_call',
+        toolCall: { id: 'call-1', name: 'Bash', arguments: { command: 'cat config.env' } },
+      };
+      yield { type: 'done' };
+    },
+  } as unknown as Provider;
+}
 
 function loopCallbacks(overrides: Partial<AgentLoopCallbacks> = {}): AgentLoopCallbacks {
   return {
@@ -89,4 +129,58 @@ describe('a run cancelled during a tool (#669)', () => {
     expect(step?.toolResults?.map((result) => result.status)).toEqual(['cancelled']);
     expect(outcome?.status).toBe('cancelled');
   });
+
+  it.each([
+    ['during the call', 0],
+    ['while its PostToolUse hooks run', 5_000],
+  ])(
+    'withholds the output of a call whose PostToolUse hooks a cancel skipped (%s)',
+    async (_when, hookDelayMs) => {
+      const controller = new AbortController();
+      const registry = createRegistry();
+      registry.register({
+        name: 'Bash',
+        description: 'Prints what a PostToolUse hook is configured to scrub.',
+        parameters: { type: 'object', properties: { command: { type: 'string' } } },
+        execute: async (): Promise<ToolResult> => {
+          if (hookDelayMs === 0) controller.abort({ bookTerminalReason: 'user_cancelled' });
+          return toolSuccess('DB_PASSWORD=hunter2');
+        },
+      });
+      const config = defaultConfig();
+      config.settings.hooks.PostToolUse = [scrubbingHook(hookDelayMs)];
+      const results: ToolResult[] = [];
+
+      const history = await runAgentLoop(
+        config,
+        registry,
+        'start',
+        [],
+        loopCallbacks({
+          onToolResult: (result: ToolResult) => results.push(result),
+          // Esc while the hook is still working on the output.
+          onHookEvent: (event: string) => {
+            if (event === 'PostToolUse' && hookDelayMs > 0) {
+              setTimeout(() => controller.abort({ bookTerminalReason: 'user_cancelled' }), 50);
+            }
+          },
+        }),
+        'bypassPermissions',
+        {
+          isNewSession: false,
+          runtime: new SessionRuntime(),
+          provider: oneCallProvider(),
+          signal: controller.signal,
+        },
+      );
+
+      // The row still settles, and the step is still recorded, but with none of the output the
+      // hook never got to check.
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({ toolCallId: 'call-1', status: 'cancelled' });
+      expect(results[0]!.structuredError?.message).toContain('withheld');
+      expect(JSON.stringify(results)).not.toContain('hunter2');
+      expect(JSON.stringify(history)).not.toContain('hunter2');
+    },
+  );
 });

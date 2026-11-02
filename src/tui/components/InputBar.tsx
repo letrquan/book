@@ -594,28 +594,21 @@ export function InputBar({
     [setAttachments, setHistory, setHistoryIndex, setValue],
   );
 
-  /** Close every composer menu: the draft they were completing has been sent. */
-  const dismissMenus = useCallback(() => {
-    setMenuVisible(false);
-    selectMenuItem(0);
-    setFileMenuVisible(false);
-    setFileMention(null);
-    setFileCandidates([]);
-    setFileSelected(0);
-    setSkillMenuVisible(false);
-    setSkillMention(null);
-    setSkillSelected(0);
-  }, [selectMenuItem]);
-
   /** When Ctrl+X armed the send-now chord. Any key but Ctrl+S disarms it. */
   const sendNowArmedAtRef = useRef<number | undefined>(undefined);
   /**
    * The send-now chord completed (#661). A draft goes only if Enter would steer it: a slash
    * command, a `!` line or a draft the run cannot take keeps its own rules, and the chord does
-   * nothing. An empty composer sends the steers already waiting, if there are any.
+   * nothing. So does a draft with a completion menu open: Enter would take the selected `@file`
+   * or `$skill` first, and the chord would send the half-typed mention instead. An empty composer
+   * sends the steers already waiting, if there are any.
    */
   const sendNow = useCallback(() => {
     if (!onSendNow) return;
+    if (menuVisibleRef.current || skillMenuVisibleRef.current || fileMenuVisibleRef.current) {
+      uiLog.event('input:Ctrl+X Ctrl+S', { action: 'noop', reason: 'menu-open' });
+      return;
+    }
     const normalized = normalizeInput(valueRef.current);
     if (!normalized.trim() && attachmentsRef.current.length === 0) {
       uiLog.event('input:Ctrl+X Ctrl+S', { action: 'send-now', draft: false });
@@ -627,9 +620,8 @@ export function InputBar({
       return;
     }
     uiLog.event('input:Ctrl+X Ctrl+S', { action: 'send-now', draft: true, len: normalized.length });
-    dismissMenus();
     handOffSteer(normalized, onSendNow);
-  }, [dismissMenus, handOffSteer, onSendNow, resolveSubmissionAction]);
+  }, [handOffSteer, onSendNow, resolveSubmissionAction]);
 
   useInput((_input, key) => {
     // TranscriptView owns mouse reports. Drop them before menu/history routing
@@ -1018,7 +1010,15 @@ export function InputBar({
       }
 
       // Dismiss menus on submit.
-      dismissMenus();
+      setMenuVisible(false);
+      selectMenuItem(0);
+      setFileMenuVisible(false);
+      setFileMention(null);
+      setFileCandidates([]);
+      setFileSelected(0);
+      setSkillMenuVisible(false);
+      setSkillMention(null);
+      setSkillSelected(0);
 
       const normalized = normalizeInput(val);
       if (!normalized.trim() && attachmentsRef.current.length === 0) {
@@ -1061,7 +1061,6 @@ export function InputBar({
       acceptSelectedFileMention,
       acceptSelectedSkillMention,
       commands,
-      dismissMenus,
       handOffSteer,
       onSteer,
       onSubmit,

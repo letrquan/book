@@ -234,21 +234,50 @@ describe('send-now in the loop (#661)', () => {
     // It never ran, so nothing reads it as work the call did.
     expect(refusedBeforeRun(results[0])).toBe(true);
 
-    // The call keeps its result in request 2, and the steer comes after it.
-    const second = conversation(requests[1]!.messages);
-    const callIndex = requests[1]!.messages.findIndex((message) =>
-      message.tool_calls?.some((call) => call.id === 'call-1'),
+    // The call leaves the reply the model is shown: kept, it would be a call replayed without the
+    // signed reasoning that came before it. Request 2 reads the stopped text, then the steer.
+    const second = requests[1]!.messages;
+    expect(second.some((message) => message.tool_calls?.length)).toBe(false);
+    expect(second.some((message) => message.tool_call_id === 'call-1')).toBe(false);
+    expect(conversation(second)).toEqual([
+      { role: 'user', text: expect.stringContaining('start') },
+      { role: 'assistant', text: 'Editing the wrong file.' },
+      { role: 'user', text: expect.stringContaining('use the other file') },
+    ]);
+  });
+
+  it('lets the last allowed turn finish its reply, and leaves the steer for the host', async () => {
+    // With no turn left to answer it, stopping the reply would only cut it short.
+    const inbox = createSteeringInbox();
+    const { provider, requests } = scriptedProvider(async function* () {
+      yield { type: 'text', content: 'The final ' };
+      sendNow(inbox, 'steer-1', 'too late for this run');
+      yield { type: 'text', content: 'answer.' };
+      yield { type: 'done' };
+    });
+    const config = defaultConfig();
+    config.maxTurns = 1;
+
+    const history = await runAgentLoop(
+      config,
+      createRegistry(),
+      'start',
+      [],
+      loopCallbacks(),
+      'auto',
+      {
+        isNewSession: false,
+        runtime: new SessionRuntime(),
+        steering: inbox,
+        provider,
+        signal: new AbortController().signal,
+      },
     );
-    const resultIndex = requests[1]!.messages.findIndex(
-      (message) => message.tool_call_id === 'call-1',
-    );
-    const steerIndex = requests[1]!.messages.findIndex(
-      (message) => message.role === 'user' && textOf(message).includes('use the other file'),
-    );
-    expect(callIndex).toBeGreaterThan(-1);
-    expect(resultIndex).toBeGreaterThan(callIndex);
-    expect(steerIndex).toBeGreaterThan(resultIndex);
-    expect(second.at(-1)?.text).toContain('use the other file');
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.signal?.aborted).toBe(false);
+    expect(history.at(-1)).toMatchObject({ role: 'assistant', content: 'The final answer.' });
+    expect(inbox.hasPending()).toBe(true);
   });
 
   it('changes nothing when nothing is pending', async () => {
@@ -403,6 +432,37 @@ describe('send-now in the loop (#661)', () => {
     expect(history.find((message) => message.role === 'assistant')?.content).toBe('Writing');
   });
 
+  it('does not wait for a provider that ignores the abort and goes quiet', async () => {
+    const inbox = createSteeringInbox();
+    const { provider, requests } = scriptedProvider(
+      async function* () {
+        yield { type: 'text', content: 'Thinking it over' };
+        sendNow(inbox, 'steer-1', 'stop');
+        // A route that never looks at the signal, waiting on a socket that never speaks again.
+        await new Promise<never>(() => {});
+      },
+      async function* () {
+        yield { type: 'text', content: 'Stopped.' };
+        yield { type: 'done' };
+      },
+    );
+
+    const history = await runAgentLoop(
+      defaultConfig(),
+      createRegistry(),
+      'start',
+      [],
+      loopCallbacks(),
+      'auto',
+      { isNewSession: false, runtime: new SessionRuntime(), steering: inbox, provider },
+    );
+
+    expect(requests).toHaveLength(2);
+    expect(history.filter((message) => message.role === 'assistant').map((m) => m.content)).toEqual(
+      ['Thinking it over', 'Stopped.'],
+    );
+  });
+
   it('resumes the stopped reply when the steer it stopped for is blocked by a hook', async () => {
     // Without a steer to answer, request 2 would end on the stopped reply: assistant prefill,
     // which Anthropic refuses while thinking is on.
@@ -482,5 +542,50 @@ describe('send-now and Anthropic replay (#661)', () => {
     // The request is still a conversation the API accepts: it ends on the user's words.
     expect(converted.at(-1)?.role).toBe('user');
     expect(JSON.stringify(converted.at(-1))).toContain('look at the lexer instead');
+  });
+
+  it('replays no tool_use from a reply stopped before its signed blocks arrived', async () => {
+    // Anthropic streams a call when its block ends, but the signed thinking block before it only
+    // comes with the terminal event. A `tool_use` replayed without it is refused while thinking is
+    // on, so the stopped reply keeps its text and loses the call.
+    const inbox = createSteeringInbox();
+    const { provider, requests } = scriptedProvider(
+      async function* (signal) {
+        yield { type: 'reasoning', reasoning: 'the parser first' };
+        yield { type: 'text', content: 'Opening the parser.' };
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'toolu_1', name: 'Read', arguments: { filePath: 'parser.ts' } },
+        };
+        sendNow(inbox, 'steer-1', 'the lexer, not the parser');
+        await abortOf(signal);
+      },
+      async function* () {
+        yield { type: 'text', content: 'Opening the lexer.' };
+        yield { type: 'done' };
+      },
+    );
+
+    await runAgentLoop(
+      defaultConfig({ provider: 'anthropic', baseUrl: 'https://api.anthropic.com' }),
+      createRegistry(),
+      'start',
+      [],
+      loopCallbacks(),
+      'auto',
+      { isNewSession: false, runtime: new SessionRuntime(), steering: inbox, provider },
+    );
+
+    const converted = convertMessages(requests[1]!.messages).messages;
+    const blocks = converted.flatMap((message) =>
+      typeof message.content === 'string' ? [] : message.content,
+    );
+    expect(blocks.some((block) => block.type === 'tool_use' || block.type === 'tool_result')).toBe(
+      false,
+    );
+    expect(blocks.some((block) => block.type === 'thinking')).toBe(false);
+    expect(converted.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
+    expect(JSON.stringify(converted[1])).toContain('Opening the parser.');
+    expect(JSON.stringify(converted.at(-1))).toContain('the lexer, not the parser');
   });
 });
