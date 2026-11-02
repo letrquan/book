@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../session/store.js';
@@ -156,7 +156,18 @@ describe('book status', () => {
       }),
     );
     expect(run()).toBeCloseTo(2, 8);
-    // A settings file that does not load is not a reason to stop the command.
+    // A workspace file that does not load takes nothing from the user's prices: only the user
+    // file is read.
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(join(workspace, '.book', 'settings.json'), '{ not json');
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({
+        provider: { r1: { models: { 'some-local-model': { pricing: { in: 0, out: 0 } } } } },
+      }),
+    );
+    expect(run()).toBeCloseTo(2, 8);
+    // A user file that does not load is not a reason to stop the command.
     writeFileSync(join(home, 'settings.json'), '{ not json');
     expect(run()).toBeNull();
   });

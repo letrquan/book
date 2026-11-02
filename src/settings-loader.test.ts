@@ -2293,11 +2293,20 @@ describe('user-or-flag-only keys: a model price (#663)', () => {
   it('is a user-or-flag-only path from the key itself down, not above it', () => {
     expect(isUserOrFlagOnlySettingPath('provider.r1.models.m.pricing')).toBe(true);
     expect(isUserOrFlagOnlySettingPath('provider.r1.models.m.pricing.in')).toBe(true);
+    // A model id with dots in it is one segment of the key, not several.
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.deepseek-v4.1-flash.pricing')).toBe(
+      true,
+    );
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.a.b.c.pricing.cacheRead')).toBe(true);
     // Above the key, a provider or a model can be rewritten or removed without setting a price.
     expect(isUserOrFlagOnlySettingPath('provider')).toBe(false);
     expect(isUserOrFlagOnlySettingPath('provider.r1')).toBe(false);
     expect(isUserOrFlagOnlySettingPath('provider.r1.models.m')).toBe(false);
     expect(isUserOrFlagOnlySettingPath('provider.r1.models.m.contextWindow')).toBe(false);
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.deepseek-v4.1-flash')).toBe(false);
+    // A model that is called `pricing` is a model, not a price.
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.pricing')).toBe(false);
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.pricingX')).toBe(false);
     // The messaging keys keep the rule they had: the key, or a container holding it.
     expect(isUserOrFlagOnlySettingPath('messaging.enabled')).toBe(true);
     expect(isUserOrFlagOnlySettingPath('messaging')).toBe(true);
@@ -2310,6 +2319,16 @@ describe('user-or-flag-only keys: a model price (#663)', () => {
       'provider.r1.models.m.pricing is ignored when read from any file inside the workspace',
     );
     expect(blockedWorkspaceSettingWrite('provider.r1.models.m.pricing.in', 1)).toBeDefined();
+    // The dotted form cannot be split back into a document for a model id that has dots in it,
+    // so the path is what is judged.
+    expect(
+      blockedWorkspaceSettingWrite('provider.r1.models.deepseek-v4.1-flash.pricing', rate),
+    ).toContain(
+      'provider.r1.models.deepseek-v4.1-flash.pricing is ignored when read from any file',
+    );
+    expect(
+      blockedWorkspaceSettingWrite('provider.r1.models.deepseek-v4.1-flash.label', 'x'),
+    ).toBeUndefined();
     expect(blockedWorkspaceSettingWrite('provider.r1.models.m.pricing')).toBeDefined();
     // A whole provider block is judged by what it stores.
     expect(blockedWorkspaceSettingWrite('provider', priced('m', rate).provider)).toBeDefined();

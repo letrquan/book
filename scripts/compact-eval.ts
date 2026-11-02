@@ -714,6 +714,9 @@ async function runFixture(options: {
     sessionId: crypto.randomUUID(),
     source: 'headless',
   });
+  compactRuntime.runAccounting.usePricing(
+    pricingOverridesFromProviders(compactConfig.settings.provider),
+  );
   compactRuntime.runAccounting.startRoot(compactRunContext);
   const compactRegistry = createRegistry();
   const compactAmbient = compactRuntime.recordRunAmbientSnapshot(

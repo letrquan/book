@@ -7,7 +7,7 @@ import {
   pricingOverridesFromProviders,
   type PricingOverrides,
 } from '../pricing.js';
-import { resolveSettings } from '../settings-loader.js';
+import { loadSettingsFile } from '../settings-loader.js';
 import { readRunStatus, runStatusPath, type RunStatusRecord } from '../run-status.js';
 import type { LoadedSession, SessionMeta } from '../types/sessions.js';
 import type { Message } from '../types/messages.js';
@@ -373,16 +373,17 @@ export function renderSessionStatus(status: SessionStatus, now = Date.now()): st
 
 /**
  * The rates the user's settings declare for models the built-in table does not list (#663), so a
- * router model's spend reads as dollars here as it does in `/cost`. Settings are not a credential,
- * but a file that does not load must not stop a command that exists for a broken setup: the
- * session is then priced by the table alone.
+ * router model's spend reads as dollars here as it does in `/cost`.
+ *
+ * Only the user-global file is read, because it is the only place a price can come from here: a
+ * workspace layer's price is ignored by the loader, and this command takes no `--settings`. That
+ * also keeps a workspace file that does not load from taking the user's prices with it. Settings
+ * are not a credential, but a file that does not load must not stop a command that exists for a
+ * broken setup: the session is then priced by the table alone.
  */
-function settingsPricing(workspace: string, home: string): PricingOverrides | undefined {
+function settingsPricing(home: string): PricingOverrides | undefined {
   try {
-    const settings = resolveSettings(workspace, undefined, {
-      userSettingsPath: join(home, 'settings.json'),
-    });
-    return pricingOverridesFromProviders(settings.provider);
+    return pricingOverridesFromProviders(loadSettingsFile(join(home, 'settings.json'))?.provider);
   } catch {
     return undefined;
   }
@@ -425,7 +426,7 @@ export function runStatusCommand(options: StatusCommandOptions): number {
     meta,
     store.load(meta.id),
     readRunStatus(meta.id, home),
-    settingsPricing(options.workspace, home),
+    settingsPricing(home),
   );
   stdout.write(
     options.json ? `${JSON.stringify(status, null, 2)}\n` : `${renderSessionStatus(status)}\n`,

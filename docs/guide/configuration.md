@@ -305,9 +305,12 @@ the field named. A cache read with no `cacheRead` is priced at `in`, and a cache
 - **The model id is the key.** It is the id under `models` (`cmc/deepseek/deepseek-v4.1-flash`,
   not `r1/cmc/deepseek/deepseek-v4.1-flash`), because that is the id a request carries and the one
   the built-in table is keyed by. A dated id the endpoint reports back
-  (`cmc/deepseek/deepseek-v4.1-flash-20261101`) is priced from the declared one. If two providers
-  declare the same id at different rates, the dearer one (`in` plus `out`) applies, so a budget
-  never reads the model as cheaper than anything you said it costs.
+  (`cmc/deepseek/deepseek-v4.1-flash-20261101`) is priced from the declared one, and an undated
+  alias from a declared dated key; a different model whose id merely starts or ends like a
+  declared one (`deepseek-v4.1` next to a declared `deepseek-v4.1-flash`) is not priced from it. If
+  two providers declare the same id at different rates, the highest of each rate applies (a cache
+  rate a declaration leaves out counts as the upper bound it is billed at), so a budget never reads
+  the model as cheaper than anything you said it costs.
 - **A declared rate wins over the built-in one** for the same id, so a price that has gone stale
   in the table can be corrected without waiting for a release.
 - **It is read only from `~/.book/settings.json` and `--settings`.** A price decides what `/cost`
@@ -318,12 +321,16 @@ the field named. A cache read with no `cacheRead` is priced at `in`, and a cache
   covers where requests go, not what they cost. The model stays unpriced (a USD budget still
   refuses it) until you declare the rate yourself. `book doctor` lists the rate in force for the
   active model and where it comes from, and every workspace price it ignored, under
-  `Model pricing:`.
+  `Model pricing:`. The settings writers refuse a price in a workspace scope too.
 - **Refreshing the catalog keeps it.** `/model`'s refresh and a hand-added model leave the
-  `pricing` you set on a model the endpoint still lists.
+  `pricing` you set on a model the endpoint still lists. A model the endpoint stops listing is
+  dropped with its entry, price included, unless you added it by hand, as for every other
+  per-model field.
 - **Everything that prices tokens reads it:** `/cost` and `/usage` (delegated agents included),
   the status line's session bill, `book status`, the `--max-budget-usd` check and the stream-json
   `result`'s `costUsd` and `costStatus` (`known` once the model is priced), and the evals.
+  `book status` reads `~/.book/settings.json` alone: it takes no `--settings`, so a price kept
+  only in a `--settings` file is not seen there.
 
 ### The OpenAI Responses API
 

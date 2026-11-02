@@ -116,6 +116,12 @@ type PricedProviders = Readonly<
   >
 >;
 
+/**
+ * The highest cache-write premium a provider charges, as a multiple of the input rate:
+ * Anthropic's one-hour cache. A write on a model with no `cacheCreation` rate is priced at it.
+ */
+const MAX_CACHE_WRITE_MULTIPLIER = 2;
+
 /** A settings rate as the table holds it: `cacheWrite` is the table's `cacheCreation`. */
 function modelPricingFromSetting(declared: ModelPricingSetting): ModelPricing {
   return {
@@ -127,14 +133,33 @@ function modelPricingFromSetting(declared: ModelPricingSetting): ModelPricing {
 }
 
 /**
+ * The highest of each rate two declarations of one model give. A cache rate a declaration leaves
+ * out is read as `usageCostUsd` prices it (a read at `in`, a write at twice `in`), so neither
+ * declaration can make the other look cheaper than it would be billed.
+ */
+function upperBoundRate(a: ModelPricing, b: ModelPricing): ModelPricing {
+  const read = (rate: ModelPricing): number => rate.cacheRead ?? rate.in;
+  const write = (rate: ModelPricing): number =>
+    rate.cacheCreation ?? rate.in * MAX_CACHE_WRITE_MULTIPLIER;
+  const merged: ModelPricing = { in: Math.max(a.in, b.in), out: Math.max(a.out, b.out) };
+  if (a.cacheRead !== undefined || b.cacheRead !== undefined) {
+    merged.cacheRead = Math.max(read(a), read(b));
+  }
+  if (a.cacheCreation !== undefined || b.cacheCreation !== undefined) {
+    merged.cacheCreation = Math.max(write(a), write(b));
+  }
+  return merged;
+}
+
+/**
  * The rates the settings declare, keyed by model id, or undefined when none do.
  *
  * Keyed by the id a request carries (`provider.r1.models["cmc/x"]` is `cmc/x`), not by the
  * `<provider>/<model>` selection: the accounting and the reports see only the id the endpoint was
- * asked for, as the built-in table does. Two providers can declare one id; the one with the higher
- * list price (`in` plus `out`) is kept, because a spend ceiling must not read a model cheaper than
- * anything the user said it costs. Without a tie-break the first declared would win, and which
- * that is would depend on the key order of a JSON file.
+ * asked for, as the built-in table does. Two providers can declare one id, and nothing here can
+ * tell which of them a request went to, so the highest of each of their rates applies
+ * (`upperBoundRate`): a spend ceiling must not read a model cheaper than anything the user said it
+ * costs, and the answer must not depend on the key order of a JSON file.
  */
 export function pricingOverridesFromProviders(
   providers: PricedProviders | undefined,
@@ -146,8 +171,7 @@ export function pricingOverridesFromProviders(
       if (!info?.pricing || model === '__proto__') continue;
       const rate = modelPricingFromSetting(info.pricing);
       table ??= {};
-      const kept = Object.hasOwn(table, model) ? table[model] : undefined;
-      if (!kept || rate.in + rate.out > kept.in + kept.out) table[model] = rate;
+      table[model] = Object.hasOwn(table, model) ? upperBoundRate(table[model], rate) : rate;
     }
   }
   return table;
@@ -198,6 +222,11 @@ export function resolveModelPricing(
     for (const [key, rate] of Object.entries(table)) {
       if (model.length >= key.length || !key.startsWith(model)) continue;
       if (!PRICING_KEY_BOUNDARY.has(key.charAt(model.length))) continue;
+      // The key must be the alias plus a date stamp, as in the forward direction. Any longer
+      // key is a different model: `deepseek-v4.1` is not `deepseek-v4.1-flash`, and `claude-haiku-5`
+      // is not `claude-haiku-5-5`. Keys a user declares are arbitrary, so this is no longer
+      // only about a curated table.
+      if (!DATED_MODEL_SUFFIX.test(key.slice(model.length))) continue;
       candidates.push({ key, rate });
     }
     // Exactly one, or not at all. Unlike the forward direction — where a provider
@@ -212,12 +241,6 @@ export function resolveModelPricing(
 /** The usage fields a cost needs; cache counts are optional because most callers lack them. */
 export type CostedUsage = Pick<Usage, 'promptTokens' | 'completionTokens'> &
   Partial<Pick<Usage, 'cacheReadInputTokens' | 'cacheCreationInputTokens'>>;
-
-/**
- * The highest cache-write premium a provider charges, as a multiple of the input rate:
- * Anthropic's one-hour cache. A write on a model with no `cacheCreation` rate is priced at it.
- */
-const MAX_CACHE_WRITE_MULTIPLIER = 2;
 
 export type PricingBasis = 'request' | 'pool';
 

@@ -99,16 +99,29 @@ export function formatTaskCost(outcome: Pick<TaskOutcome, 'costUsd' | 'costStatu
   return `$${outcome.costUsd.toFixed(4)}${outcome.costStatus === 'estimated' ? ' (est.)' : ''}`;
 }
 
-/** The run's cost line: the summed dollars when every task is priced, else how many are not. */
+/**
+ * The run's cost line: the summed dollars when every task is priced, else how many are not.
+ *
+ * Two different things leave a task without dollars. A task on a model with no price recorded its
+ * cost as unknown, and the fix is a rate in the settings. A task that never produced a result (a
+ * config that did not load, a worker that crashed) recorded no cost at all, and says nothing about
+ * the model's price: counting it as unpriced would send the reader to settings that are fine.
+ */
 export function summarizeEditEvalCost(outcomes: readonly TaskOutcome[]): string {
-  const unpriced = outcomes.filter(
-    (outcome) => outcome.costUsd === null || outcome.costUsd === undefined,
-  ).length;
+  const tasks = `${outcomes.length === 1 ? 'task' : 'tasks'}`;
+  const unpriced = outcomes.filter((outcome) => outcome.costStatus === 'unknown').length;
+  const unrecorded = outcomes.filter((outcome) => outcome.costStatus === undefined).length;
+  if (unrecorded === outcomes.length) return 'unavailable (no task recorded a cost)';
+  const note =
+    unrecorded > 0 ? `${unrecorded} of ${outcomes.length} ${tasks} recorded no cost` : '';
   if (unpriced > 0) {
-    return `unknown (${unpriced} of ${outcomes.length} task${outcomes.length === 1 ? '' : 's'} on a model with no price; set provider.<id>.models.<model>.pricing in settings to price it)`;
+    return (
+      `unknown (${unpriced} of ${outcomes.length} ${tasks} on a model with no price; ` +
+      `set provider.<id>.models.<model>.pricing in settings to price it${note ? `; ${note}` : ''})`
+    );
   }
   const total = outcomes.reduce((sum, outcome) => sum + (outcome.costUsd ?? 0), 0);
-  return `$${total.toFixed(4)}`;
+  return `$${total.toFixed(4)}${note ? ` (${note})` : ''}`;
 }
 
 export function createEditEvaluationSettings(config: AgentConfig): Record<string, unknown> {

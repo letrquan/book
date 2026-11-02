@@ -295,18 +295,46 @@ describe('pricing from settings (#663)', () => {
       expect(pricingOverridesFromProviders({ r1: {} })).toBeUndefined();
     });
 
-    it('keeps the dearer rate when two providers price one model id differently', () => {
-      const cheapFirst = pricingOverridesFromProviders({
-        a: { models: { m: { pricing: { in: 1, out: 2 } } } },
-        b: { models: { m: { pricing: { in: 3, out: 4 } } } },
+    it('applies the highest of each rate when two providers price one model id', () => {
+      const a = { in: 1, out: 2 };
+      const b = { in: 3, out: 1 };
+      const both = (first: typeof a, second: typeof b) =>
+        pricingOverridesFromProviders({
+          x: { models: { m: { pricing: first } } },
+          y: { models: { m: { pricing: second } } },
+        })?.m;
+      // The same answer whichever provider comes first in the file, and never below either one.
+      expect(both(a, b)).toEqual({ in: 3, out: 2 });
+      expect(
+        pricingOverridesFromProviders({
+          x: { models: { m: { pricing: b } } },
+          y: { models: { m: { pricing: a } } },
+        })?.m,
+      ).toEqual({ in: 3, out: 2 });
+    });
+
+    it('reads a cache rate a provider leaves out as the upper bound it is billed at', () => {
+      const merged = (first: object, second: object) =>
+        pricingOverridesFromProviders({
+          x: { models: { m: { pricing: first as never } } },
+          y: { models: { m: { pricing: second as never } } },
+        })?.m;
+      // x lists a cheap cache read, y lists none and so bills a read at its own input rate (1).
+      expect(merged({ in: 0.5, out: 1, cacheRead: 0.05 }, { in: 1, out: 1 })).toEqual({
+        in: 1,
+        out: 1,
+        cacheRead: 1,
       });
-      const dearFirst = pricingOverridesFromProviders({
-        b: { models: { m: { pricing: { in: 3, out: 4 } } } },
-        a: { models: { m: { pricing: { in: 1, out: 2 } } } },
+      // Equal list prices do not make the cache-heavy reading order-dependent.
+      expect(merged({ in: 1, out: 1, cacheRead: 0.9 }, { in: 0.5, out: 1.5 })).toEqual(
+        merged({ in: 0.5, out: 1.5 }, { in: 1, out: 1, cacheRead: 0.9 }),
+      );
+      // A write left out is billed at twice the input rate: x's 1.25 is below y's 2 * 2.
+      expect(merged({ in: 1, out: 1, cacheWrite: 1.25 }, { in: 2, out: 1 })).toEqual({
+        in: 2,
+        out: 1,
+        cacheCreation: 4,
       });
-      // The same answer whichever key comes first in the file.
-      expect(cheapFirst?.m).toEqual({ in: 3, out: 4 });
-      expect(dearFirst?.m).toEqual({ in: 3, out: 4 });
     });
 
     it('does not let a model named __proto__ reach the table prototype', () => {
@@ -362,6 +390,29 @@ describe('pricing from settings (#663)', () => {
       expect(hasKnownPricing(`${ROUTER_MODEL}-20261101`, overrides)).toBe(true);
       // The sibling-name guard of the table holds for a declared id too.
       expect(hasKnownPricing(`${ROUTER_MODEL}-mini`, overrides)).toBe(false);
+    });
+
+    it('prices an undated alias only from a declared key that adds a date stamp', () => {
+      const overrides = { 'my-model-20261101': { in: 1, out: 2 } };
+      expect(resolveModelPricing('my-model', overrides)?.key).toBe('my-model-20261101');
+    });
+
+    it('does not price a sibling from a declared key that merely extends its id', () => {
+      // `deepseek-v4.1` is not `deepseek-v4.1-flash`: reading it as one would enforce a budget
+      // against another model's rate.
+      const overrides = pricingOverridesFromProviders(ROUTER_PROVIDERS);
+      const flash = 'deepseek-v4.1-flash';
+      const declared = { [flash]: { in: 0.14, out: 0.28 } };
+      expect(resolveModelPricing('deepseek-v4.1', declared)).toBeUndefined();
+      expect(resolveModelPricing('cmc/deepseek', overrides)).toBeUndefined();
+      expect(resolveModelPricing('foo', { 'foo-pro': { in: 1, out: 1 } })).toBeUndefined();
+      expect(hasKnownPricing('cmc/deepseek/deepseek', overrides)).toBe(false);
+    });
+
+    it('does not read a built-in version-suffixed key as the alias either', () => {
+      // `claude-haiku-5` used to price as `claude-haiku-5-5`, the one table key that extends it.
+      expect(resolveModelPricing('claude-haiku-5')).toBeUndefined();
+      expect(resolveModelPricing('claude-haiku-4-5')?.key).toBe('claude-haiku-4-5-20251001');
     });
 
     it('prices an id such as constructor as unknown instead of reading Object.prototype', () => {

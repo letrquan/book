@@ -293,9 +293,25 @@ describe('runEditEvalTask', () => {
       const unpriced = summarizeEditEvalCost([task(null, 'unknown'), task(null, 'unknown')]);
       expect(unpriced).toContain('unknown (2 of 2 tasks on a model with no price');
       expect(unpriced).toContain('provider.<id>.models.<model>.pricing');
-      expect(summarizeEditEvalCost([task(0.001, 'known'), task(undefined)])).toContain(
-        'unknown (1 of 2 tasks',
+      expect(summarizeEditEvalCost([task(0.001, 'known'), task(null, 'unknown')])).toContain(
+        'unknown (1 of 2 tasks on a model with no price',
       );
+    });
+
+    it('does not call a task that never produced a result a task on an unpriced model', () => {
+      // A config that did not load, or a worker that crashed, recorded no cost. The model may be
+      // priced; sending the reader to the settings would hide the failure that really happened.
+      const task = (costUsd: number | null | undefined, costStatus?: 'known' | 'unknown') =>
+        ({ name: 'n', category: 'c', costUsd, costStatus }) as never;
+      expect(summarizeEditEvalCost([task(0.001, 'known'), task(undefined)])).toBe(
+        '$0.0010 (1 of 2 tasks recorded no cost)',
+      );
+      expect(summarizeEditEvalCost([task(undefined), task(undefined)])).toBe(
+        'unavailable (no task recorded a cost)',
+      );
+      const mixed = summarizeEditEvalCost([task(null, 'unknown'), task(undefined)]);
+      expect(mixed).toContain('unknown (1 of 2 tasks on a model with no price');
+      expect(mixed).toContain('1 of 2 tasks recorded no cost');
     });
   });
 });

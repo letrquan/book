@@ -386,22 +386,33 @@ export function ignoredWorkspaceUserOnlyKeys(settings: unknown): IgnoredWorkspac
 }
 
 /**
- * Whether a dotted settings path is, or holds, a user-or-flag-only key. A key under a wildcard is
- * reached only by a path that gets as far as the key itself (`provider.r1.models.m.pricing`, or
- * inside it): `provider` or `provider.r1` can be rewritten or removed without setting a price.
+ * Whether a dotted path reaches a user-or-flag-only key that sits under a wildcard: the key
+ * itself, or a field inside it (`provider.r1.models.m.pricing`, `provider.r1.models.m.pricing.in`).
+ * A shorter path (`provider`, `provider.r1`, `provider.r1.models.m`) can be rewritten or removed
+ * without setting the key, and is not one.
+ *
+ * Read as text and not split on its dots: a model id can hold dots (`deepseek-v4.1-flash`), and
+ * splitting the path would put the key out of step with the pattern it is matched against.
  */
-export function isUserOrFlagOnlySettingPath(path: string): boolean {
-  const segments = path.split('.');
+export function reachesWildcardUserOnlyKey(path: string): boolean {
   return USER_OR_FLAG_ONLY_SETTING_PATHS.some((pattern) => {
-    if (!pattern.includes(ANY_KEY)) {
+    if (!pattern.includes(ANY_KEY)) return false;
+    const source = pattern
+      .map((part) => (part === ANY_KEY ? '.+' : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+      .join('\\.');
+    return new RegExp(`^${source}(\\..*)?$`).test(path);
+  });
+}
+
+/** Whether a dotted settings path is, or holds, a user-or-flag-only key. */
+export function isUserOrFlagOnlySettingPath(path: string): boolean {
+  return (
+    USER_OR_FLAG_ONLY_SETTING_PATHS.some((pattern) => {
+      if (pattern.includes(ANY_KEY)) return false;
       const key = pattern.join('.');
       return key === path || key.startsWith(`${path}.`);
-    }
-    return (
-      segments.length >= pattern.length &&
-      pattern.every((part, index) => part === ANY_KEY || part === segments[index])
-    );
-  });
+    }) || reachesWildcardUserOnlyKey(path)
+  );
 }
 
 /**

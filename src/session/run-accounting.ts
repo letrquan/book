@@ -252,7 +252,8 @@ export class RunAccounting {
    * the whole accounting rather than per root: a root minted late (a managed agent adopted after
    * a restart, a compaction that spends before any prompt) would otherwise price a router model
    * as unknown and fail a USD budget closed. Set by `usePricing` wherever a root starts, so a
-   * settings reload takes effect at the next prompt.
+   * settings reload takes effect at the next prompt. Every config of one session carries the same
+   * settings, so every start sets the same table; a root already running reads the new one.
    */
   private pricing: PricingOverrides | undefined;
 

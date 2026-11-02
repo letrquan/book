@@ -51,6 +51,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
 import { runAgentLoop } from '../src/agent/loop.js';
+import { pricingOverridesFromProviders } from '../src/pricing.js';
 import { createProvider, type Provider } from '../src/provider/index.js';
 import { createRunAmbientSnapshot } from '../src/session/run-ambient.js';
 import { SessionRuntime } from '../src/session/runtime.js';
@@ -666,6 +667,7 @@ async function runLoop(options: {
   // As a resumed host does (headless.ts), so an edit to a file the history read is not refused.
   seedObservationLedger(runtime.fileObservationLedger, history);
   const runContext = createAgentRunContext({ sessionId: crypto.randomUUID(), source: 'headless' });
+  runtime.runAccounting.usePricing(pricingOverridesFromProviders(config.settings.provider));
   runtime.runAccounting.startRoot(runContext);
   const registry = createDefaultRegistry();
   runtime.recordRunAmbientSnapshot(
