@@ -765,6 +765,63 @@ describe('readOnlyRoots', () => {
   });
 });
 
+/**
+ * #668. A write no root serves is refused with the code and the message a read gets, but not with
+ * its remedy. "Add its directory to additionalDirectories … no permission rule can change which roots
+ * a read may cross" answered a model that had only wanted a scratch file in `/tmp` with settings and
+ * restarts, and never named the move that works: a path inside the workspace.
+ */
+describe('a write no root serves (#668)', () => {
+  const scratch = join(tmpdir(), 'book-668-scratch.py');
+
+  afterEach(() => rmSync(scratch, { force: true }));
+
+  it.each([
+    {
+      tool: 'Write',
+      run: () => write.execute({ filePath: scratch, content: 'print(1)\n' }, ctx),
+    },
+    {
+      tool: 'Edit',
+      run: () => edit.execute({ filePath: scratch, oldString: 'a', newString: 'b' }, ctx),
+    },
+    {
+      tool: 'MultiEdit',
+      run: () =>
+        multiEditTool.execute(
+          { filePath: scratch, edits: [{ oldString: 'a', newString: 'b' }] },
+          ctx,
+        ),
+    },
+  ])('refuses $tool with a remedy about writing, not reading', async ({ run }) => {
+    const result = await run();
+
+    expect(result.status).toBe('error');
+    // The code is what the loop's streak remedy and a managed child's notice classify a refusal by,
+    // so it is the read refusal's.
+    expect(result.structuredError?.code).toBe('path_outside_workspace');
+    expect(result.structuredError?.message).toBe(
+      `Path outside workspace and additionalDirectories: ${scratch}`,
+    );
+    const remedy = result.structuredError?.remediation ?? '';
+    expect(remedy).toContain('inside the workspace');
+    expect(remedy).not.toMatch(/\bread\b/i);
+    // That is the text the model gets back.
+    expect(toolResultModelContent(result)).toContain(`Fix: ${remedy}`);
+    expect(existsSync(scratch)).toBe(false);
+  });
+
+  it('keeps the read remedy on Read and Grep', async () => {
+    const readRefusal = await read.execute({ filePath: scratch }, ctx);
+    const grepRefusal = await grep.execute({ pattern: 'x', path: scratch }, ctx);
+
+    for (const refusal of [readRefusal, grepRefusal]) {
+      expect(refusal.structuredError?.code).toBe('path_outside_workspace');
+      expect(refusal.structuredError?.remediation).toContain('which roots a read may cross');
+    }
+  });
+});
+
 describe('memorySearchRoot', () => {
   let memory: string;
 

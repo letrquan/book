@@ -268,6 +268,9 @@ describe('ApplyPatch', () => {
       context,
     );
     expect(result.structuredError?.code).toBe('path_outside_workspace');
+    // A patch writes, so the remedy is about writing: a path inside the workspace (#668).
+    expect(result.structuredError?.remediation).toContain('inside the workspace');
+    expect(result.structuredError?.remediation).not.toMatch(/\bread\b/i);
   });
 
   it('applies a patch to an honored directory, and refuses it without one', async () => {

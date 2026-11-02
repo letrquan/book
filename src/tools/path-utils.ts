@@ -379,6 +379,8 @@ export function messagePathFor(resolved: ResolvedReadablePath): string {
  * the only root a read may cross, so "outside workspace" alone sent the model looking for a rule
  * that would never work. The code is unchanged, so a caller that classifies refusals by code
  * (the agent loop's streak remedy, the managed-child notice) is unaffected.
+ *
+ * Its remedy is about reading. A write tool gives {@link mutationOutsideWorkspaceResult}.
  */
 export function pathOutsideWorkspaceResult(inputPath: unknown): ToolResult {
   return toolFailure(`Path outside workspace and additionalDirectories: ${inputPath}`, {
@@ -386,6 +388,29 @@ export function pathOutsideWorkspaceResult(inputPath: unknown): ToolResult {
     remediation:
       'Add its directory to additionalDirectories, or start Book in a directory that contains it. ' +
       'No permission rule and no permission mode can change which roots a read may cross.',
+  });
+}
+
+/**
+ * The refusal a write tool (Write, Edit, MultiEdit, NotebookEdit, ApplyPatch) gives a path no
+ * write root serves: the workspace, an approved `additionalDirectories` entry, or the memory
+ * directory for a memory file.
+ *
+ * The code and the message are {@link pathOutsideWorkspaceResult}'s, so the agent loop's streak
+ * remedy and a managed child's notice, which classify a refusal by its code, are unaffected. The
+ * remedy is not: it used to be the read tools', which answered a model that had only wanted a
+ * scratch file in `/tmp` with settings and a restart, and never named the move that works (#668).
+ * It leads with that move, a path inside the workspace. It does not suggest `.book/`, whose files
+ * are Book's own control files, and it does not suggest writing the file through `Bash`.
+ */
+export function mutationOutsideWorkspaceResult(inputPath: unknown): ToolResult {
+  return toolFailure(`Path outside workspace and additionalDirectories: ${inputPath}`, {
+    code: 'path_outside_workspace',
+    remediation:
+      'The file-writing tools only create or change files inside the workspace and the directories ' +
+      'in additionalDirectories, and no permission rule or mode changes that. Write the file under ' +
+      'a path inside the workspace instead, and delete it when you are done if it is only a scratch ' +
+      'file. If it has to live elsewhere, ask the user to add its directory to additionalDirectories.',
   });
 }
 

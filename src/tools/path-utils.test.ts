@@ -8,6 +8,8 @@ import {
   memoryReadDisplayPath,
   messagePathFor,
   mutationDisplayPath,
+  mutationOutsideWorkspaceResult,
+  pathOutsideWorkspaceResult,
   realWorkspaceRoot,
   resolveMutationPath,
   resolveReadablePath,
@@ -196,6 +198,36 @@ describe('resolveReadablePathDetail', () => {
   it('keeps resolveReadablePath as the null-returning form of the same decision', () => {
     expect(resolveReadablePath(roots(), 'notes.txt')).not.toBeNull();
     expect(resolveReadablePath(roots(), join(outside, 'secret.txt'))).toBeNull();
+  });
+});
+
+describe('the refusal of a path no root serves (#668)', () => {
+  it('gives a write the code and the message of a read, and a remedy of its own', () => {
+    const asked = join(tmpdir(), 'scratch.py');
+    const refusedRead = pathOutsideWorkspaceResult(asked).structuredError;
+    const refusedWrite = mutationOutsideWorkspaceResult(asked).structuredError;
+
+    // Anything that classifies a refusal does so by its code, so the two cannot differ in it.
+    expect(refusedWrite?.code).toBe('path_outside_workspace');
+    expect(refusedWrite?.code).toBe(refusedRead?.code);
+    expect(refusedWrite?.message).toBe(refusedRead?.message);
+    expect(refusedWrite?.message).toBe(
+      `Path outside workspace and additionalDirectories: ${asked}`,
+    );
+
+    expect(refusedRead?.remediation).toContain('which roots a read may cross');
+    expect(refusedWrite?.remediation).not.toBe(refusedRead?.remediation);
+  });
+
+  it('tells a write to go to a path inside the workspace, and not to a place it cannot reach', () => {
+    const remedy = mutationOutsideWorkspaceResult('/tmp/x.py').structuredError?.remediation ?? '';
+
+    expect(remedy).toContain('inside the workspace');
+    expect(remedy).toContain('additionalDirectories');
+    // A write is not a read, and the control directory is not a scratch directory.
+    expect(remedy).not.toMatch(/\bread\b/i);
+    expect(remedy).not.toContain('.book');
+    expect(remedy).not.toMatch(/\bBash\b|\/tmp/);
   });
 });
 
