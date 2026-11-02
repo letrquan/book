@@ -33,6 +33,10 @@ function isFiniteNumberRecord(value: unknown): value is Record<string, number> {
   return isRecord(value) && Object.values(value).every((item) => Number.isFinite(item));
 }
 
+function isCostStatus(value: unknown): boolean {
+  return value === 'known' || value === 'estimated' || value === 'unknown';
+}
+
 function isEligibility(value: unknown): boolean {
   return (
     isRecord(value) &&
@@ -86,6 +90,25 @@ async function seedWorkspace(task: EvalTask, workspace: string): Promise<void> {
     ['-c', 'user.email=eval@book', '-c', 'user.name=book-eval', 'commit', '-qm', 'seed'],
     workspace,
   );
+}
+
+/** A task's cost as the report shows it: dollars, or `unknown` for a model with no price (#663). */
+export function formatTaskCost(outcome: Pick<TaskOutcome, 'costUsd' | 'costStatus'>): string {
+  if (outcome.costStatus === undefined) return 'unavailable';
+  if (outcome.costUsd === null || outcome.costUsd === undefined) return 'unknown';
+  return `$${outcome.costUsd.toFixed(4)}${outcome.costStatus === 'estimated' ? ' (est.)' : ''}`;
+}
+
+/** The run's cost line: the summed dollars when every task is priced, else how many are not. */
+export function summarizeEditEvalCost(outcomes: readonly TaskOutcome[]): string {
+  const unpriced = outcomes.filter(
+    (outcome) => outcome.costUsd === null || outcome.costUsd === undefined,
+  ).length;
+  if (unpriced > 0) {
+    return `unknown (${unpriced} of ${outcomes.length} task${outcomes.length === 1 ? '' : 's'} on a model with no price; set provider.<id>.models.<model>.pricing in settings to price it)`;
+  }
+  const total = outcomes.reduce((sum, outcome) => sum + (outcome.costUsd ?? 0), 0);
+  return `$${total.toFixed(4)}`;
 }
 
 export function createEditEvaluationSettings(config: AgentConfig): Record<string, unknown> {
@@ -174,6 +197,10 @@ export async function runEditEvalTask(task: EvalTask, model?: string): Promise<T
         !isFiniteNumberRecord(parsed.failuresByCode) ||
         (parsed.runError !== undefined && typeof parsed.runError !== 'string') ||
         (parsed.totalTokens !== undefined && !Number.isFinite(parsed.totalTokens)) ||
+        (parsed.costUsd !== undefined &&
+          parsed.costUsd !== null &&
+          !Number.isFinite(parsed.costUsd)) ||
+        (parsed.costStatus !== undefined && !isCostStatus(parsed.costStatus)) ||
         (parsed.attribution !== undefined && !isEligibility(parsed.attribution))
       ) {
         throw new Error('Edit evaluation worker returned a malformed or mismatched task result.');
@@ -247,6 +274,7 @@ async function main(): Promise<void> {
     '',
     `- Date: ${new Date().toISOString()}`,
     `- Result: **${passed}/${outcomes.length} passed**`,
+    `- Cost: ${summarizeEditEvalCost(outcomes)}`,
     `- Mutation tool usage: ${
       Object.entries(mutationTotals)
         .map(([tool, count]) => `${tool} ×${count}`)
@@ -267,15 +295,15 @@ async function main(): Promise<void> {
     '',
     '## Task Results',
     '',
-    '| Task | Category | Result | Attribution | Duration | Mutation calls | Tool failures |',
-    '| --- | --- | --- | --- | --- | --- | --- |',
+    '| Task | Category | Result | Attribution | Duration | Mutation calls | Tool failures | Cost |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
     ...outcomes.map(
       (outcome) =>
         `| ${outcome.name} | ${outcome.category} | ${outcome.success ? 'pass' : 'FAIL'} | ${outcome.attribution?.eligible ? 'eligible' : `ineligible:${outcome.attribution?.reasons.join(',') ?? 'missing'}`} | ${(outcome.durationMs / 1000).toFixed(1)}s | ${
           Object.entries(outcome.mutationCalls)
             .map(([tool, count]) => `${tool} ×${count}`)
             .join(', ') || '—'
-        } | ${formatFailureCounts(outcome.failuresByCode) || '—'} |`,
+        } | ${formatFailureCounts(outcome.failuresByCode) || '—'} | ${formatTaskCost(outcome)} |`,
     ),
     '',
   ].join('\n');

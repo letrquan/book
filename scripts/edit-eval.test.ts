@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import { runEvaluationProcess } from './eval-process.js';
 import type { EvalTask } from './edit-eval-fixtures.js';
-import { createEditEvaluationSettings, runEditEvalTask } from './edit-eval.js';
+import {
+  createEditEvaluationSettings,
+  formatTaskCost,
+  runEditEvalTask,
+  summarizeEditEvalCost,
+} from './edit-eval.js';
 
 vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }));
 vi.mock('./eval-process.js', () => ({
@@ -199,6 +204,98 @@ describe('runEditEvalTask', () => {
     await expect(runEditEvalTask(TASK)).resolves.toMatchObject({
       success: false,
       runError: 'Edit evaluation worker returned a malformed or mismatched task result.',
+    });
+  });
+
+  describe('cost on a model with no price (#663)', () => {
+    const completed = (result: Record<string, unknown>) => {
+      vi.mocked(loadConfig).mockReturnValue({
+        apiKey: 'key',
+        baseUrl: 'https://provider.example/v1',
+        model: 'model-id',
+        provider: 'openai',
+        retry: {},
+      } as never);
+      vi.mocked(runEvaluationProcess).mockResolvedValue({
+        status: 'completed',
+        stdout: JSON.stringify({
+          name: TASK.name,
+          category: TASK.category,
+          success: true,
+          verified: true,
+          durationMs: 1,
+          mutationCalls: { Edit: 1 },
+          failuresByCode: {},
+          toolCalls: 1,
+          attribution: { eligible: true, reasons: [] },
+          ...result,
+        }),
+        stderr: '',
+        ...controls,
+      } as never);
+    };
+
+    it('accepts a passing task whose cost is unknown', async () => {
+      completed({ costUsd: null, costStatus: 'unknown' });
+      await expect(runEditEvalTask(TASK)).resolves.toMatchObject({
+        success: true,
+        costUsd: null,
+        costStatus: 'unknown',
+      });
+    });
+
+    it('accepts a task that carries its dollars', async () => {
+      completed({ costUsd: 0.0012, costStatus: 'known' });
+      await expect(runEditEvalTask(TASK)).resolves.toMatchObject({
+        success: true,
+        costUsd: 0.0012,
+        costStatus: 'known',
+      });
+    });
+
+    it('rejects a cost that is not a number or a known status', async () => {
+      completed({ costUsd: 'free', costStatus: 'known' });
+      await expect(runEditEvalTask(TASK)).resolves.toMatchObject({
+        success: false,
+        runError: 'Edit evaluation worker returned a malformed or mismatched task result.',
+      });
+      completed({ costUsd: 0.1, costStatus: 'free' });
+      await expect(runEditEvalTask(TASK)).resolves.toMatchObject({ success: false });
+    });
+
+    it('hands the worker the rate the settings declare, so a priced router model reads as known', () => {
+      const pricing = { in: 0.14, out: 0.28 };
+      const settings = createEditEvaluationSettings({
+        baseUrl: 'https://provider.example/v1',
+        model: 'cmc/deepseek/deepseek-v4.1-flash',
+        provider: 'openai',
+        retry: {},
+        modelInfo: { pricing },
+      } as never);
+      expect(settings).toMatchObject({
+        provider: {
+          evaluation: { models: { 'cmc/deepseek/deepseek-v4.1-flash': { pricing } } },
+        },
+      });
+    });
+
+    it('shows a task cost as dollars, an estimate, or unknown', () => {
+      expect(formatTaskCost({ costUsd: 0.0012, costStatus: 'known' })).toBe('$0.0012');
+      expect(formatTaskCost({ costUsd: 0.0012, costStatus: 'estimated' })).toBe('$0.0012 (est.)');
+      expect(formatTaskCost({ costUsd: null, costStatus: 'unknown' })).toBe('unknown');
+      expect(formatTaskCost({})).toBe('unavailable');
+    });
+
+    it('sums the run cost when every task is priced, and says how many are not when some are not', () => {
+      const task = (costUsd: number | null | undefined, costStatus?: 'known' | 'unknown') =>
+        ({ name: 'n', category: 'c', costUsd, costStatus }) as never;
+      expect(summarizeEditEvalCost([task(0.001, 'known'), task(0.002, 'known')])).toBe('$0.0030');
+      const unpriced = summarizeEditEvalCost([task(null, 'unknown'), task(null, 'unknown')]);
+      expect(unpriced).toContain('unknown (2 of 2 tasks on a model with no price');
+      expect(unpriced).toContain('provider.<id>.models.<model>.pricing');
+      expect(summarizeEditEvalCost([task(0.001, 'known'), task(undefined)])).toContain(
+        'unknown (1 of 2 tasks',
+      );
     });
   });
 });
