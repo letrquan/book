@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { shellArgument } from '../trust-command.js';
@@ -11,6 +11,7 @@ import {
   shouldBridgeWslTerminal,
 } from './run.js';
 import { setExitCodeFn, setExitFn } from './exit.js';
+import { removeWhenReleased } from '../test/remove-when-released.js';
 import { createRepeatingScriptedProvider, sseResponse } from '../test/scripted-provider.js';
 
 function fakeStdout(isTTY: boolean) {
@@ -146,9 +147,20 @@ describe('printPipeErrorHandler', () => {
   });
 });
 
+/**
+ * Removes the temp directories of a print-mode suite. A run can leave a child with the workspace as
+ * its cwd (the abort test's Bash command is one), and on Windows a process still tearing down keeps
+ * its directory from being removed, so the removal waits for the release (#597, as #350 did for the
+ * shell suite). The wait stays under the 20 s hook timeout, so a directory that is never released
+ * fails with its EPERM instead of a timeout.
+ */
+async function removeTempDirs(dirs: readonly string[]): Promise<void> {
+  await Promise.all(dirs.map((dir) => removeWhenReleased(dir, 15_000)));
+}
+
 describe('runMainAction — slash commands in print mode', () => {
   const saved: Record<string, string | undefined> = {};
-  let tempDirs: string[] = [];
+  const tempDirs: string[] = [];
 
   function stashEnv(name: string, value: string): void {
     if (!(name in saved)) saved[name] = process.env[name];
@@ -177,7 +189,7 @@ describe('runMainAction — slash commands in print mode', () => {
     };
   }
 
-  afterEach(() => {
+  afterEach(async () => {
     setExitFn((code: number): never => process.exit(code));
     setExitCodeFn((code: number) => {
       process.exitCode = code;
@@ -189,8 +201,7 @@ describe('runMainAction — slash commands in print mode', () => {
       else process.env[name] = value;
       delete saved[name];
     }
-    for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
-    tempDirs = [];
+    await removeTempDirs(tempDirs.splice(0));
   });
 
   it('fails an interactive-only command through the exit code, not exit() (#243)', async () => {
@@ -380,7 +391,7 @@ describe('runMainAction — slash commands in print mode', () => {
 
 describe('runMainAction — print mode exit codes (#190)', () => {
   const saved: Record<string, string | undefined> = {};
-  let tempDirs: string[] = [];
+  const tempDirs: string[] = [];
 
   function stashEnv(name: string, value: string): void {
     if (!(name in saved)) saved[name] = process.env[name];
@@ -408,7 +419,7 @@ describe('runMainAction — print mode exit codes (#190)', () => {
     };
   }
 
-  afterEach(() => {
+  afterEach(async () => {
     setExitFn((code: number): never => process.exit(code));
     setExitCodeFn((code: number) => {
       process.exitCode = code;
@@ -420,8 +431,7 @@ describe('runMainAction — print mode exit codes (#190)', () => {
       else process.env[name] = value;
       delete saved[name];
     }
-    for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
-    tempDirs = [];
+    await removeTempDirs(tempDirs.splice(0));
   });
 
   it('fails a print run that stops due to max turns through the exit code, not exit() (#243)', async () => {
