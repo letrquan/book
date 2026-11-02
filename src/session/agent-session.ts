@@ -1713,6 +1713,10 @@ export class AgentSession {
               fileObservations: message.fileObservations,
             },
           } satisfies SessionRecord);
+          // The user's own words reached the model mid-run (#661). The host shows them at that
+          // point of the transcript; without the event the row would only appear at the end of
+          // the run, next to output that answers it.
+          if (message.steered) emit({ type: 'steer_delivered', message });
         },
         onRetry: callbacks.onRetry,
         onStreamStall: callbacks.onStreamStall,

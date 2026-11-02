@@ -1,6 +1,40 @@
 # Long and unattended runs
 
-Letting Book keep working past the first answer, and what it carries across compaction.
+Letting Book keep working past the first answer, what it carries across compaction, and how to
+correct a run while it is going.
+
+## Steering a running turn
+
+A run can be minutes of tool calls, and a correction that waits for its end arrives too late. In
+the interactive TUI, a prompt typed while Book works does not wait: **Enter steers it into the
+running turn**, and the loop delivers it after the tool call in flight, in the next request. The
+message appears above the composer under "Sends after the current tool call (n)" until then; once
+the loop has taken it, it leaves that list and becomes a user row in the transcript where the
+model read it. Recording it is not a rewind point — `/rewind` targets the prompt that started the
+run — and a run with a steer pending when the model would otherwise answer continues the same run
+instead of starting a new one.
+
+**Tab with text in the composer queues it for the end of the run** instead, the same list with the
+follow-ups it already held, now under "Queued for when this run ends (n)". Tab on an empty prompt
+still cycles agent focus; the two never compete because the queue key needs a draft.
+
+The rest of what a prompt gets before a run — `UserPromptSubmit` hooks, `@file` mentions, and
+intent routing for a URL or a search phrase — happens to a steer too. A `$skill` name does not
+invoke the skill (activation is per run), and a steer takes its attachments with it. Steers count
+against the same `maxTurns`, budget and terminal outcome as the rest of the run, and they reach the
+model as the user's own words, not host text.
+
+Up recalls a pending steer so it can be edited, taking it out of the loop's inbox first: the
+newest steer is recalled before a queued follow-up. What the keys do not steer stays queued as it
+was: a slash command, a `!` shell line, and anything typed while a permission or question dialog
+owns the composer.
+
+**If the run ends with steers undelivered** — it finished, failed, or hit a limit — they go to the
+front of the follow-up queue, so the next run answers them. **If you cancel the run** (Esc, or
+Ctrl+C while it works), the steers waiting come back to the composer, oldest first, ahead of any
+queued follow-ups and of whatever you were typing, so you can send them again or rewrite them.
+Print mode, the SDK and subagents have no steering: a prompt there reaches the model only when the
+run it starts begins.
 
 ## Unattended runs
 

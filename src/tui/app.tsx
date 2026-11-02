@@ -134,6 +134,7 @@ import {
   restoreQueuedInputAttachments,
   restoreQueuedInputText,
   shouldRequeueQueuedSend,
+  MAX_QUEUED_INPUTS,
   type QueuedInput,
 } from './queued-inputs.js';
 import { readClipboardImage } from '../input/clipboard-image.js';
@@ -445,6 +446,12 @@ export function App({
     sessionId,
     sessionName,
     send,
+    steer,
+    canSteer,
+    pendingSteers,
+    recallSteer,
+    takeSteers,
+    dropSteers,
     sendAgentCompletions,
     sendBackgroundShellCompletion,
     sendPeerMessages,
@@ -724,6 +731,14 @@ export function App({
   const editingQueuedInputRef = useRef<QueuedInput | undefined>(undefined);
   const dispatchingQueuedIdRef = useRef<string | undefined>(undefined);
   const draftRef = useRef('');
+  /**
+   * What an interrupt restored to the composer, and the draft it replaced (#661).
+   *
+   * The restore reaches the composer through an effect, so a cancelled send that settles before
+   * that effect runs still reads the pre-interrupt draft. Recording both lets the settlement
+   * append to the restored text instead of overwriting it with the old draft.
+   */
+  const interruptDraftRef = useRef<{ value: string; restored: string } | undefined>(undefined);
   const startupDraftRef = useRef('');
   const draftAttachmentsRef = useRef<ImageAttachment[]>([]);
   const queueDrainRunningRef = useRef(false);
@@ -900,9 +915,79 @@ export function App({
     },
     [send],
   );
+  /**
+   * The words of every steer, oldest first, that the run ended before delivering (#661).
+   *
+   * A run that failed, hit max turns or simply finished leaves them here; the queue then sends
+   * them next. A cancelled run's belong to the composer instead, which is
+   * `applySettledSteers`'s branch, not this one.
+   */
+  const enqueuePendingSteers = useCallback(
+    (pending: readonly QueuedInput[], paused: boolean) => {
+      if (pending.length === 0) return;
+      const room = Math.max(0, MAX_QUEUED_INPUTS - queuedInputsRef.current.length);
+      const accepted = pending.slice(0, room);
+      if (accepted.length > 0) {
+        // At the front: they were written before the run ended, so they are answered first.
+        replaceQueuedInputs([...accepted, ...queuedInputsRef.current]);
+        if (paused) {
+          queueDrainPausedRef.current = true;
+          setQueueNotice('Queued send failed. Automatic queue dispatch is paused.');
+        } else {
+          setQueueNotice(undefined);
+        }
+      }
+      if (accepted.length < pending.length) {
+        announceQueueEvent(
+          'Queue is full. Some messages sent during the run were not kept.',
+          'warning',
+          6_000,
+        );
+      }
+    },
+    [announceQueueEvent, replaceQueuedInputs],
+  );
+  /**
+   * Put the steers a settled run never delivered where the user's words belong (#661).
+   *
+   * A run that failed, hit max turns or simply finished leaves them for the follow-up queue, at
+   * its front and in order, so they are answered next. A run the user cancelled already had what
+   * was waiting restored by Esc; what is left are the steers the loop had taken when it was
+   * aborted and handed back, and those are appended to the composer draft so no word is lost.
+   */
+  const applySettledSteers = useCallback(
+    (result: { status: string; pendingSteers?: QueuedInput[] }) => {
+      const pending = result.pendingSteers ?? [];
+      if (pending.length === 0) return;
+      if (result.status === 'cancelled') {
+        // The draft the composer has *now*, not the one it had before Esc: the restore that
+        // interrupt() queued may not have reached the composer yet, and reading the old draft
+        // would replace the queued follow-ups it had just put back.
+        const before = interruptDraftRef.current;
+        interruptDraftRef.current = undefined;
+        const base =
+          before && draftRef.current === before.value ? before.restored : draftRef.current;
+        setDraftRestore((current) => ({
+          key: (current?.key ?? 0) + 1,
+          value: restoreQueuedInputText(pending, base),
+          attachments: restoreQueuedInputAttachments(pending, draftAttachmentsRef.current),
+        }));
+        announceQueueEvent('Messages sent during the run restored to the composer.');
+        return;
+      }
+      enqueuePendingSteers(pending, result.status === 'failed');
+    },
+    [announceQueueEvent, enqueuePendingSteers],
+  );
   const enqueueFollowUp = useCallback(
-    (value: string, attachments: ImageAttachment[] = []): boolean => {
-      const edited = editingQueuedInputRef.current;
+    (
+      value: string,
+      attachments: ImageAttachment[] = [],
+      identity?: Pick<QueuedInput, 'id' | 'createdAt'>,
+    ): boolean => {
+      // A recalled input keeps its identity so it goes back to where it was in written order;
+      // one typed just now gets a fresh id and lands last (#661).
+      const edited = identity ?? editingQueuedInputRef.current;
       const input = createQueuedInput(value, sessionId, attachments, edited);
       const result = enqueueQueuedInput(queuedInputsRef.current, input);
       if (!result.accepted) {
@@ -930,6 +1015,18 @@ export function App({
   );
   const recallQueuedInput = useCallback(():
     { value: string; attachments?: ImageAttachment[] } | undefined => {
+    const pendingSteer = recallSteer();
+    // A steer waiting in the running loop is the more urgent of the two (#661): the loop can
+    // deliver it at its next tool call, while a queued follow-up cannot go anywhere until the run
+    // ends. It is recalled first, and the queue is left exactly as it was.
+    if (pendingSteer) {
+      replaceEditingQueuedInput(pendingSteer);
+      queueDrainPausedRef.current = true;
+      setQueueNotice(
+        'Editing a message sent during the run. Enter sends it again; Esc removes it.',
+      );
+      return { value: pendingSteer.value, attachments: pendingSteer.attachments };
+    }
     const result = recallNewestQueuedInput(queuedInputsRef.current, dispatchingQueuedIdRef.current);
     if (!result.recalled) return undefined;
     replaceQueuedInputs(result.queue);
@@ -937,7 +1034,7 @@ export function App({
     queueDrainPausedRef.current = true;
     setQueueNotice('Editing queued input. Enter resubmits; Esc removes it.');
     return { value: result.recalled.value, attachments: result.recalled.attachments };
-  }, [replaceEditingQueuedInput, replaceQueuedInputs]);
+  }, [recallSteer, replaceEditingQueuedInput, replaceQueuedInputs]);
   const cancelQueuedEdit = useCallback(() => {
     endQueuedEdit();
     announceQueueEvent('Queued input removed.', 'done');
@@ -972,20 +1069,32 @@ export function App({
     // #262: clearing the handle before the resolution's own `finally` ran left "Resolving…" up
     // and the composer blocked for the rest of the session.
     abortCommandResolution();
-    const pending = queuedInputsRef.current;
+    // A steer is the user's most recent words and the earliest they would be answered, so it
+    // goes back first, oldest first, ahead of the follow-ups queued for the end of the run
+    // (#661). Taking it withdraws the inbox, so the cancelled run's own requeue cannot bring the
+    // same words back a second time.
+    const steers = takeSteers();
+    const queued = queuedInputsRef.current;
+    const pending = [...steers, ...queued];
     if (pending.length > 0) {
       const restored = restoreQueuedInputText(pending, draftRef.current);
       replaceQueuedInputs([]);
+      // Remembered for a settlement that lands before the composer effect applies this restore.
+      interruptDraftRef.current = { value: draftRef.current, restored };
       setDraftRestore((current) => ({
         key: (current?.key ?? 0) + 1,
         value: restored,
         attachments: restoreQueuedInputAttachments(pending, draftAttachmentsRef.current),
       }));
-      announceQueueEvent('Queued inputs restored to the composer after interrupt.');
+      announceQueueEvent(
+        queued.length === 0
+          ? 'Message sent during the run restored to the composer after interrupt.'
+          : 'Queued inputs restored to the composer after interrupt.',
+      );
     }
     endQueuedEdit(true);
     cancel();
-  }, [abortCommandResolution, cancel, endQueuedEdit, replaceQueuedInputs]);
+  }, [abortCommandResolution, cancel, endQueuedEdit, replaceQueuedInputs, takeSteers]);
 
   useEffect(() => {
     return () => commandResolutionRef.current?.abort();
@@ -1089,12 +1198,16 @@ export function App({
     queueSessionRef.current = sessionId;
     queueInterruptEpochRef.current += 1;
     replaceQueuedInputs([]);
+    // A steer belongs to the run it was written to, and that run belongs to the session being
+    // left; carrying the words into the next conversation would answer a question it never
+    // asked (#661), exactly as a queued input from the previous session is discarded.
+    dropSteers();
     endQueuedEdit();
     dispatchingQueuedIdRef.current = undefined;
     queueDrainRunningRef.current = false;
     setQueueNotice(undefined);
     draftRef.current = '';
-  }, [endQueuedEdit, replaceQueuedInputs, sessionId]);
+  }, [dropSteers, endQueuedEdit, replaceQueuedInputs, sessionId]);
 
   useAgentCompletionDelivery({
     pending: managedAgents.pendingCompletions,
@@ -1620,6 +1733,10 @@ export function App({
         } else {
           clearQueuedSendNotice();
         }
+        // Words the user steered into this send that the run never delivered go to the front of
+        // the queue, so the next send answers them (#661). A failed run's pause is its own: the
+        // existing rules keep the queue waiting.
+        applySettledSteers(result);
       } catch (sendError) {
         replaceQueuedInputs([item, ...queuedInputsRef.current]);
         queueDrainPausedRef.current = true;
@@ -1635,6 +1752,7 @@ export function App({
       }
     })();
   }, [
+    applySettledSteers,
     clearQueuedSendNotice,
     dispatchAgentSend,
     queueDrainBlocked,
@@ -2353,14 +2471,16 @@ export function App({
         }
         if (effect?.type === 'send-prompt') {
           // A prompt that carries the repository's text (`/security-review`'s REVIEW.md) is
-          // expanded as a project command's body is (#564).
-          void dispatchAgentSend(
+          // expanded as a project command's body is (#564). Steers it never delivered go back
+          // to the queue here too (#661): the command's own run is the one that ended.
+          const result = await dispatchAgentSend(
             effect.prompt,
             effect.context,
             undefined,
             value,
             effect.projectCommand,
           );
+          applySettledSteers(result);
           return;
         }
         if (effect?.type === 'local-message') {
@@ -2697,22 +2817,26 @@ export function App({
           // The typed line, before argument or shell substitution, names a fresh session.
           // A project command's body is the repository's text: its mentions inline only
           // committed files (#564).
-          void dispatchAgentSend(
+          const result = await dispatchAgentSend(
             resolved,
             commandEnforcementContext(cmd, resolved),
             undefined,
             value,
             cmd.source === 'project',
           );
+          applySettledSteers(result);
         } else {
           // Unknown command — send as-is (the model might handle it).
-          void dispatchAgentSend(value);
+          const result = await dispatchAgentSend(value);
+          applySettledSteers(result);
         }
       } else {
-        void dispatchAgentSend(value, undefined, attachments);
+        const result = await dispatchAgentSend(value, undefined, attachments);
+        applySettledSteers(result);
       }
     },
     [
+      applySettledSteers,
       dispatchAgentSend,
       commandResolutionRef,
       clear,
@@ -2757,6 +2881,40 @@ export function App({
   const canQueueWhileParentBusy = useCallback(
     (value: string) => !value.trimStart().startsWith('/'),
     [],
+  );
+  /**
+   * Enter while the main agent runs (#661): the text joins the running turn. If that run ended
+   * while its mentions were still expanding, the text waits in the follow-up queue instead — the
+   * words are never dropped between the two.
+   */
+  const handleSteer = useCallback(
+    async (value: string, attachments?: ImageAttachment[]): Promise<boolean> => {
+      if (exitStartedRef.current) return false;
+      const recalled = editingQueuedInputRef.current;
+      if (recalled) {
+        // The steer was recalled for editing and is being sent again: it leaves the edit state,
+        // and the inputs queued behind it resume where they were.
+        endQueuedEdit(queuedInputsRef.current.length > 0);
+        setQueueNotice(undefined);
+      }
+      setFollowRequestKey((key) => key + 1);
+      const outcome = await steer(value, attachments);
+      if (outcome === 'steered') {
+        uiLog.event('submit:steer', { len: value.length });
+        return true;
+      }
+      // The run ended first, so the words wait for the next one. A recalled steer keeps its
+      // written place rather than moving behind what was queued after it (#661).
+      if (enqueueFollowUp(value, attachments ?? [], recalled)) return true;
+      // The queue refused it too: put the words back in the composer rather than lose them.
+      setDraftRestore((current) => ({
+        key: (current?.key ?? 0) + 1,
+        value,
+        attachments,
+      }));
+      return false;
+    },
+    [endQueuedEdit, enqueueFollowUp, steer],
   );
 
   // Ctrl+U and Ctrl+D scroll the transcript half a page, but only when the
@@ -2920,6 +3078,24 @@ export function App({
   // paging. `pagerChordsAvailable` is that rule as one function, so it cannot be
   // restated — and read backwards — at a second call site.
   const pagerChordsFree = pagerChordsAvailable({ composerAcceptsInput, sheetEditorFocused });
+
+  /**
+   * Whether Enter on this draft steers into the running turn instead of queueing (#661).
+   *
+   * Only the user's plain words steer: a slash command keeps its busy rules, a `!` shell line
+   * runs a command rather than talking to the model, and a dialog or the managed-agent detail
+   * surface owns the composer's meaning while it is up. Everything else falls back to queueing.
+   */
+  const canSteerWhileParentBusy = useCallback(
+    (value: string) => {
+      if (exitStartedRef.current || !canSteer) return false;
+      if (!composerAcceptsInput || managedAgents.surface !== 'main') return false;
+      const trimmed = value.trimStart();
+      if (trimmed.startsWith('/') || trimmed.startsWith('!')) return false;
+      return trimmed.length > 0;
+    },
+    [canSteer, composerAcceptsInput, managedAgents.surface],
+  );
 
   // The most rows a dialog's body may take before it scrolls: the screen, less the transcript's last
   // rows over it, the dialog's own chrome, and what can still stand under it (the working row, a
@@ -3749,6 +3925,7 @@ export function App({
           >
             <QueuedInputPreview
               items={queuedInputs}
+              steers={pendingSteers}
               terminalWidth={termWidth}
               // Keep the exit hint visible even when another transient notice remains.
               // An exit in progress outranks both: the queue's notices offer actions that no
@@ -3776,16 +3953,20 @@ export function App({
                     ? 'blocked'
                     : managedAgents.surface === 'detail'
                       ? 'submit'
-                      : isThinking || sendInFlight
-                        ? 'queue'
-                        : isCompacting || isRewinding || isResolvingCommand
-                          ? 'blocked'
-                          : 'submit'
+                      : canSteer
+                        ? 'steer'
+                        : isThinking || sendInFlight
+                          ? 'queue'
+                          : isCompacting || isRewinding || isResolvingCommand
+                            ? 'blocked'
+                            : 'submit'
                 }
                 mode={mode}
                 onCycleMode={cycleMode}
                 canSubmitWhileBusy={canSubmitWhileParentBusy}
                 canQueueWhileBusy={canQueueWhileParentBusy}
+                canSteerWhileBusy={canSteerWhileParentBusy}
+                onSteer={handleSteer}
                 onQueue={enqueueFollowUp}
                 onRecallQueued={
                   managedAgents.surface === 'main' && !exitStarted ? recallQueuedInput : undefined
@@ -3987,6 +4168,10 @@ const SHORTCUT_ROWS: ReadonlyArray<{ key: string; value: string }> = [
   { key: 'Ctrl+W / Alt+Bksp', value: 'Delete the previous word' },
   { key: 'Ctrl+U / Ctrl+K', value: 'Delete to start / end of the prompt' },
   { key: 'Ctrl+Y', value: 'Put back the last deletion' },
+  {
+    key: 'Enter / Tab',
+    value: 'While Book works: steer after the current tool call / queue for the end of the run',
+  },
   { key: 'Ctrl+/', value: 'Toggle this reference' },
   { key: '@path', value: 'Expand file contents' },
   { key: '!cmd', value: 'Run shell command' },

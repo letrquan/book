@@ -18,44 +18,65 @@ export interface FlashNotice {
 }
 
 interface QueuedInputPreviewProps {
+  /** Queued follow-ups, sent when the run ends. */
   items: readonly QueuedInput[];
+  /** Steers waiting in the running loop, delivered at its next tool boundary (#661). */
+  steers?: readonly QueuedInput[];
   terminalWidth: number;
   notice?: string;
   noticeTone?: NoticeTone;
 }
 
+/** Total rows the two sections show before the rest are counted as "... n more". */
+const MAX_VISIBLE_ROWS = 3;
+
 /**
- * What sits between the transcript and the composer: follow-ups waiting for
- * the turn to end, and a one-line note. Quiet grey on the content column, so
- * it reads as margin matter; the rubric red belongs to marks.
+ * What sits between the transcript and the composer: the follow-ups waiting for the turn to
+ * end, the steers the running turn will take at its next tool call, and a one-line note. Quiet
+ * grey on the content column, so it reads as margin matter; the rubric red belongs to marks.
  */
 export function QueuedInputPreview({
   items,
+  steers = [],
   terminalWidth,
   notice,
   noticeTone = 'warning',
 }: QueuedInputPreviewProps) {
   const theme = useTheme();
-  if (items.length === 0 && !notice) return null;
+  if (items.length === 0 && steers.length === 0 && !notice) return null;
 
   const width = Math.max(8, Math.floor(terminalWidth) - CONTENT_COLUMN - 4);
-  const visible = items.slice(0, 3);
-  const hidden = items.length - visible.length;
+  // One budget across both sections, in the order they are delivered: a steer is still ahead of
+  // the run's own end, so its rows come first.
+  const visibleSteers = steers.slice(0, MAX_VISIBLE_ROWS);
+  const visibleQueued = items.slice(0, Math.max(0, MAX_VISIBLE_ROWS - visibleSteers.length));
+  const hidden = steers.length + items.length - visibleSteers.length - visibleQueued.length;
+
+  const rows = (entries: readonly QueuedInput[]) =>
+    entries.map((item) => (
+      <Text key={item.id} color={theme.inactive}>
+        {'  ↳ '}
+        {item.attachments?.length
+          ? `[${item.attachments.length} image${item.attachments.length === 1 ? '' : 's'}] `
+          : ''}
+        {truncateDisplay(item.value.replace(/\s+/g, ' ').trim(), width)}
+      </Text>
+    ));
 
   return (
     <Box flexDirection="column" paddingLeft={CONTENT_COLUMN} marginBottom={1}>
-      {items.length > 0 ? (
-        <Text color={theme.subtle}>Queued follow-up inputs ({items.length})</Text>
+      {steers.length > 0 ? (
+        <>
+          <Text color={theme.subtle}>Sends after the current tool call ({steers.length})</Text>
+          {rows(visibleSteers)}
+        </>
       ) : null}
-      {visible.map((item) => (
-        <Text key={item.id} color={theme.inactive}>
-          {'  ↳ '}
-          {item.attachments?.length
-            ? `[${item.attachments.length} image${item.attachments.length === 1 ? '' : 's'}] `
-            : ''}
-          {truncateDisplay(item.value.replace(/\s+/g, ' ').trim(), width)}
-        </Text>
-      ))}
+      {items.length > 0 ? (
+        <>
+          <Text color={theme.subtle}>Queued for when this run ends ({items.length})</Text>
+          {rows(visibleQueued)}
+        </>
+      ) : null}
       {hidden > 0 ? <Text color={theme.inactive}> ... {hidden} more</Text> : null}
       {notice ? (
         noticeTone === 'done' ? (

@@ -46,6 +46,12 @@ export type AgentEvent =
   | { type: 'evidence_update'; evidence: EvidenceItem }
   | { type: 'attempt_discarded'; reason: 'empty_response' }
   | { type: 'notice'; message: string; title?: string }
+  /**
+   * A steer the host handed the running loop was appended to history (#661), at the point the
+   * model will read it. Display only: the transcript shows the user's words there, and the
+   * provider history comes from the loop.
+   */
+  | { type: 'steer_delivered'; message: Message }
   | { type: 'goal_status'; event: GoalStatusEvent }
   | { type: 'error'; error: string }
   | {
@@ -178,6 +184,7 @@ export function reduceAgentSessionSnapshot(
     case 'agent_persistence':
     case 'skill_lifecycle':
     case 'notice':
+    case 'steer_delivered':
     case 'goal_status':
     case 'background_job_start':
     case 'background_job_update':

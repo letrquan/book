@@ -102,6 +102,8 @@ import {
   type AgentSessionSendResult,
 } from '../../session/agent-session.js';
 import { normalizePersistedTodos } from '../../tools/todo.js';
+import { createSteeringInbox, type SteeringInboxHandle } from '../../agent/steering.js';
+import { queuedInputFromSteer, type QueuedInput } from '../queued-inputs.js';
 import { SessionRuntime } from '../../session/runtime.js';
 import { seedShellIds } from '../../jobs/shell-ids.js';
 import { createInteractiveAgentSession } from '../../session/interactive-session.js';
@@ -339,6 +341,35 @@ interface SendMessageOptions {
    * `$name` tokens invoke a skill, and only it goes back in the composer on a rewind.
    */
   typedText?: string;
+}
+
+/**
+ * A send's result as the TUI sees it: the session's own result, plus the steers still pending
+ * when the run settled (#661), as the queue and the composer already render their rows. The app
+ * decides what happens to them — a run the user cancelled hands them back to the composer,
+ * anything else puts them at the front of the follow-up queue.
+ */
+export type TuiSendResult = AgentSessionSendResult & { pendingSteers?: QueuedInput[] };
+
+/** What a steer attempt did: the running loop took it, or there was no run left to take it. */
+export type SteerOutcome = 'steered' | 'not-running';
+
+/**
+ * The run whose inbox takes steers (#661). Held for exactly as long as that send is current, so a
+ * steer prepared for a run that ended in the meantime is queued instead of pushed into a queue
+ * nothing will drain.
+ */
+interface ActiveSteering {
+  inbox: SteeringInboxHandle;
+  sessionId: string;
+  /**
+   * The host withdrew these steers (Esc, a session switch): whatever this inbox still holds when
+   * the run settles must not be queued again. The loop requeues what it took but did not deliver,
+   * so without this an interrupt would restore the words twice.
+   */
+  dropped: boolean;
+  /** The send returned: the leftovers were read once, and nothing may push into it again. */
+  settled: boolean;
 }
 
 /** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
@@ -610,6 +641,73 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // the shell manager's 20 retained terminal jobs loses the oldest before the diff; and the entry
   // goes with the first completion delivered, so a later completion of the same id is unpinned.
   const pinnedJobsRef = useRef(new Map<string, PeerPermissionClass>());
+  /**
+   * The run that can take steers (#661): created when a user-started send enters the loop, held
+   * while that send is the current one, and cleared when it settles, so a steer is only ever
+   * pushed into a queue that run still drains.
+   */
+  const steeringRef = useRef<ActiveSteering | null>(null);
+  /** The same fact as state, for the composer: it offers steering only while a run takes steers. */
+  const [canSteer, setCanSteer] = useState(false);
+  /** The steers still waiting in `steeringRef`, as the preview lists them and Up recalls them. */
+  const [pendingSteers, setPendingSteers] = useState<QueuedInput[]>([]);
+  const pendingSteersRef = useRef<QueuedInput[]>([]);
+  /**
+   * Re-read the running inbox for the preview and for recall/interrupt.
+   *
+   * The loop drains on its own schedule, so this state can only be refreshed where the host acts
+   * or hears: after a push, after a delivery, and after a removal.
+   */
+  const readPendingSteers = useCallback((): QueuedInput[] => {
+    const active = steeringRef.current;
+    const next =
+      active && !active.settled
+        ? active.inbox.pending().map((input) => queuedInputFromSteer(input, active.sessionId))
+        : [];
+    pendingSteersRef.current = next;
+    setPendingSteers(next);
+    return next;
+  }, []);
+  /**
+   * Take the newest pending steer back for editing (Up). It leaves the inbox, so the loop cannot
+   * also deliver the words the user is now editing; Enter sends it again as a steer while the run
+   * is still going, and as a normal prompt otherwise.
+   */
+  const recallSteer = useCallback((): QueuedInput | undefined => {
+    const active = steeringRef.current;
+    const pending = active?.inbox.pending() ?? [];
+    const newest = pending[pending.length - 1];
+    if (!active || !newest) return undefined;
+    active.inbox.remove(newest.id);
+    readPendingSteers();
+    return queuedInputFromSteer(newest, active.sessionId);
+  }, [readPendingSteers]);
+  /**
+   * Every steer still waiting, oldest first, and the run's inbox emptied.
+   *
+   * This is what Esc restores to the composer. The inbox is *not* withdrawn: a cancelled loop
+   * requeues the steers it had taken but never appended, and those have to come back at settle
+   * rather than be lost between the interrupt and the abort. `settleSteering` therefore reports
+   * whatever is pending then — empty in the ordinary case, because this call just emptied it.
+   */
+  const takeSteers = useCallback((): QueuedInput[] => {
+    const active = steeringRef.current;
+    if (!active) return [];
+    const taken = active.inbox
+      .pending()
+      .map((input) => queuedInputFromSteer(input, active.sessionId));
+    active.inbox.clear();
+    readPendingSteers();
+    return taken;
+  }, [readPendingSteers]);
+  /** Drop every pending steer without returning it: a session switch discards them, as it does the queue. */
+  const dropSteers = useCallback(() => {
+    const active = steeringRef.current;
+    if (!active) return;
+    active.inbox.clear();
+    active.dropped = true;
+    readPendingSteers();
+  }, [readPendingSteers]);
   const timelineStore = session.timelineStore ?? session.store;
 
   useEffect(() => interactions.subscribe(setInteractionSnapshot), [interactions]);
@@ -749,7 +847,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     accumulatorRef.current?.discard();
     accumulatorRef.current = null;
     clearCountdown();
-  }, [clearCountdown]);
+    // The projection leaves the old conversation's run behind, and its steers with it (#661):
+    // the loop no longer appends them to this transcript, so keeping them in the preview would
+    // promise rows that never arrive. A cancelled loop's own requeue is withdrawn too, exactly as
+    // the queue discards inputs that belonged to the session being left.
+    dropSteers();
+  }, [clearCountdown, dropSteers]);
 
   const projectConversationState = useCallback(
     (
@@ -1008,14 +1111,86 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [timelineStore],
   );
 
+  /**
+   * Show the mentions a send left as written, right under the message they were in (#567).
+   *
+   * Shared by a normal send and a steer: a steer has no placeholder yet when it is prepared, so
+   * its notices go at the end of the transcript and the delivery row follows them later.
+   */
+  const showMentionNotices = useCallback(
+    (notices: readonly string[], sessionId: string, beforeId?: string) => {
+      if (notices.length === 0) return;
+      const rows = notices.map((text) => ({
+        ...makeMessage('assistant', text, undefined, false),
+        kind: 'local' as const,
+      }));
+      for (const notice of rows) {
+        timelineStore?.append(sessionId, {
+          type: 'local',
+          eventId: notice.id,
+          timestamp: notice.timestamp,
+          data: {
+            id: notice.id,
+            content: notice.content,
+            kind: 'local',
+            includeInContext: false,
+          },
+        });
+      }
+      setMessages((prev) => {
+        const at = beforeId ? prev.findIndex((message) => message.id === beforeId) : -1;
+        const next =
+          at === -1 ? [...prev, ...rows] : [...prev.slice(0, at), ...rows, ...prev.slice(at)];
+        messagesRef.current = next;
+        return next;
+      });
+    },
+    [timelineStore],
+  );
+
+  /**
+   * Hand the running loop one more message from the user (#661): it is delivered after the tool
+   * call in flight, and the transcript shows it where the model got it.
+   *
+   * `'not-running'` means no run the user started is left to take it — the caller then queues the
+   * text for the end of the run instead. `prepareSteer` expands mentions asynchronously, so the
+   * check is made on both sides of that await: the run can end while the expansion runs.
+   */
+  const steer = useCallback(
+    async (value: string, attachments?: Message['attachments']): Promise<SteerOutcome> => {
+      const active = steeringRef.current;
+      if (!active || active.dropped) return 'not-running';
+      let prepared: Awaited<ReturnType<AgentSession['prepareSteer']>>;
+      try {
+        prepared = await agentSession.prepareSteer({
+          displayMessage: value,
+          attachments,
+          config: liveConfigRef.current,
+        });
+      } catch (error) {
+        // A mention that cannot be read is not a reason to drop the user's words: the caller
+        // queues them, and the next send expands them again with its own notices.
+        log.warn('steer prepare failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return 'not-running';
+      }
+      if (steeringRef.current !== active || active.dropped) return 'not-running';
+      active.inbox.push(prepared.input);
+      readPendingSteers();
+      showMentionNotices(prepared.mentionNotices, active.sessionId);
+      return 'steered';
+    },
+    [agentSession, readPendingSteers, showMentionNotices],
+  );
+
   const sendMessage = useCallback(
     async (
       userMessage: string,
       commandContext?: CommandContext,
       messageOptions?: SendMessageOptions,
-    ): Promise<AgentSessionSendResult> => {
+    ): Promise<TuiSendResult> => {
       setCompactUi(null);
-
       const generation = sessionGenerationRef.current;
       const activeSessionId = sessionIdRef.current;
       let operationIsCurrent = () => false;
@@ -1047,6 +1222,35 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         streamOutputRef.current.any = true;
         if (tool) streamOutputRef.current.tools = true;
       };
+      /**
+       * Show a steer the model just received (#661) as the user's own row, at the point of the
+       * transcript the model read it at.
+       *
+       * An empty placeholder has produced nothing yet, so the row goes in front of it and the
+       * reply streams after the row. Once the message has output, the row goes after it and the
+       * message is closed: the next output opens its own message, so it cannot land above the
+       * words it answers.
+       */
+      const insertSteerRow = (message: Message) => {
+        activeAccumulator?.flush();
+        const streamingId = streamingIdRef.current;
+        if (streamingId && !streamOutputRef.current.any) {
+          setMessages((prev) => {
+            const at = prev.findIndex((entry) => entry.id === streamingId);
+            const next =
+              at === -1 ? [...prev, message] : [...prev.slice(0, at), message, ...prev.slice(at)];
+            messagesRef.current = next;
+            return next;
+          });
+          return;
+        }
+        setMessages((prev) => {
+          const next = [...prev, message];
+          messagesRef.current = next;
+          return next;
+        });
+        if (streamingId) streamOutputRef.current.closed = true;
+      };
       let activeUserMessage: Message | undefined;
       let placeholder: Message | undefined;
       let activeRunContext: AgentRunContext | undefined;
@@ -1068,6 +1272,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         operationIsCurrent = control.isCurrent;
         activeRunContext = control.runContext;
         activeSignal = control.signal;
+        // The send was accepted, so this run is the one steers go to (#661). Published here
+        // rather than when `send` was called: a send the session refused never runs, and its
+        // inbox would hold words nothing drains.
+        if (steering) {
+          steeringRef.current = steering;
+          setCanSteer(true);
+          readPendingSteers();
+        }
         // The plan this turn started from, read from the runtime — the loop
         // mutates that array in place, so it is the plan the turn is actually
         // working through, not a render-old copy of it.
@@ -1197,6 +1409,41 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             )
           : undefined;
 
+      /*
+       * Only a run the user started can take steers (#661). A host-delivered turn — a
+       * notification, a peer's message — runs on the assistant's behalf: the user's words there
+       * would reach a turn whose permission class is another session's, and the reply belongs to
+       * that peer. Enter queues during one, as it always did.
+       */
+      const steerable = !isHostDeliveredTurn({ kind: messageOptions?.kind });
+      const steering: ActiveSteering | null = steerable
+        ? {
+            inbox: createSteeringInbox(),
+            sessionId: activeSessionId,
+            dropped: false,
+            settled: false,
+          }
+        : null;
+      /**
+       * The run is over: anything the loop did not drain is the host's again. Read once, and
+       * report nothing when the host discarded them (`dropped`) — a session switch already threw
+       * them away on purpose.
+       */
+      const settleSteering = (): QueuedInput[] => {
+        if (!steering || steering.settled) return [];
+        steering.settled = true;
+        const leftover = steering.inbox
+          .pending()
+          .map((input) => queuedInputFromSteer(input, steering.sessionId));
+        steering.inbox.clear();
+        if (steeringRef.current === steering) {
+          steeringRef.current = null;
+          setCanSteer(false);
+        }
+        readPendingSteers();
+        return steering.dropped ? [] : leftover;
+      };
+
       const createUserMessage = () => {
         const message = makeMessage('user', userMessage, messageOptions?.contextMessage, true);
         message.kind = messageOptions?.kind ?? 'conversation';
@@ -1266,34 +1513,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // A mention left as written is reported right under the message it was in, as a local
         // line like a start-up notice, ahead of the reply (#567). `addLocalMessage` would hold it
         // until the turn ends, since a send is in flight.
-        if (prepared.mentionNotices.length > 0) {
-          const notices = prepared.mentionNotices.map((text) => ({
-            ...makeMessage('assistant', text, undefined, false),
-            kind: 'local' as const,
-          }));
-          for (const notice of notices) {
-            timelineStore?.append(activeSessionId, {
-              type: 'local',
-              eventId: notice.id,
-              timestamp: notice.timestamp,
-              data: {
-                id: notice.id,
-                content: notice.content,
-                kind: 'local',
-                includeInContext: false,
-              },
-            });
-          }
-          setMessages((prev) => {
-            const at = prev.findIndex((message) => message.id === placeholder?.id);
-            const next =
-              at === -1
-                ? [...prev, ...notices]
-                : [...prev.slice(0, at), ...notices, ...prev.slice(at)];
-            messagesRef.current = next;
-            return next;
-          });
-        }
+        showMentionNotices(prepared.mentionNotices, activeSessionId, placeholder?.id);
         setRewindTargets((current) => [prepared.rewindTarget, ...current]);
         // Ink layout plus markdown parsing commonly takes longer than a 60fps
         // frame on a real transcript. A 32ms cadence keeps streaming responsive
@@ -1332,6 +1552,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         snapshotStore: session.snapshotStore,
         timelineStore,
         registryStore: timelineStore,
+        // Every run this host starts announces that it takes mid-run input: the system prompt's
+        // harness line is part of the cached prefix, and a session that set it on some runs and
+        // not others would re-bill the whole conversation whenever it flipped (#661).
+        steeringHost: true,
+        ...(steering ? { steering: steering.inbox } : {}),
         isCurrent: () => sessionGenerationRef.current === generation,
         runtime: agentSession.getRuntime(),
         beforePrepare,
@@ -1360,6 +1585,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 break;
               case 'notice':
                 appendLocalMessage(event.message);
+                break;
+              case 'steer_delivered':
+                // The user's words reached the model mid-run (#661): show them there, not at
+                // the end of the run next to output that already answers them. Display only —
+                // the provider history is the loop's.
+                insertSteerRow(event.message);
+                readPendingSteers();
                 break;
               case 'goal_status':
                 appendLocalMessage(formatGoalStatus(event.event));
@@ -1732,7 +1964,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         setError(null);
       }
       uiLog.event('send:finally', { durationMs: Date.now() - turnStartRef.current });
-      return sendResult;
+      // The run is over (#661): whatever the loop never drained goes back to the host, so the app
+      // can put it where the user's words belong instead of silently dropping them.
+      const pendingSteers = settleSteering();
+      return pendingSteers.length > 0 ? { ...sendResult, pendingSteers } : sendResult;
     },
     [
       liveConfig,
@@ -1745,6 +1980,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       session.snapshotStore,
       agentSession,
       syncGoal,
+      readPendingSteers,
+      showMentionNotices,
     ],
   );
 
@@ -2287,7 +2524,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     clearCountdown();
     setRetryPhase('none');
     setRetryCountdownMs(0);
-  }, [agentSession, clearCountdown, operations, resetAgentPlan]);
+    // `/clear` abandons the run, so the steers written into it go too (#661); the app discards
+    // its own copy on the new session id as well, and a second drop is a no-op.
+    dropSteers();
+  }, [agentSession, clearCountdown, dropSteers, operations, resetAgentPlan]);
 
   const cycleMode = useCallback(() => {
     const modes: PermissionMode[] = [
@@ -2927,6 +3167,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     sessionId,
     sessionName,
     send,
+    /** Steer the running turn (#661): `'not-running'` means the caller queues the text instead. */
+    steer,
+    /** Whether a run the user started is taking steers right now. */
+    canSteer,
+    /** The steers still waiting in that run's inbox, oldest first, for the preview. */
+    pendingSteers,
+    /** Take the newest pending steer back for editing (Up), leaving the inbox. */
+    recallSteer,
+    /** Every pending steer, oldest first; the run's inbox is withdrawn so nothing doubles. */
+    takeSteers,
+    /** Discard pending steers: a session switch, which drops queued inputs too. */
+    dropSteers,
     sendAgentCompletions,
     sendBackgroundShellCompletion,
     sendPeerMessages,

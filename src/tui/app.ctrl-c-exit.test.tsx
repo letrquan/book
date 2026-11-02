@@ -155,6 +155,13 @@ function agentState(overrides: Record<string, unknown> = {}) {
     sessionId: testSession.sessionId,
     sessionName: undefined,
     send: vi.fn(async () => ({ status: 'completed' as const, messages: [] })),
+    // Steering (#661): a completed mock run has nothing left, and no inbox to steer into.
+    steer: vi.fn(async () => 'not-running' as const),
+    canSteer: false,
+    pendingSteers: [],
+    recallSteer: vi.fn(() => undefined),
+    takeSteers: vi.fn(() => []),
+    dropSteers: vi.fn(),
     sendAgentCompletions: vi.fn(async () => {}),
     sendBackgroundShellCompletion: vi.fn(async () => true),
     clear: vi.fn(),
@@ -312,7 +319,7 @@ async function queueAndRecallNewest(view: ReturnType<typeof render>, texts: stri
     press(view, text);
     await waitForFrame(view, `> ${text}`);
     press(view, '\r');
-    await waitForFrame(view, `Queued follow-up inputs (${index + 1})`);
+    await waitForFrame(view, `Queued for when this run ends (${index + 1})`);
   }
   press(view, '\x1b[A');
   await waitForFrame(view, 'Editing queued input');
@@ -585,7 +592,7 @@ describe('idle Ctrl+C exit confirmation', () => {
       press(view, text);
       await waitForFrame(view, `> ${text}`);
       press(view, '\r');
-      await waitForFrame(view, `Queued follow-up inputs (${index + 1})`);
+      await waitForFrame(view, `Queued for when this run ends (${index + 1})`);
     }
     rerenderWith({ isThinking: false, isCompacting: true });
 
@@ -593,7 +600,7 @@ describe('idle Ctrl+C exit confirmation', () => {
     await waitUntil(() => expect(state.cancel).toHaveBeenCalledTimes(1));
     rerenderWith({ isThinking: false, isCompacting: true });
 
-    expect(frameOf(view)).toContain('Queued follow-up inputs (2)');
+    expect(frameOf(view)).toContain('Queued for when this run ends (2)');
     expect(frameOf(view)).not.toContain('Queued inputs restored');
     expect(frameOf(view)).not.toContain('> first waiting');
   });
@@ -878,7 +885,7 @@ describe('idle Ctrl+C exit confirmation', () => {
     press(view, 'first queued');
     await waitForFrame(view, '> first queued');
     press(view, '\r');
-    await waitForFrame(view, 'Queued follow-up inputs (1)');
+    await waitForFrame(view, 'Queued for when this run ends (1)');
     press(view, 'second queued');
     await waitForFrame(view, '> second queued');
 
@@ -888,7 +895,7 @@ describe('idle Ctrl+C exit confirmation', () => {
     for (let turn = 0; turn < 100 && !frameOf(view).includes('inputs (2)'); turn++) {
       await new Promise((resolve) => setImmediate(resolve));
     }
-    expect(frameOf(view)).toContain('Queued follow-up inputs (2)');
+    expect(frameOf(view)).toContain('Queued for when this run ends (2)');
     view.stdin.write('\x1b[A');
 
     await waitForFrame(view, 'Editing queued input');
@@ -903,7 +910,7 @@ describe('idle Ctrl+C exit confirmation', () => {
     press(view, 'first queued');
     await waitForFrame(view, '> first queued');
     press(view, '\r');
-    await waitForFrame(view, 'Queued follow-up inputs (1)');
+    await waitForFrame(view, 'Queued for when this run ends (1)');
     press(view, 'second queued');
     await waitForFrame(view, '> second queued');
 
@@ -1007,7 +1014,7 @@ describe('queued follow-up notice', () => {
     press(view, 'follow up');
     await waitForFrame(view, '> follow up');
     press(view, '\r');
-    await waitForFrame(view, 'Queued follow-up inputs (1)');
+    await waitForFrame(view, 'Queued for when this run ends (1)');
 
     rerenderWith({ isThinking: false, send });
     await waitForFrame(view, 'Sending queued follow-up...');
@@ -1097,7 +1104,7 @@ describe('queue notices for one-off events', () => {
     press(view, 'later');
     await waitForFrame(view, '> later');
     press(view, '\r');
-    await waitForFrame(view, 'Queued follow-up inputs (1)');
+    await waitForFrame(view, 'Queued for when this run ends (1)');
 
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     press(view, '\u001b');
@@ -1283,7 +1290,7 @@ describe('queue edges (#268)', () => {
       press(view, text);
       await waitForFrame(view, `> ${text}`);
       press(view, '\r');
-      await waitForFrame(view, `Queued follow-up inputs (${index + 1})`);
+      await waitForFrame(view, `Queued for when this run ends (${index + 1})`);
     }
 
     // The turn ends; the queue sends its first input, which is still in flight.
@@ -1293,12 +1300,12 @@ describe('queue edges (#268)', () => {
     press(view, 'late input');
     await waitForFrame(view, '> late input');
     press(view, '\r');
-    await waitForFrame(view, 'Queued follow-up inputs (10)');
+    await waitForFrame(view, 'Queued for when this run ends (10)');
     press(view, '\x1b[A');
     await waitForFrame(view, 'Editing queued input');
     // The first send never started, so it goes back to the front: the queue is full again.
     finishFirstSend({ status: 'rejected' });
-    await waitForFrame(view, 'Queued follow-up inputs (10)');
+    await waitForFrame(view, 'Queued for when this run ends (10)');
 
     press(view, ' edited');
     await waitForFrame(view, '> late input edited');

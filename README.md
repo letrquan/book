@@ -86,14 +86,15 @@ The login form accepts an empty password. Find out why and fix it.
 
 A few things make the conversation go further:
 
-| Type                     | To                                                       |
-| ------------------------ | -------------------------------------------------------- |
-| `@path`                  | point Book at a file (its contents go with your message) |
-| `!command`               | run a shell command yourself and send its output along   |
-| `/`                      | open the command menu (`/help` lists every command)      |
-| `Esc`                    | stop the current turn                                    |
-| `Enter` while Book works | queue a follow-up; it is sent when the turn ends         |
-| `Ctrl+/`                 | show all keyboard shortcuts                              |
+| Type                     | To                                                                  |
+| ------------------------ | ------------------------------------------------------------------- |
+| `@path`                  | point Book at a file (its contents go with your message)            |
+| `!command`               | run a shell command yourself and send its output along              |
+| `/`                      | open the command menu (`/help` lists every command)                 |
+| `Esc`                    | stop the current turn                                               |
+| `Enter` while Book works | steer the running turn; it is delivered after the current tool call |
+| `Tab` while Book works   | queue a follow-up instead; it is sent when the turn ends            |
+| `Ctrl+/`                 | show all keyboard shortcuts                                         |
 
 When Book wants to change a file or run a command, it stops and shows you exactly what it will do:
 

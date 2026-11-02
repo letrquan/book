@@ -132,6 +132,13 @@ function pendingAgentState() {
     sessionId: 'session-test',
     sessionName: undefined,
     send: vi.fn(async () => ({ status: 'completed' as const, messages: [] })),
+    // Steering (#661): no run in these tests takes steers, and nothing is pending in one.
+    steer: vi.fn(async () => 'not-running' as const),
+    canSteer: false,
+    pendingSteers: [],
+    recallSteer: vi.fn(() => undefined),
+    takeSteers: vi.fn(() => []),
+    dropSteers: vi.fn(),
     clear: vi.fn(),
     startNewConversation: vi.fn(async () => {}),
     resumeConversation: vi.fn(async () => {}),
@@ -578,7 +585,7 @@ describe('App session commands', () => {
     await submit(view, 'check the retry path');
 
     expect(agentState.send).not.toHaveBeenCalled();
-    expect(stripAnsi(view.lastFrame())).toContain('Queued follow-up inputs (1)');
+    expect(stripAnsi(view.lastFrame())).toContain('Queued for when this run ends (1)');
     expect(stripAnsi(view.lastFrame())).toContain('check the retry path');
 
     agentState = { ...agentState, isThinking: false };
@@ -614,7 +621,7 @@ describe('App session commands', () => {
 
     expect(send).toHaveBeenCalledWith('preserve this follow-up');
     const frame = stripAnsi(view.lastFrame());
-    expect(frame).toContain('Queued follow-up inputs (1)');
+    expect(frame).toContain('Queued for when this run ends (1)');
     expect(frame).toContain('preserve this follow-up');
     expect(frame).toContain('Queued send did not start.');
   });
@@ -678,7 +685,7 @@ describe('App session commands', () => {
 
     expect(agentState.cancel).not.toHaveBeenCalled();
     expect(stripAnsi(view.lastFrame())).toContain('Queued input removed.');
-    expect(stripAnsi(view.lastFrame())).not.toContain('Queued follow-up inputs (1)');
+    expect(stripAnsi(view.lastFrame())).not.toContain('Queued for when this run ends (1)');
   });
 
   it('restores pending queued inputs ahead of the live draft on interrupt', async () => {

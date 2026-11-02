@@ -1,4 +1,4 @@
-import type { ImageAttachment } from '../types/messages.js';
+import type { ImageAttachment, SteeredInput } from '../types/messages.js';
 
 export const MAX_QUEUED_INPUTS = 10;
 
@@ -8,6 +8,24 @@ export interface QueuedInput {
   value: string;
   attachments?: ImageAttachment[];
   createdAt: number;
+}
+
+/**
+ * The preview's view of a steer still waiting in the inbox (#661).
+ *
+ * One type for both queues, so the preview renders them the same way and Up can hand either one
+ * back to the composer; the id is the inbox's, which is what `remove`/`clear` take.
+ */
+export function queuedInputFromSteer(input: SteeredInput, sessionId: string): QueuedInput {
+  const attachments = input.attachments;
+  return {
+    id: input.id,
+    sessionId,
+    // What the user typed, not what routing reads (`content`): the row is their words.
+    value: input.displayMessage ?? input.content,
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
+    createdAt: input.timestamp,
+  };
 }
 
 export function createQueuedInput(
@@ -33,7 +51,13 @@ export function enqueueQueuedInput(
   capacity = MAX_QUEUED_INPUTS,
 ): { accepted: boolean; queue: QueuedInput[] } {
   if (queue.length >= capacity) return { accepted: false, queue: [...queue] };
-  return { accepted: true, queue: [...queue, input] };
+  // Chronological rather than append (#661): a recalled input keeps its own `createdAt`, and a
+  // steer recalled from the running turn was written before the follow-ups queued after it, so
+  // it belongs back where it came from. A newly typed input has "now" and still lands last.
+  const at = queue.findIndex((item) => item.createdAt > input.createdAt);
+  const next = [...queue];
+  next.splice(at === -1 ? next.length : at, 0, input);
+  return { accepted: true, queue: next };
 }
 
 export function recallNewestQueuedInput(
