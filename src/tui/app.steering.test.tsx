@@ -145,6 +145,7 @@ function agentState(overrides: Record<string, unknown> = {}) {
     recallSteer: vi.fn(() => undefined),
     takeSteers: vi.fn(() => [] as QueuedInput[]),
     dropSteers: vi.fn(),
+    requestSteerNow: vi.fn(() => true),
     sendAgentCompletions: vi.fn(async () => {}),
     sendBackgroundShellCompletion: vi.fn(async () => true),
     clear: vi.fn(),
@@ -446,5 +447,55 @@ describe('the two queues when a run ends', () => {
     await waitForFrame(view, '> change of plan');
     expect(frameOf(view)).toContain('Queued for when this run ends (1)');
     expect(frameOf(view)).toContain('queued behind the run');
+  });
+});
+
+describe('send-now from the composer (#661)', () => {
+  it('steers the draft first, then asks the running turn to send it now', async () => {
+    const { view, state } = await startApp({ isThinking: true, canSteer: true });
+
+    press(view, 'stop and say hi');
+    await waitForFrame(view, '> stop and say hi');
+    press(view, '\x18');
+    press(view, '\x13');
+
+    await waitUntil(() => expect(state.requestSteerNow).toHaveBeenCalledTimes(1));
+    expect(state.steer).toHaveBeenCalledWith('stop and say hi', undefined);
+    // Asked once the words are in the inbox: before that there is nothing to send now.
+    expect(state.steer.mock.invocationCallOrder[0]).toBeLessThan(
+      state.requestSteerNow.mock.invocationCallOrder[0]!,
+    );
+    expect(state.send).not.toHaveBeenCalled();
+    await waitUntil(() => expect(frameOf(view)).not.toContain('> stop and say hi'));
+  });
+
+  it('sends the steers already waiting from an empty composer', async () => {
+    const waiting = [steerItem('steer-1', 'already waiting', 2)];
+    const { view, state } = await startApp({
+      isThinking: true,
+      canSteer: true,
+      pendingSteers: waiting,
+    });
+    await waitForFrame(view, 'Ctrl+X Ctrl+S sends now');
+
+    press(view, '\x18');
+    press(view, '\x13');
+
+    await waitUntil(() => expect(state.requestSteerNow).toHaveBeenCalledTimes(1));
+    expect(state.steer).not.toHaveBeenCalled();
+  });
+
+  it('types the key that broke the chord, and a late Ctrl+S does nothing', async () => {
+    const { view, state } = await startApp({ isThinking: true, canSteer: true });
+
+    press(view, '\x18');
+    press(view, 'k');
+    await waitForFrame(view, '> k');
+    press(view, '\x13');
+    await new Promise((resolve) => realSetTimeout(resolve, 60));
+
+    expect(state.requestSteerNow).not.toHaveBeenCalled();
+    expect(state.steer).not.toHaveBeenCalled();
+    expect(frameOf(view)).toContain('> k');
   });
 });

@@ -59,6 +59,17 @@ export interface SteeringInbox {
   requeue(inputs: readonly SteeredInput[]): void;
   /** Whether a steer is waiting. */
   hasPending(): boolean;
+  /**
+   * Send-now: the user wants what is pending delivered at once, not after the current step. A
+   * no-op while nothing is pending. The request stands until the loop takes those steers, so a
+   * loop that starts its next model request in between still hears it.
+   */
+  requestNow(): void;
+  /**
+   * Hear send-now requests: the loop listens while a model request streams, and stops that one
+   * request when it fires. Fires at once when a request already stands. Returns an unsubscribe.
+   */
+  onRequestNow(listener: () => void): () => void;
 }
 
 /** A session-owned image referenced by a user message. */

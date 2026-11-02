@@ -156,14 +156,15 @@ describe('runHeadless — SessionEnd reports how the run ended (#248)', () => {
     );
     const writes: string[] = [];
 
-    await expect(
-      runHeadless(
-        sessionEndConfig(),
-        abortingRegistry(controller),
-        streamOptions(controller.signal, writes),
-      ),
-    ).rejects.toThrow();
+    // A cancel inside a tool ends the run as any cancel does (#669). It used to throw, only because
+    // the tool step's PostToolUse hooks threw the abort reason and lost the tool's result.
+    const result = await runHeadless(
+      sessionEndConfig(),
+      abortingRegistry(controller),
+      streamOptions(controller.signal, writes),
+    );
 
+    expect(result.outcome.status).toBe('cancelled');
     expect(sessionEndRecords(writes)).toEqual([
       expect.objectContaining({
         reason: 'aborted',
@@ -192,14 +193,13 @@ describe('runHeadless — SessionEnd reports how the run ended (#248)', () => {
       );
       const writes: string[] = [];
 
-      await expect(
-        runHeadless(
-          sessionEndConfig(),
-          abortingRegistry(controller, reason),
-          streamOptions(controller.signal, writes),
-        ),
-      ).rejects.toThrow();
+      const result = await runHeadless(
+        sessionEndConfig(),
+        abortingRegistry(controller, reason),
+        streamOptions(controller.signal, writes),
+      );
 
+      expect(result.outcome.status).toBe(expected.status);
       expect(sessionEndRecords(writes)).toEqual([
         expect.objectContaining({ reason: 'aborted', ...expected }),
       ]);
@@ -254,14 +254,13 @@ describe('runHeadless — SessionEnd runs after the session is disposed (#248)',
     );
     const disposedFirst = disposeBeforeEnd();
 
-    await expect(
-      runHeadless(
-        sessionEndConfig(),
-        abortingRegistry(controller),
-        streamOptions(controller.signal, []),
-      ),
-    ).rejects.toThrow();
+    const result = await runHeadless(
+      sessionEndConfig(),
+      abortingRegistry(controller),
+      streamOptions(controller.signal, []),
+    );
 
+    expect(result.outcome.status).toBe('cancelled');
     expect(disposedFirst()).toBe(true);
   });
 });
