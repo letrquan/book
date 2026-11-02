@@ -611,6 +611,55 @@ describe('a rule or hook on ToolSearch itself gates discovery again (#619, decis
     expect(ran).toEqual(['GitLog']);
     expect(hooked).toEqual(['GitLog']);
   });
+
+  it('a `*` hook keeps direct calls, and runs on and can block every call (#656)', async () => {
+    const requests: string[][] = [];
+    const results = new Map<string, ToolResult>();
+    let turn = 0;
+    const ran: string[] = [];
+    const config = defaultConfig({ workspace, maxTurns: 2 });
+    config.settings.hooks.PreToolUse = [{ command: 'exit 2', matcher: '*', env: {} }];
+    await runAgentLoop(
+      config,
+      stubbedRegistry(ran),
+      'go',
+      [],
+      {
+        onText: () => {},
+        onToolCall: () => {},
+        onToolResult: (result) => results.set(result.toolCallId ?? '', result),
+        onError: () => {},
+        onTurnStart: () => {},
+        onDone: () => {},
+        onPermissionRequired: async () => 'allow',
+      },
+      'bypassPermissions',
+      {
+        provider: {
+          id: 'scripted',
+          stream: async function* (_c: unknown, _m: unknown, tools: Array<{ name: string }>) {
+            requests.push(tools.map((tool) => tool.name));
+            if (turn++ === 0) {
+              // A core tool, then a deferred one called directly.
+              yield {
+                type: 'tool_call',
+                toolCall: { id: 'bash-1', name: 'Bash', arguments: { command: 'echo hi' } },
+              };
+              yield { type: 'tool_call', toolCall: { id: 'log-1', name: 'GitLog', arguments: {} } };
+            } else yield { type: 'text', content: 'done' };
+            yield { type: 'done' };
+          },
+        } as unknown as Provider,
+        isNewSession: false,
+      },
+    );
+
+    expect(results.get('bash-1')?.structuredError?.code).toBe('hook_blocked');
+    expect(results.get('log-1')?.structuredError?.code).toBe('hook_blocked');
+    expect(ran).toEqual([]);
+    // The direct call was admitted, as on a surface no rule or hook gates: it loaded the tool.
+    expect(requests[1]).toContain('GitLog');
+  });
 });
 
 describe('just-in-time calls in the loop (#619)', () => {

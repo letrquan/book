@@ -14,6 +14,7 @@ import type {
 } from '../types/tools.js';
 import { estimateTokens } from '../context-report.js';
 import { createDebugLogger } from '../debug-log.js';
+import { hookMatcherNamesTool } from '../hook-matcher.js';
 import { resolveContextLimit } from '../models.js';
 import { canonicalToolName, TOOL_ALIASES, unwrapProviderPrefix } from './aliases.js';
 import {
@@ -252,24 +253,26 @@ function effectiveBudget(config: AgentConfig): number {
 
 /**
  * Whether a rule or hook the user wrote targets ToolSearch itself: a `permissions.deny` or `ask`
- * rule on it, or a PreToolUse or PostToolUse hook whose matcher names it. Whoever wrote one meant
- * to gate or to audit the deferred catalog, so such a surface admits no direct call (#619): the
- * model loads deferred tools through ToolSearch as before, and the rule or hook sees that call. A hook with no matcher runs
- * on every call, the direct one included, so it gates nothing; an allow rule gates nothing either.
- * The tool is read as a permission rule (`parseRule`) and a hook matcher (`matchesHookMatcher`)
- * read it: the text before any `(`, trimmed, compared exactly, which is the only spelling either
- * matches ToolSearch with. It depends on settings alone, so it is decided once per surface.
+ * rule on it, or a PreToolUse or PostToolUse hook whose matcher names it, alone or as one of its
+ * `A|B` alternatives. Whoever wrote one meant to gate or to audit the deferred catalog, so such a
+ * surface admits no direct call (#619): the model loads deferred tools through ToolSearch as
+ * before, and the rule or hook sees that call. A catch-all hook (no matcher, an empty one, or `*`)
+ * runs on every call, the direct one included, so it gates nothing; an allow rule gates nothing
+ * either. A rule's tool is read as `parseRule` reads it: the text before any `(`, trimmed, compared
+ * exactly. A hook's matcher is read by `hook-matcher.ts`, the reading the hook runner matches calls
+ * with, so the gate and the hook cannot disagree about which tools a hook names (#656). It depends
+ * on settings alone, so it is decided once per surface.
  */
 function toolSearchIsGated(config: AgentConfig): boolean {
-  const namesToolSearch = (text: string): boolean => {
-    const paren = text.indexOf('(');
-    return (paren === -1 ? text : text.slice(0, paren)).trim() === 'ToolSearch';
+  const ruleNamesToolSearch = (rule: string): boolean => {
+    const paren = rule.indexOf('(');
+    return (paren === -1 ? rule : rule.slice(0, paren)).trim() === 'ToolSearch';
   };
   const { permissions, hooks } = config.settings;
   return (
-    [...(permissions?.deny ?? []), ...(permissions?.ask ?? [])].some(namesToolSearch) ||
-    [...(hooks?.PreToolUse ?? []), ...(hooks?.PostToolUse ?? [])].some(
-      (entry) => Boolean(entry.matcher) && namesToolSearch(entry.matcher!),
+    [...(permissions?.deny ?? []), ...(permissions?.ask ?? [])].some(ruleNamesToolSearch) ||
+    [...(hooks?.PreToolUse ?? []), ...(hooks?.PostToolUse ?? [])].some((entry) =>
+      hookMatcherNamesTool(entry.matcher, 'ToolSearch'),
     )
   );
 }

@@ -675,6 +675,79 @@ describe('runDoctorCommand project-declared hooks', () => {
   });
 });
 
+describe('runDoctorCommand tool-hook matchers (#656)', () => {
+  it('flags a matcher alternative that names no tool', async () => {
+    writeUserSettings({
+      hooks: {
+        PreToolUse: [{ command: 'audit.sh', matcher: 'Edit|Wirte' }],
+        PostToolUse: [
+          { command: 'log.sh', matcher: 'apply_patch' },
+          { command: 'log.sh', matcher: 'bash(git *)' },
+        ],
+      },
+    });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('[!] PreToolUse matcher "Edit|Wirte": no tool is named "Wirte"');
+    expect(output).not.toContain('no tool is named "Edit"');
+    // An alias or a misspelt case is named with the tool it stands for, and a matcher that names
+    // nothing else never runs at all.
+    expect(output).toContain(
+      '[!] PostToolUse matcher "apply_patch": no tool is named "apply_patch" (did you mean "ApplyPatch"?); this hook never runs',
+    );
+    expect(output).toContain(
+      'no tool is named "bash" (did you mean "Bash"?); this hook never runs',
+    );
+  });
+
+  it('says nothing of a catch-all, registered tools, MCP tools or the compact events', async () => {
+    writeUserSettings({
+      hooks: {
+        PreToolUse: [
+          { command: 'a.sh', matcher: '*' },
+          { command: 'b.sh', matcher: 'Bash(git *)|Write' },
+          { command: 'c.sh', matcher: 'mcp__github__create_issue|ToolSearch' },
+          { command: 'd.sh', matcher: 'SessionSend|SessionHistorySearch|AgentSpawn' },
+        ],
+        PreCompact: [{ command: 'e.sh', matcher: 'manual' }],
+      },
+    });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('PreToolUse: 4');
+    expect(output).not.toContain('no tool is named');
+  });
+
+  it('neutralizes a matcher that tries to forge a report line', async () => {
+    writeUserSettings({
+      hooks: { PreToolUse: [{ command: 'a.sh', matcher: 'Nope\n  [x] all good' }] },
+    });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('no tool is named "Nope\\n  [x] all good"');
+    expect(output).not.toContain('\n  [x] all good');
+  });
+
+  it('knows the tools a session registers around its own handles', async () => {
+    const { SESSION_TOOL_NAMES } = await import('./doctor.js');
+    const { createSessionHistoryTools } = await import('../tools/session-history.js');
+    const { createSessionListTool } = await import('../tools/session-list.js');
+    const { createSessionSendTool } = await import('../tools/session-send.js');
+    // The factories only close over their handles, so a stand-in builds the real definitions.
+    const handle = {} as never;
+    const names = [
+      ...createSessionHistoryTools(handle),
+      createSessionListTool(handle),
+      createSessionSendTool(handle),
+    ].map((definition) => definition.name);
+
+    expect([...SESSION_TOOL_NAMES].sort()).toEqual(names.sort());
+  });
+});
+
 describe('runDoctorCommand memory health', () => {
   it('reports memory health line, counts, index lines, and last write', async () => {
     const { getProjectMemoryDir } = await import('../memory-store.js');

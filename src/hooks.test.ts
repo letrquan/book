@@ -458,6 +458,72 @@ describe('runHooks — matcher filtering', () => {
   });
 });
 
+describe('runHooks — `*` and `A|B` tool matchers (#656)', () => {
+  const blocking = (matcher: string): HookEntry => ({ matcher, command: 'exit 2', env: {} });
+  const patch = (path: string) => ({
+    toolName: 'ApplyPatch',
+    toolArgs: { patch: `*** Begin Patch\n*** Update File: ${path}\n@@\n-old\n+new\n*** End Patch` },
+  });
+  const ran = async (matcher: string, call: Record<string, unknown>, event = 'PreToolUse') =>
+    (await runHooks([blocking(matcher)], event as HookEvent, ctx({ event, ...call }))).length;
+
+  it.each(['*', ' * '])('runs a %j hook, and lets it block, for every tool', async (matcher) => {
+    for (const call of [
+      { toolName: 'Bash', toolArgs: { command: 'ls' } },
+      { toolName: 'GitLog', toolArgs: {} },
+      { toolName: 'ToolSearch', toolArgs: { query: 'select:GitLog' } },
+      { toolName: 'mcp__demo__lookup', toolArgs: { q: 'x' } },
+      patch('src/main.ts'),
+    ]) {
+      const results = await runHooks([blocking(matcher)], 'PreToolUse', ctx(call));
+      expect(
+        results.map((result) => result.action),
+        call.toolName,
+      ).toEqual(['block']);
+    }
+    expect(await ran(matcher, { toolName: 'Read', toolArgs: {} }, 'PostToolUse')).toBe(1);
+  });
+
+  it('runs an `A|B` hook for A and for B only', async () => {
+    expect(await ran('Edit|Write', { toolName: 'Edit', toolArgs: { file_path: 'a.ts' } })).toBe(1);
+    expect(await ran('Edit|Write', { toolName: 'Write', toolArgs: { file_path: 'a.ts' } })).toBe(1);
+    // ApplyPatch answers to Edit and Write matchers, as it does to each alone.
+    expect(await ran('Edit|Write', patch('src/main.ts'))).toBe(1);
+    expect(await ran('Edit|Write', { toolName: 'Bash', toolArgs: { command: 'ls' } })).toBe(0);
+    expect(await ran(' Read | GitLog ', { toolName: 'GitLog', toolArgs: {} })).toBe(1);
+  });
+
+  it("applies each alternative's own pattern", async () => {
+    const matcher = 'Bash(ls *)|Edit(src/**)';
+    expect(await ran(matcher, { toolName: 'Bash', toolArgs: { command: 'ls -la' } })).toBe(1);
+    expect(await ran(matcher, { toolName: 'Bash', toolArgs: { command: 'rm -rf x' } })).toBe(0);
+    expect(await ran(matcher, { toolName: 'Edit', toolArgs: { file_path: 'src/a.ts' } })).toBe(1);
+    expect(await ran(matcher, { toolName: 'Edit', toolArgs: { file_path: 'docs/a.md' } })).toBe(0);
+    expect(await ran(matcher, patch('src/main.ts'))).toBe(1);
+    expect(await ran(matcher, patch('docs/main.md'))).toBe(0);
+  });
+
+  it('keeps a `|` inside the parentheses part of the pattern', async () => {
+    const matcher = 'Bash(echo a|b)';
+    expect(await ran(matcher, { toolName: 'Bash', toolArgs: { command: 'echo a|b' } })).toBe(1);
+    expect(await ran(matcher, { toolName: 'Bash', toolArgs: { command: 'echo a' } })).toBe(0);
+  });
+
+  it('reads a pattern after `*` against any tool', async () => {
+    expect(await ran('*(src/**)', { toolName: 'Read', toolArgs: { file_path: 'src/a.ts' } })).toBe(
+      1,
+    );
+    expect(await ran('*(src/**)', { toolName: 'Read', toolArgs: { file_path: 'doc/a.md' } })).toBe(
+      0,
+    );
+    expect(await ran('*(src/**)', patch('src/main.ts'))).toBe(1);
+  });
+
+  it('runs a blank matcher for every tool, as an empty one does', async () => {
+    expect(await ran('   ', { toolName: 'GitLog', toolArgs: {} })).toBe(1);
+  });
+});
+
 describe('runHooks — env vars', () => {
   it('passes BOOK_WORKSPACE to the hook', async () => {
     const scriptPath = join(dir, 'test-hook.sh');

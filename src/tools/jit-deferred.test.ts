@@ -584,6 +584,10 @@ describe('a rule or hook on ToolSearch itself (#619, decision c)', () => {
     ['PreToolUse', 'ToolSearch(select:*)'],
     // An audit hook: it cannot block, but whoever wrote it means to see every load.
     ['PostToolUse', 'ToolSearch'],
+    // Claude Code's alternation names it as surely as the name alone (#656).
+    ['PreToolUse', 'ToolSearch|WebFetch'],
+    ['PostToolUse', 'WebFetch|ToolSearch(select:*)'],
+    ['PreToolUse', ' Edit | ToolSearch '],
   ] as const)('a %s hook matching %s restores it', async (event, matcher) => {
     const { surface } = setup({
       configure: (config) => {
@@ -596,7 +600,11 @@ describe('a rule or hook on ToolSearch itself (#619, decision c)', () => {
 
   it.each([
     ['no matcher, which runs on every call', undefined],
+    // A catch-all runs on the direct call itself, exactly as no matcher does (#656).
+    ['`*`', '*'],
+    ['` * `', ' * '],
     ['another tool', 'Bash'],
+    ['an alternation of other tools', 'Edit|Write'],
   ])('a PreToolUse hook with %s does not', (_name, matcher) => {
     const { surface } = setup({
       configure: (config) => {
@@ -609,6 +617,7 @@ describe('a rule or hook on ToolSearch itself (#619, decision c)', () => {
       },
     });
 
+    expect(surface.admitsDirectCalls?.()).toBe(true);
     expect(surface.admitDirect?.('GitLog')).toEqual({ loaded: true });
   });
 

@@ -33,6 +33,67 @@ function approvalHint(label: string, workspace: string, rest: string): string {
   return `${label} ${command}${note}`;
 }
 
+/**
+ * Tools a session registers beside the default registry, each around a handle doctor does not
+ * open: the session store, and the TUI's inbox. Listed by name; `doctor.test.ts` builds each from
+ * its factory, so a renamed tool cannot leave doctor flagging a hook on a tool that exists.
+ */
+export const SESSION_TOOL_NAMES: readonly string[] = [
+  'SessionHistorySearch',
+  'SessionHistoryRead',
+  'SessionList',
+  'SessionSend',
+];
+
+/**
+ * One line for each `PreToolUse`/`PostToolUse` matcher alternative that names no tool a session can
+ * register (#656). It matches no call, so its hook silently never runs for it: a typo, a legacy
+ * alias, another letter case, or a Claude Code regular expression (`Notebook.*`), which Book reads
+ * as a name. `*` names every tool, and an `mcp__` name belongs to a server doctor does not start,
+ * so neither is checked.
+ */
+async function hookMatcherWarnings(hooks: {
+  PreToolUse: HookEntry[];
+  PostToolUse: HookEntry[];
+}): Promise<string[]> {
+  const events = (['PreToolUse', 'PostToolUse'] as const).filter((event) =>
+    hooks[event].some((entry) => entry.matcher !== undefined),
+  );
+  if (events.length === 0) return [];
+  const { hookMatcherAlternatives } = await import('../hook-matcher.js');
+  const { createDefaultRegistry } = await import('../tools/registry.js');
+  const { TOOL_ALIASES } = await import('../tools/aliases.js');
+  const known = new Set([
+    ...createDefaultRegistry({ agents: true })
+      .getDefinitions()
+      .map((definition) => definition.name),
+    ...SESSION_TOOL_NAMES,
+  ]);
+  const byLowerCase = new Map([...known].map((name) => [name.toLowerCase(), name]));
+  const lines: string[] = [];
+  for (const event of events) {
+    for (const entry of hooks[event]) {
+      const alternatives = hookMatcherAlternatives(entry.matcher);
+      if (!alternatives) continue;
+      const unknown = alternatives
+        .map((alternative) => alternative.tool)
+        .filter((tool) => tool !== '*' && !tool.startsWith('mcp__') && !known.has(tool));
+      const neverRuns = unknown.length === alternatives.length;
+      for (const tool of new Set(unknown)) {
+        const suggestion = Object.hasOwn(TOOL_ALIASES, tool)
+          ? TOOL_ALIASES[tool]
+          : byLowerCase.get(tool.toLowerCase());
+        lines.push(
+          `  [!] ${event} matcher "${renderUntrustedText(entry.matcher!)}": no tool is named "${renderUntrustedText(tool)}"` +
+            (suggestion ? ` (did you mean "${suggestion}"?)` : '') +
+            (neverRuns ? '; this hook never runs' : ''),
+        );
+      }
+    }
+  }
+  return lines;
+}
+
 function formatRelativeTime(timestamp: number, now = Date.now()): string {
   const elapsedMs = Math.max(0, now - timestamp);
   const minutes = Math.floor(elapsedMs / 60_000);
@@ -592,6 +653,13 @@ export async function runDoctorCommand(
     if (entries.length > 0) console.log('  ' + event + ': ' + entries.length);
   }
   if (hookTotal === 0) console.log('  (none)');
+  const matcherWarnings = await hookMatcherWarnings(hooks);
+  for (const warning of matcherWarnings) console.log(warning);
+  if (matcherWarnings.length > 0) {
+    console.log(
+      '      A tool matcher names tools exactly: "*" is every tool, "A|B" either one, and "Tool(pattern)" one tool by its argument.',
+    );
+  }
 
   // Hook entries a repository declared are withheld until the user decides on
   // them, so doctor is where an unexplained "my project hook does nothing" is
