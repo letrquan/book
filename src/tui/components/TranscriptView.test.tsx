@@ -94,6 +94,7 @@ describe('TranscriptView', () => {
   afterEach(() => {
     setFrameSnapshotForTesting(null);
     writeClipboardMock.mockReset();
+    vi.useRealTimers();
   });
 
   it('clips to the latest rendered rows initially', () => {
@@ -259,32 +260,53 @@ describe('TranscriptView', () => {
   });
 
   it('moves a quick second notch further, gliding it in over frames', async () => {
-    const labels = Array.from({ length: 60 }, (_, index) => `R${index}`);
-    const app = render(view(labels, { height: 6 }));
-    const topRow = (frame: string | undefined) =>
-      Number(
-        frameLines(frame)
-          .find((line) => /^R\d+$/.test(line))
-          ?.slice(1),
-      );
-    const start = topRow(app.lastFrame());
+    // The glide is a chain of timers, one step a frame apart, and every step is drawn by React. On
+    // real timers the test raced that scheduling: a runner that paused between two steps ran both
+    // before React drew the first, the glide was drawn as one frame, and the test failed (#607).
+    // The fake clock runs a step, then draws it, so the frames do not depend on the machine.
+    vi.useFakeTimers();
+    const app = render(
+      view(
+        Array.from({ length: 60 }, (_, index) => `R${index}`),
+        { height: 6 },
+      ),
+    );
+    try {
+      const topRow = (frame: string | undefined) =>
+        Number(
+          frameLines(frame)
+            .find((line) => /^R\d+$/.test(line))
+            ?.slice(1),
+        );
+      // A stretch of the fake clock, drawn before the next: two steps never share a commit.
+      const tick = (ms = 1) =>
+        act(async () => {
+          vi.advanceTimersByTime(ms);
+        });
+      const start = topRow(app.lastFrame());
 
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    await flushFrame();
-    expect(topRow(app.lastFrame())).toBe(start - 3);
+      act(() => app.stdin.write('\x1b[<64;10;5M'));
+      await tick(0);
+      expect(topRow(app.lastFrame())).toBe(start - 3);
 
-    // A second notch 20 ms later is part of a run: it moves further than a lone notch.
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
-    const drawn = app.frames.length;
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    await vi.waitFor(() => expect(start - topRow(app.lastFrame())).toBeGreaterThan(6), {
-      timeout: 500,
-    });
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
-    const tops = [...new Set(app.frames.slice(drawn).map(topRow))];
-    // It lands over more than one frame, each one closer to where the run ends.
-    expect(tops.length).toBeGreaterThan(1);
-    expect(tops).toEqual([...tops].sort((left, right) => right - left));
+      // A second notch 20 ms later is part of a run: it moves further than a lone notch.
+      await tick(20);
+      act(() => app.stdin.write('\x1b[<64;10;5M'));
+      const drawn: number[] = [];
+      for (let ms = 0; ms < 100; ms++) {
+        await tick();
+        drawn.push(topRow(app.lastFrame()));
+      }
+
+      const tops = [...new Set(drawn)];
+      // It lands over more than one frame, each one closer to where the run ends...
+      expect(tops.length).toBeGreaterThan(1);
+      expect(tops).toEqual([...tops].sort((left, right) => right - left));
+      // ... and the run ends further than a lone notch would have taken it: two notches of three.
+      expect(start - tops[tops.length - 1]!).toBeGreaterThan(6);
+    } finally {
+      app.unmount();
+    }
   });
 
   it('toggles expandable tool summaries on a left click release', () => {
