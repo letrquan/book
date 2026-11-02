@@ -8,6 +8,12 @@ export type AgentTerminalReason =
   | 'provider_timeout'
   | 'stream_stall'
   | 'protocol_error'
+  /**
+   * The model's reply was a tool call written out as plain text (DeepSeek's DSML, V3's
+   * `<｜tool▁calls▁begin｜>` tokens, `<tool_call>` tags) rather than a structured one, and
+   * the one re-ask came back the same way (#667). No tool ran, so the run did not finish.
+   */
+  | 'malformed_tool_call'
   | 'context_overflow'
   | 'budget_exceeded'
   | 'budget_unverifiable'
@@ -122,8 +128,9 @@ export function terminalRecovery(outcome: AgentTerminalOutcome): TerminalRecover
       return 'park';
     default:
       // Everything else — budget_exceeded, blocked_by_policy, user_cancelled,
-      // max_turns, context_overflow, protocol_error — is a real end. Re-sending
-      // would reproduce it, and for the budget it would also spend past the cap.
+      // max_turns, context_overflow, protocol_error, malformed_tool_call — is a real
+      // end. Re-sending would reproduce it, and for the budget it would also spend
+      // past the cap. A tool call written out as text has had its one re-ask already.
       return 'none';
   }
 }

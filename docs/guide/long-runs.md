@@ -164,6 +164,21 @@ since it is all the user would otherwise have. A stream that was cut before it s
 an empty completion: it is a transport fault, and it keeps the single re-issue and the run-level
 budget, so a route that keeps dropping is still bounded.
 
+A reply that is a tool call written out as plain text is a fault of the route, not an answer. Some
+routes cannot parse a model's tool-call syntax and pass it on as the message text: DeepSeek's DSML
+(`<｜DSML｜ calls>` … `</｜DSML｜ calls>`), DeepSeek V3's `<｜tool▁calls▁begin｜>` tokens, and the
+`<tool_call>` tags of Qwen and Hermes models. Such a turn calls no tool, and it used to end the run
+`completed` on a call that never ran. When a turn with no tool calls **ends with** one of these
+blocks (a DSML or DeepSeek block may also be cut off before its closing tag), Book discards the
+reply and asks again once, with the same backoff and the same retry notice an empty completion gets
+(`reason: malformed_tool_call` on the `retry` record). That one re-ask has an allowance of its own
+and does not draw on `retry.streamReissueAttempts`. If the reply comes back the same way, the run
+ends `failed` with `malformed_tool_call`, and print mode exits 1. Neither reply is kept in the
+history or returned as the answer, so a resumed session does not read the raw call back as its own
+previous turn. Only a block at the end of the reply counts: prose that names a tag, a block inside
+a fenced code example, and a block that more text follows are answers. Book does not parse the
+markup into a call. Resume the session to try again, or switch to another route or model.
+
 A retryable status is classified by the error it quotes, not by the status alone. A router that
 wraps an upstream 4xx as a 503 with a cooldown
 (`503 [antigravity/<model>] [400]: {"status":"INVALID_ARGUMENT"}`) is answered once and the run

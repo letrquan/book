@@ -117,6 +117,7 @@ import { appendToolUseRecords, telemetryProviderOf } from '../tool-telemetry.js'
 import type { ToolUseRecord } from '../types/tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
+import { detectToolCallMarkup } from './tool-markup.js';
 import {
   permissionDeniedError,
   unattendedRefusalNotice,
@@ -1404,6 +1405,8 @@ export async function runAgentLoop(
       Math.min(config.retry.maxDelayMs, config.retry.baseDelayMs * 2 ** attempt);
     let contentFilterRetryTurn = -1;
     let upstreamErrorRetryTurn = -1;
+    /** The turn whose reply was tool-call markup and has had its one re-ask (#667). */
+    let toolMarkupRetryTurn = -1;
     let forcedCompactTurn: number | null = null;
     /** The size-inferred retry awaiting its verdict: which turn, how large, and how it was shrunk. */
     let sizeInferredRetry: { turn: number; tokens: number; compacted: boolean } | null = null;
@@ -2300,6 +2303,56 @@ export async function runAgentLoop(
         assistantContent = '';
       }
 
+      // A reply that is tool-call markup in plain text (#667). A route that cannot parse the
+      // model's tool-call syntax passes it on as `content` (DeepSeek's DSML, V3's tool-call
+      // tokens, Qwen's `<tool_call>`), so the turn calls no tool and used to end the run as
+      // completed on a call that never ran. It is re-asked once, like an empty completion, on an
+      // allowance of its own: the route's parser failed on one reply (once in about a thousand
+      // calls in #667), which another sample usually avoids, while a route that fails every time
+      // is not helped by more, so `streamReissueAttempts` is not spent on it. When the re-ask
+      // comes back the same way the run fails with a reason that names it. The markup is left
+      // out of the history and the answer: it is not what the model said, and a resumed session
+      // should not read its own raw call back as the previous turn.
+      const toolMarkup =
+        !streamError && streamDone && toolCalls.length === 0 && !signal?.aborted
+          ? detectToolCallMarkup(assistantContent)
+          : null;
+      if (toolMarkup) {
+        if (toolMarkupRetryTurn !== turn) {
+          toolMarkupRetryTurn = turn;
+          log.warn('provider answered with tool-call markup as text; re-issuing', {
+            turn,
+            format: toolMarkup.format,
+            closed: toolMarkup.closed,
+            contentLen: assistantContent.length,
+            responseId: responseMetadata?.responseId,
+          });
+          callbacks.onAttemptDiscarded?.();
+          // The same delay and retry label an empty completion's re-issue gets.
+          const delayMs = reissueBackoffMs(1);
+          callbacks.onRetry?.('reissue', 1, 1, delayMs, 'malformed_tool_call');
+          retryLabelShown = true;
+          await delay(delayMs, signal);
+          if (signal?.aborted) break;
+          retrySameTurn = true;
+          continue;
+        }
+        log.warn('provider answered with tool-call markup as text again; ending the run', {
+          turn,
+          format: toolMarkup.format,
+          closed: toolMarkup.closed,
+          contentLen: assistantContent.length,
+          responseId: responseMetadata?.responseId,
+        });
+        streamError =
+          `The model's reply was a tool call written out as plain text (${toolMarkup.label}), not a ` +
+          'structured tool call, so no tool ran. Book asked again and the reply came back the same ' +
+          "way. The route is probably failing to parse this model's tool calls: resume the session " +
+          'to try again, or switch to another route or model.';
+        streamErrorCode = 'malformed_tool_call';
+        assistantContent = '';
+      }
+
       if (heldText && !routerOverflowResponse && !upstreamErrorAsContent) {
         assistantOutputProduced = true;
         flushReasoning();
@@ -2618,11 +2671,18 @@ export async function runAgentLoop(
                                 message: streamError,
                                 providerCode: streamErrorCode,
                               })
-                            : createTerminalOutcome('failed', 'provider_error', {
-                                partialOutput: hasPartialOutput(),
-                                message: streamError,
-                                providerCode: streamErrorCode,
-                              });
+                            : // Its one re-ask is spent: a re-issue would send the same request again.
+                              streamErrorCode === 'malformed_tool_call'
+                              ? createTerminalOutcome('failed', 'malformed_tool_call', {
+                                  partialOutput: hasPartialOutput(),
+                                  message: streamError,
+                                  providerCode: streamErrorCode,
+                                })
+                              : createTerminalOutcome('failed', 'provider_error', {
+                                  partialOutput: hasPartialOutput(),
+                                  message: streamError,
+                                  providerCode: streamErrorCode,
+                                });
 
         // A transport fault is not a failure of the work. Everything needed to send
         // the turn again is already committed: the partial assistant message was
