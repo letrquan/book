@@ -938,7 +938,10 @@ async function run() {
         pty.write('\r');
         break;
       case 'type':
+        // The same gap as `send`: a key written right after the text can land in the same read,
+        // and Book takes the chunk as a paste, so a following `key ctrl-x` or `key enter` is lost.
         pty.write(rest);
+        await sleep(SEND_GAP_MS);
         break;
       case 'key': {
         for (const name of rest.split(/\s+/)) {
