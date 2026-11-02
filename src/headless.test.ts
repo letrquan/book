@@ -201,6 +201,54 @@ describe('runHeadless — text output', () => {
     expect(result.outcome).toMatchObject({ status: 'failed', reason: 'budget_unverifiable' });
   });
 
+  it('lets a USD budget run a model the settings declare a rate for (#663)', async () => {
+    const model = 'vendor/unknown';
+    const fetchMock = vi.fn(async () =>
+      sse([
+        textDelta('Hello!'),
+        `data: ${JSON.stringify({
+          id: 'response-1',
+          model,
+          choices: [{ delta: {}, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1_000_000, completion_tokens: 500_000, total_tokens: 1_500_000 },
+        })}\n\n`,
+      ]),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const base = freshConfig({ model });
+
+    const result = await runHeadless(
+      {
+        ...base,
+        settings: {
+          ...base.settings,
+          provider: { r1: { type: 'openai', models: { [model]: { pricing: { in: 1, out: 2 } } } } },
+        },
+      },
+      createDefaultRegistry(),
+      {
+        prompt: 'say hi',
+        inputFormat: 'text',
+        outputFormat: 'text',
+        history: [],
+        mode: 'bypassPermissions',
+        maxBudgetUsd: 5,
+        stdout: { write: () => true },
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(result.outcome).toMatchObject({ status: 'completed' });
+    expect(result.runs?.[0]?.accounting).toMatchObject({
+      costStatus: 'known',
+      unknownModels: [],
+      budgetUsd: 5,
+      budgetStatus: 'within',
+    });
+    // A million input tokens at $1/M and half a million output tokens at $2/M.
+    expect(result.runs?.[0]?.accounting?.inclusiveCostUsd).toBeCloseTo(2, 8);
+  });
+
   it('delivers shared agent events before text output encoding', async () => {
     const events: AgentEvent[] = [];
 

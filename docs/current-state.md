@@ -268,8 +268,11 @@ Work aimed at running an objective unattended for days rather than hours. All of
   in plan mode, where a refusal is a person or a policy, not a stall.
 - **Spend.** `--max-budget-usd` bounds the _objective_: enforced against inclusive cost so delegated
   work counts, carried across submitted prompts and across restarts, and fail-closed on a ceiling that
-  cannot be evaluated. A `usage` record is written for whatever a response reports, and again when a
-  root run ends and when the session ends — `dispose`, `/clear`, `/resume` — each after the outgoing
+  cannot be evaluated or a model with no price. A router or BYOK model is priced by
+  `provider.<id>.models.<model>.pricing` in the user settings (read from `~/.book/settings.json` and
+  `--settings` only; a workspace layer's price is ignored and reported by `book doctor`, #663). A
+  `usage` record is written for whatever a response reports, and again when a root run ends and when
+  the session ends — `dispose`, `/clear`, `/resume` — each after the outgoing
   runtime's managed children are stopped, so a managed child that answers after the root's last
   response, a host-performed `/review`, and a compaction's own model calls all reach the store. A
   flush writes one record for the whole unwritten delta, and every record names every model its root

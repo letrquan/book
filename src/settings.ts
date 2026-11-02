@@ -221,6 +221,31 @@ export type RetrySettings = z.infer<typeof retrySettingsSchema>;
 
 export const effortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 
+/**
+ * A rate in US dollars per million tokens: not negative, and finite (Zod 4's `number` already
+ * refuses `NaN` and the infinities, so only the sign needs saying).
+ */
+const ratePerMillionSchema = z.number().min(0);
+
+/**
+ * What a model costs, for a model the built-in price table does not list or lists wrongly (#663).
+ * `in` and `out` are required: a price with only one of them could not bill a request. A cache
+ * read or write with no rate of its own is priced at an upper bound, as for a table entry
+ * (`usageCostUsd`), so `cacheRead` and `cacheWrite` may be left out.
+ */
+const modelPricingSchema = z.object({
+  /** Input tokens, $ per million. */
+  in: ratePerMillionSchema,
+  /** Output tokens, $ per million. */
+  out: ratePerMillionSchema,
+  /** Input tokens served from the provider's cache, $ per million. */
+  cacheRead: ratePerMillionSchema.optional(),
+  /** Input tokens written to the provider's cache, $ per million. */
+  cacheWrite: ratePerMillionSchema.optional(),
+});
+
+export type ModelPricingSetting = z.infer<typeof modelPricingSchema>;
+
 export const providerModelSchema = z.object({
   label: z.string().optional(),
   contextWindow: unboundedInt().positive().optional(),
@@ -241,6 +266,14 @@ export const providerModelSchema = z.object({
   manual: z.boolean().optional(),
   /** Mutation-tool preference for this model; defaults to a family-level prior. */
   editFormat: z.enum(['patch', 'replace', 'whole']).optional(),
+  /**
+   * What this model costs, $ per million tokens. It prices a router or BYOK model the built-in
+   * table does not list, and wins over the table for one it does. It decides what `/cost` shows
+   * and what a USD budget enforces, so it is read only from the user-global file and
+   * `--settings`: a workspace layer's price is ignored and reported by `book doctor`
+   * (`USER_OR_FLAG_ONLY_SETTING_PATHS`). Keyed by the model id as sent to the provider.
+   */
+  pricing: modelPricingSchema.optional(),
   effort: z
     .union([
       z.literal(false),

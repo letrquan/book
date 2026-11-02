@@ -142,7 +142,10 @@ so both reports say the figure is counted from there — the persisted totals ar
 model it actually ran on and adding them to the headline figure, which names how many agents it
 includes; `/cost` appends the per-model breakdown once more than one model has run, and `/usage`
 prints the same alongside the turn, duration and tool-call counters.
-The USD figure is a local estimate from the price table. Each of the lead session's responses is
+The USD figure is a local estimate from the built-in price table, or from the rate you declare for
+the model in settings (`provider.<id>.models.<model>.pricing`, see
+[Model pricing](configuration.md#model-pricing)); a model with neither shows its tokens and no
+dollars, and says where the rate goes. Each of the lead session's responses is
 priced at the model that served it, and at the rate for that request's size where a model charges
 by prompt length (`claude-haiku-5-5` charges more above 100,000 prompt tokens); the per-model
 breakdown still lists the lead's tokens under the active model, so a mid-session `/model` switch is

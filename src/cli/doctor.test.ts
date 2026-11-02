@@ -1254,3 +1254,60 @@ describe('runDoctorCommand messaging (#620)', () => {
     );
   });
 });
+
+describe('runDoctorCommand model pricing (#663)', () => {
+  const model = 'cmc/deepseek/deepseek-v4.1-flash';
+  const provider = (pricing?: { in: number; out: number }) => ({
+    model: `r1/${model}`,
+    provider: {
+      r1: {
+        type: 'openai',
+        baseURL: 'https://router.example/v1',
+        apiKey: 'k',
+        models: { [model]: pricing ? { pricing } : {} },
+      },
+    },
+  });
+
+  it('says the active model is priced by the user settings', async () => {
+    writeUserSettings(provider({ in: 0.14, out: 0.28 }));
+    const output = await doctorOutput();
+    expect(output).toContain('Model pricing:');
+    expect(output).toContain(`  ${model}: $0.14/M in, $0.28/M out (your settings)`);
+    expect(output).toContain('  Priced in your settings: 1 model');
+    expect(output).not.toContain('Ignored from');
+  });
+
+  it('says a model with no rate is unknown, and where the rate goes', async () => {
+    writeUserSettings(provider());
+    expect(await doctorOutput()).toContain(
+      `  ${model}: unknown, so a USD budget (--max-budget-usd) refuses it; set provider.<id>.models.<model>.pricing in ~/.book/settings.json to price it`,
+    );
+  });
+
+  it('reports a built-in rate as the table', async () => {
+    writeUserSettings({ model: 'claude-sonnet-5' });
+    expect(await doctorOutput()).toContain(
+      '  claude-sonnet-5: $2/M in, $10/M out (built-in table)',
+    );
+  });
+
+  it('reports a rate a repository set, under its own heading and not under Messaging', async () => {
+    writeUserSettings(provider());
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    const project = join(workspace, '.book', 'settings.json');
+    writeFileSync(
+      project,
+      JSON.stringify({ provider: { r1: { models: { [model]: { pricing: { in: 0, out: 0 } } } } } }),
+    );
+    const output = await doctorOutput();
+    expect(output).toContain(
+      `  Ignored from ${project}: provider.r1.models.${model}.pricing={"in":0,"out":0} — a price is read only from ~/.book/settings.json or --settings`,
+    );
+    expect(output).toContain(`  ${model}: unknown, so a USD budget`);
+    const pricing = output.indexOf('Model pricing:');
+    const messaging = output.indexOf('Messaging:');
+    expect(output.indexOf('Ignored from')).toBeGreaterThan(pricing);
+    expect(output.indexOf('Ignored from')).toBeLessThan(messaging);
+  });
+});

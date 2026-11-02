@@ -34,12 +34,14 @@ import { promptCurrentDate } from '../agent/prompt-determinism.js';
 import {
   costReport,
   failureTotal,
+  pricingOverridesFromProviders,
   resolveModelPricing,
   sessionTotals,
   usageCostForModel,
   usageReport,
   type BillScope,
   type DelegatedUsage,
+  type PricingOverrides,
 } from '../pricing.js';
 import { buildContextBreakdown, buildContextReport, sourceLabel } from '../context-report.js';
 import { resolveContextWindow } from '../models.js';
@@ -631,9 +633,15 @@ function billScope(context: BuiltinCommandContext): BillScope {
   return { sinceResume: context.sessionUsageSinceResume === true };
 }
 
+/** The rates the user's settings declare for models the built-in table does not list (#663). */
+function billPricing(context: BuiltinCommandContext): PricingOverrides | undefined {
+  return pricingOverridesFromProviders(context.runtimeConfig.settings.provider);
+}
+
 function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffect {
   const usage = billableUsage(context);
   const delegated = context.delegatedUsage ?? [];
+  const pricing = billPricing(context);
   // The sheet is read as the session's spend, so it carries the same total the
   // text beside it does: the lead plus every delegated agent (#370).
   const totals = sessionTotals(
@@ -641,11 +649,14 @@ function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffec
     usage,
     delegated,
     billableLeadCost(context),
+    pricing,
   );
   // The same rate resolution as /cost and the /usage text, so a dated or aliased model id
   // prices here too.
-  const priced = usage ? usageCostForModel(context.runtimeConfig.model, usage, 'pool') : undefined;
-  const rate = priced?.rate ?? resolveModelPricing(context.runtimeConfig.model)?.rate;
+  const priced = usage
+    ? usageCostForModel(context.runtimeConfig.model, usage, 'pool', pricing)
+    : undefined;
+  const rate = priced?.rate ?? resolveModelPricing(context.runtimeConfig.model, pricing)?.rate;
   const estimatedCostUsd = totals.usd ?? undefined;
   const toolCallStats =
     context.toolCallStats && context.toolCallStats.size > 0
@@ -673,6 +684,7 @@ function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffec
       delegated,
       billScope(context),
       billableLeadCost(context),
+      pricing,
     ),
     sheet: { title: 'Usage' },
     display: {
@@ -1044,6 +1056,7 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
         context.delegatedUsage ?? [],
         billScope(context),
         billableLeadCost(context),
+        billPricing(context),
       ),
       sheet: { title: 'Cost' },
     }),

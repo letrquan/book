@@ -342,6 +342,43 @@ describe('built-in command contract', () => {
     );
   });
 
+  it('prices /cost and /usage for a router model from the rate the settings declare (#663)', () => {
+    const model = 'cmc/deepseek/deepseek-v4.1-flash';
+    const base = defaultConfig({ model });
+    const priced = defaultConfig({
+      model,
+      settings: {
+        ...base.settings,
+        provider: {
+          r1: { type: 'openai', models: { [model]: { pricing: { in: 0.14, out: 0.28 } } } },
+        },
+      },
+    });
+    const usage = { promptTokens: 1_000_000, completionTokens: 1_000_000, totalTokens: 2_000_000 };
+    const registry = createBuiltinCommandRegistry();
+
+    // Without a rate the model has no dollars, and the report says where one goes.
+    const unpriced = registry.execute('cost', '', { ...context(), runtimeConfig: base, usage });
+    expect(unpriced).toMatchObject({
+      content: expect.stringContaining('provider.<id>.models.<model>.pricing'),
+    });
+
+    expect(
+      registry.execute('cost', '', { ...context(), runtimeConfig: priced, usage }),
+    ).toMatchObject({
+      content: expect.stringContaining('$0.4200 estimated'),
+    });
+    expect(registry.execute('usage', '', { ...context(), runtimeConfig: priced, usage })).toEqual(
+      expect.objectContaining({
+        display: expect.objectContaining({
+          kind: 'usage',
+          rate: { inputPerMillion: 0.14, outputPerMillion: 0.28 },
+          estimatedCostUsd: expect.closeTo(0.42, 8),
+        }),
+      }),
+    );
+  });
+
   it('prices /usage for a dated model id and counts its cached tokens', () => {
     const registry = createBuiltinCommandRegistry();
     const effect = registry.execute('usage', '', {

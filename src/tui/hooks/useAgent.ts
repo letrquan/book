@@ -32,7 +32,12 @@ import type {
   PlanRecordData,
 } from '../../types/sessions.js';
 import { compactionGate, usageAtGate, usagePressureTokens } from '../../agent/compact.js';
-import { addUsage, estimateUsageCost, type DelegatedUsage } from '../../pricing.js';
+import {
+  addUsage,
+  estimateUsageCost,
+  pricingOverridesFromProviders,
+  type DelegatedUsage,
+} from '../../pricing.js';
 import { maskAtGate } from '../../agent/tool-output-masking.js';
 import { resolveContextLimit } from '../../models.js';
 import {
@@ -1078,7 +1083,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const recordCompactionUsage = useCallback((u: Usage, model?: string) => {
     setSessionUsage((current) => addUsage(current, u));
     const compactModel = model ?? resolveCompactModelConfig(liveConfigRef.current).model;
-    const quote = estimateUsageCost(compactModel, u, 'request');
+    const quote = estimateUsageCost(
+      compactModel,
+      u,
+      'request',
+      pricingOverridesFromProviders(liveConfigRef.current.settings.provider),
+    );
     setSessionCostUsd((current) => {
       if (current === null) return null;
       return quote.status === 'known' ? current + quote.costUsd : null;
@@ -1658,15 +1668,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             lastHostCompactAttemptRef.current = null;
             setUsage(u);
             setSessionUsage((current) => addUsage(current, u));
+            // The rates the user's settings declare for models the table does not list (#663).
+            const pricing = pricingOverridesFromProviders(liveConfigRef.current.settings.provider);
             const responseQuote = response?.responseModel
-              ? estimateUsageCost(response.responseModel, u, 'request')
+              ? estimateUsageCost(response.responseModel, u, 'request', pricing)
               : undefined;
             const quote =
               responseQuote?.status === 'known'
                 ? responseQuote
                 : response?.requestedModel
-                  ? estimateUsageCost(response.requestedModel, u, 'request')
-                  : estimateUsageCost(liveConfigRef.current.model, u, 'request');
+                  ? estimateUsageCost(response.requestedModel, u, 'request', pricing)
+                  : estimateUsageCost(liveConfigRef.current.model, u, 'request', pricing);
             setSessionCostUsd((current) => {
               if (current === null) return null;
               return quote.status === 'known' ? current + quote.costUsd : null;

@@ -318,6 +318,9 @@ export function formatIgnoredWorkspaceSandboxKey(entry: IgnoredWorkspaceSandboxK
   } more characters)`;
 }
 
+/** A path segment that stands for every key at its level: a provider id or a model id. */
+const ANY_KEY = '*';
+
 /**
  * Settings read only from the user-global layer and an explicit `--settings` file, at any value.
  *
@@ -332,10 +335,36 @@ const USER_OR_FLAG_ONLY_SETTING_PATHS: ReadonlyArray<readonly string[]> = [
   ['messaging', 'enabled'],
   // How long a held message waits for approval: a longer wait keeps a peer's request around.
   ['messaging', 'approvalTimeout'],
+  // What a model costs decides what `/cost` shows and what a USD budget enforces, so a repository
+  // that priced its own model at zero would never trip a budget (#663).
+  ['provider', ANY_KEY, 'models', ANY_KEY, 'pricing'],
 ];
 
 /** One user-or-flag-only key a workspace layer set, and the value it wrote. */
-export type IgnoredWorkspaceUserOnlyKey = IgnoredWorkspaceSandboxKey;
+export interface IgnoredWorkspaceUserOnlyKey extends IgnoredWorkspaceSandboxKey {
+  /**
+   * The key as a path, set for a key under a wildcard (`provider.<id>.models.<model>.pricing`).
+   * A model id such as `deepseek-v4.1-flash` has a dot in it, so the dotted `key` cannot be split
+   * back into the path it was read from.
+   */
+  path?: readonly string[];
+}
+
+/** Every place in a settings document a path names, with each `ANY_KEY` standing for the keys present. */
+function readUserOnlyPaths(
+  node: unknown,
+  pattern: readonly string[],
+  at: readonly string[] = [],
+): Array<{ path: string[]; value: unknown }> {
+  if (pattern.length === 0) return node === undefined ? [] : [{ path: [...at], value: node }];
+  if (typeof node !== 'object' || node === null || Array.isArray(node)) return [];
+  const record = node as Record<string, unknown>;
+  const [head, ...rest] = pattern;
+  const keys = head === ANY_KEY ? Object.keys(record) : [head];
+  return keys.flatMap((key) =>
+    Object.hasOwn(record, key) ? readUserOnlyPaths(record[key], rest, [...at, key]) : [],
+  );
+}
 
 /**
  * The user-or-flag-only keys a workspace layer declares, with the values it wrote. Pure, and the
@@ -344,18 +373,34 @@ export type IgnoredWorkspaceUserOnlyKey = IgnoredWorkspaceSandboxKey;
 export function ignoredWorkspaceUserOnlyKeys(settings: unknown): IgnoredWorkspaceUserOnlyKey[] {
   if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) return [];
   const ignored: IgnoredWorkspaceUserOnlyKey[] = [];
-  for (const path of USER_OR_FLAG_ONLY_SETTING_PATHS) {
-    const value = readPath(settings as Record<string, unknown>, path);
-    if (value !== undefined) ignored.push({ key: path.join('.'), value });
+  for (const pattern of USER_OR_FLAG_ONLY_SETTING_PATHS) {
+    for (const { path, value } of readUserOnlyPaths(settings, pattern)) {
+      ignored.push(
+        pattern.includes(ANY_KEY)
+          ? { key: path.join('.'), value, path }
+          : { key: path.join('.'), value },
+      );
+    }
   }
   return ignored;
 }
 
-/** Whether a dotted settings path is, or holds, a user-or-flag-only key. */
+/**
+ * Whether a dotted settings path is, or holds, a user-or-flag-only key. A key under a wildcard is
+ * reached only by a path that gets as far as the key itself (`provider.r1.models.m.pricing`, or
+ * inside it): `provider` or `provider.r1` can be rewritten or removed without setting a price.
+ */
 export function isUserOrFlagOnlySettingPath(path: string): boolean {
-  return USER_OR_FLAG_ONLY_SETTING_PATHS.some((parts) => {
-    const key = parts.join('.');
-    return key === path || key.startsWith(`${path}.`);
+  const segments = path.split('.');
+  return USER_OR_FLAG_ONLY_SETTING_PATHS.some((pattern) => {
+    if (!pattern.includes(ANY_KEY)) {
+      const key = pattern.join('.');
+      return key === path || key.startsWith(`${path}.`);
+    }
+    return (
+      segments.length >= pattern.length &&
+      pattern.every((part, index) => part === ANY_KEY || part === segments[index])
+    );
   });
 }
 
@@ -386,7 +431,7 @@ function sanitizeLayer(
   // Nor may a workspace file widen the sandbox it is supposed to be confined by.
   applyIgnoredWorkspaceSandboxKeys(sanitized);
   for (const entry of ignoredWorkspaceUserOnlyKeys(sanitized)) {
-    deletePath(sanitized as Record<string, unknown>, entry.key.split('.'));
+    deletePath(sanitized as Record<string, unknown>, entry.path ?? entry.key.split('.'));
   }
   stripPaths(sanitized, WORKSPACE_FORBIDDEN_PATHS);
   return sanitized;
@@ -662,9 +707,18 @@ export function resolveSettingsWithProviderGate(
     { providers: user?.provider },
     { providers: override?.provider },
   ]);
+  // A provider only a workspace declares reaches `provider` through the partition below, not
+  // through the merge, so what `sanitizeLayer` removes from a workspace layer (a price, among
+  // other things) has to be removed from what the partition sees as well. Approving the
+  // provider approves where its requests go; it does not approve the repository's idea of what
+  // they cost (#663).
+  const workspaceProviders = (layer: BookSettings | null): BookSettings['provider'] | undefined =>
+    layer?.provider
+      ? sanitizeLayer({ provider: layer.provider }, 'repository').provider
+      : undefined;
   const workspaceProviderLayers: ProviderLayer[] = [
-    { path: projectPath, providers: project?.provider },
-    { path: localPath, providers: local?.provider },
+    { path: projectPath, providers: workspaceProviders(project) },
+    { path: localPath, providers: workspaceProviders(local) },
   ];
   // A workspace layer reaches `provider` only for ids a trusted layer defines, and only with
   // `models` and `type`. The rest is held back for the partition below.

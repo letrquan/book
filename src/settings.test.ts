@@ -214,6 +214,58 @@ describe('settings schema rejection', () => {
     ]);
   });
 
+  describe('provider.<id>.models.<model>.pricing (#663)', () => {
+    const document = (pricing: unknown) => ({
+      provider: { r1: { models: { 'cmc/deepseek/deepseek-v4.1-flash': { pricing } } } },
+    });
+    const pricingIssues = (pricing: unknown) => issuePaths(document(pricing));
+    const at = 'provider.r1.models.cmc/deepseek/deepseek-v4.1-flash.pricing';
+
+    it('accepts an input and output rate, with optional cache rates', () => {
+      expect(pricingIssues({ in: 0.14, out: 0.28 })).toEqual([]);
+      expect(pricingIssues({ in: 3, out: 15, cacheRead: 0.3, cacheWrite: 3.75 })).toEqual([]);
+    });
+
+    it('accepts a free model: zero is a price, a local model costs nothing', () => {
+      expect(pricingIssues({ in: 0, out: 0, cacheRead: 0, cacheWrite: 0 })).toEqual([]);
+    });
+
+    it('rejects a negative rate, naming the field', () => {
+      expect(pricingIssues({ in: -1, out: 1 })).toEqual([`${at}.in`]);
+      expect(pricingIssues({ in: 1, out: -0.01 })).toEqual([`${at}.out`]);
+      expect(pricingIssues({ in: 1, out: 1, cacheRead: -1 })).toEqual([`${at}.cacheRead`]);
+      expect(pricingIssues({ in: 1, out: 1, cacheWrite: -1 })).toEqual([`${at}.cacheWrite`]);
+    });
+
+    it('rejects a rate that is not a number', () => {
+      expect(pricingIssues({ in: '0.14', out: 1 })).toEqual([`${at}.in`]);
+      expect(pricingIssues({ in: 1, out: null })).toEqual([`${at}.out`]);
+      expect(pricingIssues({ in: 1, out: true })).toEqual([`${at}.out`]);
+      expect(pricingIssues({ in: 1, out: 1, cacheRead: 'cheap' })).toEqual([`${at}.cacheRead`]);
+    });
+
+    it('rejects a rate that is not finite, which JSON can still spell as 1e999', () => {
+      const huge = JSON.parse('{"in": 1e999, "out": 1}') as unknown;
+      expect(pricingIssues(huge)).toEqual([`${at}.in`]);
+      expect(pricingIssues({ in: Number.NaN, out: 1 })).toEqual([`${at}.in`]);
+      expect(pricingIssues({ in: 1, out: Number.POSITIVE_INFINITY })).toEqual([`${at}.out`]);
+    });
+
+    it('requires both the input and the output rate', () => {
+      expect(pricingIssues({ in: 1 })).toEqual([`${at}.out`]);
+      expect(pricingIssues({ out: 1 })).toEqual([`${at}.in`]);
+      expect(pricingIssues({})).toEqual([`${at}.in`, `${at}.out`]);
+      expect(pricingIssues('free')).toEqual([at]);
+    });
+
+    it('leaves a model without a price exactly as it was', () => {
+      const parsed = bookSettingsSchema.parse({
+        provider: { r1: { models: { m: { label: 'M' } } } },
+      });
+      expect(parsed.provider.r1.models.m).toEqual({ label: 'M' });
+    });
+  });
+
   it('keeps a legacy .bookrc.json baseUrl exactly as written', () => {
     expect(legacyConfigSchema.parse({ baseUrl: ' http://x.com/v1 ' }).baseUrl).toBe(
       ' http://x.com/v1 ',

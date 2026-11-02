@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   addUsage,
   usageReport,
@@ -6,13 +9,23 @@ import {
   estimateUsageCost,
   hasKnownPricing,
   modelBreakdownLines,
+  pricingOverridesFromProviders,
+  PRICING_SETTING_HINT,
   promptSizeTokens,
   resolveModelPricing,
+  sessionTotals,
   trafficTokens,
   usageCostUsd,
   PRICING,
   type ModelPricing,
 } from './pricing.js';
+import { RunAccounting } from './session/run-accounting.js';
+import { ignoredWorkspaceUserOnlyKeys, resolveSettings } from './settings-loader.js';
+import {
+  persistWorkspaceProviderChoice,
+  workspaceProviderFingerprint,
+} from './provider-approvals.js';
+import type { AgentRunContext } from './types/runs.js';
 
 const NO_CACHE = { promptTokens: 1_000, completionTokens: 500, totalTokens: 1_500 };
 
@@ -251,6 +264,392 @@ describe('pricing overrides', () => {
       'claude-sonnet-5': { in: 30, out: 150 },
     });
     expect(quote.costUsd).toBeCloseTo(0.105, 6);
+  });
+});
+
+/** The model a daily-job run reaches through 9router: no entry in the built-in table. */
+const ROUTER_MODEL = 'cmc/deepseek/deepseek-v4.1-flash';
+const ROUTER_PROVIDERS = {
+  r1: { models: { [ROUTER_MODEL]: { pricing: { in: 0.14, out: 0.28 } } } },
+};
+
+describe('pricing from settings (#663)', () => {
+  describe('pricingOverridesFromProviders', () => {
+    it('keys a rate by the model id a request carries, not by <provider>/<model>', () => {
+      expect(pricingOverridesFromProviders(ROUTER_PROVIDERS)).toEqual({
+        [ROUTER_MODEL]: { in: 0.14, out: 0.28 },
+      });
+    });
+
+    it('reads the settings cacheWrite as the table cacheCreation', () => {
+      const table = pricingOverridesFromProviders({
+        r1: { models: { m: { pricing: { in: 3, out: 15, cacheRead: 0.3, cacheWrite: 3.75 } } } },
+      });
+      expect(table?.m).toEqual({ in: 3, out: 15, cacheRead: 0.3, cacheCreation: 3.75 });
+    });
+
+    it('is undefined when no model declares a rate, so callers keep the table-only path', () => {
+      expect(pricingOverridesFromProviders(undefined)).toBeUndefined();
+      expect(pricingOverridesFromProviders({})).toBeUndefined();
+      expect(pricingOverridesFromProviders({ r1: { models: { m: {} } } })).toBeUndefined();
+      expect(pricingOverridesFromProviders({ r1: {} })).toBeUndefined();
+    });
+
+    it('keeps the dearer rate when two providers price one model id differently', () => {
+      const cheapFirst = pricingOverridesFromProviders({
+        a: { models: { m: { pricing: { in: 1, out: 2 } } } },
+        b: { models: { m: { pricing: { in: 3, out: 4 } } } },
+      });
+      const dearFirst = pricingOverridesFromProviders({
+        b: { models: { m: { pricing: { in: 3, out: 4 } } } },
+        a: { models: { m: { pricing: { in: 1, out: 2 } } } },
+      });
+      // The same answer whichever key comes first in the file.
+      expect(cheapFirst?.m).toEqual({ in: 3, out: 4 });
+      expect(dearFirst?.m).toEqual({ in: 3, out: 4 });
+    });
+
+    it('does not let a model named __proto__ reach the table prototype', () => {
+      const providers = JSON.parse(
+        '{"r1":{"models":{"__proto__":{"pricing":{"in":9,"out":9}},"ok":{"pricing":{"in":1,"out":1}}}}}',
+      ) as Parameters<typeof pricingOverridesFromProviders>[0];
+      const table = pricingOverridesFromProviders(providers);
+      expect(Object.keys(table ?? {})).toEqual(['ok']);
+      expect(Object.getPrototypeOf(table)).toBe(Object.prototype);
+    });
+  });
+
+  describe('resolution', () => {
+    it('leaves a router model unknown until a rate is declared', () => {
+      expect(resolveModelPricing(ROUTER_MODEL)).toBeUndefined();
+      expect(estimateUsageCost(ROUTER_MODEL, NO_CACHE, 'request')).toMatchObject({
+        status: 'unknown',
+        costUsd: null,
+      });
+    });
+
+    it('makes the cost known once the settings declare a rate', () => {
+      const quote = estimateUsageCost(
+        ROUTER_MODEL,
+        NO_CACHE,
+        'request',
+        pricingOverridesFromProviders(ROUTER_PROVIDERS),
+      );
+      expect(quote).toMatchObject({ status: 'known', model: ROUTER_MODEL });
+      // 1,000 in at $0.14/M plus 500 out at $0.28/M.
+      expect(quote.costUsd).toBeCloseTo(0.00028, 8);
+    });
+
+    it('still prices a table model from the table when no rate is declared for it', () => {
+      const overrides = pricingOverridesFromProviders(ROUTER_PROVIDERS);
+      expect(estimateUsageCost('claude-sonnet-5', NO_CACHE, 'request', overrides)).toEqual(
+        estimateUsageCost('claude-sonnet-5', NO_CACHE, 'request'),
+      );
+      expect(resolveModelPricing('claude-sonnet-5', overrides)?.rate).toBe(
+        PRICING['claude-sonnet-5'],
+      );
+    });
+
+    it('prefers a declared rate to the table entry of the same id', () => {
+      const overrides = pricingOverridesFromProviders({
+        corp: { models: { 'claude-sonnet-5': { pricing: { in: 0.5, out: 1 } } } },
+      });
+      expect(resolveModelPricing('claude-sonnet-5', overrides)?.rate).toEqual({ in: 0.5, out: 1 });
+    });
+
+    it('prices a dated id the router returns from the declared id', () => {
+      const overrides = pricingOverridesFromProviders(ROUTER_PROVIDERS);
+      expect(hasKnownPricing(`${ROUTER_MODEL}-20261101`, overrides)).toBe(true);
+      // The sibling-name guard of the table holds for a declared id too.
+      expect(hasKnownPricing(`${ROUTER_MODEL}-mini`, overrides)).toBe(false);
+    });
+
+    it('prices an id such as constructor as unknown instead of reading Object.prototype', () => {
+      expect(resolveModelPricing('constructor')).toBeUndefined();
+      expect(resolveModelPricing('toString', {})).toBeUndefined();
+      expect(hasKnownPricing('hasOwnProperty')).toBe(false);
+    });
+  });
+
+  describe('the USD budget', () => {
+    const root: AgentRunContext = {
+      runId: 'root',
+      rootRunId: 'root',
+      sessionId: 'session',
+      source: 'headless',
+      startedAt: 1,
+    };
+    const metadata = {
+      provider: 'openai-compatible',
+      requestedModel: ROUTER_MODEL,
+      responseModel: ROUTER_MODEL,
+      responseId: 'response-1',
+    };
+    const million = { promptTokens: 1_000_000, completionTokens: 0, totalTokens: 1_000_000 };
+
+    it('refuses a router model with no rate, and says how to price it', () => {
+      const accounting = new RunAccounting();
+      accounting.startRoot(root, 1);
+      const check = accounting.checkBeforeModelCall('root', ROUTER_MODEL);
+      expect(check).toMatchObject({ allowed: false, status: 'unknown' });
+      expect(check.message).toContain(`pricing is unknown for ${ROUTER_MODEL}`);
+      expect(check.message).toContain(PRICING_SETTING_HINT);
+    });
+
+    it('lets a router model with a declared rate run, and counts its spend against the cap', () => {
+      const accounting = new RunAccounting();
+      accounting.usePricing(pricingOverridesFromProviders(ROUTER_PROVIDERS));
+      accounting.startRoot(root, 0.2);
+
+      expect(accounting.checkBeforeModelCall('root', ROUTER_MODEL)).toMatchObject({
+        allowed: true,
+        status: 'within',
+      });
+      // A million input tokens at $0.14/M.
+      accounting.record(root, million, metadata);
+      expect(accounting.snapshotRoot('root')).toMatchObject({
+        costStatus: 'known',
+        unknownModels: [],
+        budgetStatus: 'within',
+      });
+      expect(accounting.snapshotRoot('root').inclusiveCostUsd).toBeCloseTo(0.14, 8);
+
+      accounting.record(root, million, { ...metadata, responseId: 'response-2' });
+      expect(accounting.snapshotRoot('root').inclusiveCostUsd).toBeCloseTo(0.28, 8);
+      expect(accounting.checkBeforeModelCall('root', ROUTER_MODEL)).toMatchObject({
+        allowed: false,
+        status: 'exceeded',
+      });
+    });
+
+    it('prices a router model the endpoint reported under another name from the requested one', () => {
+      const accounting = new RunAccounting();
+      accounting.usePricing(pricingOverridesFromProviders(ROUTER_PROVIDERS));
+      accounting.startRoot(root, 1);
+      accounting.record(root, million, { ...metadata, responseModel: 'deepseek-flash-routed' });
+      expect(accounting.snapshotRoot('root')).toMatchObject({ costStatus: 'known' });
+      expect(accounting.snapshotRoot('root').inclusiveCostUsd).toBeCloseTo(0.14, 8);
+    });
+
+    it('stops pricing a model once the rates are withdrawn', () => {
+      const accounting = new RunAccounting();
+      accounting.usePricing(pricingOverridesFromProviders(ROUTER_PROVIDERS));
+      accounting.startRoot(root, 1);
+      accounting.usePricing(undefined);
+      expect(accounting.checkBeforeModelCall('root', ROUTER_MODEL)).toMatchObject({
+        allowed: false,
+        status: 'unknown',
+      });
+    });
+
+    it('names the declared rate when asked for the dearest model', () => {
+      const accounting = new RunAccounting();
+      accounting.usePricing(
+        pricingOverridesFromProviders({
+          r1: {
+            models: {
+              dear: { pricing: { in: 50, out: 50 } },
+              cheap: { pricing: { in: 1, out: 1 } },
+            },
+          },
+        }),
+      );
+      accounting.startRoot(root, 100);
+      accounting.record(root, million, {
+        ...metadata,
+        requestedModel: 'cheap',
+        responseModel: 'cheap',
+      });
+      accounting.record(root, million, {
+        ...metadata,
+        requestedModel: 'dear',
+        responseModel: 'dear',
+        responseId: 'r2',
+      });
+      expect(accounting.dearestModel('root')).toBe('dear');
+    });
+  });
+
+  describe('/cost and /usage', () => {
+    const usage = { promptTokens: 1_000_000, completionTokens: 1_000_000, totalTokens: 2_000_000 };
+    const overrides = pricingOverridesFromProviders(ROUTER_PROVIDERS);
+
+    it('shows dollars for a router model with a declared rate', () => {
+      const report = costReport(ROUTER_MODEL, usage, [], {}, undefined, overrides);
+      // $0.14 in plus $0.28 out.
+      expect(report).toContain('$0.4200 estimated');
+      expect(report).not.toContain('no price');
+    });
+
+    it('tells a reader with an unpriced model where the rate goes', () => {
+      expect(costReport(ROUTER_MODEL, usage)).toContain(
+        `${ROUTER_MODEL} has no price, so no dollar estimate (${PRICING_SETTING_HINT})`,
+      );
+      expect(
+        usageReport(ROUTER_MODEL, usage, { currentTurn: 1, messageCount: 2, turnDurationMs: 0 }),
+      ).toContain(
+        `pricing unknown for "${ROUTER_MODEL}"; tokens are counted, dollars are not (${PRICING_SETTING_HINT})`,
+      );
+    });
+
+    it('shows the declared rate on the /usage rate line', () => {
+      const report = usageReport(
+        ROUTER_MODEL,
+        usage,
+        { currentTurn: 1, messageCount: 2, turnDurationMs: 0 },
+        undefined,
+        [],
+        {},
+        undefined,
+        overrides,
+      );
+      expect(report).toContain('Est. cost: $0.4200  (local estimate — $0.14/M in, $0.28/M out)');
+    });
+
+    it('prices a delegated agent on a declared model, and the whole session with it', () => {
+      const delegated = [{ label: 'explorer', model: ROUTER_MODEL, usage }];
+      expect(sessionTotals('claude-sonnet-5', null, delegated).usd).toBeNull();
+      const totals = sessionTotals('claude-sonnet-5', null, delegated, undefined, overrides);
+      expect(totals.usd).toBeCloseTo(0.42, 8);
+      const lines = modelBreakdownLines(
+        'claude-sonnet-5',
+        { promptTokens: 1000, completionTokens: 100 },
+        delegated,
+        undefined,
+        overrides,
+      );
+      expect(lines.join('\n')).toContain(`${ROUTER_MODEL} (1 delegated)`);
+      expect(lines.join('\n')).not.toContain('pricing unknown');
+    });
+  });
+});
+
+describe('pricing from settings layers (#663)', () => {
+  let workspace: string;
+  let home: string;
+  const files = () => ({
+    userSettingsPath: join(home, '.book', 'settings.json'),
+    projectSettingsPath: join(workspace, '.book', 'settings.json'),
+    localSettingsPath: join(workspace, '.book', 'settings.local.json'),
+    trustStorePath: join(home, '.book', 'trust.json'),
+  });
+  const priced = (rate: { in: number; out: number }) => ({
+    provider: { r1: { models: { [ROUTER_MODEL]: { pricing: rate } } } },
+  });
+  /** The user's own provider, with no price on its model. */
+  const userProvider = {
+    provider: {
+      r1: { type: 'openai', baseURL: 'https://router.example/v1', models: { [ROUTER_MODEL]: {} } },
+    },
+  };
+
+  function write(path: string, document: unknown): void {
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, JSON.stringify(document));
+  }
+  function resolved(overridePath?: string) {
+    const settings = resolveSettings(workspace, overridePath, files());
+    return {
+      settings,
+      cost: estimateUsageCost(
+        ROUTER_MODEL,
+        NO_CACHE,
+        'request',
+        pricingOverridesFromProviders(settings.provider),
+      ),
+    };
+  }
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), 'book-pricing-workspace-'));
+    home = mkdtempSync(join(tmpdir(), 'book-pricing-home-'));
+  });
+  afterEach(() => {
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('honours a rate in the user-global file', () => {
+    write(files().userSettingsPath, priced({ in: 0.14, out: 0.28 }));
+    expect(resolved().cost).toMatchObject({ status: 'known' });
+  });
+
+  it('honours a rate in the --settings file, over the user file', () => {
+    write(files().userSettingsPath, priced({ in: 1, out: 1 }));
+    const flagFile = join(home, 'flag.json');
+    write(flagFile, priced({ in: 0.14, out: 0.28 }));
+    expect(resolved(flagFile).cost.costUsd).toBeCloseTo(0.00028, 8);
+  });
+
+  it('ignores a rate in the checked-in project file: the cost stays unknown', () => {
+    write(files().userSettingsPath, userProvider);
+    write(files().projectSettingsPath, priced({ in: 0, out: 0 }));
+    const { settings, cost } = resolved();
+    expect(cost).toMatchObject({ status: 'unknown', costUsd: null });
+    expect(settings.provider.r1.models[ROUTER_MODEL]).toEqual({});
+  });
+
+  it('ignores a rate in a force-added settings.local.json the same way', () => {
+    write(files().userSettingsPath, userProvider);
+    write(files().localSettingsPath, priced({ in: 0, out: 0 }));
+    expect(resolved().cost).toMatchObject({ status: 'unknown', costUsd: null });
+  });
+
+  it('keeps the user rate when a workspace layer prices the same model at zero', () => {
+    write(files().userSettingsPath, priced({ in: 0.14, out: 0.28 }));
+    write(files().projectSettingsPath, priced({ in: 0, out: 0 }));
+    write(files().localSettingsPath, priced({ in: 0, out: 0 }));
+    const { settings, cost } = resolved();
+    expect(settings.provider.r1.models[ROUTER_MODEL].pricing).toEqual({ in: 0.14, out: 0.28 });
+    expect(cost.costUsd).toBeCloseTo(0.00028, 8);
+  });
+
+  it('ignores a rate on a provider only the repository declares, even once the user approved it', () => {
+    const declaration = {
+      type: 'openai',
+      baseURL: 'https://corp.example/v1',
+      apiKey: 'k',
+      models: { [ROUTER_MODEL]: { pricing: { in: 0, out: 0 } } },
+    } as const;
+    write(files().projectSettingsPath, { provider: { corp: declaration } });
+    persistWorkspaceProviderChoice(
+      workspace,
+      'corp',
+      workspaceProviderFingerprint(declaration),
+      'approved',
+      files().trustStorePath,
+    );
+    const { settings, cost } = resolved();
+    // Approved, so in effect: it is the price that does not come with the approval.
+    expect(Object.keys(settings.provider)).toEqual(['corp']);
+    expect(settings.provider.corp.models[ROUTER_MODEL]).toEqual({});
+    expect(cost).toMatchObject({ status: 'unknown', costUsd: null });
+  });
+
+  it('reports each ignored rate with the model it was set on', () => {
+    const document = {
+      provider: {
+        r1: {
+          models: {
+            [ROUTER_MODEL]: { pricing: { in: 0, out: 0 } },
+            other: { label: 'no price here' },
+          },
+        },
+        r2: { models: { m2: { pricing: { in: 1, out: 2 } } } },
+      },
+    };
+    expect(ignoredWorkspaceUserOnlyKeys(document)).toEqual([
+      {
+        key: `provider.r1.models.${ROUTER_MODEL}.pricing`,
+        value: { in: 0, out: 0 },
+        path: ['provider', 'r1', 'models', ROUTER_MODEL, 'pricing'],
+      },
+      {
+        key: 'provider.r2.models.m2.pricing',
+        value: { in: 1, out: 2 },
+        path: ['provider', 'r2', 'models', 'm2', 'pricing'],
+      },
+    ]);
   });
 });
 

@@ -67,7 +67,10 @@ sessions, except that a live run's record is kept even when it is old.
 `--max-budget-usd` bounds the **objective**, not one process and not one prompt: spend is carried
 across restarts and across submitted prompts, and enforced against _inclusive_ cost, so work done by
 managed agents and subagents counts against the same ceiling. A cap that cannot be evaluated fails
-closed — a non-finite value is refused at startup rather than silently permitting everything.
+closed — a non-finite value is refused at startup rather than silently permitting everything, and a
+model with no price is refused before its first call. A router or BYOK model gets its price from
+`provider.<id>.models.<model>.pricing` in your user settings (see
+[Model pricing](configuration.md#model-pricing)).
 
 Continuation never overrides an abort, an approved plan handoff, a spent budget, or a policy
 refusal. `noProgressLimit` is the brake: when the todo list, the observed-file hashes, and the
