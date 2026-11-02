@@ -590,6 +590,9 @@ const KEYS = {
   'ctrl-j': '\x0a',
   'ctrl-t': '\x14',
   'ctrl-u': '\x15',
+  // The send-now chord (#661) is Ctrl+X then Ctrl+S: `key ctrl-x ctrl-s`.
+  'ctrl-x': '\x18',
+  'ctrl-s': '\x13',
   home: '\x1b[H',
   end: '\x1b[F',
   pageup: '\x1b[5~',
@@ -935,7 +938,10 @@ async function run() {
         pty.write('\r');
         break;
       case 'type':
+        // The same gap as `send`: a key written right after the text can land in the same read,
+        // and Book takes the chunk as a paste, so a following `key ctrl-x` or `key enter` is lost.
         pty.write(rest);
+        await sleep(SEND_GAP_MS);
         break;
       case 'key': {
         for (const name of rest.split(/\s+/)) {
