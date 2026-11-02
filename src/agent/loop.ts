@@ -3464,6 +3464,13 @@ export async function runAgentLoop(
           parallel: entry.parallel,
         });
 
+        // A skill the model activates narrows the tools from its next call on, not from the next
+        // turn (#657): its allowed-tools are pushed here, before the next call of this response is
+        // prepared. Calls are prepared in order and InvokeSkill is serial, so a parallel wave after
+        // it is prepared only once this has run; every later call meets the ceiling the next turn
+        // starts with, and is refused the same way.
+        if (canonName === 'InvokeSkill' && toolResultSucceeded(result)) syncSkillRestrictions(turn);
+
         if (toolResultSucceeded(result)) {
           if (
             result.artifacts?.fileMutation ||

@@ -48,6 +48,29 @@ describe('InvokeSkill activation', () => {
     expect(result.content).not.toContain('Review carefully.');
   });
 
+  it('says that a skill with allowed-tools narrows the calls after it at once (#657)', async () => {
+    const unrestricted = await skillsTool[0]!.execute({ skill: 'review' }, context('auto'));
+    writeFileSync(
+      join(workspace, '.book', 'skills', 'review', 'SKILL.md'),
+      [
+        '---',
+        'name: review',
+        'description: Review changes',
+        'allowed-tools:',
+        '- Read',
+        '- Bash(git *)',
+        '---',
+        'Review carefully.',
+      ].join('\n'),
+    );
+    const restricted = await skillsTool[0]!.execute({ skill: 'review' }, context('auto'));
+
+    expect(unrestricted.content).not.toContain('allowed tools');
+    expect(restricted.content).toContain(
+      'Its allowed tools apply from your next call, in this response too: Read, Bash(git *), InvokeSkill, ReadSkillResource.',
+    );
+  });
+
   it('blocks disabled skills', async () => {
     const result = await skillsTool[0]!.execute({ skill: 'review' }, context('off'));
     expect(result.status).toBe('blocked');

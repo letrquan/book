@@ -22,8 +22,13 @@ async function invokeSkill(args: Record<string, unknown>, ctx: ToolContext): Pro
     const resourceSummary = frame.resources.length
       ? ` Supporting resources: ${frame.resources.map((resource) => resource.relativePath).join(', ')}.`
       : '';
+    // The loop narrows the tools to these as soon as this call returns (#657), so a later call in
+    // the same response that they leave out is refused: say so where the model reads it.
+    const ceiling = frame.allowedTools
+      ? ` Its allowed tools apply from your next call, in this response too: ${frame.allowedTools.join(', ')}.`
+      : '';
     return toolSuccess(
-      `Activated skill "${frame.skillName}" for this ${frame.expires}. Its instructions will be applied in the next model request.${resourceSummary}`,
+      `Activated skill "${frame.skillName}" for this ${frame.expires}. Its instructions will be applied in the next model request.${ceiling}${resourceSummary}`,
       {
         data: {
           skill: frame.skillName,

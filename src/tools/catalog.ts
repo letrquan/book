@@ -811,6 +811,13 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     const id = nextRuleSetId++;
     ruleSets.set(id, parseCapabilityRules(rawRules));
     trimLoaded();
+    // A restriction applies at once, in the request being answered too (#657): a tool it excludes
+    // leaves the active snapshot and this request's just-in-time admissions, so a later call to it
+    // is refused as outside the run's allowed tools, exactly as on the next turn, rather than as an
+    // active tool whose arguments no rule covers. It only takes tools away: what it allows stays
+    // as the request had it until the next request's definitions are built.
+    for (const name of activeSnapshot) if (!isAuthorized(name)) activeSnapshot.delete(name);
+    for (const name of admitted.keys()) if (!isAuthorized(name)) admitted.delete(name);
     let active = true;
     return () => {
       if (!active) return;

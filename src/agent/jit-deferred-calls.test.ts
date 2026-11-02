@@ -163,6 +163,13 @@ afterAll(() => {
   rmSync(workspace, { recursive: true, force: true });
 });
 
+/** The model activating the `jit` skill, whose allowed-tools are Read, GitLog and WebFetch. */
+const INVOKE_JIT: ToolCall = { id: 'skill', name: 'InvokeSkill', arguments: { skill: 'jit' } };
+/** A new skill is `manual`, which refuses the model's InvokeSkill: let the model activate `jit`. */
+const modelActivatesJit = (config: ReturnType<typeof defaultConfig>) => {
+  config.settings.skills.overrides.jit = 'auto';
+};
+
 async function run(
   testCase: Case,
   arm: Arm,
@@ -348,23 +355,32 @@ describe('a direct call against select: then the same call (#619)', () => {
       'InvokeSkill with allowed-tools, then WebFetch',
       {
         mode: 'bypassPermissions',
-        prelude: [{ id: 'skill', name: 'InvokeSkill', arguments: { skill: 'jit' } }],
+        prelude: [INVOKE_JIT],
         call: CALLS.WebFetch,
+        configure: modelActivatesJit,
       },
     ],
     [
       'InvokeSkill with allowed-tools, then NotebookEdit',
       {
         mode: 'bypassPermissions',
-        prelude: [{ id: 'skill', name: 'InvokeSkill', arguments: { skill: 'jit' } }],
+        prelude: [INVOKE_JIT],
         call: CALLS.NotebookEdit,
+        configure: modelActivatesJit,
       },
     ],
   ] as Array<[string, Case]>)('in the same response: %s', async (_name, testCase) => {
     // A mode or a skill restriction that changes earlier in the response decides the call the
-    // same way for both: the mode is read live, and a skill's frame applies from the next turn.
-    const direct = await run(testCase, 'direct');
+    // same way for both: the mode is read live, and a skill's allowed-tools apply from the call
+    // after its InvokeSkill (#657).
+    const preludes: string[] = [];
+    const direct = await run(testCase, 'direct', (result) => {
+      if (testCase.prelude?.some((call) => call.id === result.toolCallId))
+        preludes.push(`${result.toolCallId}: ${result.status}`);
+    });
     expect(direct).toEqual(await run(testCase, 'select-same-response'));
+    // The row tests what it names only if the earlier call did what it says.
+    expect(preludes).toEqual(testCase.prelude?.map((call) => `${call.id}: success`));
   });
 });
 
@@ -475,6 +491,33 @@ describe('what a direct call gets (#619)', () => {
       'direct',
     );
     expect(outcome).toMatchObject({ code: 'tool_not_active', ran: false });
+  });
+
+  it('holds the rest of the response to the allowed-tools of a skill the model activated (#657)', async () => {
+    const afterSkill = (call: ToolCall): Case => ({
+      mode: 'bypassPermissions',
+      prelude: [INVOKE_JIT],
+      call,
+      configure: modelActivatesJit,
+    });
+    let remediation: string | undefined;
+    const outside = await run(afterSkill(CALLS.NotebookEdit), 'direct', (result) => {
+      if (result.toolCallId === 'target') remediation = result.structuredError?.remediation;
+    });
+
+    expect(outside).toEqual({
+      asked: 0,
+      status: 'blocked',
+      code: 'tool_not_active',
+      ran: false,
+      declaredNext: false,
+    });
+    // Outside the run's allowed tools, which no ToolSearch can change: not "call ToolSearch".
+    expect(remediation).toContain("outside this run's allowed tools");
+    expect(await run(afterSkill(CALLS.GitLog), 'direct')).toMatchObject({
+      status: 'success',
+      ran: true,
+    });
   });
 
   it('refuses a deferred tool its runtime does not offer', async () => {
