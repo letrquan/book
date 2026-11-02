@@ -225,6 +225,30 @@ describe('BYOK validation and provider merge', () => {
     });
   });
 
+  it('keeps a priced model the endpoint stops listing, and drops an unpriced one (#663)', () => {
+    const pricing = { in: 0.14, out: 0.28 };
+    const existing = {
+      type: 'anthropic' as const,
+      models: {
+        'priced-gone': { pricing },
+        'unpriced-gone': { contextWindow: 64_000 },
+        'listed-now': {},
+      },
+    };
+    const refreshed = providerConfigFromDraft(
+      anthropicDraft([{ id: 'listed-now' }]),
+      existing,
+      true,
+    );
+    // The price survives a model the endpoint does not list for the moment; the other per-model
+    // fields of an unlisted model go with it, as they always did.
+    expect(refreshed.models).toEqual({ 'priced-gone': { pricing }, 'listed-now': {} });
+    // And it keeps surviving: the next refresh finds the price still there.
+    expect(
+      providerConfigFromDraft(anthropicDraft([{ id: 'listed-now' }]), refreshed, true).models,
+    ).toEqual({ 'priced-gone': { pricing }, 'listed-now': {} });
+  });
+
   it('does not treat an earlier discovery as hand-set: a refresh overwrites a stale reported window', () => {
     const existing = {
       type: 'anthropic' as const,

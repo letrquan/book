@@ -323,9 +323,10 @@ the field named. A cache read with no `cacheRead` is priced at `in`, and a cache
   active model and where it comes from, and every workspace price it ignored, under
   `Model pricing:`. The settings writers refuse a price in a workspace scope too.
 - **Refreshing the catalog keeps it.** `/model`'s refresh and a hand-added model leave the
-  `pricing` you set on a model the endpoint still lists. A model the endpoint stops listing is
-  dropped with its entry, price included, unless you added it by hand, as for every other
-  per-model field.
+  `pricing` you set. A model with a price stays through a refresh even when the endpoint stops
+  listing it, as a hand-added one does, because without its rate a USD budget would refuse it. A
+  model with neither is dropped when the endpoint stops listing it, as are its other per-model
+  fields.
 - **Everything that prices tokens reads it:** `/cost` and `/usage` (delegated agents included),
   the status line's session bill, `book status`, the `--max-budget-usd` check and the stream-json
   `result`'s `costUsd` and `costStatus` (`known` once the model is priced), and the evals.

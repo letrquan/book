@@ -153,10 +153,15 @@ export function providerConfigFromDraft(
   // A refresh replaces the discovered catalog with whatever the endpoint now
   // reports, but hand-entered models survive it: they were typed in because
   // the model-list API does not return them, so dropping them here would undo
-  // the user's work on every refresh.
+  // the user's work on every refresh. So does a model the user priced (#663): a
+  // price is the one per-model field whose loss leaves the model unusable, since
+  // a USD budget refuses a model with none, and an endpoint that omits a model
+  // for a moment must not cost the user the rate they entered.
   const models: ProviderConfig['models'] = replaceModels
     ? Object.fromEntries(
-        Object.entries(existing?.models ?? {}).filter(([, metadata]) => metadata.manual),
+        Object.entries(existing?.models ?? {}).filter(
+          ([, metadata]) => metadata.manual || metadata.pricing !== undefined,
+        ),
       )
     : { ...(existing?.models ?? {}) };
   for (const model of draft.models) {
