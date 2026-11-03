@@ -1090,9 +1090,13 @@ export function protectedWorkspacePaths(
     }
     if (depth >= MAX_WALK_DEPTH) return;
     for (const included of readGitConfigIncludes(text)) {
+      // As git resolves it: `~/` from the home directory, an absolute path as
+      // written, and anything else against the including file's directory.
       const target = included.startsWith('~/')
         ? host.path.join(host.homedir(), included.slice(2))
-        : host.path.join(host.path.dirname(at), included);
+        : host.path.isAbsolute(included)
+          ? host.path.resolve(included)
+          : host.path.join(host.path.dirname(at), included);
       readConfig(target, workTree, depth + 1);
     }
   };
@@ -1632,6 +1636,16 @@ export function buildSandboxExecution(
     canonicalPath(target, host),
   );
   const pins = denyWritePins(deniedWrites, writableRoots, paths, host);
+  // A protected file is bound only where the command could write it: inside the
+  // workspace or a writable root, as `denyWrite` is applied. Anywhere else (a
+  // config an `[include]` names, a linked work tree's `.git` pointer) it is not
+  // in the namespace at all, so there is nothing there to protect, and a bind
+  // would only add it. The host still reads it for `core.hooksPath`.
+  const boundWhereWritable = (mount: ProtectedMount): boolean => {
+    if (mount.kind !== 'file') return true;
+    const canonical = canonicalPath(mount.path, host);
+    return writableRoots.some((root) => !isOutside(root.canonical, canonical, host.path));
+  };
 
   const mounts: NamespaceMount[] = [];
 
@@ -1661,7 +1675,8 @@ export function buildSandboxExecution(
   // The credential masks are left for the end, after everything that could
   // bind the directory holding one.
   for (const mount of paths.mounts) {
-    const applied = mount.kind === 'hidden-file' ? null : protectedMount(mount, host);
+    const skipped = mount.kind === 'hidden-file' || !boundWhereWritable(mount);
+    const applied = skipped ? null : protectedMount(mount, host);
     if (applied) mounts.push(applied);
   }
   // ...and only now the opt-ins for the protected areas themselves, with the
@@ -1681,6 +1696,7 @@ export function buildSandboxExecution(
       (optIn) => !isOutside(optIn, mountCanonical, host.path) && optIn !== mountCanonical,
     );
     if (!strictlyBelowDeferredOptIn || deferredOptInCanonicals.includes(mountCanonical)) continue;
+    if (!boundWhereWritable(mount)) continue;
     const applied = protectedMount(mount, host);
     if (applied) mounts.push(applied);
   }

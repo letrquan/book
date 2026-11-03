@@ -1258,7 +1258,10 @@ stripped, and `[core "x"]` is not counted as `[core]`. `[include]` and `[include
 followed the way git follows them — relative to the including file's directory, with `~/` expanded —
 and a followed file inside the workspace is bound read-only and parsed for `hooksPath` in turn,
 because a config that could add a `hooksPath` to a file the command may rewrite is a config the
-command wrote. A git config is read with a **1 MiB** cap; a larger one is refused outright rather than
+command wrote. Under bubblewrap a protected git file (a followed config, a linked work tree's `.git`
+pointer) is bound only inside the workspace or an `allowWrite` root, where a command could write
+it; one outside all of them is still read for `hooksPath`, but it is not visible inside the sandbox.
+A git config is read with a **1 MiB** cap; a larger one is refused outright rather than
 truncated, since a truncated read is a `hooksPath` past the cut that the namespace never saw.
 
 **A symlinked control path is refused, not protected.** `.book`, `.git`, `.git/hooks`,
