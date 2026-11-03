@@ -1953,10 +1953,14 @@ describe('runHeadless — SessionEnd on an aborted run (#248)', () => {
     );
     const writes: string[] = [];
 
-    await expect(
-      runHeadless(sessionEndConfig(), registry, streamOptions(controller.signal, writes)),
-    ).rejects.toThrow();
+    // It ends as any cancel does (#669), no longer by throwing out of the tool step.
+    const result = await runHeadless(
+      sessionEndConfig(),
+      registry,
+      streamOptions(controller.signal, writes),
+    );
 
+    expect(result.outcome.status).toBe('cancelled');
     expect(sessionEndRecords(writes).map((record) => record.reason)).toEqual(['aborted']);
   });
 

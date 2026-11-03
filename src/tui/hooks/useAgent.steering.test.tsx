@@ -192,6 +192,31 @@ describe('steering from the TUI', () => {
     await running;
   });
 
+  it('asks the running loop to send now only while a steer is waiting', async () => {
+    const { config, session } = fixture();
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const running = latest!.send('start');
+    await waitFor(() => latest!.canSteer && loopState.runs.length === 1);
+    const inbox = loopState.runs[0]!.steering as SteeringInbox;
+    const heard: string[] = [];
+    inbox.onRequestNow(() => heard.push('now'));
+
+    // Nothing is waiting, so there is nothing to send now.
+    expect(latest!.requestSteerNow()).toBe(false);
+    expect(heard).toEqual([]);
+
+    expect(await latest!.steer('stop and say hi')).toBe('steered');
+    expect(latest!.requestSteerNow()).toBe(true);
+    expect(heard).toEqual(['now']);
+
+    loopState.runs[0]!.finish();
+    await running;
+    // The run is over: no inbox is left to ask.
+    expect(latest!.requestSteerNow()).toBe(false);
+  });
+
   it('returns steers the run never delivered when it settles', async () => {
     const { config, session } = fixture();
     render(<Harness config={config} session={session} />);

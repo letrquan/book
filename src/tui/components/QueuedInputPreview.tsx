@@ -2,7 +2,10 @@ import { Box, Text } from 'ink';
 import type { QueuedInput } from '../queued-inputs.js';
 import { CONTENT_COLUMN } from '../layout.js';
 import { useTheme } from '../theme.js';
-import { truncateDisplay } from './word-wrap.js';
+import { displayWidth, truncateDisplay } from './word-wrap.js';
+
+/** The send-now chord (#661), as the steer section names it. */
+const SEND_NOW_HINT = 'Ctrl+X Ctrl+S sends now';
 
 /**
  * How a note above the composer reads. `warning` is for a state that needs
@@ -63,11 +66,18 @@ export function QueuedInputPreview({
       </Text>
     ));
 
+  // Send-now is offered only where it can act: with steers waiting (#661). The key goes when the
+  // line would wrap, since the section's count is the part a reader needs.
+  const steerHeader = `Sends after the current tool call (${steers.length})`;
+  const steerHeaderWithKey = `${steerHeader} · ${SEND_NOW_HINT}`;
+
   return (
     <Box flexDirection="column" paddingLeft={CONTENT_COLUMN} marginBottom={1}>
       {steers.length > 0 ? (
         <>
-          <Text color={theme.subtle}>Sends after the current tool call ({steers.length})</Text>
+          <Text color={theme.subtle}>
+            {displayWidth(steerHeaderWithKey) <= width + 4 ? steerHeaderWithKey : steerHeader}
+          </Text>
           {rows(visibleSteers)}
         </>
       ) : null}

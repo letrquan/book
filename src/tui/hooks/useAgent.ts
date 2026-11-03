@@ -7,6 +7,7 @@ import type {
   ElicitationHandler,
   ElicitationResponse,
   NestedToolInvocation,
+  ToolCall,
   ToolDefinition,
   ToolResult,
   PermissionDecision,
@@ -50,6 +51,7 @@ import {
 import { collectProviderSecrets, redactSecrets } from '../../provider-secrets.js';
 import type { ProviderResponseMetadata } from '../../types/providers.js';
 import type { Todo } from '../../tools/todo.js';
+import { toolFailure } from '../../tools/result.js';
 import type { AgentConfig } from '../../types/runtime.js';
 import {
   compactionPlacement,
@@ -57,6 +59,7 @@ import {
   makeMessage,
   removeTrailingEmptyAssistantPlaceholder,
   resetStreamedContent,
+  settleOpenToolCalls,
   type StreamOutput,
 } from './streaming-state.js';
 import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-log.js';
@@ -375,6 +378,27 @@ interface ActiveSteering {
   dropped: boolean;
   /** The send returned: the leftovers were read once, and nothing may push into it again. */
   settled: boolean;
+}
+
+/**
+ * The result a call gets when its run was cancelled before the call reported back (#669): it reads
+ * the way the loop words a cancelled call.
+ */
+function interruptedToolResult(call: ToolCall): ToolResult {
+  return toolFailure('CANCELLED: Agent execution was interrupted', {
+    toolCallId: call.id,
+    code: 'cancelled',
+    status: 'cancelled',
+  });
+}
+
+/** The result a call gets when its run ended any other way before the call reported back. */
+function unansweredToolResult(call: ToolCall): ToolResult {
+  return toolFailure('INTERRUPTED: the run ended before this call reported a result', {
+    toolCallId: call.id,
+    code: 'cancelled',
+    status: 'cancelled',
+  });
 }
 
 /** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
@@ -705,6 +729,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     readPendingSteers();
     return taken;
   }, [readPendingSteers]);
+  /**
+   * Send-now (#661): ask the running loop to stop the model request in flight, so the pending
+   * steers go at once instead of after the current tool call. Nothing happens without a pending
+   * steer, and a running tool is never stopped: the loop listens only while the model writes.
+   */
+  const requestSteerNow = useCallback((): boolean => {
+    const active = steeringRef.current;
+    if (!active || active.dropped || !active.inbox.hasPending()) return false;
+    uiLog.event('steer:send-now', { pending: active.inbox.pending().length });
+    active.inbox.requestNow();
+    return true;
+  }, []);
   /** Drop every pending steer without returning it: a session switch discards them, as it does the queue. */
   const dropSteers = useCallback(() => {
     const active = steeringRef.current;
@@ -1207,12 +1243,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const stillCurrent = () =>
         sessionGenerationRef.current === generation && operationIsCurrent();
       let activeAccumulator: MessageAccumulator | null = null;
+      /** Every message this send streams into, for settling the calls a cancel left open. */
+      const runMessageIds = new Set<string>();
       // A fresh streaming message for the turn's next output: at each turn after the first, and
       // after a compaction that committed behind output the same turn then continues.
       const openStreamingMessage = (reason: 'new-turn' | 'after-compaction') => {
         activeAccumulator?.stop();
         uiLog.event('accumulator:stopped', { reason });
         const next = makeMessage('assistant', '', undefined, true);
+        runMessageIds.add(next.id);
         streamingIdRef.current = next.id;
         streamOutputRef.current = freshStreamOutput();
         setStreamingMessageId(next.id);
@@ -1471,6 +1510,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         operationIsCurrent = control.isCurrent;
         // Render the user's message immediately and stream into a fresh placeholder.
         placeholder = makeMessage('assistant', '', undefined, true);
+        runMessageIds.add(placeholder.id);
         streamingIdRef.current = placeholder.id;
         streamOutputRef.current = freshStreamOutput();
         setStreamingMessageId(placeholder.id);
@@ -1941,6 +1981,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         accumulatorRef.current?.stop();
         uiLog.event('accumulator:stopped', { reason: 'done' });
         if (accumulatorRef.current === activeAccumulator) accumulatorRef.current = null;
+        // No row of this run may go on saying `Running…` once the run is over (#669): a cancel can
+        // end it before a call's result reaches the host, and so can a run that fails in its tool
+        // step. After the final flush, so a result that did arrive is the one shown.
+        const settle =
+          sendResult.status === 'cancelled' ? interruptedToolResult : unansweredToolResult;
+        setMessages((prev) => {
+          const next = settleOpenToolCalls(prev, runMessageIds, settle);
+          if (next === prev) return prev;
+          messagesRef.current = next;
+          return next;
+        });
         finalizeStreamingMessages();
         streamingIdRef.current = null;
         setStreamingMessageId(null);
@@ -3191,6 +3242,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     takeSteers,
     /** Discard pending steers: a session switch, which drops queued inputs too. */
     dropSteers,
+    /** Send-now: stop the model request in flight so the pending steers go at once. */
+    requestSteerNow,
     sendAgentCompletions,
     sendBackgroundShellCompletion,
     sendPeerMessages,

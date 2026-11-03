@@ -10,6 +10,7 @@ import {
   makeMessage,
   removeTrailingEmptyAssistantPlaceholder,
   resetStreamedContent,
+  settleOpenToolCalls,
 } from './streaming-state.js';
 import type { Message } from '../../types/messages.js';
 import { toolFailure, toolSuccess } from '../../tools/result.js';
@@ -343,5 +344,58 @@ describe('compactionPlacement', () => {
       ordinal: messages.length + 1,
       afterStreaming: true,
     });
+  });
+});
+
+describe('settleOpenToolCalls (#669)', () => {
+  const interrupted = (call: { id: string }) =>
+    toolFailure('CANCELLED: Agent execution was interrupted', {
+      toolCallId: call.id,
+      code: 'cancelled',
+      status: 'cancelled',
+    });
+
+  it('settles only the open calls of the named messages, nested ones included', () => {
+    const answered = toolSuccess('done', { toolCallId: 'a' });
+    const nestedDone = toolSuccess('read', { toolCallId: 'n1' });
+    const run: Message = {
+      ...msg('run', 'assistant', ''),
+      toolCalls: [
+        { id: 'a', name: 'Read', arguments: {} },
+        { id: 'b', name: 'Bash', arguments: {} },
+      ],
+      toolResults: [answered],
+      nestedToolInvocations: [
+        {
+          traceId: 't1',
+          parentTraceId: 'task',
+          call: { id: 'n1', name: 'Read', arguments: {} },
+          result: nestedDone,
+        },
+        { traceId: 't2', parentTraceId: 'task', call: { id: 'n2', name: 'Grep', arguments: {} } },
+      ],
+    };
+    const other: Message = {
+      ...msg('other', 'assistant', ''),
+      toolCalls: [{ id: 'c', name: 'Bash', arguments: {} }],
+    };
+
+    const next = settleOpenToolCalls([run, other], new Set(['run']), interrupted);
+
+    expect(next[0]!.toolResults?.map((result) => [result.toolCallId, result.status])).toEqual([
+      ['a', 'success'],
+      ['b', 'cancelled'],
+    ]);
+    expect(next[0]!.nestedToolInvocations?.map((entry) => entry.result?.status)).toEqual([
+      'success',
+      'cancelled',
+    ]);
+    // A message of another run is not this cancel's to settle.
+    expect(next[1]).toBe(other);
+  });
+
+  it('hands back the same array when nothing is open', () => {
+    const messages = [msg('run', 'assistant', 'text only')];
+    expect(settleOpenToolCalls(messages, new Set(['run']), interrupted)).toBe(messages);
   });
 });
