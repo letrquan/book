@@ -1,4 +1,4 @@
-import { expandTabs as expandToTabStops } from '../../cli/ink-frame-clip.js';
+import { expandTabs as expandToTabStops } from '../../tab-stops.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 export interface ToolOutputDisplayOptions {
@@ -68,8 +68,8 @@ function outputLinesEnd(output: string): number {
  *
  * `string-width`, and so Ink's layout, measures a tab as no cells while the terminal moves to the
  * next tab stop, so a row holding one is wider on screen than the width it was cut to (#537). The
- * algorithm and its stops are the frame clip's own (`expandTabs` in `cli/ink-frame-clip.ts`), here
- * measured with {@link displayWidth}, so the two cannot drift. Eight-column stops, not the fixed
+ * algorithm and its stops are the frame clip's own (`expandTabs` in `tab-stops.ts`), here measured
+ * with {@link displayWidth}, so the two cannot drift. Eight-column stops, not the fixed
  * four spaces a user message's tab gets, keep the columns of `make`, `ls`, TSV and `column` output
  * aligned the way the command's own terminal shows them.
  */
@@ -208,8 +208,10 @@ function firstWrapRows(
 
 /**
  * The last `room` rows of `line` wrapped at display width `width`, and whether the line has rows
- * before them. Rows are cut from the start of a line, so all of them are found, but only a window
- * of at most `2 * room` is held: a huge line costs a pass and no more memory than a short one.
+ * before them. Rows are cut from the start of a line, so the pass covers all of it, but only a
+ * window of at most `2 * room` rows is held. A tool result is clipped to `TOOL_RESULT_MAX_BYTES`
+ * before a row sees it, and the display is memoized, so the pass is bounded by that, as
+ * `hardWrapLine` over the whole line was.
  */
 function lastWrapRows(
   line: string,

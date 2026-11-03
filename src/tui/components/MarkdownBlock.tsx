@@ -4,7 +4,7 @@ import { marked, Tokens, Token } from 'marked';
 import { useTheme } from '../theme.js';
 import { useDensity } from '../density.js';
 import { useTranscriptLayoutChange } from '../transcript-layout.js';
-import { expandTabs as expandToTabStops, type StringWidth } from '../../cli/ink-frame-clip.js';
+import { expandTabs as expandToTabStops, type StringWidth } from '../../tab-stops.js';
 import { displayWidth, wordWrap } from './word-wrap.js';
 import { expandTabs } from './tool-output.js';
 import { highlightCode, type StyledLine } from './syntax-highlight.js';
@@ -24,6 +24,9 @@ const LIST_INDENT = 2;
 
 /** Columns a list nested in a list item is indented from the item's text. */
 const NESTED_LIST_INDENT = 2;
+
+/** Columns a blockquote's rail takes before its text: the border and one column of padding. */
+const BLOCKQUOTE_GUTTER = 2;
 
 interface MarkdownBlockProps {
   /** Raw markdown string to render. */
@@ -54,9 +57,15 @@ interface RenderContext {
   /** Nested blockquote depth for width budgeting. */
   blockquoteDepth: number;
   /**
-   * Columns from the left edge of the block (of a blockquote's text, inside one) to the box a token
-   * is drawn in. A tab in a list item's text stops at the 8-column stops counted from there, so
-   * the item's text starts after its marker, where a terminal would put it.
+   * Columns from the left edge of the Markdown block to the box a token is drawn in: the markers
+   * of the lists it is in, the rails of the blockquotes. A tab in its text stops at the 8-column
+   * stops counted from the block's edge, so the text starts where a terminal would put it,
+   * after what is drawn to its left on the row, and a list's cells line up with a paragraph's.
+   *
+   * Not counted: where the block itself sits in the transcript, which it is not told; a code
+   * block's rail and line numbers, because its tabs are the code's indentation and count from the
+   * code's own left edge (#547); and the wrapping of a long line, because a tab is expanded
+   * ahead of the wrapper, which must see the widths, so a continuation row follows the line.
    */
   column: number;
 }
@@ -183,6 +192,8 @@ function plainTextFromTokens(tokens: Token[]): string {
  *
  * The column the line has reached is carried from one run to the next, so each piece of text is
  * measured once however many styled runs the line holds. A tab stop depends on that column alone.
+ * The line is expanded whole, ahead of the wrapper (which has to see the widths), so a row the
+ * wrapper then continues keeps the stops of the line it continues.
  */
 export function expandRunTabs<Run extends { text: string }>(
   runs: Run[],
@@ -749,7 +760,9 @@ function renderBlockToken(
       const t = token as Tokens.Blockquote;
       // Incremental budget: border + paddingLeft ≈ 2 columns per quote level.
       const childWidth =
-        terminalWidth !== undefined ? Math.max(1, Math.floor(terminalWidth) - 2) : undefined;
+        terminalWidth !== undefined
+          ? Math.max(1, Math.floor(terminalWidth) - BLOCKQUOTE_GUTTER)
+          : undefined;
       return (
         <Box
           key={`bq-${index}`}
@@ -767,8 +780,7 @@ function renderBlockToken(
               ...context,
               textColor: theme.mdBlockquoteText,
               blockquoteDepth: context.blockquoteDepth + 1,
-              // Its text is measured from after the rail, as a code block's is from after its own.
-              column: 0,
+              column: context.column + BLOCKQUOTE_GUTTER,
             }),
           )}
         </Box>
@@ -790,6 +802,9 @@ function renderBlockToken(
       // fixed width leaves a dead column after every bullet.
       const markerWidth =
         Math.max(...t.items.map((item, ii) => displayWidth(markerFor(item, ii))), 1) + 1;
+      // Where every item's text begins: after the list's own indent, the item's and its marker.
+      const textColumn =
+        context.column + (context.depth > 0 ? NESTED_LIST_INDENT : 0) + LIST_INDENT + markerWidth;
       return (
         <Box
           key={`list-${index}`}
@@ -809,12 +824,6 @@ function renderBlockToken(
               listGutter: LIST_INDENT + markerWidth,
               blockquoteDepth: 0,
             });
-            // Where the item's text begins: after the list's own indent, the item's and its marker.
-            const textColumn =
-              context.column +
-              (context.depth > 0 ? NESTED_LIST_INDENT : 0) +
-              LIST_INDENT +
-              markerWidth;
             return (
               <Box key={`li-${index}-${ii}`} flexDirection="row" marginLeft={LIST_INDENT}>
                 <Box width={markerWidth} flexShrink={0}>

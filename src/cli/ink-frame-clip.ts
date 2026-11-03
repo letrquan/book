@@ -10,6 +10,7 @@ import {
   type SliceAnsi,
 } from './ink-output-cache.js';
 import { parseEnvBoolean } from '../env-boolean.js';
+import { expandTabs, type StringWidth } from '../tab-stops.js';
 import { inkBuildDir } from './ink-renderer.js';
 
 /**
@@ -65,39 +66,16 @@ import { inkBuildDir } from './ink-renderer.js';
  * pins the parts of `Output` it reads.
  */
 
-/** `string-width`, resolved from Ink's own location so it is the copy Ink measures with. */
-export type StringWidth = (text: string) => number;
-
 export interface FrameClippedGetOptions {
   /** The `get` being wrapped: Ink's own, or one already wrapping it. */
   get: (this: InkOutput) => InkOutputFrame;
   sliceAnsi: SliceAnsi;
+  /** `string-width`, resolved from Ink's own location so it is the copy Ink measures with. */
   stringWidth: StringWidth;
 }
 
 /** Set on the installed `get` itself, as the output cache marks its own. */
 const INSTALLED_MARK = Symbol('book.inkFrameClip');
-
-/** The terminal's tab stops: every eighth column. */
-const TAB_STOP = 8;
-
-/**
- * Replaces every tab with spaces up to the next tab stop, as the terminal would move the cursor,
- * counting visible columns from the start of the row, or from `startColumn` for text that is drawn
- * that many columns in. `measure` skips ANSI escapes.
- */
-export function expandTabs(row: string, measure: StringWidth, startColumn = 0): string {
-  const parts = row.split('\t');
-  let expanded = parts[0] ?? '';
-  let column = startColumn + measure(expanded);
-  for (let index = 1; index < parts.length; index++) {
-    const part = parts[index] ?? '';
-    const pad = TAB_STOP - (column % TAB_STOP);
-    expanded += ' '.repeat(pad) + part;
-    column += pad + measure(part);
-  }
-  return expanded;
-}
 
 /** Whether Ink's own clip cuts writes horizontally at an edge inside the width. */
 function clipsWithinWidth(clip: InkClip | undefined, width: number): boolean {

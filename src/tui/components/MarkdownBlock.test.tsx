@@ -13,7 +13,7 @@ import {
   useThrottledValue,
   wrapParagraphLines,
 } from './MarkdownBlock.js';
-import { expandTabs } from '../../cli/ink-frame-clip.js';
+import { expandTabs } from '../../tab-stops.js';
 import { displayWidth } from './word-wrap.js';
 
 function stripAnsi(value: string | undefined): string {
@@ -975,11 +975,26 @@ describe('MarkdownBlock list items with tabs start after their marker (#605)', (
     expect(lines.find((row) => row.includes('d '))!.indexOf('e')).toBe(8);
   });
 
-  it('leaves a paragraph, and text in a blockquote, counted from their own left edge', () => {
+  it("counts a blockquote's rail, and the lists and quotes it is nested with", () => {
+    // A paragraph has nothing to its left: the block's own edge is column 0.
     expect(rows('ab\tcd\tef')[0]).toBe('ab      cd      ef');
-    // After the rail, as a code block's text is.
-    expect(rows('> ab\tcd\tef')[0]).toBe('\u2502 ab      cd      ef');
-    expect(rows('- item\n\n  > ab\tcd')[1]).toBe('    \u2502 ab      cd');
+    // The rail takes columns 0 and 1, so `ab` ends in column 4 and the tab takes four cells.
+    expect(rows('> ab\tcd\tef')[0]).toBe('\u2502 ab    cd      ef');
+    // A quote in a list item starts at the item's text (column 4): its text from column 6.
+    const inItem = rows('- item\n\n  > ab\tcd')[1]!;
+    expect(inItem).toBe('    \u2502 ab        cd');
+    expect(inItem.indexOf('cd')).toBe(16);
+    // A list in a quote: the rail (2), the list's indent (2) and its marker (2).
+    const inQuote = rows('> - ab\tcd')[0]!;
+    expect(inQuote.indexOf('ab')).toBe(6);
+    expect(inQuote.indexOf('cd')).toBe(16);
+  });
+
+  it('leaves the tabs of a code block counted from its own code line, in a list item too', () => {
+    // A tab in code is its indentation or alignment: the rail and the line numbers are chrome,
+    // not code, and the list the block sits in is further from it still.
+    const lines = rows('- item\n\n  ```make\n  all:\n  gcc\t-o x.c\n  ```');
+    expect(lines.find((row) => row.includes('gcc'))).toContain(`gcc${' '.repeat(5)}-o x.c`);
   });
 });
 

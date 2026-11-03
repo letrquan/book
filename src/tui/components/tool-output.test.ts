@@ -356,6 +356,32 @@ describe('a wrapped display of the tail (#605)', () => {
     expect(display.footer).toBe('… +2 lines');
   });
 
+  it('reads head-tail as the head', () => {
+    const output = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n');
+    const headTail = prepareToolOutputDisplay(output, {
+      maxLines: 4,
+      maxLineWidth: WIDTH,
+      longLines: 'wrap',
+      strategy: 'head-tail',
+    });
+    expect(headTail.lines).toEqual(['line 1', 'line 2', 'line 3', 'line 4']);
+    expect(headTail.hiddenLines).toBe(6);
+  });
+
+  it('still draws the head of an output shown in full, failed or not', () => {
+    const output = Array.from({ length: 2100 }, (_, i) => `line ${i + 1}`).join('\n');
+    for (const success of [true, false]) {
+      const display = toolOutputDisplay(output, {
+        success,
+        showAllToolOutput: true,
+        terminalWidth: WIDTH,
+      });
+      expect([success, display.lines[0]]).toEqual([success, 'line 1']);
+      expect(display.lines).toHaveLength(2000);
+      expect(display.hiddenLines).toBe(100);
+    }
+  });
+
   it('keeps the last rows of a line far wider than the bound, as it would of a short one', () => {
     const huge = 'abcdefghij'.repeat(30_000);
     const display = tail(huge, 3);

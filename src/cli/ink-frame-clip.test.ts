@@ -7,12 +7,8 @@ import { Box, Text, render, useApp, useStdout } from 'ink';
 import { createElement as h, useEffect, useState, type ReactNode } from 'react';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { replayTerminalOutput } from '../tui/terminal-screen.js';
-import {
-  createFrameClippedGet,
-  expandTabs,
-  installInkFrameClip,
-  type StringWidth,
-} from './ink-frame-clip.js';
+import { createFrameClippedGet, installInkFrameClip } from './ink-frame-clip.js';
+import type { StringWidth } from '../tab-stops.js';
 import {
   createRowCachedGet,
   installInkOutputCache,
@@ -523,29 +519,6 @@ describe('frame-clipped Ink output', () => {
     // Ink keeps the transformer's newline on grid row 0, so the frame splits into three rows.
     expect(originalGet.call(output).output).toBe(`a\nb\n${'x'.repeat(12)}`);
     expect(clipped().call(output)).toEqual({ output: `a\nb\n${'x'.repeat(8)}`, height: 2 });
-  });
-
-  it('expands tabs to the next multiple-of-8 column', () => {
-    expect(expandTabs('a\tb', stringWidth)).toBe(`a${' '.repeat(7)}b`);
-    expect(expandTabs('abcdefg\tb', stringWidth)).toBe('abcdefg b');
-    expect(expandTabs('abcdefgh\tb', stringWidth)).toBe(`abcdefgh${' '.repeat(8)}b`);
-    expect(expandTabs('a\t\tb', stringWidth)).toBe(`a${' '.repeat(15)}b`);
-    expect(expandTabs('你\tb', stringWidth)).toBe(`你${' '.repeat(6)}b`);
-    expect(expandTabs('no tab', stringWidth)).toBe('no tab');
-  });
-
-  it('counts the columns from the one the text starts at, when it is drawn in from the edge', () => {
-    // Four columns in, `ab` ends in column 6: the tab takes two cells, not six.
-    expect(expandTabs('ab\tcd', stringWidth, 4)).toBe('ab  cd');
-    expect(expandTabs('\tx', stringWidth, 4)).toBe(`${' '.repeat(4)}x`);
-    expect(expandTabs('\tx', stringWidth, 8)).toBe(`${' '.repeat(8)}x`);
-    expect(expandTabs('ab\tcd', stringWidth, 0)).toBe(expandTabs('ab\tcd', stringWidth));
-  });
-
-  it('expands a tab after styled text by its visible column', () => {
-    expect(expandTabs(`${RED}red${NO_COLOUR}\tx`, stringWidth)).toBe(
-      `${RED}red${NO_COLOUR}${' '.repeat(5)}x`,
-    );
   });
 
   it('expands tabs from column 0 of the row, not of the write', () => {
