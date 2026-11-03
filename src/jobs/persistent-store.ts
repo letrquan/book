@@ -17,6 +17,7 @@ import type {
   BackgroundShellStatus,
   CommandExecution,
 } from '../types/runtime.js';
+import type { PeerPermissionClass } from '../types/messaging.js';
 import { resolveBookHome } from '../book-home.js';
 
 export interface PersistentShellSpec {
@@ -49,6 +50,8 @@ export interface PersistentShellSpec {
   parentSessionId?: string;
   rootRunId?: string;
   parentRunId?: string;
+  /** The class of the pinned run that started the job (#650); the runner copies it to the record. */
+  peerTurnClass?: PeerPermissionClass;
   token: string;
   tokenHash: string;
   recordPath: string;
@@ -93,6 +96,12 @@ export interface PersistentShellState {
   parentSessionId?: string;
   rootRunId?: string;
   parentRunId?: string;
+  /**
+   * The class of the pinned run that started the job (#650), so its completion stays pinned after
+   * a restart. A record written before the field existed lacks it and reads as unpinned; read it
+   * through {@link persistedPeerTurnClass}.
+   */
+  peerTurnClass?: PeerPermissionClass;
   outputPath: string;
   controlPath: string;
   completionSequence: number;
@@ -233,6 +242,17 @@ export function loadPersistentShellSpec(
     };
   }
   return { spec };
+}
+
+/**
+ * The peer class a job record names, as the pin its completions run under (#650). Absent reads as
+ * unpinned, which is what a record from before the field means. Anything else that is not a class
+ * reads as `prompting`, the stricter one: the record is a JSON file on disk, and a pin must not
+ * loosen because one was damaged.
+ */
+export function persistedPeerTurnClass(value: unknown): PeerPermissionClass | undefined {
+  if (value === undefined) return undefined;
+  return value === 'bypass' ? 'bypass' : 'prompting';
 }
 
 export function listPersistentStates(paths: PersistentJobPaths): PersistentShellState[] {

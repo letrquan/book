@@ -762,16 +762,22 @@ delivered (N held)` row (name from the registry record advertising the frame's a
   notifier, as a host-delivered `[Cross-session idle notice]` turn in the class a message from the
   notifier would get (`peerTurnClass`), which continues the relay the subscription was sent on
   (`continueRelay`); a `dropped` receipt reaches it as a delivery receipt does. Waiting notices are
-  told together, up to 10 a turn, continuing the longest relay among them, so re-subscribing from
-  many notices counts one hop rather than a branch each (security review). Each notifier is judged
-  again (`noticeTurnClass`) when the batch is built and when its turn starts (`stillDeliverable`):
-  one the policy no longer accepts is left out, its row the only trace. The notice text
-  says the subscription was one-shot and does not suggest subscribing again. A subscription with
-  no word for 12 h plus 5 min lapses locally, as a user-only row.
+  told together, up to 10 a turn, continuing the longest relay among every waiting notice, those
+  left for a later turn included (#658), so re-subscribing from many notices counts one hop rather
+  than a branch each, and each notice turn advances the relay a level (security review). Each
+  notifier is judged again (`noticeTurnClass`) when the batch is built and when its turn starts
+  (`stillDeliverable`): one the policy no longer accepts is left out, its row the only trace. The
+  notice text says the subscription was one-shot and does not suggest subscribing again. A
+  subscription with no word for 12 h plus 5 min lapses locally, as a user-only row.
 
 **PR 7 and later**:
 
-- a mid-turn drain at the tool-round boundary (a new `runAgentLoop` seam);
+- a mid-turn drain at the tool-round boundary (a new `runAgentLoop` seam). Requirement (#655): once
+  a peer message is drained into a running user turn, the run carries the peer's words, so it sets
+  `peerTurnClass` (or a dedicated "carries peer text" flag) on the run and drops
+  `toolContext.memoryWrite` for the rest of it, as a run that starts with a class never gets one.
+  The drain test shows that run cannot write memory without a prompt once a peer message is
+  drained into it, while the user's own turn before the drain still writes memory unprompted;
 - the print-mode/SDK inbox (`--messaging`), with stream-json `peer_message_hold` events;
 - Windows named pipes;
 - the CC interop adapter, if D1-b is chosen;

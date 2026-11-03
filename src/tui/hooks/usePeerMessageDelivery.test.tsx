@@ -129,6 +129,32 @@ describe('usePeerMessageDelivery idle notices', () => {
     expect(options.peerTurnClass).toBe('prompting');
   });
 
+  it('continues the longest relay among every waiting notice, not only the ten it tells (#658)', async () => {
+    const { messaging, notify, view, props } = mount(true);
+    await settle();
+    const sender = { from: 'uds:/s/1.sock', mode: 'prompting' as const };
+    // Twelve notices wait, the oldest on the shallowest relay; a turn tells ten of them.
+    const chains = Array.from({ length: 12 }, (_, depth) =>
+      Array.from({ length: depth + 1 }, (_, hop) => `hop-${hop}`),
+    );
+    for (const chain of chains) {
+      messaging.emit({
+        type: 'idle-notice',
+        notice: notice({ target: `peer-${chain.length}`, chain, sender }),
+      });
+    }
+    view.rerender(<Harness {...props} blocked={false} />);
+    await settle();
+    expect(notify).toHaveBeenCalledTimes(2);
+    const turns = notify.mock.calls as unknown as Array<[string, { relayChain: string[] }]>;
+    expect(turns[0]![0].match(/\[Cross-session idle notice\]/g)).toHaveLength(10);
+    expect(turns[1]![0].match(/\[Cross-session idle notice\]/g)).toHaveLength(2);
+    // The first turn continues the deepest relay waiting, though it tells only the ten oldest: a
+    // model re-subscribing from it then advances the relay a level, however many notices wait.
+    expect(turns[0]![1].relayChain).toEqual(chains[11]);
+    expect(turns[1]![1].relayChain).toEqual(chains[11]);
+  });
+
   it('judges a queued notice again before its turn: one the policy no longer accepts stays a row', async () => {
     const { messaging, notify, warn, view, props } = mount(true);
     await settle();

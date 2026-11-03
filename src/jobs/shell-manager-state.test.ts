@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { BackgroundShellStore } from '../types/runtime.js';
+import type { BackgroundShellRecord, BackgroundShellStore } from '../types/runtime.js';
 import {
   persistentJobPaths,
   writeJsonAtomic,
@@ -117,6 +117,71 @@ describe('ShellJobManager persistent state recovery', () => {
     expect(existsSync(join(paths.records, `${id}.json`))).toBe(true);
     expect(existsSync(join(paths.specs, `${id}.json`))).toBe(false);
     expect(existsSync(join(paths.controls, `${id}.json`))).toBe(false);
+    manager.dispose();
+  });
+
+  it('restores the peer class a persistent job recorded, for every completion of it (#650)', () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-shell-peer-class-'));
+    const root = join(directory, 'jobs');
+    const paths = persistentJobPaths(directory, root);
+    const write = (id: string, overrides: Partial<PersistentShellState> = {}) =>
+      writeJsonAtomic(
+        join(paths.records, `${id}.json`),
+        state(id, 'exited', paths, { notify: 'agent', parentSessionId: 'session-a', ...overrides }),
+      );
+    write('shell_prompting', { peerTurnClass: 'prompting' });
+    write('shell_bypass', { peerTurnClass: 'bypass' });
+    write('shell_old');
+    write('shell_garbled', { peerTurnClass: 'anything' as never });
+
+    // Book restarted, or the session was resumed: a new manager reads the records the runners left.
+    const manager = new ShellJobManager({ nextId: 1, shells: new Map() }, { persistentRoot: root });
+    manager.configureWorkspace(directory);
+    const classOf = (id: string) =>
+      manager.listPendingAgentCompletions('session-a').find((job) => job.id === id)?.peerTurnClass;
+    expect(
+      manager
+        .listPendingAgentCompletions('session-a')
+        .map((job) => job.id)
+        .sort(),
+    ).toEqual(['shell_bypass', 'shell_garbled', 'shell_old', 'shell_prompting']);
+    expect(classOf('shell_prompting')).toBe('prompting');
+    expect(classOf('shell_bypass')).toBe('bypass');
+    // A record written before the field existed reads as unpinned, as it always did.
+    expect(classOf('shell_old')).toBeUndefined();
+    // A value that is no class reads as the stricter one.
+    expect(classOf('shell_garbled')).toBe('prompting');
+
+    // The completion is delivered, then the job completes again: that completion is pinned too,
+    // even from a record that no longer names the class.
+    const results: BackgroundShellRecord[] = [];
+    manager.subscribe((event) => {
+      if (event.type === 'background_job_result') results.push(event.job);
+    });
+    manager.acknowledgeCompletion('shell_prompting', 1, 'agent');
+    expect(classOf('shell_prompting')).toBeUndefined();
+    write('shell_prompting', {
+      revision: 5,
+      completionSequence: 2,
+      completionDeliveredSequence: 1,
+    });
+    expect(classOf('shell_prompting')).toBe('prompting');
+    // Nor can a record that names the looser class loosen it.
+    manager.acknowledgeCompletion('shell_prompting', 2, 'agent');
+    write('shell_prompting', {
+      revision: 7,
+      completionSequence: 3,
+      completionDeliveredSequence: 2,
+      peerTurnClass: 'bypass',
+    });
+    expect(classOf('shell_prompting')).toBe('prompting');
+    // A record can tighten one, though.
+    write('shell_bypass', { revision: 3, peerTurnClass: 'prompting' });
+    expect(classOf('shell_bypass')).toBe('prompting');
+    expect(results.map((job) => [job.id, job.peerTurnClass])).toEqual([
+      ['shell_prompting', 'prompting'],
+      ['shell_prompting', 'prompting'],
+    ]);
     manager.dispose();
   });
 

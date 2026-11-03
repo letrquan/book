@@ -21,6 +21,7 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { PermissionDecision, ToolResult } from '../types/tools.js';
 import type { Provider } from '../provider/index.js';
 import type { LoadedMemoryContext } from '../memory-store.js';
+import type { PeerPermissionClass } from '../types/messaging.js';
 import { memoryConsolidateTools } from '../commands/builtins-prompts.js';
 
 function noopCallbacks(overrides: Partial<AgentLoopCallbacks> = {}): AgentLoopCallbacks {
@@ -1208,7 +1209,8 @@ describe('runAgentLoop memory writes', () => {
       isSubagent?: boolean;
       notices?: string[];
       configure?: (config: AgentConfig) => void;
-      userMessageKind?: 'peer-message';
+      userMessageKind?: 'peer-message' | 'agent-notification';
+      peerTurnClass?: PeerPermissionClass;
     } = {},
   ) {
     const prompt = vi.fn(async () => 'deny' as const);
@@ -1235,10 +1237,20 @@ describe('runAgentLoop memory writes', () => {
         isNewSession: false,
         isSubagent: options.isSubagent,
         userMessageKind: options.userMessageKind,
+        ...(options.peerTurnClass !== undefined ? { peerTurnClass: options.peerTurnClass } : {}),
       },
     );
     return { prompt, results };
   }
+
+  const memoryFileWrite = (file: string): ScriptedCall => ({
+    id: 'w1',
+    name: 'Write',
+    arguments: {
+      filePath: file,
+      content: '---\nname: fact\ndescription: A fact\nmetadata:\n  type: project\n---\nBody\n',
+    },
+  });
 
   it("gives a turn another session's message started no memory write root (#620)", async () => {
     // A memory write needs no prompt, and what it saves loads into every later session, a bypass
@@ -1265,6 +1277,49 @@ describe('runAgentLoop memory writes', () => {
       expect(byId(results, 'w1')?.status, mode).not.toBe('success');
       expect(existsSync(file), mode).toBe(false);
     }
+  });
+
+  it("gives a run that carries a peer's work on no memory write root either (#655)", async () => {
+    // A completion or notice turn pinned to a peer turn's class runs that peer's work: a memory it
+    // saved unprompted would load into every later session just the same.
+    for (const mode of ['default', 'auto'] as const) {
+      for (const peerTurnClass of ['prompting', 'bypass'] as const) {
+        const label = `${mode}, pinned ${peerTurnClass}`;
+        const peerMemory = tempDir('book-loop-memory-');
+        const peerTurn = await run(
+          peerMemory,
+          [memoryFileWrite(join(peerMemory, 'fact.md'))],
+          mode,
+          { userMessageKind: 'peer-message', peerTurnClass },
+        );
+        const memory = tempDir('book-loop-memory-');
+        const file = join(memory, 'fact.md');
+        const { prompt, results } = await run(memory, [memoryFileWrite(file)], mode, {
+          userMessageKind: 'agent-notification',
+          peerTurnClass,
+        });
+        expect(byId(results, 'w1')?.status, label).not.toBe('success');
+        expect(existsSync(file), label).toBe(false);
+        // Refused or asked exactly as in the peer's own turn.
+        expect(byId(results, 'w1')?.structuredError?.code, label).toBe(
+          byId(peerTurn.results, 'w1')?.structuredError?.code,
+        );
+        expect(prompt.mock.calls.length, label).toBe(peerTurn.prompt.mock.calls.length);
+      }
+    }
+  });
+
+  it("still writes memory unprompted in a completion turn of the user's own work", async () => {
+    // The gate keys on the pin, not on the turn's kind: an unpinned completion carries on what
+    // the user started.
+    const memory = tempDir('book-loop-memory-');
+    const file = join(memory, 'fact.md');
+    const { prompt, results } = await run(memory, [memoryFileWrite(file)], 'default', {
+      userMessageKind: 'agent-notification',
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'w1')?.status).toBe('success');
+    expect(existsSync(file)).toBe(true);
   });
 
   for (const mode of ['default', 'accept-edits', 'dontAsk', 'auto'] as const) {

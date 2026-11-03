@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GIT_BASH_EVAL_SCRIPT, shellExecution } from '../shell-selection.js';
 import { posixBash, windowsGitBash, windowsMsysSh } from '../test/real-shells.js';
 import { removeWhenReleased } from '../test/remove-when-released.js';
-import type { BackgroundShellStore } from '../types/runtime.js';
+import type { BackgroundShellRecord, BackgroundShellStore } from '../types/runtime.js';
 import { persistentJobPaths } from './persistent-store.js';
 import { isProcessAlive } from './process-tree.js';
 import { DEFAULT_RUNNER_START_BUDGET_MS, ShellJobManager } from './shell-manager.js';
@@ -119,7 +119,10 @@ describe('ShellJobManager persistent jobs', () => {
       sandboxed: false,
       lifetime: 'persistent',
       workspace: directory,
+      // A pinned run started it (#650): the runner keeps the class in the job's record.
+      peerTurnClass: 'prompting',
     });
+    expect(started.peerTurnClass).toBe('prompting');
     // Output flows through two cold node spawns (detached runner, then the
     // worker) plus log-file writes; contended Windows CI runners push that
     // chain past the helper's 5s default. The property is eventual, not
@@ -138,9 +141,11 @@ describe('ShellJobManager persistent jobs', () => {
     managers.push(second);
     second.configureWorkspace(directory);
     expect(second.get(started.id)?.status).toBe('running');
+    expect(second.get(started.id)?.peerTurnClass).toBe('prompting');
 
     expect(await second.stop(started.id)).toBe(true);
     expect(second.get(started.id)?.status).toBe('killed');
+    expect(second.get(started.id)?.peerTurnClass).toBe('prompting');
 
     const paths = persistentJobPaths(directory, persistentRoot);
     expect(existsSync(join(paths.records, `${started.id}.json`))).toBe(true);
@@ -456,6 +461,36 @@ setInterval(() => {}, 1000);
 });
 
 describe('ShellJobManager session jobs', () => {
+  it('keeps the peer class on every job a pinned run starts, past the finished jobs it retains (#650)', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'book-session-peer-class-'));
+    const script = join(directory, 'done.cjs');
+    writeFileSync(script, '');
+    const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+    const manager = new ShellJobManager({ nextId: 1, shells: new Map() });
+    managers.push(manager);
+    const results: BackgroundShellRecord[] = [];
+    manager.subscribe((event) => {
+      if (event.type === 'background_job_result') results.push(event.job);
+    });
+    const start = () =>
+      manager.start({
+        command,
+        effectiveCommand: command,
+        workdir: directory,
+        env: process.env,
+        sandboxed: false,
+        notify: 'agent',
+        peerTurnClass: 'prompting',
+      });
+    const started: BackgroundShellRecord[] = [];
+    for (let index = 0; index < 21; index++) started.push(await start());
+    await waitFor(() => results.length === 21, '21 job completions', 30_000);
+    // The manager keeps only the newest 20 finished jobs; every completion still names its class.
+    expect(manager.list()).toHaveLength(20);
+    expect(started.map((job) => job.peerTurnClass)).toEqual(Array(21).fill('prompting'));
+    expect(results.map((job) => job.peerTurnClass)).toEqual(Array(21).fill('prompting'));
+  }, 60_000);
+
   // On POSIX, `sh -c` forks the worker into the process group, so the direct child exits from
   // SIGTERM while a worker that ignores SIGTERM survives in the same process group.
   // On Windows, `process.on('SIGTERM')` is inert and there is no process group, but the direct child

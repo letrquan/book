@@ -231,34 +231,92 @@ describe('peer-message delivery in the TUI', () => {
     ]);
   });
 
-  it('pins the completion of a background job a pinned turn started, after the user typed too', async () => {
+  it('pins every completion of a background job a pinned turn started, from the job itself (#650)', async () => {
     const messaging = fakeMessaging();
     const { config, session } = fixture(messaging);
     render(<Harness config={config} session={session} />);
     await new Promise((resolve) => setTimeout(resolve, 30));
+    // The job records the class of the run that started it; no peer turn ran in this process, as
+    // after a restart or `--resume`.
     const shell = {
       id: 'bg-peer',
       title: 'peer job',
       command: 'npm test',
-      status: 'completed',
+      status: 'exited',
       exitCode: 0,
       startedAt: Date.now() - 1000,
       finishedAt: Date.now(),
+      peerTurnClass: 'prompting',
     } as unknown as Parameters<NonNullable<typeof latest>['sendBackgroundShellCompletion']>[0];
-    // The peer turn starts the job: it is listed only once that run has gone.
-    const list = vi
-      .spyOn(latest!.runtime.shellManager, 'list')
-      .mockReturnValueOnce([])
-      .mockReturnValue([shell]);
-    expect(await latest!.sendPeerMessages({ ...batch, turnClass: 'prompting' })).toBe(true);
-    list.mockReturnValue([shell]);
+    expect(await latest!.sendBackgroundShellCompletion(shell)).toBe(true);
+    // A second completion of the same job is pinned too.
+    expect(await latest!.sendBackgroundShellCompletion(shell)).toBe(true);
     // The user's own turn clears the session's pin, but not the pin on the work the peer started.
     await latest!.send('the user types');
     expect(await latest!.sendBackgroundShellCompletion(shell)).toBe(true);
+    // A job the user's own run started names no class: its completion is not pinned.
+    expect(
+      await latest!.sendBackgroundShellCompletion({
+        ...shell,
+        id: 'bg-mine',
+        peerTurnClass: undefined,
+      }),
+    ).toBe(true);
     expect(loopState.calls.map((call) => call.peerTurnClass)).toEqual([
+      'prompting',
       'prompting',
       undefined,
       'prompting',
+      undefined,
+    ]);
+  });
+
+  it('pins the completion of a managed agent a pinned turn spawned, from its notification (#650)', async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const notification = (agentId: string, peerTurnClass?: 'bypass' | 'prompting') => ({
+      deliveryId: `${agentId}:1`,
+      sequence: 1,
+      completion: {
+        agentId,
+        displayName: agentId,
+        profile: 'explorer',
+        status: 'completed' as const,
+        resolvedModel: 'test/model',
+        isolation: 'workspace-readonly' as const,
+        summary: 'Done',
+        summaryCharacters: 4,
+        summaryTruncated: false,
+        errorCharacters: 0,
+        errorTruncated: false,
+        evidenceIds: [],
+        createdAt: 10,
+        startedAt: 20,
+        updatedAt: 80,
+        finishedAt: 80,
+      },
+      ...(peerTurnClass !== undefined ? { peerTurnClass } : {}),
+    });
+    // The user's own turn has cleared the session's pin: the class comes from the agent's record.
+    await latest!.send('the user types');
+    expect(await latest!.sendAgentCompletions([notification('agent-peer', 'bypass')])).toBe(true);
+    // A batch runs in the strictest class among its completions.
+    expect(
+      await latest!.sendAgentCompletions([
+        notification('agent-mine'),
+        notification('agent-peer-2', 'bypass'),
+        notification('agent-peer-3', 'prompting'),
+      ]),
+    ).toBe(true);
+    // An agent the user's own turn spawned names no class.
+    expect(await latest!.sendAgentCompletions([notification('agent-mine-2')])).toBe(true);
+    expect(loopState.calls.map((call) => call.peerTurnClass)).toEqual([
+      undefined,
+      'bypass',
+      'prompting',
+      undefined,
     ]);
   });
 

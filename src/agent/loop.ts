@@ -322,10 +322,12 @@ export async function runAgentLoop(
     resolveAttachment?: (attachment: ImageAttachment) => Promise<Uint8Array> | Uint8Array;
     userMessageKind?: Message['kind'];
     /**
-     * The permission class a `peer-message` turn was delivered in (#620). The gate applies it for
-     * the whole run: a host mode switched into the bypass class meanwhile is read as `default`
-     * (`peerTurnGateMode`), so another session's request keeps asking; a stricter mode applies
-     * as it is. Absent for every other turn.
+     * The permission class a `peer-message` turn was delivered in (#620), or the one a host-delivered
+     * turn that carries a peer turn's work on is pinned to (a completion, a notice). The gate
+     * applies it for the whole run: a host mode switched into the bypass class meanwhile is read as
+     * `default` (`peerTurnGateMode`), so another session's request keeps asking; a stricter mode
+     * applies as it is. A run with a class gets no memory write root (#655). Absent for a turn the
+     * user started.
      */
     peerTurnClass?: PeerPermissionClass;
     /** The prompt was resolved from a command or delegated, not typed by the user. */
@@ -820,10 +822,12 @@ export async function runAgentLoop(
   /**
    * The memory directory as a write root: the root agent only, and only when memory is on with
    * `autoSave`. A subagent or managed child never gets it (a Task subagent runs in
-   * `bypassPermissions`, so the missing field is what keeps it out of memory). Nor does a turn
-   * another session's message started (#620): a memory write needs no prompt, and what it saves
-   * loads into every later session of the workspace, a bypass one included, so a peer could
-   * otherwise steer the sessions it may not message.
+   * `bypassPermissions`, so the missing field is what keeps it out of memory). Nor does a run that
+   * carries another session's words or work (#620): a turn a peer's message started, or one pinned
+   * to a peer turn's class (`peerTurnClass`), such as the completion of a job or agent that turn
+   * started (#655). A memory write needs no prompt, and what it saves loads into every later
+   * session of the workspace, a bypass one included, so a peer could otherwise steer the sessions
+   * it may not message.
    */
   const memoryWriteMode = memoryWriteScope(config);
   const memoryWrite: ToolContext['memoryWrite'] =
@@ -831,7 +835,8 @@ export async function runAgentLoop(
     memoryWriteMode !== 'none' &&
     !options?.isSubagent &&
     !options?.agentId &&
-    options?.userMessageKind !== 'peer-message'
+    options?.userMessageKind !== 'peer-message' &&
+    options?.peerTurnClass === undefined
       ? {
           root: config.memoryContext.dir,
           scope: memoryWriteMode,

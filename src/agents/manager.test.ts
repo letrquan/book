@@ -553,6 +553,38 @@ describe('AgentManager lifecycle', () => {
     manager.dispose();
   });
 
+  it('names the class of the peer turn that spawned an agent on its completion notification (#650)', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history) => history,
+    });
+    const notified: Extract<AgentRuntimeEvent, { type: 'agent_completion' }>['notification'][] = [];
+    manager.subscribe((event) => {
+      if (event.type === 'agent_completion') notified.push(event.notification);
+    });
+
+    const pinned = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'pinned',
+      peerTurnClass: 'bypass',
+    });
+    const plain = await manager.spawn({ agent: 'explorer', prompt: 'plain' });
+    await manager.waitForIdle();
+    const classOf = (list: typeof notified, agentId: string) =>
+      list.find((notification) => notification.completion.agentId === agentId)?.peerTurnClass;
+    expect(classOf(notified, pinned.id)).toBe('bypass');
+    expect(classOf(notified, plain.id)).toBeUndefined();
+    // Listed again from the records, as after a restart, it still names the class.
+    const pending = await manager.listPendingCompletions();
+    expect(classOf(pending, pinned.id)).toBe('bypass');
+    expect(classOf(pending, plain.id)).toBeUndefined();
+    manager.dispose();
+  });
+
   it('tracks resumed execution generations separately from cumulative usage', async () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });
