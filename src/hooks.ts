@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { buildChildEnv } from './child-env.js';
 import type { HookEntry, HookEvent } from './settings.js';
+import { hookMatcherAlternatives, type HookMatcherAlternative } from './hook-matcher.js';
 import { toolPrimaryArg } from './tools/primary-arg.js';
 import { parsePatch } from './tools/patch.js';
 import { runTaskkill, signalProcessGroup } from './jobs/process-tree.js';
@@ -169,29 +170,34 @@ function matchesCompactTrigger(matcher: string, trigger?: 'manual' | 'auto'): bo
 }
 
 /**
- * Check whether a hook entry's matcher pattern matches a tool call.
- * Uses the same Tool(specifier) format as permission rules.
+ * Check whether a hook entry's matcher matches a tool call: any of its `|` alternatives, each a
+ * tool name or `*` for every tool, in the same Tool(specifier) format as permission rules. The
+ * grammar is read in `hook-matcher.ts`, which the ToolSearch gate and `book doctor` read it with
+ * too (#656).
  */
 function matchesHookMatcher(
   matcher: string,
   toolName: string,
   args: Record<string, unknown>,
 ): boolean {
-  // Reuse the permission rule parsing logic (dynamic import to avoid circular deps).
+  const alternatives = hookMatcherAlternatives(matcher);
+  if (!alternatives) return true;
+  return alternatives.some((alternative) => matchesAlternative(alternative, toolName, args));
+}
+
+/** Whether one alternative of a matcher matches a tool call. */
+function matchesAlternative(
+  { tool, pattern }: HookMatcherAlternative,
+  toolName: string,
+  args: Record<string, unknown>,
+): boolean {
   try {
-    // Inline simplified matcher — parse rule and test against primary arg.
-    const parenIdx = matcher.indexOf('(');
-    let ruleTool: string;
-    let pattern: string | null = null;
-    if (parenIdx === -1) {
-      ruleTool = matcher.trim();
-    } else {
-      ruleTool = matcher.slice(0, parenIdx).trim();
-      const closeIdx = matcher.indexOf(')', parenIdx);
-      if (closeIdx > parenIdx) {
-        pattern = matcher.slice(parenIdx + 1, closeIdx).trim() || null;
-      }
-    }
+    // `*` is every tool, and an Edit or Write matcher also sees what ApplyPatch edits.
+    const coversPatch = tool === '*' || tool === 'Edit' || tool === 'Write';
+    const compatibleTool =
+      tool === '*' || tool === toolName || (toolName === 'ApplyPatch' && coversPatch);
+    if (!compatibleTool) return false;
+    if (pattern === null) return true; // match-all
 
     const patchTargets =
       toolName === 'ApplyPatch' && args
@@ -202,45 +208,32 @@ function matchesHookMatcher(
               : [];
           })()
         : [];
-    const compatibleTool =
-      ruleTool === toolName ||
-      (toolName === 'ApplyPatch' && (ruleTool === 'Edit' || ruleTool === 'Write'));
-    if (!compatibleTool) return false;
-    if (pattern === null) return true; // match-all
-
-    if (patchTargets.length > 0 && (ruleTool === 'Edit' || ruleTool === 'Write')) {
-      return patchTargets.some((path) => {
-        const normalizedPath = path.startsWith('./') ? path.slice(2) : path;
-        const normalizedPattern = pattern.startsWith('./') ? pattern.slice(2) : pattern;
-        const reStr = normalizedPattern
-          .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-          .replace(/\*\*/g, '.*')
-          .replace(/ \*$/g, '( .*)?')
-          .replace(/\*/g, '.*');
-        return new RegExp(`^${reStr}$`).test(normalizedPath);
-      });
+    if (patchTargets.length > 0 && coversPatch) {
+      return patchTargets.some((path) => matchesArgumentPattern(pattern, path));
     }
 
     // Extract primary arg from tool arguments using shared utility, the tool's own where it names
     // one (`SessionSend` matches on its recipient).
-    let primaryArg = toolPrimaryArg(toolName, args);
-
-    // Normalize leading ./ in paths.
-    if (primaryArg.startsWith('./')) primaryArg = primaryArg.slice(2);
-    const normPattern = pattern.startsWith('./') ? pattern.slice(2) : pattern;
-
-    // Glob to regex: * → .* (zero or more). A trailing " *" (space-star)
-    // idiom means "optionally followed by space and more args" (CC convention).
-    const reStr = normPattern
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-      .replace(/\*\*/g, '.*')
-      .replace(/ \*$/g, '( .*)?') // trailing " *" = optional args
-      .replace(/\*/g, '.*');
-    const re = new RegExp('^' + reStr + '$');
-    return re.test(primaryArg);
+    return matchesArgumentPattern(pattern, toolPrimaryArg(toolName, args));
   } catch {
     return false; // malformed matcher — skip
   }
+}
+
+/**
+ * A matcher's argument glob against one argument, both with a leading `./` dropped. `*` is zero or
+ * more of anything, and a trailing " *" (space-star) means "optionally followed by a space and more
+ * arguments" (CC convention).
+ */
+function matchesArgumentPattern(pattern: string, argument: string): boolean {
+  const normalizedArgument = argument.startsWith('./') ? argument.slice(2) : argument;
+  const normalizedPattern = pattern.startsWith('./') ? pattern.slice(2) : pattern;
+  const reStr = normalizedPattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '.*')
+    .replace(/ \*$/g, '( .*)?') // trailing " *" = optional args
+    .replace(/\*/g, '.*');
+  return new RegExp(`^${reStr}$`).test(normalizedArgument);
 }
 
 async function runSingleHook(

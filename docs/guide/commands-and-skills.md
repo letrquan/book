@@ -368,7 +368,10 @@ the line that runs a command (`/triage $review`); in a command's body, the REVIE
 requests consent, while `deny` fails closed; no skill can grant tools, bypass permissions, alter the
 sandbox, or execute a packaged script implicitly. Active instructions are scoped to the current run
 by default (or the next model step for `lifetime: turn`) and tool declarations are intersections
-with Book's existing authorized surface.
+with Book's existing authorized surface. A skill's `allowed-tools` apply as soon as it is active:
+when the model activates one with `InvokeSkill`, the calls after it in the same response already
+meet them, and a call they leave out is refused as outside the run's allowed tools, exactly as on
+the next turn.
 
 Newly discovered skills start in `manual` mode. After evaluating representative positive and
 negative prompts, enable automatic matching per skill from `/skills` or by setting its override to
