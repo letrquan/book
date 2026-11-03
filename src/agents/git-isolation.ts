@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { execFile, spawn } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
 import { dirname, join, relative, resolve, sep } from 'path';
 import type { AgentApplyResult, AgentRecord, AgentSnapshot, PatchCandidate } from './types.js';
 import { buildChildEnv } from '../child-env.js';
@@ -14,6 +13,7 @@ import {
 } from '../tools/git.js';
 import { readRepositoryProgramPins } from '../tools/git-repository-programs.js';
 import { ignoresHomeRepository } from '../repo-containment.js';
+import { trustedTempRoot } from '../temp-root.js';
 import { canonicalizePath, isOutside } from '../tools/path-utils.js';
 import {
   signingPinArgs,
@@ -689,7 +689,7 @@ function gitIdentityEnv(): NodeJS.ProcessEnv {
 }
 
 function tempIndex(): { dir: string; path: string } {
-  const dir = mkdtempSync(join(tmpdir(), 'book-index-'));
+  const dir = mkdtempSync(join(trustedTempRoot(), 'book-index-'));
   return { dir, path: join(dir, 'index') };
 }
 

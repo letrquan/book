@@ -19,9 +19,9 @@
  */
 
 import { chmod, lstat, mkdir, realpath, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { resolveBookHome } from '../book-home.js';
+import { trustedTempRoot } from '../temp-root.js';
 import type { SocketDirRefusalReason, SocketDirSource } from '../types/messaging.js';
 
 /**
@@ -40,7 +40,7 @@ export interface SocketDirCandidate {
 
 export interface SocketDirEnvironment {
   env?: NodeJS.ProcessEnv;
-  /** `os.tmpdir()` unless a test pins it. */
+  /** `trustedTempRoot()` (`os.tmpdir()`, checked against startup) unless a test pins it. */
   tmpdir?: string;
   /** This process's uid; `process.getuid()` unless a test pins it. */
   uid?: number;
@@ -49,7 +49,7 @@ export interface SocketDirEnvironment {
   platform?: NodeJS.Platform;
 }
 
-/** The directories to try, in order. Pure. */
+/** The directories to try, in order. Pure apart from resolving the trusted temp root. */
 export function socketDirCandidates(options: SocketDirEnvironment = {}): SocketDirCandidate[] {
   const env = options.env ?? process.env;
   const override = env[SOCKET_DIR_ENV]?.trim();
@@ -68,10 +68,18 @@ export function socketDirCandidates(options: SocketDirEnvironment = {}): SocketD
       candidates.push({ dir: join(runtime, 'book-socks'), source: 'xdg-runtime' });
     }
   }
-  candidates.push({
-    dir: join(options.tmpdir ?? tmpdir(), `book-socks-${options.uid ?? currentUid()}`),
-    source: 'tmp',
-  });
+  let tmp: string | undefined;
+  try {
+    tmp = options.tmpdir ?? trustedTempRoot();
+  } catch (error) {
+    // A temp directory that no longer resolves where it did at startup is no
+    // place for the fallback (temp-root.ts). The earlier candidates are still
+    // tried; with none, the refusal is the answer.
+    if (candidates.length === 0) throw error;
+  }
+  if (tmp !== undefined) {
+    candidates.push({ dir: join(tmp, `book-socks-${options.uid ?? currentUid()}`), source: 'tmp' });
+  }
   return candidates;
 }
 

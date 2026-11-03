@@ -556,11 +556,13 @@ decision you already made and costs nothing, so it is not reported as one the re
 The workspace is bound read-write, with exceptions for the files your machine itself acts on after
 a command exits:
 
-- `.book/` — read-only. When the directory does not exist, Book masks it with an empty read-only
-  directory so a command cannot create it either. **That masking creates an empty `.book/`
-  directory on your disk as a side effect** of running a sandboxed command in such a workspace.
-- `.book/settings.local.json` — masked with a read-only `/dev/null`, so the provider credential it
-  can hold is not merely unwritable inside the sandbox but unreadable.
+- `.book/` — read-only: an empty read-only directory with each entry the command can see bound
+  back into it. When the directory does not exist, Book masks it with an empty read-only directory
+  so a command cannot create it either. **That masking creates an empty `.book/` directory on your
+  disk as a side effect** of running a sandboxed command in such a workspace.
+- `.book/settings.local.json` — never bound into that directory, so the provider credential it can
+  hold is not merely unwritable inside the sandbox but unreadable, even when the host saves a new
+  key while a command runs ([What `.book` looks like inside the sandbox](tools-and-safety.md#what-book-looks-like-inside-the-sandbox)).
 - `.bookrc.json` — read-only when it exists. An absent file is left alone, since bubblewrap cannot
   mount a tmpfs over a file path.
 - Every git directory of the workspace (`.git`, linked worktree admin directories, and submodule

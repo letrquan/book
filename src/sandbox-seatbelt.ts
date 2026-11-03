@@ -47,6 +47,17 @@ export interface SeatbeltRule {
    * name is denied too — over-denial, which fails closed.
    */
   bookTempEntries?: boolean;
+  /**
+   * Narrow every filter to the local settings and every copy of them: a path
+   * with a component whose name carries `settings.local.json` (the file, the
+   * settings writer's `.settings.local.json.<pid>.<uuid>.tmp`, its lock, an
+   * editor's backup), and everything below one. Used for the workspace's
+   * `.book`, at its canonical path, so the rule holds for names that do not
+   * exist yet and for a `.book` that is a link to another directory. Like
+   * `bookTempEntries` it is not anchored to the directory, so a deeper match is
+   * denied too, which fails closed.
+   */
+  localSettingsEntries?: boolean;
 }
 
 export interface SeatbeltPolicy {
@@ -96,6 +107,9 @@ export const BOOK_TEMP_PREFIXES = [
 // The prefixes are constants of this file, letters and `-` only, so they need no
 // regex escaping; a test pins that.
 const BOOK_TEMP_ENTRY_REGEX = `#"/(${BOOK_TEMP_PREFIXES.join('|')})[^/]*(/|$)"`;
+
+/** The names {@link SeatbeltRule.localSettingsEntries} narrows to; `[.]` is a literal dot. */
+const LOCAL_SETTINGS_ENTRY_REGEX = '#"/[^/]*settings[.]local[.]json[^/]*(/|$)"';
 
 /**
  * Read-only system roots: the macOS spelling of what bubblewrap binds read-only
@@ -212,15 +226,19 @@ export function renderSeatbeltProfile(policy: SeatbeltPolicy): RenderedSeatbeltP
     }
     return `(param "${name}")`;
   };
-  const filter = (entry: SeatbeltPathFilter, bookTempEntries = false): string => {
+  const filter = (entry: SeatbeltPathFilter, rule: SeatbeltRule): string => {
     const base = `(${entry.match} ${param(entry.path)})`;
-    return bookTempEntries ? `(require-all ${base} (regex ${BOOK_TEMP_ENTRY_REGEX}))` : base;
+    if (rule.bookTempEntries) return `(require-all ${base} (regex ${BOOK_TEMP_ENTRY_REGEX}))`;
+    if (rule.localSettingsEntries) {
+      return `(require-all ${base} (regex ${LOCAL_SETTINGS_ENTRY_REGEX}))`;
+    }
+    return base;
   };
 
   const lines = [...PREAMBLE];
   for (const rule of policy.rules) {
     if (rule.filters.length === 0) continue;
-    const filters = rule.filters.map((entry) => filter(entry, rule.bookTempEntries));
+    const filters = rule.filters.map((entry) => filter(entry, rule));
     lines.push(`(${rule.action} ${rule.operations.join(' ')} ${filters.join(' ')})`);
   }
 
