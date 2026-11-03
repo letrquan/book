@@ -66,6 +66,7 @@ import {
 } from './agent-events.js';
 import { recordResumeDriver, selectSession, type SessionBootstrap } from './resolve.js';
 import { isSpendlessUsage } from './run-accounting.js';
+import { pricingOverridesFromProviders } from '../pricing.js';
 import { seedShellIds } from '../jobs/shell-ids.js';
 import { SessionRuntime, type SessionRuntimeOptions } from './runtime.js';
 import { createRunAmbientSnapshot } from './run-ambient.js';
@@ -74,6 +75,22 @@ import { deriveSessionName, isHostDeliveredTurn } from './name.js';
 export type AgentLoopRunner = typeof runAgentLoop;
 
 const log = createDebugLogger('session:usage');
+
+/**
+ * Start a root in the runtime's accounting, priced by the rates `config`'s settings declare for
+ * models the built-in table does not list (#663). Every host that starts a root has the config of
+ * the run in hand, and refreshing the rates here is what lets a settings change apply from the
+ * next prompt on without the accounting holding a config of its own.
+ */
+function startAccountedRoot(
+  runtime: SessionRuntime,
+  config: Pick<AgentConfig, 'settings'>,
+  runContext: AgentRunContext,
+  budgetUsd?: number,
+): void {
+  runtime.runAccounting.usePricing(pricingOverridesFromProviders(config.settings.provider));
+  runtime.runAccounting.startRoot(runContext, budgetUsd);
+}
 
 type AgentLoopOptions = NonNullable<Parameters<AgentLoopRunner>[6]>;
 type SessionTimelineStore = Pick<SessionStoreInterface, 'append'> &
@@ -532,7 +549,7 @@ export class AgentSession {
           source: request.source ?? 'internal',
           resumedFromRunId: request.resumedFromRunId,
         });
-      runtime.runAccounting.startRoot(runContext, request.maxBudgetUsd);
+      startAccountedRoot(runtime, request.config, runContext, request.maxBudgetUsd);
       const control: AgentSessionSendControl = {
         signal: operation.signal,
         isCurrent: () => operation.isCurrent() && request.isCurrent?.() !== false,
@@ -1229,7 +1246,7 @@ export class AgentSession {
 
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {
     const runtime = request.runtime ?? this.runtime;
-    if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
+    if (request.runContext) startAccountedRoot(runtime, request.config, request.runContext);
     this.registerUsageTarget(request, runtime);
     const result = await this.compactRunner(request.config, request.history, {
       ...this.accountedOptions(request.options, request.runContext, runtime, request.onUsage),
@@ -1250,7 +1267,7 @@ export class AgentSession {
     request: AgentSessionCompactRequest,
   ): Promise<AgentSessionPrepareCompactOutcome> {
     const runtime = request.runtime ?? this.runtime;
-    if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
+    if (request.runContext) startAccountedRoot(runtime, request.config, request.runContext);
     this.registerUsageTarget(request, runtime);
     const result = await this.compactRunner(request.config, request.history, {
       ...this.accountedOptions(request.options, request.runContext, runtime, request.onUsage),
@@ -1295,7 +1312,7 @@ export class AgentSession {
     const snapshotIds = new Set(prepared.snapshot.map((message) => message.id));
     const delta = request.history.filter((message) => !snapshotIds.has(message.id));
     // The judge spends too, charged to the same root as the reducer it reviews.
-    if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
+    if (request.runContext) startAccountedRoot(runtime, request.config, request.runContext);
     this.registerUsageTarget(request, runtime);
     const accounted = this.accountedOptions(
       { ...request.options, trigger: prepared.trigger },
@@ -1459,7 +1476,7 @@ export class AgentSession {
       });
     const runtime = request.options?.runtime ?? this.runtime;
     const effectiveHistory = request.history;
-    runtime.runAccounting.startRoot(runContext, request.maxBudgetUsd);
+    startAccountedRoot(runtime, request.config, runContext, request.maxBudgetUsd);
     const effectiveConfig = request.options?.modelOverride
       ? {
           ...request.config,

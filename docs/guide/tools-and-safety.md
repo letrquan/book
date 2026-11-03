@@ -240,7 +240,10 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   into the model-facing error text.
 - **Reliability visibility.** `/usage` shows per-tool call and failure counters for the session,
   and `npm run eval:edit` runs a deterministic ~25-task edit-reliability eval against the
-  configured model, writing a report to `.book/reports/`.
+  configured model, writing a report to `.book/reports/`. A task passes when its edit verifies,
+  whether or not Book has a price for the model: a router or BYOK model with no `pricing` in your
+  settings (see [Model pricing](configuration.md#model-pricing)) is scored all the same, and the
+  report shows its cost as unknown.
 
 `npm run eval:compact` runs a real-provider paired benchmark for `/compact`. Every probe runs
 against the original history and the compacted history, so the report can separate baseline model

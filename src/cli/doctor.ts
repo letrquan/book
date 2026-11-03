@@ -10,6 +10,12 @@ import { resolveBookHome } from '../book-home.js';
 import type { HookEntry } from '../settings.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { InboundLayer, InboundResolution } from '../messaging/receive-policy.js';
+import {
+  formatModelRate,
+  pricingOverridesFromProviders,
+  PRICING_SETTING_HINT,
+  resolveModelPricing,
+} from '../pricing.js';
 
 /**
  * How much a settings layer named by `settingsLayers` is trusted, in the terms
@@ -182,6 +188,60 @@ async function describeLiveSessions(): Promise<string> {
 }
 
 /**
+ * What the active model is priced at and where that rate comes from (#663), and any price a
+ * workspace layer tried to set. A price decides what `/cost` shows and what a USD budget
+ * enforces, so only `~/.book/settings.json` and `--settings` may set one; a repository's is
+ * dropped by the loader, and this is where a person who put one in the wrong file finds out.
+ */
+async function describeModelPricing(
+  config: AgentConfig,
+  workspace: string,
+  noSettings: boolean | undefined,
+): Promise<string[]> {
+  const overrides = pricingOverridesFromProviders(config.settings.provider);
+  const resolved = resolveModelPricing(config.model, overrides);
+  const lines = ['Model pricing:'];
+  if (!resolved) {
+    lines.push(
+      `  ${config.model}: unknown, so a USD budget (--max-budget-usd) refuses it; ${PRICING_SETTING_HINT}`,
+    );
+  } else {
+    const source =
+      overrides && Object.hasOwn(overrides, resolved.key) ? 'your settings' : 'built-in table';
+    lines.push(`  ${config.model}: ${formatModelRate(resolved.rate)} (${source})`);
+  }
+  const priced = Object.keys(overrides ?? {}).length;
+  if (priced > 0)
+    lines.push(`  Priced in your settings: ${priced} model${priced === 1 ? '' : 's'}`);
+  if (noSettings) return lines;
+  const {
+    formatIgnoredWorkspaceSandboxKey,
+    ignoredWorkspaceUserOnlyKeys,
+    isUserSettingsFile,
+    loadSettingsFile,
+  } = await import('../settings-loader.js');
+  for (const [label, path] of await settingsLayers(workspace)) {
+    // The user-global layer is where a price is read from, so one there is never ignored. At
+    // `$HOME` the project file is that same file.
+    if (label === 'User' || isUserSettingsFile(path)) continue;
+    let document: unknown;
+    try {
+      document = loadSettingsFile(path);
+    } catch {
+      continue;
+    }
+    for (const entry of ignoredWorkspaceUserOnlyKeys(document).filter((candidate) =>
+      candidate.key.startsWith('provider.'),
+    )) {
+      lines.push(
+        `  Ignored from ${path}: ${formatIgnoredWorkspaceSandboxKey(entry)} — a price is read only from ~/.book/settings.json or --settings`,
+      );
+    }
+  }
+  return lines;
+}
+
+/**
  * Cross-session messaging (#620): whether it is on, where this machine's inbox would bind and
  * whether that directory passes the checks, and any workspace layer that tried to turn it on.
  * Nothing is created: a directory that does not exist yet is reported as such.
@@ -248,7 +308,10 @@ async function describeMessaging(
         value: (document as { messaging?: { inbound?: unknown } } | null)?.messaging?.inbound,
       });
       if (user) continue;
-      for (const entry of ignoredWorkspaceUserOnlyKeys(document)) {
+      // The other user-or-flag-only keys have their own section (`describeModelPricing`).
+      for (const entry of ignoredWorkspaceUserOnlyKeys(document).filter((candidate) =>
+        candidate.key.startsWith('messaging.'),
+      )) {
         lines.push(
           `  Ignored from ${path}: ${formatIgnoredWorkspaceSandboxKey(entry)} — read only from ~/.book/settings.json or --settings`,
         );
@@ -370,6 +433,11 @@ export async function runDoctorCommand(
   // stops the report reading as a description of the user's configuration.
   if (options.noSettings) {
     console.log('  (--no-settings: every layer skipped, defaults reported below)');
+  }
+  console.log();
+
+  for (const line of await describeModelPricing(config, config.workspace, options.noSettings)) {
+    console.log(line);
   }
   console.log();
 

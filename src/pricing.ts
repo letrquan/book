@@ -1,3 +1,4 @@
+import type { ModelPricingSetting } from './settings.js';
 import type { Usage } from './types/messages.js';
 
 /**
@@ -6,8 +7,12 @@ import type { Usage } from './types/messages.js';
  * Convention: Claude Code and Aider both estimate USD locally from a hardcoded
  * table — no API, no live billing. Figures are illustrative and WILL go stale
  * as prices change; the displayed USD is always labeled an estimate.
- * ponytail: ceiling = user-overridable pricing via settings.json (PRICING or
- * a pricing.<model> key); add when a model not in the table needs a custom rate.
+ *
+ * A model the table does not list (anything reached through a router or a BYOK
+ * provider) is priced by the user's own settings instead: `provider.<id>.models.<model>.pricing`
+ * (#663), turned into a `PricingOverrides` table by `pricingOverridesFromProviders`. A settings rate
+ * wins over a table entry of the same id, and a model with neither stays `unknown`, which a USD
+ * budget refuses.
  */
 export const PRICING_VERSION = 'book-local-2026-10-13';
 
@@ -97,6 +102,82 @@ export interface ResolvedModelPricing {
 }
 
 /**
+ * Rates keyed by model id that are consulted before the built-in table: the ones the user's
+ * settings declare. Always built from the user-global file and `--settings`, never from a
+ * workspace layer, which could otherwise set a zero price and defeat a USD budget (#663).
+ */
+export type PricingOverrides = Readonly<Record<string, ModelPricing>>;
+
+/** The part of the resolved `provider` settings that carries prices, so this file need not import them whole. */
+type PricedProviders = Readonly<
+  Record<
+    string,
+    { models?: Readonly<Record<string, { pricing?: ModelPricingSetting } | undefined>> } | undefined
+  >
+>;
+
+/**
+ * The highest cache-write premium a provider charges, as a multiple of the input rate:
+ * Anthropic's one-hour cache. A write on a model with no `cacheCreation` rate is priced at it.
+ */
+const MAX_CACHE_WRITE_MULTIPLIER = 2;
+
+/** A settings rate as the table holds it: `cacheWrite` is the table's `cacheCreation`. */
+function modelPricingFromSetting(declared: ModelPricingSetting): ModelPricing {
+  return {
+    in: declared.in,
+    out: declared.out,
+    ...(declared.cacheRead !== undefined ? { cacheRead: declared.cacheRead } : {}),
+    ...(declared.cacheWrite !== undefined ? { cacheCreation: declared.cacheWrite } : {}),
+  };
+}
+
+/**
+ * The highest of each rate two declarations of one model give. A cache rate a declaration leaves
+ * out is read as `usageCostUsd` prices it (a read at `in`, a write at twice `in`), so neither
+ * declaration can make the other look cheaper than it would be billed.
+ */
+function upperBoundRate(a: ModelPricing, b: ModelPricing): ModelPricing {
+  const read = (rate: ModelPricing): number => rate.cacheRead ?? rate.in;
+  const write = (rate: ModelPricing): number =>
+    rate.cacheCreation ?? rate.in * MAX_CACHE_WRITE_MULTIPLIER;
+  const merged: ModelPricing = { in: Math.max(a.in, b.in), out: Math.max(a.out, b.out) };
+  if (a.cacheRead !== undefined || b.cacheRead !== undefined) {
+    merged.cacheRead = Math.max(read(a), read(b));
+  }
+  if (a.cacheCreation !== undefined || b.cacheCreation !== undefined) {
+    merged.cacheCreation = Math.max(write(a), write(b));
+  }
+  return merged;
+}
+
+/**
+ * The rates the settings declare, keyed by model id, or undefined when none do.
+ *
+ * Keyed by the id a request carries (`provider.r1.models["cmc/x"]` is `cmc/x`), not by the
+ * `<provider>/<model>` selection: the accounting and the reports see only the id the endpoint was
+ * asked for, as the built-in table does. Two providers can declare one id, and nothing here can
+ * tell which of them a request went to, so the highest of each of their rates applies
+ * (`upperBoundRate`): a spend ceiling must not read a model cheaper than anything the user said it
+ * costs, and the answer must not depend on the key order of a JSON file.
+ */
+export function pricingOverridesFromProviders(
+  providers: PricedProviders | undefined,
+): PricingOverrides | undefined {
+  let table: Record<string, ModelPricing> | undefined;
+  for (const provider of Object.values(providers ?? {})) {
+    for (const [model, info] of Object.entries(provider?.models ?? {})) {
+      // `__proto__` would assign to the table's prototype instead of adding an entry.
+      if (!info?.pricing || model === '__proto__') continue;
+      const rate = modelPricingFromSetting(info.pricing);
+      table ??= {};
+      table[model] = Object.hasOwn(table, model) ? upperBoundRate(table[model], rate) : rate;
+    }
+  }
+  return table;
+}
+
+/**
  * Resolve a model id to a rate, falling back to the longest table key the id
  * extends at a separator boundary.
  *
@@ -108,11 +189,13 @@ export interface ResolvedModelPricing {
  */
 export function resolveModelPricing(
   model: string,
-  overrides?: Readonly<Record<string, ModelPricing>>,
+  overrides?: PricingOverrides,
 ): ResolvedModelPricing | undefined {
   const tables = overrides ? [overrides, PRICING] : [PRICING];
   for (const table of tables) {
-    const exact = table[model];
+    // Own properties only: a provider-supplied id such as `constructor` must not find a rate on
+    // `Object.prototype`, which would price the call as NaN dollars.
+    const exact = Object.hasOwn(table, model) ? table[model] : undefined;
     if (exact) return { key: model, rate: exact };
   }
   for (const table of tables) {
@@ -139,6 +222,11 @@ export function resolveModelPricing(
     for (const [key, rate] of Object.entries(table)) {
       if (model.length >= key.length || !key.startsWith(model)) continue;
       if (!PRICING_KEY_BOUNDARY.has(key.charAt(model.length))) continue;
+      // The key must be the alias plus a date stamp, as in the forward direction. Any longer
+      // key is a different model: `deepseek-v4.1` is not `deepseek-v4.1-flash`, and `claude-haiku-5`
+      // is not `claude-haiku-5-5`. Keys a user declares are arbitrary, so this is no longer
+      // only about a curated table.
+      if (!DATED_MODEL_SUFFIX.test(key.slice(model.length))) continue;
       candidates.push({ key, rate });
     }
     // Exactly one, or not at all. Unlike the forward direction — where a provider
@@ -153,12 +241,6 @@ export function resolveModelPricing(
 /** The usage fields a cost needs; cache counts are optional because most callers lack them. */
 export type CostedUsage = Pick<Usage, 'promptTokens' | 'completionTokens'> &
   Partial<Pick<Usage, 'cacheReadInputTokens' | 'cacheCreationInputTokens'>>;
-
-/**
- * The highest cache-write premium a provider charges, as a multiple of the input rate:
- * Anthropic's one-hour cache. A write on a model with no `cacheCreation` rate is priced at it.
- */
-const MAX_CACHE_WRITE_MULTIPLIER = 2;
 
 export type PricingBasis = 'request' | 'pool';
 
@@ -235,8 +317,9 @@ export function usageCostForModel(
   model: string,
   usage: CostedUsage,
   basis: PricingBasis,
+  overrides?: PricingOverrides,
 ): { rate: ModelPricing; costUsd: number } | undefined {
-  const rate = resolveModelPricing(model)?.rate;
+  const rate = resolveModelPricing(model, overrides)?.rate;
   return rate ? { rate, costUsd: usageCostUsd(rate, usage, basis) } : undefined;
 }
 
@@ -257,10 +340,7 @@ export type UsageCostEstimate =
       reason: 'unknown-model';
     };
 
-export function hasKnownPricing(
-  model: string,
-  overrides?: Readonly<Record<string, ModelPricing>>,
-): boolean {
+export function hasKnownPricing(model: string, overrides?: PricingOverrides): boolean {
   return resolveModelPricing(model, overrides) !== undefined;
 }
 
@@ -272,7 +352,7 @@ export function estimateUsageCost(
   model: string,
   usage: Usage,
   basis: PricingBasis,
-  overrides?: Readonly<Record<string, ModelPricing>>,
+  overrides?: PricingOverrides,
 ): UsageCostEstimate {
   const resolved = resolveModelPricing(model, overrides);
   if (!resolved) {
@@ -327,8 +407,13 @@ interface ModelTotal {
   usd: number | null;
 }
 
-function usdFor(model: string, usage: CostedUsage, basis: PricingBasis): number | null {
-  return usageCostForModel(model, usage, basis)?.costUsd ?? null;
+function usdFor(
+  model: string,
+  usage: CostedUsage,
+  basis: PricingBasis,
+  overrides?: PricingOverrides,
+): number | null {
+  return usageCostForModel(model, usage, basis, overrides)?.costUsd ?? null;
 }
 
 /**
@@ -345,6 +430,7 @@ function modelTotals(
   leadUsage: CostedUsage | null,
   delegated: readonly DelegatedUsage[],
   leadCostUsd?: number | null,
+  overrides?: PricingOverrides,
 ): ModelTotal[] {
   const byModel = new Map<string, ModelTotal>();
   const add = (model: string, usage: CostedUsage, usd: number | null, isAgent: boolean): void => {
@@ -376,11 +462,13 @@ function modelTotals(
   };
   if (leadUsage) {
     const leadUsd =
-      typeof leadCostUsd === 'number' ? leadCostUsd : usdFor(leadModel, leadUsage, 'pool');
+      typeof leadCostUsd === 'number'
+        ? leadCostUsd
+        : usdFor(leadModel, leadUsage, 'pool', overrides);
     add(leadModel, leadUsage, leadUsd, false);
   }
   for (const del of delegated) {
-    add(del.model, del.usage, usdFor(del.model, del.usage, 'pool'), true);
+    add(del.model, del.usage, usdFor(del.model, del.usage, 'pool', overrides), true);
   }
   return [...byModel.values()];
 }
@@ -390,13 +478,14 @@ function buildUpperBoundNote(
   leadUsage: CostedUsage | null,
   delegated: readonly DelegatedUsage[],
   leadCostUsd?: number | null,
+  overrides?: PricingOverrides,
 ): string | undefined {
   const pooledTiered = new Map<string, ModelPricing>();
 
   const check = (model: string, usage: CostedUsage | null, isPooled: boolean) => {
     if (!isPooled || !usage) return;
     if (promptSizeTokens(usage) === 0 && usage.completionTokens === 0) return;
-    const rate = resolveModelPricing(model)?.rate;
+    const rate = resolveModelPricing(model, overrides)?.rate;
     if (rate?.longPrompt && !pooledTiered.has(model)) {
       pooledTiered.set(model, rate);
     }
@@ -432,8 +521,9 @@ export function modelBreakdownLines(
   leadUsage: CostedUsage | null,
   delegated: readonly DelegatedUsage[],
   leadCostUsd?: number | null,
+  overrides?: PricingOverrides,
 ): string[] {
-  const rows = modelTotals(leadModel, leadUsage, delegated, leadCostUsd);
+  const rows = modelTotals(leadModel, leadUsage, delegated, leadCostUsd, overrides);
   if (rows.length <= 1) return [];
 
   const lines = ['Per model'];
@@ -452,12 +542,12 @@ export function modelBreakdownLines(
   // Skip counterfactual when the lead or any row model is tiered: a saving computed
   // against a bound is an artifact.
   const isTiered = (model: string): boolean =>
-    resolveModelPricing(model)?.rate.longPrompt !== undefined;
+    resolveModelPricing(model, overrides)?.rate.longPrompt !== undefined;
   if (isTiered(leadModel) || rows.some((row) => isTiered(row.model))) return lines;
 
   // A cache rate the lead does not list would be priced at its upper bound, and the "saving"
   // would then be an artifact of that bound, not a comparison.
-  const leadRate = resolveModelPricing(leadModel)?.rate;
+  const leadRate = resolveModelPricing(leadModel, overrides)?.rate;
   const boundedOnLead = rows.some(
     (row) =>
       (row.cacheReadInputTokens > 0 && leadRate?.cacheRead === undefined) ||
@@ -465,7 +555,7 @@ export function modelBreakdownLines(
   );
   if (boundedOnLead) return lines;
   const allOnLead = rows.reduce(
-    (sum, row) => sum + (usdFor(leadModel, row, 'pool') ?? Number.NaN),
+    (sum, row) => sum + (usdFor(leadModel, row, 'pool', overrides) ?? Number.NaN),
     0,
   );
   if (!Number.isFinite(allOnLead)) return lines;
@@ -483,12 +573,16 @@ export function modelBreakdownLines(
 }
 
 /**
- * What /cost and /usage say for a model the table has no rate for. It speaks to
- * the person reading the report: pointing them at a source file they cannot
- * edit in an installed build only explained how the table is maintained.
+ * How a person gives an unlisted model a price (#663), for every report or refusal that names an
+ * unpriced one. It points at the settings file they can edit; the built-in table is source code
+ * they cannot change in an installed build.
  */
+export const PRICING_SETTING_HINT =
+  'set provider.<id>.models.<model>.pricing in ~/.book/settings.json to price it';
+
+/** What /cost and /usage say for a model with no rate, in the table or in the settings. */
 function unpricedLine(model: string): string {
-  return `Est. cost: pricing unknown for "${model}"; tokens are counted, dollars are not`;
+  return `Est. cost: pricing unknown for "${model}"; tokens are counted, dollars are not (${PRICING_SETTING_HINT})`;
 }
 
 /**
@@ -519,7 +613,7 @@ export interface BillScope {
 export interface SessionTotals {
   /** Lead and delegated usage added together, for a report's headline counts. */
   usage: CostedUsage & { totalTokens: number };
-  /** Summed over every row; null when any row's model has no rate in the table. */
+  /** Summed over every row; null when any row's model has no rate (in the table or the settings). */
   usd: number | null;
   /** Every model the session ran on, in the order it first appears. */
   models: string[];
@@ -542,8 +636,9 @@ export function sessionTotals(
   leadUsage: (CostedUsage & { totalTokens: number }) | null,
   delegated: readonly DelegatedUsage[] = [],
   leadCostUsd?: number | null,
+  overrides?: PricingOverrides,
 ): SessionTotals {
-  const rows = modelTotals(leadModel, leadUsage, delegated, leadCostUsd);
+  const rows = modelTotals(leadModel, leadUsage, delegated, leadCostUsd, overrides);
   // Left as it was when there is nothing to add: a session that delegated nothing
   // reports its own usage verbatim rather than a re-summed copy of it.
   let usage: (CostedUsage & { totalTokens: number }) | null = leadUsage;
@@ -554,7 +649,13 @@ export function sessionTotals(
   }
   const pricedEveryRow = rows.every((row): row is ModelTotal & { usd: number } => row.usd !== null);
   const usd = pricedEveryRow ? rows.reduce((sum, row) => sum + row.usd, 0) : null;
-  const upperBoundNote = buildUpperBoundNote(leadModel, leadUsage, delegated, leadCostUsd);
+  const upperBoundNote = buildUpperBoundNote(
+    leadModel,
+    leadUsage,
+    delegated,
+    leadCostUsd,
+    overrides,
+  );
   return {
     usage: usage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     // One row with no rate makes the whole sum unavailable: a partial total would
@@ -589,11 +690,12 @@ export function costReport(
   delegated: readonly DelegatedUsage[] = [],
   scope: BillScope = {},
   leadCostUsd?: number | null,
+  overrides?: PricingOverrides,
 ): string {
   if (!usage && delegated.length === 0) {
     return 'No token usage recorded for this session yet.\n\n(USD estimate available after the first model response.)';
   }
-  const totals = sessionTotals(model, usage, delegated, leadCostUsd);
+  const totals = sessionTotals(model, usage, delegated, leadCostUsd, overrides);
   const bill = totals.usage;
   // One line: what it cost, what it used, on which model. It used to take
   // three labelled lines (Model, Tokens, Est. cost) to say the same thing.
@@ -601,10 +703,10 @@ export function costReport(
   const models = totals.models.join(', ');
   const summary =
     totals.usd === null
-      ? `${tokens} · ${models} ${totals.models.length > 1 ? 'have' : 'has'} no price, so no dollar estimate`
+      ? `${tokens} · ${models} ${totals.models.length > 1 ? 'have' : 'has'} no price, so no dollar estimate (${PRICING_SETTING_HINT})`
       : `$${totals.usd.toFixed(4)} estimated · ${tokens} · ${models}`;
   const notes = headlineNotes(totals, scope);
-  const breakdown = modelBreakdownLines(model, usage, delegated, leadCostUsd);
+  const breakdown = modelBreakdownLines(model, usage, delegated, leadCostUsd, overrides);
   const lines = [notes ? `${summary} · ${notes}` : summary];
   if (totals.upperBoundNote) {
     lines.push(totals.upperBoundNote);
@@ -642,6 +744,7 @@ export function usageReport(
   delegated: readonly DelegatedUsage[] = [],
   scope: BillScope = {},
   leadCostUsd?: number | null,
+  overrides?: PricingOverrides,
 ): string {
   const lines: string[] = ['Session usage', ''];
   lines.push(`Model: ${model}`);
@@ -650,7 +753,7 @@ export function usageReport(
     lines.push(`Last turn duration: ${(session.turnDurationMs / 1000).toFixed(1)}s`);
   }
   lines.push('');
-  const totals = sessionTotals(model, usage, delegated, leadCostUsd);
+  const totals = sessionTotals(model, usage, delegated, leadCostUsd, overrides);
   if (!usage && totals.delegatedAgents === 0) {
     lines.push('Tokens: (no model response yet this session)');
     lines.push('');
@@ -671,7 +774,7 @@ export function usageReport(
     );
   } else {
     // One model priced the whole total, so its rate describes the whole figure.
-    const rate = resolveModelPricing(totals.models[0])?.rate;
+    const rate = resolveModelPricing(totals.models[0], overrides)?.rate;
     lines.push(
       rate
         ? `Est. cost: $${totals.usd.toFixed(4)}  (local estimate — ${formatModelRate(rate)})`
@@ -699,7 +802,7 @@ export function usageReport(
   lines.push('');
   // The same helper /cost uses, so a session that delegated reads identically in
   // both reports rather than one counting an agent and the other not (#370).
-  const breakdown = modelBreakdownLines(model, usage, delegated, leadCostUsd);
+  const breakdown = modelBreakdownLines(model, usage, delegated, leadCostUsd, overrides);
   if (breakdown.length) lines.push(...breakdown);
   // Only true when agents are actually on the report: a session that delegated
   // nothing says nothing about them (#370).

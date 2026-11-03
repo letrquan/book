@@ -2,7 +2,12 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { SessionStore } from '../session/store.js';
 import { resolveBookHome } from '../book-home.js';
-import { estimateUsageCost } from '../pricing.js';
+import {
+  estimateUsageCost,
+  pricingOverridesFromProviders,
+  type PricingOverrides,
+} from '../pricing.js';
+import { loadSettingsFile } from '../settings-loader.js';
 import { readRunStatus, runStatusPath, type RunStatusRecord } from '../run-status.js';
 import type { LoadedSession, SessionMeta } from '../types/sessions.js';
 import type { Message } from '../types/messages.js';
@@ -159,6 +164,7 @@ export function buildSessionStatus(
   meta: SessionMeta,
   loaded: LoadedSession,
   runRecord?: RunStatusRecord,
+  pricing?: PricingOverrides,
 ): SessionStatus {
   const usage = loaded.carriedUsage;
   const models = loaded.carriedModels ?? [];
@@ -177,6 +183,7 @@ export function buildSessionStatus(
           cacheCreationInputTokens: usage.cacheCreationInputTokens,
         },
         'pool',
+        pricing,
       );
       if (quote.status !== 'known') {
         costUsd = null;
@@ -364,6 +371,24 @@ export function renderSessionStatus(status: SessionStatus, now = Date.now()): st
   return lines.join('\n');
 }
 
+/**
+ * The rates the user's settings declare for models the built-in table does not list (#663), so a
+ * router model's spend reads as dollars here as it does in `/cost`.
+ *
+ * Only the user-global file is read, because it is the only place a price can come from here: a
+ * workspace layer's price is ignored by the loader, and this command takes no `--settings`. That
+ * also keeps a workspace file that does not load from taking the user's prices with it. Settings
+ * are not a credential, but a file that does not load must not stop a command that exists for a
+ * broken setup: the session is then priced by the table alone.
+ */
+function settingsPricing(home: string): PricingOverrides | undefined {
+  try {
+    return pricingOverridesFromProviders(loadSettingsFile(join(home, 'settings.json'))?.provider);
+  } catch {
+    return undefined;
+  }
+}
+
 export interface StatusCommandOptions {
   session?: string;
   workspace: string;
@@ -397,7 +422,12 @@ export function runStatusCommand(options: StatusCommandOptions): number {
     return 1;
   }
 
-  const status = buildSessionStatus(meta, store.load(meta.id), readRunStatus(meta.id, home));
+  const status = buildSessionStatus(
+    meta,
+    store.load(meta.id),
+    readRunStatus(meta.id, home),
+    settingsPricing(home),
+  );
   stdout.write(
     options.json ? `${JSON.stringify(status, null, 2)}\n` : `${renderSessionStatus(status)}\n`,
   );

@@ -147,14 +147,16 @@ layers (`~/.book/settings.json`, `--settings`) are trusted and unchanged.
   `--settings`) define. `type` and `api` decide how the key is sent (a bearer token to
   `/chat/completions` or `/responses`, or `x-api-key` to `/v1/messages`), so changing them would
   re-route your key without moving the origin. The override is dropped and reported, at launch and in `book doctor`. Only its `models`
-  still merge, so a repository can still add a model to your provider. The model picker's refresh
+  still merge, so a repository can still add a model to your provider, but not a price for it (see
+  [Model pricing](#model-pricing)). The model picker's refresh
   and hand-typed models write only what your own file holds, never a value a workspace layer
   merged in.
 - **A provider only a repository declares is withheld.** It is not in effect until
   `book trust provider <id>` approves it. The decision is recorded in `~/.book/trust.json`, which
   nothing a repository ships can write, and it is keyed by a fingerprint of the declaration's
   `type`, origin and `apiKey` text, and its `api` when it sets one. Changing the `baseURL` or the key reference needs a new
-  approval; editing its `models` does not. `book trust provider` shows what a request would
+  approval; editing its `models` does not, and approving it never approves a `pricing` in them,
+  which is ignored (see [Model pricing](#model-pricing)). `book trust provider` shows what a request would
   actually reach, in full: the parsed protocol, host and port of the origin (a URL with userinfo
   before the host, or one that does not parse, is flagged), the variable an `{env:…}` reference
   names, and the normalised file a `{file:…}` reference opens, with `~` expanded and `..`
@@ -262,6 +264,74 @@ and removes the connection keys of a same-named entry in `.book/settings.local.j
 local key cannot look as though it overrides the new one. It leaves that entry's
 `reportedContextWindow` and the local `model` alone, since no catalog was refreshed and no model
 activated, and it never creates a local entry or file.
+
+### Model pricing
+
+`/cost`, `/usage`, `book status`, the stream-json `result` and `--max-budget-usd` turn tokens into
+dollars with a rate per model. Book ships rates for the models it knows. Any other model, and in
+particular one reached through a router or a BYOK provider, has no price: its tokens are counted,
+its dollars are not, `eval:edit` records its cost as unknown, and a USD budget refuses it rather
+than run unmetered. Declare the rate, in dollars per million tokens, on the model's entry:
+
+```json
+{
+  "provider": {
+    "r1": {
+      "type": "openai",
+      "baseURL": "http://127.0.0.1:20128/v1",
+      "apiKey": "{env:ROUTER_KEY}",
+      "models": {
+        "cmc/deepseek/deepseek-v4.1-flash": {
+          "pricing": { "in": 0.14, "out": 0.28, "cacheRead": 0.014 }
+        }
+      }
+    }
+  }
+}
+```
+
+| Field        | Meaning                                                       |
+| ------------ | ------------------------------------------------------------- |
+| `in`         | Input tokens, $ per million. Required.                        |
+| `out`        | Output tokens, $ per million. Required.                       |
+| `cacheRead`  | Input tokens served from the provider's cache, $ per million. |
+| `cacheWrite` | Input tokens written to the provider's cache, $ per million.  |
+
+Every rate is a finite number of zero or more. Zero is a price: a local model costs nothing. A
+negative or non-numeric rate, or a `pricing` missing `in` or `out`, fails the settings file with
+the field named. A cache read with no `cacheRead` is priced at `in`, and a cache write with no
+`cacheWrite` at twice `in`, the upper bounds the built-in table uses, so a budget still works.
+
+- **The model id is the key.** It is the id under `models` (`cmc/deepseek/deepseek-v4.1-flash`,
+  not `r1/cmc/deepseek/deepseek-v4.1-flash`), because that is the id a request carries and the one
+  the built-in table is keyed by. A dated id the endpoint reports back
+  (`cmc/deepseek/deepseek-v4.1-flash-20261101`) is priced from the declared one, and an undated
+  alias from a declared dated key; a different model whose id merely starts or ends like a
+  declared one (`deepseek-v4.1` next to a declared `deepseek-v4.1-flash`) is not priced from it. If
+  two providers declare the same id at different rates, the highest of each rate applies (a cache
+  rate a declaration leaves out counts as the upper bound it is billed at), so a budget never reads
+  the model as cheaper than anything you said it costs.
+- **A declared rate wins over the built-in one** for the same id, so a price that has gone stale
+  in the table can be corrected without waiting for a release.
+- **It is read only from `~/.book/settings.json` and `--settings`.** A price decides what `/cost`
+  shows and what a USD budget enforces: a repository that priced its model at zero would never
+  trip your budget, and `.book/settings.local.json` can be force-added to a clone. A `pricing` in
+  `.book/settings.json` or `.book/settings.local.json` is therefore ignored, on a provider you
+  define and on a provider only the repository declares, even one you approved: the approval
+  covers where requests go, not what they cost. The model stays unpriced (a USD budget still
+  refuses it) until you declare the rate yourself. `book doctor` lists the rate in force for the
+  active model and where it comes from, and every workspace price it ignored, under
+  `Model pricing:`. The settings writers refuse a price in a workspace scope too.
+- **Refreshing the catalog keeps it.** `/model`'s refresh and a hand-added model leave the
+  `pricing` you set. A model with a price stays through a refresh even when the endpoint stops
+  listing it, as a hand-added one does, because without its rate a USD budget would refuse it. A
+  model with neither is dropped when the endpoint stops listing it, as are its other per-model
+  fields.
+- **Everything that prices tokens reads it:** `/cost` and `/usage` (delegated agents included),
+  the status line's session bill, `book status`, the `--max-budget-usd` check and the stream-json
+  `result`'s `costUsd` and `costStatus` (`known` once the model is priced), and the evals.
+  `book status` reads `~/.book/settings.json` alone: it takes no `--settings`, so a price kept
+  only in a `--settings` file is not seen there.
 
 ### The OpenAI Responses API
 
@@ -393,8 +463,9 @@ nothing for Book today. What Book does on that path is read the cache counts a p
 `cached_tokens`, OpenRouter's `cache_write_tokens`, 9router's `cache_creation_tokens`, DashScope's
 `prompt_tokens_details.cache_creation_input_tokens`, and LiteLLM's top-level
 `cache_read_input_tokens` / `cache_creation_input_tokens`. `/cost`, `/usage` and
-`--max-budget-usd` then price cached input at the model's cache rates. A cache read on a model with
-no listed cache-read rate is priced at its input rate, and a cache write with no listed rate at
+`--max-budget-usd` then price cached input at the model's cache rates, which are the built-in
+table's or the `cacheRead` and `cacheWrite` you declare under [Model pricing](#model-pricing). A
+cache read on a model with no listed cache-read rate is priced at its input rate, and a cache write with no listed rate at
 twice it, the highest write premium a provider charges: both are upper bounds, so
 `--max-budget-usd` keeps working.
 A model priced by prompt length, such as `claude-haiku-5-5` (more above 100,000 prompt tokens), is

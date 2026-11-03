@@ -34,7 +34,11 @@ import { resolveContextLimit } from './models.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { seedObservationLedger } from './tools/file-provenance.js';
 import { normalizePersistedTodos } from './tools/todo.js';
-import { estimateUsageCost } from './pricing.js';
+import {
+  estimateUsageCost,
+  pricingOverridesFromProviders,
+  type PricingOverrides,
+} from './pricing.js';
 import { createSessionHistoryTools } from './tools/session-history.js';
 import {
   createStreamParser,
@@ -67,10 +71,14 @@ import { createReaderFlush } from './reader-gone.js';
  * model's rate keeps the restored total an upper bound — the safe direction for a
  * spend ceiling. Any unpriceable model makes the total unknown.
  */
-function carriedCostUsd(usage: Usage, models: readonly string[]): number | null {
+function carriedCostUsd(
+  usage: Usage,
+  models: readonly string[],
+  pricing?: PricingOverrides,
+): number | null {
   let worst: number | null = null;
   for (const model of models) {
-    const quote = estimateUsageCost(model, usage, 'pool');
+    const quote = estimateUsageCost(model, usage, 'pool', pricing);
     if (quote.status !== 'known') return null;
     worst = worst === null ? quote.costUsd : Math.max(worst, quote.costUsd);
   }
@@ -823,6 +831,12 @@ export async function runHeadless(
       if (opts.prompt) prompts.unshift(opts.prompt);
     }
 
+    // The rates the settings declare for models the built-in table does not list (#663). Set on
+    // the accounting here as well as by the session at each run, because a command the host
+    // performs itself (`/review`) spends under a root before any run exists.
+    const pricing = pricingOverridesFromProviders(config.settings.provider);
+    runtime.runAccounting.usePricing(pricing);
+
     // A USD cap has to bound the OBJECTIVE, not one prompt. Every submitted line
     // mints a fresh root and `startRoot` seeds the full cap into it, so a hundred
     // stream-json prompts under a $50 cap would authorise $5000 inside a single
@@ -838,6 +852,7 @@ export async function runHeadless(
           costUsd: carriedCostUsd(
             opts.carriedUsage,
             opts.carriedModels?.length ? opts.carriedModels : [config.model],
+            pricing,
           ),
         }
       : undefined;

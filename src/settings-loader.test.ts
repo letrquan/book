@@ -12,6 +12,7 @@ import {
   ignoredWorkspaceSandboxKeys,
   ignoredWorkspaceUserOnlyKeys,
   formatIgnoredWorkspaceSandboxKey,
+  isUserOrFlagOnlySettingPath,
   isUserSettingsFile,
   settingsLayerPaths,
   workspaceLayerThatEnabledSandbox,
@@ -2217,6 +2218,130 @@ describe('a local advisorModel "off"', () => {
     writeLayer('settings.local.json', { advisorModel: 'local/adv' });
 
     expect(load().advisorModel).toBe('local/adv');
+  });
+});
+
+describe('user-or-flag-only keys: a model price (#663)', () => {
+  const priced = (model: string, rate = { in: 0, out: 0 }) => ({
+    provider: { r1: { models: { [model]: { pricing: rate } } } },
+  });
+
+  function resolveWith(layers: {
+    user?: object;
+    project?: object;
+    local?: object;
+    override?: object;
+  }) {
+    const paths = {
+      userSettingsPath: join(userDir, 'user.json'),
+      projectSettingsPath: join(dir, '.book', 'settings.json'),
+      localSettingsPath: join(dir, '.book', 'settings.local.json'),
+      trustStorePath: join(userDir, 'trust.json'),
+    };
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    if (layers.user) writeFileSync(paths.userSettingsPath, JSON.stringify(layers.user));
+    if (layers.project) writeFileSync(paths.projectSettingsPath, JSON.stringify(layers.project));
+    if (layers.local) writeFileSync(paths.localSettingsPath, JSON.stringify(layers.local));
+    const overridePath = layers.override ? join(userDir, 'override.json') : undefined;
+    if (overridePath) writeFileSync(overridePath, JSON.stringify(layers.override));
+    return resolveSettings(dir, overridePath, paths);
+  }
+
+  it('names the key as a path too, because a model id can hold a dot', () => {
+    const document = priced('vendor/model.v2');
+    expect(ignoredWorkspaceUserOnlyKeys(document)).toEqual([
+      {
+        key: 'provider.r1.models.vendor/model.v2.pricing',
+        value: { in: 0, out: 0 },
+        path: ['provider', 'r1', 'models', 'vendor/model.v2', 'pricing'],
+      },
+    ]);
+  });
+
+  it('drops the price of a model whose id has dots, and keeps the rest of its entry', () => {
+    const user = { provider: { r1: { baseURL: 'https://r.example/v1', models: { 'a.b.c': {} } } } };
+    const project = {
+      provider: { r1: { models: { 'a.b.c': { label: 'ABC', pricing: { in: 0, out: 0 } } } } },
+    };
+    expect(resolveWith({ user, project }).provider.r1.models['a.b.c']).toEqual({ label: 'ABC' });
+  });
+
+  it('reads a price from the user layer and --settings, and from no workspace layer', () => {
+    const rate = { in: 2, out: 4 };
+    const priceOf = (settings: ResolvedSettings) => settings.provider.r1?.models.m?.pricing;
+    expect(priceOf(resolveWith({ user: priced('m', rate) }))).toEqual(rate);
+    expect(priceOf(resolveWith({ override: priced('m', rate) }))).toEqual(rate);
+    expect(
+      priceOf(resolveWith({ user: priced('m', rate), override: priced('m', { in: 9, out: 9 }) })),
+    ).toEqual({ in: 9, out: 9 });
+    const declared = { provider: { r1: { models: { m: {} } } } };
+    expect(priceOf(resolveWith({ user: declared, project: priced('m') }))).toBeUndefined();
+    expect(priceOf(resolveWith({ user: declared, local: priced('m') }))).toBeUndefined();
+    expect(
+      priceOf(resolveWith({ user: priced('m', rate), project: priced('m'), local: priced('m') })),
+    ).toEqual(rate);
+  });
+
+  it('does not touch the other keys a workspace layer sets on the same model', () => {
+    const user = { provider: { r1: { baseURL: 'https://r.example/v1', models: { m: {} } } } };
+    const project = {
+      provider: { r1: { models: { m: { contextWindow: 64_000, pricing: { in: 0, out: 0 } } } } },
+    };
+    expect(resolveWith({ user, project }).provider.r1.models.m).toEqual({ contextWindow: 64_000 });
+  });
+
+  it('is a user-or-flag-only path from the key itself down, not above it', () => {
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.m.pricing')).toBe(true);
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.m.pricing.in')).toBe(true);
+    // A model id with dots in it is one segment of the key, not several.
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.deepseek-v4.1-flash.pricing')).toBe(
+      true,
+    );
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.a.b.c.pricing.cacheRead')).toBe(true);
+    // Above the key, a provider or a model can be rewritten or removed without setting a price.
+    expect(isUserOrFlagOnlySettingPath('provider')).toBe(false);
+    expect(isUserOrFlagOnlySettingPath('provider.r1')).toBe(false);
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.m')).toBe(false);
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.m.contextWindow')).toBe(false);
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.deepseek-v4.1-flash')).toBe(false);
+    // A model that is called `pricing` is a model, not a price.
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.pricing')).toBe(false);
+    expect(isUserOrFlagOnlySettingPath('provider.r1.models.pricingX')).toBe(false);
+    // The messaging keys keep the rule they had: the key, or a container holding it.
+    expect(isUserOrFlagOnlySettingPath('messaging.enabled')).toBe(true);
+    expect(isUserOrFlagOnlySettingPath('messaging')).toBe(true);
+    expect(isUserOrFlagOnlySettingPath('model')).toBe(false);
+  });
+
+  it('is refused by the workspace writers, and written to the user layer', () => {
+    const rate = { in: 1, out: 2 };
+    expect(blockedWorkspaceSettingWrite('provider.r1.models.m.pricing', rate)).toContain(
+      'provider.r1.models.m.pricing is ignored when read from any file inside the workspace',
+    );
+    expect(blockedWorkspaceSettingWrite('provider.r1.models.m.pricing.in', 1)).toBeDefined();
+    // The dotted form cannot be split back into a document for a model id that has dots in it,
+    // so the path is what is judged.
+    expect(
+      blockedWorkspaceSettingWrite('provider.r1.models.deepseek-v4.1-flash.pricing', rate),
+    ).toContain(
+      'provider.r1.models.deepseek-v4.1-flash.pricing is ignored when read from any file',
+    );
+    expect(
+      blockedWorkspaceSettingWrite('provider.r1.models.deepseek-v4.1-flash.label', 'x'),
+    ).toBeUndefined();
+    expect(blockedWorkspaceSettingWrite('provider.r1.models.m.pricing')).toBeDefined();
+    // A whole provider block is judged by what it stores.
+    expect(blockedWorkspaceSettingWrite('provider', priced('m', rate).provider)).toBeDefined();
+    expect(
+      blockedWorkspaceSettingWrite('provider.r1', { models: { m: { pricing: rate } } }),
+    ).toBeDefined();
+    expect(
+      blockedWorkspaceSettingWrite('provider', { r1: { models: { m: { label: 'M' } } } }),
+    ).toBeUndefined();
+    expect(blockedWorkspaceSettingWrite('provider.r1')).toBeUndefined();
+    expect(blockedConfigWritePath('provider.r1.models.m.pricing', rate, 'local')).toBeDefined();
+    expect(blockedConfigWritePath('provider.r1.models.m.pricing', rate, 'project')).toBeDefined();
+    expect(blockedConfigWritePath('provider.r1.models.m.pricing', rate, 'user')).toBeUndefined();
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../session/store.js';
@@ -104,6 +104,72 @@ describe('book status', () => {
     const status = buildSessionStatus(s.findById(id)!, s.load(id));
     expect(status.costUsd).toBeNull();
     expect(renderSessionStatus(status)).toContain('pricing unknown');
+  });
+
+  it('prices a model the user settings declare a rate for (#663)', () => {
+    const s = store();
+    const id = s.create({ cwd: process.cwd() });
+    s.append(id, {
+      type: 'usage',
+      timestamp: Date.now(),
+      data: {
+        version: 1,
+        usage: { promptTokens: 1_000_000, completionTokens: 1_000_000, totalTokens: 2_000_000 },
+        responseModel: 'some-local-model',
+      },
+    });
+
+    const status = buildSessionStatus(s.findById(id)!, s.load(id), undefined, {
+      'some-local-model': { in: 0.14, out: 0.28 },
+    });
+    expect(status.costUsd).toBeCloseTo(0.42, 8);
+    expect(renderSessionStatus(status)).not.toContain('pricing unknown');
+  });
+
+  it('reads that rate from the user settings file when run as a command (#663)', () => {
+    const s = store();
+    const home = mkdtempSync(join(tmpdir(), 'book-status-home-'));
+    // A workspace of its own, so no settings file of this repository is read as a layer.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-status-workspace-'));
+    dirs.push(home, workspace);
+    const id = s.create({ cwd: workspace });
+    s.append(id, {
+      type: 'usage',
+      timestamp: Date.now(),
+      data: {
+        version: 1,
+        usage: { promptTokens: 1_000_000, completionTokens: 0, totalTokens: 1_000_000 },
+        responseModel: 'some-local-model',
+      },
+    });
+    const run = () => {
+      const out = capture();
+      runStatusCommand({ session: id, workspace, store: s, home, json: true, stdout: out });
+      return (JSON.parse(out.text()) as { costUsd: number | null }).costUsd;
+    };
+
+    expect(run()).toBeNull();
+    writeFileSync(
+      join(home, 'settings.json'),
+      JSON.stringify({
+        provider: { r1: { models: { 'some-local-model': { pricing: { in: 2, out: 4 } } } } },
+      }),
+    );
+    expect(run()).toBeCloseTo(2, 8);
+    // A workspace file that does not load takes nothing from the user's prices: only the user
+    // file is read.
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(join(workspace, '.book', 'settings.json'), '{ not json');
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({
+        provider: { r1: { models: { 'some-local-model': { pricing: { in: 0, out: 0 } } } } },
+      }),
+    );
+    expect(run()).toBeCloseTo(2, 8);
+    // A user file that does not load is not a reason to stop the command.
+    writeFileSync(join(home, 'settings.json'), '{ not json');
+    expect(run()).toBeNull();
   });
 
   it('reports the restored plan and the compaction generation', () => {

@@ -88,7 +88,7 @@ got a prompt is removed when Book exits, including one you have since left with 
 | `--effort <level>`                    | Thinking effort: `low` \| `medium` \| `high` \| `xhigh` \| `max`; outranks `BOOK_EFFORT`, `settings.effort`, and model metadata |
 | `--provider <type>`                   | `anthropic` \| `openai` \| `auto`                                                                                               |
 | `--max-turns <n>`                     | Cap agent turns (print mode)                                                                                                    |
-| `--max-budget-usd <amount>`           | Cap spend (print mode)                                                                                                          |
+| `--max-budget-usd <amount>`           | Cap spend (print mode); a model with no price is refused, see [Model pricing](configuration.md#model-pricing)                   |
 | `--json-schema <schema>`              | Structured JSON output (print mode)                                                                                             |
 | `-r, --resume <id\|name>`             | Resume a named/id session                                                                                                       |
 | `-c, --continue`                      | Resume the most recent session here that has a message                                                                          |

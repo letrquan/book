@@ -2,8 +2,10 @@ import {
   addUsage,
   estimateUsageCost,
   hasKnownPricing,
+  PRICING_SETTING_HINT,
   PRICING_VERSION,
   promptSizeTokens,
+  type PricingOverrides,
   type UsageCostEstimate,
 } from '../pricing.js';
 import type { Usage } from '../types/messages.js';
@@ -245,6 +247,20 @@ export interface BudgetCheck {
  */
 export class RunAccounting {
   private readonly roots = new Map<string, RootState>();
+  /**
+   * The rates the user's settings declare, consulted before the built-in table (#663). Held for
+   * the whole accounting rather than per root: a root minted late (a managed agent adopted after
+   * a restart, a compaction that spends before any prompt) would otherwise price a router model
+   * as unknown and fail a USD budget closed. Set by `usePricing` wherever a root starts, so a
+   * settings reload takes effect at the next prompt. Every config of one session carries the same
+   * settings, so every start sets the same table; a root already running reads the new one.
+   */
+  private pricing: PricingOverrides | undefined;
+
+  /** Price the models the settings declare a rate for; undefined leaves only the built-in table. */
+  usePricing(overrides: PricingOverrides | undefined): void {
+    this.pricing = overrides;
+  }
 
   private ensureExecution(root: RootState, context: AgentRunContext): ExecutionState {
     const existing = root.executions.get(context.runId);
@@ -375,7 +391,7 @@ export class RunAccounting {
     let dearest: string | undefined;
     let dearestCost: number | undefined;
     for (const model of models) {
-      const quote = estimateUsageCost(model, spend, 'pool');
+      const quote = estimateUsageCost(model, spend, 'pool', this.pricing);
       if (quote.status !== 'known') continue;
       if (dearestCost === undefined || quote.costUsd > dearestCost) {
         dearest = model;
@@ -468,14 +484,14 @@ export class RunAccounting {
     this.roots.set(context.rootRunId, root);
     const execution = this.ensureExecution(root, context);
     const responseQuote = metadata.responseModel
-      ? estimateUsageCost(metadata.responseModel, usage, 'request')
+      ? estimateUsageCost(metadata.responseModel, usage, 'request', this.pricing)
       : undefined;
     // Providers commonly resolve aliases to dated model IDs. Prefer exact response pricing, but
     // retain the requested alias as the pricing fallback while preserving verified response identity.
     const quote =
       responseQuote?.status === 'known'
         ? responseQuote
-        : estimateUsageCost(metadata.requestedModel, usage, 'request');
+        : estimateUsageCost(metadata.requestedModel, usage, 'request', this.pricing);
     const identity = identityFor(metadata, quote);
     execution.usage = addUsage(execution.usage, usage);
     execution.costStatus = mergeCostStatus(execution.costStatus, quote, identity);
@@ -539,11 +555,11 @@ export class RunAccounting {
         message: `Refusing to run: the USD budget is not a usable number (${root.budgetUsd}).`,
       };
     }
-    if (!hasKnownPricing(requestedModel)) {
+    if (!hasKnownPricing(requestedModel, this.pricing)) {
       return {
         allowed: false,
         status: 'unknown',
-        message: `Cannot enforce the USD budget because pricing is unknown for ${requestedModel}.`,
+        message: `Cannot enforce the USD budget because pricing is unknown for ${requestedModel}: ${PRICING_SETTING_HINT}.`,
       };
     }
     const snapshot = this.snapshotRoot(rootRunId);

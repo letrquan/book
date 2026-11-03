@@ -5,6 +5,7 @@ import {
   ignoredWorkspaceSandboxKeys,
   ignoredWorkspaceUserOnlyKeys,
   isUserOrFlagOnlySettingPath,
+  reachesWildcardUserOnlyKey,
   type IgnoredWorkspaceSandboxKey,
   type WorkspaceLayerSandboxView,
 } from './settings-loader.js';
@@ -178,6 +179,9 @@ function blockedWorkspaceUserOnlySetting(path: string, value: unknown): string |
       .split('.')
       .reduceRight<unknown>((nested, segment) => ({ [segment]: nested }), value);
     keys = ignoredWorkspaceUserOnlyKeys(document).map((entry) => entry.key);
+    // The document is built by splitting the path on its dots, which cannot spell a model id that
+    // holds one (`deepseek-v4.1-flash`): where the path itself reaches the key, it is the key.
+    if (keys.length === 0 && reachesWildcardUserOnlyKey(path)) keys = [path];
   }
   if (keys.length === 0) return undefined;
   return (

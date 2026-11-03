@@ -18,9 +18,20 @@ export interface EditEvalTaskOutcome {
   failuresByCode: Record<string, number>;
   toolCalls: number;
   totalTokens?: number;
+  /**
+   * What the task cost, summed over the run records; null when a record's model has no price
+   * (#663). An unpriced model does not fail the task: the eval scores it by verification and
+   * says here that the dollars are unknown.
+   */
+  costUsd?: number | null;
+  costStatus?: TaskCostStatus;
   attribution?: EvaluationEligibility;
   controls?: EvaluationControls;
 }
+
+type TaskCostStatus = 'known' | 'estimated' | 'unknown';
+
+const COST_STATUS_RANK: Record<TaskCostStatus, number> = { known: 0, estimated: 1, unknown: 2 };
 
 const MUTATION_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'ApplyPatch', 'NotebookEdit']);
 
@@ -51,6 +62,29 @@ export function taskTotalTokens(runs: readonly AgentRunResult[] | undefined): nu
     total += usage.totalTokens;
   }
   return total;
+}
+
+/**
+ * What the task spent in dollars, summed over the result's run records as {@link taskTotalTokens}
+ * is, with the least certain record's status. A model Book has no price for (a router or BYOK
+ * model that `provider.<id>.models.<model>.pricing` does not declare) makes the cost unknown rather
+ * than low, and a record without accounting does too.
+ */
+export function taskCost(
+  runs: readonly AgentRunResult[] | undefined,
+): { costUsd: number | null; costStatus: TaskCostStatus } | undefined {
+  if (!runs?.length) return undefined;
+  let costUsd: number | null = 0;
+  let costStatus: TaskCostStatus = 'known';
+  for (const run of runs) {
+    const accounting = run.accounting;
+    if (!accounting) return { costUsd: null, costStatus: 'unknown' };
+    if (COST_STATUS_RANK[accounting.costStatus] > COST_STATUS_RANK[costStatus]) {
+      costStatus = accounting.costStatus;
+    }
+    costUsd = costUsd === null || accounting.costUsd === null ? null : costUsd + accounting.costUsd;
+  }
+  return costStatus === 'unknown' ? { costUsd: null, costStatus } : { costUsd, costStatus };
 }
 
 function collectVerifyPaths(task: EvalTask): string[] {
@@ -99,7 +133,15 @@ export async function runEditEvalWorker(
         }
       } else if (event.type === 'result') {
         outcome.totalTokens = taskTotalTokens(event.runs);
-        outcome.attribution = evaluateRunEligibility(event.runs);
+        const cost = taskCost(event.runs);
+        if (cost) {
+          outcome.costUsd = cost.costUsd;
+          outcome.costStatus = cost.costStatus;
+        }
+        // The edit is what this eval measures. A router or BYOK model usually has no price, and
+        // failing every task for that (`cost_unknown`) made the eval unusable on exactly the
+        // cheap models it should compare (#663); the report records the cost as unknown instead.
+        outcome.attribution = evaluateRunEligibility(event.runs, { requireKnownCost: false });
         if (!outcome.attribution.eligible && !outcome.runError) {
           outcome.runError = `ineligible evaluation evidence: ${outcome.attribution.reasons.join('; ')}`;
         }

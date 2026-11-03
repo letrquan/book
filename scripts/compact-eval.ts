@@ -57,7 +57,12 @@ import {
   type EvaluationComparisonEligibility,
   type EvaluationEligibility,
 } from './eval-eligibility.js';
-import { estimateUsageCost, PRICING_VERSION, promptSizeTokens } from '../src/pricing.js';
+import {
+  estimateUsageCost,
+  PRICING_VERSION,
+  pricingOverridesFromProviders,
+  promptSizeTokens,
+} from '../src/pricing.js';
 import { createRunAmbientSnapshot } from '../src/session/run-ambient.js';
 import { createRegistry } from '../src/tools/registry.js';
 import { SessionRuntime } from '../src/session/runtime.js';
@@ -485,13 +490,14 @@ export function createMeteredProvider(config: AgentConfig, meter: Meter): Provid
           call.usage = event.usage;
           call.responseModel = event.responseModel;
           addUsage(meter.usage, usageTotals(event.usage));
+          const pricing = pricingOverridesFromProviders(currentConfig.settings.provider);
           const responseQuote = event.responseModel
-            ? estimateUsageCost(event.responseModel, event.usage, 'request')
+            ? estimateUsageCost(event.responseModel, event.usage, 'request', pricing)
             : undefined;
           const quote =
             responseQuote?.status === 'known'
               ? responseQuote
-              : estimateUsageCost(currentConfig.model, event.usage, 'request');
+              : estimateUsageCost(currentConfig.model, event.usage, 'request', pricing);
           if (quote.status === 'known' && meter.costUsd !== null) meter.costUsd += quote.costUsd;
           else {
             meter.costUsd = null;
@@ -605,6 +611,7 @@ export async function runProbe(
   };
   const runtime = new SessionRuntime();
   const runContext = createAgentRunContext({ sessionId: crypto.randomUUID(), source: 'headless' });
+  runtime.runAccounting.usePricing(pricingOverridesFromProviders(config.settings.provider));
   runtime.runAccounting.startRoot(runContext);
   const registry = createRegistry();
   const ambient = runtime.recordRunAmbientSnapshot(
@@ -707,6 +714,9 @@ async function runFixture(options: {
     sessionId: crypto.randomUUID(),
     source: 'headless',
   });
+  compactRuntime.runAccounting.usePricing(
+    pricingOverridesFromProviders(compactConfig.settings.provider),
+  );
   compactRuntime.runAccounting.startRoot(compactRunContext);
   const compactRegistry = createRegistry();
   const compactAmbient = compactRuntime.recordRunAmbientSnapshot(
