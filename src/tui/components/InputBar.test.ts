@@ -85,6 +85,8 @@ function mentionSkill(overrides: Partial<Skill> = {}): Skill {
     invocationCount: 0,
     entryByteSize: 0,
     entryMtimeMs: 0,
+    entryCtimeMs: 0,
+    entryHeaderDigest: 'header',
     resources: [],
     issues: [],
     valid: true,

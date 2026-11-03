@@ -25,6 +25,7 @@ import type {
 } from '../types/sessions.js';
 import { resolveBookHome } from '../book-home.js';
 import { pathExists as pathExistsAsync } from '../fs-utils.js';
+import { statStamp, statVouches, type StatFacts, type StatStamp } from '../stat-freshness.js';
 import { createUncGuard, reachesUncPath, type UncGuard } from '../unc-path.js';
 
 export const REWIND_MAX_ENTRIES = 20_000;
@@ -325,14 +326,38 @@ type WalkedEntry = {
   byteSize: number;
   mode: number;
   mtimeMs: number;
+  ctimeMs: number;
 };
 
+/**
+ * A captured entry, reused by the next capture while `stat` vouches for it (#647): the same kind
+ * and mode, and stat facts that have not moved since a capture they were already safely old for.
+ * A same-size edit inside one timestamp tick of the capture, or one whose mtime a tool put back,
+ * is read again instead of restoring stale bytes.
+ */
 interface CachedSnapshotEntry {
   kind: RewindSnapshotEntry['kind'];
-  byteSize: number;
   mode: number;
-  mtimeMs: number;
+  stamp: StatStamp;
   snapshotEntry: RewindSnapshotEntry;
+}
+
+/** A walked entry's stat facts: for a link, the size of its target text. */
+function walkedFacts(entry: WalkedEntry): StatFacts {
+  return { size: entry.byteSize, mtimeMs: entry.mtimeMs, ctimeMs: entry.ctimeMs };
+}
+
+function reusable(cached: CachedSnapshotEntry, entry: WalkedEntry): boolean {
+  return (
+    cached.kind === entry.kind &&
+    cached.mode === entry.mode &&
+    statVouches(cached.stamp, walkedFacts(entry))
+  );
+}
+
+export interface RewindSnapshotStoreOptions {
+  /** The wall clock a capture is stamped with; a test moves it. */
+  now?: () => number;
 }
 
 function walkIncludedEntries(
@@ -366,6 +391,7 @@ function walkIncludedEntries(
         byteSize: stat.isSymbolicLink() ? Buffer.byteLength(readlinkSync(absolutePath)) : stat.size,
         mode: stat.mode,
         mtimeMs: stat.mtimeMs,
+        ctimeMs: stat.ctimeMs,
       });
       if (entries.length > maxEntries) {
         throw new Error(`Code rewind unavailable: checkpoint exceeds ${maxEntries} entries.`);
@@ -417,6 +443,7 @@ async function walkIncludedEntriesAsync(
           : stat.size,
         mode: stat.mode,
         mtimeMs: stat.mtimeMs,
+        ctimeMs: stat.ctimeMs,
       });
       if (entries.length > maxEntries) {
         throw new Error(`Code rewind unavailable: checkpoint exceeds ${maxEntries} entries.`);
@@ -456,14 +483,17 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
   private readonly blobsRoot: string;
   private readonly workspace: string;
   private readonly limits: RewindSnapshotLimits;
+  private readonly now: () => number;
   private fileCache = new Map<string, CachedSnapshotEntry>();
 
   constructor(
     workspace: string,
     private readonly root = persistentRewindRoot(workspace),
     limits: Partial<RewindSnapshotLimits> = {},
+    options: RewindSnapshotStoreOptions = {},
   ) {
     this.workspace = resolve(workspace);
+    this.now = options.now ?? Date.now;
     this.limits = {
       maxEntries: limits.maxEntries ?? REWIND_MAX_ENTRIES,
       maxFileBytes: limits.maxFileBytes ?? REWIND_MAX_FILE_BYTES,
@@ -486,6 +516,8 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
         ...readCustomIgnorePatterns(this.workspace),
       ]);
     try {
+      // Taken before the walk and every read, as `StatStamp.judgedAt` must be.
+      const judgedAt = this.now();
       const walked = walkIncludedEntries(this.workspace, patterns, this.limits.maxEntries);
 
       let logicalBytes = 0;
@@ -498,13 +530,7 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
           );
         }
         const cached = this.fileCache.get(entry.path);
-        if (
-          cached &&
-          cached.kind === entry.kind &&
-          cached.byteSize === entry.byteSize &&
-          cached.mode === entry.mode &&
-          cached.mtimeMs === entry.mtimeMs
-        ) {
+        if (cached && reusable(cached, entry)) {
           logicalBytes += cached.snapshotEntry.byteSize;
           if (logicalBytes > this.limits.maxLogicalBytes) {
             throw new Error(
@@ -543,9 +569,8 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
         entries.push(snapshotEntry);
         nextCache.set(entry.path, {
           kind: entry.kind,
-          byteSize: entry.byteSize,
           mode: entry.mode,
-          mtimeMs: entry.mtimeMs,
+          stamp: statStamp(walkedFacts(entry), judgedAt),
           snapshotEntry,
         });
       }
@@ -583,6 +608,8 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
       const patterns =
         ignorePatterns ??
         expandNegatedParents([...DEFAULT_IGNORE_PATTERNS, ...customIgnorePatterns]);
+      // Taken before the walk and every read, as `StatStamp.judgedAt` must be.
+      const judgedAt = this.now();
       const walked = await walkIncludedEntriesAsync(
         this.workspace,
         patterns,
@@ -599,13 +626,7 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
           );
         }
         const cached = this.fileCache.get(entry.path);
-        if (
-          cached &&
-          cached.kind === entry.kind &&
-          cached.byteSize === entry.byteSize &&
-          cached.mode === entry.mode &&
-          cached.mtimeMs === entry.mtimeMs
-        ) {
+        if (cached && reusable(cached, entry)) {
           logicalBytes += cached.snapshotEntry.byteSize;
           if (logicalBytes > this.limits.maxLogicalBytes) {
             throw new Error(
@@ -644,9 +665,8 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
         entries.push(snapshotEntry);
         nextCache.set(entry.path, {
           kind: entry.kind,
-          byteSize: entry.byteSize,
           mode: entry.mode,
-          mtimeMs: entry.mtimeMs,
+          stamp: statStamp(walkedFacts(entry), judgedAt),
           snapshotEntry,
         });
       }

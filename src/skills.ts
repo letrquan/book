@@ -16,6 +16,7 @@ import { parseFrontmatter } from './frontmatter.js';
 import { resolveBookHome } from './book-home.js';
 import { isUserHome, tryRealPath } from './repo-containment.js';
 import type { SkillActivation, SkillExecution } from './settings.js';
+import { sameStatFacts } from './stat-freshness.js';
 import { createUncGuard, reachesUncPath, type UncGuard } from './unc-path.js';
 
 export const SKILL_ENTRY_FILENAME = 'SKILL.md';
@@ -60,6 +61,7 @@ export interface SkillResource {
   relativePath: string;
   byteSize: number;
   mtimeMs: number;
+  ctimeMs: number;
   digest: string;
 }
 
@@ -94,8 +96,15 @@ export interface Skill {
   activation: SkillActivation;
   execution: SkillExecution;
   invocationCount: number;
+  /** The entrypoint's stat facts at discovery: a load refuses a file they no longer describe. */
   entryByteSize: number;
   entryMtimeMs: number;
+  entryCtimeMs: number;
+  /**
+   * The digest of the frontmatter block discovery read the descriptor from: a load checks the bytes
+   * it loads against it, since `stat` cannot see a same-size edit inside one tick of a coarse clock.
+   */
+  entryHeaderDigest: string;
   resources: SkillResource[];
   issues: SkillIssue[];
   valid: boolean;
@@ -270,6 +279,17 @@ export function skillRoots(
   return [...byPath.values()];
 }
 
+/** The frontmatter block a SKILL.md opens with, both delimiters included. */
+const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/;
+
+function frontmatterBlock(text: string): string | undefined {
+  return FRONTMATTER_BLOCK.exec(text)?.[0];
+}
+
+function digestOf(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
 function readFrontmatterPrefix(path: string): {
   frontmatter: Record<string, unknown>;
   headerText: string;
@@ -286,10 +306,8 @@ function readFrontmatterPrefix(path: string): {
       if (count === 0) break;
       chunks.push(chunk.subarray(0, count));
       total += count;
-      const text = Buffer.concat(chunks).toString('utf8');
-      if (/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(text)) {
-        const match = text.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/);
-        const headerText = match?.[0] ?? '';
+      const headerText = frontmatterBlock(Buffer.concat(chunks).toString('utf8'));
+      if (headerText !== undefined) {
         return { frontmatter: parseFrontmatter(headerText).frontmatter, headerText, issues };
       }
     }
@@ -440,6 +458,7 @@ function collectResources(
         relativePath: relative(rootPath, fullPath).split(sep).join('/'),
         byteSize: info.size,
         mtimeMs: info.mtimeMs,
+        ctimeMs: info.ctimeMs,
         digest,
       });
     }
@@ -540,10 +559,12 @@ function descriptorFromEntry(
 
   let entryByteSize = 0;
   let entryMtimeMs = 0;
+  let entryCtimeMs = 0;
   try {
     const entryInfo = statSync(entryPath);
     entryByteSize = entryInfo.size;
     entryMtimeMs = entryInfo.mtimeMs;
+    entryCtimeMs = entryInfo.ctimeMs;
     if (entryByteSize > MAX_SKILL_BODY_BYTES + MAX_SKILL_HEADER_BYTES) {
       issues.push({
         code: 'body_too_large',
@@ -610,6 +631,8 @@ function descriptorFromEntry(
     invocationCount: 0,
     entryByteSize,
     entryMtimeMs,
+    entryCtimeMs,
+    entryHeaderDigest: digestOf(headerText),
     resources: resourceResult.resources,
     issues,
     valid: !issues.some((issue) => issue.severity === 'error'),
@@ -715,15 +738,23 @@ export function loadSkillBody(skill: Skill): LoadedSkillBody {
   if (!isInside(canonicalRoot, canonicalEntry)) {
     throw new Error(`Skill entrypoint escapes its root: ${skill.path}`);
   }
-  const current = statSync(canonicalEntry);
-  if (current.size !== skill.entryByteSize || current.mtimeMs !== skill.entryMtimeMs) {
-    throw new Error(`Skill "${skill.name}" changed after discovery; reload skills before use.`);
-  }
+  const changed = () =>
+    new Error(`Skill "${skill.name}" changed after discovery; reload skills before use.`);
+  const discovered = {
+    size: skill.entryByteSize,
+    mtimeMs: skill.entryMtimeMs,
+    ctimeMs: skill.entryCtimeMs,
+  };
+  if (!sameStatFacts(discovered, statSync(canonicalEntry))) throw changed();
   const buffer = readFileSync(canonicalEntry);
   if (buffer.includes(0)) {
     throw new Error(`Skill "${skill.name}" contains binary content.`);
   }
   const raw = buffer.toString('utf8');
+  // Equal stat facts cannot tell a same-size edit inside one tick of a coarse clock, or one made
+  // while discovery read the file (#647), so the bytes loaded must still carry the frontmatter the
+  // descriptor (its name, tools, execution) was read from. The body is always the one loaded now.
+  if (digestOf(frontmatterBlock(raw) ?? '') !== skill.entryHeaderDigest) throw changed();
   const { body } = parseFrontmatter(raw);
   const byteSize = Buffer.byteLength(body);
   if (byteSize > MAX_SKILL_BODY_BYTES) {

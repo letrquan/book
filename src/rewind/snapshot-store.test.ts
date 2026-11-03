@@ -8,23 +8,56 @@ import {
   readlinkSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'fs';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRewindSnapshotStore, RewindSnapshotStore } from './snapshot-store.js';
+import { rewriteRestoringMtime } from '../test/restored-mtime.js';
+
+/** Every path the store reads content from, so a test can tell a cached entry from a fresh read. */
+const reads = vi.hoisted(() => ({ paths: [] as string[] }));
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
+      reads.paths.push(String(args[0]));
+      return actual.readFileSync(...args);
+    },
+  };
+});
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  return {
+    ...actual,
+    readFile: (...args: Parameters<typeof actual.readFile>) => {
+      reads.paths.push(String(args[0]));
+      return actual.readFile(...args);
+    },
+  };
+});
 
 const roots: string[] = [];
 
-function fixture(limits?: ConstructorParameters<typeof RewindSnapshotStore>[2]) {
+function fixture(
+  limits?: ConstructorParameters<typeof RewindSnapshotStore>[2],
+  options?: ConstructorParameters<typeof RewindSnapshotStore>[3],
+) {
   const root = mkdtempSync(join(tmpdir(), 'book-rewind-test-'));
   roots.push(root);
   const workspace = join(root, 'workspace');
   const storage = join(root, 'storage');
   mkdirSync(workspace);
-  return { root, workspace, storage, store: new RewindSnapshotStore(workspace, storage, limits) };
+  return {
+    root,
+    workspace,
+    storage,
+    store: new RewindSnapshotStore(workspace, storage, limits, options),
+  };
 }
 
 afterEach(() => {
@@ -126,6 +159,75 @@ describe('RewindSnapshotStore', () => {
     expect(second.ok).toBe(true);
     if (!second.ok) return;
     expect(second.manifest.entries[0].blobHash).toBe(first.manifest.entries[0].blobHash);
+  });
+
+  describe('trusts a cached entry only while stat can vouch for it (#647)', () => {
+    const captures = ['capture', 'captureAsync'] as const;
+    const restoredBy = async (store: RewindSnapshotStore, id: string, path: string) => {
+      writeFileSync(path, 'later\n');
+      expect(store.restore(id)).toMatchObject({ ok: true });
+      return readFileSync(path, 'utf-8');
+    };
+
+    it.each(captures)('%s records a same-size rewrite that kept its mtime', async (method) => {
+      const { workspace, store } = fixture();
+      const path = join(workspace, 'a.txt');
+      // Both writes land on one mtime, as same-size writes inside a coarse timestamp tick do. A
+      // tick ahead of the clock keeps each capture inside the margin however slow the runner is.
+      const tick = new Date(Date.now() + 60_000);
+      writeFileSync(path, 'one\n');
+      utimesSync(path, tick, tick);
+      const first = await store[method]();
+      writeFileSync(path, 'two\n');
+      utimesSync(path, tick, tick);
+      const second = await store[method]();
+
+      expect(first.ok && second.ok).toBe(true);
+      if (!first.ok || !second.ok) return;
+      expect(second.manifest.entries[0].blobHash).not.toBe(first.manifest.entries[0].blobHash);
+      expect(await restoredBy(store, second.manifest.id, path)).toBe('two\n');
+    });
+
+    it.each(captures)('%s records an edit whose mtime was put back', async (method) => {
+      // Each capture is judged an hour after the file's last change, so only its facts decide:
+      // the ctime, which `touch -r` cannot put back.
+      const { workspace, store } = fixture(undefined, { now: () => Date.now() + 3_600_000 });
+      const path = join(workspace, 'a.txt');
+      const old = new Date(Date.now() - 3_600_000);
+      writeFileSync(path, 'one\n');
+      utimesSync(path, old, old);
+      const first = await store[method]();
+      await rewriteRestoringMtime(path, 'two\n', old);
+      const second = await store[method]();
+
+      expect(first.ok && second.ok).toBe(true);
+      if (!first.ok || !second.ok) return;
+      expect(second.manifest.entries[0].blobHash).not.toBe(first.manifest.entries[0].blobHash);
+      expect(await restoredBy(store, second.manifest.id, path)).toBe('two\n');
+    });
+
+    it.each(captures)(
+      '%s reads an unchanged file again only while its last change is too close to trust',
+      async (method) => {
+        let writtenAt = 0;
+        const clocks = { now: () => writtenAt, later: () => writtenAt + 3_600_000 };
+        for (const [name, now] of Object.entries(clocks)) {
+          const { workspace, store } = fixture(undefined, { now });
+          const path = join(workspace, 'a.txt');
+          writeFileSync(path, 'one\n');
+          writtenAt = Date.now();
+          reads.paths = [];
+
+          expect((await store[method]()).ok).toBe(true);
+          expect((await store[method]()).ok).toBe(true);
+
+          // Captured at the instant of the write, the file is still inside the margin: read again.
+          // Captured an hour after it, nothing has moved since a safe capture: one read, then the
+          // cache.
+          expect(reads.paths.filter((read) => read === path)).toHaveLength(name === 'now' ? 2 : 1);
+        }
+      },
+    );
   });
 
   it('allows .book/rewindignore negation to override default exclusions', () => {

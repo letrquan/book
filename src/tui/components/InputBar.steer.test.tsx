@@ -359,6 +359,8 @@ describe('InputBar send-now chord (#661)', () => {
       invocationCount: 0,
       entryByteSize: 0,
       entryMtimeMs: 0,
+      entryCtimeMs: 0,
+      entryHeaderDigest: 'header',
       resources: [],
       issues: [],
       valid: true,

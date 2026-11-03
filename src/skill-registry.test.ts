@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SkillSettings } from './settings.js';
 import { SkillRegistry, SkillRegistryError } from './skill-registry.js';
+import { rewriteRestoringMtime } from './test/restored-mtime.js';
 
 let workspace: string;
 
@@ -231,6 +232,23 @@ describe('SkillRegistry', () => {
 
     expect(() => skills.readResource('review', 'references/checklist.md')).toThrowError(
       expect.objectContaining<Partial<SkillRegistryError>>({ code: 'skill_resource_changed' }),
+    );
+  });
+
+  it('refuses a resource whose mtime was put back on its ctime, before reading it (#647)', async () => {
+    const root = writeSkill('review', {
+      resources: { 'references/checklist.md': 'original-content' },
+    });
+    const path = join(root, 'references', 'checklist.md');
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(path, old, old);
+    const skills = registry();
+    skills.activate('review', 'user', 0);
+    await rewriteRestoringMtime(path, 'replaced-content', old);
+
+    // The stat refusal, not the content check that reads the bytes behind it.
+    expect(() => skills.readResource('review', 'references/checklist.md')).toThrow(
+      /^Skill resource changed after discovery/,
     );
   });
 
