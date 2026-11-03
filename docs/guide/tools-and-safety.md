@@ -785,7 +785,9 @@ address a reply copies from `from` (#653).
 - The prompt names the session as the rules judged it, and "Always allow" saves its bare name,
   whichever spelling the call used. While the name is shared, the call is asked about as
   `name [ref]` and can only be approved once: a ref comes from the session's pid-named socket, so a
-  rule saved for it could admit a later session that reuses the pid.
+  rule saved for it could admit a later session that reuses the pid. A ref is only 24 bits of a
+  path another session picks, so when a second session answers to the same `name [ref]`, the
+  call is asked about by its `uds:` address, and only a rule on that address allows it.
 - The message goes to the session that was judged, or nowhere: a session that ends before the
   send, while the prompt is open say, is reported gone, and its address is never resolved again.
 
