@@ -672,8 +672,11 @@ export class SessionStore {
         let targetId = checkpointByUserEventId.get(eventId);
         // Plan decision D7: a steer is not a rewind point. It belongs to the target of the run's
         // prompt before it, so without a checkpoint of its own it mints none — not even the
-        // legacy target a prompt that captured no snapshot gets.
-        if (!targetId && data.steered !== true) {
+        // legacy target a prompt that captured no snapshot gets. Nor is a turn the host wrote into
+        // the run (`derivedContent`: the work-state refresh, a `[continuation]`, the completion
+        // gate): the user never sent it, and the live session makes a target only for a prepared
+        // send, so a resumed one must list the same prompts (#666).
+        if (!targetId && data.steered !== true && data.derivedContent !== true) {
           targetId = `user:${eventId}`;
           // Nothing records this prompt as typed: a print-mode turn's may be a command's body, and
           // print mode runs no `!` line in any of it. A rewind lists it but never puts it back in

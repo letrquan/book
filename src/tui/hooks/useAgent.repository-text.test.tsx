@@ -285,9 +285,17 @@ describe('a rewind to a resumed turn', () => {
       prompt: body,
       content: body,
     });
-    // A print-mode command's turn, which has no checkpoint.
+    // A print-mode turn, which has no checkpoint: its legacy target lists it and never puts it back.
     recordTurn(timeline, session.sessionId, {
       id: 'print-mode-body',
+      prompt: body,
+      content: body,
+      checkpoint: false,
+    });
+    // A print-mode command's body is marked derived, and with no checkpoint it is no rewind point
+    // at all: the host-written turns a run carries on with look the same (#666).
+    recordTurn(timeline, session.sessionId, {
+      id: 'print-mode-command-body',
       prompt: body,
       content: body,
       derived: true,
@@ -315,6 +323,11 @@ describe('a rewind to a resumed turn', () => {
 
     const targets = latest!.getRewindTargets();
     expect(targets.map((target) => target.prompt)).toEqual([body, body, 'Explain the build']);
+    expect(targets.map((target) => target.userEventId)).toEqual([
+      'print-mode-body',
+      'checkpointed-body',
+      'typed-turn',
+    ]);
     for (const target of targets.slice(0, 2)) {
       expect(await latest!.rewind(target.id, 'conversation')).toEqual({ ok: true });
       await tick();
