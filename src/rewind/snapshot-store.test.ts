@@ -18,8 +18,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRewindSnapshotStore, RewindSnapshotStore } from './snapshot-store.js';
 import { rewriteRestoringMtime } from '../test/restored-mtime.js';
 
-/** Every path the store reads content from, so a test can tell a cached entry from a fresh read. */
-const reads = vi.hoisted(() => ({ paths: [] as string[] }));
+/**
+ * Every path the store reads content from, so a test can tell a cached entry from a fresh read;
+ * and the paths whose `lstat` reports another file, with the same facts, as a directory swapped in
+ * would.
+ */
+const reads = vi.hoisted(() => ({ paths: [] as string[], swapped: new Set<string>() }));
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
   return {
@@ -27,6 +31,11 @@ vi.mock('fs', async (importOriginal) => {
     readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
       reads.paths.push(String(args[0]));
       return actual.readFileSync(...args);
+    },
+    lstatSync: (...args: Parameters<typeof actual.lstatSync>) => {
+      const stat = actual.lstatSync(...args);
+      if (stat && reads.swapped.has(String(args[0]))) (stat as { ino: number }).ino += 1;
+      return stat;
     },
   };
 });
@@ -37,6 +46,11 @@ vi.mock('fs/promises', async (importOriginal) => {
     readFile: (...args: Parameters<typeof actual.readFile>) => {
       reads.paths.push(String(args[0]));
       return actual.readFile(...args);
+    },
+    lstat: async (...args: Parameters<typeof actual.lstat>) => {
+      const stat = await actual.lstat(...args);
+      if (reads.swapped.has(String(args[0]))) (stat as { ino: number }).ino += 1;
+      return stat;
     },
   };
 });
@@ -205,6 +219,27 @@ describe('RewindSnapshotStore', () => {
       expect(second.manifest.entries[0].blobHash).not.toBe(first.manifest.entries[0].blobHash);
       expect(await restoredBy(store, second.manifest.id, path)).toBe('two\n');
     });
+
+    it.each(captures)(
+      '%s reads again a file whose identity changed with its facts',
+      async (method) => {
+        // Judged an hour after the last change, so the facts alone would vouch for the cache.
+        const { workspace, store } = fixture(undefined, { now: () => Date.now() + 3_600_000 });
+        const path = join(workspace, 'a.txt');
+        writeFileSync(path, 'one\n');
+        expect((await store[method]()).ok).toBe(true);
+        // Another file at the path, with the old one's size, mode and times: a directory swapped in.
+        reads.swapped.add(path);
+        reads.paths = [];
+        try {
+          expect((await store[method]()).ok).toBe(true);
+        } finally {
+          reads.swapped.clear();
+        }
+
+        expect(reads.paths.filter((read) => read === path)).toHaveLength(1);
+      },
+    );
 
     it.each(captures)(
       '%s reads an unchanged file again only while its last change is too close to trust',

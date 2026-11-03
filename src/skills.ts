@@ -562,23 +562,27 @@ function descriptorFromEntry(
     }
   }
 
-  let entryByteSize = 0;
+  // The size is that of the bytes the descriptor and its digest came from, not of a later `stat`:
+  // a file that shrank in between must not pass for one within the limit, without a digest.
+  const tooLarge = entryBytes.length > MAX_SKILL_ENTRY_BYTES;
+  let entryByteSize = entryBytes.length;
   let entryMtimeMs = 0;
   try {
     const entryInfo = statSync(entryPath);
-    entryByteSize = entryInfo.size;
     entryMtimeMs = entryInfo.mtimeMs;
-    if (entryByteSize > MAX_SKILL_BODY_BYTES + MAX_SKILL_HEADER_BYTES) {
-      issues.push({
-        code: 'body_too_large',
-        message: `SKILL.md exceeds the ${MAX_SKILL_BODY_BYTES}-byte body budget.`,
-        severity: 'error',
-      });
-    }
+    // Shown only: a file too large to load is read no further than one byte past the limit.
+    if (tooLarge) entryByteSize = Math.max(entryInfo.size, entryBytes.length);
   } catch {
     issues.push({
       code: 'skill_unreadable',
       message: 'Skill entrypoint is unreadable.',
+      severity: 'error',
+    });
+  }
+  if (tooLarge) {
+    issues.push({
+      code: 'body_too_large',
+      message: `SKILL.md exceeds the ${MAX_SKILL_BODY_BYTES}-byte body budget.`,
       severity: 'error',
     });
   }
@@ -634,7 +638,7 @@ function descriptorFromEntry(
     invocationCount: 0,
     entryByteSize,
     entryMtimeMs,
-    ...(entryBytes.length <= MAX_SKILL_ENTRY_BYTES ? { entryDigest: digestOf(entryBytes) } : {}),
+    ...(tooLarge ? {} : { entryDigest: digestOf(entryBytes) }),
     resources: resourceResult.resources,
     issues,
     valid: !issues.some((issue) => issue.severity === 'error'),

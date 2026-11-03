@@ -327,17 +327,22 @@ type WalkedEntry = {
   mode: number;
   mtimeMs: number;
   ctimeMs: number;
+  dev: number;
+  ino: number;
 };
 
 /**
- * A captured entry, reused by the next capture while `stat` vouches for it (#647): the same kind
- * and mode, and stat facts that have not moved since a capture they were already safely old for.
- * A same-size edit inside one timestamp tick of the capture, or one whose mtime a tool put back,
- * is read again instead of restoring stale bytes.
+ * A captured entry, reused by the next capture while `stat` vouches for it (#647): the same kind,
+ * mode and file, and stat facts that have not moved since a capture they were already safely old
+ * for. A same-size edit inside one timestamp tick of the capture, one whose mtime a tool put back,
+ * or a directory swapped in whose file has the old one's facts, is read again instead of restoring
+ * stale bytes.
  */
 interface CachedSnapshotEntry {
   kind: RewindSnapshotEntry['kind'];
   mode: number;
+  dev: number;
+  ino: number;
   stamp: StatStamp;
   snapshotEntry: RewindSnapshotEntry;
 }
@@ -351,6 +356,8 @@ function reusable(cached: CachedSnapshotEntry, entry: WalkedEntry): boolean {
   return (
     cached.kind === entry.kind &&
     cached.mode === entry.mode &&
+    cached.dev === entry.dev &&
+    cached.ino === entry.ino &&
     statVouches(cached.stamp, walkedFacts(entry))
   );
 }
@@ -364,6 +371,8 @@ function cacheEntry(
   return {
     kind: entry.kind,
     mode: entry.mode,
+    dev: entry.dev,
+    ino: entry.ino,
     stamp: statStamp(walkedFacts(entry), judgedAt),
     snapshotEntry,
   };
@@ -406,6 +415,8 @@ function walkIncludedEntries(
         mode: stat.mode,
         mtimeMs: stat.mtimeMs,
         ctimeMs: stat.ctimeMs,
+        dev: stat.dev,
+        ino: stat.ino,
       });
       if (entries.length > maxEntries) {
         throw new Error(`Code rewind unavailable: checkpoint exceeds ${maxEntries} entries.`);
@@ -458,6 +469,8 @@ async function walkIncludedEntriesAsync(
         mode: stat.mode,
         mtimeMs: stat.mtimeMs,
         ctimeMs: stat.ctimeMs,
+        dev: stat.dev,
+        ino: stat.ino,
       });
       if (entries.length > maxEntries) {
         throw new Error(`Code rewind unavailable: checkpoint exceeds ${maxEntries} entries.`);

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createHash } from 'crypto';
 import {
   chmodSync,
   mkdtempSync,
@@ -694,6 +695,23 @@ describe('the SKILL.md guard against a change after discovery (#647)', () => {
 
     expect(review.valid).toBe(true);
     expect(loadSkillBody(review).body).toBe('Read every line.');
+  });
+
+  it('takes the size and the digest from one read, and no digest for a skill too large to load', () => {
+    const entry = writeEntry();
+    const bytes = readFileSync(entry);
+    const [review] = discoverSkills(dir);
+
+    expect(review.entryByteSize).toBe(bytes.length);
+    expect(review.entryDigest).toBe(createHash('sha256').update(bytes).digest('hex'));
+
+    const padding = Buffer.alloc(MAX_SKILL_BODY_BYTES + MAX_SKILL_HEADER_BYTES, 0x61);
+    writeFileSync(entry, Buffer.concat([bytes, padding]));
+    const [large] = discoverSkills(dir);
+
+    expect(large.valid).toBe(false);
+    expect(large.entryDigest).toBeUndefined();
+    expect(large.issues.map((issue) => issue.code)).toContain('body_too_large');
   });
 
   it('guards a descriptor built without discovery by its size and mtime', () => {

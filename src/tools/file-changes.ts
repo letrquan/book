@@ -12,13 +12,13 @@
  */
 
 import { createHash } from 'node:crypto';
-import { constants, type Stats } from 'node:fs';
-import { lstat, open, realpath, type FileHandle } from 'node:fs/promises';
+import { constants, type BigIntStats } from 'node:fs';
+import { lstat, open, readlink, realpath, type FileHandle } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { mapLimited } from '../async.js';
 import { plainSpan } from '../messaging/peer-text.js';
 import { redactSecrets } from '../provider-secrets.js';
-import { statStamp, statVouches, type StatStamp } from '../stat-freshness.js';
+import { statStamp, statVouches, type StatFacts, type StatStamp } from '../stat-freshness.js';
 import type { FileObservation } from '../types/tools.js';
 import { renderDiff } from './diff.js';
 import { normalizeObservedPath, workspaceIdentity } from './file-provenance.js';
@@ -103,8 +103,18 @@ function samePath(a: string, b: string): boolean {
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
-function sameFile(a: Stats, b: Stats): boolean {
+/** Whether two stats are of one file, by 64-bit ids: an NTFS file id can exceed a double's. */
+function sameFile(a: BigIntStats, b: BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino;
+}
+
+/** The facts a verdict is keyed on, in the milliseconds the clock gives `judgedAt` in. */
+function factsOf(info: BigIntStats): StatFacts {
+  return {
+    size: Number(info.size),
+    mtimeMs: Number(info.mtimeNs) / 1e6,
+    ctimeMs: Number(info.ctimeNs) / 1e6,
+  };
 }
 
 function looksBinary(bytes: Uint8Array): boolean {
@@ -112,17 +122,30 @@ function looksBinary(bytes: Uint8Array): boolean {
 }
 
 /**
- * Whether an opened handle holds the file the checks before the open vetted, and the path still
- * names that file, with no link on the way, once it is open. The checks go by path, so they cannot
- * be atomic with the open: `O_NOFOLLOW` guards only the last component (and Windows has no such
- * flag), so a directory above the file swapped for a link in between, or on Windows the file
- * itself, leaves the handle on another file, and its identity then differs from the vetted one or
- * from what the path names now. A process that swaps a workspace directory back and forth several
- * times inside one check can still slip past; that needs a writer already in the workspace.
+ * What the path names once the handle is open, when that is still the file the checks before the
+ * open vetted, with no link on the way; `undefined` when the handle holds another file.
+ *
+ * The checks go by path, so they cannot be atomic with the open. `O_NOFOLLOW` guards only the last
+ * component (and Windows has no such flag), so a directory above the file swapped for a link in
+ * between, or on Windows the file itself, leaves the handle on another file; its identity then
+ * differs from the vetted one or from what the path names now. On Linux the kernel's own name for
+ * the opened file (`/proc/self/fd`) must be the path as well, which no later swap can change. On
+ * macOS and Windows a process that swaps a workspace directory back and forth several times within
+ * one check can still slip past.
  */
-async function holdsVettedFile(path: string, vetted: Stats, held: Stats): Promise<boolean> {
-  if (!sameFile(vetted, held)) return false;
-  return sameFile(await lstat(path), held) && samePath(await realpath(path), path);
+async function vettedNow(
+  handle: FileHandle,
+  path: string,
+  vetted: BigIntStats,
+  held: BigIntStats,
+): Promise<BigIntStats | undefined> {
+  if (!sameFile(vetted, held)) return undefined;
+  if (process.platform === 'linux') {
+    const opened = await readlink(`/proc/self/fd/${handle.fd}`).catch(() => undefined);
+    if (opened !== undefined && opened !== path) return undefined;
+  }
+  const named = await lstat(path, { bigint: true });
+  return sameFile(named, held) && samePath(await realpath(path), path) ? named : undefined;
 }
 
 /**
@@ -146,8 +169,12 @@ async function readCapped(handle: FileHandle, size: number): Promise<Buffer | un
   }
 }
 
-/** Invisible format characters: zero-width spaces and joiners, bidi marks, Unicode tag text. */
-const FORMAT_CHARACTERS = /\p{Cf}/gu;
+/**
+ * Invisible characters: the format characters (zero-width spaces and joiners, bidi marks, Unicode
+ * tag text) and the other default-ignorable ones (variation selectors, the combining grapheme
+ * joiner, Hangul fillers).
+ */
+const INVISIBLE_CHARACTERS = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
 
 /** Whether a line still spells one of the keys once its whitespace is gone. */
 function spellsSecret(line: string, secrets: readonly string[]): boolean {
@@ -159,8 +186,8 @@ function spellsSecret(line: string, secrets: readonly string[]): boolean {
  * The change as a diff of at most {@link MAX_CHANGE_SNIPPET_LINES} lines, or `undefined` when it
  * is longer. The changed span is measured first, so a large rewrite is never diffed at all.
  * Each line is made plain first, as the prompt will show it (`plainSpan`), with every invisible
- * format character removed outright (`plainSpan` would fold a bidi mark to a space), and only then
- * are provider keys redacted, before a long line is cut. So a key with an invisible character
+ * character removed outright (`plainSpan` would fold a bidi mark to a space, and keeps a variation
+ * selector), and only then are provider keys redacted, before a long line is cut. So a key with an invisible character
  * inside cannot pass the redaction to be joined up in the prompt, and a key the cut would split
  * cannot escape it by half. A line that still spells a key split by a space or a control character
  * leaves the diff out.
@@ -186,7 +213,7 @@ export function changeSnippet(
   if (changed === 0 || changed >= MAX_CHANGE_SNIPPET_LINES) return undefined;
   const diff = renderDiff(before, after, 1);
   if (!diff) return undefined;
-  const plain = diff.split('\n').map((line) => plainSpan(line.replace(FORMAT_CHARACTERS, '')));
+  const plain = diff.split('\n').map((line) => plainSpan(line.replace(INVISIBLE_CHARACTERS, '')));
   const lines = redactSecrets(plain.join('\n'), secrets).split('\n');
   if (lines.length > MAX_CHANGE_SNIPPET_LINES) return undefined;
   if (lines.some((line) => spellsSecret(line, secrets))) return undefined;
@@ -332,18 +359,17 @@ export class FileChangeTracker {
    * directory above it that became one, means something else stands there now: it is reported as
    * changed and never read, so a checkout or a peer cannot point the notice at `~/.npmrc` or a
    * denied `.env` and have its lines diffed into the prompt. A handle that turns out to hold
-   * another file than the one checked is not read either (`holdsVettedFile`), and a file with
-   * another name (a hard link, which may be any file on this filesystem) is reported without its
-   * lines.
+   * another file than the one checked is not read either (`vettedNow`), and a file with another
+   * name (a hard link, which may be any file on this filesystem) is reported without its lines.
    */
   private async judge(
     key: string,
     absolutePath: string,
     observation: FileObservation,
   ): Promise<{ sha: string; text?: string } | undefined> {
-    let vetted: Stats;
+    let vetted: BigIntStats;
     try {
-      vetted = await lstat(absolutePath);
+      vetted = await lstat(absolutePath, { bigint: true });
       if (vetted.isSymbolicLink()) return { sha: REPLACED };
       if (!vetted.isFile()) return { sha: DELETED };
       if (!samePath(await realpath(absolutePath), absolutePath)) return { sha: REPLACED };
@@ -351,26 +377,28 @@ export class FileChangeTracker {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
       return { sha: DELETED };
     }
-    if (vetted.size > MAX_JUDGED_BYTES) return undefined;
+    if (Number(vetted.size) > MAX_JUDGED_BYTES) return undefined;
     const last = this.judged.get(key);
-    if (last && last.observedSha === observation.sha256 && statVouches(last, vetted)) {
+    if (last && last.observedSha === observation.sha256 && statVouches(last, factsOf(vetted))) {
       return { sha: last.currentSha };
     }
     // Taken before the read, as `StatStamp.judgedAt` must be.
     const judgedAt = this.now();
     let bytes: Buffer;
-    let held: Stats;
+    let held: BigIntStats;
+    let named: BigIntStats | undefined;
     try {
       const handle = await open(absolutePath, constants.O_RDONLY | NO_FOLLOW | NO_BLOCK);
       try {
         // The verdict is keyed on the stat of the handle the bytes come from, not the `lstat` above:
         // a write between the two must not be cached under the times of the file it replaced.
-        held = await handle.stat();
+        held = await handle.stat({ bigint: true });
         if (!held.isFile()) return { sha: REPLACED };
         // Another file than the one checked, or one past the cap: not read, and judged next turn.
-        if (!(await holdsVettedFile(absolutePath, vetted, held))) return undefined;
-        if (held.size > MAX_JUDGED_BYTES) return undefined;
-        const read = await readCapped(handle, held.size);
+        named = await vettedNow(handle, absolutePath, vetted, held);
+        if (!named) return undefined;
+        if (Number(held.size) > MAX_JUDGED_BYTES) return undefined;
+        const read = await readCapped(handle, Number(held.size));
         if (!read) return undefined;
         bytes = read;
       } finally {
@@ -381,12 +409,16 @@ export class FileChangeTracker {
     }
     const sha = createHash('sha256').update(bytes).digest('hex');
     this.judged.set(key, {
-      ...statStamp(held, judgedAt),
+      ...statStamp(factsOf(held), judgedAt),
       observedSha: observation.sha256,
       currentSha: sha,
     });
+    // Another name (a hard link) shows in the link count of every stat taken while it stood, so all
+    // three are asked: a name removed between the open and the handle's stat, and put back before
+    // the last `lstat`, is still caught.
+    const linked = vetted.nlink > 1n || held.nlink > 1n || named.nlink > 1n;
     const text =
-      held.nlink <= 1 && bytes.byteLength <= MAX_BASELINE_BYTES && !looksBinary(bytes)
+      !linked && bytes.byteLength <= MAX_BASELINE_BYTES && !looksBinary(bytes)
         ? bytes.toString('utf8')
         : undefined;
     return { sha, ...(text !== undefined ? { text } : {}) };
