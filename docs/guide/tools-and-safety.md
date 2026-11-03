@@ -351,10 +351,11 @@ and plan mode still refuses its mutating tools with its own message.
 
 A `permissions.deny` or `ask` rule on `ToolSearch` itself, or a `PreToolUse` or `PostToolUse` hook
 whose matcher names `ToolSearch`, alone or as one of its `A|B` alternatives, turns direct calls off
-for the run: whoever wrote it meant to gate or to audit discovery, so a direct call to a tool that is
+for the run, and so does one narrowing `*` by a pattern (`*(select:*)`), which reads ToolSearch's
+query too: whoever wrote it meant to gate or to audit discovery, so a direct call to a tool that is
 not active is refused toward `ToolSearch` as before, where the rule or hook applies, and the
-deferred-tool list does not offer direct calls. A hook with no matcher, or with `*`, runs on every
-call, the direct one included, and turns nothing off; nor does an allow rule.
+deferred-tool list does not offer direct calls. A hook with no matcher, or with a bare `*`, runs on
+every call, the direct one included, and turns nothing off; nor does an allow rule.
 
 Before a turn's first model call, Book also routes what you typed. A URL that `WebFetch` would
 fetch activates `WebFetch`, in a code fence too; a plain-HTTP, local or private address counts only
@@ -845,13 +846,16 @@ prompt through `/dev/tty`, and a Ctrl+C in the terminal goes to Book, not to the
 
 `matcher` filters `PreToolUse`/`PostToolUse` by tool call and `PreCompact`/`PostCompact` by
 trigger (`manual`, `auto`, `manual|auto`, or `*` for both). A tool matcher names a tool exactly
-(`Bash`, `mcp__github__create_issue`) and may narrow it by its primary argument, as a permission
-rule does (`Bash(git *)`, `Edit(src/**)`; an `Edit` or `Write` matcher also sees the files an
-`ApplyPatch` call edits). `*` matches every tool, as an absent or empty matcher does, and Claude
+(`Bash`, `mcp__github__create_issue`) and may narrow it with a glob on its primary argument, in the
+`Tool(pattern)` form permission rules use (`Bash(git *)`, `Edit(src/**)`; `*` matches anything, a
+trailing ` *` also matches the bare command, and an `Edit` or `Write` matcher also sees the files
+an `ApplyPatch` call edits). `*` matches every tool, as an absent or empty matcher does, and Claude
 Code's `A|B` matches either alternative (`Edit|Write`, `Bash(ls *)|Read`), split on a `|` outside
 the parentheses only. Names are compared as written, never as regular expressions, so a matcher
-such as `Notebook.*` matches no tool: `book doctor` flags an alternative that names no tool Book
-registers, leaving `mcp__` names alone because it does not start the servers.
+such as `Notebook.*` or `mcp__memory__.*` matches no tool. `book doctor` flags an alternative that
+matches nothing: a name no tool Book registers has, a regular expression, an MCP server name where
+a tool's belongs, or a pattern with no tool before it. It leaves full `mcp__server__tool` names
+alone, because it does not start the servers.
 
 `PreCompact` receives `trigger`, `focus`, and, when the span about to be summarized
 contains text addressed to a summarizer, `suspect_inputs`: a list of `{ eventRef, excerpt }`; exit

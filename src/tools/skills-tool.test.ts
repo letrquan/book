@@ -63,12 +63,17 @@ describe('InvokeSkill activation', () => {
         'Review carefully.',
       ].join('\n'),
     );
-    const restricted = await skillsTool[0]!.execute({ skill: 'review' }, context('auto'));
+    const ctx = context('auto');
+    const restricted = await skillsTool[0]!.execute({ skill: 'review' }, ctx);
+    // Invoked again while active: its limits have applied since the first call, so nothing new.
+    const again = await skillsTool[0]!.execute({ skill: 'review' }, ctx);
 
     expect(unrestricted.content).not.toContain('allowed tools');
     expect(restricted.content).toContain(
-      'Its allowed tools apply from your next call, in this response too: Read, Bash(git *), InvokeSkill, ReadSkillResource.',
+      'From your next call on, in this response too, your calls are also limited to its allowed tools: Read, Bash(git *), InvokeSkill, ReadSkillResource. Any other limit on this run still applies.',
     );
+    expect(again.status).toBe('success');
+    expect(again.content).not.toContain('allowed tools');
   });
 
   it('blocks disabled skills', async () => {

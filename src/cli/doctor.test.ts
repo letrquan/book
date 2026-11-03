@@ -701,6 +701,37 @@ describe('runDoctorCommand tool-hook matchers (#656)', () => {
     );
   });
 
+  it('flags a regular expression, an MCP server and a pattern with no tool, MCP names included', async () => {
+    writeUserSettings({
+      hooks: {
+        PreToolUse: [
+          { command: 'a.sh', matcher: 'mcp__memory__.*' },
+          { command: 'b.sh', matcher: 'Read|Notebook.*' },
+          { command: 'c.sh', matcher: 'mcp__github' },
+          { command: 'd.sh', matcher: '(git *)' },
+        ],
+      },
+    });
+
+    const output = await doctorOutput();
+
+    const regex =
+      'a matcher compares whole names, never a regular expression or a wildcard inside one';
+    expect(output).toContain(
+      `[!] PreToolUse matcher "mcp__memory__.*": no tool is named "mcp__memory__.*": ${regex}; this hook never runs`,
+    );
+    expect(output).toContain(
+      `[!] PreToolUse matcher "Read|Notebook.*": no tool is named "Notebook.*": ${regex}`,
+    );
+    expect(output).not.toContain(`"Notebook.*": ${regex}; this hook never runs`);
+    expect(output).toContain(
+      '[!] PreToolUse matcher "mcp__github": "mcp__github" names an MCP server, not a tool: a hook matcher names each tool, as "mcp__github__<tool>"; this hook never runs',
+    );
+    expect(output).toContain(
+      `[!] PreToolUse matcher "(git *)": "(git *)" names no tool; write "*(git *)" for every tool, or a tool's name before the "("; this hook never runs`,
+    );
+  });
+
   it('says nothing of a catch-all, registered tools, MCP tools or the compact events', async () => {
     writeUserSettings({
       hooks: {

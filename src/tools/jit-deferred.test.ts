@@ -588,6 +588,8 @@ describe('a rule or hook on ToolSearch itself (#619, decision c)', () => {
     ['PreToolUse', 'ToolSearch|WebFetch'],
     ['PostToolUse', 'WebFetch|ToolSearch(select:*)'],
     ['PreToolUse', ' Edit | ToolSearch '],
+    // A pattern on every tool reads ToolSearch's query too, so a direct call could slip past it.
+    ['PreToolUse', '*(select:*)'],
   ] as const)('a %s hook matching %s restores it', async (event, matcher) => {
     const { surface } = setup({
       configure: (config) => {

@@ -920,6 +920,31 @@ export async function runAgentLoop(
     for (const dispose of appliedSkillRestrictions.values()) dispose();
     appliedSkillRestrictions.clear();
   };
+  /**
+   * Push the allowed-tools of every active frame not applied yet, and report whether any was. It
+   * never lifts a ceiling or loads a tool, so it is safe at any point of a turn: before each
+   * request, and after each call (#657), whatever activated the frame.
+   */
+  const pushSkillCeilings = (currentTurn: number): boolean => {
+    let pushed = false;
+    for (const frame of skillRegistry.activeFrames(currentTurn)) {
+      if (!frame.allowedTools) continue;
+      const key = `${frame.skillId}:${frame.bodyDigest}`;
+      if (appliedSkillRestrictions.has(key)) continue;
+      appliedSkillRestrictions.set(key, toolSurface.pushRestriction(frame.allowedTools));
+      pushed = true;
+    }
+    return pushed;
+  };
+  const recordSkillEffectiveTools = (anyFrame: boolean): void =>
+    skillRegistry.recordEffectiveTools(
+      anyFrame
+        ? toolSurface
+            .previewRestriction(['*'])
+            .map((definition) => canonicalToolName(definition.name))
+            .filter((name) => name !== 'ToolSearch')
+        : undefined,
+    );
   const syncSkillRestrictions = (currentTurn: number): void => {
     const frames = skillRegistry.activeFrames(currentTurn);
     const activeKeys = new Set(frames.map((frame) => `${frame.skillId}:${frame.bodyDigest}`));
@@ -928,21 +953,11 @@ export async function runAgentLoop(
       dispose();
       appliedSkillRestrictions.delete(key);
     }
-    for (const frame of frames) {
-      if (!frame.allowedTools) continue;
-      const key = `${frame.skillId}:${frame.bodyDigest}`;
-      if (appliedSkillRestrictions.has(key)) continue;
-      appliedSkillRestrictions.set(key, toolSurface.pushRestriction(frame.allowedTools));
-    }
+    pushSkillCeilings(currentTurn);
+    // Loading a tool can evict another, so it happens here, before the request is built, and
+    // never mid-response, where it could drop a tool the answered request declared.
     if (frames.length > 0) toolSurface.activate(['ReadSkillResource']);
-    skillRegistry.recordEffectiveTools(
-      frames.length > 0
-        ? toolSurface
-            .previewRestriction(['*'])
-            .map((definition) => canonicalToolName(definition.name))
-            .filter((name) => name !== 'ToolSearch')
-        : undefined,
-    );
+    recordSkillEffectiveTools(frames.length > 0);
   };
   /**
    * Activation-class prompt text: skill frames and their notices change on
@@ -3617,13 +3632,6 @@ export async function runAgentLoop(
           parallel: entry.parallel,
         });
 
-        // A skill the model activates narrows the tools from its next call on, not from the next
-        // turn (#657): its allowed-tools are pushed here, before the next call of this response is
-        // prepared. Calls are prepared in order and InvokeSkill is serial, so a parallel wave after
-        // it is prepared only once this has run; every later call meets the ceiling the next turn
-        // starts with, and is refused the same way.
-        if (canonName === 'InvokeSkill' && toolResultSucceeded(result)) syncSkillRestrictions(turn);
-
         if (toolResultSucceeded(result)) {
           if (
             result.artifacts?.fileMutation ||
@@ -3900,6 +3908,12 @@ export async function runAgentLoop(
       const finishCall = async (entry: PreparedLoopCall, result: ToolResult): Promise<void> => {
         const normalized = await finalizeToolCall(entry, result);
         toolResults[entry.index] = normalized;
+        // A skill a call activated (InvokeSkill) narrows the tools from the next call on, not from
+        // the next turn (#657): its allowed-tools are pushed here, before the next call of this
+        // response is prepared. Calls are prepared in order, and a call that activates a skill is
+        // serial, so a parallel wave after it is prepared only once this has run; every later call
+        // meets the ceiling the next turn starts with, and is refused the same way.
+        if (pushSkillCeilings(turn)) recordSkillEffectiveTools(true);
       };
       const resultAt = (index: number): ToolResult => {
         const result = toolResults[index];

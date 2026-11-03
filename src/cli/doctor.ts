@@ -45,12 +45,47 @@ export const SESSION_TOOL_NAMES: readonly string[] = [
   'SessionSend',
 ];
 
+/** What a Claude Code regular expression or a glob holds and no tool name can (`.` aside). */
+const NAME_PATTERN_SYNTAX = /[*+?^$[\]{}\\]/;
+
 /**
- * One line for each `PreToolUse`/`PostToolUse` matcher alternative that names no tool a session can
- * register (#656). It matches no call, so its hook silently never runs for it: a typo, a legacy
- * alias, another letter case, or a Claude Code regular expression (`Notebook.*`), which Book reads
- * as a name. `*` names every tool, and an `mcp__` name belongs to a server doctor does not start,
- * so neither is checked.
+ * Why one matcher alternative's tool matches no call, or `undefined` when it names a tool (or `*`).
+ * The text is the user's, so it is rendered as untrusted.
+ */
+function unmatchedHookTool(
+  tool: string,
+  pattern: string | null,
+  known: ReadonlySet<string>,
+  suggest: (tool: string) => string | undefined,
+): string | undefined {
+  if (tool === '*' || known.has(tool)) return undefined;
+  if (tool === '') {
+    const written = renderUntrustedText(`(${pattern ?? ''})`);
+    const everyTool = pattern === null ? '*' : `*${written}`;
+    return `"${written}" names no tool; write "${everyTool}" for every tool, or a tool's name before the "("`;
+  }
+  const name = renderUntrustedText(tool);
+  // Claude Code reads a matcher as a regular expression (`mcp__memory__.*`, `Notebook.*`); Book
+  // compares names, so such a name never matches, an MCP one included.
+  if (NAME_PATTERN_SYNTAX.test(tool)) {
+    return `no tool is named "${name}": a matcher compares whole names, never a regular expression or a wildcard inside one`;
+  }
+  if (tool.startsWith('mcp__')) {
+    // A server's tools are `mcp__<server>__<tool>`, and a server name holds no `__`. Any other MCP
+    // name belongs to a server doctor does not start, so it is not checked.
+    if (tool.slice('mcp__'.length).includes('__')) return undefined;
+    return `"${name}" names an MCP server, not a tool: a hook matcher names each tool, as "${name}__<tool>"`;
+  }
+  const suggestion = suggest(tool);
+  return `no tool is named "${name}"${suggestion ? ` (did you mean "${suggestion}"?)` : ''}`;
+}
+
+/**
+ * One line for each `PreToolUse`/`PostToolUse` matcher alternative that matches no call (#656), so
+ * its hook silently never runs for it: a name no tool a session can register has (a typo, a legacy
+ * alias, another letter case), a Claude Code regular expression, which Book reads as a name, an
+ * MCP server where a tool belongs, or a pattern with no tool before it. `*` names every tool, and
+ * a full `mcp__server__tool` name belongs to a server doctor does not start, so neither is flagged.
  */
 async function hookMatcherWarnings(hooks: {
   PreToolUse: HookEntry[];
@@ -70,22 +105,21 @@ async function hookMatcherWarnings(hooks: {
     ...SESSION_TOOL_NAMES,
   ]);
   const byLowerCase = new Map([...known].map((name) => [name.toLowerCase(), name]));
+  const suggest = (tool: string): string | undefined =>
+    Object.hasOwn(TOOL_ALIASES, tool) ? TOOL_ALIASES[tool] : byLowerCase.get(tool.toLowerCase());
   const lines: string[] = [];
   for (const event of events) {
     for (const entry of hooks[event]) {
       const alternatives = hookMatcherAlternatives(entry.matcher);
       if (!alternatives) continue;
-      const unknown = alternatives
-        .map((alternative) => alternative.tool)
-        .filter((tool) => tool !== '*' && !tool.startsWith('mcp__') && !known.has(tool));
-      const neverRuns = unknown.length === alternatives.length;
-      for (const tool of new Set(unknown)) {
-        const suggestion = Object.hasOwn(TOOL_ALIASES, tool)
-          ? TOOL_ALIASES[tool]
-          : byLowerCase.get(tool.toLowerCase());
+      const problems = alternatives.map(({ tool, pattern }) =>
+        unmatchedHookTool(tool, pattern, known, suggest),
+      );
+      const neverRuns = problems.every((problem) => problem !== undefined);
+      for (const problem of new Set(problems)) {
+        if (problem === undefined) continue;
         lines.push(
-          `  [!] ${event} matcher "${renderUntrustedText(entry.matcher!)}": no tool is named "${renderUntrustedText(tool)}"` +
-            (suggestion ? ` (did you mean "${suggestion}"?)` : '') +
+          `  [!] ${event} matcher "${renderUntrustedText(entry.matcher!)}": ${problem}` +
             (neverRuns ? '; this hook never runs' : ''),
         );
       }

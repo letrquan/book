@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hookMatcherAlternatives, hookMatcherNamesTool } from './hook-matcher.js';
+import { hookMatcherAlternatives, hookMatcherTargetsTool } from './hook-matcher.js';
 
 describe('hookMatcherAlternatives (#656)', () => {
   it.each([
@@ -53,7 +53,7 @@ describe('hookMatcherAlternatives (#656)', () => {
   });
 });
 
-describe('hookMatcherNamesTool (#656)', () => {
+describe('hookMatcherTargetsTool (#656)', () => {
   it.each([
     'ToolSearch',
     ' ToolSearch ',
@@ -62,20 +62,17 @@ describe('hookMatcherNamesTool (#656)', () => {
     'WebFetch|ToolSearch(select:*)',
     // Named is named, whatever else the alternation also matches.
     'ToolSearch|*',
-  ])('finds ToolSearch named in %s', (matcher) => {
-    expect(hookMatcherNamesTool(matcher, 'ToolSearch')).toBe(true);
+    // A pattern on every tool reads ToolSearch's query too, and only some calls match it.
+    '*(select:*)',
+    'Edit|*(src/**)',
+  ])('finds ToolSearch targeted by %s', (matcher) => {
+    expect(hookMatcherTargetsTool(matcher, 'ToolSearch')).toBe(true);
   });
 
-  it.each([
-    undefined,
-    '',
-    '*',
-    ' * ',
-    '*(select:*)',
-    'Edit|Write',
-    'Bash(ToolSearch)',
-    'toolsearch',
-  ])('does not find it in %s', (matcher) => {
-    expect(hookMatcherNamesTool(matcher, 'ToolSearch')).toBe(false);
-  });
+  it.each([undefined, '', '*', ' * ', '*|Edit', 'Edit|Write', 'Bash(ToolSearch)', 'toolsearch'])(
+    'does not find it targeted by %s',
+    (matcher) => {
+      expect(hookMatcherTargetsTool(matcher, 'ToolSearch')).toBe(false);
+    },
+  );
 });

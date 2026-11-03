@@ -411,9 +411,11 @@ describe('runAgentLoop skill lifecycle', () => {
         [{ id: 'bash-next', name: 'Bash', arguments: { command: 'echo next' } }],
       ];
       let providerTurn = 0;
+      const toolSurfaces: string[][] = [];
       const provider: Provider = {
         id: 'scripted',
-        stream: async function* () {
+        stream: async function* (_config, _messages, tools) {
+          toolSurfaces.push(tools.map((tool) => tool.name));
           const calls = turns[providerTurn++];
           if (calls) for (const toolCall of calls) yield { type: 'tool_call', toolCall };
           else yield { type: 'text', content: 'done' };
@@ -455,6 +457,11 @@ describe('runAgentLoop skill lifecycle', () => {
       expect(results.get('read-same')?.status).toBe('success');
       expect(results.get('log-same')?.status).toBe('success');
       expect(ran).toEqual(['GitStatus', 'GitLog']);
+      // The next request is built as before: the skill's tools, and the resource reader loaded at
+      // the turn's start rather than in the middle of the response it was activated in.
+      expect(toolSurfaces[1]).toEqual(expect.arrayContaining(['Read', 'ReadSkillResource']));
+      expect(toolSurfaces[1]).not.toContain('Bash');
+      expect(toolSurfaces[1]).not.toContain('GitStatus');
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

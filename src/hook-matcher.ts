@@ -1,7 +1,9 @@
+import { parseRule } from './permissions.js';
+
 /**
  * How a `PreToolUse` or `PostToolUse` hook's `matcher` reads (#656), in one place for everything
  * that reads one: the hook runner deciding which calls a hook sees, the tool surface deciding
- * whether a hook names ToolSearch and so gates direct calls (#619), and `book doctor` checking the
+ * whether a hook targets ToolSearch and so gates direct calls (#619), and `book doctor` checking the
  * names against the registry. Two readings of the same text are how a hook comes to run where the
  * gate assumes it does not.
  *
@@ -9,8 +11,8 @@
  * - absent, empty or blank: every tool call;
  * - `*`: every tool;
  * - `Tool` or `Tool(pattern)`: one tool by its exact name, every call of it or those whose primary
- *   argument the pattern matches (the permission-rule format; `*(pattern)` is the pattern on any
- *   tool);
+ *   argument the pattern matches (the permission-rule format, read by `parseRule`; `*(pattern)` is
+ *   the pattern on any tool);
  * - `A|B`: any of the alternatives, each read as above. The text splits on a `|` outside
  *   parentheses only, so `Bash(a|b)` is one alternative whose pattern holds a `|`.
  */
@@ -42,21 +44,11 @@ function splitTopLevel(text: string): string[] {
 }
 
 /**
- * One alternative, read as `parseRule` reads a permission rule: the tool is the text before the
- * first `(`, and the pattern runs to the last `)`. Without a closing `)` there is no pattern.
- */
-function parseAlternative(text: string): HookMatcherAlternative {
-  const open = text.indexOf('(');
-  if (open === -1) return { tool: text.trim(), pattern: null };
-  const close = text.lastIndexOf(')');
-  const pattern = close > open ? text.slice(open + 1, close).trim() : '';
-  return { tool: text.slice(0, open).trim(), pattern: pattern || null };
-}
-
-/**
  * The alternatives a tool-event matcher lists, in order, or `undefined` when it lists none (absent,
- * empty, blank, or nothing but separators), which matches every tool call as no matcher does. A
- * `*` alternative is listed as written: it matches every tool, and the caller reads the rest.
+ * empty, blank, or nothing but separators), which matches every tool call as no matcher does. Each
+ * is read as `parseRule` reads a permission rule: the tool is the text before the first `(`, and
+ * the pattern runs to the last `)`. A `*` alternative is listed as written: it matches every tool,
+ * and the caller reads the rest.
  */
 export function hookMatcherAlternatives(
   matcher: string | undefined,
@@ -64,17 +56,24 @@ export function hookMatcherAlternatives(
   if (matcher === undefined) return undefined;
   const alternatives = splitTopLevel(matcher)
     .filter((part) => part.trim() !== '')
-    .map(parseAlternative);
+    .map((part): HookMatcherAlternative => {
+      const { toolName, pattern } = parseRule(part);
+      return { tool: toolName, pattern };
+    });
   return alternatives.length > 0 ? alternatives : undefined;
 }
 
 /**
- * Whether a tool-event matcher names this tool itself, alone or in an alternation, with or without
- * a pattern. A catch-all does not name it: `*`, and a matcher that lists nothing, match it only as
- * they match every tool.
+ * Whether a tool-event matcher can select some calls of this tool without selecting every call:
+ * an alternative that names the tool, alone or in an alternation, with or without a pattern, or a
+ * `*` narrowed by a pattern (`*(select:*)` reads every tool's primary argument, ToolSearch's query
+ * included). A catch-all does not target it: a bare `*`, and a matcher that lists nothing, match
+ * every call of every tool. A named tool targets it even beside a bare `*` (`ToolSearch|*`).
  */
-export function hookMatcherNamesTool(matcher: string | undefined, toolName: string): boolean {
+export function hookMatcherTargetsTool(matcher: string | undefined, toolName: string): boolean {
   return (
-    hookMatcherAlternatives(matcher)?.some((alternative) => alternative.tool === toolName) ?? false
+    hookMatcherAlternatives(matcher)?.some(
+      ({ tool, pattern }) => tool === toolName || (tool === '*' && pattern !== null),
+    ) ?? false
   );
 }

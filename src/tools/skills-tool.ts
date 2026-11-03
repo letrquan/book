@@ -18,15 +18,19 @@ async function invokeSkill(args: Record<string, unknown>, ctx: ToolContext): Pro
   const registry = registryFor(ctx);
   const reason = registry.isExplicitlyRequested(skillName) ? 'user' : 'model';
   try {
+    const alreadyActive = registry.isActive(skillName, ctx.currentTurn ?? 0);
     const frame = registry.activate(skillName, reason, ctx.currentTurn ?? 0);
     const resourceSummary = frame.resources.length
       ? ` Supporting resources: ${frame.resources.map((resource) => resource.relativePath).join(', ')}.`
       : '';
-    // The loop narrows the tools to these as soon as this call returns (#657), so a later call in
-    // the same response that they leave out is refused: say so where the model reads it.
-    const ceiling = frame.allowedTools
-      ? ` Its allowed tools apply from your next call, in this response too: ${frame.allowedTools.join(', ')}.`
-      : '';
+    // The loop adds these to the run's tool limits as soon as this call returns (#657), so a later
+    // call in the same response that they leave out is refused: say so where the model reads it.
+    // They narrow whatever else limits the run, which still applies; a frame that was already
+    // active has applied them since it was activated.
+    const ceiling =
+      frame.allowedTools && !alreadyActive
+        ? ` From your next call on, in this response too, your calls are also limited to its allowed tools: ${frame.allowedTools.join(', ')}. Any other limit on this run still applies.`
+        : '';
     return toolSuccess(
       `Activated skill "${frame.skillName}" for this ${frame.expires}. Its instructions will be applied in the next model request.${ceiling}${resourceSummary}`,
       {
