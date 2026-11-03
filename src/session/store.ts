@@ -111,6 +111,24 @@ function normalizeWorkspace(cwd: string): string {
 }
 
 /**
+ * What the loop's own turns began with in a record an older Book wrote, before it marked them
+ * (`hostWritten`): `[continuation] …` (a continuation, a resume, the completion gate),
+ * `[work-state] …` and a goal's `Stop hook feedback:`. Records written now carry the mark, so this
+ * list does not grow.
+ */
+const UNMARKED_HOST_TURN = /^(?:\[(?:continuation|work-state)\]|Stop hook feedback:)/;
+
+/** Whether a user record is a turn the loop wrote into a run, not a prompt the user sent. */
+function isHostWrittenTurn(data: {
+  hostWritten?: boolean;
+  derivedContent?: boolean;
+  content?: string;
+}): boolean {
+  if (data.hostWritten === true) return true;
+  return data.derivedContent === true && UNMARKED_HOST_TURN.test(data.content ?? '');
+}
+
+/**
  * JSONL session persistence. Each session is one file under <root>/<id>.jsonl.
  * The first line is a session_meta record; subsequent lines are event records
  * (user / assistant / tool_call / tool_result / usage). load() replays the
@@ -517,6 +535,11 @@ export class SessionStore {
         derivedContent?: boolean;
         /** A user turn the host steered into a running loop, rather than the one that started it. */
         steered?: boolean;
+        /**
+         * A turn the loop wrote into the run itself (a `[continuation]`, the work-state refresh,
+         * the completion gate): not the user's words and not the prompt the run started with.
+         */
+        hostWritten?: boolean;
         complete?: boolean;
         toolCalls?: Message['toolCalls'];
         toolResults?: PersistedToolResult[];
@@ -673,10 +696,11 @@ export class SessionStore {
         // Plan decision D7: a steer is not a rewind point. It belongs to the target of the run's
         // prompt before it, so without a checkpoint of its own it mints none — not even the
         // legacy target a prompt that captured no snapshot gets. Nor is a turn the host wrote into
-        // the run (`derivedContent`: the work-state refresh, a `[continuation]`, the completion
-        // gate): the user never sent it, and the live session makes a target only for a prepared
-        // send, so a resumed one must list the same prompts (#666).
-        if (!targetId && data.steered !== true && data.derivedContent !== true) {
+        // the run (the work-state refresh, a `[continuation]`, the completion gate): the user never
+        // sent it, and the live session makes a target only for a prepared send, so a resumed one
+        // must list the same prompts (#666). A command's resolved body is `derivedContent` too and
+        // is a prompt the user sent, so only the host's own turns are told apart.
+        if (!targetId && data.steered !== true && !isHostWrittenTurn(data)) {
           targetId = `user:${eventId}`;
           // Nothing records this prompt as typed: a print-mode turn's may be a command's body, and
           // print mode runs no `!` line in any of it. A rewind lists it but never puts it back in
