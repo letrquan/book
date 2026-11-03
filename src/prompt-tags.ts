@@ -178,10 +178,12 @@ function readUnit(text: string, at: number): Unit {
 
 /** What follows a `<`: the name of the tag it would open or close, and how it was spelled. */
 interface SpelledTag {
-  /** The name as matching reads it, lower-cased. */
-  name: string;
-  /** Where the name ends in the text. */
-  end: number;
+  /**
+   * The names the run can be read as, lower-cased, each with where it ends in the text: the whole
+   * run with its invisible characters dropped, and the run up to each invisible character in it,
+   * which a reader may take for a space (`system-reminder` in `<system-reminder\u3164x>`).
+   */
+  names: Array<{ name: string; end: number }>;
   /** Where the backslashes a writer put after the `<` are: the rewrite folds them into its two. */
   backslashes: number[];
   /** Whether whitespace stood between the `<`, the `/` and the name. */
@@ -191,7 +193,8 @@ interface SpelledTag {
 /**
  * The tag a `<` ending at `at` begins: after it, invisible characters, whitespace and the
  * backslashes a writer put there, an optional `/` with whitespace after it too, then the run of
- * name characters. Undefined when no name follows.
+ * name characters, invisible ones in it ending a reading of the name each. Undefined when no name
+ * follows.
  */
 function readTag(text: string, at: number): SpelledTag | undefined {
   const backslashes: number[] = [];
@@ -211,20 +214,29 @@ function readTag(text: string, at: number): SpelledTag | undefined {
     }
     index = unit.end;
   }
+  const names: Array<{ name: string; end: number }> = [];
   let name = '';
   while (index < text.length) {
     const unit = readUnit(text, index);
-    if (unit.read !== '' && !NAME_CHARACTERS.test(unit.read)) break;
-    name += unit.read;
+    if (unit.read === '') {
+      if (name) names.push({ name: name.toLowerCase(), end: index });
+    } else if (NAME_CHARACTERS.test(unit.read)) {
+      name += unit.read;
+    } else {
+      break;
+    }
     index = unit.end;
   }
-  return name ? { name: name.toLowerCase(), end: index, backslashes, spaced } : undefined;
+  if (!name) return undefined;
+  names.push({ name: name.toLowerCase(), end: index });
+  return { names, backslashes, spaced };
 }
 
 /**
- * Whether the name ending at `at` is followed as a tag's is: by `>`, `/>`, or whitespace and an
- * attribute (`name=`). A spelling with whitespace in it counts only then: a space is how code
- * compares (`i < source.length`), and how a shell redirects (`cmd < /source/in.txt`).
+ * Whether the name ending at `at` is followed as a tag's is: by `>`, `/>`, or whitespace (or an
+ * invisible character) and an attribute (`name=`). A spelling with whitespace in it counts only
+ * then: a space is how code compares (`i < source.length`), and how a shell redirects
+ * (`cmd < /source/in.txt`).
  */
 function endsLikeTag(text: string, at: number): boolean {
   let state: 'name' | 'gap' | 'attribute' | 'equals' | 'slash' = 'name';
@@ -232,8 +244,15 @@ function endsLikeTag(text: string, at: number): boolean {
   while (index < text.length) {
     const { read, end } = readUnit(text, index);
     index = end;
-    if (read === '') continue;
-    if (state === 'slash') return read === '>';
+    if (state === 'slash') {
+      if (read === '') continue;
+      return read === '>';
+    }
+    // Right after the name an invisible character may read as a space; elsewhere it reads as nothing.
+    if (read === '') {
+      if (state === 'name') state = 'gap';
+      continue;
+    }
     if (WHITESPACE.test(read)) {
       if (state === 'name') state = 'gap';
       else if (state === 'attribute') state = 'equals';
@@ -273,8 +292,10 @@ export function neutralizeTags(text: string, options: NeutralizeTagsOptions = {}
     const opener = readUnit(text, match.index);
     if (opener.read !== '<') continue;
     const tag = readTag(text, opener.end);
-    if (!tag || !isHarnessTag(tag.name)) continue;
-    if (tag.spaced && !endsLikeTag(text, tag.end)) continue;
+    const harness = tag?.names.some(
+      ({ name, end }) => isHarnessTag(name) && (!tag.spaced || endsLikeTag(text, end)),
+    );
+    if (!tag || !harness) continue;
     // Two backslashes after the `<`: read as written the tag is `<\\name`, and decoded from a JSON
     // string it is `<\name`. Neither is markup. Backslashes already there are folded into these
     // two; everything else, whitespace and invisible characters included, stays as written.
