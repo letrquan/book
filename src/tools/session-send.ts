@@ -58,6 +58,9 @@ function alsoRestricts(pattern: string): readonly (string | null)[] {
  * - The prompt shows the canonical spelling, and "Always allow" saves the rule for it: the bare name
  *   while it is unique; `name [ref]` while it is shared, for which no rule is saved
  *   (`namesSessionByAddress`).
+ * - A ref is 24 bits of a hash of a socket path, which a peer chooses, so another session can
+ *   answer to the same `name [ref]`. Then that spelling names neither of them: only the address
+ *   allows this one, and the prompt shows the address.
  */
 export function sessionSendSubject(
   rows: readonly PeerSessionRow[],
@@ -70,19 +73,18 @@ export function sessionSendSubject(
   const label = peerLabel({ name: target.name, ref });
   const address = encodeUdsAddress(target.socketPath);
   const shared = addressNeedsRef(rows, target);
+  const byLabel = resolvePeerAddress(rows, label);
+  const labelNamesIt = byLabel.ok && byLabel.target.socketPath === target.socketPath;
+  const canonical = !shared ? target.name : labelNamesIt ? label : address;
+  const allows = (pattern: string) =>
+    pattern.startsWith('uds:') || !labelNamesIt
+      ? pattern === address
+      : splitRef(pattern)?.ref === ref;
   return {
-    args: { ...args, to: shared ? label : target.name },
-    allow: shared ? [label, address] : [target.name, label, address],
+    args: { ...args, to: canonical },
+    allow: !shared ? [target.name, label, address] : labelNamesIt ? [label, address] : [address],
     restrict: [...new Set([to, target.name, label, address])],
-    rules: {
-      ...(shared
-        ? {
-            allows: (pattern: string) =>
-              pattern.startsWith('uds:') ? pattern === address : splitRef(pattern)?.ref === ref,
-          }
-        : {}),
-      alsoRestricts,
-    },
+    rules: { ...(shared ? { allows } : {}), alsoRestricts },
   };
 }
 

@@ -1300,7 +1300,10 @@ export function evaluatePermissionDetail(
         ? [...subject.restrict]
         : candidates;
   if (scope && paths && PATH_RULE_TOOLS.has(tool) && rulesName(parsed, tool)) {
-    restrictiveCandidates = [...candidates, ...pathRuleSpellings(paths, tool, args, true)];
+    restrictiveCandidates = [
+      ...restrictiveCandidates,
+      ...pathRuleSpellings(paths, tool, args, true),
+    ];
     // `allow` is offered only the spellings a `Write` would have written: the raw argument, the
     // path as given, and its canonical form. It is not offered the form relative to an honored
     // root, so a workspace-shaped allow such as `Edit(src/**)` cannot come to mean

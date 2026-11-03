@@ -608,6 +608,36 @@ describe('SessionList and SessionSend permissions (D7)', () => {
     }
   });
 
+  it('names a session by its address when another one answers to the same name and ref', async () => {
+    // A ref is 24 bits of a hash of a path the peer chooses: a peer can grind one to match.
+    const impostor = row('peer-b', {
+      socketPath: '/tmp/socks/impostor.sock',
+      sessionId: 'session-impostor',
+    });
+    const address = encodeUdsAddress('/tmp/socks/impostor.sock');
+    const subject = judgeSessionSend(
+      [row('me', { self: true, ref: 'eeeeee' }), row('peer-b'), impostor],
+      { to: address },
+    ).subject;
+    expect(subject).toMatchObject({ args: { to: address }, allow: [address] });
+    expect(subject.restrict).toContain('peer-b [a1b2c3]');
+    expect(subject.rules?.allows?.('peer-b [a1b2c3]')).toBe(false);
+    expect(subject.rules?.allows?.(address)).toBe(true);
+    // An allow rule written for the real peer-b admits neither, and nothing is saved.
+    for (const to of [address, PEER_B_ADDRESS]) {
+      const outcome = await run('default', {
+        allow: ['SessionSend(peer-b [a1b2c3])'],
+        to,
+        answer: 'always',
+        configure: (messaging) => {
+          messaging.listing = { ...messaging.listing, peers: [row('peer-b'), impostor] };
+        },
+      });
+      expect(outcome.promptedTo, to).toEqual([to]);
+      expect(outcome.persisted, to).toEqual([]);
+    }
+  });
+
   it('refuses a send to no live session before any prompt, and saves nothing', async () => {
     for (const [to, shared, code] of [
       ['nobody', false, 'session_not_found'],
