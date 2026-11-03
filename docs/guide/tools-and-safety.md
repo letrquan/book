@@ -683,7 +683,12 @@ The entry carries the workspace's protections too: its own `.book/settings.local
 `.book` directory holding it are guarded, a file must be read before it can be edited, and a write
 into a home directory held inside the entry still asks. A _relative_ path stays anchored to the
 workspace, so a bare `./notes.txt` is never re-anchored to a directory you did not name. Without an
-approved entry, the same absolute path is still `path_outside_workspace`.
+approved entry, the same absolute path is still `path_outside_workspace`. The refusal has the same
+code and message as a read's but its own remedy, since a write's way through is not a read's: it
+says the write tools change files only inside the workspace and the approved directories, that the
+file belongs under a path inside the workspace instead (a scratch file included, deleted when the
+model is done with it), and that only the user can add a directory. The system temp directory is
+outside every root, so a write there is refused like any other.
 
 A path rule for `Read`, `Write`, `Edit`, `MultiEdit` or `NotebookEdit` is also matched against the
 other spellings of the target — relative to the workspace and absolute, before and after following

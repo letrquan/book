@@ -11,7 +11,7 @@ import { checkMemoryWrite, noticeMemoryWrite, withMemoryWarnings } from '../memo
 import {
   messagePathFor,
   mutationDisplayPath,
-  pathOutsideWorkspaceResult,
+  mutationOutsideWorkspaceResult,
   resolveMutationPath,
 } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
@@ -349,7 +349,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
       : null;
   });
   if (resolved.some((entry) => !entry))
-    return pathOutsideWorkspaceResult(paths[resolved.findIndex((entry) => !entry)]);
+    return mutationOutsideWorkspaceResult(paths[resolved.findIndex((entry) => !entry)]);
   const entries = resolved as Array<{
     operation: PatchOperation;
     filePath: string;
