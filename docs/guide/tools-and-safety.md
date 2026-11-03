@@ -1145,21 +1145,45 @@ Under bubblewrap the sandbox gives the command fresh PID/IPC/UTS namespaces, a p
 
 The writable workspace bind deliberately stops at the control files your machine acts on _after_ the command exits. Each of these is a way to change what the host does next, not a scratch file:
 
-| Path                                    | How it is protected                                |
-| --------------------------------------- | -------------------------------------------------- |
-| `<workspace>/.book/`                    | read-only bind, or a read-only mask                |
-| `<workspace>/.book/settings.local.json` | read-only mask over `/dev/null`                    |
-| `<workspace>/.bookrc.json`              | read-only bind when the file exists                |
-| every workspace git directory           | read-only bind by default (issue 373)              |
-| a git dir's `hooks/`                    | as above (or read-only mask when `allowGitWrites`) |
-| a git dir's `config`, `config.worktree` | as above (or read-only bind when `allowGitWrites`) |
-| a git dir's `commondir`, `gitdir`       | as above (or read-only bind when `allowGitWrites`) |
-| a `.git` pointer file                   | read-only bind                                     |
-| a `core.hooksPath` inside the workspace | read-only bind, or read-only mask                  |
+| Path                                    | How it is protected                                               |
+| --------------------------------------- | ----------------------------------------------------------------- |
+| `<workspace>/.book/`                    | empty read-only tmpfs, each entry bound back; or a read-only mask |
+| `<workspace>/.book/settings.local.json` | never bound in: it has no name inside the sandbox                 |
+| `<workspace>/.bookrc.json`              | read-only bind when the file exists                               |
+| every workspace git directory           | read-only bind by default (issue 373)                             |
+| a git dir's `hooks/`                    | as above (or read-only mask when `allowGitWrites`)                |
+| a git dir's `config`, `config.worktree` | as above (or read-only bind when `allowGitWrites`)                |
+| a git dir's `commondir`, `gitdir`       | as above (or read-only bind when `allowGitWrites`)                |
+| a `.git` pointer file                   | read-only bind                                                    |
+| a `core.hooksPath` inside the workspace | read-only bind, or read-only mask                                 |
 
 Without this, a sandboxed command could write `.book/settings.local.json` (resolved on the host from
 the next session — it can disable the sandbox or add `Bash(*)`), drop a `.git/hooks/*` script the
 next `git commit` runs, or repoint `core.hooksPath` / `core.fsmonitor` in `.git/config`.
+
+#### What `.book` looks like inside the sandbox
+
+Under bubblewrap `.book/` is an empty, read-only tmpfs, and every entry the directory held when the
+command started is bound back into it: read-only, or writable where an `allowWrite` entry names it.
+A symlink is recreated as a link with the same target, so it resolves inside the sandbox exactly as
+it did before; it is never bound from the host, where a link to `~/.ssh` would bring the home's keys
+in. A directory bound back is a live view, so a file the host adds _inside_ `.book/agents/` shows up,
+but an entry the host adds to `.book/` itself after the command started does not.
+
+`settings.local.json`, which can hold a provider key, is never bound in, and neither is any other
+entry whose name contains it: the `.settings.local.json.<pid>.<uuid>.tmp` file Book's settings
+writer holds the key in until it renames it into place, the writer's lock, an editor's swap or
+backup copy. Inside the sandbox the file has no name at all, so nothing the host does to it while a
+command runs reaches that command: not a save that replaces it (the writer's temp file and rename),
+and not a first save that creates it. Before issue 633 the file was masked with `/dev/null`, a
+mount on the file's directory entry, and a rename over the path installed a new entry the mask did
+not cover: a polling background command could read a key saved mid-session.
+
+The directory itself stays read-only whatever the policy says. An `allowWrite` entry naming
+`<workspace>/.book` makes every entry in it writable, but a command still cannot add, remove or
+rename an entry in `.book/`, so Book's own settings writer (a temp file beside the target, then a
+rename) cannot run inside the sandbox. A `.book/` with more than 256 entries is refused rather than
+bound one by one, since each entry is a mount of its own.
 
 A git dir is found by following a `.git` **file** (`gitdir: …`), a `commondir` file,
 `.git/worktrees/*`, and nested `.git/modules/*` — including a submodule path with several segments,
@@ -1234,17 +1258,15 @@ Five consequences worth knowing:
 - An **absent file** is skipped rather than masked: bubblewrap rejects a tmpfs over a file path and
   aborts the whole invocation, and there is nothing to protect where there is no file. An absent
   **directory** is masked, because a command that creates one inside the namespace would otherwise
-  put it in the host. A `hidden-file` mask is emitted only for a **regular** file — a
-  `.book/settings.local.json` that is a directory would otherwise ask for `--ro-bind /dev/null` over
-  a directory, which bubblewrap rejects with "Is a directory" and which takes every command in the
-  workspace down with it. `.book/settings.local.json` is the one file masked rather than bound
-  read-only — with `/dev/null`, which hides the credentials in it as well as blocking the write.
+  put it in the host. `.book/settings.local.json` is the one control file left out rather than
+  bound read-only, whatever it is (a file, or a directory a repository shipped), which hides the
+  credentials in it as well as blocking the write.
   Because a trusted `filesystem.allowWrite` entry is applied after these mounts, an opt-in on a git
   dir reopens what it names, but keeps control paths strictly below it (`hooks/`, `config`, pointer files)
-  read-only unless an entry names that control path directly. Every `hidden-file` mask is re-applied once
-  more after the `allowWrite` opt-ins and the `denyWrite` binds: remounting `.book` writable would otherwise
-  reopen `settings.local.json` for both reading and writing, and a `denyWrite` entry at or above `.book` is
-  a read-only bind of the real directory that would show its contents again (issue 625).
+  read-only unless an entry names that control path directly. The `.book` view is applied once
+  more after the `allowWrite` opt-ins and the `denyWrite` binds: binding `.book` writable would otherwise
+  bring `settings.local.json` back, and a `denyWrite` entry at or above `.book` is a read-only bind of
+  the real directory that would show it again (issue 625).
 
 The permission layer already asked before any file tool touched `.book/`, but a permission prompt is
 one approval the user can be talked into — and a shell command is not a file tool, so the sandbox
