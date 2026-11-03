@@ -320,8 +320,24 @@ export interface PermissionSubject {
   args: Record<string, unknown>;
   /** The spellings `allow` rules and session approvals match: those that name the target alone. */
   allow: readonly string[];
-  /** The spellings `deny` and `ask` rules match: every one that reaches the target. */
+  /** The spellings `deny` and `ask` rules and hook matchers match: every one that reaches it. */
   restrict: readonly string[];
+  /**
+   * How the tool reads a rule's pattern for this target beyond a glob over those spellings, and
+   * only ever more strictly: `allows` says whether an allow rule's pattern may admit the target at
+   * all, and `alsoRestricts` adds the patterns a deny or ask rule's pattern binds as well (`null`:
+   * every target).
+   */
+  rules?: {
+    allows?(pattern: string): boolean;
+    alsoRestricts?(pattern: string): readonly (string | null)[];
+  };
+  /**
+   * Set when the call can never run however it is approved, its target being gone, say. The loop
+   * refuses it with this result once the deny rules and the tool's own activity have been checked,
+   * before any prompt, so nothing is approved or saved for it.
+   */
+  refusal?: ToolResult;
 }
 
 export interface ToolDefinition {
@@ -353,11 +369,11 @@ export interface ToolDefinition {
   timeoutMs?: number | ((context: ToolContext) => number | undefined);
   /**
    * What the permission check judges a call by, for a tool whose primary argument can spell one
-   * target several ways: the agent loop asks it before every one of the tool's calls is judged, in
-   * every mode, so the rules apply to the target the call reaches rather than to how it was typed.
-   * `undefined` judges the call as typed. The loop hands the subject back to `execute` as
-   * `context.permissionSubject`, so the call acts on exactly what was judged. A throw refuses the
-   * call.
+   * target several ways: the agent loop asks it before the call's PreToolUse hooks and permission
+   * check, in every mode that offers the tool, so hooks and rules apply to the target the call
+   * reaches rather than to how it was typed. `undefined` judges the call as typed. The loop hands
+   * the subject back to `execute` as `context.permissionSubject`, so the call acts on exactly what
+   * was judged. A throw refuses the call; `context.signal` cancels it.
    */
   canonicalizeForPermission?: (
     args: Record<string, unknown>,

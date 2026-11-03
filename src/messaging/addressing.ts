@@ -12,6 +12,7 @@ import type {
 import { foldControlCharacters } from '../control-characters.js';
 import { neutralizeTags } from '../prompt-tags.js';
 import { sanitizeEnvelopeName } from './envelope.js';
+import { splitRef } from './ref.js';
 import { socketPathHash } from './registry.js';
 import { decodeUdsAddress } from './wire.js';
 
@@ -65,8 +66,6 @@ export function peerLabel(row: Pick<PeerSessionRow, 'name' | 'ref'>): string {
   return row.ref !== undefined ? `${row.name} [${row.ref}]` : row.name;
 }
 
-const NAME_WITH_REF = /^(.*\S)\s*\[([0-9a-fA-F]{6})\]$/;
-
 function addressable(row: PeerSessionRow): row is PeerSessionRow & { socketPath: string } {
   return row.socketPath !== undefined;
 }
@@ -80,14 +79,16 @@ export function resolvePeerAddress(
   to: string,
 ): PeerAddressResolution {
   const address = to.trim();
+  // `name [ref]`; a ref alone holds no name, and is read as one.
+  const split = address.startsWith('uds:') ? undefined : splitRef(address);
+  const withRef = split?.name ? split : undefined;
   let matches: PeerSessionRow[];
   if (address.startsWith('uds:')) {
     const path = decodeUdsAddress(address);
     matches = path === undefined ? [] : rows.filter((row) => row.socketPath === path);
   } else {
-    const withRef = NAME_WITH_REF.exec(address);
     matches = withRef
-      ? rows.filter((row) => row.name === withRef[1] && row.ref === withRef[2].toLowerCase())
+      ? rows.filter((row) => row.name === withRef.name && row.ref === withRef.ref)
       : rows.filter((row) => row.name === address);
   }
   if (matches.length === 0) return { ok: false, problem: 'not_found', candidates: [] };
@@ -96,7 +97,7 @@ export function resolvePeerAddress(
   // A bare name addresses a session only while no other live session holds it, inbox or not: a
   // shared name is answered with the refs, and the `name [ref]` retry is what a rule on the bare
   // name does not cover, so the permission check asks.
-  const bareName = !address.startsWith('uds:') && !NAME_WITH_REF.test(address);
+  const bareName = !address.startsWith('uds:') && withRef === undefined;
   if (bareName && others.length > 1) {
     return { ok: false, problem: 'ambiguous', candidates: others };
   }

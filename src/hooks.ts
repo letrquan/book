@@ -14,6 +14,13 @@ export interface HookContext {
   toolName?: string;
   /** For tool-related events: the tool arguments. */
   toolArgs?: Record<string, unknown>;
+  /**
+   * For tool-related events: every spelling of the call's target its tool knows
+   * (`PermissionSubject.restrict`, #653). A matcher's argument pattern matches the call when it
+   * matches any of them, so a `SessionSend` hook fires however `to` spells the session. Matched
+   * only: the hook is still given `toolArgs` as the call made them.
+   */
+  toolTargets?: readonly string[];
   /** For UserPromptSubmit: the user's raw prompt. */
   userPrompt?: string;
   /** For PostToolUse: the tool result output (truncated). */
@@ -135,7 +142,7 @@ export async function runHooks(
       if (event === 'PreCompact' || event === 'PostCompact') {
         if (!matchesCompactTrigger(entry.matcher, ctx.trigger)) continue;
       } else if (ctx.toolName) {
-        if (!matchesHookMatcher(entry.matcher, ctx.toolName, ctx.toolArgs ?? {})) {
+        if (!matchesHookMatcher(entry.matcher, ctx.toolName, ctx.toolArgs ?? {}, ctx.toolTargets)) {
           continue;
         }
       }
@@ -179,10 +186,13 @@ function matchesHookMatcher(
   matcher: string,
   toolName: string,
   args: Record<string, unknown>,
+  targets?: readonly string[],
 ): boolean {
   const alternatives = hookMatcherAlternatives(matcher);
   if (!alternatives) return true;
-  return alternatives.some((alternative) => matchesAlternative(alternative, toolName, args));
+  return alternatives.some((alternative) =>
+    matchesAlternative(alternative, toolName, args, targets),
+  );
 }
 
 /** Whether one alternative of a matcher matches a tool call. */
@@ -190,6 +200,7 @@ function matchesAlternative(
   { tool, pattern }: HookMatcherAlternative,
   toolName: string,
   args: Record<string, unknown>,
+  targets?: readonly string[],
 ): boolean {
   try {
     // `*` is every tool, and an Edit or Write matcher also sees what ApplyPatch edits.
@@ -213,8 +224,10 @@ function matchesAlternative(
     }
 
     // Extract primary arg from tool arguments using shared utility, the tool's own where it names
-    // one (`SessionSend` matches on its recipient).
-    return matchesArgumentPattern(pattern, toolPrimaryArg(toolName, args));
+    // one (`SessionSend` matches on its recipient), or every spelling of the target its tool knows.
+    return (targets ?? [toolPrimaryArg(toolName, args)]).some((target) =>
+      matchesArgumentPattern(pattern, target),
+    );
   } catch {
     return false; // malformed matcher — skip
   }

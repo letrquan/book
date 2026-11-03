@@ -9,6 +9,7 @@ import type { PermissionSubject, ToolDefinition, ToolResult } from '../types/too
 import { foldControlCharacters } from '../control-characters.js';
 import { addressNeedsRef, listingRows } from '../input/session-mentions.js';
 import { peerLabel, peerRef, resolvePeerAddress } from '../messaging/addressing.js';
+import { splitRef } from '../messaging/ref.js';
 import { encodeUdsAddress } from '../messaging/wire.js';
 import { toolFailure, toolSuccess } from './result.js';
 
@@ -31,21 +32,65 @@ export interface SessionSendJudgment {
 }
 
 /**
- * What the permission check judges a `SessionSend` by (#653): the session `to` reaches among the
- * live sessions `rows` (this one's own included), in each spelling that reaches it, so a rule on the
- * session applies however the call spells it.
+ * The further patterns a `SessionSend` deny or ask rule binds (`PermissionSubject.rules`). One
+ * written with a ref also binds every session of that name, since a ref comes from a pid-named
+ * socket; one written with a ref alone binds every session, as it did before #653. Both only ever
+ * widen a deny or ask.
+ */
+function alsoRestricts(pattern: string): readonly (string | null)[] {
+  const split = splitRef(pattern);
+  if (split === undefined) return [];
+  return [split.name === '' ? null : split.name];
+}
+
+/**
+ * What the permission check judges a `SessionSend` by when its `to` reaches `target` among the
+ * live sessions `rows` (this one's own included): that session in each spelling that reaches it, so
+ * a rule or a hook on the session applies however the call spells it (#653).
  *
  * - `allow` rules and session approvals match the spellings that name that session alone: its
- *   `name [ref]`, its `uds:` address, and its bare name while no other live session holds the name,
- *   which is when a bare name reaches it (`resolvePeerAddress`).
- * - `deny` and `ask` rules match every spelling: the one the call typed, the bare name even while it
- *   is shared, `name [ref]` and the `uds:` address. One written with a ref also binds every session
- *   of that name (`evaluatePermissionDetail`).
- * - The prompt shows the canonical spelling, and "Always allow" saves the rule for it: the bare
- *   name while it is unique; `name [ref]` while it is shared, for which no rule is saved
+ *   `name [ref]`, its `uds:` address, and its bare name while no other live session holds the
+ *   name, which is when a bare name reaches it (`resolvePeerAddress`). While the name is shared, only
+ *   a rule that names this session's ref or its address may allow it at all, so a rule on the name,
+ *   exact or a glob, asks; a rule on the whole tool still allows it.
+ * - `deny` and `ask` rules and hook matchers match every spelling: the one the call typed, the bare
+ *   name even while it is shared, `name [ref]` and the `uds:` address ({@link alsoRestricts}).
+ * - The prompt shows the canonical spelling, and "Always allow" saves the rule for it: the bare name
+ *   while it is unique; `name [ref]` while it is shared, for which no rule is saved
  *   (`namesSessionByAddress`).
- *
- * A `to` that reaches no session is judged as typed, and the call then fails without sending.
+ */
+export function sessionSendSubject(
+  rows: readonly PeerSessionRow[],
+  target: PeerSessionRow & { socketPath: string },
+  args: Record<string, unknown>,
+): PermissionSubject {
+  const to = typeof args.to === 'string' ? args.to.trim() : '';
+  // Never the bare name, even for a row without its ref: a shared name must keep one.
+  const ref = target.ref ?? peerRef(target.socketPath);
+  const label = peerLabel({ name: target.name, ref });
+  const address = encodeUdsAddress(target.socketPath);
+  const shared = addressNeedsRef(rows, target);
+  return {
+    args: { ...args, to: shared ? label : target.name },
+    allow: shared ? [label, address] : [target.name, label, address],
+    restrict: [...new Set([to, target.name, label, address])],
+    rules: {
+      ...(shared
+        ? {
+            allows: (pattern: string) =>
+              pattern.startsWith('uds:') ? pattern === address : splitRef(pattern)?.ref === ref,
+          }
+        : {}),
+      alsoRestricts,
+    },
+  };
+}
+
+/**
+ * What the permission check judges a `SessionSend` by (#653): `to` resolved among the live sessions
+ * `rows`, and judged as {@link sessionSendSubject} says. A `to` that reaches no session can never be
+ * sent: it is judged as typed for the deny rules, and the call is refused, with the reason, before
+ * any prompt.
  */
 export function judgeSessionSend(
   rows: readonly PeerSessionRow[],
@@ -53,20 +98,19 @@ export function judgeSessionSend(
 ): SessionSendJudgment {
   const to = typeof args.to === 'string' ? args.to.trim() : '';
   const resolution = resolvePeerAddress(rows, to);
-  if (!resolution.ok) return { to, resolution, subject: { args, allow: [to], restrict: [to] } };
-  const { target } = resolution;
-  // Never the bare name, even for a row without its ref: a shared name must keep one.
-  const label = peerLabel({ name: target.name, ref: target.ref ?? peerRef(target.socketPath) });
-  const address = encodeUdsAddress(target.socketPath);
-  const shared = addressNeedsRef(rows, target);
+  if (resolution.ok) {
+    return { to, resolution, subject: sessionSendSubject(rows, resolution.target, args) };
+  }
+  const refusal = sessionSendResult({
+    status: 'unresolved',
+    problem: resolution.problem,
+    to,
+    candidates: resolution.candidates,
+  });
   return {
     to,
     resolution,
-    subject: {
-      args: { ...args, to: shared ? label : target.name },
-      allow: shared ? [label, address] : [target.name, label, address],
-      restrict: [...new Set([to, target.name, label, address])],
-    },
+    subject: { args, allow: [to], restrict: [to], rules: { alsoRestricts }, refusal },
   };
 }
 
@@ -263,6 +307,17 @@ export function createSessionSendTool(messaging: SessionMessagingHandle): ToolDe
     },
     // The session `to` reaches now, read from the registry before the call is judged (#653).
     canonicalizeForPermission: async (args) => {
+      // Without an inbox nothing can be sent, so the registry is not read.
+      if (!messaging.available()) {
+        const to = typeof args.to === 'string' ? args.to.trim() : '';
+        return {
+          args,
+          allow: [to],
+          restrict: [to],
+          rules: { alsoRestricts },
+          refusal: sessionSendResult({ status: 'unavailable' }),
+        };
+      }
       const judgment = judgeSessionSend(listingRows(await messaging.list()), args);
       judged.set(judgment.subject, judgment);
       return judgment.subject;

@@ -21,6 +21,7 @@ import type {
   PeerSessionRow,
   SessionMessagingHandle,
 } from '../types/messaging.js';
+import type { HookEntry } from '../settings.js';
 import type { ToolCall, ToolContext, ToolResult } from '../types/tools.js';
 import { READ_ONLY_PLAN_TOOLS } from './plan-mode.js';
 import { getPrimaryArg, toolPrimaryArg } from './primary-arg.js';
@@ -241,6 +242,8 @@ type FakeMessaging = SessionMessagingHandle & {
   listing: PeerSessionListing;
   /** How many times anything resolved an address through the handle. */
   resolves: number;
+  /** How many times anything read the registry through the handle. */
+  lists: number;
 };
 
 /** A handle over a registry of this session and peer-b (and its twin, when `sharedName`). */
@@ -252,8 +255,12 @@ function fakeMessaging(sharedName = false): FakeMessaging {
       peers: [row('peer-b'), ...(sharedName ? [twin] : [])],
     },
     resolves: 0,
+    lists: 0,
     available: () => true,
-    list: async () => messaging.listing,
+    list: async () => {
+      messaging.lists++;
+      return messaging.listing;
+    },
     resolve: async (to) => {
       messaging.resolves++;
       return resolvePeerAddress(listingRows(messaging.listing), to);
@@ -336,6 +343,9 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       /** Runs while a prompt is open, before it is answered. */
       whilePrompting?: (messaging: FakeMessaging) => void;
       configure?: (messaging: FakeMessaging) => void;
+      preToolUse?: HookEntry[];
+      postToolUse?: HookEntry[];
+      signal?: AbortSignal;
     } = {},
   ) {
     const messaging = fakeMessaging(options.shared);
@@ -346,6 +356,8 @@ describe('SessionList and SessionSend permissions (D7)', () => {
     if (options.deny) config.settings.permissions.deny = options.deny;
     if (options.ask) config.settings.permissions.ask = options.ask;
     if (options.allow) config.settings.permissions.allow = options.allow;
+    if (options.preToolUse) config.settings.hooks.PreToolUse = options.preToolUse;
+    if (options.postToolUse) config.settings.hooks.PostToolUse = options.postToolUse;
     const prompted = vi.fn(async (_call: ToolCall) => {
       options.whilePrompting?.(messaging);
       return options.answer ?? ('allow' as const);
@@ -366,6 +378,7 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       {
         provider: provider([options.to ?? 'peer-b', ...(options.then ? [options.then] : [])]),
         isNewSession: false,
+        ...(options.signal ? { signal: options.signal } : {}),
         ...(options.allowedTools ? { allowedTools: options.allowedTools } : {}),
         ...(options.isSubagent ? { isSubagent: true } : {}),
       },
@@ -377,6 +390,7 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       second: byId('s2'),
       sends: messaging.sends,
       resolves: messaging.resolves,
+      lists: messaging.lists,
       persisted,
       promptedFor: prompted.mock.calls.map(([call]) => call.name),
       /** The recipient each prompt named. */
@@ -420,23 +434,41 @@ describe('SessionList and SessionSend permissions (D7)', () => {
 
   it('judges a call by the session it reaches, in every spelling of it (#653)', () => {
     const rows = [row('me', { self: true, ref: 'eeeeee' }), row('peer-b')];
-    expect(judgeSessionSend(rows, { to: PEER_B_ADDRESS, message: 'hi' }).subject).toEqual({
+    const unique = judgeSessionSend(rows, { to: PEER_B_ADDRESS, message: 'hi' }).subject;
+    expect(unique).toMatchObject({
       args: { to: 'peer-b', message: 'hi' },
       allow: ['peer-b', 'peer-b [a1b2c3]', PEER_B_ADDRESS],
       restrict: [PEER_B_ADDRESS, 'peer-b', 'peer-b [a1b2c3]'],
     });
+    expect(unique.refusal).toBeUndefined();
+    // Any allow rule may admit a session whose name is unique.
+    expect(unique.rules?.allows?.('peer-*') ?? true).toBe(true);
     // A shared name: only the ref and the address name the session, and the prompt shows the ref.
-    expect(judgeSessionSend([...rows, twin], { to: 'peer-b [A1B2C3]' }).subject).toEqual({
+    const shared = judgeSessionSend([...rows, twin], { to: 'peer-b [A1B2C3]' }).subject;
+    expect(shared).toMatchObject({
       args: { to: 'peer-b [a1b2c3]' },
       allow: ['peer-b [a1b2c3]', PEER_B_ADDRESS],
       restrict: ['peer-b [A1B2C3]', 'peer-b', 'peer-b [a1b2c3]', PEER_B_ADDRESS],
     });
-    // A `to` that reaches no session is judged as typed.
-    expect(judgeSessionSend(rows, { to: ' nobody ' }).subject).toEqual({
+    // Then only a rule that names its ref or its address may allow it.
+    for (const pattern of ['peer-b', 'peer-*', '*', 'peer-b [ffffff]', 'uds:/tmp/socks/*']) {
+      expect(shared.rules?.allows?.(pattern), pattern).toBe(false);
+    }
+    for (const pattern of ['peer-b [a1b2c3]', 'peer-* [A1B2C3]', PEER_B_ADDRESS]) {
+      expect(shared.rules?.allows?.(pattern), pattern).toBe(true);
+    }
+    // A deny or ask rule with a ref binds the name; one with a ref alone binds every session.
+    expect(shared.rules?.alsoRestricts?.('peer-b [ffffff]')).toEqual(['peer-b']);
+    expect(shared.rules?.alsoRestricts?.('[ffffff]')).toEqual([null]);
+    expect(shared.rules?.alsoRestricts?.('peer-b')).toEqual([]);
+    // A `to` that reaches no session is judged as typed, and refused with the reason.
+    const nobody = judgeSessionSend(rows, { to: ' nobody ' }).subject;
+    expect(nobody).toMatchObject({
       args: { to: ' nobody ' },
       allow: ['nobody'],
       restrict: ['nobody'],
     });
+    expect(nobody.refusal?.structuredError?.code).toBe('session_not_found');
   });
 
   it('covers every spelling of the session with a bare-name allow rule while the name is unique', async () => {
@@ -453,6 +485,7 @@ describe('SessionList and SessionSend permissions (D7)', () => {
     // The bare name reaches neither session: it is answered with both refs, and nothing is sent.
     const bare = await run('default', { allow, shared: true });
     expect(bare.send?.structuredError?.code).toBe('session_ambiguous');
+    expect(bare.promptedFor).toEqual([]);
     expect(bare.sends).toEqual([]);
     for (const to of ['peer-b [a1b2c3]', PEER_B_ADDRESS, 'peer-b [ffffff]']) {
       const outcome = await run('default', { allow, shared: true, to });
@@ -533,6 +566,145 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       expect(asked.promptedFor, to).toEqual(['SessionSend']);
       expect(asked.sends, to).toHaveLength(1);
     }
+  });
+
+  it('binds every session with a deny or ask rule written with a ref alone, as before #653', async () => {
+    // A ref alone names no session's name: such a rule has always bound every send, which is the
+    // stricter reading, so it stays.
+    for (const mode of ['default', 'auto', 'bypassPermissions']) {
+      for (const to of ['peer-b', 'peer-b [ffffff]']) {
+        const outcome = await run(mode, { deny: ['SessionSend([a1b2c3])'], shared: true, to });
+        expect(outcome.send?.structuredError?.code, `${mode} ${to}`).toBe('permission_denied');
+        expect(outcome.sends, `${mode} ${to}`).toEqual([]);
+      }
+    }
+    const asked = await run('auto', { ask: ['SessionSend([ffffff])'], to: PEER_B_ADDRESS });
+    expect(asked.promptedFor).toEqual(['SessionSend']);
+  });
+
+  it('lets only a rule naming its ref or address allow a session whose name is shared', async () => {
+    for (const allow of ['SessionSend(peer-*)', 'SessionSend(*)', 'SessionSend(peer-b)']) {
+      for (const to of ['peer-b [a1b2c3]', PEER_B_ADDRESS]) {
+        const outcome = await run('default', { allow: [allow], shared: true, to });
+        expect(outcome.promptedFor, `${allow} ${to}`).toEqual(['SessionSend']);
+      }
+      // The same rules cover it while the name is unique.
+      expect((await run('default', { allow: [allow], to: PEER_B_ADDRESS })).promptedFor).toEqual(
+        [],
+      );
+    }
+    for (const allow of [
+      'SessionSend(peer-b [a1b2c3])',
+      'SessionSend(peer-* [a1b2c3])',
+      `SessionSend(${PEER_B_ADDRESS})`,
+      // A rule on the whole tool allows every call of it.
+      'SessionSend',
+    ]) {
+      for (const to of ['peer-b [a1b2c3]', PEER_B_ADDRESS]) {
+        const outcome = await run('default', { allow: [allow], shared: true, to });
+        expect(outcome.promptedFor, `${allow} ${to}`).toEqual([]);
+        expect(outcome.sends, `${allow} ${to}`).toHaveLength(1);
+      }
+    }
+  });
+
+  it('refuses a send to no live session before any prompt, and saves nothing', async () => {
+    for (const [to, shared, code] of [
+      ['nobody', false, 'session_not_found'],
+      ['me', false, 'session_is_self'],
+      ['peer-b', true, 'session_ambiguous'],
+      ['uds:/tmp/socks/gone.sock', false, 'session_not_found'],
+    ] as const) {
+      for (const mode of ['default', 'auto', 'dontAsk']) {
+        const outcome = await run(mode, { to, shared, answer: 'always' });
+        expect(outcome.send?.structuredError?.code, `${mode} ${to}`).toBe(code);
+        expect(outcome.promptedFor, `${mode} ${to}`).toEqual([]);
+        expect(outcome.persisted, `${mode} ${to}`).toEqual([]);
+        expect(outcome.sends, `${mode} ${to}`).toEqual([]);
+      }
+    }
+    // A deny rule still speaks first.
+    const denied = await run('default', { to: 'nobody', deny: ['SessionSend(nobody)'] });
+    expect(denied.send?.structuredError?.code).toBe('permission_denied');
+  });
+
+  it('matches PreToolUse and PostToolUse hooks on every spelling of the session', async () => {
+    const block = (matcher: string): HookEntry => ({ matcher, command: 'exit 2', env: {} });
+    for (const matcher of [
+      'SessionSend(peer-b)',
+      'SessionSend(peer-*)',
+      `SessionSend(${PEER_B_ADDRESS})`,
+    ]) {
+      for (const to of SPELLINGS) {
+        const outcome = await run('bypassPermissions', { to, preToolUse: [block(matcher)] });
+        expect(outcome.send?.structuredError?.code, `${matcher} ${to}`).toBe('hook_blocked');
+        expect(outcome.sends, `${matcher} ${to}`).toEqual([]);
+      }
+    }
+    // Another session's hook does not fire.
+    const other = await run('bypassPermissions', {
+      to: PEER_B_ADDRESS,
+      preToolUse: [block('SessionSend(prod-*)')],
+    });
+    expect(other.sends).toHaveLength(1);
+    const rewrite: HookEntry = {
+      matcher: 'SessionSend(peer-b)',
+      command:
+        process.platform === 'win32'
+          ? 'echo {"action":"modify","output":"HOOKED"}'
+          : 'echo \'{"action":"modify","output":"HOOKED"}\'',
+      env: {},
+    };
+    const post = await run('bypassPermissions', { to: PEER_B_ADDRESS, postToolUse: [rewrite] });
+    expect(post.send?.content).toBe('HOOKED');
+  });
+
+  it('reads the registry only for a call that can run: not in plan mode, not without an inbox', async () => {
+    // SessionList's own read is the only one.
+    expect((await run('default')).lists).toBe(2);
+    expect((await run('plan')).lists).toBe(1);
+    const offline = await run('default', {
+      configure: (messaging) => {
+        messaging.available = () => false;
+      },
+    });
+    expect(offline.lists).toBe(0);
+    expect(offline.sends).toEqual([]);
+  });
+
+  it('reports a failed registry read only once the tool is found able to run', async () => {
+    const failing = (messaging: FakeMessaging) => {
+      messaging.list = async () => {
+        throw new Error('EACCES');
+      };
+    };
+    // Left out by an allowed-tools list: refused as such, not as a failed read.
+    const inactive = await run('bypassPermissions', {
+      allowedTools: ['Read', 'SessionList'],
+      configure: failing,
+    });
+    expect(inactive.send?.structuredError?.code).not.toBe('permission_check_failed');
+    expect(inactive.sends).toEqual([]);
+  });
+
+  it('cancels at once when the turn is cancelled during the registry read', async () => {
+    const controller = new AbortController();
+    const outcome = await run('bypassPermissions', {
+      configure: (messaging) => {
+        const list = messaging.list;
+        messaging.list = async () => {
+          // SessionList's read answers; the permission check's hangs until the turn is cancelled.
+          if (messaging.lists > 0) {
+            controller.abort();
+            return new Promise(() => {});
+          }
+          return list();
+        };
+      },
+      signal: controller.signal,
+    });
+    expect(outcome.send?.structuredError?.code).toBe('cancelled_before_start');
+    expect(outcome.sends).toEqual([]);
   });
 
   it('saves the bare name from "Always allow" on any spelling, and nothing while the name is shared', async () => {

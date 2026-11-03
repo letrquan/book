@@ -1,3 +1,4 @@
+import { splitRef } from '../messaging/ref.js';
 import { canonicalToolName } from './aliases.js';
 
 /**
@@ -63,11 +64,10 @@ export function toolPrimaryArg(toolName: string, args: Record<string, unknown>):
  * hex of the socket path) — rather than by name. Both derive from the pid-named socket, so a rule
  * saved for one would outlive the session and could pre-approve a later one that reuses the pid:
  * such a call is approved once, never remembered. The permission check asks with the recipient
- * canonically spelled (#653), so that is a session whose name another live session also holds, or
- * an address no session answers.
+ * canonically spelled (#653), so that is a session whose name another live session also holds.
  */
 export function namesSessionByAddress(toolName: string, args: Record<string, unknown>): boolean {
   if (canonicalToolName(toolName) !== 'SessionSend') return false;
   const to = toolPrimaryArg(toolName, args);
-  return to.startsWith('uds:') || /\s*\[[0-9a-fA-F]{6}\]$/.test(to);
+  return to.startsWith('uds:') || splitRef(to) !== undefined;
 }

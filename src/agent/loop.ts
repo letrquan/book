@@ -3068,6 +3068,8 @@ export async function runAgentLoop(
         nestedTraceId?: string;
         prepared: PreparedToolCall;
         context: ToolContext;
+        /** What the permission check judged the call by, when its tool canonicalized it (#653). */
+        permissionSubject?: PermissionSubject;
         parallel: boolean;
         modeAtPreparation: PermissionMode;
         previousModeAtPreparation: PermissionMode | undefined;
@@ -3217,6 +3219,41 @@ export async function runAgentLoop(
         const canonName = canonicalToolName(registry.getTool(call.name)?.name ?? call.name);
         const nestedTraceId = nestedTraceIds[callIndex];
 
+        // A tool whose primary argument can spell one target several ways is judged by the target
+        // the call reaches, not by how it was typed (#653): `SessionSend` by the session its `to`
+        // resolves to now. Hook matchers and deny and ask rules match every spelling of it, allow
+        // rules and session approvals the spellings that name it alone, and the prompt and "Always
+        // allow" see the canonical one. The tool is handed the subject back when the call runs, so
+        // it acts on the target that was judged, or on nothing. Not asked for a call the mode
+        // refuses anyway, and a failure is reported only once the tool's own refusals have spoken.
+        let permissionSubject: PermissionSubject | undefined;
+        let permissionSubjectFailure: string | undefined;
+        if (registeredTool?.canonicalizeForPermission && !modeRefusesItself) {
+          const tool = registeredTool;
+          const cancelled = Symbol('cancelled');
+          try {
+            const judged = await new Promise<PermissionSubject | undefined | typeof cancelled>(
+              (resolve, reject) => {
+                const stopListening = listenForAbort(signal, () => resolve(cancelled));
+                Promise.resolve()
+                  .then(() => tool.canonicalizeForPermission?.(call.arguments, toolContext))
+                  .then(resolve, reject)
+                  .finally(stopListening);
+              },
+            );
+            if (judged === cancelled) {
+              toolResults[callIndex] = cancelledBeforeStart(call);
+              return undefined;
+            }
+            permissionSubject = judged;
+          } catch (error) {
+            permissionSubjectFailure = error instanceof Error ? error.message : String(error);
+          }
+        }
+        const judgedCall: ToolCall = permissionSubject
+          ? { ...call, arguments: permissionSubject.args }
+          : call;
+
         const preHookResults = await runHooks(
           config.settings.hooks.PreToolUse,
           'PreToolUse',
@@ -3225,6 +3262,7 @@ export async function runAgentLoop(
             event: 'PreToolUse',
             toolName: canonName,
             toolArgs: call.arguments,
+            ...(permissionSubject ? { toolTargets: permissionSubject.restrict } : {}),
           },
           { onHookEvent: callbacks.onHookEvent, signal },
         );
@@ -3236,29 +3274,6 @@ export async function runAgentLoop(
           );
           return undefined;
         }
-
-        // A tool whose primary argument can spell one target several ways is judged by the target
-        // the call reaches, not by how it was typed (#653): `SessionSend` by the session its `to`
-        // resolves to now. Allow rules and session approvals match the spellings that name that
-        // target alone, deny and ask rules every spelling, and the prompt and "Always allow" see
-        // the canonical one. The tool is handed the subject back when the call runs, so it acts on
-        // the target that was judged, or on nothing.
-        let permissionSubject: PermissionSubject | undefined;
-        try {
-          permissionSubject = await registeredTool?.canonicalizeForPermission?.(
-            call.arguments,
-            toolContext,
-          );
-        } catch (error) {
-          toolResults[callIndex] = toolFailure(
-            `SKIPPED: ${canonName} could not be checked for permission: ${error instanceof Error ? error.message : String(error)}`,
-            { toolCallId: call.id, code: 'permission_check_failed', status: 'error' },
-          );
-          return undefined;
-        }
-        const judgedCall: ToolCall = permissionSubject
-          ? { ...call, arguments: permissionSubject.args }
-          : call;
 
         syncHostMode();
         const planReadOnly = effectiveMode === 'plan' && READ_ONLY_PLAN_TOOLS.has(canonName);
@@ -3446,6 +3461,24 @@ export async function runAgentLoop(
           }
         }
 
+        // A call its tool could not judge, or judged as one that can never run (a `SessionSend` to
+        // no live session), is refused here: once the deny rules and the tool's own refusals have
+        // spoken, and before any prompt, so nothing is approved or saved for it (#653).
+        const unjudgeable =
+          permissionSubjectFailure !== undefined
+            ? toolFailure(
+                `SKIPPED: ${canonName} could not be checked for permission: ${permissionSubjectFailure}`,
+                { toolCallId: call.id, code: 'permission_check_failed', status: 'error' },
+              )
+            : permissionSubject?.refusal && { ...permissionSubject.refusal, toolCallId: call.id };
+        if (unjudgeable) {
+          if (forceSkillPermission && invokedSkillName && skillActivationReason) {
+            skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'permission_denied');
+          }
+          toolResults[callIndex] = unjudgeable;
+          return undefined;
+        }
+
         // A compound Bash command under a Bash deny or ask rule asks in every mode but
         // `bypassPermissions`, `auto` included, exactly as a persistent background shell does; so
         // does any call, of any tool, that an `ask` rule the user wrote matched (#527). Both are
@@ -3503,7 +3536,7 @@ export async function runAgentLoop(
                   judgedCall,
                   process.platform,
                   scanShell,
-                  permissionSubject?.allow,
+                  permissionSubject,
                 ),
             )) &&
           (!autoSafeTool || userRuleAsked || guardedReadInPlan || peerMustAsk) &&
@@ -3660,6 +3693,7 @@ export async function runAgentLoop(
           nestedTraceId,
           prepared,
           context,
+          ...(permissionSubject ? { permissionSubject } : {}),
           parallel,
           modeAtPreparation: effectiveMode,
           previousModeAtPreparation: context.previousMode,
@@ -3933,6 +3967,9 @@ export async function runAgentLoop(
                 event: 'PostToolUse',
                 toolName: canonName,
                 toolArgs: call.arguments,
+                ...(entry.permissionSubject
+                  ? { toolTargets: entry.permissionSubject.restrict }
+                  : {}),
                 toolOutput: toolResultSucceeded(result)
                   ? result.content
                   : (toolResultErrorMessage(result) ?? ''),

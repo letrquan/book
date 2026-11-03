@@ -169,9 +169,9 @@ export interface PermissionEvaluationOptions {
   /**
    * The call's target in each spelling its tool knows (`ToolDefinition.canonicalizeForPermission`),
    * matched in place of the primary argument as typed: `allow` rules match `allow`, and `deny` and
-   * `ask` rules match `restrict`.
+   * `ask` rules match `restrict`, each rule's pattern read as the subject's `rules` say.
    */
-  subject?: Pick<PermissionSubject, 'allow' | 'restrict'>;
+  subject?: Pick<PermissionSubject, 'allow' | 'restrict' | 'rules'>;
 }
 
 /** Read-only file tools whose targets inside the workspace need no prompt (#264). */
@@ -322,20 +322,25 @@ function ruleMatches(rule: ParsedRule, toolName: string, primaryArg: string): bo
   return ruleMatchesCandidate(rule, toolName, primaryArg, false);
 }
 
-/** A trailing ` [ref]` on a `SessionSend` rule's recipient: six hex digits of its socket's hash. */
-const SESSION_RULE_REF = /^(.*?)\s*\[[0-9a-fA-F]{6}\]$/;
-
 /**
- * A `SessionSend` rule that names a session with its ref, read as the rule on the bare name, or
- * `undefined` for any other rule. Only `deny` and `ask` rules are also read this way: a ref comes
- * from a pid-named socket, so such a rule binds every session of that name, which is stricter,
- * never looser. An `allow` rule keeps its ref and admits that one session only.
+ * A rule as the tool of a call's {@link PermissionEvaluationOptions.subject} reads it for that
+ * call's target (`PermissionSubject.rules`), and only ever more strictly: an allow rule the tool
+ * says may not admit the target reads as none, and a deny or ask rule also reads as each pattern the
+ * tool adds. Any other rule, a rule on another tool, and a rule on the whole tool read as written.
  */
-function sessionRuleByName(rule: ParsedRule): ParsedRule | undefined {
-  if (rule.toolName !== 'SessionSend' || rule.pattern === null) return undefined;
-  const name = SESSION_RULE_REF.exec(rule.pattern)?.[1].trim();
-  if (name === undefined) return undefined;
-  return { toolName: rule.toolName, pattern: name.length === 0 ? null : name };
+function rulesAsJudged(
+  rule: ParsedRule,
+  toolName: string,
+  restrictive: boolean,
+  subject: Pick<PermissionSubject, 'rules'> | undefined,
+): ParsedRule[] {
+  const rules = subject?.rules;
+  if (!rules || rule.pattern === null || !toolNameMatchesRule(rule.toolName, toolName)) {
+    return [rule];
+  }
+  if (!restrictive) return rules.allows?.(rule.pattern) === false ? [] : [rule];
+  const also = rules.alsoRestricts?.(rule.pattern) ?? [];
+  return [rule, ...also.map((pattern) => ({ toolName: rule.toolName, pattern }))];
 }
 
 /**
@@ -498,7 +503,7 @@ export interface MissingRuleReason {
   /**
    * A `SessionSend` to a session named by its inbox (`name [ref]`, `uds:`): a rule for it would
    * outlive the session, so none is offered (`namesSessionByAddress`). Canonically spelled, that
-   * is a session whose name another live session also holds, or an address no session answers.
+   * is a session whose name another live session also holds.
    */
   sessionAddress?: boolean;
 }
@@ -612,17 +617,18 @@ export function permissionRuleMatchesCall(
   call: ToolCall,
   platform: NodeJS.Platform = process.platform,
   shell?: ScanShell,
-  /** The `allow` spellings the call's tool gave the permission check (`PermissionSubject`). */
-  allowSpellings?: readonly string[],
+  /** What the call's tool gave the permission check to judge it by (`PermissionSubject`). */
+  subject?: Pick<PermissionSubject, 'allow' | 'rules'>,
 ): boolean {
   const toolName = canonicalToolName(call.name);
   // This feeds the session approve-all rules, which act as an allow.
   if (toolName === 'Bash') {
     return bashAllowRuleMatches(parseRule(rule), call.arguments.command, platform, shell);
   }
-  if (allowSpellings) {
-    const parsed = parseRule(rule);
-    return allowSpellings.some((spelling) => ruleMatches(parsed, toolName, spelling));
+  if (subject) {
+    return rulesAsJudged(parseRule(rule), toolName, false, subject).some((judged) =>
+      subject.allow.some((spelling) => ruleMatches(judged, toolName, spelling)),
+    );
   }
   const primaryArg = toolPrimaryArg(toolName, call.arguments);
   if (toolName === 'WebFetch' && primaryArg) {
@@ -1315,11 +1321,8 @@ export function evaluatePermissionDetail(
         // Invalid URLs retain the normal raw-argument matching behavior.
       }
     }
-    if (pool.some((candidate) => ruleMatchesCandidate(rule, tool, candidate, fold))) return true;
-    const byName = fold ? sessionRuleByName(rule) : undefined;
-    return (
-      byName !== undefined &&
-      pool.some((candidate) => ruleMatchesCandidate(byName, tool, candidate, fold))
+    return rulesAsJudged(rule, tool, fold, subject).some((judged) =>
+      pool.some((candidate) => ruleMatchesCandidate(judged, tool, candidate, fold)),
     );
   };
   // What a Read, Glob or Grep reaches. Judged wherever a refusal may follow from it: in the modes

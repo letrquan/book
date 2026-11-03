@@ -766,11 +766,15 @@ address a reply copies from `from` (#653).
 
 - An `allow` rule covers the session when it names that session alone: by `name [ref]` (or its
   `uds:` address), or by the bare name while no other live session holds the name. Once the name
-  is shared, a rule on the bare name no longer covers it, and the call asks.
+  is shared, only a rule that names its ref or its address covers it, or a rule on the whole tool
+  (`SessionSend`); a rule on the name, exact or a glob such as `SessionSend(prod-*)`, asks.
 - A `deny` or `ask` rule applies on any spelling, in every mode: a deny refuses the call, in
   `bypassPermissions` too, and an ask asks the user at once, in every mode but
   `bypassPermissions` (`dontAsk` refuses it). One written with a ref binds every session of that
-  name, which is stricter.
+  name, which is stricter, and one written with a ref alone binds every session.
+- A `to` that reaches no live session (none of that name or address, this session itself, a bare
+  name two sessions share, a session with messaging off) is refused with the reason before any
+  prompt, so nothing is approved or saved for it.
 - The prompt names the session as the rules judged it, and "Always allow" saves its bare name,
   whichever spelling the call used. While the name is shared, the call is asked about as
   `name [ref]` and can only be approved once: a ref comes from the session's pid-named socket, so a
@@ -778,8 +782,9 @@ address a reply copies from `from` (#653).
 - The message goes to the session that was judged, or nowhere: a session that ends before the
   send, while the prompt is open say, is reported gone, and its address is never resolved again.
 
-A hook's matcher reads the recipient as the call typed it: `SessionSend(prod-*)` matches a message
-to `prod-3f`. Print mode, the SDK, managed agents and `Task` subagents have neither tool, and a
+A hook's matcher matches the recipient in every spelling too: `SessionSend(prod-*)` fires for a
+message to `prod-3f` by name, `name [ref]` or `uds:` address, and the hook is still given `to` as
+the call typed it. Print mode, the SDK, managed agents and `Task` subagents have neither tool, and a
 skill or command whose `allowed-tools` leaves `SessionSend` out does not get it. A turn another
 session's message started cannot write memory, and neither can a completion or notice turn pinned
 to its class, since what it saved would load into every later session.
