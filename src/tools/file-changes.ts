@@ -16,6 +16,7 @@ import { constants, type Stats } from 'node:fs';
 import { lstat, open, realpath, type FileHandle } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { mapLimited } from '../async.js';
+import { plainSpan } from '../messaging/peer-text.js';
 import { redactSecrets } from '../provider-secrets.js';
 import { statStamp, statVouches, type StatStamp } from '../stat-freshness.js';
 import type { FileObservation } from '../types/tools.js';
@@ -143,8 +144,10 @@ async function readExactly(handle: FileHandle, size: number): Promise<Buffer | u
 /**
  * The change as a diff of at most {@link MAX_CHANGE_SNIPPET_LINES} lines, or `undefined` when it
  * is longer. The changed span is measured first, so a large rewrite is never diffed at all.
- * Provider keys are redacted from the whole diff before a long line is cut, so a key the cut
- * would split cannot escape the redaction by half.
+ * Each line is made plain first, as the prompt will show it (`plainSpan`), and only then are
+ * provider keys redacted, before a long line is cut: a key with a zero-width space inside does not
+ * match the redaction, and removing that space later would join it back up; a key the cut would
+ * split cannot escape the redaction by half.
  */
 export function changeSnippet(
   before: string,
@@ -167,7 +170,8 @@ export function changeSnippet(
   if (changed === 0 || changed >= MAX_CHANGE_SNIPPET_LINES) return undefined;
   const diff = renderDiff(before, after, 1);
   if (!diff) return undefined;
-  const lines = redactSecrets(diff, secrets).split('\n');
+  const plain = diff.split('\n').map(plainSpan).join('\n');
+  const lines = redactSecrets(plain, secrets).split('\n');
   if (lines.length > MAX_CHANGE_SNIPPET_LINES) return undefined;
   return lines.map((line) => Array.from(line).slice(0, MAX_SNIPPET_LINE_CHARS).join(''));
 }

@@ -22,6 +22,7 @@ import {
 } from './file-changes.js';
 import { observeFile, requireFreshObservation } from './file-provenance.js';
 import { patchTools } from './patch.js';
+import { promptSpan } from '../messaging/peer-text.js';
 import type { SessionRuntime } from '../session/runtime.js';
 
 /**
@@ -344,6 +345,21 @@ describe('changed-on-disk detection (#620 4a)', () => {
     expect(changeSnippet('a\nb\n', 'a\nc\n')).toEqual(['@@ -1 +1 @@', ' a', '-b', '+c']);
     expect(changeSnippet(lines(500), lines(500, 'x'))).toBeUndefined();
     expect(changeSnippet('same\n', 'same\n')).toBeUndefined();
+  });
+
+  it('redacts a provider key written with an invisible character inside it (#649)', async () => {
+    const key = 'sk-live-0123456789abcdef';
+    const file = write('.env', 'A=1\n');
+    await observeFile(ctx, file, 'read');
+    writeFileSync(file, `A=1\nKEY=${key.slice(0, 8)}\u200b${key.slice(8)}\n`);
+
+    const [changed] = (await tracker.collect({ ledger, workspace, secrets: [key] })).files;
+    // Each line as the prompt shows it: the zero-width space stripped, which joins the key up.
+    const shown = changed!.snippet!.map(promptSpan).join('\n');
+
+    expect(shown).toContain('+KEY=');
+    expect(shown).not.toContain(key);
+    expect(shown).not.toContain(key.slice(8));
   });
 });
 
