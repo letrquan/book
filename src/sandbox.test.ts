@@ -486,12 +486,10 @@ describe('buildSandboxExecution workspace control files', () => {
 
     const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', WORKSPACE, settings, host);
 
+    // Read-only: an empty read-only tmpfs, with what it holds bound back (#633).
     const book = mountsFor(exec.args, '/work/.book');
-    expect(exec.args.slice(book.index - 1, book.index + 2)).toEqual([
-      '--ro-bind',
-      '/work/.book',
-      '/work/.book',
-    ]);
+    expect(exec.args.slice(book.index - 1, book.index + 1)).toEqual(['--tmpfs', '/work/.book']);
+    expect(accessAt(exec.args, '/work/.book')).toBe('empty-read-only');
     // After the workspace bind, or the workspace would shadow it.
     expect(exec.args.lastIndexOf('--bind', book.index)).toBeLessThan(book.index);
     // After `allowWrite`, or an extra writable root would reopen it.
@@ -1723,7 +1721,7 @@ describe('buildSandboxExecution workspace control files', () => {
         host,
       );
 
-      expect(mountsFor(exec.args, '/work/.book').flag).toBe('--ro-bind');
+      expect(accessAt(exec.args, '/work/.book')).toBe('empty-read-only');
       expect(mountsFor(exec.args, '/work/.book/hooks').index).toBe(-1);
     });
   });
@@ -2300,6 +2298,75 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(exec.args.some((arg) => arg.startsWith('/data'))).toBe(false);
       expect(accessAt(exec.args, '/l/ws/.book/settings.json')).toBe('writable');
       expect(accessAt(exec.args, '/l/ws/.book/settings.local.json')).toBe('absent');
+    });
+
+    it('keeps the view when core.hooksPath makes the workspace root a protected directory', () => {
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        sandboxSettings(),
+        hostWith(
+          settingsTree({
+            '/work/.git': 'dir',
+            '/work/.git/HEAD': 'file',
+            '/work/.git/objects': 'dir',
+            '/work/.git/config': 'file',
+          }),
+          { '/work/.git/config': '[core]\n\thooksPath = .\n' },
+        ),
+      );
+
+      expect(accessAt(exec.args, '/work')).toBe('read-only');
+      expect(accessAt(exec.args, '/work/.book')).toBe('empty-read-only');
+      expect(accessAt(exec.args, '/work/.book/settings.json')).toBe('read-only');
+      expect(accessAt(exec.args, '/work/.book/settings.local.json')).toBe('absent');
+    });
+
+    it('settles an absent .book after a denyWrite bind of the workspace', () => {
+      const settings = sandboxSettings();
+      settings.filesystem.denyWrite = ['/work'];
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        settings,
+        hostWith({ '/work': 'dir' }),
+      );
+
+      expect(accessAt(exec.args, '/work/.book')).toBe('empty-read-only');
+      expect(lastMountFor(exec.args, '/work/.book').index).toBeGreaterThan(
+        lastMountFor(exec.args, '/work').index,
+      );
+      // The first mask stays: it is what creates the mount point on the host
+      // before the read-only bind of the workspace.
+      expect(mountsFor(exec.args, '/work/.book').index).toBeLessThan(
+        lastMountFor(exec.args, '/work').index,
+      );
+    });
+
+    it('drops a mount inside an absent .book, which has no mount point to give it', () => {
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        sandboxSettings(),
+        hostWith(
+          {
+            '/work': 'dir',
+            '/work/.git': 'dir',
+            '/work/.git/HEAD': 'file',
+            '/work/.git/objects': 'dir',
+            '/work/.git/config': 'file',
+          },
+          { '/work/.git/config': '[core]\n\thooksPath = .book/hooks\n' },
+        ),
+      );
+
+      expect(exec.args).not.toContain('/work/.book/hooks');
+      expect(accessAt(exec.args, '/work/.book')).toBe('empty-read-only');
+      expect(accessAt(exec.args, '/work/.book/hooks')).toBe('absent');
     });
 
     it('refuses a .book that holds more entries than it binds one by one', () => {
@@ -3855,32 +3922,47 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
      * reaches a running command.
      */
     describe('.book inside the sandbox (#633)', () => {
-      const LOOP =
-        'touch .probe-running; for i in 1 2 3 4 5 6 7 8; do cat .book/settings.local.json .book/.settings.local.json.* 2>&1; sleep 0.4; done';
-
       /**
-       * Run the polling loop, and have the host write the local settings once the
+       * Run a polling loop, and have the host write the local settings once the
        * loop is reading inside the namespace: a write that lands before the mounts
        * are computed is masked like any file present at the start, which proves
-       * nothing about a running command.
+       * nothing about a running command. The loop signals through a directory of
+       * its own, so a workspace the policy makes read-only can still run it.
        */
       async function readWhileHostWrites(
         repo: string,
         hostWrite: () => void,
+        overrides: SandboxOverrides = {},
       ): Promise<{ status: string; content: string }> {
-        const running = join(repo, '.probe-running');
-        const run = sandboxedBash(LOOP, repo);
-        for (let waited = 0; waited < 10_000 && !existsSync(running); waited += 50) {
-          await new Promise((settle) => setTimeout(settle, 50));
+        const marker = mkdtempSync(join(tmpdir(), 'book-probe-marker-'));
+        const running = join(marker, 'running');
+        try {
+          const run = sandboxedBash(
+            `touch '${running}'; for i in 1 2 3 4 5 6 7 8; do cat .book/settings.local.json .book/.settings.local.json.* 2>&1; sleep 0.4; done`,
+            repo,
+            {
+              ...overrides,
+              filesystem: {
+                ...overrides.filesystem,
+                allowWrite: [...(overrides.filesystem?.allowWrite ?? []), marker],
+              },
+            },
+          );
+          for (let waited = 0; waited < 10_000 && !existsSync(running); waited += 50) {
+            await new Promise((settle) => setTimeout(settle, 50));
+          }
+          expect(existsSync(running)).toBe(true);
+          await new Promise((settle) => setTimeout(settle, 600));
+          hostWrite();
+          return await run;
+        } finally {
+          rmSync(marker, { recursive: true, force: true });
         }
-        expect(existsSync(running)).toBe(true);
-        await new Promise((settle) => setTimeout(settle, 600));
-        hostWrite();
-        return run;
       }
 
       /** What Book's settings writer does: a temp file beside it, renamed over it. */
       function replaceAtomically(path: string, contents: string): void {
+        mkdirSync(dirname(path), { recursive: true });
         const temporary = join(dirname(path), `.settings.local.json.${process.pid}.probe.tmp`);
         writeFileSync(temporary, contents);
         renameSync(temporary, path);
@@ -3916,6 +3998,63 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
           expect(result.status).toBe('success');
           expect(result.content).not.toContain('sk-first-save');
           expect(readFileSync(local, 'utf8')).toContain('sk-first-save');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('never shows a first save when core.hooksPath names the workspace root', async () => {
+        // The root becomes a read-only protected directory then, and `.book`
+        // inside it used to be dropped as redundant, view and all.
+        const repo = freshRepo({ book: true });
+        writeFileSync(join(repo, '.git', 'config'), '[core]\n\thooksPath = .\n');
+        const local = join(repo, '.book', 'settings.local.json');
+        try {
+          const result = await readWhileHostWrites(repo, () =>
+            replaceAtomically(local, JSON.stringify({ provider: { apiKey: 'sk-hookspath' } })),
+          );
+
+          expect(result.status).toBe('success');
+          expect(result.content).not.toContain('sk-hookspath');
+          expect(readFileSync(local, 'utf8')).toContain('sk-hookspath');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('never shows a first save into an absent .book under a denyWrite of the workspace', async () => {
+        // The mask over the absent directory came before the read-only bind of the
+        // workspace, which showed the `.book` the host then created.
+        const repo = freshRepo();
+        const local = join(repo, '.book', 'settings.local.json');
+        try {
+          const result = await readWhileHostWrites(
+            repo,
+            () => replaceAtomically(local, JSON.stringify({ provider: { apiKey: 'sk-absent' } })),
+            { filesystem: { denyWrite: [repo] } },
+          );
+
+          expect(result.status).toBe('success');
+          expect(result.content).not.toContain('sk-absent');
+          expect(readFileSync(local, 'utf8')).toContain('sk-absent');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('runs in a workspace with no .book whose core.hooksPath is inside .book', async () => {
+        // A mask for the absent hooks directory inside the read-only `.book` mask
+        // had no mount point to create, and bwrap aborted every command.
+        const repo = freshRepo();
+        writeFileSync(join(repo, '.git', 'config'), '[core]\n\thooksPath = .book/hooks\n');
+        try {
+          const result = await sandboxedBash('echo ran; mkdir -p .book/hooks 2>&1; true', repo);
+
+          // A bwrap abort runs nothing: `ran` is the proof the command started.
+          expect(result.status).toBe('success');
+          expect(result.content).toContain('ran');
+          expect(result.content.toLowerCase()).toMatch(/read-only file system/);
+          expect(existsSync(join(repo, '.book', 'hooks'))).toBe(false);
         } finally {
           rmSync(repo, { recursive: true, force: true });
         }

@@ -10,6 +10,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'fs';
 import { createServer as createHttpServer, type Server as HttpServer } from 'http';
@@ -143,7 +144,7 @@ type FileOperation =
  */
 function decide(policy: SeatbeltPolicy, operation: FileOperation, path: string): 'allow' | 'deny' {
   const bookTemp = new RegExp(`/(${BOOK_TEMP_PREFIXES.join('|')})[^/]*(/|$)`);
-  const localSettings = /\/[.]book\/[^/]*settings[.]local[.]json[^/]*(\/|$)/;
+  const localSettings = /\/[^/]*settings[.]local[.]json[^/]*(\/|$)/;
   const under = (root: string): boolean =>
     root === '/' ? path.startsWith('/') : path === root || path.startsWith(`${root}/`);
   let wildcard: 'allow' | 'deny' | undefined =
@@ -341,6 +342,23 @@ describe('buildSeatbeltPolicy', () => {
    * built, left a first save made while a command ran readable, and every copy
    * of it the settings writer and editors leave beside it (#633).
    */
+  it('denies the local settings in a .book that links to another directory', () => {
+    // Accepted, not refused, when a deny entry covers the link: the rule then has
+    // to hold at the directory's real path, which has no `.book` in it.
+    const tree = repoTree({
+      [`${WS}/config/book/settings.json`]: 'file',
+      [`${WS}/config/book/settings.local.json`]: 'file',
+      [`${WS}/.book`]: { link: 'config/book' },
+    });
+    delete tree[`${WS}/.book/settings.json`];
+    delete tree[`${WS}/.book/settings.local.json`];
+    const policy = policyFor({ filesystem: { denyWrite: [WS] } }, tree);
+
+    expect(canRead(policy, `${WS}/config/book/settings.local.json`)).toBe(false);
+    expect(canRead(policy, `${WS}/config/book/.settings.local.json.1234.abcd.tmp`)).toBe(false);
+    expect(canRead(policy, `${WS}/config/book/settings.json`)).toBe(true);
+  });
+
   it('denies the local settings and every copy of them by name, present or not', () => {
     const tree = repoTree();
     delete tree[`${WS}/.book/settings.local.json`];
@@ -684,7 +702,7 @@ describe('renderSeatbeltProfile', () => {
     const book = parameters.find((parameter) => parameter.endsWith(`=${WS}/.book`))?.split('=')[0];
 
     expect(profile).toContain(
-      `(deny file-read* file-write* (require-all (subpath (param "${book}")) (regex #"/[.]book/[^/]*settings[.]local[.]json[^/]*(/|$)")))`,
+      `(deny file-read* file-write* (require-all (subpath (param "${book}")) (regex #"/[^/]*settings[.]local[.]json[^/]*(/|$)")))`,
     );
   });
 });
@@ -995,6 +1013,24 @@ describe.skipIf(process.platform !== 'darwin')('the Seatbelt sandbox on a real M
       expect(result.content).not.toContain(secret);
     }
     expect(readFileSync(local, 'utf8')).toBe('first-save\n');
+  });
+
+  it('hides the local settings in a .book that links to another directory', async () => {
+    // Accepted, not refused, when a deny entry covers the link; the rule has to
+    // hold at the directory's real path, which has no `.book` in it.
+    rmSync(join(workspace, '.book'), { recursive: true, force: true });
+    mkdirSync(join(workspace, 'config', 'book'), { recursive: true });
+    writeFileSync(join(workspace, 'config', 'book', 'settings.json'), '{}\n');
+    writeFileSync(join(workspace, 'config', 'book', 'settings.local.json'), 'linked-secret\n');
+    symlinkSync('config/book', join(workspace, '.book'));
+    const result = await sandboxedBash(
+      'cat .book/settings.local.json config/book/settings.local.json 2>&1; cat .book/settings.json',
+      { filesystem: { denyWrite: [workspace] } },
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('{}');
+    expect(result.content).not.toContain('linked-secret');
   });
 
   /**

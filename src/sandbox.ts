@@ -1136,8 +1136,13 @@ export function protectedWorkspacePaths(
   const filteredMounts: ProtectedMount[] = [];
   const gitDirControlMounts: ProtectedMount[] = [];
 
+  const settingsDirectoryPath = host.path.resolve(host.path.join(root, '.book'));
   for (const mount of result.mounts) {
-    if (mount.kind === 'hidden-file') {
+    // `.book` is kept even inside a read-only directory mount (a `core.hooksPath`
+    // naming the workspace root makes the root one): bubblewrap builds the
+    // settings directory's view from this mount, and without it the local
+    // settings would be one host save away from a running command (#633).
+    if (mount.kind === 'hidden-file' || mount.path === settingsDirectoryPath) {
       filteredMounts.push(mount);
       continue;
     }
@@ -1292,9 +1297,10 @@ interface SettingsDirectoryView {
 
 /**
  * The entries `.book/` holds now, less the hidden ones, when it is a directory
- * the namespace protects; null otherwise (absent, a file, or not protected).
- * Throws, which refuses the command, when it holds more than
- * {@link MAX_SETTINGS_DIRECTORY_ENTRIES}.
+ * the namespace protects; none when it is absent, so its mask is settled the
+ * same way; null otherwise (a regular file, or a symlink a deny entry made safe
+ * to accept, which keep the mounts they had). Throws, which refuses the
+ * command, when it holds more than {@link MAX_SETTINGS_DIRECTORY_ENTRIES}.
  */
 function settingsDirectoryView(
   workspaceRoot: string,
@@ -1303,7 +1309,11 @@ function settingsDirectoryView(
 ): SettingsDirectoryView | null {
   const at = host.path.join(host.path.resolve(workspaceRoot), '.book');
   const mount = paths.mounts.find((candidate) => candidate.path === at);
-  if (!mount || mount.kind !== 'directory' || !mount.present) return null;
+  if (!mount || mount.kind !== 'directory') return null;
+  // Absent: an empty view. The mask alone would be covered by a later
+  // read-only bind of the workspace (a `denyWrite` entry for it), which shows
+  // the `.book` the host creates on a first save, local settings and all.
+  if (!mount.present) return { at, entries: [] };
   if (host.entryKind(at) !== 'directory') return null;
   const entries: SettingsDirectoryView['entries'] = [];
   for (const name of [...host.readDir(at)].sort()) {
@@ -1411,8 +1421,13 @@ function settleSettingsDirectory(
     if (!isOutside(mount.at, view.at, host.path)) last = index;
   });
   if (last === -1) return mounts;
+  // The earlier mounts at `.book` stay where they were: an absent directory's
+  // mask is what creates its mount point on the host before a later read-only
+  // bind of the workspace. The last one, if it is at `.book`, is what the view
+  // replaces.
+  const replaced = mounts[last].at === view.at ? last : -1;
   return [
-    ...mounts.filter((mount) => !insideView(view, mount.at, host)),
+    ...mounts.filter((mount, index) => index !== replaced && !insideView(view, mount.at, host)),
     ...settingsDirectoryMounts(view, mounts[last].access, host),
     ...mounts.filter(
       (mount, index) =>

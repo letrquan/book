@@ -1178,8 +1178,14 @@ backup copy. Inside the sandbox the file has no name at all, so nothing the host
 command runs reaches that command: not a save that replaces it (the writer's temp file and rename),
 and not a first save that creates it. Before issue 633 the file was masked with `/dev/null`, a
 mount on the file's directory entry, and a rename over the path installed a new entry the mask did
-not cover: a polling background command could read a key saved mid-session. On macOS the same
-names are denied by pattern instead (see [macOS (Seatbelt)](#macos-seatbelt)).
+not cover: a polling background command could read a key saved mid-session. The view is placed
+after every mount that could cover `.book` (a `denyWrite` entry for the workspace, an opt-in on
+`.book`, a `core.hooksPath` naming the workspace root), and a workspace with no `.book` gets an
+empty read-only one placed the same way, so a first save that creates the directory does not reach
+a running command either. On macOS the same names are denied by pattern instead (see
+[macOS (Seatbelt)](#macos-seatbelt)). A `.book` that is itself a symlink is refused, unless a
+`denyWrite` or `denyRead` entry covers it; under bubblewrap that layout keeps the older per-file
+mask.
 
 Under bubblewrap the directory itself stays read-only whatever the policy says. An `allowWrite`
 entry naming `<workspace>/.book` makes every entry in it writable, but a command still cannot add,
