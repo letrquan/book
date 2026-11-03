@@ -97,6 +97,19 @@ describe('the rows after a hold', () => {
     );
   });
 
+  it('does not say a sender no live session vouches for was told (#651)', () => {
+    const message = held('x', { senderVerified: false, sender: 'an unverified sender [d4d5d6]' });
+    expect(settledMessageLine(message, 'denied', 'user')).toBe(
+      'Held peer message from an unverified sender [d4d5d6] denied; no live session has its address to tell.',
+    );
+    expect(settledMessageLine(message, 'expired', 'room')).toMatch(
+      /held at most\. No live session has its address to tell\.$/,
+    );
+    expect(settledMessageLine(held('x', { senderVerified: true }), 'refused', 'policy')).toMatch(
+      /refuse\. Its sender was told\.$/,
+    );
+  });
+
   it('follows up an approval that found no room, or nothing to approve', () => {
     expect(lateApprovalLine(held('x'), 'no-room')).toContain(
       'the delivery queue is full. The peer message from peer-a [a1b2c3] stays held',

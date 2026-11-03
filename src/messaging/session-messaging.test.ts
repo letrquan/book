@@ -16,7 +16,7 @@ import type { LiveSessionRecord } from '../types/messaging.js';
 import { peerRef } from './addressing.js';
 import { parseEnvelope, renderEnvelope } from './envelope.js';
 import { sendToInbox } from './inbox-client.js';
-import { heldMessageLine, MAX_HELD_MESSAGES } from './hold.js';
+import { heldMessageLine, MAX_HELD_MESSAGES, REOFFER_INTERVAL_MS } from './hold.js';
 import type { InboxServerOptions } from './inbox-server.js';
 import type { LivenessProbe } from './liveness.js';
 import { liveSessionRecordPath, liveSessionsDir } from './registry.js';
@@ -452,14 +452,26 @@ describe.skipIf(!posix)('SessionMessaging', () => {
     expect(b.messaging.approve(held.id)).toEqual({ outcome: 'released', held });
   });
 
-  it('offers a message put off again at the next idle, once', async () => {
-    const a = await session(4242, 'peer-a', 'default');
-    const b = await session(4343, 'peer-b', 'bypassPermissions');
+  it('offers a message put off again at an idle once the interval has passed, once', async () => {
+    let clock = Date.now();
+    const now = () => clock;
+    const a = await session(4242, 'peer-a', 'default', { now });
+    const b = await session(4343, 'peer-b', 'bypassPermissions', {
+      now,
+      approvalTimeoutMs: 3_600_000,
+    });
     await a.messaging.send({ to: 'peer-b', message: 'later' });
     await eventually(() => b.messaging.nextApproval() !== undefined);
     const held = b.messaging.nextApproval()!;
     b.messaging.defer(held.id);
     expect(b.messaging.nextApproval()).toBeUndefined();
+    // Later, then an idle at once: nothing, since the interval counts from the Later (#651).
+    b.messaging.reofferDeferred();
+    expect(b.messaging.nextApproval()).toBeUndefined();
+    clock += REOFFER_INTERVAL_MS - 1;
+    b.messaging.reofferDeferred();
+    expect(b.messaging.nextApproval()).toBeUndefined();
+    clock += 1;
     b.messaging.reofferDeferred();
     expect(b.messaging.nextApproval()).toBe(held);
     b.messaging.defer(held.id);
@@ -524,9 +536,13 @@ describe.skipIf(!posix)('SessionMessaging', () => {
     await eventually(() => b.messaging.heldList().length === 100, 15_000);
     const first = b.messaging.nextApproval()!;
     expect(b.messaging.heldFromSender(first)).toBe(100);
-    // Later puts the sender off, not one message: the next of its 100 is not offered.
+    // Later puts the sender off, not one message: the next of its 100 is not offered, and an idle
+    // soon after offers nothing either, since the first re-offer waits too (#651).
     b.messaging.defer(first.id);
     expect(b.messaging.nextApproval()).toBeUndefined();
+    b.messaging.reofferDeferred();
+    expect(b.messaging.nextApproval()).toBeUndefined();
+    clock += 5 * 60_000;
     b.messaging.reofferDeferred();
     expect(b.messaging.nextApproval()).toBe(first);
     b.messaging.defer(first.id);
@@ -562,6 +578,93 @@ describe.skipIf(!posix)('SessionMessaging', () => {
     // Deny all held blocks no one: the next message is held again.
     await a.messaging.send({ to: 'peer-b', message: 'from a again' });
     await eventually(() => b.messaging.heldList().length === 1);
+  });
+
+  it('takes every sender no live session vouches for as one sender (#651)', async () => {
+    const a = await session(4242, 'peer-a', 'default');
+    const b = await session(4343, 'peer-b', 'bypassPermissions');
+    const acks = vi.spyOn(b.messaging.inbox, 'acknowledge');
+    // A process with the inbox key sends frames, each from an address no live session advertises.
+    const forged = (n: number) =>
+      sendToInbox({
+        socketPath: b.socketPath,
+        keysDir: liveSessionsDir(bookHome()),
+        probe,
+        frame: {
+          type: 'user',
+          message: { role: 'user', content: `forged ${n}` },
+          from: encodeUdsAddress(join(socketDir, `${9000 + n}.sock`)),
+          msg_id: `forged-${n}`,
+        },
+      });
+    for (const n of [1, 2, 3]) await forged(n);
+    await a.messaging.send({ to: 'peer-b', message: 'from a' });
+    await eventually(() => b.events.filter((event) => event.type === 'held').length === 4);
+    const first = b.messaging.heldList().find((held) => held.message.msgId === 'forged-1')!;
+    expect(first.senderVerified).toBe(false);
+    expect(first.sender).toMatch(/^an unverified sender \[[0-9a-f]{6}\]$/);
+    expect(b.messaging.heldFromSender(first)).toBe(3);
+    // Later puts the three off together; peer-a, a live session, is asked about on its own.
+    b.messaging.defer(first.id);
+    const fromA = b.messaging.nextApproval()!;
+    expect(fromA).toMatchObject({
+      senderVerified: true,
+      sender: `peer-a [${peerRef(a.socketPath)}]`,
+    });
+    expect(b.messaging.heldFromSender(fromA)).toBe(1);
+    // Deny all from them: the three are denied, and a frame from yet another such address is
+    // refused, while peer-a's next message is held as before.
+    expect(b.messaging.denyAllFrom(first.id)).toBe(3);
+    await forged(4);
+    await eventually(() =>
+      acks.mock.calls.some(
+        ([message, status]) => message.msgId === 'forged-4' && status === 'refused',
+      ),
+    );
+    await a.messaging.send({ to: 'peer-b', message: 'from a again' });
+    await eventually(() => b.messaging.heldList().length === 2);
+    expect(b.messaging.heldList().map((held) => held.preview)).toEqual(['from a', 'from a again']);
+  });
+
+  it('takes two spellings of the address of one live session as one sender (#651)', async () => {
+    const a = await session(4242, 'peer-a', 'default');
+    const b = await session(4343, 'peer-b', 'bypassPermissions');
+    await a.messaging.send({ to: 'peer-b', message: 'as written' });
+    await sendToInbox({
+      socketPath: b.socketPath,
+      keysDir: liveSessionsDir(bookHome()),
+      probe,
+      frame: {
+        type: 'user',
+        message: { role: 'user', content: 'respelled' },
+        from: encodeUdsAddress(a.socketPath).replace(/\.sock$/, '%2Esock'),
+        msg_id: 'respelled',
+      },
+    });
+    await eventually(() => b.events.filter((event) => event.type === 'held').length === 2);
+    const held = b.messaging.heldList();
+    expect(held.map((entry) => entry.senderVerified)).toEqual([true, true]);
+    expect(b.messaging.heldFromSender(held[0])).toBe(2);
+  });
+
+  it('delivers a message the user approved, though its sender is denied everything later (#651)', async () => {
+    const a = await session(4242, 'peer-a', 'default');
+    const b = await session(4343, 'peer-b', 'bypassPermissions');
+    const sent = await a.messaging.send({ to: 'peer-b', message: 'approved one' });
+    await a.messaging.send({ to: 'peer-b', message: 'denied one' });
+    await eventually(() => b.events.filter((event) => event.type === 'held').length === 2);
+    const approved = b.messaging.heldList().find((held) => held.preview === 'approved one')!;
+    expect(b.messaging.approve(approved.id)).toMatchObject({ outcome: 'released' });
+    const denied = b.messaging.heldList().find((held) => held.preview === 'denied one')!;
+    expect(b.messaging.denyAllFrom(denied.id)).toBe(1);
+    const batch = b.messaging.prepareDelivery()!;
+    expect(batch.delivered.map((message) => message.msgId)).toEqual([
+      sent.status === 'sent' ? sent.msgId : '',
+    ]);
+    expect(batch.turnClass).toBe('prompting');
+    b.messaging.commitDelivery(batch);
+    await eventually(() => statusesOf(a.events).length === 4);
+    expect([...statusesOf(a.events)].sort()).toEqual(['denied', 'held', 'held', 'released']);
   });
 
   it('settles held messages as expired on close, within its budget', async () => {

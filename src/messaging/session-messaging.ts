@@ -48,6 +48,7 @@ import {
   HOLD_PREVIEW_CHARS,
   MAX_HELD_MESSAGES,
   peerTextSpan,
+  REOFFER_INTERVAL_MS,
   type HeldPeerMessage,
   type HoldOutcome,
   type HoldSettledBy,
@@ -212,10 +213,18 @@ export interface PeerDeliveryBatch {
 }
 
 const ACCEPT: ReceiveVerdict = { action: 'accept' };
-/** How often messages put off with Later are offered again, at most: once per idle besides. */
-export const REOFFER_INTERVAL_MS = 5 * 60_000;
 /** How long one registry listing names the senders of held messages. */
 const SENDER_LISTING_MAX_AGE_MS = 2_000;
+/**
+ * How old a listing may be to say that no live session advertises an address: older, it is read
+ * again first, so a session that started since is not taken for an unverified sender.
+ */
+const SENDER_MISS_MAX_AGE_MS = 250;
+/**
+ * The key every message from a sender no live session vouches for is grouped, put off and denied
+ * under (#651). No socket path holds a NUL (`decodeUdsAddress`), so no verified sender has it.
+ */
+const UNVERIFIED_SENDER = '\0unverified';
 /** Characters of a sender's `name [ref]` a held row shows. */
 const SENDER_LABEL_CHARS = 80;
 
@@ -248,9 +257,12 @@ export class SessionMessaging implements SessionMessagingHandle {
   private readonly heldMessages = new Map<string, HeldPeerMessage>();
   /** One timer, for the earliest deadline among the held messages. */
   private expiryTimer?: ReturnType<typeof setTimeout>;
-  /** Reply addresses the user denied everything from: what parity would hold from them is refused. */
+  /**
+   * The senders the user denied everything from (`heldSenderKey`): what parity would hold from
+   * them is refused.
+   */
   private readonly refusedSenders = new Set<string>();
-  /** When held messages put off were last offered again. */
+  /** When held messages were last put off or offered again: the next offer waits the interval. */
   private lastReofferAt?: number;
   /** The listing held messages' senders are named from (`senderListing`). */
   private senderNames?: { readAt: number; listing: Promise<PeerSessionListing | undefined> };
@@ -432,14 +444,15 @@ export class SessionMessaging implements SessionMessagingHandle {
 
   /**
    * The held message to ask the user about next: the oldest the parity rules held that the user
-   * has not put off, and, while the delivery queue is full, not one whose approval found it full.
-   * One `messaging.inbound: hold` held is not offered: the user's setting holds it, and only a
-   * change of that setting releases it.
+   * has not put off, whose sender the registry has told, and, while the delivery queue is full,
+   * not one whose approval found it full. One `messaging.inbound: hold` held is not offered: the
+   * user's setting holds it, and only a change of that setting releases it.
    */
   nextApproval(): HeldPeerMessage | undefined {
     const full = this.inbox.queueFull;
     for (const held of this.heldMessages.values()) {
-      if (!isParityHold(held.cause) || held.deferred || (held.awaitingRoom && full)) continue;
+      if (!isParityHold(held.cause) || held.deferred || held.senderVerified === undefined) continue;
+      if (held.awaitingRoom && full) continue;
       return held;
     }
     return undefined;
@@ -461,9 +474,10 @@ export class SessionMessaging implements SessionMessagingHandle {
   }
 
   /**
-   * The session went idle: every held message the user put off is offered again — at most every
-   * {@link REOFFER_INTERVAL_MS}, so a sender that keeps sending cannot bring the sheet back after
-   * every turn. Between times the status line's held count is the only reminder.
+   * The session went idle: every held message the user put off is offered again — no sooner than
+   * {@link REOFFER_INTERVAL_MS} after the last Later or the last re-offer, so a sender that keeps
+   * sending cannot bring the sheet back after every turn, nor a Later right before an idle (#651).
+   * Between times the status line's held count is the only reminder.
    */
   reofferDeferred(): void {
     const deferred = [...this.heldMessages.values()].filter((held) => held.deferred);
@@ -475,23 +489,24 @@ export class SessionMessaging implements SessionMessagingHandle {
     this.emit({ type: 'holds-changed' });
   }
 
-  /** How many messages are held from the sender of `held`, `held` included. */
+  /** How many messages are held from the sender of `held` (`heldSenderKey`), `held` included. */
   heldFromSender(held: HeldPeerMessage): number {
-    const sender = senderKey(held.message);
-    return this.heldList().filter((candidate) => senderKey(candidate.message) === sender).length;
+    const sender = heldSenderKey(held);
+    return this.heldList().filter((candidate) => heldSenderKey(candidate) === sender).length;
   }
 
   /**
-   * The user denied everything from one sender: every message held from it is denied, and what
-   * mode parity would hold from it later is refused, for the rest of this session. Returns how
-   * many were denied.
+   * The user denied everything from one sender (`heldSenderKey`): every message held from it is
+   * denied, and what mode parity would hold from it later is refused, for the rest of this
+   * session. A message from it that the user already approved is still delivered (#651). Returns
+   * how many were denied.
    */
   denyAllFrom(id: string): number {
     const held = this.heldMessages.get(id);
     if (!held) return 0;
-    const sender = senderKey(held.message);
+    const sender = heldSenderKey(held);
     this.refusedSenders.add(sender);
-    const denied = this.heldList().filter((candidate) => senderKey(candidate.message) === sender);
+    const denied = this.heldList().filter((candidate) => heldSenderKey(candidate) === sender);
     for (const candidate of denied) this.settle(candidate, 'denied', 'user');
     return denied.length;
   }
@@ -513,15 +528,17 @@ export class SessionMessaging implements SessionMessagingHandle {
 
   /**
    * The user put a held message off, and with it its sender: everything held from that sender —
-   * and what it sends next — stays held, offered again when the session is next idle.
+   * and what it sends next — stays held, offered again at an idle no sooner than
+   * {@link REOFFER_INTERVAL_MS} from now.
    */
   defer(id: string): void {
     const held = this.heldMessages.get(id);
     if (!held) return;
-    const sender = senderKey(held.message);
+    const sender = heldSenderKey(held);
     for (const candidate of this.heldMessages.values()) {
-      if (senderKey(candidate.message) === sender) candidate.deferred = true;
+      if (heldSenderKey(candidate) === sender) candidate.deferred = true;
     }
+    this.lastReofferAt = this.now();
   }
 
   /** Hear about arriving messages and receipt batches. Returns the unsubscribe. */
@@ -774,7 +791,7 @@ export class SessionMessaging implements SessionMessagingHandle {
     }
     if (this.closed) return;
     const senderMode = assertedClassOf(notice.fromMode);
-    const toModel = this.judgeSender(senderMode, notice.from ?? '').action === 'accept';
+    const toModel = this.judgeSender(senderMode, notice.from).action === 'accept';
     const detail = idleDetail(notice.detail);
     this.emit({
       type: 'idle-notice',
@@ -941,12 +958,13 @@ export class SessionMessaging implements SessionMessagingHandle {
 
   /**
    * The verdict at delivery: the policy's, judged again for every queued message. The user's
-   * approval answers a parity hold and `inbound: hold`, never `inbound: refuse`; a release by a
-   * mode change answers nothing the policy now says.
+   * approval answers a parity hold and `inbound: hold`, never `inbound: refuse`, and outlasts a
+   * later "deny all from this sender", which settles what is still held, not what the user
+   * approved (#651). A release by a mode change answers nothing the policy now says.
    */
   private deliveryVerdict(message: AcceptedPeerMessage): ReceiveVerdict {
-    const verdict = this.judge(message);
-    if (message.release !== 'approved' || verdict.action === 'accept') return verdict;
+    if (message.release !== 'approved') return this.judge(message);
+    const verdict = this.policyVerdict(assertedModeOf(message));
     return verdict.action === 'refuse' ? verdict : ACCEPT;
   }
 
@@ -955,21 +973,26 @@ export class SessionMessaging implements SessionMessagingHandle {
    * everything from is refused instead.
    */
   private judge(message: AcceptedPeerMessage): ReceiveVerdict {
-    return this.judgeSender(assertedModeOf(message), senderKey(message));
+    return this.judgeSender(assertedModeOf(message), message.from);
+  }
+
+  /** What `messaging.inbound` and mode parity say now about a sender that asserts `senderMode`. */
+  private policyVerdict(senderMode: AssertedMode): ReceiveVerdict {
+    return evaluateReceivePolicy({ inbound: this.inbound, receiverMode: this.mode, senderMode });
   }
 
   /**
-   * The policy's verdict now on anything from a sender that asserts `senderMode`, reached at
-   * `sender`: a message, or an idle notice's words.
+   * The policy's verdict now on anything from a sender that asserts `senderMode`, reached at the
+   * reply address `from`: a message, or an idle notice's words. A socket the user denied
+   * everything from is refused at once, however its address is spelled; a sender no live session
+   * vouches for is told apart only once the registry is read (`senderKnown`).
    */
-  private judgeSender(senderMode: AssertedMode, sender: string): ReceiveVerdict {
-    const verdict = evaluateReceivePolicy({
-      inbound: this.inbound,
-      receiverMode: this.mode,
-      senderMode,
-    });
+  private judgeSender(senderMode: AssertedMode, from: string | undefined): ReceiveVerdict {
+    const verdict = this.policyVerdict(senderMode);
+    const sender = decodeUdsAddress(from);
     return verdict.action === 'hold' &&
       isParityHold(verdict.cause) &&
+      sender !== undefined &&
       this.refusedSenders.has(sender)
       ? { action: 'refuse' }
       : verdict;
@@ -995,7 +1018,8 @@ export class SessionMessaging implements SessionMessagingHandle {
 
   /**
    * Hold a message for the user, telling its sender. Over the cap, the oldest held message expires
-   * to make room. The row names the sender once the registry is read; until then, by its ref.
+   * to make room. The registry is read for its sender before the transcript and the sheet hear of
+   * it (`senderKnown`).
    */
   private hold(message: AcceptedPeerMessage, cause: HoldCause): void {
     if (this.closed) {
@@ -1018,39 +1042,67 @@ export class SessionMessaging implements SessionMessagingHandle {
       sender: path !== undefined ? `[${peerRef(path)}]` : 'an unattributed sender',
       ...(claimedName !== undefined ? { claimedName } : {}),
       preview: peerTextSpan(heldBody(message), HOLD_PREVIEW_CHARS),
-      // A sender the user put off stays put off: its next message does not bring the sheet back.
-      deferred: this.heldList().some(
-        (candidate) => candidate.deferred && senderKey(candidate.message) === senderKey(message),
-      ),
+      // Whether its sender is put off is known with the sender (`senderKnown`).
+      deferred: false,
     };
     this.heldMessages.set(held.id, held);
     this.inbox.acknowledge(message, 'held', cause);
     this.scheduleExpiry();
-    void this.nameSender(held, path).then(() => {
-      if (this.heldMessages.get(held.id) === held) {
-        this.emit({ type: 'held', held, count: this.heldMessages.size });
-      }
-    });
+    void this.identifySender(held, path).then(() => this.senderKnown(held));
   }
 
   /**
-   * `name [ref]` of the live session whose record advertises the address the frame named, as a
-   * span: that session wrote its own name, so it is sanitized like any other peer text.
+   * Who sent a held message, from the registry (#651). When a live session of this pid domain
+   * advertises the address the frame named, it is that session, `name [ref]` as a span: it wrote
+   * its own name, so it is sanitized like any other peer text. Otherwise the sender is unverified,
+   * told by its ref, and one with every other unverified sender.
    */
-  private async nameSender(held: HeldPeerMessage, path: string | undefined): Promise<void> {
-    if (path === undefined) return;
-    const listing = await this.senderListing();
-    const row = listing?.peers.find((candidate) => candidate.socketPath === path);
+  private async identifySender(held: HeldPeerMessage, path: string | undefined): Promise<void> {
+    const advertised = (listing: PeerSessionListing | undefined) =>
+      listing?.peers.find((candidate) => candidate.socketPath === path);
+    const row =
+      path === undefined
+        ? undefined
+        : (advertised(await this.senderListing()) ??
+          advertised(await this.senderListing(SENDER_MISS_MAX_AGE_MS)));
+    held.senderVerified = row !== undefined;
     if (row) held.sender = peerTextSpan(peerLabel(row), SENDER_LABEL_CHARS);
+    else if (path !== undefined) held.sender = `an unverified sender [${peerRef(path)}]`;
   }
 
   /**
-   * One registry listing for naming the senders of held messages, read at most every
-   * {@link SENDER_LISTING_MAX_AGE_MS} and shared by every hold meanwhile: a burst of holds costs
-   * one scan, not one each.
+   * A held message's sender is known. One the user denied everything from is refused now — a
+   * sender no live session vouches for can only be told apart here, not on arrival — with no row,
+   * as a refused sender's message is on arrival. Any other is put off when its sender is, and
+   * then the transcript and the sheet hear of it.
    */
-  private senderListing(): Promise<PeerSessionListing | undefined> {
-    if (this.senderNames && this.now() - this.senderNames.readAt < SENDER_LISTING_MAX_AGE_MS) {
+  private senderKnown(held: HeldPeerMessage): void {
+    if (this.heldMessages.get(held.id) !== held) return;
+    const sender = heldSenderKey(held);
+    if (isParityHold(held.cause) && this.refusedSenders.has(sender)) {
+      this.heldMessages.delete(held.id);
+      this.scheduleExpiry();
+      this.refuse(held.message);
+      this.emit({ type: 'holds-changed' });
+      return;
+    }
+    // A sender the user put off stays put off: its next message does not bring the sheet back.
+    held.deferred = this.heldList().some(
+      (candidate) =>
+        candidate !== held && candidate.deferred && heldSenderKey(candidate) === sender,
+    );
+    this.emit({ type: 'held', held, count: this.heldMessages.size });
+  }
+
+  /**
+   * One registry listing for naming the senders of held messages, read at most every `maxAgeMs`
+   * ({@link SENDER_LISTING_MAX_AGE_MS} by default) and shared by every hold meanwhile: a burst of
+   * holds costs one scan, not one each.
+   */
+  private senderListing(
+    maxAgeMs = SENDER_LISTING_MAX_AGE_MS,
+  ): Promise<PeerSessionListing | undefined> {
+    if (this.senderNames && this.now() - this.senderNames.readAt < maxAgeMs) {
       return this.senderNames.listing;
     }
     const readAt = this.now();
@@ -1172,9 +1224,14 @@ export class SessionMessaging implements SessionMessagingHandle {
   }
 }
 
-/** Which sender a message is from, for grouping: its reply address, or none. */
-function senderKey(message: AcceptedPeerMessage): string {
-  return message.from ?? '';
+/**
+ * The sender a held message is grouped, put off and denied under (#651): the socket its frame
+ * names when a live session advertises it, however the address is spelled, and one sender for
+ * every other. Until the registry is read, the socket it names.
+ */
+function heldSenderKey(held: HeldPeerMessage): string {
+  const path = held.senderVerified === false ? undefined : decodeUdsAddress(held.message.from);
+  return path ?? UNVERIFIED_SENDER;
 }
 
 function resolveIn(listing: PeerSessionListing, to: string): PeerAddressResolution {

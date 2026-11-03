@@ -7,6 +7,7 @@ import {
   heldBody,
   holdCauseText,
   peerTextSpan,
+  REOFFER_INTERVAL_MS,
   type HeldPeerMessage,
 } from '../../messaging/hold.js';
 import { ChoiceList, DecisionSheet, type Choice } from './chrome.js';
@@ -14,7 +15,10 @@ import { PANEL_CHROME, frameGrid } from '../layout.js';
 
 interface PeerMessageApprovalPromptProps {
   held: HeldPeerMessage;
-  /** Messages held from this message's sender, this one included: the sheet asks once per sender. */
+  /**
+   * Messages held from this message's sender, this one included: the sheet asks once per sender,
+   * and once for every sender no live session vouches for (#651).
+   */
   fromSender: number;
   /** Messages held from other senders. */
   fromOthers: number;
@@ -43,7 +47,9 @@ function expiryTime(epochMs: number, now = Date.now()): string {
 /**
  * The approval sheet for a peer message the receive policy held (#620 PR 5): deliver it now, deny
  * it, or decide later. Everything the peer wrote is shown as sanitized spans (`peerTextSpan`), so
- * its text cannot draw a choice or a hint of its own.
+ * its text cannot draw a choice or a hint of its own. A message whose address no live session
+ * advertises is asked about with every other such message, as one sender (#651), and the sheet
+ * says so: its Later and its "deny all" cover them all.
  *
  * "Later" is the choice the sheet opens on, no letter key answers it, and it ignores every key for
  * {@link PEER_APPROVAL_ARM_MS} after it appears: a sheet that appears under a typed-ahead Enter,
@@ -61,24 +67,30 @@ export function PeerMessageApprovalPrompt({
   terminalWidth = 80,
 }: PeerMessageApprovalPromptProps) {
   const theme = useTheme();
+  const unverified = held.senderVerified === false;
+  const sender = unverified ? 'unverified senders' : 'this sender';
   const options: Array<{ key: OptionKey; label: string; hint: string }> = [
     {
       key: 'approve',
       label: 'Deliver now',
       hint: 'as a peer turn, under prompting-mode rules',
     },
-    { key: 'deny', label: 'Deny', hint: 'not delivered; its sender is told' },
+    {
+      key: 'deny',
+      label: 'Deny',
+      hint: unverified
+        ? 'not delivered; no live session has its address to tell'
+        : 'not delivered; its sender is told',
+    },
     {
       key: 'deny-sender',
-      label: 'Deny all from this sender',
-      hint: 'and refuse what it sends from the other class from now on',
+      label: `Deny all from ${sender}`,
+      hint: unverified
+        ? 'and refuse what any sends from the other class from now on'
+        : 'and refuse what it sends from the other class from now on',
     },
     { key: 'deny-all', label: 'Deny all held', hint: 'from every sender' },
-    {
-      key: 'later',
-      label: 'Later',
-      hint: `everything from this sender; asked again when idle, expires at ${expiryTime(held.expiresAt)}`,
-    },
+    { key: 'later', label: 'Later', hint: `everything from ${sender}` },
   ];
   const [selected, setSelected, currentSelected] = useKeyState(options.length - 1);
   const shownAt = useRef(Date.now());
@@ -106,8 +118,11 @@ export function PeerMessageApprovalPrompt({
   const width = frameGrid(Math.max(20, Math.floor(terminalWidth))).width;
   const contentWidth = Math.max(12, width - PANEL_CHROME);
   const waiting =
-    (fromSender > 1 ? ` · ${fromSender} held from this sender` : '') +
+    (fromSender > 1 ? ` · ${fromSender} held from ${sender}` : '') +
     (fromOthers > 0 ? ` · ${fromOthers} from others` : '');
+  // Later is offered again no sooner than the interval after it is chosen (#651), so the message
+  // may well expire first: the sheet shows both times.
+  const reofferAt = Date.now() + REOFFER_INTERVAL_MS;
   const choices: Choice[] = options.map((option) => ({
     label: option.label,
     detail: option.hint,
@@ -132,12 +147,21 @@ export function PeerMessageApprovalPrompt({
           {held.claimedName !== undefined ? (
             <Text color={theme.inactive}> (peer claims name: {held.claimedName})</Text>
           ) : null}
-          <Text color={theme.inactive}> · address not verified</Text>
+          <Text color={theme.inactive}>
+            {unverified ? ' · no live session has this address' : ' · address not verified'}
+          </Text>
         </Text>
         <Text wrap="wrap">
           <Text color={theme.inactive}>{'message  '}</Text>
           <Text color={theme.text}>
             {peerTextSpan(heldBody(held.message), APPROVAL_PREVIEW_CHARS)}
+          </Text>
+        </Text>
+        <Text wrap="wrap">
+          <Text color={theme.inactive}>{'expires  '}</Text>
+          <Text color={theme.text}>{expiryTime(held.expiresAt)}</Text>
+          <Text color={theme.inactive}>
+            ; Later asks again when idle, not before {expiryTime(reofferAt)}
           </Text>
         </Text>
       </Box>

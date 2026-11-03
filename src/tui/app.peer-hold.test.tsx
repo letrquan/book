@@ -323,6 +323,26 @@ describe('the held peer message in the TUI', () => {
     await waitFor(() => !words(view.lastFrame()).includes(SHEET));
   });
 
+  it('says when it asks about every sender no live session vouches for, and when it asks again (#651)', async () => {
+    const unverified = [1, 2].map((index) =>
+      Object.assign(heldMessage(`u${index}`, `unverified ${index}`), {
+        senderVerified: false,
+        sender: 'an unverified sender [d4d5d6]',
+        claimedName: undefined,
+      }),
+    );
+    const view = launch(fakeMessaging(unverified));
+    await waitFor(() => words(view.lastFrame()).includes(SHEET));
+    const frame = words(view.lastFrame());
+    expect(frame).toContain('2 held from unverified senders');
+    expect(frame).toContain('no live session has this address');
+    expect(frame).not.toContain('address not verified');
+    expect(frame).toContain('Deny all from unverified senders');
+    expect(frame).toContain('Later asks again when idle, not before');
+    expect(frame).toContain('everything from unverified senders');
+    expect(frame).toContain('not delivered; no live session has its address to tell');
+  });
+
   it('goes away when the message expires unanswered', async () => {
     const { view, messaging } = await heldOnScreen();
     messaging.settle('h1', 'expired', 'timeout');
