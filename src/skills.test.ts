@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
+  chmodSync,
   mkdtempSync,
   writeFileSync,
   rmSync,
@@ -51,8 +52,6 @@ function skill(overrides: Partial<Skill> = {}): Skill {
     invocationCount: 0,
     entryByteSize: 0,
     entryMtimeMs: 0,
-    entryCtimeMs: 0,
-    entryHeaderDigest: 'header',
     resources: [],
     issues: [],
     valid: true,
@@ -649,7 +648,7 @@ describe('the SKILL.md guard against a change after discovery (#647)', () => {
     expect(() => loadSkillBody(review)).toThrow(changed);
   });
 
-  it('refuses an edit whose mtime was put back, through its ctime', async () => {
+  it('refuses an edit whose mtime was put back', async () => {
     const entry = writeEntry();
     const old = new Date(Date.now() - 3_600_000);
     utimesSync(entry, old, old);
@@ -659,25 +658,53 @@ describe('the SKILL.md guard against a change after discovery (#647)', () => {
     expect(() => loadSkillBody(review)).toThrow(changed);
   });
 
-  it('checks the frontmatter of the bytes it loads, where stat cannot tell', () => {
+  it('compares the bytes it loads with the ones discovered, where stat cannot tell', () => {
     const entry = writeEntry();
     const [review] = discoverSkills(dir);
+    writeFileSync(entry, edit(entry, 'Read every line.', 'Skip every line.'));
     // What a same-size edit inside one tick of a coarse clock looks like to `stat`: nothing moved.
-    const unmoved = (): Skill => {
-      const info = statSync(entry);
-      return {
-        ...review,
-        entryByteSize: info.size,
-        entryMtimeMs: info.mtimeMs,
-        entryCtimeMs: info.ctimeMs,
-      };
-    };
+    const info = statSync(entry);
+    const unmoved: Skill = { ...review, entryByteSize: info.size, entryMtimeMs: info.mtimeMs };
 
-    writeFileSync(entry, edit(entry, 'review workflow', 'weiver workflow'));
-    expect(() => loadSkillBody(unmoved())).toThrow(changed);
-    // A body edit leaves the frontmatter discovery vouched for, and the body is read at load.
-    writeFileSync(entry, edit(entry, 'weiver workflow', 'review workflow').replace('Read', 'Skip'));
-    expect(loadSkillBody(unmoved()).body).toBe('Skip every line.');
+    expect(() => loadSkillBody(unmoved)).toThrow(changed);
+  });
+
+  it('still loads a skill whose metadata alone changed', () => {
+    const entry = writeEntry();
+    const [review] = discoverSkills(dir);
+    // A touch and a chmod move mtime and ctime, and leave the bytes discovery read.
+    const later = new Date(Date.now() + 60_000);
+    utimesSync(entry, later, later);
+    chmodSync(entry, 0o600);
+
+    expect(loadSkillBody(review).body).toBe('Read every line.');
+  });
+
+  it('loads a skill whose frontmatter closes on a 4 KiB boundary', () => {
+    const skillDir = join(dir, '.book', 'skills', 'review');
+    mkdirSync(skillDir, { recursive: true });
+    const head = ['---', 'name: review', 'description: Use the review workflow', ''].join('\n');
+    // The closing `---` ends at byte 4096, with its newline at 4097.
+    const padding = `notes: ${'x'.repeat(4096 - head.length - '\n---'.length - 'notes: '.length)}`;
+    const text = `${head}${padding}\n---\nRead every line.`;
+    expect(text.indexOf('\n---\n') + '\n---'.length).toBe(4096);
+    writeFileSync(join(skillDir, 'SKILL.md'), text);
+
+    const [review] = discoverSkills(dir);
+
+    expect(review.valid).toBe(true);
+    expect(loadSkillBody(review).body).toBe('Read every line.');
+  });
+
+  it('guards a descriptor built without discovery by its size and mtime', () => {
+    const entry = writeEntry();
+    const handBuilt: Skill = { ...discoverSkills(dir)[0] };
+    delete handBuilt.entryDigest;
+
+    expect(loadSkillBody(handBuilt).body).toBe('Read every line.');
+    const later = new Date(Date.now() + 60_000);
+    utimesSync(entry, later, later);
+    expect(() => loadSkillBody(handBuilt)).toThrow(changed);
   });
 });
 

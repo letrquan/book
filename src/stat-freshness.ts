@@ -1,7 +1,8 @@
 /**
  * When `stat` alone may vouch for a file's bytes (#647). One rule for every cache that skips a read
  * on unchanged stat facts (the changed-on-disk tracker in `tools/file-changes.ts`, `/rewind`'s code
- * snapshots) and for the skill loaders' check against discovery, so they cannot drift apart.
+ * snapshots), so they cannot drift apart. The skill loaders need none: they read the bytes they
+ * load, and compare those with the digest discovery took instead.
  *
  * The facts are size, mtime and ctime. ctime is among them because a tool that puts mtime back
  * (`cp -p`, `touch -r`, `rsync -t`) cannot put ctime back, and a rename into place gives the file its
@@ -45,7 +46,7 @@ export function statStamp(info: StatFacts, judgedAt: number): StatStamp {
  * Whether `stat` reports the facts recorded: as far as it can tell, nothing wrote, replaced or
  * re-stamped the file since.
  */
-export function sameStatFacts(recorded: StatFacts, current: StatFacts): boolean {
+function sameStatFacts(recorded: StatFacts, current: StatFacts): boolean {
   return (
     recorded.size === current.size &&
     recorded.mtimeMs === current.mtimeMs &&

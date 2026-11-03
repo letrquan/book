@@ -16,7 +16,6 @@ import { parseFrontmatter } from './frontmatter.js';
 import { resolveBookHome } from './book-home.js';
 import { isUserHome, tryRealPath } from './repo-containment.js';
 import type { SkillActivation, SkillExecution } from './settings.js';
-import { sameStatFacts } from './stat-freshness.js';
 import { createUncGuard, reachesUncPath, type UncGuard } from './unc-path.js';
 
 export const SKILL_ENTRY_FILENAME = 'SKILL.md';
@@ -61,7 +60,6 @@ export interface SkillResource {
   relativePath: string;
   byteSize: number;
   mtimeMs: number;
-  ctimeMs: number;
   digest: string;
 }
 
@@ -96,15 +94,13 @@ export interface Skill {
   activation: SkillActivation;
   execution: SkillExecution;
   invocationCount: number;
-  /** The entrypoint's stat facts at discovery: a load refuses a file they no longer describe. */
   entryByteSize: number;
   entryMtimeMs: number;
-  entryCtimeMs: number;
   /**
-   * The digest of the frontmatter block discovery read the descriptor from: a load checks the bytes
-   * it loads against it, since `stat` cannot see a same-size edit inside one tick of a coarse clock.
+   * The digest of the bytes discovery read this descriptor from: a load refuses any others (#647).
+   * Absent from a descriptor built without discovery, which its size and mtime alone guard.
    */
-  entryHeaderDigest: string;
+  entryDigest?: string;
   resources: SkillResource[];
   issues: SkillIssue[];
   valid: boolean;
@@ -279,47 +275,56 @@ export function skillRoots(
   return [...byPath.values()];
 }
 
-/** The frontmatter block a SKILL.md opens with, both delimiters included. */
-const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/;
+/** The most of a SKILL.md that is read: a valid one is never longer. */
+const MAX_SKILL_ENTRY_BYTES = MAX_SKILL_BODY_BYTES + MAX_SKILL_HEADER_BYTES;
 
-function frontmatterBlock(text: string): string | undefined {
-  return FRONTMATTER_BLOCK.exec(text)?.[0];
+/**
+ * A SKILL.md's bytes, at most one past {@link MAX_SKILL_ENTRY_BYTES}. Discovery takes a skill's
+ * descriptor and digest from one such read, and a load compares its own read with that digest, so
+ * the frontmatter a skill runs under is always the one in the bytes it loads.
+ */
+function readSkillEntry(path: string): Buffer {
+  const fd = openSync(path, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(MAX_SKILL_ENTRY_BYTES + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const count = readSync(fd, buffer, total, buffer.length - total, total);
+      if (count === 0) break;
+      total += count;
+    }
+    return buffer.subarray(0, total);
+  } finally {
+    closeSync(fd);
+  }
 }
 
-function digestOf(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
+function digestOf(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
-function readFrontmatterPrefix(path: string): {
+/** The frontmatter a SKILL.md opens with, looked for in its first {@link MAX_SKILL_HEADER_BYTES}. */
+function frontmatterOf(entry: Buffer): {
   frontmatter: Record<string, unknown>;
   headerText: string;
   issues: SkillIssue[];
 } {
-  const issues: SkillIssue[] = [];
-  const fd = openSync(path, 'r');
-  const chunks: Buffer[] = [];
-  let total = 0;
-  try {
-    while (total < MAX_SKILL_HEADER_BYTES) {
-      const chunk = Buffer.alloc(Math.min(4096, MAX_SKILL_HEADER_BYTES - total));
-      const count = readSync(fd, chunk, 0, chunk.length, total);
-      if (count === 0) break;
-      chunks.push(chunk.subarray(0, count));
-      total += count;
-      const headerText = frontmatterBlock(Buffer.concat(chunks).toString('utf8'));
-      if (headerText !== undefined) {
-        return { frontmatter: parseFrontmatter(headerText).frontmatter, headerText, issues };
-      }
-    }
-  } finally {
-    closeSync(fd);
+  const prefix = entry.subarray(0, MAX_SKILL_HEADER_BYTES).toString('utf8');
+  const headerText = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(prefix)?.[0];
+  if (headerText !== undefined) {
+    return { frontmatter: parseFrontmatter(headerText).frontmatter, headerText, issues: [] };
   }
-  issues.push({
-    code: 'invalid_frontmatter',
-    message: `Missing YAML frontmatter or closing delimiter within ${MAX_SKILL_HEADER_BYTES} bytes.`,
-    severity: 'error',
-  });
-  return { frontmatter: {}, headerText: '', issues };
+  return {
+    frontmatter: {},
+    headerText: '',
+    issues: [
+      {
+        code: 'invalid_frontmatter',
+        message: `Missing YAML frontmatter or closing delimiter within ${MAX_SKILL_HEADER_BYTES} bytes.`,
+        severity: 'error',
+      },
+    ],
+  };
 }
 
 function stringField(frontmatter: Record<string, unknown>, name: string): string | undefined {
@@ -458,7 +463,6 @@ function collectResources(
         relativePath: relative(rootPath, fullPath).split(sep).join('/'),
         byteSize: info.size,
         mtimeMs: info.mtimeMs,
-        ctimeMs: info.ctimeMs,
         digest,
       });
     }
@@ -480,7 +484,8 @@ function descriptorFromEntry(
   directoryName: string,
   flat = false,
 ): Skill {
-  const { frontmatter, headerText, issues: headerIssues } = readFrontmatterPrefix(entryPath);
+  const entryBytes = readSkillEntry(entryPath);
+  const { frontmatter, headerText, issues: headerIssues } = frontmatterOf(entryBytes);
   const issues = [...headerIssues];
   const declaredName = stringField(frontmatter, 'name');
   const name = declaredName ?? directoryName;
@@ -559,12 +564,10 @@ function descriptorFromEntry(
 
   let entryByteSize = 0;
   let entryMtimeMs = 0;
-  let entryCtimeMs = 0;
   try {
     const entryInfo = statSync(entryPath);
     entryByteSize = entryInfo.size;
     entryMtimeMs = entryInfo.mtimeMs;
-    entryCtimeMs = entryInfo.ctimeMs;
     if (entryByteSize > MAX_SKILL_BODY_BYTES + MAX_SKILL_HEADER_BYTES) {
       issues.push({
         code: 'body_too_large',
@@ -631,8 +634,7 @@ function descriptorFromEntry(
     invocationCount: 0,
     entryByteSize,
     entryMtimeMs,
-    entryCtimeMs,
-    entryHeaderDigest: digestOf(headerText),
+    ...(entryBytes.length <= MAX_SKILL_ENTRY_BYTES ? { entryDigest: digestOf(entryBytes) } : {}),
     resources: resourceResult.resources,
     issues,
     valid: !issues.some((issue) => issue.severity === 'error'),
@@ -740,21 +742,19 @@ export function loadSkillBody(skill: Skill): LoadedSkillBody {
   }
   const changed = () =>
     new Error(`Skill "${skill.name}" changed after discovery; reload skills before use.`);
-  const discovered = {
-    size: skill.entryByteSize,
-    mtimeMs: skill.entryMtimeMs,
-    ctimeMs: skill.entryCtimeMs,
-  };
-  if (!sameStatFacts(discovered, statSync(canonicalEntry))) throw changed();
-  const buffer = readFileSync(canonicalEntry);
+  const current = statSync(canonicalEntry);
+  // A new size is a change, refused before a read. Bytes of the same size are compared with the
+  // ones discovery read the descriptor from: no timestamp can tell a same-size edit inside one tick
+  // of a coarse clock, or one whose mtime was put back (#647), and a chmod or a touch moves them
+  // without a change. A descriptor built without discovery has no digest; its mtime stands in.
+  if (current.size !== skill.entryByteSize) throw changed();
+  if (skill.entryDigest === undefined && current.mtimeMs !== skill.entryMtimeMs) throw changed();
+  const buffer = readSkillEntry(canonicalEntry);
+  if (skill.entryDigest !== undefined && digestOf(buffer) !== skill.entryDigest) throw changed();
   if (buffer.includes(0)) {
     throw new Error(`Skill "${skill.name}" contains binary content.`);
   }
   const raw = buffer.toString('utf8');
-  // Equal stat facts cannot tell a same-size edit inside one tick of a coarse clock, or one made
-  // while discovery read the file (#647), so the bytes loaded must still carry the frontmatter the
-  // descriptor (its name, tools, execution) was read from. The body is always the one loaded now.
-  if (digestOf(frontmatterBlock(raw) ?? '') !== skill.entryHeaderDigest) throw changed();
   const { body } = parseFrontmatter(raw);
   const byteSize = Buffer.byteLength(body);
   if (byteSize > MAX_SKILL_BODY_BYTES) {

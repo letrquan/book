@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  appendFileSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -27,13 +28,15 @@ import type { SessionRuntime } from '../session/runtime.js';
 
 /**
  * Every path the tracker opens to read, so a test can tell a cached verdict from a fresh read; the
- * bytes read through each handle; and a hook run just before an open, where a racing process
- * would act between the tracker's checks and the open.
+ * bytes read through each handle; and hooks run where a racing process would act: just before an
+ * open (between the tracker's checks and the open), and just after a handle's stat (before the
+ * read).
  */
 const opened = vi.hoisted(() => ({
   paths: [] as string[],
   bytes: new Map<string, number>(),
   before: undefined as ((path: string) => void) | undefined,
+  afterStat: undefined as ((path: string) => void) | undefined,
 }));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -46,11 +49,17 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       opened.paths.push(path);
       opened.before?.(path);
       const handle = await actual.open(...args);
+      const stat = handle.stat.bind(handle) as (...rest: unknown[]) => Promise<unknown>;
       const read = handle.read.bind(handle) as (
         ...rest: unknown[]
       ) => Promise<{ bytesRead: number }>;
       const readFile = handle.readFile.bind(handle) as (...rest: unknown[]) => Promise<Buffer>;
       return Object.assign(handle, {
+        stat: async (...rest: unknown[]) => {
+          const result = await stat(...rest);
+          opened.afterStat?.(path);
+          return result;
+        },
         read: async (...rest: unknown[]) => {
           const result = await read(...rest);
           tally(path, result.bytesRead);
@@ -75,6 +84,7 @@ let ctx: ToolContext;
 
 beforeEach(() => {
   opened.before = undefined;
+  opened.afterStat = undefined;
   opened.bytes.clear();
   workspace = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-file-changes-')));
   tracker = new FileChangeTracker();
@@ -351,15 +361,32 @@ describe('changed-on-disk detection (#620 4a)', () => {
     const key = 'sk-live-0123456789abcdef';
     const file = write('.env', 'A=1\n');
     await observeFile(ctx, file, 'read');
-    writeFileSync(file, `A=1\nKEY=${key.slice(0, 8)}\u200b${key.slice(8)}\n`);
+    // A zero-width space, a bidi mark, a bidi isolate and a Unicode tag character.
+    const marks = ['\u200b', '\u200e', '\u2067', '\u{e0041}'];
+    const spellings = marks.map((mark) => `KEY=${key.slice(0, 8)}${mark}${key.slice(8)}`);
+    writeFileSync(file, `A=1\n${spellings.join('\n')}\n`);
 
     const [changed] = (await tracker.collect({ ledger, workspace, secrets: [key] })).files;
-    // Each line as the prompt shows it: the zero-width space stripped, which joins the key up.
+    // Each line as the prompt shows it: the invisible characters gone, which joins each key up.
     const shown = changed!.snippet!.map(promptSpan).join('\n');
 
-    expect(shown).toContain('+KEY=');
-    expect(shown).not.toContain(key);
-    expect(shown).not.toContain(key.slice(8));
+    expect(shown.match(/\+KEY=/g)).toHaveLength(marks.length);
+    expect(shown.replace(/\s+/g, '')).not.toContain(key.slice(8));
+  });
+
+  it('leaves the diff out while a line spells a key split by a space or a control (#649)', async () => {
+    const key = 'sk-live-0123456789abcdef';
+    const files = [' ', '\u0001'].map((mark, index) => ({
+      file: write(`${index}.env`, 'A=1\n'),
+      text: `A=1\nKEY=${key.slice(0, 8)}${mark}${key.slice(8)}\n`,
+    }));
+    for (const { file } of files) await observeFile(ctx, file, 'read');
+    for (const { file, text } of files) writeFileSync(file, text);
+
+    const changed = (await tracker.collect({ ledger, workspace, secrets: [key] })).files;
+
+    expect(changed).toHaveLength(2);
+    expect(changed.every((entry) => entry.snippet === undefined)).toBe(true);
   });
 });
 
@@ -390,6 +417,29 @@ describe('the changed-on-disk read reaches only the observed file (#648)', () =>
 
     expect(await collect()).toEqual([]);
     expect(opened.bytes.get(file) ?? 0).toBe(0);
+  });
+
+  it('reads a file appended to after its stat to its end', async () => {
+    const file = write('dev.log', 'one\n');
+    await observeFile(ctx, file, 'read');
+    opened.afterStat = (path) => {
+      if (path === file) appendFileSync(file, 'two\n');
+    };
+
+    const [changed] = await collect();
+
+    expect(changed!.snippet).toContain('+two');
+  });
+
+  it('stops one byte past the cap when a file grows past it while it is read', async () => {
+    const file = write('a.txt', 'one\n');
+    await observeFile(ctx, file, 'read');
+    opened.afterStat = (path) => {
+      if (path === file) truncateSync(file, MAX_JUDGED_BYTES + 2);
+    };
+
+    expect(await collect()).toEqual([]);
+    expect(opened.bytes.get(file)).toBe(MAX_JUDGED_BYTES + 1);
   });
 
   it('reads nothing through a directory swapped for a link between its checks and the open', async () => {

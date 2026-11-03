@@ -355,6 +355,20 @@ function reusable(cached: CachedSnapshotEntry, entry: WalkedEntry): boolean {
   );
 }
 
+/** The cache entry for an entry a capture just read, stamped with that capture's judgment. */
+function cacheEntry(
+  entry: WalkedEntry,
+  snapshotEntry: RewindSnapshotEntry,
+  judgedAt: number,
+): CachedSnapshotEntry {
+  return {
+    kind: entry.kind,
+    mode: entry.mode,
+    stamp: statStamp(walkedFacts(entry), judgedAt),
+    snapshotEntry,
+  };
+}
+
 export interface RewindSnapshotStoreOptions {
   /** The wall clock a capture is stamped with; a test moves it. */
   now?: () => number;
@@ -567,12 +581,7 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
           mode: entry.mode,
         };
         entries.push(snapshotEntry);
-        nextCache.set(entry.path, {
-          kind: entry.kind,
-          mode: entry.mode,
-          stamp: statStamp(walkedFacts(entry), judgedAt),
-          snapshotEntry,
-        });
+        nextCache.set(entry.path, cacheEntry(entry, snapshotEntry, judgedAt));
       }
 
       const manifest: RewindSnapshotManifest = {
@@ -663,12 +672,7 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
           mode: entry.mode,
         };
         entries.push(snapshotEntry);
-        nextCache.set(entry.path, {
-          kind: entry.kind,
-          mode: entry.mode,
-          stamp: statStamp(walkedFacts(entry), judgedAt),
-          snapshotEntry,
-        });
+        nextCache.set(entry.path, cacheEntry(entry, snapshotEntry, judgedAt));
       }
 
       const manifest: RewindSnapshotManifest = {

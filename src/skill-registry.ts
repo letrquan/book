@@ -14,7 +14,6 @@ import {
   type SkillListingResult,
   skillListingBudgetChars,
 } from './skills.js';
-import { sameStatFacts } from './stat-freshness.js';
 import { reachesUncPath } from './unc-path.js';
 
 export type SkillActivationReason = 'model' | 'user' | 'workflow' | 'subagent-preload';
@@ -542,14 +541,10 @@ export class SkillRegistry {
     }
     const resourceInfo = statSync(canonical);
     const byteSize = resourceInfo.size;
-    // Its facts at discovery, ctime included (#647): `touch -r` cannot put that back. A same-size
-    // edit `stat` cannot see is still refused by the content digest below.
-    const discovered = {
-      size: declared.byteSize,
-      mtimeMs: declared.mtimeMs,
-      ctimeMs: declared.ctimeMs,
-    };
-    if (!sameStatFacts(discovered, resourceInfo)) {
+    // A new size is a change, refused before a read. Bytes of the same size go to the content
+    // digest below instead of a timestamp check (#647): a same-size edit whose mtime was put back
+    // is refused there, while a chmod or a touch leaves the resource readable.
+    if (byteSize !== declared.byteSize) {
       throw new SkillRegistryError(
         'skill_resource_changed',
         `Skill resource changed after discovery; reload skills before reading: ${normalized}`,

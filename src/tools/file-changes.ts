@@ -126,28 +126,44 @@ async function holdsVettedFile(path: string, vetted: Stats, held: Stats): Promis
 }
 
 /**
- * The `size` bytes an opened file holds, or `undefined` when it grew or shrank while it was read
- * (it is judged again next turn). Never reads more than one byte past `size`, which tells growth
- * apart from the end of the file.
+ * An opened file's bytes, read to its end however far that is from the size its handle reported
+ * (a log being appended to, a stale size on a network mount), or `undefined` once they run past
+ * the cap: never more than one byte past it is read.
  */
-async function readExactly(handle: FileHandle, size: number): Promise<Buffer | undefined> {
-  const buffer = Buffer.allocUnsafe(size + 1);
+async function readCapped(handle: FileHandle, size: number): Promise<Buffer | undefined> {
+  let buffer = Buffer.allocUnsafe(Math.min(size, MAX_JUDGED_BYTES) + 1);
   let total = 0;
-  while (total < buffer.length) {
+  for (;;) {
+    if (total === buffer.length) {
+      if (total > MAX_JUDGED_BYTES) return undefined;
+      const grown = Buffer.allocUnsafe(Math.min(buffer.length * 2, MAX_JUDGED_BYTES + 1));
+      buffer.copy(grown, 0, 0, total);
+      buffer = grown;
+    }
     const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
-    if (bytesRead === 0) break;
+    if (bytesRead === 0) return buffer.subarray(0, total);
     total += bytesRead;
   }
-  return total === size ? buffer.subarray(0, size) : undefined;
+}
+
+/** Invisible format characters: zero-width spaces and joiners, bidi marks, Unicode tag text. */
+const FORMAT_CHARACTERS = /\p{Cf}/gu;
+
+/** Whether a line still spells one of the keys once its whitespace is gone. */
+function spellsSecret(line: string, secrets: readonly string[]): boolean {
+  const squeezed = line.replace(/\s+/g, '');
+  return secrets.some((secret) => secret !== '' && squeezed.includes(secret));
 }
 
 /**
  * The change as a diff of at most {@link MAX_CHANGE_SNIPPET_LINES} lines, or `undefined` when it
  * is longer. The changed span is measured first, so a large rewrite is never diffed at all.
- * Each line is made plain first, as the prompt will show it (`plainSpan`), and only then are
- * provider keys redacted, before a long line is cut: a key with a zero-width space inside does not
- * match the redaction, and removing that space later would join it back up; a key the cut would
- * split cannot escape the redaction by half.
+ * Each line is made plain first, as the prompt will show it (`plainSpan`), with every invisible
+ * format character removed outright (`plainSpan` would fold a bidi mark to a space), and only then
+ * are provider keys redacted, before a long line is cut. So a key with an invisible character
+ * inside cannot pass the redaction to be joined up in the prompt, and a key the cut would split
+ * cannot escape it by half. A line that still spells a key split by a space or a control character
+ * leaves the diff out.
  */
 export function changeSnippet(
   before: string,
@@ -170,9 +186,10 @@ export function changeSnippet(
   if (changed === 0 || changed >= MAX_CHANGE_SNIPPET_LINES) return undefined;
   const diff = renderDiff(before, after, 1);
   if (!diff) return undefined;
-  const plain = diff.split('\n').map(plainSpan).join('\n');
-  const lines = redactSecrets(plain, secrets).split('\n');
+  const plain = diff.split('\n').map((line) => plainSpan(line.replace(FORMAT_CHARACTERS, '')));
+  const lines = redactSecrets(plain.join('\n'), secrets).split('\n');
   if (lines.length > MAX_CHANGE_SNIPPET_LINES) return undefined;
+  if (lines.some((line) => spellsSecret(line, secrets))) return undefined;
   return lines.map((line) => Array.from(line).slice(0, MAX_SNIPPET_LINE_CHARS).join(''));
 }
 
@@ -353,7 +370,7 @@ export class FileChangeTracker {
         // Another file than the one checked, or one past the cap: not read, and judged next turn.
         if (!(await holdsVettedFile(absolutePath, vetted, held))) return undefined;
         if (held.size > MAX_JUDGED_BYTES) return undefined;
-        const read = await readExactly(handle, held.size);
+        const read = await readCapped(handle, held.size);
         if (!read) return undefined;
         bytes = read;
       } finally {

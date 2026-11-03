@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -235,7 +236,7 @@ describe('SkillRegistry', () => {
     );
   });
 
-  it('refuses a resource whose mtime was put back on its ctime, before reading it (#647)', async () => {
+  it('reads a resource whose metadata alone changed, and refuses one whose bytes did (#647)', async () => {
     const root = writeSkill('review', {
       resources: { 'references/checklist.md': 'original-content' },
     });
@@ -244,11 +245,18 @@ describe('SkillRegistry', () => {
     utimesSync(path, old, old);
     const skills = registry();
     skills.activate('review', 'user', 0);
-    await rewriteRestoringMtime(path, 'replaced-content', old);
 
-    // The stat refusal, not the content check that reads the bytes behind it.
-    expect(() => skills.readResource('review', 'references/checklist.md')).toThrow(
-      /^Skill resource changed after discovery/,
+    // A touch and a chmod move mtime and ctime, and leave the bytes the digest was taken from.
+    const later = new Date(Date.now() + 60_000);
+    utimesSync(path, later, later);
+    chmodSync(path, 0o600);
+    expect(skills.readResource('review', 'references/checklist.md').content).toBe(
+      'original-content',
+    );
+    // A same-size edit whose mtime was put back (`touch -r`) moves nothing a size check sees.
+    await rewriteRestoringMtime(path, 'replaced-content', later);
+    expect(() => skills.readResource('review', 'references/checklist.md')).toThrowError(
+      expect.objectContaining<Partial<SkillRegistryError>>({ code: 'skill_resource_changed' }),
     );
   });
 

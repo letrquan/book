@@ -24,8 +24,6 @@ describe('buildSkillReport', () => {
           invocationCount: 0,
           entryByteSize: 10,
           entryMtimeMs: 1,
-          entryCtimeMs: 1,
-          entryHeaderDigest: 'header',
           resources: [],
           issues: [{ code: 'bad', message: 'Broken', severity: 'error' }],
           valid: false,

@@ -26,8 +26,6 @@ function skill(overrides: Partial<Skill> = {}): Skill {
     invocationCount: 0,
     entryByteSize: 0,
     entryMtimeMs: 0,
-    entryCtimeMs: 0,
-    entryHeaderDigest: 'header',
     resources: [],
     issues: [],
     valid: true,
@@ -108,13 +106,7 @@ describe('SkillManager', () => {
     const detailed = skill({
       compatibility: 'Requires git',
       resources: [
-        {
-          relativePath: 'references/checklist.md',
-          byteSize: 12,
-          mtimeMs: 1,
-          ctimeMs: 1,
-          digest: 'digest',
-        },
+        { relativePath: 'references/checklist.md', byteSize: 12, mtimeMs: 1, digest: 'digest' },
       ],
       shadowed: [
         {
