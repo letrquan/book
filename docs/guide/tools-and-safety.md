@@ -1168,7 +1168,8 @@ command started is bound back into it: read-only, or writable where an `allowWri
 A symlink is recreated as a link with the same target, so it resolves inside the sandbox exactly as
 it did before; it is never bound from the host, where a link to `~/.ssh` would bring the home's keys
 in. A directory bound back is a live view, so a file the host adds _inside_ `.book/agents/` shows up,
-but an entry the host adds to `.book/` itself after the command started does not.
+but an entry the host adds to `.book/` itself after the command started does not, and one that is
+gone by the time the command starts (a temp file another writer just renamed) is left out.
 
 `settings.local.json`, which can hold a provider key, is never bound in, and neither is any other
 entry whose name contains it: the `.settings.local.json.<pid>.<uuid>.tmp` file Book's settings
@@ -1177,13 +1178,16 @@ backup copy. Inside the sandbox the file has no name at all, so nothing the host
 command runs reaches that command: not a save that replaces it (the writer's temp file and rename),
 and not a first save that creates it. Before issue 633 the file was masked with `/dev/null`, a
 mount on the file's directory entry, and a rename over the path installed a new entry the mask did
-not cover: a polling background command could read a key saved mid-session.
+not cover: a polling background command could read a key saved mid-session. On macOS the same
+names are denied by pattern instead (see [macOS (Seatbelt)](#macos-seatbelt)).
 
-The directory itself stays read-only whatever the policy says. An `allowWrite` entry naming
-`<workspace>/.book` makes every entry in it writable, but a command still cannot add, remove or
-rename an entry in `.book/`, so Book's own settings writer (a temp file beside the target, then a
-rename) cannot run inside the sandbox. A `.book/` with more than 256 entries is refused rather than
-bound one by one, since each entry is a mount of its own.
+Under bubblewrap the directory itself stays read-only whatever the policy says. An `allowWrite`
+entry naming `<workspace>/.book` makes every entry in it writable, but a command still cannot add,
+remove or rename an entry in `.book/`, so Book's own settings writer (a temp file beside the target,
+then a rename) cannot run inside the sandbox. A `.book/` with more than 256 entries is refused rather
+than bound one by one, since each entry is a mount of its own. An `allowWrite` entry spelled through
+a link to somewhere in the workspace is bound at the workspace's own spelling, where these
+protections are, rather than at a second spelling none of them covers.
 
 A git dir is found by following a `.git` **file** (`gitdir: …`), a `commondir` file,
 `.git/worktrees/*`, and nested `.git/modules/*` — including a submodule path with several segments,
@@ -1280,10 +1284,13 @@ same resolved policy the bubblewrap argv is built from — the workspace, the pr
 above, and `sandbox.filesystem` — and starts from `(deny default)`:
 
 - **Writes** reach the workspace, the `allowWrite` entries, and the temp directories (see below).
-  The control files in the table above are read-only in both modes, `.book/settings.local.json` is
-  unreadable as well, and an `allowWrite` opt-in reopens what it names exactly as it does under
-  bubblewrap. A denied write fails with `Operation not permitted` rather than `Read-only file
-system`; the read-only git directory note is appended for it all the same.
+  The control files in the table above are read-only in both modes, and an `allowWrite` opt-in
+  reopens what it names as it does under bubblewrap (`.book` itself included: Seatbelt denies by
+  path, so the directory need not stay read-only). Every name in `.book/` that carries
+  `settings.local.json` is unreadable and unwritable as well, whether or not it exists yet, so a
+  first save made while a command runs, the settings writer's temp file, its lock and an editor's
+  copy are all out of reach (issue 633). A denied write fails with `Operation not permitted` rather
+  than `Read-only file system`; the read-only git directory note is appended for it all the same.
 - **Reads** cover what bubblewrap mounts: the system directories (`/usr`, `/bin`, `/sbin`, `/opt`,
   `/System`, `/Library`, `/Applications`, `/private/etc`), the workspace, and the `allowWrite` paths.
   The home directory is not readable, as it is not mounted under bubblewrap — `~/.book`, `~/.ssh`
@@ -1305,7 +1312,8 @@ system`; the read-only git directory note is appended for it all the same.
   renamed, removed or replaced (issue 652): the per-user `T` sits in a directory you own, and a
   command that moved it aside and put a symlink to the workspace in its place would have Book create
   its own entries where sandboxed commands write. Book also resolves `os.tmpdir()` once at startup
-  and refuses to create one of its own entries once it resolves anywhere else.
+  and refuses to create one of its own entries once it resolves anywhere else, or when it did not
+  exist at startup: a directory that only appears later may be one a sandboxed command made.
 - **Network** is the host's unless a domain rule is declared, in which case every socket is denied
   (below). Even when it is shared, a command can connect only to unix-domain sockets inside the
   workspace or an `allowWrite` path, plus the system DNS resolver: the ssh-agent, Docker and other
@@ -1359,7 +1367,7 @@ sandbox at all, so a session that refused unsandboxed commands still ran its che
 
 Entries may start with `~`. Paths that do not exist are skipped — bubblewrap rejects a bind with a missing source — and the skipped entries are reported once at startup and by `book doctor`, since a skipped rule is policy you might otherwise believe is active. On macOS the same entries become Seatbelt rules: `denyWrite` not writable, `denyRead` neither readable nor writable, and missing paths are skipped the same way.
 
-`denyWrite` only ever takes write access away; it never shows a path the sandbox did not already show. An entry inside the workspace or an `allowWrite` root is bound read-only, a writable root inside an entry becomes read-only, and an entry anywhere else changes nothing, because it was already invisible or read-only. Under bubblewrap every directory between that root and the entry is pinned with a writable self-bind, as for the control files, so `mv conf conf-old && mkdir -p conf/locked` fails with `EBUSY` instead of putting a fresh directory where the protected entry was (issue 634). Before issue 625, bubblewrap bound the real path read-only wherever it was. So `denyWrite: ["~"]`, which a workspace settings layer may add, showed the whole home directory to sandboxed commands, and `["/"]` overlaid the host's `/proc` and `/tmp`. To make a toolchain outside the workspace usable inside the sandbox, list it in `allowWrite` from your own settings.
+`denyWrite` only ever takes write access away; it never shows a path the sandbox did not already show. An entry inside the workspace or an `allowWrite` root is bound read-only, a writable root inside an entry becomes read-only, and an entry anywhere else changes nothing, because it was already invisible or read-only. Under bubblewrap every directory between that root and the entry is pinned with a writable self-bind, as for the control files, so `mv conf conf-old && mkdir -p conf/locked` fails with `EBUSY` instead of putting a fresh directory where the protected entry was (issue 634). The writable binds are made shallowest first, so an `allowWrite` root above the workspace does not cover these pins, the control files' pins, or the workspace root itself, which stays un-renameable too. Before issue 625, bubblewrap bound the real path read-only wherever it was. So `denyWrite: ["~"]`, which a workspace settings layer may add, showed the whole home directory to sandboxed commands, and `["/"]` overlaid the host's `/proc` and `/tmp`. To make a toolchain outside the workspace usable inside the sandbox, list it in `allowWrite` from your own settings.
 
 `sandbox.network` **fails closed**. Neither bubblewrap nor Seatbelt has DNS or per-domain filtering, so each can only share or deny the network as a whole. If `allowedDomains` or `deniedDomains` contains anything, Book cannot honour the rule as written and disables network access entirely for sandboxed commands, with a warning. Leave both empty to share the host network.
 

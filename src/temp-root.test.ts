@@ -2,6 +2,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { socketDirCandidates } from './messaging/socket-dir.js';
 import { createEphemeralRewindEnvironment } from './rewind/environment.js';
 import { checkTempRoot, trustedTempRoot } from './temp-root.js';
 
@@ -22,8 +23,10 @@ describe('checkTempRoot', () => {
     expect(() => checkTempRoot('/private/var/folders/x/T', null, '/var/x/T')).toThrow(
       /no longer resolves/,
     );
+    // Not re-resolved: a directory that only appears later may be one a sandboxed
+    // command made, so the message says what to do rather than blaming a move.
     expect(() => checkTempRoot(null, '/private/var/folders/x/T', '/var/x/T')).toThrow(
-      /did not resolve/,
+      /\/var\/x\/T: it did not exist when Book started.*restart Book/,
     );
   });
 });
@@ -68,6 +71,20 @@ describe('trustedTempRoot', () => {
     moveTempDirectory();
 
     expect(() => createEphemeralRewindEnvironment(workspace)).toThrow(
+      /Refusing to create Book's temporary files/,
+    );
+  });
+
+  it("drops the inbox's temp fallback, and keeps its other candidates, once the temp root moved", () => {
+    moveTempDirectory();
+
+    // The other candidates are tried as before; without one, the refusal stands.
+    expect(
+      socketDirCandidates({ env: { BOOK_HOME: '/book-home' }, uid: 7, platform: 'linux' }).map(
+        (candidate) => candidate.source,
+      ),
+    ).toEqual(['book-home']);
+    expect(() => socketDirCandidates({ env: {}, uid: 7, platform: 'darwin' })).toThrow(
       /Refusing to create Book's temporary files/,
     );
   });

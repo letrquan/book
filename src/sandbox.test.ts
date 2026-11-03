@@ -438,7 +438,8 @@ describe('buildSandboxExecution workspace control files', () => {
   function accessAt(args: string[], target: string): Access {
     const mounts: Array<{ at: string; access: Access }> = [];
     for (let i = 0; i < args.length && args[i] !== '--'; i++) {
-      const flag = args[i];
+      // `-try` binds mount like the others; they only skip a missing source.
+      const flag = args[i].replace(/-try$/, '');
       if (flag === '--bind' || flag === '--ro-bind' || flag === '--symlink') {
         const [source, at] = [args[i + 1], args[i + 2]];
         i += 2;
@@ -2117,6 +2118,9 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(accessAt(exec.args, '/work/.book/settings.json')).toBe('read-only');
       expect(accessAt(exec.args, '/work/.book/agents')).toBe('read-only');
       expect(accessAt(exec.args, '/work/.book/agents/reviewer.md')).toBe('read-only');
+      // `-try`: an entry gone between the listing and the mount (the settings
+      // writer's temp file for settings.json) is left out, not an abort.
+      expect(lastMountFor(exec.args, '/work/.book/settings.json').flag).toBe('--ro-bind-try');
       // The remount comes after the binds back, whose mount points bwrap creates
       // in the tmpfs while it is still writable.
       expect(lastMountFor(exec.args, '/work/.book').flag).toBe('--remount-ro');
@@ -2219,6 +2223,26 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(accessAt(exec.args, '/work/.book/settings.local.json')).toBe('absent');
     });
 
+    it('drops a denyRead entry that reaches the hidden file through a link, too', () => {
+      // A workspace layer may add deny entries, so a repository could ship
+      // `bk -> .book` and deny `bk/settings.local.json`: bwrap would resolve that
+      // into the read-only tmpfs, fail to create the mount point, and abort every
+      // sandboxed command in the workspace.
+      const settings = sandboxSettings();
+      settings.filesystem.denyRead = ['/work/bk/settings.local.json'];
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        settings,
+        hostWith(settingsTree({ '/work/bk': 'symlink' }), {}, { '/work/bk': '/work/.book' }),
+      );
+
+      expect(exec.args).not.toContain('/work/bk/settings.local.json');
+      expect(accessAt(exec.args, '/work/.book/settings.local.json')).toBe('absent');
+    });
+
     it('still masks a denyRead entry that the view bound back', () => {
       const settings = sandboxSettings();
       settings.filesystem.denyRead = ['/work/.book/agents', '/work/.book/settings.json'];
@@ -2246,6 +2270,36 @@ describe('buildSandboxExecution workspace control files', () => {
 
       expect(accessAt(exec.args, '/work/.book')).toBe('empty-read-only');
       expect(accessAt(exec.args, '/work/.book/settings.local.json')).toBe('absent');
+    });
+
+    it('treats an opt-in spelled through a link to the workspace as the workspace .book', () => {
+      // The workspace is reached as /l/ws, a link to /data/ws. An opt-in on the
+      // real spelling used to bind the live directory at /data/ws/.book, a second
+      // view with the local settings in it.
+      const settings = sandboxSettings();
+      settings.filesystem.allowWrite = ['/data/ws/.book'];
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        '/l/ws',
+        settings,
+        hostWith(
+          {
+            '/data/ws': 'dir',
+            '/data/ws/.book': 'dir',
+            '/data/ws/.book/settings.json': 'file',
+            '/data/ws/.book/settings.local.json': 'file',
+            '/l': 'symlink',
+          },
+          {},
+          { '/l': '/data' },
+        ),
+      );
+
+      expect(exec.args.some((arg) => arg.startsWith('/data'))).toBe(false);
+      expect(accessAt(exec.args, '/l/ws/.book/settings.json')).toBe('writable');
+      expect(accessAt(exec.args, '/l/ws/.book/settings.local.json')).toBe('absent');
     });
 
     it('refuses a .book that holds more entries than it binds one by one', () => {
@@ -2325,6 +2379,35 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(lastMountFor(exec.args, '/work/.git').flag).toBe('--ro-bind');
       expect(exec.args).not.toContain('/work/.git/objects');
       expect(accessAt(exec.args, '/work/.git/objects')).toBe('read-only');
+    });
+
+    it('keeps the workspace and its pins mount points under an allowWrite root above it', () => {
+      // A bind from the host covers every mount below it: with the broad root
+      // bound after them, `mv conf conf-old` (or `mv <workspace> …`) worked again.
+      const settings = sandboxSettings();
+      settings.filesystem.allowWrite = ['/srv/proj'];
+      settings.filesystem.denyWrite = ['/srv/proj/app/conf/locked'];
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        '/srv/proj/app',
+        settings,
+        hostWith({
+          '/srv/proj': 'dir',
+          '/srv/proj/app': 'dir',
+          '/srv/proj/app/conf': 'dir',
+          '/srv/proj/app/conf/locked': 'dir',
+        }),
+      );
+
+      const broad = lastMountFor(exec.args, '/srv/proj').index;
+      expect(lastMountFor(exec.args, '/srv/proj/app').index).toBeGreaterThan(broad);
+      expect(lastMountFor(exec.args, '/srv/proj/app/conf').flag).toBe('--bind');
+      expect(lastMountFor(exec.args, '/srv/proj/app/conf').index).toBeGreaterThan(
+        lastMountFor(exec.args, '/srv/proj/app').index,
+      );
+      expect(accessAt(exec.args, '/srv/proj/app/conf/locked')).toBe('read-only');
     });
 
     it('pins between an allowWrite root and the entry in it, after the root', () => {
@@ -3931,6 +4014,30 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
         }
       });
 
+      it('runs, with the key hidden, when a denyRead entry reaches the file through a link', async () => {
+        // A workspace layer may add deny entries. Mounting this one would mean a
+        // mount point in the read-only tmpfs, and bwrap aborting the command.
+        const repo = freshRepo({ book: true });
+        writeFileSync(
+          join(repo, '.book', 'settings.local.json'),
+          JSON.stringify({ provider: { apiKey: 'sk-secret' } }),
+        );
+        symlinkSync('.book', join(repo, 'bk'));
+        try {
+          const result = await sandboxedBash(
+            'cat bk/settings.local.json .book/settings.local.json 2>&1; cat .book/settings.json',
+            repo,
+            { filesystem: { denyRead: [join(repo, 'bk', 'settings.local.json')] } },
+          );
+
+          expect(result.status).toBe('success');
+          expect(result.content).not.toContain('sk-secret');
+          expect(result.content).toContain('{}');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
       it('keeps an entry writable that allowWrite names, and the credential hidden', async () => {
         const repo = freshRepo({ book: true });
         mkdirSync(join(repo, '.book', 'cache'));
@@ -4009,6 +4116,47 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
           expect(readFileSync(join(repo, 'a', 'b', 'other', 'f'), 'utf8')).toBe('ok');
         } finally {
           rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('keeps the workspace and the entry in place under an allowWrite root above the workspace', async () => {
+        const parent = mkdtempSync(join(tmpdir(), 'book-sandbox-parent-'));
+        const repo = join(parent, 'app');
+        mkdirSync(repo);
+        execFileSync('git', ['init', '--quiet'], { cwd: repo });
+        const policy = join(repo, 'conf', 'locked', 'policy.json');
+        mkdirSync(dirname(policy), { recursive: true });
+        writeFileSync(policy, 'original\n');
+        try {
+          const overrides = {
+            filesystem: { allowWrite: [parent], denyWrite: [join(repo, 'conf', 'locked')] },
+          };
+          const swap = await sandboxedBash(
+            'mv conf conf-old && mkdir -p conf/locked && printf swapped > conf/locked/policy.json; echo done',
+            repo,
+            overrides,
+          );
+          const moveWorkspace = await sandboxedBash(
+            `mv '${repo}' '${repo}-moved'`,
+            repo,
+            overrides,
+          );
+          const sibling = await sandboxedBash(
+            `printf ok > '${join(parent, 'sibling')}'`,
+            repo,
+            overrides,
+          );
+
+          expect(swap.content).toContain('done');
+          expect(readFileSync(policy, 'utf8')).toBe('original\n');
+          expect(existsSync(join(repo, 'conf-old'))).toBe(false);
+          expect(moveWorkspace.status).not.toBe('success');
+          expect(existsSync(`${repo}-moved`)).toBe(false);
+          // The root above the workspace is still writable, as it asked.
+          expect(sibling.status).toBe('success');
+          expect(readFileSync(join(parent, 'sibling'), 'utf8')).toBe('ok');
+        } finally {
+          rmSync(parent, { recursive: true, force: true });
         }
       });
 

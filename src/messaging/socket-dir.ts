@@ -68,10 +68,18 @@ export function socketDirCandidates(options: SocketDirEnvironment = {}): SocketD
       candidates.push({ dir: join(runtime, 'book-socks'), source: 'xdg-runtime' });
     }
   }
-  candidates.push({
-    dir: join(options.tmpdir ?? trustedTempRoot(), `book-socks-${options.uid ?? currentUid()}`),
-    source: 'tmp',
-  });
+  let tmp: string | undefined;
+  try {
+    tmp = options.tmpdir ?? trustedTempRoot();
+  } catch (error) {
+    // A temp directory that no longer resolves where it did at startup is no
+    // place for the fallback (temp-root.ts). The earlier candidates are still
+    // tried; with none, the refusal is the answer.
+    if (candidates.length === 0) throw error;
+  }
+  if (tmp !== undefined) {
+    candidates.push({ dir: join(tmp, `book-socks-${options.uid ?? currentUid()}`), source: 'tmp' });
+  }
   return candidates;
 }
 

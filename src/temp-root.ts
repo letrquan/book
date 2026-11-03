@@ -41,12 +41,21 @@ export function checkTempRoot(
   spelled: string,
 ): string {
   if (startup !== null && current === startup) return startup;
+  if (startup === null) {
+    // Not re-resolved later: on macOS a sandboxed command may create the path
+    // (one under /private/tmp, say), so a directory that only appears after
+    // startup is no more trusted than a replaced one.
+    throw new Error(
+      `Refusing to create Book's temporary files in ${spelled}: it did not exist when Book ` +
+        'started, so there is no directory to hold it to. Create it, or point the temp ' +
+        'directory at one that exists, and restart Book.',
+    );
+  }
   const now = current === null ? 'no longer resolves' : `resolves to ${current}`;
-  const then = startup === null ? 'did not resolve' : `resolved to ${startup}`;
   throw new Error(
-    `Refusing to create Book's temporary files in ${spelled}: it ${now}, and it ${then} when ` +
-      'Book started. The temp directory was moved or replaced since then, so a file Book keeps ' +
-      'there could land where another process controls it. Restart Book.',
+    `Refusing to create Book's temporary files in ${spelled}: it ${now}, and it resolved to ` +
+      `${startup} when Book started. The temp directory was moved or replaced since then, so a ` +
+      'file Book keeps there could land where another process controls it. Restart Book.',
   );
 }
 

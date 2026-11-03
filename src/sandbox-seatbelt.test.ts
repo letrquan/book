@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'fs';
@@ -142,6 +143,7 @@ type FileOperation =
  */
 function decide(policy: SeatbeltPolicy, operation: FileOperation, path: string): 'allow' | 'deny' {
   const bookTemp = new RegExp(`/(${BOOK_TEMP_PREFIXES.join('|')})[^/]*(/|$)`);
+  const localSettings = /\/[.]book\/[^/]*settings[.]local[.]json[^/]*(\/|$)/;
   const under = (root: string): boolean =>
     root === '/' ? path.startsWith('/') : path === root || path.startsWith(`${root}/`);
   let wildcard: 'allow' | 'deny' | undefined =
@@ -153,7 +155,8 @@ function decide(policy: SeatbeltPolicy, operation: FileOperation, path: string):
     const hit = rule.filters.some(
       (filter) =>
         (filter.match === 'literal' ? path === filter.path : under(filter.path)) &&
-        (!rule.bookTempEntries || bookTemp.test(path)),
+        (!rule.bookTempEntries || bookTemp.test(path)) &&
+        (!rule.localSettingsEntries || localSettings.test(path)),
     );
     if (!hit) continue;
     for (const ruleOperation of rule.operations) {
@@ -327,7 +330,38 @@ describe('buildSeatbeltPolicy', () => {
     for (const root of TEMP_ROOTS) {
       expect(canRemove(policy, root), root).toBe(false);
       expect(canCreate(policy, root), root).toBe(false);
+      // Its mode and times too: a world-writable `T` would let other users in.
+      expect(canWrite(policy, root), root).toBe(false);
       expect(canWrite(policy, `${root}/scratch/file`), root).toBe(true);
+    }
+  });
+
+  /**
+   * A rule for the file alone, and only when it existed as the profile was
+   * built, left a first save made while a command ran readable, and every copy
+   * of it the settings writer and editors leave beside it (#633).
+   */
+  it('denies the local settings and every copy of them by name, present or not', () => {
+    const tree = repoTree();
+    delete tree[`${WS}/.book/settings.local.json`];
+    const names = [
+      'settings.local.json',
+      '.settings.local.json.1234.abcd.tmp',
+      'settings.local.json.lock',
+      'settings.local.json~',
+    ];
+
+    for (const policy of [
+      policyFor({}, tree),
+      policyFor({ filesystem: { allowWrite: [`${WS}/.book`] } }, tree),
+    ]) {
+      for (const name of names) {
+        expect(canRead(policy, `${WS}/.book/${name}`), name).toBe(false);
+        expect(canCreate(policy, `${WS}/.book/${name}`), name).toBe(false);
+      }
+      expect(canRead(policy, `${WS}/.book/settings.json`)).toBe(true);
+      // Moving `.book` would carry the file to a name the rule does not match.
+      expect(canRemove(policy, `${WS}/.book`)).toBe(false);
     }
   });
 
@@ -625,19 +659,32 @@ describe('renderSeatbeltProfile', () => {
     );
   });
 
-  it('denies writes to each temp root as a path right after the temp roots are allowed (#652)', () => {
-    const { profile, parameters } = renderSeatbeltProfile(policyFor());
+  it('denies writes to each temp root as a path, after every allow (#652)', () => {
+    const { profile, parameters } = renderSeatbeltProfile(
+      policyFor({ filesystem: { allowWrite: [USER_TEMP] } }),
+    );
     const name = (path: string): string =>
       parameters.find((parameter) => parameter.endsWith(`=${path}`))?.split('=')[0] ?? '';
     const [user, shared] = TEMP_ROOTS.map(name);
     const lines = profile.split('\n');
-    const allow = lines.indexOf(
-      `(allow file-read* file-write* (subpath (param "${user}")) (subpath (param "${shared}")))`,
+    const deny = lines.indexOf(
+      `(deny file-write* (literal (param "${user}")) (literal (param "${shared}")))`,
+    );
+    const lastAllow = lines.reduce(
+      (last, line, index) => (line.startsWith('(allow file-read* file-write*') ? index : last),
+      -1,
     );
 
-    expect(allow).toBeGreaterThan(-1);
-    expect(lines[allow + 1]).toBe(
-      `(deny file-write* (literal (param "${user}")) (literal (param "${shared}")))`,
+    expect(deny).toBeGreaterThan(-1);
+    expect(deny).toBeGreaterThan(lastAllow);
+  });
+
+  it("narrows the local settings rule to the names in .book that carry the file's name", () => {
+    const { profile, parameters } = renderSeatbeltProfile(policyFor());
+    const book = parameters.find((parameter) => parameter.endsWith(`=${WS}/.book`))?.split('=')[0];
+
+    expect(profile).toContain(
+      `(deny file-read* file-write* (require-all (subpath (param "${book}")) (regex #"/[.]book/[^/]*settings[.]local[.]json[^/]*(/|$)")))`,
     );
   });
 });
@@ -665,12 +712,11 @@ describe('BOOK_TEMP_PREFIXES', () => {
       for (const match of text.matchAll(/mkdtemp(?:Sync)?\(\s*join\([^']*'(book-[^']*)'/g)) {
         prefixes.add(match[1]);
       }
-      // A fixed name under the temp root built from a template, such as the messaging inbox's
-      // `book-socks-${uid}` (#620): the part before the first substitution, less its dash, is
-      // the prefix, so the bare name (`$XDG_RUNTIME_DIR/book-socks`) is covered as well.
-      for (const match of text.matchAll(
-        /(?:tmpdir|trustedTempRoot)\(\)\s*,\s*`(book-[a-z-]*?)-?\$\{/g,
-      )) {
+      // A fixed name joined under a directory from a template, such as the messaging inbox's
+      // `book-socks-${uid}` under the temp root (#620): the part before the first substitution,
+      // less its dash, is the prefix, so the bare name (`$XDG_RUNTIME_DIR/book-socks`) is
+      // covered as well.
+      for (const match of text.matchAll(/join\([^)]*?,\s*`(book-[a-z-]*?)-?\$\{/g)) {
         prefixes.add(match[1]);
       }
     }
@@ -920,6 +966,35 @@ describe.skipIf(process.platform !== 'darwin')('the Seatbelt sandbox on a real M
     expect(read.status).not.toBe('success');
     expect(write.status).not.toBe('success');
     expect(readFileSync(join(entry, 'snapshot'), 'utf8')).toBe('host\n');
+  });
+
+  it('hides a settings.local.json the host creates while a command runs, and every copy (#633)', async () => {
+    const local = join(workspace, '.book', 'settings.local.json');
+    rmSync(local);
+    writeFileSync(join(workspace, '.book', '.settings.local.json.1234.abcd.tmp'), 'in-flight\n');
+    writeFileSync(join(workspace, '.book', 'settings.local.json~'), 'backup\n');
+    const running = join(workspace, '.probe-running');
+    const run = sandboxedBash(
+      'touch .probe-running; for i in 1 2 3 4 5 6 7 8; do cat .book/settings.local.json .book/.settings.local.json.* .book/settings.local.json~ 2>&1; sleep 0.4; done; cat .book/settings.json',
+    );
+    // The host saves once the loop is reading inside the sandbox, as Book's
+    // settings writer does: a temp file beside the target, renamed over it.
+    for (let waited = 0; waited < 10_000 && !existsSync(running); waited += 50) {
+      await new Promise((settle) => setTimeout(settle, 50));
+    }
+    expect(existsSync(running)).toBe(true);
+    await new Promise((settle) => setTimeout(settle, 600));
+    const temporary = join(workspace, '.book', `.settings.local.json.${process.pid}.probe.tmp`);
+    writeFileSync(temporary, 'first-save\n');
+    renameSync(temporary, local);
+    const result = await run;
+
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('{}');
+    for (const secret of ['first-save', 'in-flight', 'backup']) {
+      expect(result.content).not.toContain(secret);
+    }
+    expect(readFileSync(local, 'utf8')).toBe('first-save\n');
   });
 
   /**
