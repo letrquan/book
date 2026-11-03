@@ -393,6 +393,20 @@ describe('Bash shell tools', () => {
     expect(c.backgroundShells?.shells.get(shellIdFrom(result))?.status).toBe('running');
   });
 
+  it('records the class of a pinned run on the background job it starts (#650)', async () => {
+    const command = nodeCommand('pinned.cjs', '');
+    const pinned = ctxWith({ peerTurnClass: 'prompting' });
+    const fromPeer = await bash.execute({ command, run_in_background: true }, pinned);
+    expect(pinned.backgroundShells?.shells.get(shellIdFrom(fromPeer))?.peerTurnClass).toBe(
+      'prompting',
+    );
+    // A run nobody pinned starts a job whose completion is the user's own.
+    const own = ctx();
+    const fromUser = await bash.execute({ command, run_in_background: true }, own);
+    expect(own.backgroundShells?.shells.get(shellIdFrom(fromUser))).toBeDefined();
+    expect(own.backgroundShells?.shells.get(shellIdFrom(fromUser))?.peerTurnClass).toBeUndefined();
+  });
+
   it('reads background shell output incrementally and reports terminal status', async () => {
     const c = ctx();
     const command = nodeCommand(
@@ -776,6 +790,16 @@ setTimeout(() => process.exit(0), 1500);\n`,
     expect(record?.notify).toBe('ui');
     expect(record?.timeoutMs).toBeUndefined();
     expect(record?.status).toBe('running');
+    expect(record?.peerTurnClass).toBeUndefined();
+  });
+
+  it('keeps the class of a pinned run on the command it adopts (#650)', async () => {
+    const c = ctxWith({ workspaceRoot: process.cwd(), peerTurnClass: 'prompting' });
+    const started = await bash.execute(
+      { command: slowCommand('adopted-pinned.cjs'), timeout: 300 },
+      c,
+    );
+    expect(c.backgroundShells?.shells.get(shellIdFrom(started))?.peerTurnClass).toBe('prompting');
   });
 
   it('adopts into the session runtime, which outlives the call', async () => {

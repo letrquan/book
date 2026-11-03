@@ -100,6 +100,8 @@ describe('terminalRecovery', () => {
       'max_turns',
       'context_overflow',
       'protocol_error',
+      // A tool call written out as text that came back the same way after its one re-ask (#667).
+      'malformed_tool_call',
       'normal_completion',
       'session_disposed',
       'session_replaced',

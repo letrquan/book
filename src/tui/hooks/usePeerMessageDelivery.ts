@@ -39,8 +39,10 @@ interface PendingNotice {
  * notice in a peer's words is judged again here, since the mode or the settings may have changed
  * while it waited: one the receive policy no longer accepts is left out (its row is all the user
  * gets), and the turn runs in the strictest class among the rest. The turn continues the longest
- * relay among them, so a model re-subscribing from many notices at once counts one hop, not one
- * branch each. `turn` is undefined when nothing is left to tell the model.
+ * relay among every waiting notice, those left for a later turn included, so a model
+ * re-subscribing from many notices at once counts one hop, not one branch each, and a turn that
+ * tells only older notices cannot hold the relay back at their depth (#658). `turn` is undefined
+ * when nothing is left to tell the model.
  */
 function noticeTurn(
   pending: readonly PendingNotice[],
@@ -61,7 +63,7 @@ function noticeTurn(
   }
   if (told.length === 0) return { taken: taken.length };
   let relayChain: readonly string[] | undefined;
-  for (const notice of told) {
+  for (const notice of pending) {
     if (notice.relayChain && notice.relayChain.length >= (relayChain?.length ?? 0)) {
       relayChain = notice.relayChain;
     }

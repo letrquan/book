@@ -4,7 +4,11 @@ import { extname } from 'path';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
-import { messagePathFor, pathOutsideWorkspaceResult, resolveMutationPath } from './path-utils.js';
+import {
+  messagePathFor,
+  mutationOutsideWorkspaceResult,
+  resolveMutationPath,
+} from './path-utils.js';
 import {
   observeFile,
   requireFreshObservation,
@@ -194,7 +198,7 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   }
 
   const resolved = resolveMutationPath(ctx, notebookPath);
-  if (!resolved) return pathOutsideWorkspaceResult(notebookPath);
+  if (!resolved) return mutationOutsideWorkspaceResult(notebookPath);
   const { filePath, relativePath } = resolved;
   const shownPath = messagePathFor(resolved);
   const stale = await requireFreshObservation(ctx, filePath, shownPath);

@@ -353,11 +353,12 @@ tool outside the agent role, `allowed-tools`, the mode or the run's state is ref
 and plan mode still refuses its mutating tools with its own message.
 
 A `permissions.deny` or `ask` rule on `ToolSearch` itself, or a `PreToolUse` or `PostToolUse` hook
-whose matcher names `ToolSearch`, turns direct calls off for the run: whoever wrote it meant to gate
-or to audit discovery, so a direct call to a tool that is not active is refused toward `ToolSearch`
-as before, where the rule or hook applies, and the deferred-tool list does not offer direct calls. A
-hook with no matcher runs on every call, the direct one included, and turns nothing off; nor does an
-allow rule.
+whose matcher names `ToolSearch`, alone or as one of its `A|B` alternatives, turns direct calls off
+for the run, and so does one narrowing `*` by a pattern (`*(select:*)`), which reads ToolSearch's
+query too: whoever wrote it meant to gate or to audit discovery, so a direct call to a tool that is
+not active is refused toward `ToolSearch` as before, where the rule or hook applies, and the
+deferred-tool list does not offer direct calls. A hook with no matcher, or with a bare `*`, runs on
+every call, the direct one included, and turns nothing off; nor does an allow rule.
 
 Before a turn's first model call, Book also routes what you typed. A URL that `WebFetch` would
 fetch activates `WebFetch`, in a code fence too; a plain-HTTP, local or private address counts only
@@ -682,7 +683,12 @@ The entry carries the workspace's protections too: its own `.book/settings.local
 `.book` directory holding it are guarded, a file must be read before it can be edited, and a write
 into a home directory held inside the entry still asks. A _relative_ path stays anchored to the
 workspace, so a bare `./notes.txt` is never re-anchored to a directory you did not name. Without an
-approved entry, the same absolute path is still `path_outside_workspace`.
+approved entry, the same absolute path is still `path_outside_workspace`. The refusal has the same
+code and message as a read's but its own remedy, since a write's way through is not a read's: it
+says the write tools change files only inside the workspace and the approved directories, that the
+file belongs under a path inside the workspace instead (a scratch file included, deleted when the
+model is done with it), and that only the user can add a directory. The system temp directory is
+outside every root, so a write there is refused like any other.
 
 A path rule for `Read`, `Write`, `Edit`, `MultiEdit` or `NotebookEdit` is also matched against the
 other spellings of the target — relative to the workspace and absolute, before and after following
@@ -770,7 +776,8 @@ name, `name [ref]` and the session's `from` address, refusing a denied one and, 
 the model back with the spelling the rule names. Print mode, the SDK,
 managed agents and `Task` subagents have neither tool, and a skill or command whose
 `allowed-tools` leaves `SessionSend` out does not get it. A turn another session's message
-started cannot write memory, since what it saved would load into every later session.
+started cannot write memory, and neither can a completion or notice turn pinned to its class,
+since what it saved would load into every later session.
 
 What a send returns:
 
@@ -846,8 +853,21 @@ Off Windows each hook runs in its own session and process group, as foreground `
 do, so a timeout can end all of it. A hook therefore has no controlling terminal: it cannot
 prompt through `/dev/tty`, and a Ctrl+C in the terminal goes to Book, not to the hook.
 
-`matcher` filters `PreToolUse`/`PostToolUse` by tool call (`Bash(*)`) and `PreCompact`/`PostCompact`
-by trigger. `PreCompact` receives `trigger`, `focus`, and, when the span about to be summarized
+`matcher` filters `PreToolUse`/`PostToolUse` by tool call and `PreCompact`/`PostCompact` by
+trigger (`manual`, `auto`, `manual|auto`, or `*` for both). A tool matcher names a tool exactly
+(`Bash`, `mcp__github__create_issue`) and may narrow it with a glob on its primary argument, in the
+`Tool(pattern)` form permission rules use (`Bash(git *)`, `Edit(src/**)`; `*` matches anything, a
+trailing ` *` also matches the bare command, and an `Edit` or `Write` matcher also sees the files
+an `ApplyPatch` call edits). `*` matches every tool, as an absent or empty matcher does, and Claude
+Code's `A|B` matches either alternative (`Edit|Write`, `Bash(ls *)|Read`), split on a `|` outside
+the parentheses only; an alternative ends at the `)` that closes its pattern, and text after that
+`)` is ignored. Names are compared as written, never as regular expressions, so a matcher
+such as `Notebook.*` or `mcp__memory__.*` matches no tool. `book doctor` flags an alternative that
+matches nothing: a name no tool Book registers has, a regular expression, an MCP server name where
+a tool's belongs, or a pattern with no tool before it. It also notes text it ignores after a `)`. It
+leaves full `mcp__server__tool` names alone, because it does not start the servers.
+
+`PreCompact` receives `trigger`, `focus`, and, when the span about to be summarized
 contains text addressed to a summarizer, `suspect_inputs`: a list of `{ eventRef, excerpt }`; exit
 2 (or `{"action":"block","message":…}`) refuses the compaction and the TUI shows the message. For a
 deferred compaction the hook runs when the summarizer starts on the snapshot, and again if the

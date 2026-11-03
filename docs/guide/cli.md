@@ -140,13 +140,13 @@ lines included.
 The answer on stdout is the model's final answer: the text of the last turn that called no tools,
 read past the prompts Book appends mid-run (`[continuation]`, `[work-state]`, the output-cap
 resume). When the run stopped before the model answered again (a provider failure, a turn that was
-only reasoning, or `--max-turns` reached on a turn that called tools), stdout stays empty rather
-than repeating an earlier turn's narration. A prompt a `UserPromptSubmit` hook refused and a tool
-batch Book rejected are not answers either: stdout stays empty and the reason goes to stderr as an
-`error:` line. A run of host-performed commands only (`book -p --continue "/review"`) prints the
-command's output and no answer, never the previous process's. The exit status does not depend on the
-answer: a `failed` outcome exits 1, and a run that stalled, timed out, or lost its connection exits 0
-like a completed one.
+only reasoning, a reply that was only a tool call written out as text, or `--max-turns` reached on
+a turn that called tools), stdout stays empty rather than repeating an earlier turn's narration. A
+prompt a `UserPromptSubmit` hook refused and a tool batch Book rejected are not answers either:
+stdout stays empty and the reason goes to stderr as an `error:` line. A run of host-performed
+commands only (`book -p --continue "/review"`) prints the command's output and no answer, never the
+previous process's. The exit status does not depend on the answer: a `failed` outcome exits 1, and a
+run that stalled, timed out, or lost its connection exits 0 like a completed one.
 
 `json` and `stream-json` write no progress lines, but their stderr is not silent. `json` still
 writes `retry:` lines (unless `--quiet`) and `error:` lines there; `stream-json` carries retries and

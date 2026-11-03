@@ -242,6 +242,12 @@ export interface AgentCompletionNotification {
   parentRunId?: string;
   runId?: string;
   outcome?: import('../types/terminal.js').AgentTerminalOutcome;
+  /**
+   * The class of the peer turn that spawned the agent (`AgentRecord.peerTurnClass`, #620): its
+   * completion turn runs pinned to it, after the user's own turn and a restart too, as a
+   * background job's does (#650).
+   */
+  peerTurnClass?: PeerPermissionClass;
 }
 
 export type EvidenceKind = 'finding' | 'hypothesis' | 'test_result' | 'patch_candidate' | 'blocker';

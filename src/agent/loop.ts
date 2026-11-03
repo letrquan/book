@@ -121,6 +121,7 @@ import { appendToolUseRecords, telemetryProviderOf } from '../tool-telemetry.js'
 import type { ToolUseRecord } from '../types/tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
+import { detectToolCallMarkup } from './tool-markup.js';
 import {
   permissionDeniedError,
   unattendedRefusalNotice,
@@ -321,10 +322,12 @@ export async function runAgentLoop(
     resolveAttachment?: (attachment: ImageAttachment) => Promise<Uint8Array> | Uint8Array;
     userMessageKind?: Message['kind'];
     /**
-     * The permission class a `peer-message` turn was delivered in (#620). The gate applies it for
-     * the whole run: a host mode switched into the bypass class meanwhile is read as `default`
-     * (`peerTurnGateMode`), so another session's request keeps asking; a stricter mode applies
-     * as it is. Absent for every other turn.
+     * The permission class a `peer-message` turn was delivered in (#620), or the one a host-delivered
+     * turn that carries a peer turn's work on is pinned to (a completion, a notice). The gate
+     * applies it for the whole run: a host mode switched into the bypass class meanwhile is read as
+     * `default` (`peerTurnGateMode`), so another session's request keeps asking; a stricter mode
+     * applies as it is. A run with a class gets no memory write root (#655). Absent for a turn the
+     * user started.
      */
     peerTurnClass?: PeerPermissionClass;
     /** The prompt was resolved from a command or delegated, not typed by the user. */
@@ -819,10 +822,12 @@ export async function runAgentLoop(
   /**
    * The memory directory as a write root: the root agent only, and only when memory is on with
    * `autoSave`. A subagent or managed child never gets it (a Task subagent runs in
-   * `bypassPermissions`, so the missing field is what keeps it out of memory). Nor does a turn
-   * another session's message started (#620): a memory write needs no prompt, and what it saves
-   * loads into every later session of the workspace, a bypass one included, so a peer could
-   * otherwise steer the sessions it may not message.
+   * `bypassPermissions`, so the missing field is what keeps it out of memory). Nor does a run that
+   * carries another session's words or work (#620): a turn a peer's message started, or one pinned
+   * to a peer turn's class (`peerTurnClass`), such as the completion of a job or agent that turn
+   * started (#655). A memory write needs no prompt, and what it saves loads into every later
+   * session of the workspace, a bypass one included, so a peer could otherwise steer the sessions
+   * it may not message.
    */
   const memoryWriteMode = memoryWriteScope(config);
   const memoryWrite: ToolContext['memoryWrite'] =
@@ -830,7 +835,8 @@ export async function runAgentLoop(
     memoryWriteMode !== 'none' &&
     !options?.isSubagent &&
     !options?.agentId &&
-    options?.userMessageKind !== 'peer-message'
+    options?.userMessageKind !== 'peer-message' &&
+    options?.peerTurnClass === undefined
       ? {
           root: config.memoryContext.dir,
           scope: memoryWriteMode,
@@ -920,6 +926,31 @@ export async function runAgentLoop(
     for (const dispose of appliedSkillRestrictions.values()) dispose();
     appliedSkillRestrictions.clear();
   };
+  /**
+   * Push the allowed-tools of every active frame not applied yet, and report whether any was. It
+   * never lifts a ceiling or loads a tool, so it is safe at any point of a turn: before each
+   * request, and after each call (#657), whatever activated the frame.
+   */
+  const pushSkillCeilings = (currentTurn: number): boolean => {
+    let pushed = false;
+    for (const frame of skillRegistry.activeFrames(currentTurn)) {
+      if (!frame.allowedTools) continue;
+      const key = `${frame.skillId}:${frame.bodyDigest}`;
+      if (appliedSkillRestrictions.has(key)) continue;
+      appliedSkillRestrictions.set(key, toolSurface.pushRestriction(frame.allowedTools));
+      pushed = true;
+    }
+    return pushed;
+  };
+  const recordSkillEffectiveTools = (anyFrame: boolean): void =>
+    skillRegistry.recordEffectiveTools(
+      anyFrame
+        ? toolSurface
+            .previewRestriction(['*'])
+            .map((definition) => canonicalToolName(definition.name))
+            .filter((name) => name !== 'ToolSearch')
+        : undefined,
+    );
   const syncSkillRestrictions = (currentTurn: number): void => {
     const frames = skillRegistry.activeFrames(currentTurn);
     const activeKeys = new Set(frames.map((frame) => `${frame.skillId}:${frame.bodyDigest}`));
@@ -928,21 +959,11 @@ export async function runAgentLoop(
       dispose();
       appliedSkillRestrictions.delete(key);
     }
-    for (const frame of frames) {
-      if (!frame.allowedTools) continue;
-      const key = `${frame.skillId}:${frame.bodyDigest}`;
-      if (appliedSkillRestrictions.has(key)) continue;
-      appliedSkillRestrictions.set(key, toolSurface.pushRestriction(frame.allowedTools));
-    }
+    pushSkillCeilings(currentTurn);
+    // Loading a tool can evict another, so it happens here, before the request is built, and
+    // never mid-response, where it could drop a tool the answered request declared.
     if (frames.length > 0) toolSurface.activate(['ReadSkillResource']);
-    skillRegistry.recordEffectiveTools(
-      frames.length > 0
-        ? toolSurface
-            .previewRestriction(['*'])
-            .map((definition) => canonicalToolName(definition.name))
-            .filter((name) => name !== 'ToolSearch')
-        : undefined,
-    );
+    recordSkillEffectiveTools(frames.length > 0);
   };
   /**
    * Activation-class prompt text: skill frames and their notices change on
@@ -1431,6 +1452,8 @@ export async function runAgentLoop(
       Math.min(config.retry.maxDelayMs, config.retry.baseDelayMs * 2 ** attempt);
     let contentFilterRetryTurn = -1;
     let upstreamErrorRetryTurn = -1;
+    /** The turn whose reply was tool-call markup and has had its one re-ask (#667). */
+    let toolMarkupRetryTurn = -1;
     let forcedCompactTurn: number | null = null;
     /** The size-inferred retry awaiting its verdict: which turn, how large, and how it was shrunk. */
     let sizeInferredRetry: { turn: number; tokens: number; compacted: boolean } | null = null;
@@ -1937,6 +1960,8 @@ export async function runAgentLoop(
       // is stranded is a reasoning block the transcript collapses to one row.
       let textBuffer = '';
       let heldText = '';
+      /** What the host had been shown before this attempt, for one that is taken back whole. */
+      const outputBeforeAttempt: boolean = assistantOutputProduced;
       let textStreamingStarted = false;
       let reasoningStreamingStarted = false;
       const flushReasoning = (): void => {
@@ -2483,6 +2508,56 @@ export async function runAgentLoop(
         assistantContent = '';
       }
 
+      // A reply that is tool-call markup in plain text (#667). A route that cannot parse the
+      // model's tool-call syntax passes it on as `content` (DeepSeek's DSML, V3's tool-call
+      // tokens, Qwen's `<tool_call>`), so the turn calls no tool and used to end the run as
+      // completed on a call that never ran. It is re-asked once, like an empty completion, on an
+      // allowance of its own: the route's parser failed on one reply (once in about a thousand
+      // calls in #667), which another sample usually avoids, while a route that fails every time
+      // is not helped by more, so `streamReissueAttempts` is not spent on it. When the re-ask
+      // comes back the same way the run fails with a reason that names it. Either reply is taken
+      // back from the host and left out of the history and the answer: it is not what the model
+      // said, and a resumed session should not read its own raw call back as the previous turn.
+      const toolMarkup =
+        !streamError && streamDone && toolCalls.length === 0 && !signal?.aborted
+          ? detectToolCallMarkup(assistantContent)
+          : null;
+      if (toolMarkup) {
+        const found = {
+          turn,
+          format: toolMarkup.format,
+          closed: toolMarkup.closed,
+          contentLen: assistantContent.length,
+          responseId: responseMetadata?.responseId,
+        };
+        // Nothing of this attempt is left in the transcript, so the output it produced is not
+        // the run's partial output either.
+        callbacks.onAttemptDiscarded?.();
+        assistantOutputProduced = outputBeforeAttempt;
+        if (toolMarkupRetryTurn !== turn) {
+          toolMarkupRetryTurn = turn;
+          log.warn('provider answered with tool-call markup as text; re-issuing', found);
+          // The same delay and retry label an empty completion's re-issue gets.
+          const delayMs = reissueBackoffMs(1);
+          callbacks.onRetry?.('reissue', 1, 1, delayMs, 'malformed_tool_call');
+          retryLabelShown = true;
+          await delay(delayMs, signal);
+          if (signal?.aborted) break;
+          retrySameTurn = true;
+          continue;
+        }
+        log.warn('provider answered with tool-call markup as text again; ending the run', found);
+        streamError =
+          `The model's reply was a tool call written out as plain text (${toolMarkup.label}), not a ` +
+          'structured tool call, so no tool ran. Book asked again and the reply came back the same ' +
+          "way. The route is probably failing to parse this model's tool calls: resume the session " +
+          'to try again, or switch to another route or model.';
+        streamErrorCode = 'malformed_tool_call';
+        assistantContent = '';
+        // Its reasoning went with it, so the error path below has no message to keep.
+        reasoningContent = '';
+      }
+
       if (heldText && !routerOverflowResponse && !upstreamErrorAsContent) {
         assistantOutputProduced = true;
         flushReasoning();
@@ -2789,11 +2864,18 @@ export async function runAgentLoop(
                                 message: streamError,
                                 providerCode: streamErrorCode,
                               })
-                            : createTerminalOutcome('failed', 'provider_error', {
-                                partialOutput: hasPartialOutput(),
-                                message: streamError,
-                                providerCode: streamErrorCode,
-                              });
+                            : // Its one re-ask is spent: a re-issue would send the same request again.
+                              streamErrorCode === 'malformed_tool_call'
+                              ? createTerminalOutcome('failed', 'malformed_tool_call', {
+                                  partialOutput: hasPartialOutput(),
+                                  message: streamError,
+                                  providerCode: streamErrorCode,
+                                })
+                              : createTerminalOutcome('failed', 'provider_error', {
+                                  partialOutput: hasPartialOutput(),
+                                  message: streamError,
+                                  providerCode: streamErrorCode,
+                                });
 
         // A transport fault is not a failure of the work. Everything needed to send
         // the turn again is already committed: the partial assistant message was
@@ -3893,6 +3975,12 @@ export async function runAgentLoop(
       const finishCall = async (entry: PreparedLoopCall, result: ToolResult): Promise<void> => {
         const normalized = await finalizeToolCall(entry, result);
         toolResults[entry.index] = normalized;
+        // A skill a call activated (InvokeSkill) narrows the tools from the next call on, not from
+        // the next turn (#657): its allowed-tools are pushed here, before the next call of this
+        // response is prepared. Calls are prepared in order, and a call that activates a skill is
+        // serial, so a parallel wave after it is prepared only once this has run; every later call
+        // meets the ceiling the next turn starts with, and is refused the same way.
+        if (pushSkillCeilings(turn)) recordSkillEffectiveTools(true);
       };
       const resultAt = (index: number): ToolResult => {
         const result = toolResults[index];

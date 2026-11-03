@@ -26,6 +26,7 @@ import {
   memoryReadDisplayPath,
   messagePathFor,
   mutationDisplayPath,
+  mutationOutsideWorkspaceResult,
   pathOutsideWorkspaceResult,
   resolveMutationPath,
   resolveReadablePath,
@@ -1500,7 +1501,7 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
 
 async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveMutationPath(ctx, args.filePath as string);
-  if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
+  if (!resolved) return mutationOutsideWorkspaceResult(args.filePath);
   const { filePath, canonicalPath } = resolved;
   const shownPath = messagePathFor(resolved);
   return withMutationLocks([canonicalPath], async () => {
@@ -1597,7 +1598,7 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
 
 async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveMutationPath(ctx, args.filePath as string);
-  if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
+  if (!resolved) return mutationOutsideWorkspaceResult(args.filePath);
   const { filePath, canonicalPath } = resolved;
   const shownPath = messagePathFor(resolved);
   return withMutationLocks([canonicalPath], async () => {
@@ -1688,7 +1689,7 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
 
 async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveMutationPath(ctx, args.filePath as string);
-  if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
+  if (!resolved) return mutationOutsideWorkspaceResult(args.filePath);
   const { filePath, canonicalPath } = resolved;
   const shownPath = messagePathFor(resolved);
   const edits =

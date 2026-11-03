@@ -411,6 +411,9 @@ describe('NotebookEdit', () => {
         ctx,
       );
       expect(refused.structuredError?.code).toBe('path_outside_workspace');
+      // A notebook edit writes, so the remedy is about writing: a path inside the workspace (#668).
+      expect(refused.structuredError?.remediation).toContain('inside the workspace');
+      expect(refused.structuredError?.remediation).not.toMatch(/\bread\b/i);
       expect(readFileSync(target, 'utf-8')).toContain('Edited');
     } finally {
       delete ctx.additionalRoots;

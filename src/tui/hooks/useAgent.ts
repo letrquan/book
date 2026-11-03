@@ -661,15 +661,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const pendingHandoffRef = useRef<{ plan: string; mode: PermissionMode } | null>(null);
   // The permission class pin a peer turn set (#620). The host-delivered turns after it — a
   // completion, a delivery notice — carry its work on, so they inherit it, as they keep its relay
-  // chain; only a turn the user starts clears it.
+  // chain; only a turn the user starts clears it. A background job a pinned run started keeps the
+  // run's class on its own record (#650), for every completion whenever it lands.
   const peerPinRef = useRef<PeerPermissionClass | undefined>(undefined);
-  // The class of each background job a pinned run started: its completion carries the peer's
-  // work on whenever it lands, after the user's own turn cleared the session's pin too.
-  // TODO(#620): accepted gaps (security review of #643): the map is in memory, so a persistent
-  // job's completion after a restart or `--resume` is unpinned; a pinned run that starts more than
-  // the shell manager's 20 retained terminal jobs loses the oldest before the diff; and the entry
-  // goes with the first completion delivered, so a later completion of the same id is unpinned.
-  const pinnedJobsRef = useRef(new Map<string, PeerPermissionClass>());
   /**
    * The run that can take steers (#661): created when a user-started send enters the loop, held
    * while that send is the current one, and cleared when it settles, so a steer is only ever
@@ -1448,15 +1442,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           : isHostDeliveredTurn({ kind: messageOptions?.kind })
             ? stricterClass(messageOptions?.peerTurnClass, peerPinRef.current)
             : undefined;
-      const jobsBefore =
-        runPeerClass !== undefined
-          ? new Set(
-              agentSession
-                .getRuntime()
-                .shellManager.list()
-                .map((job) => job.id),
-            )
-          : undefined;
 
       /*
        * Only a run the user started can take steers (#661). A host-delivered turn — a
@@ -1930,13 +1915,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           ...(runPeerClass !== undefined ? { peerTurnClass: runPeerClass } : {}),
         },
       });
-      if (jobsBefore && runPeerClass !== undefined) {
-        for (const job of agentSession.getRuntime().shellManager.list()) {
-          if (jobsBefore.has(job.id)) continue;
-          const pinned = pinnedJobsRef.current;
-          pinned.set(job.id, stricterClass(pinned.get(job.id), runPeerClass)!);
-        }
-      }
       // A host-delivered turn (a notification, a peer's message) never takes the resumed run's
       // linkage: the user's own next prompt continues it.
       if (
@@ -2146,6 +2124,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         fresh.every((notification) => notification.rootRunId === fresh[0]?.rootRunId)
           ? fresh[0]?.rootRunId
           : undefined;
+      // An agent a pinned turn spawned keeps that turn's class for its completion (#650), after
+      // the user's own turn cleared the session's pin too; a batch runs in the strictest one.
+      const agentClass = fresh.reduce<PeerPermissionClass | undefined>(
+        (strictest, notification) => stricterClass(strictest, notification.peerTurnClass),
+        undefined,
+      );
       const result = await sendMessage(
         built.map((item) => item.displayMessage).join('\n'),
         undefined,
@@ -2155,6 +2139,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           agentNotifications: built.map((item) => item.display),
           rootRunId: sharedRootRunId,
           parentRunId: sharedRootRunId ? fresh[0]?.runId : undefined,
+          ...(agentClass !== undefined ? { peerTurnClass: agentClass } : {}),
         },
       );
       return didSendMessageComplete(result);
@@ -2246,13 +2231,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       ]
         .filter((line): line is string => line !== undefined)
         .join('\n');
-      const jobClass = pinnedJobsRef.current.get(shell.id);
+      // A job a pinned run started names the run's class on its own record (#650): every completion
+      // of it carries the peer's work on, after the user's own turn cleared the session's pin too.
+      const jobClass = shell.peerTurnClass;
       const result = await sendMessage(display, undefined, {
         contextMessage: context,
         kind: 'agent-notification',
         ...(jobClass !== undefined ? { peerTurnClass: jobClass } : {}),
       });
-      if (didSendMessageComplete(result)) pinnedJobsRef.current.delete(shell.id);
       return didSendMessageComplete(result);
     },
     [agentSession, sendMessage],

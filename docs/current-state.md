@@ -532,10 +532,13 @@ branch --set-upstream-to`, `git config`), for `Bash` and `Check` alike: git's ow
   turn on its own and draws on `retry.streamReissueAttempts` (default 3, at least once), with the
   same exponential backoff between attempts and the same `onRetry` notice a transport re-issue
   gives; a stream cut before it said anything is a transport fault instead and keeps its single
-  re-issue plus the run-level transport budget. Already-emitted attempt text is marked
-  `attempt_discarded` rather than persisted as the replacement turn. Print mode's exit code does not
-  change with the terminal outcome (see "Exit codes" in
-  [docs/guide/cli.md](guide/cli.md#print-mode)): a failed outcome still exits 0.
+  re-issue plus the run-level transport budget. A reply that is a tool call written out as text
+  (DeepSeek's DSML, DeepSeek V3's `<｜tool▁calls▁begin｜>` tokens, `<tool_call>` tags) is neither
+  of those: a turn with no tool calls that ends with such a block is re-asked once on an allowance
+  of its own, and the run ends `failed` with `malformed_tool_call` when the reply repeats (see
+  [docs/guide/long-runs.md](guide/long-runs.md)). Already-emitted attempt text is marked
+  `attempt_discarded` rather than persisted as the replacement turn. Print mode exits 1 for a
+  failed outcome (see "Exit codes" in [docs/guide/cli.md](guide/cli.md#print-mode)).
 - Print/headless and SDK hosts run only the built-ins marked non-interactive — `/init`,
   `/security-review`, and `/review` — plus any `.book/commands/*.md` file. Every other built-in
   (session controls, pickers, panels, `/config`, `/export`, `/memory`) is refused before its own
