@@ -9,9 +9,9 @@ import type {
   PeerSessionRow,
   ReadLiveSessionRecord,
 } from '../types/messaging.js';
-import { foldControlCharacters } from '../control-characters.js';
 import { neutralizeTags } from '../prompt-tags.js';
 import { sanitizeEnvelopeName } from './envelope.js';
+import { plainSpan } from './peer-text.js';
 import { socketPathHash } from './registry.js';
 import { decodeUdsAddress } from './wire.js';
 
@@ -24,13 +24,12 @@ export function peerRef(socketPath: string): string {
 const MAX_FIELD_CHARS = 64;
 
 /**
- * A record's free-text field as a row shows it to the model. Another session wrote it, so its
- * control characters are folded and its harness tags neutralized, as a message's body is.
+ * A record's free-text field as a row shows it to the model. Another session wrote it, so it reads
+ * as the session-state lines do (`plainSpan`): control characters folded and invisible format
+ * characters dropped (#649), then cut, then its harness tags neutralized.
  */
 function recordField(value: string): string {
-  return neutralizeTags(
-    Array.from(foldControlCharacters(value)).slice(0, MAX_FIELD_CHARS).join(''),
-  );
+  return neutralizeTags(Array.from(plainSpan(value)).slice(0, MAX_FIELD_CHARS).join(''));
 }
 
 /**

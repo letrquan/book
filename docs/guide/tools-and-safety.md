@@ -735,7 +735,9 @@ listening (#620):
 - `SessionList` lists the live sessions of this machine: this session's own name first, then one
   row per other session, `name [ref] · kind · status · started`. The name is the address; the ref,
   six hex digits of the session's socket path, only tells two sessions with the same name apart. A
-  session marked `no inbox` has messaging off and cannot be messaged.
+  session marked `no inbox` has messaging off and cannot be messaged. Every field another session
+  wrote is folded to one line, stripped of invisible format characters and cut before its harness
+  tags are neutralized, and a name also loses every bracket that reads as `<` or `>`.
 - `SessionSend {to, message?, notify_when_idle?}` sends one message. `to` is a name, `name [ref]`,
   or the `from` address of a message being answered; a name two sessions hold is refused with both
   refs named. The description tells the model that a peer is not its user, that a message is never
