@@ -307,6 +307,39 @@ export interface FileObservation {
   timestamp: number;
 }
 
+/**
+ * What the permission check judges a call by when its tool's primary argument can spell one target
+ * several ways (`ToolDefinition.canonicalizeForPermission`): `SessionSend`'s `to` is a session's
+ * name, its `name [ref]`, or the `uds:` address a reply copies (#653).
+ */
+export interface PermissionSubject {
+  /**
+   * The call's arguments with the target in its canonical spelling. The permission prompt shows
+   * them, and "Always allow" saves the rule built from them.
+   */
+  args: Record<string, unknown>;
+  /** The spellings `allow` rules and session approvals match: those that name the target alone. */
+  allow: readonly string[];
+  /** The spellings `deny` and `ask` rules and hook matchers match: every one that reaches it. */
+  restrict: readonly string[];
+  /**
+   * How the tool reads a rule's pattern for this target beyond a glob over those spellings, and
+   * only ever more strictly: `allows` says whether an allow rule's pattern may admit the target at
+   * all, and `alsoRestricts` adds the patterns a deny or ask rule's pattern binds as well (`null`:
+   * every target).
+   */
+  rules?: {
+    allows?(pattern: string): boolean;
+    alsoRestricts?(pattern: string): readonly (string | null)[];
+  };
+  /**
+   * Set when the call can never run however it is approved, its target being gone, say. The loop
+   * refuses it with this result once the deny rules and the tool's own activity have been checked,
+   * before any prompt, so nothing is approved or saved for it.
+   */
+  refusal?: ToolResult;
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -334,6 +367,18 @@ export interface ToolDefinition {
    * both sides reading the same number.
    */
   timeoutMs?: number | ((context: ToolContext) => number | undefined);
+  /**
+   * What the permission check judges a call by, for a tool whose primary argument can spell one
+   * target several ways: the agent loop asks it before the call's PreToolUse hooks and permission
+   * check, in every mode that offers the tool, so hooks and rules apply to the target the call
+   * reaches rather than to how it was typed. `undefined` judges the call as typed. The loop hands
+   * the subject back to `execute` as `context.permissionSubject`, so the call acts on exactly what
+   * was judged. A throw refuses the call; `context.signal` cancels it.
+   */
+  canonicalizeForPermission?: (
+    args: Record<string, unknown>,
+    context: ToolContext,
+  ) => Promise<PermissionSubject | undefined>;
   execute: (args: Record<string, unknown>, context: ToolContext) => Promise<ToolResult>;
 }
 
@@ -389,6 +434,12 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** Stable trace identity of the tool currently executing. */
   currentToolTraceId?: string;
+  /**
+   * What the permission check judged the call now executing by, when its tool canonicalized it
+   * (`ToolDefinition.canonicalizeForPermission`); unset for any other call. Set by the agent loop
+   * for each call it runs, as `currentToolTraceId` is.
+   */
+  permissionSubject?: PermissionSubject;
   /** Current model-loop turn, used for bounded skill activation frames. */
   currentTurn?: number;
   /** Observer for display-only tools invoked inside Task subagents. */

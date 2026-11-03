@@ -1,7 +1,12 @@
 import { realpathSync } from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
 import type { ResolvedSettings } from './settings.js';
-import type { PermissionDecision, PermissionResult, ToolCall } from './types/tools.js';
+import type {
+  PermissionDecision,
+  PermissionResult,
+  PermissionSubject,
+  ToolCall,
+} from './types/tools.js';
 import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg, namesSessionByAddress, toolPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex, globWalkPlan } from './tools/glob-regex.js';
@@ -161,6 +166,12 @@ export interface PermissionEvaluationOptions {
    * reads `'` as a quote; see {@link hasCompoundShellSyntax}.
    */
   shell?: ScanShell;
+  /**
+   * The call's target in each spelling its tool knows (`ToolDefinition.canonicalizeForPermission`),
+   * matched in place of the primary argument as typed: `allow` rules match `allow`, and `deny` and
+   * `ask` rules match `restrict`, each rule's pattern read as the subject's `rules` say.
+   */
+  subject?: Pick<PermissionSubject, 'allow' | 'restrict' | 'rules'>;
 }
 
 /** Read-only file tools whose targets inside the workspace need no prompt (#264). */
@@ -312,6 +323,27 @@ function ruleMatches(rule: ParsedRule, toolName: string, primaryArg: string): bo
 }
 
 /**
+ * A rule as the tool of a call's {@link PermissionEvaluationOptions.subject} reads it for that
+ * call's target (`PermissionSubject.rules`), and only ever more strictly: an allow rule the tool
+ * says may not admit the target reads as none, and a deny or ask rule also reads as each pattern the
+ * tool adds. Any other rule, a rule on another tool, and a rule on the whole tool read as written.
+ */
+function rulesAsJudged(
+  rule: ParsedRule,
+  toolName: string,
+  restrictive: boolean,
+  subject: Pick<PermissionSubject, 'rules'> | undefined,
+): ParsedRule[] {
+  const rules = subject?.rules;
+  if (!rules || rule.pattern === null || !toolNameMatchesRule(rule.toolName, toolName)) {
+    return [rule];
+  }
+  if (!restrictive) return rules.allows?.(rule.pattern) === false ? [] : [rule];
+  const also = rules.alsoRestricts?.(rule.pattern) ?? [];
+  return [rule, ...also.map((pattern) => ({ toolName: rule.toolName, pattern }))];
+}
+
+/**
  * Whether a Bash allow rule is an exact rule: it names a pattern and the pattern has no `*`. Any
  * other pattern is a glob rule, and a bare `Bash` (no pattern) admits every call.
  *
@@ -450,7 +482,9 @@ export function permissionRuleForToolCall(call: ToolCall): string | undefined {
     return `Bash(${command})`;
   }
   if (toolName === 'WebSearch') return toolName;
-  // A session named by its inbox is approved once, never remembered (`namesSessionByAddress`).
+  // A session named by its inbox is approved once, never remembered (`namesSessionByAddress`). The
+  // loop asks with the recipient in its canonical spelling (#653): the bare name, which a rule can
+  // keep, while no other live session holds it, and `name [ref]` while one does.
   if (namesSessionByAddress(toolName, call.arguments)) return undefined;
   const scope = ruleScopeOf(toolName, toolPrimaryArg(toolName, call.arguments));
   if (!scope || RULE_WILDCARD.test(scope.taken)) return undefined;
@@ -468,7 +502,8 @@ export interface MissingRuleReason {
   wildcard: boolean;
   /**
    * A `SessionSend` to a session named by its inbox (`name [ref]`, `uds:`): a rule for it would
-   * outlive the session, so none is offered (`namesSessionByAddress`).
+   * outlive the session, so none is offered (`namesSessionByAddress`). Canonically spelled, that
+   * is a session whose name another live session also holds.
    */
   sessionAddress?: boolean;
 }
@@ -582,11 +617,18 @@ export function permissionRuleMatchesCall(
   call: ToolCall,
   platform: NodeJS.Platform = process.platform,
   shell?: ScanShell,
+  /** What the call's tool gave the permission check to judge it by (`PermissionSubject`). */
+  subject?: Pick<PermissionSubject, 'allow' | 'rules'>,
 ): boolean {
   const toolName = canonicalToolName(call.name);
   // This feeds the session approve-all rules, which act as an allow.
   if (toolName === 'Bash') {
     return bashAllowRuleMatches(parseRule(rule), call.arguments.command, platform, shell);
+  }
+  if (subject) {
+    return rulesAsJudged(parseRule(rule), toolName, false, subject).some((judged) =>
+      subject.allow.some((spelling) => ruleMatches(judged, toolName, spelling)),
+    );
   }
   const primaryArg = toolPrimaryArg(toolName, call.arguments);
   if (toolName === 'WebFetch' && primaryArg) {
@@ -1248,11 +1290,20 @@ export function evaluatePermissionDetail(
   // A rule about a file applies however the call spells its path: `Read(.env)` must also stop
   // `D:/ws/.env` and `src/../.env`, which the glob on the raw argument misses. Resolved only when
   // a rule names the tool, since resolving touches the file system.
-  const candidates: string[] = [toolPrimaryArg(tool, args)];
+  // A target its tool spells for the rules (`options.subject`) is matched in those spellings only.
+  const subject = options.subject;
+  const candidates: string[] = subject ? [...subject.allow] : [toolPrimaryArg(tool, args)];
   let restrictiveCandidates: string[] =
-    tool === 'Bash' ? bashRestrictiveCandidates(args.command, candidates[0]) : candidates;
+    tool === 'Bash'
+      ? bashRestrictiveCandidates(args.command, candidates[0])
+      : subject
+        ? [...subject.restrict]
+        : candidates;
   if (scope && paths && PATH_RULE_TOOLS.has(tool) && rulesName(parsed, tool)) {
-    restrictiveCandidates = [...candidates, ...pathRuleSpellings(paths, tool, args, true)];
+    restrictiveCandidates = [
+      ...restrictiveCandidates,
+      ...pathRuleSpellings(paths, tool, args, true),
+    ];
     // `allow` is offered only the spellings a `Write` would have written: the raw argument, the
     // path as given, and its canonical form. It is not offered the form relative to an honored
     // root, so a workspace-shaped allow such as `Edit(src/**)` cannot come to mean
@@ -1273,7 +1324,9 @@ export function evaluatePermissionDetail(
         // Invalid URLs retain the normal raw-argument matching behavior.
       }
     }
-    return pool.some((candidate) => ruleMatchesCandidate(rule, tool, candidate, fold));
+    return rulesAsJudged(rule, tool, fold, subject).some((judged) =>
+      pool.some((candidate) => ruleMatchesCandidate(judged, tool, candidate, fold)),
+    );
   };
   // What a Read, Glob or Grep reaches. Judged wherever a refusal may follow from it: in the modes
   // that judge reads, and in `dontAsk`, which refuses the call regardless and must refuse it with

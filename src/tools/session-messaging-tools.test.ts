@@ -17,20 +17,24 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import type {
   PeerSendOutcome,
   PeerSendRequest,
+  PeerSessionListing,
   PeerSessionRow,
   SessionMessagingHandle,
 } from '../types/messaging.js';
-import type { ToolResult } from '../types/tools.js';
+import type { HookEntry } from '../settings.js';
+import type { ToolCall, ToolContext, ToolResult } from '../types/tools.js';
 import { READ_ONLY_PLAN_TOOLS } from './plan-mode.js';
 import { getPrimaryArg, toolPrimaryArg } from './primary-arg.js';
 import { createDefaultRegistry } from './registry.js';
 import { formatSessionListing, createSessionListTool } from './session-list.js';
 import {
   createSessionSendTool,
+  judgeSessionSend,
   SESSION_SEND_DESCRIPTION,
   sessionSendResult,
 } from './session-send.js';
-import { peerSessionRow } from '../messaging/addressing.js';
+import { listingRows } from '../input/session-mentions.js';
+import { peerSessionRow, resolvePeerAddress } from '../messaging/addressing.js';
 import { FILE_MUTATING_TOOLS, OUTWARD_FACING_TOOLS } from './tool-capabilities.js';
 import { encodeUdsAddress } from '../messaging/wire.js';
 
@@ -219,36 +223,62 @@ describe('SessionSend results', () => {
   });
 });
 
-/** A handle that records every send. */
-function fakeMessaging(sharedName = false): SessionMessagingHandle & { sends: PeerSendRequest[] } {
-  const sends: PeerSendRequest[] = [];
-  return {
-    sends,
+/** A second live session called peer-b: with it, the name is shared. */
+const twin = row('peer-b', {
+  ref: 'ffffff',
+  socketPath: '/tmp/socks/peer-b-2.sock',
+  sessionId: 'session-peer-b-2',
+});
+
+/** peer-b's reply address, as a message's `from` carries it. */
+const PEER_B_ADDRESS = encodeUdsAddress('/tmp/socks/peer-b.sock');
+
+/** Every spelling of peer-b a call may use. */
+const SPELLINGS = ['peer-b', ' peer-b', 'peer-b [a1b2c3]', PEER_B_ADDRESS];
+
+type FakeMessaging = SessionMessagingHandle & {
+  sends: PeerSendRequest[];
+  /** What the registry holds now: swap it as sessions come and go. */
+  listing: PeerSessionListing;
+  /** How many times anything resolved an address through the handle. */
+  resolves: number;
+  /** How many times anything read the registry through the handle. */
+  lists: number;
+};
+
+/** A handle over a registry of this session and peer-b (and its twin, when `sharedName`). */
+function fakeMessaging(sharedName = false): FakeMessaging {
+  const messaging: FakeMessaging = {
+    sends: [],
+    listing: {
+      self: row('me', { self: true, ref: 'eeeeee' }),
+      peers: [row('peer-b'), ...(sharedName ? [twin] : [])],
+    },
+    resolves: 0,
+    lists: 0,
     available: () => true,
-    list: async () => ({ self: row('me', { self: true }), peers: [row('peer-b')] }),
+    list: async () => {
+      messaging.lists++;
+      return messaging.listing;
+    },
     resolve: async (to) => {
-      const target = row('peer-b') as PeerSessionRow & { socketPath: string };
-      if (sharedName && to.trim() === 'peer-b') {
-        return {
-          ok: false,
-          problem: 'ambiguous',
-          candidates: [target, row('peer-b', { ref: 'ffffff' })],
-        };
-      }
-      const spellings = ['peer-b', 'peer-b [a1b2c3]', encodeUdsAddress(target.socketPath)];
-      return spellings.includes(to.trim())
-        ? { ok: true, target }
-        : { ok: false, problem: 'not_found', candidates: [] };
+      messaging.resolves++;
+      return resolvePeerAddress(listingRows(messaging.listing), to);
     },
     send: async (request) => {
-      sends.push(request);
-      return { status: 'sent', target: row('peer-b'), msgId: `m${sends.length}` };
+      messaging.sends.push(request);
+      return {
+        status: 'sent',
+        target: request.target ?? row('peer-b'),
+        msgId: `m${messaging.sends.length}`,
+      };
     },
   };
+  return messaging;
 }
 
-/** Turn 1 calls SessionList and SessionSend; every later turn answers with text. */
-function provider(to = 'peer-b'): Provider {
+/** Turn 1 calls SessionList, then SessionSend to each `to`; every later turn answers with text. */
+function provider(tos: readonly string[]): Provider {
   let turn = 0;
   return {
     id: 'scripted',
@@ -259,14 +289,16 @@ function provider(to = 'peer-b'): Provider {
           type: 'tool_call' as const,
           toolCall: { id: 'l1', name: 'SessionList', arguments: {} },
         };
-        yield {
-          type: 'tool_call' as const,
-          toolCall: {
-            id: 's1',
-            name: 'SessionSend',
-            arguments: { to, message: 'hello' },
-          },
-        };
+        for (const [index, to] of tos.entries()) {
+          yield {
+            type: 'tool_call' as const,
+            toolCall: {
+              id: `s${index + 1}`,
+              name: 'SessionSend',
+              arguments: { to, message: 'hello' },
+            },
+          };
+        }
       } else {
         yield { type: 'text' as const, content: 'done' };
       }
@@ -304,18 +336,32 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       ask?: string[];
       allow?: string[];
       to?: string;
+      /** A second SessionSend in the same response. */
+      then?: string;
       shared?: boolean;
       answer?: 'allow' | 'always';
+      /** Runs while a prompt is open, before it is answered. */
+      whilePrompting?: (messaging: FakeMessaging) => void;
+      configure?: (messaging: FakeMessaging) => void;
+      preToolUse?: HookEntry[];
+      postToolUse?: HookEntry[];
+      signal?: AbortSignal;
     } = {},
   ) {
     const messaging = fakeMessaging(options.shared);
+    options.configure?.(messaging);
     const registry = createDefaultRegistry();
     registry.registerAll([createSessionListTool(messaging), createSessionSendTool(messaging)]);
     const config = defaultConfig({ workspace, maxTurns: 2 });
     if (options.deny) config.settings.permissions.deny = options.deny;
     if (options.ask) config.settings.permissions.ask = options.ask;
     if (options.allow) config.settings.permissions.allow = options.allow;
-    const prompted = vi.fn(async () => options.answer ?? ('allow' as const));
+    if (options.preToolUse) config.settings.hooks.PreToolUse = options.preToolUse;
+    if (options.postToolUse) config.settings.hooks.PostToolUse = options.postToolUse;
+    const prompted = vi.fn(async (_call: ToolCall) => {
+      options.whilePrompting?.(messaging);
+      return options.answer ?? ('allow' as const);
+    });
     const persisted: string[] = [];
     const results: ToolResult[] = [];
     await runAgentLoop(
@@ -330,8 +376,9 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       }),
       mode,
       {
-        provider: provider(options.to),
+        provider: provider([options.to ?? 'peer-b', ...(options.then ? [options.then] : [])]),
         isNewSession: false,
+        ...(options.signal ? { signal: options.signal } : {}),
         ...(options.allowedTools ? { allowedTools: options.allowedTools } : {}),
         ...(options.isSubagent ? { isSubagent: true } : {}),
       },
@@ -340,11 +387,14 @@ describe('SessionList and SessionSend permissions (D7)', () => {
     return {
       list: byId('l1'),
       send: byId('s1'),
+      second: byId('s2'),
       sends: messaging.sends,
+      resolves: messaging.resolves,
+      lists: messaging.lists,
       persisted,
-      promptedFor: prompted.mock.calls.map(
-        (call) => (call as unknown as [{ name: string }])[0].name,
-      ),
+      promptedFor: prompted.mock.calls.map(([call]) => call.name),
+      /** The recipient each prompt named. */
+      promptedTo: prompted.mock.calls.map(([call]) => call.arguments.to),
     };
   }
 
@@ -382,91 +432,338 @@ describe('SessionList and SessionSend permissions (D7)', () => {
     }
   });
 
-  it('holds a deny rule even under bypassPermissions, however `to` spells the session', async () => {
-    for (const mode of ['bypassPermissions', 'auto']) {
-      for (const to of ['peer-b', ' peer-b', 'peer-b [a1b2c3]', 'uds:/tmp/socks/peer-b.sock']) {
-        const outcome = await run(mode, { deny: ['SessionSend(peer-b)'], to });
-        expect(outcome.send?.structuredError?.code, `${mode} ${to}`).toBe('permission_denied');
-        expect(outcome.sends, `${mode} ${to}`).toEqual([]);
+  it('judges a call by the session it reaches, in every spelling of it (#653)', () => {
+    const rows = [row('me', { self: true, ref: 'eeeeee' }), row('peer-b')];
+    const unique = judgeSessionSend(rows, { to: PEER_B_ADDRESS, message: 'hi' }).subject;
+    expect(unique).toMatchObject({
+      args: { to: 'peer-b', message: 'hi' },
+      allow: ['peer-b', 'peer-b [a1b2c3]', PEER_B_ADDRESS],
+      restrict: [PEER_B_ADDRESS, 'peer-b', 'peer-b [a1b2c3]'],
+    });
+    expect(unique.refusal).toBeUndefined();
+    // Any allow rule may admit a session whose name is unique.
+    expect(unique.rules?.allows?.('peer-*') ?? true).toBe(true);
+    // A shared name: only the ref and the address name the session, and the prompt shows the ref.
+    const shared = judgeSessionSend([...rows, twin], { to: 'peer-b [A1B2C3]' }).subject;
+    expect(shared).toMatchObject({
+      args: { to: 'peer-b [a1b2c3]' },
+      allow: ['peer-b [a1b2c3]', PEER_B_ADDRESS],
+      restrict: ['peer-b [A1B2C3]', 'peer-b', 'peer-b [a1b2c3]', PEER_B_ADDRESS],
+    });
+    // Then only a rule that names its ref or its address may allow it.
+    for (const pattern of ['peer-b', 'peer-*', '*', 'peer-b [ffffff]', 'uds:/tmp/socks/*']) {
+      expect(shared.rules?.allows?.(pattern), pattern).toBe(false);
+    }
+    for (const pattern of ['peer-b [a1b2c3]', 'peer-* [A1B2C3]', PEER_B_ADDRESS]) {
+      expect(shared.rules?.allows?.(pattern), pattern).toBe(true);
+    }
+    // A deny or ask rule with a ref binds the name; one with a ref alone binds every session.
+    expect(shared.rules?.alsoRestricts?.('peer-b [ffffff]')).toEqual(['peer-b']);
+    expect(shared.rules?.alsoRestricts?.('[ffffff]')).toEqual([null]);
+    expect(shared.rules?.alsoRestricts?.('peer-b')).toEqual([]);
+    // A `to` that reaches no session is judged as typed, and refused with the reason.
+    const nobody = judgeSessionSend(rows, { to: ' nobody ' }).subject;
+    expect(nobody).toMatchObject({
+      args: { to: ' nobody ' },
+      allow: ['nobody'],
+      restrict: ['nobody'],
+    });
+    expect(nobody.refusal?.structuredError?.code).toBe('session_not_found');
+  });
+
+  it('covers every spelling of the session with a bare-name allow rule while the name is unique', async () => {
+    for (const to of SPELLINGS) {
+      const outcome = await run('default', { allow: ['SessionSend(peer-b)'], to });
+      expect(outcome.promptedFor, to).toEqual([]);
+      expect(outcome.sends, to).toHaveLength(1);
+      expect(outcome.sends[0].target, to).toMatchObject({ sessionId: 'session-peer-b' });
+    }
+  });
+
+  it('asks, despite a bare-name allow rule, once another live session holds the name', async () => {
+    const allow = ['SessionSend(peer-b)'];
+    // The bare name reaches neither session: it is answered with both refs, and nothing is sent.
+    const bare = await run('default', { allow, shared: true });
+    expect(bare.send?.structuredError?.code).toBe('session_ambiguous');
+    expect(bare.promptedFor).toEqual([]);
+    expect(bare.sends).toEqual([]);
+    for (const to of ['peer-b [a1b2c3]', PEER_B_ADDRESS, 'peer-b [ffffff]']) {
+      const outcome = await run('default', { allow, shared: true, to });
+      expect(outcome.promptedFor, to).toEqual(['SessionSend']);
+      expect(outcome.sends, to).toHaveLength(1);
+    }
+  });
+
+  it('covers one session with an allow rule written with its ref, however `to` spells it', async () => {
+    const allow = ['SessionSend(peer-b [a1b2c3])'];
+    for (const to of SPELLINGS) {
+      expect((await run('default', { allow, to })).promptedFor, to).toEqual([]);
+    }
+    for (const to of ['peer-b [a1b2c3]', PEER_B_ADDRESS]) {
+      expect((await run('default', { allow, shared: true, to })).promptedFor, to).toEqual([]);
+    }
+    // Not the other session of that name.
+    const twinCall = await run('default', { allow, shared: true, to: 'peer-b [ffffff]' });
+    expect(twinCall.promptedFor).toEqual(['SessionSend']);
+  });
+
+  it('holds a deny rule on any spelling of the session, however `to` spells it, in every mode', async () => {
+    for (const rule of [
+      'SessionSend(peer-b)',
+      'SessionSend(peer-b [a1b2c3])',
+      `SessionSend(${PEER_B_ADDRESS})`,
+    ]) {
+      for (const mode of ['default', 'accept-edits', 'auto', 'bypassPermissions', 'dontAsk']) {
+        for (const to of SPELLINGS) {
+          const key = `${rule} ${mode} ${to}`;
+          const outcome = await run(mode, { deny: [rule], allow: ['SessionSend(peer-b)'], to });
+          expect(outcome.send?.structuredError?.code, key).toBe('permission_denied');
+          expect(outcome.promptedFor, key).toEqual([]);
+          expect(outcome.sends, key).toEqual([]);
+        }
       }
     }
   });
 
-  it('reads a rule written with a ref as the rule on the name', async () => {
-    for (const mode of ['bypassPermissions', 'auto']) {
-      for (const to of ['peer-b', 'peer-b [a1b2c3]', 'uds:/tmp/socks/peer-b.sock']) {
-        const outcome = await run(mode, { deny: ['SessionSend(peer-b [a1b2c3])'], to });
-        expect(outcome.send?.structuredError?.code, `${mode} ${to}`).toBe('permission_denied');
-        expect(outcome.sends, `${mode} ${to}`).toEqual([]);
+  it('asks the user at once on an ask rule naming any spelling of the session', async () => {
+    for (const rule of [
+      'SessionSend(peer-b)',
+      'SessionSend(peer-b [a1b2c3])',
+      `SessionSend(${PEER_B_ADDRESS})`,
+    ]) {
+      for (const to of SPELLINGS) {
+        const key = `${rule} ${to}`;
+        // Past an allow rule, in every mode that asks, and with no model turn spent on a refusal.
+        for (const mode of ['default', 'accept-edits', 'auto']) {
+          const outcome = await run(mode, { ask: [rule], allow: ['SessionSend(peer-b)'], to });
+          expect(outcome.promptedFor, `${key} ${mode}`).toEqual(['SessionSend']);
+          expect(outcome.promptedTo, `${key} ${mode}`).toEqual(['peer-b']);
+          expect(outcome.sends, `${key} ${mode}`).toHaveLength(1);
+        }
+        // dontAsk refuses what it would have asked; bypassPermissions asks about nothing (#527).
+        const refused = await run('dontAsk', { ask: [rule], allow: ['SessionSend(peer-b)'], to });
+        expect(refused.send?.structuredError?.code, key).toBe('permission_denied');
+        expect(refused.sends, key).toEqual([]);
+        const bypassed = await run('bypassPermissions', { ask: [rule], to });
+        expect(bypassed.promptedFor, key).toEqual([]);
+        expect(bypassed.sends, key).toHaveLength(1);
       }
     }
-    const spelled = await run('auto', { ask: ['SessionSend(peer-b [a1b2c3])'], to: 'peer-b' });
-    expect(spelled.send?.structuredError?.code).toBe('ask_rule_spelling');
-    expect(spelled.send?.structuredError?.remediation).toContain('"peer-b [a1b2c3]"');
-    // The call the rule names is asked, and once approved it is sent.
-    const exact = await run('auto', {
-      ask: ['SessionSend(peer-b [a1b2c3])'],
-      to: 'peer-b [a1b2c3]',
-    });
-    expect(exact.promptedFor).toEqual(['SessionSend']);
-    expect(exact.send?.status).toBe('success');
-    expect(exact.sends).toHaveLength(1);
   });
 
   it('binds every session of the name with a deny or ask rule written with a ref', async () => {
-    // Another live session called peer-b (ref ffffff) is not the one the rule's ref names.
-    for (const mode of ['bypassPermissions', 'auto', 'default']) {
-      const outcome = await run(mode, { deny: ['SessionSend(peer-b [ffffff])'] });
-      expect(outcome.send?.structuredError?.code, mode).toBe('permission_denied');
-      expect(outcome.sends, mode).toEqual([]);
+    // Another session called peer-b (ref ffffff) is the one the rule's ref names: a ref comes from a
+    // pid-named socket, so the rule holds for the name, which is stricter.
+    for (const mode of ['default', 'auto', 'bypassPermissions']) {
+      for (const to of SPELLINGS) {
+        const outcome = await run(mode, { deny: ['SessionSend(peer-b [ffffff])'], to });
+        expect(outcome.send?.structuredError?.code, `${mode} ${to}`).toBe('permission_denied');
+        expect(outcome.sends, `${mode} ${to}`).toEqual([]);
+      }
     }
-    const asked = await run('auto', { ask: ['SessionSend(peer-b [ffffff])'] });
-    expect(asked.send?.structuredError?.code).toBe('ask_rule_spelling');
-    expect(asked.sends).toEqual([]);
+    for (const to of SPELLINGS) {
+      const asked = await run('auto', { ask: ['SessionSend(peer-b [ffffff])'], to });
+      expect(asked.promptedFor, to).toEqual(['SessionSend']);
+      expect(asked.sends, to).toHaveLength(1);
+    }
   });
 
-  it('never persists an approval given on a ref or an address', async () => {
-    for (const to of ['peer-b [a1b2c3]', 'uds:/tmp/socks/peer-b.sock']) {
+  it('binds every session with a deny or ask rule written with a ref alone, as before #653', async () => {
+    // A ref alone names no session's name: such a rule has always bound every send, which is the
+    // stricter reading, so it stays.
+    for (const mode of ['default', 'auto', 'bypassPermissions']) {
+      for (const to of ['peer-b', 'peer-b [ffffff]']) {
+        const outcome = await run(mode, { deny: ['SessionSend([a1b2c3])'], shared: true, to });
+        expect(outcome.send?.structuredError?.code, `${mode} ${to}`).toBe('permission_denied');
+        expect(outcome.sends, `${mode} ${to}`).toEqual([]);
+      }
+    }
+    const asked = await run('auto', { ask: ['SessionSend([ffffff])'], to: PEER_B_ADDRESS });
+    expect(asked.promptedFor).toEqual(['SessionSend']);
+  });
+
+  it('lets only a rule naming its ref or address allow a session whose name is shared', async () => {
+    for (const allow of ['SessionSend(peer-*)', 'SessionSend(*)', 'SessionSend(peer-b)']) {
+      for (const to of ['peer-b [a1b2c3]', PEER_B_ADDRESS]) {
+        const outcome = await run('default', { allow: [allow], shared: true, to });
+        expect(outcome.promptedFor, `${allow} ${to}`).toEqual(['SessionSend']);
+      }
+      // The same rules cover it while the name is unique.
+      expect((await run('default', { allow: [allow], to: PEER_B_ADDRESS })).promptedFor).toEqual(
+        [],
+      );
+    }
+    for (const allow of [
+      'SessionSend(peer-b [a1b2c3])',
+      'SessionSend(peer-* [a1b2c3])',
+      `SessionSend(${PEER_B_ADDRESS})`,
+      // A rule on the whole tool allows every call of it.
+      'SessionSend',
+    ]) {
+      for (const to of ['peer-b [a1b2c3]', PEER_B_ADDRESS]) {
+        const outcome = await run('default', { allow: [allow], shared: true, to });
+        expect(outcome.promptedFor, `${allow} ${to}`).toEqual([]);
+        expect(outcome.sends, `${allow} ${to}`).toHaveLength(1);
+      }
+    }
+  });
+
+  it('names a session by its address when another one answers to the same name and ref', async () => {
+    // A ref is 24 bits of a hash of a path the peer chooses: a peer can grind one to match.
+    const impostor = row('peer-b', {
+      socketPath: '/tmp/socks/impostor.sock',
+      sessionId: 'session-impostor',
+    });
+    const address = encodeUdsAddress('/tmp/socks/impostor.sock');
+    const subject = judgeSessionSend(
+      [row('me', { self: true, ref: 'eeeeee' }), row('peer-b'), impostor],
+      { to: address },
+    ).subject;
+    expect(subject).toMatchObject({ args: { to: address }, allow: [address] });
+    expect(subject.restrict).toContain('peer-b [a1b2c3]');
+    expect(subject.rules?.allows?.('peer-b [a1b2c3]')).toBe(false);
+    expect(subject.rules?.allows?.(address)).toBe(true);
+    // An allow rule written for the real peer-b admits neither, and nothing is saved.
+    for (const to of [address, PEER_B_ADDRESS]) {
+      const outcome = await run('default', {
+        allow: ['SessionSend(peer-b [a1b2c3])'],
+        to,
+        answer: 'always',
+        configure: (messaging) => {
+          messaging.listing = { ...messaging.listing, peers: [row('peer-b'), impostor] };
+        },
+      });
+      expect(outcome.promptedTo, to).toEqual([to]);
+      expect(outcome.persisted, to).toEqual([]);
+    }
+  });
+
+  it('refuses a send to no live session before any prompt, and saves nothing', async () => {
+    for (const [to, shared, code] of [
+      ['nobody', false, 'session_not_found'],
+      ['me', false, 'session_is_self'],
+      ['peer-b', true, 'session_ambiguous'],
+      ['uds:/tmp/socks/gone.sock', false, 'session_not_found'],
+    ] as const) {
+      for (const mode of ['default', 'auto', 'dontAsk']) {
+        const outcome = await run(mode, { to, shared, answer: 'always' });
+        expect(outcome.send?.structuredError?.code, `${mode} ${to}`).toBe(code);
+        expect(outcome.promptedFor, `${mode} ${to}`).toEqual([]);
+        expect(outcome.persisted, `${mode} ${to}`).toEqual([]);
+        expect(outcome.sends, `${mode} ${to}`).toEqual([]);
+      }
+    }
+    // A deny rule still speaks first.
+    const denied = await run('default', { to: 'nobody', deny: ['SessionSend(nobody)'] });
+    expect(denied.send?.structuredError?.code).toBe('permission_denied');
+  });
+
+  it('matches PreToolUse and PostToolUse hooks on every spelling of the session', async () => {
+    const block = (matcher: string): HookEntry => ({ matcher, command: 'exit 2', env: {} });
+    for (const matcher of [
+      'SessionSend(peer-b)',
+      'SessionSend(peer-*)',
+      `SessionSend(${PEER_B_ADDRESS})`,
+    ]) {
+      for (const to of SPELLINGS) {
+        const outcome = await run('bypassPermissions', { to, preToolUse: [block(matcher)] });
+        expect(outcome.send?.structuredError?.code, `${matcher} ${to}`).toBe('hook_blocked');
+        expect(outcome.sends, `${matcher} ${to}`).toEqual([]);
+      }
+    }
+    // Another session's hook does not fire.
+    const other = await run('bypassPermissions', {
+      to: PEER_B_ADDRESS,
+      preToolUse: [block('SessionSend(prod-*)')],
+    });
+    expect(other.sends).toHaveLength(1);
+    const rewrite: HookEntry = {
+      matcher: 'SessionSend(peer-b)',
+      command:
+        process.platform === 'win32'
+          ? 'echo {"action":"modify","output":"HOOKED"}'
+          : 'echo \'{"action":"modify","output":"HOOKED"}\'',
+      env: {},
+    };
+    const post = await run('bypassPermissions', { to: PEER_B_ADDRESS, postToolUse: [rewrite] });
+    expect(post.send?.content).toBe('HOOKED');
+  });
+
+  it('reads the registry only for a call that can run: not in plan mode, not without an inbox', async () => {
+    // SessionList's own read is the only one.
+    expect((await run('default')).lists).toBe(2);
+    expect((await run('plan')).lists).toBe(1);
+    const offline = await run('default', {
+      configure: (messaging) => {
+        messaging.available = () => false;
+      },
+    });
+    expect(offline.lists).toBe(0);
+    expect(offline.sends).toEqual([]);
+  });
+
+  it('reports a failed registry read only once the tool is found able to run', async () => {
+    const failing = (messaging: FakeMessaging) => {
+      messaging.list = async () => {
+        throw new Error('EACCES');
+      };
+    };
+    // Left out by an allowed-tools list: refused as such, not as a failed read.
+    const inactive = await run('bypassPermissions', {
+      allowedTools: ['Read', 'SessionList'],
+      configure: failing,
+    });
+    expect(inactive.send?.structuredError?.code).not.toBe('permission_check_failed');
+    expect(inactive.sends).toEqual([]);
+  });
+
+  it('cancels at once when the turn is cancelled during the registry read', async () => {
+    const controller = new AbortController();
+    const outcome = await run('bypassPermissions', {
+      configure: (messaging) => {
+        const list = messaging.list;
+        messaging.list = async () => {
+          // SessionList's read answers; the permission check's hangs until the turn is cancelled.
+          if (messaging.lists > 0) {
+            controller.abort();
+            return new Promise(() => {});
+          }
+          return list();
+        };
+      },
+      signal: controller.signal,
+    });
+    expect(outcome.send?.structuredError?.code).toBe('cancelled_before_start');
+    expect(outcome.sends).toEqual([]);
+  });
+
+  it('saves the bare name from "Always allow" on any spelling, and nothing while the name is shared', async () => {
+    for (const to of SPELLINGS) {
       const outcome = await run('default', { to, answer: 'always' });
-      expect(outcome.promptedFor, to).toEqual(['SessionSend']);
+      expect(outcome.promptedTo, to).toEqual(['peer-b']);
+      expect(outcome.persisted, to).toEqual(['SessionSend(peer-b)']);
+      expect(outcome.sends, to).toHaveLength(1);
+    }
+    // Asked about as `name [ref]` while shared, and approved once: a ref comes from the session's
+    // pid-named socket, so a rule saved for it could admit a later session that reuses the pid.
+    for (const to of ['peer-b [a1b2c3]', PEER_B_ADDRESS]) {
+      const outcome = await run('default', { to, shared: true, answer: 'always' });
+      expect(outcome.promptedTo, to).toEqual(['peer-b [a1b2c3]']);
       expect(outcome.persisted, to).toEqual([]);
       expect(outcome.sends, to).toHaveLength(1);
     }
-    expect((await run('default', { answer: 'always' })).persisted).toEqual(['SessionSend(peer-b)']);
   });
 
-  it('lets an allow rule with a ref cover only that session', async () => {
-    const allow = ['SessionSend(peer-b [a1b2c3])'];
-    expect((await run('default', { allow, to: 'peer-b [a1b2c3]' })).promptedFor).toEqual([]);
-    expect((await run('default', { allow, to: 'peer-b [ffffff]' })).promptedFor).toEqual([
-      'SessionSend',
-    ]);
-  });
-
-  it('sends the model back to the name an ask rule matches, so the rule can ask (auto)', async () => {
-    const spelled = await run('auto', {
-      ask: ['SessionSend(peer-b)'],
-      to: 'uds:/tmp/socks/peer-b.sock',
+  it('lets an "Always allow" cover the session for the rest of the session, however it is spelled', async () => {
+    const outcome = await run('default', {
+      to: 'peer-b [a1b2c3]',
+      then: PEER_B_ADDRESS,
+      answer: 'always',
     });
-    expect(spelled.promptedFor).toEqual([]);
-    expect(spelled.send?.structuredError?.code).toBe('ask_rule_spelling');
-    expect(spelled.send?.structuredError?.remediation).toContain('"peer-b"');
-    expect(spelled.sends).toEqual([]);
-    const named = await run('auto', { ask: ['SessionSend(peer-b)'] });
-    expect(named.promptedFor).toEqual(['SessionSend']);
-    expect(named.sends).toHaveLength(1);
-  });
-
-  it('asks, despite an allow rule on the bare name, for a shared name or another spelling', async () => {
-    const allow = ['SessionSend(peer-b)'];
-    expect((await run('default', { allow })).promptedFor).toEqual([]);
-    // A shared name: the bare call is answered with the refs, and the `name [ref]` retry asks.
-    const shared = await run('default', { allow, shared: true });
-    expect(shared.send?.structuredError?.code).toBe('session_ambiguous');
-    expect(shared.sends).toEqual([]);
-    for (const to of ['peer-b [a1b2c3]', 'uds:/tmp/socks/peer-b.sock']) {
-      expect((await run('default', { allow, to })).promptedFor, to).toEqual(['SessionSend']);
-    }
+    expect(outcome.promptedFor).toEqual(['SessionSend']);
+    expect(outcome.persisted).toEqual(['SessionSend(peer-b)']);
+    expect(outcome.second?.status).toBe('success');
+    expect(outcome.sends).toHaveLength(2);
   });
 
   it('sends to the session it resolved and checked, and only to it', async () => {
@@ -474,6 +771,55 @@ describe('SessionList and SessionSend permissions (D7)', () => {
       socketPath: '/tmp/socks/peer-b.sock',
       sessionId: 'session-peer-b',
     });
+  });
+
+  it('sends only to the session the permission check judged, whatever the registry holds by then', async () => {
+    // While the prompt is open, peer-b ends and a session the rules deny takes its pid's socket.
+    const outcome = await run('default', {
+      to: PEER_B_ADDRESS,
+      deny: ['SessionSend(evil)'],
+      whilePrompting: (messaging) => {
+        messaging.listing = {
+          self: messaging.listing.self,
+          peers: [row('evil', { socketPath: '/tmp/socks/peer-b.sock', sessionId: 'session-evil' })],
+        };
+      },
+    });
+    expect(outcome.promptedTo).toEqual(['peer-b']);
+    // The send names peer-b's session id, so the runtime refuses it as gone rather than reach evil.
+    expect(outcome.sends).toHaveLength(1);
+    expect(outcome.sends[0].target).toMatchObject({ name: 'peer-b', sessionId: 'session-peer-b' });
+    expect(outcome.resolves).toBe(0);
+  });
+
+  it('refuses a call whose session cannot be read for the permission check, and sends nothing', async () => {
+    const outcome = await run('bypassPermissions', {
+      configure: (messaging) => {
+        messaging.list = async () => {
+          throw new Error('EACCES: permission denied, scandir');
+        };
+      },
+    });
+    expect(outcome.send?.structuredError?.code).toBe('permission_check_failed');
+    expect(outcome.send?.structuredError?.message).toContain('EACCES');
+    expect(outcome.sends).toEqual([]);
+  });
+
+  it('sends nothing for a call no permission check judged', async () => {
+    const messaging = fakeMessaging();
+    const tool = createSessionSendTool(messaging);
+    const unchecked = await tool.execute({ to: 'peer-b', message: 'hi' }, {} as ToolContext);
+    expect(unchecked.structuredError?.code).toBe('permission_unchecked');
+    // Nor for one run with a subject judged for another `to`.
+    const permissionSubject = await tool.canonicalizeForPermission!(
+      { to: 'peer-b', message: 'hi' },
+      {} as ToolContext,
+    );
+    const other = await tool.execute({ to: 'peer-b [a1b2c3]', message: 'hi' }, {
+      permissionSubject,
+    } as ToolContext);
+    expect(other.structuredError?.code).toBe('permission_unchecked');
+    expect(messaging.sends).toEqual([]);
   });
 
   it('is not offered to a skill or command whose allowed tools leave it out, nor to a child agent', async () => {
@@ -511,7 +857,7 @@ describe('SessionSend notify_when_idle (#620 PR 6)', () => {
     const sends: PeerSendRequest[] = [];
     const messaging: SessionMessagingHandle = {
       available: () => true,
-      list: async () => ({ peers: [] }),
+      list: async () => ({ peers: [row('peer-b')] }),
       resolve: async () => ({
         ok: true,
         target: row('peer-b') as PeerSessionRow & { socketPath: string },
@@ -522,8 +868,11 @@ describe('SessionSend notify_when_idle (#620 PR 6)', () => {
       },
     };
     const tool = createSessionSendTool(messaging);
-    const call = (args: Record<string, unknown>) =>
-      tool.execute(args, {} as Parameters<typeof tool.execute>[1]);
+    // As the agent loop runs it: judged for permission first, then run with what was judged.
+    const call = async (args: Record<string, unknown>) => {
+      const permissionSubject = await tool.canonicalizeForPermission?.(args, {} as ToolContext);
+      return tool.execute(args, { permissionSubject } as ToolContext);
+    };
     return { sends, call };
   }
   const target = row('peer-b');
