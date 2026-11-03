@@ -632,13 +632,15 @@ function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): WorkspaceGi
       // `.git` file, so its directory is the work tree root — what a relative
       // `core.hooksPath` in that worktree's config is resolved against.
       const workTreeGitdir = host.readFile(host.path.join(linked, 'gitdir'))?.trim();
-      if (workTreeGitdir) {
-        const resolvedGitdir = host.path.isAbsolute(workTreeGitdir)
+      // Relative to the worktree's own directory (git 2.48's relative worktree
+      // paths), not to wherever Book runs.
+      const resolvedGitdir = workTreeGitdir
+        ? host.path.isAbsolute(workTreeGitdir)
           ? workTreeGitdir
-          : host.path.join(linked, workTreeGitdir);
-        pointerPaths.push(resolvedGitdir);
-      }
-      add(linked, workTreeGitdir ? host.path.dirname(workTreeGitdir) : root);
+          : host.path.join(linked, workTreeGitdir)
+        : null;
+      if (resolvedGitdir) pointerPaths.push(resolvedGitdir);
+      add(linked, resolvedGitdir ? host.path.dirname(resolvedGitdir) : root);
     }
     // `<gitdir>/modules/<path>` holds the git dir of the submodule at `<path>`,
     // and `<path>` is the submodule's own path in the work tree — which can have
@@ -1065,11 +1067,23 @@ export function protectedWorkspacePaths(
     addFile(dotGit);
   }
 
+  // A path a file's contents named (an `[include]`, a work tree from a `gitdir`
+  // file) at the workspace's own spelling, where its mount has to land, when its
+  // directory is inside the workspace. The last component keeps its own spelling,
+  // so a symlink there is still refused rather than followed.
+  const spelledInWorkspace = (path: string): string => {
+    const resolved = host.path.resolve(path);
+    const directory = canonicalPath(host.path.dirname(resolved), host);
+    if (isOutside(canonicalRoot, directory, host.path)) return resolved;
+    const rel = host.path.relative(canonicalRoot, directory);
+    return host.path.join(rel ? host.path.resolve(root, rel) : root, host.path.basename(resolved));
+  };
+
   // Config files already read, so an `include` chain that names one of them ends
   // at the file rather than descending for ever.
   const configsRead = new Set<string>();
   const readConfig = (file: string, workTree: string, depth: number): void => {
-    const at = host.path.resolve(file);
+    const at = spelledInWorkspace(file);
     if (configsRead.has(at)) return;
     configsRead.add(at);
     const size = host.fileSize(at);
@@ -1115,7 +1129,7 @@ export function protectedWorkspacePaths(
     // to find the git dir. It is read-only in both modes for the same reason —
     // rewriting it to `gitdir: ../evil` moves every control path above onto a
     // repository the command built.
-    const workTreePointer = host.path.join(gitDir.workTree, '.git');
+    const workTreePointer = spelledInWorkspace(host.path.join(gitDir.workTree, '.git'));
     if (host.entryKind(workTreePointer) === 'file') addFile(workTreePointer);
     // `core.hooksPath` moves the hook directory out of the git dir entirely —
     // husky v9 points it at `.husky/_` — so a config this namespace leaves
@@ -1637,14 +1651,20 @@ export function buildSandboxExecution(
   );
   const pins = denyWritePins(deniedWrites, writableRoots, paths, host);
   // A protected file is bound only where the command could write it: inside the
-  // workspace or a writable root, as `denyWrite` is applied. Anywhere else (a
-  // config an `[include]` names, a linked work tree's `.git` pointer) it is not
-  // in the namespace at all, so there is nothing there to protect, and a bind
-  // would only add it. The host still reads it for `core.hooksPath`.
-  const boundWhereWritable = (mount: ProtectedMount): boolean => {
-    if (mount.kind !== 'file') return true;
+  // workspace or a writable root, and at that root's own spelling plus the rest,
+  // as `denyWrite` is applied. Anywhere else (a config an `[include]` names, a
+  // linked work tree's `.git` pointer) it is not in the namespace at all, so
+  // there is nothing there to protect, and a bind would only add it. The host
+  // still reads it for `core.hooksPath`.
+  const protectedAt = (mount: ProtectedMount): ProtectedMount | null => {
+    if (mount.kind !== 'file') return mount;
     const canonical = canonicalPath(mount.path, host);
-    return writableRoots.some((root) => !isOutside(root.canonical, canonical, host.path));
+    const container = writableRoots
+      .filter((candidate) => !isOutside(candidate.canonical, canonical, host.path))
+      .sort((left, right) => right.canonical.length - left.canonical.length)[0];
+    if (!container) return null;
+    const rest = host.path.relative(container.canonical, canonical);
+    return { ...mount, path: rest ? host.path.resolve(container.at, rest) : container.at };
   };
 
   const mounts: NamespaceMount[] = [];
@@ -1675,8 +1695,8 @@ export function buildSandboxExecution(
   // The credential masks are left for the end, after everything that could
   // bind the directory holding one.
   for (const mount of paths.mounts) {
-    const skipped = mount.kind === 'hidden-file' || !boundWhereWritable(mount);
-    const applied = skipped ? null : protectedMount(mount, host);
+    const bound = mount.kind === 'hidden-file' ? null : protectedAt(mount);
+    const applied = bound ? protectedMount(bound, host) : null;
     if (applied) mounts.push(applied);
   }
   // ...and only now the opt-ins for the protected areas themselves, with the
@@ -1696,8 +1716,8 @@ export function buildSandboxExecution(
       (optIn) => !isOutside(optIn, mountCanonical, host.path) && optIn !== mountCanonical,
     );
     if (!strictlyBelowDeferredOptIn || deferredOptInCanonicals.includes(mountCanonical)) continue;
-    if (!boundWhereWritable(mount)) continue;
-    const applied = protectedMount(mount, host);
+    const bound = protectedAt(mount);
+    const applied = bound ? protectedMount(bound, host) : null;
     if (applied) mounts.push(applied);
   }
 

@@ -1763,6 +1763,74 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(lastMountFor(exec.args, '/work/.githooks').flag).toBe('--ro-bind');
     });
 
+    it('binds an included config where the workspace shows it, whatever spelling named it', () => {
+      // The workspace is opened as /l/ws, a link to /data/ws, and the include
+      // names the real path: a bind there would protect a second view while
+      // the workspace's own stayed writable.
+      const host = hostWith(
+        {
+          '/data/ws': 'dir',
+          '/data/ws/.git': 'dir',
+          '/data/ws/.git/HEAD': 'file',
+          '/data/ws/.git/objects': 'dir',
+          '/data/ws/.git/config': 'file',
+          '/data/ws/conf/hooks.gitconfig': 'file',
+          '/data/ws/.githooks': 'dir',
+          '/l': 'symlink',
+        },
+        {
+          '/data/ws/.git/config': '[include]\n\tpath = /data/ws/conf/hooks.gitconfig\n',
+          '/data/ws/conf/hooks.gitconfig': '[core]\n\thooksPath = .githooks\n',
+        },
+        { '/l': '/data' },
+      );
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        '/l/ws',
+        sandboxSettings(),
+        host,
+      );
+
+      expect(lastMountFor(exec.args, '/l/ws/conf/hooks.gitconfig').flag).toBe('--ro-bind');
+      expect(lastMountFor(exec.args, '/l/ws/.githooks').flag).toBe('--ro-bind');
+      expect(exec.args.some((arg) => arg.startsWith('/data'))).toBe(false);
+    });
+
+    it("binds a linked work tree's .git pointer named by a relative gitdir", () => {
+      // git 2.48 can write `gitdir` relative to the worktree's own directory.
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/HEAD': 'file',
+          '/work/.git/objects': 'dir',
+          '/work/.git/worktrees/wt': 'dir',
+          '/work/.git/worktrees/wt/HEAD': 'file',
+          '/work/.git/worktrees/wt/commondir': 'file',
+          '/work/.git/worktrees/wt/gitdir': 'file',
+          '/work/wt': 'dir',
+          '/work/wt/.git': 'file',
+        },
+        {
+          '/work/.git/worktrees/wt/commondir': '../..\n',
+          '/work/.git/worktrees/wt/gitdir': '../../../wt/.git\n',
+          '/work/wt/.git': 'gitdir: ../.git/worktrees/wt\n',
+        },
+      );
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        sandboxSettings(),
+        host,
+      );
+
+      expect(lastMountFor(exec.args, '/work/wt/.git').flag).toBe('--ro-bind');
+    });
+
     it("binds a linked work tree's .git pointer only inside the workspace", () => {
       // `.git/worktrees/<name>/gitdir` names the work tree's own `.git` file,
       // wherever the work tree is.
@@ -3874,6 +3942,49 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
         } finally {
           rmSync(outside, { recursive: true, force: true });
           rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('keeps an included config read-only when the workspace is opened through a link', async () => {
+        const base = mkdtempSync(join(tmpdir(), 'book-sandbox-linked-ws-'));
+        const real = join(base, 'real');
+        const repo = join(real, 'ws');
+        mkdirSync(repo, { recursive: true });
+        execFileSync('git', ['init', '--quiet'], { cwd: repo });
+        symlinkSync(real, join(base, 'alias'));
+        const workspace = join(base, 'alias', 'ws');
+        const included = join(repo, 'conf', 'hooks.gitconfig');
+        mkdirSync(dirname(included));
+        writeFileSync(included, '[core]\n\thooksPath = .githooks\n');
+        mkdirSync(join(repo, '.githooks'));
+        // The include names the real path, not the spelling the workspace is opened at.
+        writeFileSync(
+          join(repo, '.git', 'config'),
+          `[core]\n\trepositoryformatversion = 0\n[include]\n\tpath = ${included}\n`,
+        );
+        try {
+          // Wrapped directly: the Bash tool hands the sandbox the workspace's real
+          // path, and this is about one opened at another spelling (`book -w`
+          // through a link, `BOOK_WORKSPACE`).
+          const sandbox = createSandbox(sandboxSettings({ allowUnsandboxedCommands: false }));
+          // Through the workspace's own spelling: bwrap starts in the physical cwd,
+          // so a relative path would land at the real one.
+          const exec = sandbox?.wrap(
+            `printf x >> '${join(workspace, 'conf', 'hooks.gitconfig')}'; printf x > '${join(workspace, '.githooks', 'pre-commit')}'; true`,
+            workspace,
+          );
+          expect(exec).toBeTruthy();
+          const run = execFileSync(exec!.file, exec!.args, {
+            cwd: workspace,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+
+          expect(typeof run).toBe('string');
+          expect(readFileSync(included, 'utf8')).toBe('[core]\n\thooksPath = .githooks\n');
+          expect(existsSync(join(repo, '.githooks', 'pre-commit'))).toBe(false);
+        } finally {
+          rmSync(base, { recursive: true, force: true });
         }
       });
 
