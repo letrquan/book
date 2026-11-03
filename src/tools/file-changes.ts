@@ -13,7 +13,7 @@
 
 import { createHash } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
-import { lstat, open, realpath } from 'node:fs/promises';
+import { lstat, open, realpath, type FileHandle } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { mapLimited } from '../async.js';
 import { redactSecrets } from '../provider-secrets.js';
@@ -40,10 +40,15 @@ const MAX_SNIPPET_LINE_CHARS = 160;
 const MAX_BASELINE_BYTES = 64 * 1024;
 /** All the remembered texts together, least recently observed dropped first. */
 const MAX_BASELINE_TOTAL_BYTES = 2 * 1024 * 1024;
-/** A bigger file is not read again to be judged: it goes unreported rather than cost a turn. */
-const MAX_JUDGED_BYTES = 16 * 1024 * 1024;
+/**
+ * A bigger file is not read again to be judged: it goes unreported rather than cost a turn. Checked
+ * on the opened handle too, so a file that grows after its `lstat` is not read whole.
+ */
+export const MAX_JUDGED_BYTES = 16 * 1024 * 1024;
 /** Where the platform has it (not Windows), a read that refuses to follow a final link. */
 const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
+/** Where the platform has it, an open that does not wait for a writer when a FIFO stands there. */
+const NO_BLOCK = constants.O_NONBLOCK ?? 0;
 
 export interface ChangedObservedFile {
   /** The ledger key. */
@@ -97,8 +102,42 @@ function samePath(a: string, b: string): boolean {
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
+function sameFile(a: Stats, b: Stats): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
 function looksBinary(bytes: Uint8Array): boolean {
   return bytes.subarray(0, 8192).includes(0);
+}
+
+/**
+ * Whether an opened handle holds the file the checks before the open vetted, and the path still
+ * names that file, with no link on the way, once it is open. The checks go by path, so they cannot
+ * be atomic with the open: `O_NOFOLLOW` guards only the last component (and Windows has no such
+ * flag), so a directory above the file swapped for a link in between, or on Windows the file
+ * itself, leaves the handle on another file, and its identity then differs from the vetted one or
+ * from what the path names now. A process that swaps a workspace directory back and forth several
+ * times inside one check can still slip past; that needs a writer already in the workspace.
+ */
+async function holdsVettedFile(path: string, vetted: Stats, held: Stats): Promise<boolean> {
+  if (!sameFile(vetted, held)) return false;
+  return sameFile(await lstat(path), held) && samePath(await realpath(path), path);
+}
+
+/**
+ * The `size` bytes an opened file holds, or `undefined` when it grew or shrank while it was read
+ * (it is judged again next turn). Never reads more than one byte past `size`, which tells growth
+ * apart from the end of the file.
+ */
+async function readExactly(handle: FileHandle, size: number): Promise<Buffer | undefined> {
+  const buffer = Buffer.allocUnsafe(size + 1);
+  let total = 0;
+  while (total < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+    if (bytesRead === 0) break;
+    total += bytesRead;
+  }
+  return total === size ? buffer.subarray(0, size) : undefined;
 }
 
 /**
@@ -271,40 +310,48 @@ export class FileChangeTracker {
    * A link is never followed. The observed path is the file's real one, so a link at it, or a
    * directory above it that became one, means something else stands there now: it is reported as
    * changed and never read, so a checkout or a peer cannot point the notice at `~/.npmrc` or a
-   * denied `.env` and have its lines diffed into the prompt.
+   * denied `.env` and have its lines diffed into the prompt. A handle that turns out to hold
+   * another file than the one checked is not read either (`holdsVettedFile`), and a file with
+   * another name (a hard link, which may be any file on this filesystem) is reported without its
+   * lines.
    */
   private async judge(
     key: string,
     absolutePath: string,
     observation: FileObservation,
   ): Promise<{ sha: string; text?: string } | undefined> {
-    let info;
+    let vetted: Stats;
     try {
-      info = await lstat(absolutePath);
-      if (info.isSymbolicLink()) return { sha: REPLACED };
-      if (!info.isFile()) return { sha: DELETED };
+      vetted = await lstat(absolutePath);
+      if (vetted.isSymbolicLink()) return { sha: REPLACED };
+      if (!vetted.isFile()) return { sha: DELETED };
       if (!samePath(await realpath(absolutePath), absolutePath)) return { sha: REPLACED };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
       return { sha: DELETED };
     }
-    if (info.size > MAX_JUDGED_BYTES) return undefined;
+    if (vetted.size > MAX_JUDGED_BYTES) return undefined;
     const last = this.judged.get(key);
-    if (last && last.observedSha === observation.sha256 && statVouches(last, info)) {
+    if (last && last.observedSha === observation.sha256 && statVouches(last, vetted)) {
       return { sha: last.currentSha };
     }
     // Taken before the read, as `StatStamp.judgedAt` must be.
     const judgedAt = this.now();
     let bytes: Buffer;
-    let read: Stats;
+    let held: Stats;
     try {
-      const handle = await open(absolutePath, constants.O_RDONLY | NO_FOLLOW);
+      const handle = await open(absolutePath, constants.O_RDONLY | NO_FOLLOW | NO_BLOCK);
       try {
         // The verdict is keyed on the stat of the handle the bytes come from, not the `lstat` above:
         // a write between the two must not be cached under the times of the file it replaced.
-        read = await handle.stat();
-        if (!read.isFile()) return { sha: REPLACED };
-        bytes = await handle.readFile();
+        held = await handle.stat();
+        if (!held.isFile()) return { sha: REPLACED };
+        // Another file than the one checked, or one past the cap: not read, and judged next turn.
+        if (!(await holdsVettedFile(absolutePath, vetted, held))) return undefined;
+        if (held.size > MAX_JUDGED_BYTES) return undefined;
+        const read = await readExactly(handle, held.size);
+        if (!read) return undefined;
+        bytes = read;
       } finally {
         await handle.close();
       }
@@ -313,12 +360,12 @@ export class FileChangeTracker {
     }
     const sha = createHash('sha256').update(bytes).digest('hex');
     this.judged.set(key, {
-      ...statStamp(read, judgedAt),
+      ...statStamp(held, judgedAt),
       observedSha: observation.sha256,
       currentSha: sha,
     });
     const text =
-      bytes.byteLength <= MAX_BASELINE_BYTES && !looksBinary(bytes)
+      held.nlink <= 1 && bytes.byteLength <= MAX_BASELINE_BYTES && !looksBinary(bytes)
         ? bytes.toString('utf8')
         : undefined;
     return { sha, ...(text !== undefined ? { text } : {}) };

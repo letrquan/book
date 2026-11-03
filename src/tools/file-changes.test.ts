@@ -1,31 +1,66 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  linkSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FileChangeTracker, changeSnippet, MAX_CHANGED_FILES_PER_TURN } from './file-changes.js';
+import {
+  FileChangeTracker,
+  changeSnippet,
+  MAX_CHANGED_FILES_PER_TURN,
+  MAX_JUDGED_BYTES,
+} from './file-changes.js';
 import { observeFile, requireFreshObservation } from './file-provenance.js';
 import { patchTools } from './patch.js';
 import type { SessionRuntime } from '../session/runtime.js';
 
-/** Every path the tracker opens to read, so a test can tell a cached verdict from a fresh read. */
-const opened = vi.hoisted(() => ({ paths: [] as string[] }));
+/**
+ * Every path the tracker opens to read, so a test can tell a cached verdict from a fresh read; the
+ * bytes read through each handle; and a hook run just before an open, where a racing process
+ * would act between the tracker's checks and the open.
+ */
+const opened = vi.hoisted(() => ({
+  paths: [] as string[],
+  bytes: new Map<string, number>(),
+  before: undefined as ((path: string) => void) | undefined,
+}));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const tally = (path: string, count: number) =>
+    opened.bytes.set(path, (opened.bytes.get(path) ?? 0) + count);
   return {
     ...actual,
-    open: (...args: Parameters<typeof actual.open>) => {
-      opened.paths.push(String(args[0]));
-      return actual.open(...args);
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const path = String(args[0]);
+      opened.paths.push(path);
+      opened.before?.(path);
+      const handle = await actual.open(...args);
+      const read = handle.read.bind(handle) as (
+        ...rest: unknown[]
+      ) => Promise<{ bytesRead: number }>;
+      const readFile = handle.readFile.bind(handle) as (...rest: unknown[]) => Promise<Buffer>;
+      return Object.assign(handle, {
+        read: async (...rest: unknown[]) => {
+          const result = await read(...rest);
+          tally(path, result.bytesRead);
+          return result;
+        },
+        readFile: async (...rest: unknown[]) => {
+          const result = await readFile(...rest);
+          tally(path, result.length);
+          return result;
+        },
+      });
     },
   };
 });
@@ -38,6 +73,8 @@ let ledger: Map<string, FileObservation>;
 let ctx: ToolContext;
 
 beforeEach(() => {
+  opened.before = undefined;
+  opened.bytes.clear();
   workspace = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-file-changes-')));
   tracker = new FileChangeTracker();
   ledger = new Map();
@@ -307,6 +344,70 @@ describe('changed-on-disk detection (#620 4a)', () => {
     expect(changeSnippet('a\nb\n', 'a\nc\n')).toEqual(['@@ -1 +1 @@', ' a', '-b', '+c']);
     expect(changeSnippet(lines(500), lines(500, 'x'))).toBeUndefined();
     expect(changeSnippet('same\n', 'same\n')).toBeUndefined();
+  });
+});
+
+describe('the changed-on-disk read reaches only the observed file (#648)', () => {
+  it('reports a file that became a hard link as changed, without its lines', async () => {
+    const file = write('a.txt', 'one\n');
+    await observeFile(ctx, file, 'read');
+    // Another name for a file elsewhere on this filesystem, as `ln ~/.npmrc a.txt` makes one.
+    const other = write('other.txt', 'token=ghp_linked_secret\n');
+    unlinkSync(file);
+    linkSync(other, file);
+
+    const files = await collect();
+
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatchObject({ absolutePath: file });
+    expect(files[0]!.snippet).toBeUndefined();
+    expect(JSON.stringify(files)).not.toContain('secret');
+  });
+
+  it('neither reads nor diffs a file grown past the cap after its stat', async () => {
+    const file = write('a.txt', 'one\n');
+    await observeFile(ctx, file, 'read');
+    writeFileSync(file, 'two\n');
+    opened.before = (path) => {
+      if (path === file) truncateSync(file, MAX_JUDGED_BYTES + 1);
+    };
+
+    expect(await collect()).toEqual([]);
+    expect(opened.bytes.get(file) ?? 0).toBe(0);
+  });
+
+  it('reads nothing through a directory swapped for a link between its checks and the open', async () => {
+    const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-file-changes-out-')));
+    try {
+      writeFileSync(join(outside, 'creds.txt'), 'one\ntoken=ghp_outside_secret\n');
+      mkdirSync(join(workspace, 'src'));
+      const file = write(join('src', 'creds.txt'), 'one\n');
+      await observeFile(ctx, file, 'read');
+      // `src` becomes a link once the checks have passed, just before the open: O_NOFOLLOW guards
+      // the last component only, so the open itself goes through it.
+      opened.before = (path) => {
+        if (path !== file) return;
+        opened.before = undefined;
+        renameSync(join(workspace, 'src'), join(workspace, 'src-moved'));
+        symlinkSync(
+          outside,
+          join(workspace, 'src'),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+      };
+
+      // The handle holds another file than the one checked: nothing is read or reported.
+      expect(await collect()).toEqual([]);
+      expect(opened.bytes.get(file) ?? 0).toBe(0);
+      // The next turn's checks see the link: the path is reported replaced, still unread.
+      const files = await collect();
+      expect(files).toHaveLength(1);
+      expect(files[0]!.snippet).toBeUndefined();
+      expect(JSON.stringify(files)).not.toContain('secret');
+      expect(opened.bytes.get(file) ?? 0).toBe(0);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
 
