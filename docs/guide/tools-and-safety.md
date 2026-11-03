@@ -1255,10 +1255,14 @@ the read-only config. A `git config --global` or `--system` write is left out of
 `core.hooksPath` is read from every config that can set it. **Every** `hooksPath` value in a `[core]`
 section is protected rather than the first (git takes the last), unquoted `;` and `#` comments are
 stripped, and `[core "x"]` is not counted as `[core]`. `[include]` and `[includeIf]` files are
-followed the way git follows them — relative to the including file's directory, with `~/` expanded —
-and a followed file inside the workspace is bound read-only and parsed for `hooksPath` in turn,
+followed the way git follows them — an absolute path as written, `~/` from the home directory, and
+anything else relative to the including file's directory — and a followed file inside the workspace
+is bound read-only, where the workspace shows it, and parsed for `hooksPath` in turn,
 because a config that could add a `hooksPath` to a file the command may rewrite is a config the
-command wrote. A git config is read with a **1 MiB** cap; a larger one is refused outright rather than
+command wrote. Under bubblewrap a protected git file (a followed config, a linked work tree's `.git`
+pointer) is bound only inside the workspace or an `allowWrite` root, where a command could write
+it; one outside all of them is still read for `hooksPath`, but it is not visible inside the sandbox.
+A git config is read with a **1 MiB** cap; a larger one is refused outright rather than
 truncated, since a truncated read is a `hooksPath` past the cut that the namespace never saw.
 
 **A symlinked control path is refused, not protected.** `.book`, `.git`, `.git/hooks`,
