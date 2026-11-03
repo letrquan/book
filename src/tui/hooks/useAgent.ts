@@ -2112,6 +2112,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         fresh.every((notification) => notification.rootRunId === fresh[0]?.rootRunId)
           ? fresh[0]?.rootRunId
           : undefined;
+      // An agent a pinned turn spawned keeps that turn's class for its completion (#650), after
+      // the user's own turn cleared the session's pin too; a batch runs in the strictest one.
+      const agentClass = fresh.reduce<PeerPermissionClass | undefined>(
+        (strictest, notification) => stricterClass(strictest, notification.peerTurnClass),
+        undefined,
+      );
       const result = await sendMessage(
         built.map((item) => item.displayMessage).join('\n'),
         undefined,
@@ -2121,6 +2127,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           agentNotifications: built.map((item) => item.display),
           rootRunId: sharedRootRunId,
           parentRunId: sharedRootRunId ? fresh[0]?.runId : undefined,
+          ...(agentClass !== undefined ? { peerTurnClass: agentClass } : {}),
         },
       );
       return didSendMessageComplete(result);

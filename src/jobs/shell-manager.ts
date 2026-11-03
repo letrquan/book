@@ -15,6 +15,7 @@ import type {
   CommandExecution,
 } from '../types/runtime.js';
 import type { PeerPermissionClass } from '../types/messaging.js';
+import { stricterClass } from '../messaging/receive-policy.js';
 import {
   ensurePersistentJobPaths,
   listPersistentStates,
@@ -947,9 +948,12 @@ export class ShellJobManager {
       parentSessionId: state.parentSessionId,
       rootRunId: state.rootRunId,
       parentRunId: state.parentRunId,
-      // From the record, or kept from this process when the record does not name one: a pin set
-      // here is never dropped by a read (#650).
-      peerTurnClass: persistedPeerTurnClass(state.peerTurnClass) ?? shell.peerTurnClass,
+      // The stricter of the record's class and the one this process holds: a read can tighten a
+      // pin but never drop or loosen one set here (#650).
+      peerTurnClass: stricterClass(
+        persistedPeerTurnClass(state.peerTurnClass),
+        shell.peerTurnClass,
+      ),
       completionSequence: state.completionSequence,
       // Only this process raises these two, and it raises them after it has already offered the
       // completion. A record that has not caught up — because the write failed, or because the

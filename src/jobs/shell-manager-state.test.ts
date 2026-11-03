@@ -166,7 +166,20 @@ describe('ShellJobManager persistent state recovery', () => {
       completionDeliveredSequence: 1,
     });
     expect(classOf('shell_prompting')).toBe('prompting');
+    // Nor can a record that names the looser class loosen it.
+    manager.acknowledgeCompletion('shell_prompting', 2, 'agent');
+    write('shell_prompting', {
+      revision: 7,
+      completionSequence: 3,
+      completionDeliveredSequence: 2,
+      peerTurnClass: 'bypass',
+    });
+    expect(classOf('shell_prompting')).toBe('prompting');
+    // A record can tighten one, though.
+    write('shell_bypass', { revision: 3, peerTurnClass: 'prompting' });
+    expect(classOf('shell_bypass')).toBe('prompting');
     expect(results.map((job) => [job.id, job.peerTurnClass])).toEqual([
+      ['shell_prompting', 'prompting'],
       ['shell_prompting', 'prompting'],
     ]);
     manager.dispose();

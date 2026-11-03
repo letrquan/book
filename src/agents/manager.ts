@@ -931,6 +931,7 @@ export class AgentManager {
       parentRunId: record.parentRunId,
       runId: record.runId,
       outcome: record.runOutcome,
+      ...(record.peerTurnClass !== undefined ? { peerTurnClass: record.peerTurnClass } : {}),
     };
   }
 

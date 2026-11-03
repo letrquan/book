@@ -271,6 +271,55 @@ describe('peer-message delivery in the TUI', () => {
     ]);
   });
 
+  it('pins the completion of a managed agent a pinned turn spawned, from its notification (#650)', async () => {
+    const messaging = fakeMessaging();
+    const { config, session } = fixture(messaging);
+    render(<Harness config={config} session={session} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const notification = (agentId: string, peerTurnClass?: 'bypass' | 'prompting') => ({
+      deliveryId: `${agentId}:1`,
+      sequence: 1,
+      completion: {
+        agentId,
+        displayName: agentId,
+        profile: 'explorer',
+        status: 'completed' as const,
+        resolvedModel: 'test/model',
+        isolation: 'workspace-readonly' as const,
+        summary: 'Done',
+        summaryCharacters: 4,
+        summaryTruncated: false,
+        errorCharacters: 0,
+        errorTruncated: false,
+        evidenceIds: [],
+        createdAt: 10,
+        startedAt: 20,
+        updatedAt: 80,
+        finishedAt: 80,
+      },
+      ...(peerTurnClass !== undefined ? { peerTurnClass } : {}),
+    });
+    // The user's own turn has cleared the session's pin: the class comes from the agent's record.
+    await latest!.send('the user types');
+    expect(await latest!.sendAgentCompletions([notification('agent-peer', 'bypass')])).toBe(true);
+    // A batch runs in the strictest class among its completions.
+    expect(
+      await latest!.sendAgentCompletions([
+        notification('agent-mine'),
+        notification('agent-peer-2', 'bypass'),
+        notification('agent-peer-3', 'prompting'),
+      ]),
+    ).toBe(true);
+    // An agent the user's own turn spawned names no class.
+    expect(await latest!.sendAgentCompletions([notification('agent-mine-2')])).toBe(true);
+    expect(loopState.calls.map((call) => call.peerTurnClass)).toEqual([
+      undefined,
+      'bypass',
+      'prompting',
+      undefined,
+    ]);
+  });
+
   it('does not start a peer turn whose sender no longer matches the mode', async () => {
     const messaging = fakeMessaging();
     const { config, session } = fixture(messaging);
