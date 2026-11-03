@@ -654,6 +654,199 @@ describe('SessionStore', () => {
     expect(loaded.rewindTargets[0].prompt).toBe('rename the module');
   });
 
+  describe('turns the host wrote into a run (#666)', () => {
+    // The loop appends these itself: the work-state refresh, a `[continuation]` prompt, the
+    // completion gate and a goal's feedback. They are user-role records written without a
+    // checkpoint of their own, because `useAgent` makes a rewind target only for a prepared send.
+    // A resumed session must list what the live one did: the prompts the user sent. A Book writes
+    // `hostWritten: true` on them now; an older one wrote only `derivedContent`.
+    const WORK_STATE =
+      '[work-state] Current plan, restated by the host. This is not a new instruction.';
+    const CONTINUATION = '[continuation] Continue with the remaining plan items.';
+    const GOAL_FEEDBACK = 'Stop hook feedback:\n[all tests pass]: 2 tests still fail';
+
+    const HOST_TURNS = [
+      ['ws1', WORK_STATE],
+      ['ct1', CONTINUATION],
+    ] as const;
+
+    function appendHostTurns(
+      writer: SessionStore,
+      id: string,
+      from: number,
+      marked: boolean,
+      turns: ReadonlyArray<readonly [string, string]> = HOST_TURNS,
+    ): void {
+      for (const [eventId, content] of turns) {
+        writer.append(id, {
+          type: 'user',
+          eventId,
+          timestamp: from,
+          data: {
+            id: eventId,
+            content,
+            derivedContent: true,
+            ...(marked ? { hostWritten: true } : {}),
+            kind: 'conversation',
+          },
+        });
+        writer.append(id, {
+          type: 'assistant',
+          timestamp: from + 1,
+          data: { content: 'more', complete: true },
+        });
+      }
+    }
+
+    function appendCheckpointedPrompt(writer: SessionStore, id: string): void {
+      writer.append(id, {
+        type: 'turn_checkpoint',
+        eventId: 'cp1',
+        timestamp: 1,
+        data: {
+          version: 1,
+          checkpointId: 'cp1',
+          userEventId: 'u1',
+          prompt: 'start',
+          checkpoint: { codeUnavailableReason: 'no git' },
+        },
+      });
+      writer.append(id, {
+        type: 'user',
+        eventId: 'u1',
+        timestamp: 1,
+        data: { id: 'u1', content: 'start' },
+      });
+      writer.append(id, {
+        type: 'assistant',
+        timestamp: 2,
+        data: { content: 'working', complete: true },
+      });
+    }
+
+    describe.each([
+      ['marked as the host writes them now', true],
+      ['unmarked, as an older Book wrote them', false],
+    ])('turns %s', (_name, marked) => {
+      it('lists the prompt the run started with, not the work-state and continuation turns', () => {
+        const writer = new SessionStore(dir);
+        const id = writer.create({ cwd: '/proj' });
+        appendCheckpointedPrompt(writer, id);
+        appendHostTurns(writer, id, 3, marked);
+
+        const loaded = new SessionStore(dir).load(id);
+
+        expect(loaded.rewindTargets.map((target) => [target.id, target.prompt])).toEqual([
+          ['cp1', 'start'],
+        ]);
+        // They are still history, host-written as they were: only the rewind list skips them.
+        const host = loaded.history.filter((message) => message.derivedContent);
+        expect(host.map((message) => message.content)).toEqual([WORK_STATE, CONTINUATION]);
+      });
+
+      it('mints no legacy target for them under a prompt that has none either', () => {
+        const writer = new SessionStore(dir);
+        const id = writer.create({ cwd: '/proj' });
+        writer.append(id, {
+          type: 'user',
+          eventId: 'u1',
+          timestamp: 1,
+          data: { id: 'u1', content: 'start' },
+        });
+        writer.append(id, {
+          type: 'assistant',
+          timestamp: 2,
+          data: { content: 'working', complete: true },
+        });
+        appendHostTurns(writer, id, 3, marked);
+
+        const loaded = new SessionStore(dir).load(id);
+
+        expect(loaded.rewindTargets.map((target) => target.id)).toEqual(['user:u1']);
+      });
+
+      it('still lists the next prompt the user sends, after them', () => {
+        const writer = new SessionStore(dir);
+        const id = writer.create({ cwd: '/proj' });
+        appendCheckpointedPrompt(writer, id);
+        appendHostTurns(writer, id, 3, marked);
+        writer.append(id, {
+          type: 'turn_checkpoint',
+          eventId: 'cp2',
+          timestamp: 6,
+          data: {
+            version: 1,
+            checkpointId: 'cp2',
+            userEventId: 'u2',
+            prompt: 'now the docs',
+            checkpoint: { codeUnavailableReason: 'no git' },
+          },
+        });
+        writer.append(id, {
+          type: 'user',
+          eventId: 'u2',
+          timestamp: 6,
+          data: { id: 'u2', content: 'now the docs' },
+        });
+
+        const loaded = new SessionStore(dir).load(id);
+
+        expect(loaded.rewindTargets.map((target) => target.id)).toEqual(['cp2', 'cp1']);
+      });
+    });
+
+    it('takes the mark, not the wording, for a turn a current Book wrote', () => {
+      const writer = new SessionStore(dir);
+      const id = writer.create({ cwd: '/proj' });
+      appendCheckpointedPrompt(writer, id);
+      appendHostTurns(writer, id, 3, true, [['gate', 'Address that, then finish.']]);
+
+      expect(new SessionStore(dir).load(id).rewindTargets.map((target) => target.id)).toEqual([
+        'cp1',
+      ]);
+    });
+
+    it('knows an older Books turn by what the host wrote: a goal feedback too', () => {
+      const writer = new SessionStore(dir);
+      const id = writer.create({ cwd: '/proj' });
+      appendCheckpointedPrompt(writer, id);
+      appendHostTurns(writer, id, 3, false, [
+        ['gate', '[continuation] A completion gate refused this as finished.'],
+        ['goal', GOAL_FEEDBACK],
+      ]);
+
+      expect(new SessionStore(dir).load(id).rewindTargets.map((target) => target.id)).toEqual([
+        'cp1',
+      ]);
+    });
+
+    it('keeps a resolved command turn that has no checkpoint: the user sent it', () => {
+      // A print-mode `/review` or a project command: the body is `derivedContent`, and print mode
+      // takes no checkpoint, so it is the legacy target that lists the turn after a resume.
+      const writer = new SessionStore(dir);
+      const id = writer.create({ cwd: '/proj' });
+      const body = 'Review the changes on this branch for correctness bugs.';
+      writer.append(id, {
+        type: 'user',
+        eventId: 'cmd1',
+        timestamp: 1,
+        data: { id: 'cmd1', content: body, derivedContent: true, kind: 'conversation' },
+      });
+      writer.append(id, {
+        type: 'assistant',
+        timestamp: 2,
+        data: { content: 'reviewing', complete: true },
+      });
+      appendHostTurns(writer, id, 3, true);
+
+      const loaded = new SessionStore(dir).load(id);
+
+      expect(loaded.rewindTargets.map((target) => [target.id, target.prompt])).toEqual([
+        ['user:cmd1', body],
+      ]);
+    });
+  });
+
   it('finds most recent session in a cwd (--continue)', () => {
     const s = new SessionStore(dir);
     const a = s.create({ cwd: '/proj' });

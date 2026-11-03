@@ -1,31 +1,81 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  appendFileSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FileChangeTracker, changeSnippet, MAX_CHANGED_FILES_PER_TURN } from './file-changes.js';
+import {
+  FileChangeTracker,
+  changeSnippet,
+  MAX_CHANGED_FILES_PER_TURN,
+  MAX_JUDGED_BYTES,
+} from './file-changes.js';
 import { observeFile, requireFreshObservation } from './file-provenance.js';
 import { patchTools } from './patch.js';
+import { promptSpan } from '../messaging/peer-text.js';
 import type { SessionRuntime } from '../session/runtime.js';
 
-/** Every path the tracker opens to read, so a test can tell a cached verdict from a fresh read. */
-const opened = vi.hoisted(() => ({ paths: [] as string[] }));
+/**
+ * Every path the tracker opens to read, so a test can tell a cached verdict from a fresh read; the
+ * bytes read through each handle; hooks run where a racing process would act (just before an open,
+ * between the tracker's checks and the open; just after it; just after a handle's stat, before the
+ * read); and the real paths a test makes `realpath` report, as a swap timed to it would.
+ */
+const opened = vi.hoisted(() => ({
+  paths: [] as string[],
+  bytes: new Map<string, number>(),
+  before: undefined as ((path: string) => void) | undefined,
+  afterOpen: undefined as ((path: string) => void) | undefined,
+  afterStat: undefined as ((path: string) => void) | undefined,
+  realpaths: new Map<string, string>(),
+}));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const tally = (path: string, count: number) =>
+    opened.bytes.set(path, (opened.bytes.get(path) ?? 0) + count);
   return {
     ...actual,
-    open: (...args: Parameters<typeof actual.open>) => {
-      opened.paths.push(String(args[0]));
-      return actual.open(...args);
+    realpath: async (...args: Parameters<typeof actual.realpath>) =>
+      opened.realpaths.get(String(args[0])) ?? actual.realpath(...args),
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const path = String(args[0]);
+      opened.paths.push(path);
+      opened.before?.(path);
+      const handle = await actual.open(...args);
+      opened.afterOpen?.(path);
+      const stat = handle.stat.bind(handle) as (...rest: unknown[]) => Promise<unknown>;
+      const read = handle.read.bind(handle) as (
+        ...rest: unknown[]
+      ) => Promise<{ bytesRead: number }>;
+      const readFile = handle.readFile.bind(handle) as (...rest: unknown[]) => Promise<Buffer>;
+      return Object.assign(handle, {
+        stat: async (...rest: unknown[]) => {
+          const result = await stat(...rest);
+          opened.afterStat?.(path);
+          return result;
+        },
+        read: async (...rest: unknown[]) => {
+          const result = await read(...rest);
+          tally(path, result.bytesRead);
+          return result;
+        },
+        readFile: async (...rest: unknown[]) => {
+          const result = await readFile(...rest);
+          tally(path, result.length);
+          return result;
+        },
+      });
     },
   };
 });
@@ -38,6 +88,11 @@ let ledger: Map<string, FileObservation>;
 let ctx: ToolContext;
 
 beforeEach(() => {
+  opened.before = undefined;
+  opened.afterOpen = undefined;
+  opened.afterStat = undefined;
+  opened.bytes.clear();
+  opened.realpaths.clear();
   workspace = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-file-changes-')));
   tracker = new FileChangeTracker();
   ledger = new Map();
@@ -307,6 +362,170 @@ describe('changed-on-disk detection (#620 4a)', () => {
     expect(changeSnippet('a\nb\n', 'a\nc\n')).toEqual(['@@ -1 +1 @@', ' a', '-b', '+c']);
     expect(changeSnippet(lines(500), lines(500, 'x'))).toBeUndefined();
     expect(changeSnippet('same\n', 'same\n')).toBeUndefined();
+  });
+
+  it('redacts a provider key written with an invisible character inside it (#649)', async () => {
+    const key = 'sk-live-0123456789abcdef';
+    const file = write('.env', 'A=1\n');
+    await observeFile(ctx, file, 'read');
+    // A zero-width space, a bidi mark, a bidi isolate, a Unicode tag character, a combining
+    // grapheme joiner and a variation selector.
+    const marks = ['\u200b', '\u200e', '\u2067', '\u{e0041}', '\u034f', '\ufe0f'];
+    const spellings = marks.map((mark) => `KEY=${key.slice(0, 8)}${mark}${key.slice(8)}`);
+    writeFileSync(file, `A=1\n${spellings.join('\n')}\n`);
+
+    const [changed] = (await tracker.collect({ ledger, workspace, secrets: [key] })).files;
+    // Each line as the prompt shows it: the invisible characters gone, which joins each key up.
+    const shown = changed!.snippet!.map(promptSpan).join('\n');
+
+    expect(shown.match(/\+KEY=/g)).toHaveLength(marks.length);
+    expect(shown.replace(/\s+/g, '')).not.toContain(key.slice(8));
+  });
+
+  it('leaves the diff out while a line spells a key split by a space or a control (#649)', async () => {
+    const key = 'sk-live-0123456789abcdef';
+    const files = [' ', '\u0001'].map((mark, index) => ({
+      file: write(`${index}.env`, 'A=1\n'),
+      text: `A=1\nKEY=${key.slice(0, 8)}${mark}${key.slice(8)}\n`,
+    }));
+    for (const { file } of files) await observeFile(ctx, file, 'read');
+    for (const { file, text } of files) writeFileSync(file, text);
+
+    const changed = (await tracker.collect({ ledger, workspace, secrets: [key] })).files;
+
+    expect(changed).toHaveLength(2);
+    expect(changed.every((entry) => entry.snippet === undefined)).toBe(true);
+  });
+});
+
+describe('the changed-on-disk read reaches only the observed file (#648)', () => {
+  it('reports a file that became a hard link as changed, without its lines', async () => {
+    const file = write('a.txt', 'one\n');
+    await observeFile(ctx, file, 'read');
+    // Another name for a file elsewhere on this filesystem, as `ln ~/.npmrc a.txt` makes one.
+    const other = write('other.txt', 'token=ghp_linked_secret\n');
+    unlinkSync(file);
+    linkSync(other, file);
+
+    const files = await collect();
+
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatchObject({ absolutePath: file });
+    expect(files[0]!.snippet).toBeUndefined();
+    expect(JSON.stringify(files)).not.toContain('secret');
+  });
+
+  it('reports a file without its lines when a name is unlinked and put back while it is read', async () => {
+    const file = write('a.txt', 'one\n');
+    await observeFile(ctx, file, 'read');
+    const other = write('other.txt', 'token=ghp_linked_secret\n');
+    unlinkSync(file);
+    linkSync(other, file);
+    // Between the open and the handle's stat, the observed name goes; before the last `lstat`, it
+    // comes back: the handle's own link count then shows a single name.
+    opened.afterOpen = (path) => {
+      if (path === file) unlinkSync(file);
+    };
+    opened.afterStat = (path) => {
+      if (path === file) linkSync(other, file);
+    };
+
+    const files = await collect();
+
+    expect(JSON.stringify(files)).not.toContain('secret');
+    expect(files.every((changed) => changed.snippet === undefined)).toBe(true);
+  });
+
+  it.runIf(process.platform === 'linux')(
+    'reads nothing through a link every path check was timed to miss, by the name Linux gives the handle',
+    async () => {
+      const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-file-changes-out-')));
+      try {
+        writeFileSync(join(outside, 'creds.txt'), 'one\ntoken=ghp_outside_secret\n');
+        mkdirSync(join(workspace, 'src'));
+        const file = write(join('src', 'creds.txt'), 'one\n');
+        await observeFile(ctx, file, 'read');
+        renameSync(join(workspace, 'src'), join(workspace, 'src-moved'));
+        symlinkSync(outside, join(workspace, 'src'), 'dir');
+        // A swapper that wins every race: each `realpath` lands while `src` is a directory again,
+        // and every `lstat` and the open while it is the link.
+        opened.realpaths.set(file, file);
+
+        expect(await collect()).toEqual([]);
+        expect(opened.bytes.get(file) ?? 0).toBe(0);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('neither reads nor diffs a file grown past the cap after its stat', async () => {
+    const file = write('a.txt', 'one\n');
+    await observeFile(ctx, file, 'read');
+    writeFileSync(file, 'two\n');
+    opened.before = (path) => {
+      if (path === file) truncateSync(file, MAX_JUDGED_BYTES + 1);
+    };
+
+    expect(await collect()).toEqual([]);
+    expect(opened.bytes.get(file) ?? 0).toBe(0);
+  });
+
+  it('reads a file appended to after its stat to its end', async () => {
+    const file = write('dev.log', 'one\n');
+    await observeFile(ctx, file, 'read');
+    opened.afterStat = (path) => {
+      if (path === file) appendFileSync(file, 'two\n');
+    };
+
+    const [changed] = await collect();
+
+    expect(changed!.snippet).toContain('+two');
+  });
+
+  it('stops one byte past the cap when a file grows past it while it is read', async () => {
+    const file = write('a.txt', 'one\n');
+    await observeFile(ctx, file, 'read');
+    opened.afterStat = (path) => {
+      if (path === file) truncateSync(file, MAX_JUDGED_BYTES + 2);
+    };
+
+    expect(await collect()).toEqual([]);
+    expect(opened.bytes.get(file)).toBe(MAX_JUDGED_BYTES + 1);
+  });
+
+  it('reads nothing through a directory swapped for a link between its checks and the open', async () => {
+    const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'book-file-changes-out-')));
+    try {
+      writeFileSync(join(outside, 'creds.txt'), 'one\ntoken=ghp_outside_secret\n');
+      mkdirSync(join(workspace, 'src'));
+      const file = write(join('src', 'creds.txt'), 'one\n');
+      await observeFile(ctx, file, 'read');
+      // `src` becomes a link once the checks have passed, just before the open: O_NOFOLLOW guards
+      // the last component only, so the open itself goes through it.
+      opened.before = (path) => {
+        if (path !== file) return;
+        opened.before = undefined;
+        renameSync(join(workspace, 'src'), join(workspace, 'src-moved'));
+        symlinkSync(
+          outside,
+          join(workspace, 'src'),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+      };
+
+      // The handle holds another file than the one checked: nothing is read or reported.
+      expect(await collect()).toEqual([]);
+      expect(opened.bytes.get(file) ?? 0).toBe(0);
+      // The next turn's checks see the link: the path is reported replaced, still unread.
+      const files = await collect();
+      expect(files).toHaveLength(1);
+      expect(files[0]!.snippet).toBeUndefined();
+      expect(JSON.stringify(files)).not.toContain('secret');
+      expect(opened.bytes.get(file) ?? 0).toBe(0);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
 

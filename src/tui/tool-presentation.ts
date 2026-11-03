@@ -10,7 +10,7 @@ import { refusedBeforeRun } from '../tools/pre-execution-codes.js';
 import { normalizePersistedTodos, type Todo } from '../tools/todo.js';
 import { stepProgress } from './steps.js';
 import { STATUS_INDICATORS } from './status-indicators.js';
-import { displayWidth, hardWrapLine, truncateDisplay, wordWrap } from './components/word-wrap.js';
+import { displayWidth, truncateDisplay, wordWrap } from './components/word-wrap.js';
 import {
   countOutputLines,
   expandTabs,
@@ -913,7 +913,8 @@ export interface ToolErrorDetail {
   column: number;
   /**
    * `… +36 lines (Ctrl+E)`: how many of a command's output lines are hidden above `lines`,
-   * and the key that shows them. An expanded detail names no key: `… +500 lines`. Set only
+   * and the key that shows them. An expanded detail names no key: `… +500 lines`, or
+   * `… +1 line, 1 long line shortened` when its rows cut into a line. Set only
    * when the output kept its tail and the row budget had room for it; it reads before the
    * rows, as the lines it stands for did.
    *
@@ -967,8 +968,9 @@ export interface ToolErrorDetailOptions {
   /**
    * Show the whole failure, not its tail: the row was expanded (Ctrl+E). A command's output keeps
    * its last {@link EXPANDED_OUTPUT_MAX_LINES} rows, a line wider than the row continuing on the
-   * rows after it; prose wraps with no two-row cap, to as many rows. The collapsed hint names the
-   * key that gets here, so the expanded one does not.
+   * rows after it; a line those rows cut into keeps its last ones and is counted in the footer as
+   * shortened, not hidden. Prose wraps with no two-row cap, to as many rows. The collapsed hint
+   * names the key that gets here, so the expanded one does not.
    */
   expanded?: boolean;
   /**
@@ -1011,29 +1013,6 @@ function nonBlankOutputLines(text: string): string[] {
     if (folded.trim() !== '') lines.push(folded);
   }
   return lines;
-}
-
-/**
- * The last rows of `lines`, each wrapped at display width `width`, at most `budget` of them, and
- * how many source lines they show whole. A line the budget cuts into keeps its last rows.
- */
-function wrappedTail(
-  lines: readonly string[],
-  width: number,
-  budget: number,
-): { rows: string[]; wholeLines: number } {
-  const blocks: string[][] = [];
-  let count = 0;
-  let wholeLines = 0;
-  for (let index = lines.length - 1; index >= 0 && count < budget; index--) {
-    const wrapped = hardWrapLine(lines[index]!, width);
-    const room = budget - count;
-    if (wrapped.length <= room) wholeLines++;
-    const block = wrapped.length <= room ? wrapped : wrapped.slice(-room);
-    blocks.push(block);
-    count += block.length;
-  }
-  return { rows: blocks.reverse().flat(), wholeLines };
 }
 
 /**
@@ -1090,17 +1069,18 @@ function commandOutputDetail(
     expanded ? EXPANDED_OUTPUT_MAX_LINES : TOOL_ERROR_TAIL_LINES,
     Math.max(0, maxRows - note.length),
   );
-  // Expanded, a long line continues on the rows after it instead of being cut, so the rows are
-  // wrapped here and the display only counts what stays out of them.
-  const wrapped = expanded ? wrappedTail(source, width, budget) : undefined;
+  // Expanded, a long line continues on the rows after it instead of being cut, and the display
+  // draws the rows and counts what stays out of them as the Read/Bash body does: the lines the
+  // bound leaves out are hidden, and a line it cuts into keeps its last rows and counts as
+  // shortened.
   const tail = prepareToolOutputDisplay(source.join('\n'), {
-    maxLines: wrapped ? wrapped.wholeLines : budget,
+    maxLines: budget,
     maxLineWidth: width,
-    longLines: wrapped ? 'whole' : 'cut',
+    longLines: expanded ? 'wrap' : 'cut',
     hint: expanded ? undefined : expandHint,
     strategy: 'tail',
   });
-  const lines = wrapped ? wrapped.rows : tail.lines;
+  const lines = tail.lines;
   // Under a stderr message a collapsed row says nothing of the stdout unless its footer does, and
   // Ctrl+E skips a row that hides nothing. A row draws one footer and names the key once, so it
   // counts both: the stderr lines the tail cut, above the rows where that count always stood, and
@@ -1112,7 +1092,10 @@ function commandOutputDetail(
     !stdoutFallback && !expanded && !stdoutShownBelow && hasNonBlankOutputLine(stdout)
       ? countOutputLines(stdout)
       : 0;
-  const cutLines = tail.hiddenLines > 0;
+  // Collapsed, a footer counts the lines the tail cut off above its rows, and says nothing of a
+  // line shortened to its row, which shows its own `…`. Expanded, a line the bound cut into has
+  // lost the start of itself without a mark in its rows, so that alone is footer enough.
+  const cutLines = tail.hiddenLines > 0 || (expanded && tail.truncatedLines > 0);
   const hint =
     cutLines || stdoutLines > 0
       ? formatToolOutputFooter({

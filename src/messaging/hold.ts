@@ -21,6 +21,23 @@ export const APPROVAL_PREVIEW_CHARS = 600;
 const CLAIMED_NAME_CHARS = 64;
 /** Rows about held messages the transcript shows a minute; the rest are counted into the next. */
 export const HOLD_ROWS_PER_MINUTE = 20;
+/**
+ * How long after its sender's Later a message put off is offered again at the soonest, and then
+ * only when the session goes idle (#651). Later also keeps it held for at least
+ * `messaging.approvalTimeout` past that, so it is asked about again before it expires.
+ */
+export const REOFFER_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * What the registry said about a held message's reply address (#651):
+ * - `live`: a live session of this machine advertises it, and the message is grouped under that
+ *   address, however it is spelled;
+ * - `unverified`: none does, or the frame names none, and the message is grouped with every other
+ *   such sender;
+ * - `failed`: the registry could not be read, and the message is grouped under the address it
+ *   names, as before the registry was read: never taken for an unverified sender.
+ */
+export type SenderCheck = 'live' | 'unverified' | 'failed';
 
 /** A message this session holds. */
 export interface HeldPeerMessage {
@@ -29,19 +46,30 @@ export interface HeldPeerMessage {
   readonly message: AcceptedPeerMessage;
   cause: HoldCause;
   readonly heldAt: number;
-  /** When it expires unapproved (`messaging.approvalTimeout` after it was held). */
-  readonly expiresAt: number;
   /**
-   * The session the registry says owns the frame's reply address, as `name [ref]`; the bare
-   * `[ref]` when no live record advertises it, or `an unattributed sender` with no address.
+   * When it expires unapproved: `messaging.approvalTimeout` after it was held, or after its
+   * re-offer time once the user put it off (#651).
+   */
+  expiresAt: number;
+  /**
+   * The session the registry says owns the frame's reply address, as `name [ref]`;
+   * `an unverified sender [ref]` when no live record advertises it; the bare `[ref]` until the
+   * registry is read, or when it could not be; `an unattributed sender` with no address.
    */
   sender: string;
+  /** What the registry said about its address; undefined until it is read: not offered yet. */
+  senderCheck?: SenderCheck;
   /** The name the envelope claims, as a span; absent when it claims none. */
   readonly claimedName?: string;
   /** The body as one capped span. */
   readonly preview: string;
-  /** The user chose "Later": the approval sheet offers it again when the session is next idle. */
+  /**
+   * The user chose "Later" for its sender: the approval sheet offers it again at an idle no sooner
+   * than {@link reofferAt}.
+   */
   deferred: boolean;
+  /** When a message put off may be offered again: {@link REOFFER_INTERVAL_MS} after the Later. */
+  reofferAt?: number;
   /** Approved while the delivery queue was full: offered again once it has room. */
   awaitingRoom?: boolean;
 }
@@ -98,6 +126,16 @@ export function heldMessageLine(held: HeldPeerMessage, heldCount: number): strin
   return `⚠ Held peer message — from ${held.sender}${claims}; preview: «${held.preview}» — not delivered (${heldCount} held). ${holdCauseText(held.cause)}`;
 }
 
+/**
+ * Who heard how a held message was settled: its sender, unless no live session has the address it
+ * named, since a receipt goes only to a live session's address (#651).
+ */
+export function senderToldText(held: HeldPeerMessage): string {
+  return held.senderCheck === 'unverified'
+    ? 'no live session has its address to tell'
+    : 'its sender was told';
+}
+
 /** The transcript row for a held message settled by something other than the user's answer. */
 export function settledMessageLine(
   held: HeldPeerMessage,
@@ -105,19 +143,21 @@ export function settledMessageLine(
   by: HoldSettledBy,
 ): string {
   const subject = `Held peer message from ${held.sender}`;
+  const told = senderToldText(held);
+  const Told = `${told.charAt(0).toUpperCase()}${told.slice(1)}`;
   switch (outcome) {
     case 'released':
       return by === 'approval'
         ? `✓ ${subject} approved: it is delivered when this session is next idle.`
         : `✓ ${subject} released: this session now accepts it.`;
     case 'denied':
-      return `${subject} denied; its sender was told.`;
+      return `${subject} denied; ${told}.`;
     case 'refused':
-      return `⚠ ${subject} refused: messaging.inbound is now refuse. Its sender was told.`;
+      return `⚠ ${subject} refused: messaging.inbound is now refuse. ${Told}.`;
     case 'expired':
       return by === 'room'
-        ? `⚠ ${subject} expired to make room: ${MAX_HELD_MESSAGES} messages are held at most. Its sender was told.`
-        : `⚠ ${subject} expired without approval; its sender was told.`;
+        ? `⚠ ${subject} expired to make room: ${MAX_HELD_MESSAGES} messages are held at most. ${Told}.`
+        : `⚠ ${subject} expired without approval; ${told}.`;
   }
 }
 

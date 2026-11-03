@@ -1725,6 +1725,10 @@ export class AgentSession {
               // A host-appended prompt stays host-written across a reload: the ledger,
               // Carried Turns key on it. A steer carries no mark, by construction.
               derivedContent: message.derivedContent,
+              // The loop wrote this turn, the user did not send it: it is part of the run its
+              // prompt started, so a resumed session lists no rewind point for it (#666). A
+              // steer is the user's own words, and says so with `steered`.
+              hostWritten: message.steered ? undefined : true,
               steered: message.steered,
               attachments: message.attachments,
               fileObservations: message.fileObservations,

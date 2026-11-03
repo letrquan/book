@@ -632,13 +632,15 @@ function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): WorkspaceGi
       // `.git` file, so its directory is the work tree root — what a relative
       // `core.hooksPath` in that worktree's config is resolved against.
       const workTreeGitdir = host.readFile(host.path.join(linked, 'gitdir'))?.trim();
-      if (workTreeGitdir) {
-        const resolvedGitdir = host.path.isAbsolute(workTreeGitdir)
+      // Relative to the worktree's own directory (git 2.48's relative worktree
+      // paths), not to wherever Book runs.
+      const resolvedGitdir = workTreeGitdir
+        ? host.path.isAbsolute(workTreeGitdir)
           ? workTreeGitdir
-          : host.path.join(linked, workTreeGitdir);
-        pointerPaths.push(resolvedGitdir);
-      }
-      add(linked, workTreeGitdir ? host.path.dirname(workTreeGitdir) : root);
+          : host.path.join(linked, workTreeGitdir)
+        : null;
+      if (resolvedGitdir) pointerPaths.push(resolvedGitdir);
+      add(linked, resolvedGitdir ? host.path.dirname(resolvedGitdir) : root);
     }
     // `<gitdir>/modules/<path>` holds the git dir of the submodule at `<path>`,
     // and `<path>` is the submodule's own path in the work tree — which can have
@@ -1065,11 +1067,23 @@ export function protectedWorkspacePaths(
     addFile(dotGit);
   }
 
+  // A path a file's contents named (an `[include]`, a work tree from a `gitdir`
+  // file) at the workspace's own spelling, where its mount has to land, when its
+  // directory is inside the workspace. The last component keeps its own spelling,
+  // so a symlink there is still refused rather than followed.
+  const spelledInWorkspace = (path: string): string => {
+    const resolved = host.path.resolve(path);
+    const directory = canonicalPath(host.path.dirname(resolved), host);
+    if (isOutside(canonicalRoot, directory, host.path)) return resolved;
+    const rel = host.path.relative(canonicalRoot, directory);
+    return host.path.join(rel ? host.path.resolve(root, rel) : root, host.path.basename(resolved));
+  };
+
   // Config files already read, so an `include` chain that names one of them ends
   // at the file rather than descending for ever.
   const configsRead = new Set<string>();
   const readConfig = (file: string, workTree: string, depth: number): void => {
-    const at = host.path.resolve(file);
+    const at = spelledInWorkspace(file);
     if (configsRead.has(at)) return;
     configsRead.add(at);
     const size = host.fileSize(at);
@@ -1090,9 +1104,13 @@ export function protectedWorkspacePaths(
     }
     if (depth >= MAX_WALK_DEPTH) return;
     for (const included of readGitConfigIncludes(text)) {
+      // As git resolves it: `~/` from the home directory, an absolute path as
+      // written, and anything else against the including file's directory.
       const target = included.startsWith('~/')
         ? host.path.join(host.homedir(), included.slice(2))
-        : host.path.join(host.path.dirname(at), included);
+        : host.path.isAbsolute(included)
+          ? host.path.resolve(included)
+          : host.path.join(host.path.dirname(at), included);
       readConfig(target, workTree, depth + 1);
     }
   };
@@ -1111,7 +1129,7 @@ export function protectedWorkspacePaths(
     // to find the git dir. It is read-only in both modes for the same reason —
     // rewriting it to `gitdir: ../evil` moves every control path above onto a
     // repository the command built.
-    const workTreePointer = host.path.join(gitDir.workTree, '.git');
+    const workTreePointer = spelledInWorkspace(host.path.join(gitDir.workTree, '.git'));
     if (host.entryKind(workTreePointer) === 'file') addFile(workTreePointer);
     // `core.hooksPath` moves the hook directory out of the git dir entirely —
     // husky v9 points it at `.husky/_` — so a config this namespace leaves
@@ -1136,8 +1154,13 @@ export function protectedWorkspacePaths(
   const filteredMounts: ProtectedMount[] = [];
   const gitDirControlMounts: ProtectedMount[] = [];
 
+  const settingsDirectoryPath = host.path.resolve(host.path.join(root, '.book'));
   for (const mount of result.mounts) {
-    if (mount.kind === 'hidden-file') {
+    // `.book` is kept even inside a read-only directory mount (a `core.hooksPath`
+    // naming the workspace root makes the root one): bubblewrap builds the
+    // settings directory's view from this mount, and without it the local
+    // settings would be one host save away from a running command (#633).
+    if (mount.kind === 'hidden-file' || mount.path === settingsDirectoryPath) {
       filteredMounts.push(mount);
       continue;
     }
@@ -1222,25 +1245,285 @@ export function protectedWorkspacePaths(
   return result;
 }
 
-function mountProtected(args: string[], mount: ProtectedMount, host: SandboxHost): void {
+/**
+ * One mount bubblewrap applies from the workspace bind on: the path it lands
+ * on, in the namespace's own spelling; what it leaves there; and its argv.
+ *
+ * Recorded rather than pushed straight onto the argv, because bwrap resolves
+ * every bind source on the host: a later bind at or above a path covers every
+ * mount the namespace already made below it. The settings directory is settled
+ * after all of them for that reason ({@link settleSettingsDirectory}).
+ */
+interface NamespaceMount {
+  at: string;
+  access: 'writable' | 'read-only' | 'masked';
+  args: string[];
+}
+
+function writableBind(at: string): NamespaceMount {
+  return { at, access: 'writable', args: ['--bind', at, at] };
+}
+
+function readOnlyBind(at: string): NamespaceMount {
+  return { at, access: 'read-only', args: ['--ro-bind', at, at] };
+}
+
+function protectedMount(mount: ProtectedMount, host: SandboxHost): NamespaceMount | null {
   const target = host.path.resolve(mount.path);
   if (mount.kind === 'hidden-file') {
-    if (mount.present) args.push('--ro-bind', '/dev/null', target);
-    return;
+    return mount.present
+      ? { at: target, access: 'masked', args: ['--ro-bind', '/dev/null', target] }
+      : null;
   }
-  if (mount.kind === 'file') {
-    if (mount.present) args.push('--ro-bind', target, target);
-    return;
-  }
-  if (mount.present) {
-    args.push('--ro-bind', target, target);
-    return;
-  }
+  if (mount.kind === 'file') return mount.present ? readOnlyBind(target) : null;
+  if (mount.present) return readOnlyBind(target);
   // `--tmpfs` creates the mount point, and bwrap does that *through* the
   // workspace bind: a sandboxed command in a workspace with no `.book/` leaves
   // an empty `.book/` directory on the host as a side effect. It is recorded in
   // docs/guide/configuration.md; the alternative would be a writable hole.
-  args.push('--tmpfs', target, '--remount-ro', target);
+  return { at: target, access: 'masked', args: ['--tmpfs', target, '--remount-ro', target] };
+}
+
+/**
+ * True for an entry of the workspace's `.book/` that no sandboxed command may
+ * see: the local settings file, which can hold a provider key, and every other
+ * name that carries it. Book's settings writer holds the key in
+ * `.settings.local.json.<pid>.<uuid>.tmp` until it renames it into place, takes
+ * `settings.local.json.lock` beside it, and an editor's swap or backup copy
+ * holds whatever the file did.
+ */
+export function isHiddenSettingsEntry(name: string): boolean {
+  return name.includes('settings.local.json');
+}
+
+/**
+ * The most entries `.book/` may hold for a command to run in the sandbox. Each
+ * one is a bind of its own, and bwrap rereads the mount table for every bind,
+ * so a repository that shipped thousands would stall every sandboxed command.
+ */
+export const MAX_SETTINGS_DIRECTORY_ENTRIES = 256;
+
+/**
+ * The workspace's settings directory as a sandboxed command sees it (#633): an
+ * empty tmpfs at `at` with `entries` bound back into it.
+ */
+interface SettingsDirectoryView {
+  at: string;
+  /** A symlink keeps its target as written: it is recreated, never followed. */
+  entries: Array<{ name: string; linkTarget?: string }>;
+}
+
+/**
+ * The entries `.book/` holds now, less the hidden ones, when it is a directory
+ * the namespace protects; none when it is absent, so its mask is settled the
+ * same way; null otherwise (a regular file, or a symlink a deny entry made safe
+ * to accept, which keep the mounts they had). Throws, which refuses the
+ * command, when it holds more than {@link MAX_SETTINGS_DIRECTORY_ENTRIES}.
+ */
+function settingsDirectoryView(
+  workspaceRoot: string,
+  paths: ProtectedWorkspacePaths,
+  host: SandboxHost,
+): SettingsDirectoryView | null {
+  const at = host.path.join(host.path.resolve(workspaceRoot), '.book');
+  const mount = paths.mounts.find((candidate) => candidate.path === at);
+  if (!mount || mount.kind !== 'directory') return null;
+  // Absent: an empty view. The mask alone would be covered by a later
+  // read-only bind of the workspace (a `denyWrite` entry for it), which shows
+  // the `.book` the host creates on a first save, local settings and all.
+  if (!mount.present) return { at, entries: [] };
+  if (host.entryKind(at) !== 'directory') return null;
+  const entries: SettingsDirectoryView['entries'] = [];
+  for (const name of [...host.readDir(at)].sort()) {
+    if (isHiddenSettingsEntry(name)) continue;
+    const path = host.path.join(at, name);
+    const kind = host.entryKind(path);
+    // A name lstat cannot find, gone since the listing or one the listing could
+    // not spell, is left out: a bind of a missing source aborts the whole
+    // invocation, and nothing can be read through it anyway.
+    if (kind === null) continue;
+    if (kind !== 'symlink') {
+      entries.push({ name });
+      continue;
+    }
+    const linkTarget = host.linkTarget(path);
+    if (linkTarget !== null) entries.push({ name, linkTarget });
+  }
+  if (entries.length > MAX_SETTINGS_DIRECTORY_ENTRIES) {
+    throw new Error(
+      `Refused to run this command in the sandbox: ${at} holds ${entries.length} entries, more ` +
+        `than the ${MAX_SETTINGS_DIRECTORY_ENTRIES} the sandbox binds into the command one by ` +
+        'one so that the local settings file stays hidden from it. Move entries into ' +
+        'subdirectories, or run this command without the sandbox.',
+    );
+  }
+  return { at, entries };
+}
+
+/**
+ * The settings directory as an empty tmpfs with each entry bound back in, then
+ * made read-only (#633).
+ *
+ * A mask on `settings.local.json` itself is a bind on the file's dentry, and a
+ * rename over the path installs a new one the mask does not cover — which the
+ * host's own settings writer does on every save, temp file and rename. Here the
+ * file has no name in the namespace at all, whatever the host does to it. The
+ * entries are the ones the directory held when the command started, so one the
+ * host adds later is not there either.
+ *
+ * Each entry gets `access`, the access the directory itself had: read-only, or
+ * writable under an `allowWrite` entry naming `.book`. The directory stays
+ * read-only either way, so an entry cannot be added, removed or renamed in it.
+ */
+function settingsDirectoryMounts(
+  view: SettingsDirectoryView,
+  access: NamespaceMount['access'],
+  host: SandboxHost,
+): NamespaceMount[] {
+  if (access === 'masked') {
+    return [{ at: view.at, access, args: ['--tmpfs', view.at, '--remount-ro', view.at] }];
+  }
+  const mounts: NamespaceMount[] = [{ at: view.at, access: 'masked', args: ['--tmpfs', view.at] }];
+  for (const entry of view.entries) {
+    const at = host.path.join(view.at, entry.name);
+    if (entry.linkTarget !== undefined) {
+      // Recreated, not bound: bwrap follows a bind source's links on the host,
+      // so a repository's `.book/x -> ~/.ssh` would put that directory in the
+      // namespace. The copy resolves inside the namespace, as the link itself
+      // did when the directory was bound whole.
+      mounts.push({ at, access, args: ['--symlink', entry.linkTarget, at] });
+    } else {
+      // `-try`: an entry gone since the listing (the settings writer's temp file
+      // for `settings.json`, say) is left out, instead of aborting the command on
+      // a bind source that is not there.
+      const flag = access === 'writable' ? '--bind-try' : '--ro-bind-try';
+      mounts.push({ at, access, args: [flag, at, at] });
+    }
+  }
+  mounts.push({ at: view.at, access: 'read-only', args: ['--remount-ro', view.at] });
+  return mounts;
+}
+
+/** True when `path` is strictly inside the view's directory. */
+function insideView(view: SettingsDirectoryView, path: string, host: SandboxHost): boolean {
+  return path !== view.at && !isOutside(view.at, path, host.path);
+}
+
+/** True when `path`, strictly inside the view's directory, lies under an entry it bound back. */
+function boundInView(view: SettingsDirectoryView, path: string, host: SandboxHost): boolean {
+  const first = host.path.relative(view.at, path).split(host.path.sep)[0];
+  return view.entries.some((entry) => entry.name === first);
+}
+
+/**
+ * Put the settings directory's view after every mount that could cover it.
+ *
+ * A bind whose source is the real `.book`, or a directory above it, shows the
+ * live directory again, local settings included: the workspace under a
+ * `denyWrite` entry, `.book` itself under one or under an `allowWrite` opt-in.
+ * So the view goes after the last mount at or above `.book`, with that mount's
+ * access, and the mounts strictly inside `.book` that came after that one follow
+ * it in their order. The ones before it are dropped, as that mount had already
+ * covered them; so is one at a hidden name or under a name the view did not
+ * bind back, whose mount point bwrap could not even create in the read-only
+ * tmpfs.
+ */
+function settleSettingsDirectory(
+  mounts: NamespaceMount[],
+  view: SettingsDirectoryView | null,
+  host: SandboxHost,
+): NamespaceMount[] {
+  if (!view) return mounts;
+  let last = -1;
+  mounts.forEach((mount, index) => {
+    if (!isOutside(mount.at, view.at, host.path)) last = index;
+  });
+  if (last === -1) return mounts;
+  // The earlier mounts at `.book` stay where they were: an absent directory's
+  // mask is what creates its mount point on the host before a later read-only
+  // bind of the workspace. The last one, if it is at `.book`, is what the view
+  // replaces.
+  const replaced = mounts[last].at === view.at ? last : -1;
+  return [
+    ...mounts.filter((mount, index) => index !== replaced && !insideView(view, mount.at, host)),
+    ...settingsDirectoryMounts(view, mounts[last].access, host),
+    ...mounts.filter(
+      (mount, index) =>
+        index > last && insideView(view, mount.at, host) && boundInView(view, mount.at, host),
+    ),
+  ];
+}
+
+/** A host path bound writable, and which of the two writable layers binds it. */
+interface WritableRoot {
+  /** The spelling the namespace sees it at. */
+  at: string;
+  canonical: string;
+  /**
+   * `base`: the workspace, its pins and the `allowWrite` roots, bound before the
+   * protected mounts. `opt-in`: an `allowWrite` entry on a protected path, bound
+   * after them so it reopens what it names.
+   */
+  layer: 'base' | 'opt-in';
+}
+
+/** Shallowest first, in the given order otherwise (the sort is stable). */
+function shallowestFirst(paths: string[], host: SandboxHost): string[] {
+  const depth = (path: string): number => path.split(host.path.sep).filter(Boolean).length;
+  return [...paths].sort((left, right) => depth(left) - depth(right));
+}
+
+/**
+ * The directories to pin for the `denyWrite` entries, by the layer of the
+ * writable root each entry lies in (#634).
+ *
+ * A read-only bind makes the entry itself un-renameable, but renaming a
+ * directory above it carries the mount away, and a fresh directory takes the
+ * old path. A writable self-bind of each directory strictly between the root
+ * and the entry makes that rename fail with `EBUSY`, as `pinnedDirectories`
+ * does for the control files. Nothing is pinned inside a read-only protected
+ * directory, where nothing can be renamed, or at a path already bound. The
+ * caller emits each layer shallowest first, so no later bind covers a pin.
+ */
+function denyWritePins(
+  denied: string[],
+  roots: WritableRoot[],
+  paths: ProtectedWorkspacePaths,
+  host: SandboxHost,
+): Record<WritableRoot['layer'], string[]> {
+  const readOnly = paths.mounts
+    .filter((mount) => mount.kind === 'directory' && mount.present)
+    .map((mount) => canonicalPath(mount.path, host));
+  const pins: Record<WritableRoot['layer'], string[]> = { base: [], 'opt-in': [] };
+  const bound = new Set(roots.map((root) => root.at));
+  for (const target of denied) {
+    const container = roots
+      .filter((root) => !isOutside(root.canonical, target, host.path))
+      .sort((left, right) => right.canonical.length - left.canonical.length)[0];
+    if (!container) continue;
+    const between = host.path
+      .relative(container.canonical, target)
+      .split(host.path.sep)
+      .filter(Boolean)
+      .slice(0, -1);
+    let at = container.at;
+    let canonical = container.canonical;
+    for (const segment of between) {
+      at = host.path.join(at, segment);
+      canonical = host.path.join(canonical, segment);
+      const inReadOnly = readOnly.some(
+        (dir) =>
+          dir !== container.canonical &&
+          !isOutside(container.canonical, dir, host.path) &&
+          !isOutside(dir, canonical, host.path),
+      );
+      if (inReadOnly || !host.isDirectory(at)) break;
+      if (bound.has(at)) continue;
+      bound.add(at);
+      pins[container.layer].push(at);
+    }
+  }
+  return pins;
 }
 
 /**
@@ -1258,11 +1541,12 @@ function mountProtected(args: string[], mount: ProtectedMount, host: SandboxHost
  * free to be stricter still. The one `allowWrite` entry that is applied after
  * them is one that names a protected path or something under it, which is the
  * user asking for that path to be writable again; a broader root stays before,
- * so it cannot reopen what the protections just closed. The credential masks
- * (`hidden-file`) are the one thing applied after `denyWrite` as well: a
- * read-only bind of the directory that holds one would show its contents again.
- * `denyWrite` itself is applied only where the command could write, so it never
- * shows a path the namespace did not already show.
+ * so it cannot reopen what the protections just closed. The settings
+ * directory's view (an empty tmpfs with its entries bound back, the local
+ * settings left out) is the one thing applied after `denyWrite` as well: a
+ * read-only bind of the directory, or of one above it, would show the local
+ * settings again. `denyWrite` itself is applied only where the command could
+ * write, so it never shows a path the namespace did not already show.
  *
  * Exported for testing: it does not require bwrap to be installed, and with an
  * injected `host` its output is fully determined by its arguments.
@@ -1298,20 +1582,7 @@ export function buildSandboxExecution(
 
   args.push('--tmpfs', '/tmp');
 
-  // The workspace is writable. Bound after /tmp so a workspace inside /tmp
-  // (every mkdtemp-based test run, among others) survives the tmpfs.
-  bindIfPresent(args, '--bind', workspaceRoot, host);
-
-  // Every host path bound writable below, at the spelling the namespace sees,
-  // with its canonical form for containment. `denyWrite` is applied against
-  // these and nothing else.
-  const writableRoots: Array<{ at: string; canonical: string }> = [];
-  const markWritable = (at: string): void => {
-    writableRoots.push({ at, canonical: canonicalPath(at, host) });
-  };
-  if (host.exists(expandPath(workspaceRoot, host))) markWritable(expandPath(workspaceRoot, host));
-
-  // Declared filesystem policy overrides the defaults above.
+  // Declared filesystem policy overrides the defaults below.
   //
   // The control files are computed first, because where an `allowWrite` entry
   // lands in the sequence depends on them. An entry *at or under* a protected
@@ -1337,41 +1608,102 @@ export function buildSandboxExecution(
       (mount) => !isOutside(canonicalPath(mount.path, host), canonical, host.path),
     );
   };
+  const present = (entries: string[]): string[] =>
+    entries.map((path) => expandPath(path, host)).filter((target) => host.exists(target));
+  const view = settingsDirectoryView(workspaceRoot, paths, host);
 
-  // Control files the host acts on after this command exits come after the
-  // workspace bind, so the workspace does not shadow them.
+  // Every host path bound writable below, at the spelling the namespace sees,
+  // with its canonical form for containment. `denyWrite` is applied against
+  // these and nothing else.
+  const workspace = expandPath(workspaceRoot, host);
+  const canonicalWorkspace = host.exists(workspace) ? canonicalPath(workspace, host) : null;
+  // An `allowWrite` entry inside the workspace is bound at the workspace's own
+  // spelling, where the protections are: one spelled through a link to it would
+  // otherwise be a second view of the same directories that none of them cover.
+  const spelledInWorkspace = (target: string): string => {
+    const canonical = canonicalPath(target, host);
+    if (canonicalWorkspace === null || isOutside(canonicalWorkspace, canonical, host.path)) {
+      return target;
+    }
+    const rest = host.path.relative(canonicalWorkspace, canonical);
+    return rest ? host.path.resolve(workspace, rest) : workspace;
+  };
+  const pinned = paths.pinnedDirectories.map((dir) => host.path.resolve(dir));
+  const allowWriteRoots = present(
+    settings.filesystem.allowWrite.filter((p) => !isProtectedArea(p)),
+  ).map(spelledInWorkspace);
+  const optInRoots = present(settings.filesystem.allowWrite.filter(isProtectedArea)).map(
+    spelledInWorkspace,
+  );
+  const root = (at: string, layer: WritableRoot['layer']): WritableRoot => ({
+    at,
+    canonical: canonicalPath(at, host),
+    layer,
+  });
+  const writableRoots: WritableRoot[] = [
+    ...(canonicalWorkspace !== null ? [root(workspace, 'base')] : []),
+    ...pinned.map((at) => root(at, 'base')),
+    ...allowWriteRoots.map((at) => root(at, 'base')),
+    ...optInRoots.map((at) => root(at, 'opt-in')),
+  ];
+  const deniedWrites = present(settings.filesystem.denyWrite).map((target) =>
+    canonicalPath(target, host),
+  );
+  const pins = denyWritePins(deniedWrites, writableRoots, paths, host);
+  // A protected file is bound only where the command could write it: inside the
+  // workspace or a writable root, and at that root's own spelling plus the rest,
+  // as `denyWrite` is applied. Anywhere else (a config an `[include]` names, a
+  // linked work tree's `.git` pointer) it is not in the namespace at all, so
+  // there is nothing there to protect, and a bind would only add it. The host
+  // still reads it for `core.hooksPath`.
+  const protectedAt = (mount: ProtectedMount): ProtectedMount | null => {
+    if (mount.kind !== 'file') return mount;
+    const canonical = canonicalPath(mount.path, host);
+    const container = writableRoots
+      .filter((candidate) => !isOutside(candidate.canonical, canonical, host.path))
+      .sort((left, right) => right.canonical.length - left.canonical.length)[0];
+    if (!container) return null;
+    const rest = host.path.relative(container.canonical, canonical);
+    return { ...mount, path: rest ? host.path.resolve(container.at, rest) : container.at };
+  };
+
+  const mounts: NamespaceMount[] = [];
+
+  // The workspace is writable. Bound after /tmp so a workspace inside /tmp
+  // (every mkdtemp-based test run, among others) survives the tmpfs. With it
+  // go the pins and the `allowWrite` roots, and the control files the host acts
+  // on after this command exits come after all of them, so none of them shadows
+  // a protection.
   //
-  // The pins come before the opt-in binds as well: a pin is a writable self-bind
-  // of the git dir, so an `allowWrite` entry *under* it emitted earlier is
-  // shadowed by it and silently does nothing — the entry the user wrote, dropped
-  // without a word. In the read-only git-dirs mode there is no pin: the git dir
-  // is a protected mount, so an `allowWrite` entry naming it reopens what it names,
-  // while control paths strictly below it (hooks, config, pointer files) stay
-  // read-only unless an entry names them directly.
-  for (const dir of paths.pinnedDirectories) {
-    args.push('--bind', host.path.resolve(dir), host.path.resolve(dir));
-    markWritable(host.path.resolve(dir));
-  }
-  for (const path of settings.filesystem.allowWrite) {
-    if (isProtectedArea(path)) continue;
-    bindIfPresent(args, '--bind', path, host);
-    if (host.exists(expandPath(path, host))) markWritable(expandPath(path, host));
-  }
+  // Each of these binds is a bind from the host, so it covers whatever the
+  // namespace mounted below it before. They are emitted shallowest first: an
+  // `allowWrite` root above the workspace then comes before the workspace
+  // itself, which stays a mount point (`mv <workspace> …` fails with `EBUSY`),
+  // and so does every pin below it (#634); an `allowWrite` entry under a pin
+  // comes after the pin rather than being shadowed by it, and silently doing
+  // nothing. In the read-only git-dirs mode there is no git-dir pin: the git
+  // dir is a protected mount, so an `allowWrite` entry naming it reopens what it
+  // names, while control paths strictly below it (hooks, config, pointer files)
+  // stay read-only unless an entry names them directly.
+  const base = [
+    ...(canonicalWorkspace !== null ? [workspace] : []),
+    ...pinned,
+    ...allowWriteRoots,
+    ...pins.base,
+  ];
+  for (const at of shallowestFirst(base, host)) mounts.push(writableBind(at));
   // The credential masks are left for the end, after everything that could
   // bind the directory holding one.
   for (const mount of paths.mounts) {
-    if (mount.kind !== 'hidden-file') mountProtected(args, mount, host);
+    const bound = mount.kind === 'hidden-file' ? null : protectedAt(mount);
+    const applied = bound ? protectedMount(bound, host) : null;
+    if (applied) mounts.push(applied);
   }
-  // ...and only now the opt-ins for the protected areas themselves.
-  const deferredOptInCanonicals: string[] = [];
-  for (const path of settings.filesystem.allowWrite) {
-    if (!isProtectedArea(path)) continue;
-    const target = expandPath(path, host);
-    if (host.exists(target)) {
-      args.push('--bind', target, target);
-      deferredOptInCanonicals.push(canonicalPath(target, host));
-      markWritable(target);
-    }
+  // ...and only now the opt-ins for the protected areas themselves, with the
+  // pins below them, shallowest first again.
+  const deferredOptInCanonicals = optInRoots.map((target) => canonicalPath(target, host));
+  for (const at of shallowestFirst([...optInRoots, ...pins['opt-in']], host)) {
+    mounts.push(writableBind(at));
   }
 
   // An allowWrite opt-in on a git dir reopens what it names, but not the control
@@ -1383,10 +1715,10 @@ export function buildSandboxExecution(
     const strictlyBelowDeferredOptIn = deferredOptInCanonicals.some(
       (optIn) => !isOutside(optIn, mountCanonical, host.path) && optIn !== mountCanonical,
     );
-    const explicitlyOptedIn = deferredOptInCanonicals.includes(mountCanonical);
-    if (strictlyBelowDeferredOptIn && !explicitlyOptedIn) {
-      mountProtected(args, mount, host);
-    }
+    if (!strictlyBelowDeferredOptIn || deferredOptInCanonicals.includes(mountCanonical)) continue;
+    const bound = protectedAt(mount);
+    const applied = bound ? protectedMount(bound, host) : null;
+    if (applied) mounts.push(applied);
   }
 
   // `denyWrite` only ever takes write access away. A read-only bind of the real
@@ -1405,22 +1737,19 @@ export function buildSandboxExecution(
   // bind at that spelling would create a second view of the real directory that
   // the credential masks, emitted at the workspace's spelling, do not cover.
   const readOnlyBinds = new Set<string>();
-  for (const path of settings.filesystem.denyWrite) {
-    const target = expandPath(path, host);
-    if (!host.exists(target)) continue;
-    const denied = canonicalPath(target, host);
+  for (const denied of deniedWrites) {
     const container = writableRoots
-      .filter((root) => !isOutside(root.canonical, denied, host.path))
+      .filter((candidate) => !isOutside(candidate.canonical, denied, host.path))
       .sort((left, right) => right.canonical.length - left.canonical.length)[0];
     if (container) {
       const rest = host.path.relative(container.canonical, denied);
       readOnlyBinds.add(rest ? host.path.resolve(container.at, rest) : container.at);
     }
-    for (const root of writableRoots) {
-      if (!isOutside(denied, root.canonical, host.path)) readOnlyBinds.add(root.at);
+    for (const writable of writableRoots) {
+      if (!isOutside(denied, writable.canonical, host.path)) readOnlyBinds.add(writable.at);
     }
   }
-  for (const at of readOnlyBinds) args.push('--ro-bind', at, at);
+  for (const at of readOnlyBinds) mounts.push(readOnlyBind(at));
 
   // A mask hides a file's *contents*, and a later bind of the directory that
   // holds it undoes that: an opt-in such as `allowWrite: ["<workspace>/.book"]`
@@ -1428,20 +1757,37 @@ export function buildSandboxExecution(
   // does a `denyWrite` entry at or above it, which is a read-only bind of the
   // real directory (#625). The masks are therefore emitted once, after every
   // opt-in and every `denyWrite` bind, so the last mount of a masked path is
-  // `/dev/null` whichever entry named its parent. `denyRead` stays after them:
-  // it only ever masks harder.
+  // `/dev/null` whichever entry named its parent. A hidden file inside the
+  // settings directory gets no mask at all: the directory's view, settled after
+  // the same mounts, leaves it out (#633).
   for (const mount of paths.mounts) {
-    if (mount.kind === 'hidden-file') mountProtected(args, mount, host);
+    if (mount.kind !== 'hidden-file') continue;
+    if (view && insideView(view, host.path.resolve(mount.path), host)) continue;
+    const applied = protectedMount(mount, host);
+    if (applied) mounts.push(applied);
   }
+  for (const mount of settleSettingsDirectory(mounts, view, host)) args.push(...mount.args);
 
   // bwrap cannot unmount a subpath, so a denied path is masked instead. The
   // mask has to match the kind: --tmpfs needs to mkdir its target, so pointing
   // it at a file aborts the entire invocation with "Not a directory" — and a
   // credentials *file* is the most natural thing to deny. Files are masked with
-  // /dev/null instead, which makes reads fail outright.
-  for (const path of settings.filesystem.denyRead) {
-    const target = expandPath(path, host);
-    if (!host.exists(target)) continue;
+  // /dev/null instead, which makes reads fail outright. One inside the settings
+  // directory is applied only under an entry the view bound back: anything else
+  // there is already gone, and has no mount point left in the read-only tmpfs,
+  // so bwrap would abort the whole invocation trying to create one. Decided on
+  // canonical paths, since a workspace layer may add a deny entry spelled
+  // through a link into `.book`.
+  const viewCanonical = view ? { ...view, at: canonicalPath(view.at, host) } : null;
+  for (const target of present(settings.filesystem.denyRead)) {
+    const canonical = canonicalPath(target, host);
+    if (
+      viewCanonical &&
+      insideView(viewCanonical, canonical, host) &&
+      !boundInView(viewCanonical, canonical, host)
+    ) {
+      continue;
+    }
     if (host.isDirectory(target)) args.push('--tmpfs', target);
     else args.push('--ro-bind', '/dev/null', target);
   }
@@ -1604,7 +1950,25 @@ export function buildSeatbeltPolicy(
     // empty directory on the host as a side effect.
     return { action: 'deny', operations: ['file-write*'], filters: [subpath(path)] };
   };
-  const hiddenFiles = paths.mounts.filter((mount) => mount.kind === 'hidden-file' && mount.present);
+  // The local settings: denied by name, every name in `.book/` that carries
+  // `settings.local.json`, whether or not one exists yet. A rule for the file
+  // alone, and only when it was there as the profile was built, left a first save
+  // made while a command ran readable, and so were the settings writer's
+  // `.settings.local.json.<pid>.<uuid>.tmp`, its lock and an editor's copy (#633).
+  const settingsDirectory = workspace ? canon(host.path.join(workspace, '.book')) : null;
+  const localSettingsRule: SeatbeltRule | null = settingsDirectory
+    ? {
+        action: 'deny',
+        operations: READ_WRITE,
+        filters: [subpath(settingsDirectory)],
+        localSettingsEntries: true,
+      }
+    : null;
+  const inSettingsDirectory = (mount: ProtectedMount): boolean =>
+    settingsDirectory !== null && !isOutside(settingsDirectory, canon(mount.path), host.path);
+  const hiddenFiles = paths.mounts.filter(
+    (mount) => mount.kind === 'hidden-file' && mount.present && !inSettingsDirectory(mount),
+  );
 
   const readableRoots = [...tempRoots, ...(workspace ? [workspace] : []), ...allowWrite, ...optIns];
   const rules: SeatbeltRule[] = [];
@@ -1637,6 +2001,7 @@ export function buildSeatbeltPolicy(
   if (bookHomeRule && !workspaceInBookHome) rules.push(bookHomeRule);
   rules.push({ action: 'allow', operations: READ_WRITE, filters: allowWrite.map(subpath) });
   for (const mount of paths.mounts) {
+    if (mount.kind === 'hidden-file' && inSettingsDirectory(mount)) continue;
     const rule = protectedRule(mount);
     if (rule) rules.push(rule);
   }
@@ -1653,11 +2018,13 @@ export function buildSeatbeltPolicy(
       if (rule) rules.push(rule);
     }
   }
-  // The masks once more, after every opt-in that could name their directory.
+  // The masks once more, after every opt-in that could name their directory,
+  // and the local settings with them, after every allow there is.
   for (const mount of hiddenFiles) {
     const rule = protectedRule(mount);
     if (rule) rules.push(rule);
   }
+  if (localSettingsRule) rules.push(localSettingsRule);
   // `denyWrite` takes write access away and gives nothing: no read allow, no
   // socket root. A workspace layer may add deny entries, so one that made a path
   // readable would let a repository open `~` with `denyWrite: ["~"]` (#625).
@@ -1679,15 +2046,20 @@ export function buildSeatbeltPolicy(
   ];
   const hiddenPaths = [
     ...hiddenFiles.map((mount) => canon(mount.path)),
+    // `.book` and everything above it stay in place, opt-in or not: the local
+    // settings carried to another name would be out from under the rule.
+    ...(settingsDirectory ? [host.path.join(settingsDirectory, 'settings.local.json')] : []),
     ...denyReadEntries.map((entry) => entry.path),
     ...(bookHomePath && !workspaceInBookHome ? [bookHomePath] : []),
   ];
   // In place: the workspace root and every directory above it (a workspace
   // under a temp root or an `allowWrite` root could otherwise be moved, taking
-  // its protected paths with it to a path no rule names), the directories
-  // bubblewrap pins, and the directories above every hidden or read-only path.
+  // its protected paths with it to a path no rule names), the temp roots (#652),
+  // the directories bubblewrap pins, and the directories above every hidden or
+  // read-only path.
   const keptInPlace = new Set([
     ...(workspace ? [workspace, ...ancestorsOf(workspace, host)] : []),
+    ...tempRoots,
     ...paths.pinnedDirectories.map(canon),
     ...[...hiddenPaths, ...denyWrite].flatMap((path) => ancestorsOf(path, host)),
   ]);
@@ -1695,6 +2067,14 @@ export function buildSeatbeltPolicy(
     [...(workspace ? [workspace] : []), ...deniedPaths].flatMap((path) => ancestorsOf(path, host)),
   );
   for (const path of keptInPlace) notCreatable.delete(path);
+  // A temp root's contents are writable, the root itself is not: `subpath`
+  // matches the root as well, and the per-user `T` sits in a directory the user
+  // owns, so a command could move it aside and put a symlink into the workspace
+  // in its place. Book builds its own entries from `os.tmpdir()`, and their deny
+  // holds only under the root's real path, so the next one would land where
+  // sandboxed commands write (#652). Last, after every allow that could name a
+  // root (the workspace, an `allowWrite` entry), and on top of the pins.
+  rules.push({ action: 'deny', operations: ['file-write*'], filters: tempRoots.map(literal) });
   rules.push({
     action: 'deny',
     operations: ['file-write-unlink', 'file-write-create'],

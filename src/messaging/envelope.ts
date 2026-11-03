@@ -25,7 +25,7 @@ import type {
   PeerEnvelopeAttributes,
   PeerPermissionClass,
 } from '../types/messaging.js';
-import { neutralizeTags } from '../prompt-tags.js';
+import { ANGLE_BRACKETS, neutralizeTags } from '../prompt-tags.js';
 import { decodeUdsAddress, encodeUdsAddress } from './wire.js';
 
 export const ENVELOPE_TAG = 'cross-session-message';
@@ -45,10 +45,15 @@ const ENVELOPE = new RegExp(
 );
 const ATTRIBUTE = / ([a-z-]+)="([^"]*)"/g;
 // Format and control characters, surrogates and the line and paragraph separators (Claude Code's
-// set), the characters that would break the attribute or read as markup, and the glyphs the TUI's
-// held-message rows are built from (`«»`, the dashes, the marks), so a name cannot draw a row's
-// structure (#620 PR 5).
-const NAME_STRIPPED = /[\p{Cf}\p{Cc}\p{Cs}\p{Zl}\p{Zp}"<>&«»—–·•●✓⚠›]/gu;
+// set), the other default-ignorable characters (a variation selector, a Hangul filler), the
+// characters that would break the attribute, every bracket that reads as `<` or `>`
+// (`ANGLE_BRACKETS`, lookalikes included, #654), and the glyphs the TUI's held-message rows are
+// built from (`«»`, the dashes, the marks), so a name cannot draw a tag or a row's structure
+// (#620 PR 5).
+const NAME_STRIPPED = new RegExp(
+  `[\\p{Cf}\\p{Default_Ignorable_Code_Point}\\p{Cc}\\p{Cs}\\p{Zl}\\p{Zp}"&«»—–·•●✓⚠›${ANGLE_BRACKETS}]`,
+  'gu',
+);
 
 /** The permission class of a mode (D5): `bypass` for `bypassPermissions` and `auto`. */
 export function permissionClassOf(mode: string | undefined): PeerPermissionClass {

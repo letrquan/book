@@ -5,21 +5,20 @@
  * fail on the stale-file check.
  *
  * Judged against the observation ledger (`file-provenance.ts`), so the model's own edits — which
- * re-observe the file — never count. Each change is reported once. A file whose size, mtime and
- * ctime have not moved since it was last judged is not read again, so a quiet turn costs one `stat`
- * per observed file — but only once both times are safely older than that judgment. A write landing
- * in the same timestamp tick as the read (a same-size edit on a coarse clock: up to FAT's 2 s) leaves
- * every stat field as it was, so a file modified that close to its judgment is read again: git's
- * "racily clean" rule. ctime is in the key because a tool that restores mtime (`cp -p`, `touch -r`,
- * `rsync -t`) cannot restore it, and a rename into place gives the file its own.
+ * re-observe the file — never count. Each change is reported once. A file is not read again while
+ * `stat` vouches for its last verdict (`stat-freshness.ts`: its size, mtime and ctime have not moved,
+ * and both times were safely older than that judgment), so a quiet turn costs one `stat` per
+ * observed file.
  */
 
 import { createHash } from 'node:crypto';
-import { constants, type Stats } from 'node:fs';
-import { lstat, open, realpath } from 'node:fs/promises';
+import { constants, type BigIntStats } from 'node:fs';
+import { lstat, open, readlink, realpath, type FileHandle } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { mapLimited } from '../async.js';
+import { plainSpan } from '../messaging/peer-text.js';
 import { redactSecrets } from '../provider-secrets.js';
+import { statStamp, statVouches, type StatFacts, type StatStamp } from '../stat-freshness.js';
 import type { FileObservation } from '../types/tools.js';
 import { renderDiff } from './diff.js';
 import { normalizeObservedPath, workspaceIdentity } from './file-provenance.js';
@@ -42,17 +41,15 @@ const MAX_SNIPPET_LINE_CHARS = 160;
 const MAX_BASELINE_BYTES = 64 * 1024;
 /** All the remembered texts together, least recently observed dropped first. */
 const MAX_BASELINE_TOTAL_BYTES = 2 * 1024 * 1024;
-/** A bigger file is not read again to be judged: it goes unreported rather than cost a turn. */
-const MAX_JUDGED_BYTES = 16 * 1024 * 1024;
 /**
- * How much older than its judgment a file's mtime and ctime must be before that judgment is trusted
- * without a read: timestamp granularity up to FAT's 2 s. A filesystem whose clock lags this machine's
- * by more (some network mounts) can still stamp a racy write as older, and then a same-size edit in
- * that window goes unreported until the file changes again.
+ * A bigger file is not read again to be judged: it goes unreported rather than cost a turn. Checked
+ * on the opened handle too, so a file that grows after its `lstat` is not read whole.
  */
-const RACY_MARGIN_MS = 2_000;
+export const MAX_JUDGED_BYTES = 16 * 1024 * 1024;
 /** Where the platform has it (not Windows), a read that refuses to follow a final link. */
 const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
+/** Where the platform has it, an open that does not wait for a writer when a FIFO stands there. */
+const NO_BLOCK = constants.O_NONBLOCK ?? 0;
 
 export interface ChangedObservedFile {
   /** The ledger key. */
@@ -91,13 +88,9 @@ export interface ChangedObservedFiles {
   commit(): void;
 }
 
-interface Judged {
+/** A verdict: the file's hash when it was read, keyed on the stat facts of the handle read. */
+interface Judged extends StatStamp {
   observedSha: string;
-  size: number;
-  mtimeMs: number;
-  ctimeMs: number;
-  /** When the file was read for this verdict, by the wall clock its times are stamped with. */
-  judgedAt: number;
   /** The file's hash then, or `deleted`. */
   currentSha: string;
 }
@@ -110,15 +103,94 @@ function samePath(a: string, b: string): boolean {
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
+/** Whether two stats are of one file, by 64-bit ids: an NTFS file id can exceed a double's. */
+function sameFile(a: BigIntStats, b: BigIntStats): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
+/** The facts a verdict is keyed on, in the milliseconds the clock gives `judgedAt` in. */
+function factsOf(info: BigIntStats): StatFacts {
+  return {
+    size: Number(info.size),
+    mtimeMs: Number(info.mtimeNs) / 1e6,
+    ctimeMs: Number(info.ctimeNs) / 1e6,
+  };
+}
+
 function looksBinary(bytes: Uint8Array): boolean {
   return bytes.subarray(0, 8192).includes(0);
 }
 
 /**
+ * What the path names once the handle is open, when that is still the file the checks before the
+ * open vetted, with no link on the way; `undefined` when the handle holds another file.
+ *
+ * The checks go by path, so they cannot be atomic with the open. `O_NOFOLLOW` guards only the last
+ * component (and Windows has no such flag), so a directory above the file swapped for a link in
+ * between, or on Windows the file itself, leaves the handle on another file; its identity then
+ * differs from the vetted one or from what the path names now. On Linux the kernel's own name for
+ * the opened file (`/proc/self/fd`) must be the path as well, which no later swap can change. On
+ * macOS and Windows a process that swaps a workspace directory back and forth several times within
+ * one check can still slip past.
+ */
+async function vettedNow(
+  handle: FileHandle,
+  path: string,
+  vetted: BigIntStats,
+  held: BigIntStats,
+): Promise<BigIntStats | undefined> {
+  if (!sameFile(vetted, held)) return undefined;
+  if (process.platform === 'linux') {
+    const opened = await readlink(`/proc/self/fd/${handle.fd}`).catch(() => undefined);
+    if (opened !== undefined && opened !== path) return undefined;
+  }
+  const named = await lstat(path, { bigint: true });
+  return sameFile(named, held) && samePath(await realpath(path), path) ? named : undefined;
+}
+
+/**
+ * An opened file's bytes, read to its end however far that is from the size its handle reported
+ * (a log being appended to, a stale size on a network mount), or `undefined` once they run past
+ * the cap: never more than one byte past it is read.
+ */
+async function readCapped(handle: FileHandle, size: number): Promise<Buffer | undefined> {
+  let buffer = Buffer.allocUnsafe(Math.min(size, MAX_JUDGED_BYTES) + 1);
+  let total = 0;
+  for (;;) {
+    if (total === buffer.length) {
+      if (total > MAX_JUDGED_BYTES) return undefined;
+      const grown = Buffer.allocUnsafe(Math.min(buffer.length * 2, MAX_JUDGED_BYTES + 1));
+      buffer.copy(grown, 0, 0, total);
+      buffer = grown;
+    }
+    const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+    if (bytesRead === 0) return buffer.subarray(0, total);
+    total += bytesRead;
+  }
+}
+
+/**
+ * Invisible characters: the format characters (zero-width spaces and joiners, bidi marks, Unicode
+ * tag text) and the other default-ignorable ones (variation selectors, the combining grapheme
+ * joiner, Hangul fillers).
+ */
+const INVISIBLE_CHARACTERS = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
+
+/** Whether a line still spells one of the keys once its whitespace is gone. */
+function spellsSecret(line: string, secrets: readonly string[]): boolean {
+  const squeezed = line.replace(/\s+/g, '');
+  return secrets.some((secret) => secret !== '' && squeezed.includes(secret));
+}
+
+/**
  * The change as a diff of at most {@link MAX_CHANGE_SNIPPET_LINES} lines, or `undefined` when it
  * is longer. The changed span is measured first, so a large rewrite is never diffed at all.
- * Provider keys are redacted from the whole diff before a long line is cut, so a key the cut
- * would split cannot escape the redaction by half.
+ * Each line is made plain first, as the prompt will show it (`plainSpan`), with every invisible
+ * character removed outright (`plainSpan` would fold a bidi mark to a space, and keeps a variation
+ * selector), and only then are provider keys redacted, before a long line is cut. So a key with an invisible character
+ * inside cannot pass the redaction to be joined up in the prompt, and a key the cut would split
+ * cannot escape it by half. A line that still spells a key split by a space or a control character
+ * leaves the diff out.
  */
 export function changeSnippet(
   before: string,
@@ -141,8 +213,10 @@ export function changeSnippet(
   if (changed === 0 || changed >= MAX_CHANGE_SNIPPET_LINES) return undefined;
   const diff = renderDiff(before, after, 1);
   if (!diff) return undefined;
-  const lines = redactSecrets(diff, secrets).split('\n');
+  const plain = diff.split('\n').map((line) => plainSpan(line.replace(INVISIBLE_CHARACTERS, '')));
+  const lines = redactSecrets(plain.join('\n'), secrets).split('\n');
   if (lines.length > MAX_CHANGE_SNIPPET_LINES) return undefined;
+  if (lines.some((line) => spellsSecret(line, secrets))) return undefined;
   return lines.map((line) => Array.from(line).slice(0, MAX_SNIPPET_LINE_CHARS).join(''));
 }
 
@@ -278,58 +352,55 @@ export class FileChangeTracker {
   }
 
   /**
-   * The file's current hash, from the last verdict when its size, mtime and ctime have not moved
-   * and both times were safely older than that verdict, and its text when it is small enough to
-   * diff. `undefined` when it cannot be judged now.
+   * The file's current hash, from the last verdict while `stat` vouches for it, and its text when
+   * it is small enough to diff. `undefined` when it cannot be judged now.
    *
    * A link is never followed. The observed path is the file's real one, so a link at it, or a
    * directory above it that became one, means something else stands there now: it is reported as
    * changed and never read, so a checkout or a peer cannot point the notice at `~/.npmrc` or a
-   * denied `.env` and have its lines diffed into the prompt.
+   * denied `.env` and have its lines diffed into the prompt. A handle that turns out to hold
+   * another file than the one checked is not read either (`vettedNow`), and a file with another
+   * name (a hard link, which may be any file on this filesystem) is reported without its lines.
    */
   private async judge(
     key: string,
     absolutePath: string,
     observation: FileObservation,
   ): Promise<{ sha: string; text?: string } | undefined> {
-    let info;
+    let vetted: BigIntStats;
     try {
-      info = await lstat(absolutePath);
-      if (info.isSymbolicLink()) return { sha: REPLACED };
-      if (!info.isFile()) return { sha: DELETED };
+      vetted = await lstat(absolutePath, { bigint: true });
+      if (vetted.isSymbolicLink()) return { sha: REPLACED };
+      if (!vetted.isFile()) return { sha: DELETED };
       if (!samePath(await realpath(absolutePath), absolutePath)) return { sha: REPLACED };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
       return { sha: DELETED };
     }
-    if (info.size > MAX_JUDGED_BYTES) return undefined;
+    if (Number(vetted.size) > MAX_JUDGED_BYTES) return undefined;
     const last = this.judged.get(key);
-    if (
-      last &&
-      last.observedSha === observation.sha256 &&
-      last.size === info.size &&
-      last.mtimeMs === info.mtimeMs &&
-      last.ctimeMs === info.ctimeMs &&
-      // A file with no useful ctime (0, or constant) falls back to its mtime here. One stamped in
-      // the future (an archive from a timezone ahead) has a present ctime, so it is trusted once
-      // that is old enough, rather than read on every turn.
-      Math.max(info.mtimeMs, info.ctimeMs) + RACY_MARGIN_MS <= last.judgedAt
-    ) {
+    if (last && last.observedSha === observation.sha256 && statVouches(last, factsOf(vetted))) {
       return { sha: last.currentSha };
     }
-    // Taken before the read: a write after this instant either moves the times past it or lands
-    // inside the margin, and either way the next turn reads the file again.
+    // Taken before the read, as `StatStamp.judgedAt` must be.
     const judgedAt = this.now();
     let bytes: Buffer;
-    let read: Stats;
+    let held: BigIntStats;
+    let named: BigIntStats | undefined;
     try {
-      const handle = await open(absolutePath, constants.O_RDONLY | NO_FOLLOW);
+      const handle = await open(absolutePath, constants.O_RDONLY | NO_FOLLOW | NO_BLOCK);
       try {
         // The verdict is keyed on the stat of the handle the bytes come from, not the `lstat` above:
         // a write between the two must not be cached under the times of the file it replaced.
-        read = await handle.stat();
-        if (!read.isFile()) return { sha: REPLACED };
-        bytes = await handle.readFile();
+        held = await handle.stat({ bigint: true });
+        if (!held.isFile()) return { sha: REPLACED };
+        // Another file than the one checked, or one past the cap: not read, and judged next turn.
+        named = await vettedNow(handle, absolutePath, vetted, held);
+        if (!named) return undefined;
+        if (Number(held.size) > MAX_JUDGED_BYTES) return undefined;
+        const read = await readCapped(handle, Number(held.size));
+        if (!read) return undefined;
+        bytes = read;
       } finally {
         await handle.close();
       }
@@ -338,15 +409,16 @@ export class FileChangeTracker {
     }
     const sha = createHash('sha256').update(bytes).digest('hex');
     this.judged.set(key, {
+      ...statStamp(factsOf(held), judgedAt),
       observedSha: observation.sha256,
-      size: read.size,
-      mtimeMs: read.mtimeMs,
-      ctimeMs: read.ctimeMs,
-      judgedAt,
       currentSha: sha,
     });
+    // Another name (a hard link) shows in the link count of every stat taken while it stood, so all
+    // three are asked: a name removed between the open and the handle's stat, and put back before
+    // the last `lstat`, is still caught.
+    const linked = vetted.nlink > 1n || held.nlink > 1n || named.nlink > 1n;
     const text =
-      bytes.byteLength <= MAX_BASELINE_BYTES && !looksBinary(bytes)
+      !linked && bytes.byteLength <= MAX_BASELINE_BYTES && !looksBinary(bytes)
         ? bytes.toString('utf8')
         : undefined;
     return { sha, ...(text !== undefined ? { text } : {}) };

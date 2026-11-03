@@ -1,5 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from 'fs';
+import { createHash } from 'crypto';
+import {
+  chmodSync,
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import {
@@ -17,6 +28,7 @@ import {
   type Skill,
 } from './skills.js';
 import { parseFrontmatter } from './frontmatter.js';
+import { rewriteRestoringMtime } from './test/restored-mtime.js';
 
 let dir: string;
 
@@ -599,6 +611,118 @@ describe('discoverSkills', () => {
 
     const [review] = discoverSkills(dir);
     expect(() => loadSkillBody(review)).toThrow(/binary content/);
+  });
+});
+
+describe('the SKILL.md guard against a change after discovery (#647)', () => {
+  const changed = 'Skill "review" changed after discovery; reload skills before use.';
+
+  function writeEntry(): string {
+    const skillDir = join(dir, '.book', 'skills', 'review');
+    mkdirSync(skillDir, { recursive: true });
+    const entry = join(skillDir, 'SKILL.md');
+    writeFileSync(
+      entry,
+      [
+        '---',
+        'name: review',
+        'description: Use the review workflow',
+        '---',
+        'Read every line.',
+      ].join('\n'),
+    );
+    return entry;
+  }
+
+  const edit = (entry: string, from: string, to: string) =>
+    readFileSync(entry, 'utf8').replace(from, to);
+
+  it('refuses a same-size rewrite that kept its mtime', () => {
+    const entry = writeEntry();
+    // Both writes land on one mtime, as same-size writes inside a coarse timestamp tick do.
+    const tick = new Date(Date.now() + 60_000);
+    utimesSync(entry, tick, tick);
+    const [review] = discoverSkills(dir);
+    writeFileSync(entry, edit(entry, 'review workflow', 'weiver workflow'));
+    utimesSync(entry, tick, tick);
+
+    expect(() => loadSkillBody(review)).toThrow(changed);
+  });
+
+  it('refuses an edit whose mtime was put back', async () => {
+    const entry = writeEntry();
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(entry, old, old);
+    const [review] = discoverSkills(dir);
+    await rewriteRestoringMtime(entry, edit(entry, 'Read every line.', 'Skip every line.'), old);
+
+    expect(() => loadSkillBody(review)).toThrow(changed);
+  });
+
+  it('compares the bytes it loads with the ones discovered, where stat cannot tell', () => {
+    const entry = writeEntry();
+    const [review] = discoverSkills(dir);
+    writeFileSync(entry, edit(entry, 'Read every line.', 'Skip every line.'));
+    // What a same-size edit inside one tick of a coarse clock looks like to `stat`: nothing moved.
+    const info = statSync(entry);
+    const unmoved: Skill = { ...review, entryByteSize: info.size, entryMtimeMs: info.mtimeMs };
+
+    expect(() => loadSkillBody(unmoved)).toThrow(changed);
+  });
+
+  it('still loads a skill whose metadata alone changed', () => {
+    const entry = writeEntry();
+    const [review] = discoverSkills(dir);
+    // A touch and a chmod move mtime and ctime, and leave the bytes discovery read.
+    const later = new Date(Date.now() + 60_000);
+    utimesSync(entry, later, later);
+    chmodSync(entry, 0o600);
+
+    expect(loadSkillBody(review).body).toBe('Read every line.');
+  });
+
+  it('loads a skill whose frontmatter closes on a 4 KiB boundary', () => {
+    const skillDir = join(dir, '.book', 'skills', 'review');
+    mkdirSync(skillDir, { recursive: true });
+    const head = ['---', 'name: review', 'description: Use the review workflow', ''].join('\n');
+    // The closing `---` ends at byte 4096, with its newline at 4097.
+    const padding = `notes: ${'x'.repeat(4096 - head.length - '\n---'.length - 'notes: '.length)}`;
+    const text = `${head}${padding}\n---\nRead every line.`;
+    expect(text.indexOf('\n---\n') + '\n---'.length).toBe(4096);
+    writeFileSync(join(skillDir, 'SKILL.md'), text);
+
+    const [review] = discoverSkills(dir);
+
+    expect(review.valid).toBe(true);
+    expect(loadSkillBody(review).body).toBe('Read every line.');
+  });
+
+  it('takes the size and the digest from one read, and no digest for a skill too large to load', () => {
+    const entry = writeEntry();
+    const bytes = readFileSync(entry);
+    const [review] = discoverSkills(dir);
+
+    expect(review.entryByteSize).toBe(bytes.length);
+    expect(review.entryDigest).toBe(createHash('sha256').update(bytes).digest('hex'));
+
+    const padding = Buffer.alloc(MAX_SKILL_BODY_BYTES + MAX_SKILL_HEADER_BYTES, 0x61);
+    writeFileSync(entry, Buffer.concat([bytes, padding]));
+    const [large] = discoverSkills(dir);
+
+    expect(large.valid).toBe(false);
+    expect(large.entryDigest).toBeUndefined();
+    expect(large.issues.map((issue) => issue.code)).toContain('body_too_large');
+  });
+
+  it('guards a descriptor built without discovery by its size and mtime', () => {
+    const entry = writeEntry();
+    const handBuilt: Skill = { ...discoverSkills(dir)[0] };
+    delete handBuilt.entryDigest;
+
+    expect(loadSkillBody(handBuilt).body).toBe('Read every line.');
+    const later = new Date(Date.now() + 60_000);
+    utimesSync(entry, later, later);
+    expect(() => loadSkillBody(handBuilt)).toThrow(changed);
   });
 });
 

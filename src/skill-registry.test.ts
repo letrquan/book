@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -12,6 +13,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SkillSettings } from './settings.js';
 import { SkillRegistry, SkillRegistryError } from './skill-registry.js';
+import { rewriteRestoringMtime } from './test/restored-mtime.js';
 
 let workspace: string;
 
@@ -229,6 +231,30 @@ describe('SkillRegistry', () => {
     const timestamp = new Date(declared.mtimeMs);
     utimesSync(path, timestamp, timestamp);
 
+    expect(() => skills.readResource('review', 'references/checklist.md')).toThrowError(
+      expect.objectContaining<Partial<SkillRegistryError>>({ code: 'skill_resource_changed' }),
+    );
+  });
+
+  it('reads a resource whose metadata alone changed, and refuses one whose bytes did (#647)', async () => {
+    const root = writeSkill('review', {
+      resources: { 'references/checklist.md': 'original-content' },
+    });
+    const path = join(root, 'references', 'checklist.md');
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(path, old, old);
+    const skills = registry();
+    skills.activate('review', 'user', 0);
+
+    // A touch and a chmod move mtime and ctime, and leave the bytes the digest was taken from.
+    const later = new Date(Date.now() + 60_000);
+    utimesSync(path, later, later);
+    chmodSync(path, 0o600);
+    expect(skills.readResource('review', 'references/checklist.md').content).toBe(
+      'original-content',
+    );
+    // A same-size edit whose mtime was put back (`touch -r`) moves nothing a size check sees.
+    await rewriteRestoringMtime(path, 'replaced-content', later);
     expect(() => skills.readResource('review', 'references/checklist.md')).toThrowError(
       expect.objectContaining<Partial<SkillRegistryError>>({ code: 'skill_resource_changed' }),
     );

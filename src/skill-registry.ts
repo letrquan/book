@@ -541,7 +541,10 @@ export class SkillRegistry {
     }
     const resourceInfo = statSync(canonical);
     const byteSize = resourceInfo.size;
-    if (byteSize !== declared.byteSize || resourceInfo.mtimeMs !== declared.mtimeMs) {
+    // A new size is a change, refused before a read. Bytes of the same size go to the content
+    // digest below instead of a timestamp check (#647): a same-size edit whose mtime was put back
+    // is refused there, while a chmod or a touch leaves the resource readable.
+    if (byteSize !== declared.byteSize) {
       throw new SkillRegistryError(
         'skill_resource_changed',
         `Skill resource changed after discovery; reload skills before reading: ${normalized}`,
