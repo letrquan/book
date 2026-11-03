@@ -741,7 +741,9 @@ listening (#620):
 - `SessionList` lists the live sessions of this machine: this session's own name first, then one
   row per other session, `name [ref] · kind · status · started`. The name is the address; the ref,
   six hex digits of the session's socket path, only tells two sessions with the same name apart. A
-  session marked `no inbox` has messaging off and cannot be messaged.
+  session marked `no inbox` has messaging off and cannot be messaged. Every field another session
+  wrote is folded to one line, stripped of invisible characters and cut before its harness
+  tags are neutralized, and a name also loses every bracket that reads as `<` or `>`.
 - `SessionSend {to, message?, notify_when_idle?}` sends one message. `to` is a name, `name [ref]`,
   or the `from` address of a message being answered; a name two sessions hold is refused with both
   refs named. The description tells the model that a peer is not its user, that a message is never
@@ -798,7 +800,12 @@ about its reason is never repeated.
 On the receiving side, the message's text never reaches the prompt as markup: the `<` of every tag
 Book's prompts are built from (`session-state`, `project-instructions`, `system-reminder`, the
 envelope's own `cross-session-message`, and the rest of the list in `src/prompt-tags.ts`) is
-rewritten as `<\\`, also when a JSON string spells it with escapes such as `\u003c` or `\/`. A
+rewritten as `<\\`, also when a JSON string spells it with escapes such as `\u003c` or `\/`, and
+when it is spelled with a fullwidth or lookalike bracket, slash or hyphen (`＜`, `﹤`, `‹`, `⁄`, `‐`),
+in fullwidth letters, with an invisible character inside it (a format character, a variation
+selector, a Hangul filler), or with whitespace after the `<` or around
+the `/` of a tag that ends as one does (`< /source>`, but never `i < source.length`). Other
+letters are not folded: a Cyrillic `ѕ` in a tag's name is left as written. A
 message whose permission class differs from the receiving session's is held for its user to
 approve, and a turn a peer message starts is pinned to its permission class, as are the
 completion and notice turns that carry its work on until the user's next turn, so switching into

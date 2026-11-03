@@ -7,15 +7,19 @@ import { foldControlCharacters } from '../control-characters.js';
 import { neutralizeTags } from '../prompt-tags.js';
 import type { PeerEditAttribution } from '../types/messaging.js';
 
-/** Invisible format characters: zero-width spaces and joiners, word joiners, Unicode tag text. */
-const FORMAT_CHARACTERS = /\p{Cf}/gu;
+/**
+ * Characters a reader does not see: format characters (zero-width spaces and joiners, word
+ * joiners, Unicode tag text) and the other default-ignorable ones (variation selectors, the
+ * combining grapheme joiner, Hangul fillers), #654.
+ */
+const INVISIBLE_CHARACTERS = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
 
 /**
  * Text from outside the harness, one line of it, with its control characters folded and its
- * invisible format characters removed, so neither a line break nor hidden text survives.
+ * invisible characters removed, so neither a line break nor hidden text survives.
  */
 export function plainSpan(text: string): string {
-  return foldControlCharacters(text).replace(FORMAT_CHARACTERS, '');
+  return foldControlCharacters(text).replace(INVISIBLE_CHARACTERS, '');
 }
 
 /**
