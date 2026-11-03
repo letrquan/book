@@ -1940,6 +1940,8 @@ export async function runAgentLoop(
       // is stranded is a reasoning block the transcript collapses to one row.
       let textBuffer = '';
       let heldText = '';
+      /** What the host had been shown before this attempt, for one that is taken back whole. */
+      const outputBeforeAttempt: boolean = assistantOutputProduced;
       let textStreamingStarted = false;
       let reasoningStreamingStarted = false;
       const flushReasoning = (): void => {
@@ -2493,24 +2495,28 @@ export async function runAgentLoop(
       // allowance of its own: the route's parser failed on one reply (once in about a thousand
       // calls in #667), which another sample usually avoids, while a route that fails every time
       // is not helped by more, so `streamReissueAttempts` is not spent on it. When the re-ask
-      // comes back the same way the run fails with a reason that names it. The markup is left
-      // out of the history and the answer: it is not what the model said, and a resumed session
-      // should not read its own raw call back as the previous turn.
+      // comes back the same way the run fails with a reason that names it. Either reply is taken
+      // back from the host and left out of the history and the answer: it is not what the model
+      // said, and a resumed session should not read its own raw call back as the previous turn.
       const toolMarkup =
         !streamError && streamDone && toolCalls.length === 0 && !signal?.aborted
           ? detectToolCallMarkup(assistantContent)
           : null;
       if (toolMarkup) {
+        const found = {
+          turn,
+          format: toolMarkup.format,
+          closed: toolMarkup.closed,
+          contentLen: assistantContent.length,
+          responseId: responseMetadata?.responseId,
+        };
+        // Nothing of this attempt is left in the transcript, so the output it produced is not
+        // the run's partial output either.
+        callbacks.onAttemptDiscarded?.();
+        assistantOutputProduced = outputBeforeAttempt;
         if (toolMarkupRetryTurn !== turn) {
           toolMarkupRetryTurn = turn;
-          log.warn('provider answered with tool-call markup as text; re-issuing', {
-            turn,
-            format: toolMarkup.format,
-            closed: toolMarkup.closed,
-            contentLen: assistantContent.length,
-            responseId: responseMetadata?.responseId,
-          });
-          callbacks.onAttemptDiscarded?.();
+          log.warn('provider answered with tool-call markup as text; re-issuing', found);
           // The same delay and retry label an empty completion's re-issue gets.
           const delayMs = reissueBackoffMs(1);
           callbacks.onRetry?.('reissue', 1, 1, delayMs, 'malformed_tool_call');
@@ -2520,13 +2526,7 @@ export async function runAgentLoop(
           retrySameTurn = true;
           continue;
         }
-        log.warn('provider answered with tool-call markup as text again; ending the run', {
-          turn,
-          format: toolMarkup.format,
-          closed: toolMarkup.closed,
-          contentLen: assistantContent.length,
-          responseId: responseMetadata?.responseId,
-        });
+        log.warn('provider answered with tool-call markup as text again; ending the run', found);
         streamError =
           `The model's reply was a tool call written out as plain text (${toolMarkup.label}), not a ` +
           'structured tool call, so no tool ran. Book asked again and the reply came back the same ' +
@@ -2534,6 +2534,8 @@ export async function runAgentLoop(
           'to try again, or switch to another route or model.';
         streamErrorCode = 'malformed_tool_call';
         assistantContent = '';
+        // Its reasoning went with it, so the error path below has no message to keep.
+        reasoningContent = '';
       }
 
       if (heldText && !routerOverflowResponse && !upstreamErrorAsContent) {

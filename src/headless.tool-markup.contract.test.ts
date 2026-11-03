@@ -97,12 +97,18 @@ describe('a reply that is tool-call markup, in print mode (#667)', () => {
     // The original and its one re-ask.
     expect(provider.requests).toHaveLength(2);
     expect(event.stopReason).toBe('malformed_tool_call');
-    expect(event.outcome).toMatchObject({ status: 'failed', reason: 'malformed_tool_call' });
+    expect(event.outcome).toMatchObject({
+      status: 'failed',
+      reason: 'malformed_tool_call',
+      partialOutput: false,
+    });
     const result = event.result as { stopReason: string; answer: string; outcome: unknown };
     expect(result.stopReason).toBe('malformed_tool_call');
     expect(result.outcome).toEqual(event.outcome);
     // An unexecuted Grep is not the model's answer.
     expect(result.answer).toBe('');
+    // Both replies are taken back from a reader that builds the transcript from the stream.
+    expect(events.filter((candidate) => candidate.type === 'attempt_discarded')).toHaveLength(2);
     expect(events.filter((candidate) => candidate.type === 'error')).toHaveLength(1);
     expect(events.find((candidate) => candidate.type === 'error')).toMatchObject({
       error: expect.stringContaining('tool call written out as plain text'),

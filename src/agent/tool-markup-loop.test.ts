@@ -160,10 +160,11 @@ describe('a reply that is tool-call markup (#667)', () => {
     // `provider_error` outcome would have drawn on and re-sent with a `[continuation]` prompt.
     expect(seen.calls).toBe(2);
     expect(seen.outcomes).toHaveLength(1);
+    // Nothing of either reply is left, so the run produced no partial output.
     expect(seen.outcomes[0]).toMatchObject({
       status: 'failed',
       reason: 'malformed_tool_call',
-      partialOutput: true,
+      partialOutput: false,
     });
     expect(terminalRecovery(seen.outcomes[0])).toBe('none');
     expect(seen.errors).toHaveLength(1);
@@ -172,6 +173,9 @@ describe('a reply that is tool-call markup (#667)', () => {
     expect(seen.errors[0]).toMatch(/tool call/i);
     expect(seen.history.filter((message) => message.derivedContent)).toEqual([]);
     expect(seen.retries).toHaveLength(1);
+    // The host is told to drop both replies, so what it shows and what a consumer of the stream
+    // keeps is what the history records.
+    expect(seen.discards).toBe(2);
   });
 
   it('leaves the markup out of the answer and the history of the failed run', async () => {
@@ -180,6 +184,19 @@ describe('a reply that is tool-call markup (#667)', () => {
     // An unexecuted Grep is not what the model answered: a print run must not hand it on.
     expect(finalAnswerText(seen.history)).toBe('');
     expect(seen.history.some((message) => message.content.includes('DSML'))).toBe(false);
+    expect(seen.history.map((message) => message.role)).toEqual(['user']);
+  });
+
+  it('drops the reasoning that came with the replies too', async () => {
+    const reply: ProviderStreamEvent[] = [
+      { type: 'reasoning', reasoning: 'I should search for the queue.' },
+      { type: 'text', content: DSML },
+      { type: 'done', finishReasons: ['stop'] },
+    ];
+    const seen = await run([reply]);
+
+    expect(seen.outcomes[0]).toMatchObject({ status: 'failed', reason: 'malformed_tool_call' });
+    // No assistant message is left to carry it into a resumed session.
     expect(seen.history.map((message) => message.role)).toEqual(['user']);
   });
 
@@ -229,6 +246,34 @@ describe('a reply that is tool-call markup (#667)', () => {
     expect(seen.errors).toEqual([]);
     expect(seen.outcomes[0]).toMatchObject({ status: 'completed', reason: 'normal_completion' });
     expect(finalAnswerText(seen.history)).toBe('There is nothing to find.');
+  });
+
+  it('still reports the output of earlier turns when a later one fails', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-markup-loop-'));
+    workspaces.push(workspace);
+    const seen = await run(
+      [
+        [
+          { type: 'text', content: 'Looking for the queue.' },
+          {
+            type: 'tool_call',
+            toolCall: { id: 'call-1', name: 'Glob', arguments: { pattern: '*.ts' } },
+          },
+          { type: 'done', finishReasons: ['tool_calls'] },
+        ],
+        DSML,
+      ],
+      { config: { maxTurns: 3, workspace }, registry: createDefaultRegistry() },
+    );
+
+    expect(seen.calls).toBe(3);
+    // The narration of turn one stays; only the discarded replies are taken out.
+    expect(seen.outcomes[0]).toMatchObject({
+      status: 'failed',
+      reason: 'malformed_tool_call',
+      partialOutput: true,
+    });
+    expect(seen.discards).toBe(2);
   });
 
   it('does not read the markup beside a real tool call as the reply', async () => {

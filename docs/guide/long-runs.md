@@ -183,10 +183,14 @@ reply and asks again once, with the same backoff and the same retry notice an em
 (`reason: malformed_tool_call` on the `retry` record). That one re-ask has an allowance of its own
 and does not draw on `retry.streamReissueAttempts`. If the reply comes back the same way, the run
 ends `failed` with `malformed_tool_call`, and print mode exits 1. Neither reply is kept in the
-history or returned as the answer, so a resumed session does not read the raw call back as its own
-previous turn. Only a block at the end of the reply counts: prose that names a tag, a block inside
-a fenced code example, and a block that more text follows are answers. Book does not parse the
-markup into a call. Resume the session to try again, or switch to another route or model.
+history or returned as the answer, and the host is told to drop both (an `attempt_discarded` record
+in `stream-json`, the streamed text in the TUI), so a resumed session does not read the raw call
+back as its own previous turn. Only a block at the end of the reply counts: prose that names a tag,
+a block inside a fenced code example, and a block that more text follows are answers, and an
+end-of-turn token such as `<|im_end|>` that the route leaked after the block is not text. A reply
+that ends with an unfenced, unindented example of the format cannot be told from a leak, and is read
+as one. Book does not parse the markup into a call. Resume the session to try again, or switch to
+another route or model.
 
 A retryable status is classified by the error it quotes, not by the status alone. A router that
 wraps an upstream 4xx as a 503 with a cooldown

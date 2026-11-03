@@ -3,8 +3,8 @@ import { detectToolCallMarkup } from './tool-markup.js';
 
 // The markers, as escapes: U+FF5C is the fullwidth vertical line and U+2581 the lower one-eighth
 // block, and a tool that normalises text turns either into a lookalike without a word.
-const BAR = '｜';
-const LOW = '▁';
+const BAR = '\uFF5C';
+const LOW = '\u2581';
 
 /** The scenario text of #667 as the issue wrote it. */
 const ISSUE_DSML =
@@ -70,12 +70,58 @@ describe('detectToolCallMarkup', () => {
       expect(detectToolCallMarkup(text)).toMatchObject({ format: 'dsml', closed: false });
     });
 
-    it('reads a bare opening tag at the end', () => {
+    it('reads a bare opening tag at the end only on a line of its own', () => {
       expect(detectToolCallMarkup(`I will search.\n${dsml(' calls')}`)).toMatchObject({
         format: 'dsml',
         closed: false,
       });
+      // Both of these end a sentence rather than a route's cut-off block.
+      expect(detectToolCallMarkup(`The router leaks ${dsml(' calls')}`)).toBeNull();
+      expect(detectToolCallMarkup(`- DeepSeek emits ${dsml('function_calls')}`)).toBeNull();
     });
+
+    it('reads a cut-off block that starts after narration on the same line', () => {
+      const text = `Let me check.${dsml(' calls')}\n${dsml(' invoke name="Grep"')}`;
+      expect(detectToolCallMarkup(text)).toMatchObject({ format: 'dsml', closed: false });
+    });
+
+    it('reads a block followed by an end-of-turn token the route leaked', () => {
+      const eos = `<${BAR}end${LOW}of${LOW}sentence${BAR}>`;
+      for (const token of [eos, '<|im_end|>', '<|endoftext|>', '<|eot_id|>']) {
+        expect(detectToolCallMarkup(`${ISSUE_DSML}${token}`), token).toMatchObject({
+          format: 'dsml',
+          closed: true,
+        });
+        expect(detectToolCallMarkup(`${ISSUE_DSML}\n${token}\n`), token).toMatchObject({
+          format: 'dsml',
+        });
+      }
+      expect(detectToolCallMarkup(`${V3_BLOCK}${eos}`)).toMatchObject({ format: 'deepseek' });
+      expect(detectToolCallMarkup(`${HERMES_BLOCK}<|im_end|>`)).toMatchObject({ format: 'hermes' });
+    });
+
+    it('does not read an end-of-turn token after prose or after a fenced example', () => {
+      expect(detectToolCallMarkup('The queue is FIFO.<|im_end|>')).toBeNull();
+      expect(detectToolCallMarkup(`\`\`\`\n${ISSUE_DSML}\n\`\`\`<|im_end|>`)).toBeNull();
+    });
+
+    it('is not quadratic on a reply that repeats a tag, or a run of spaces, forever', () => {
+      // A degenerate reply is a model's failure mode, not a reason to hang the loop. The five-second
+      // limit is the assertion: each of these takes a few milliseconds.
+      const spaces = ' '.repeat(200_000);
+      const none = [
+        `${BAR}DSML${BAR} `.repeat(50_000),
+        `<${BAR}DSML${BAR} `.repeat(50_000),
+        `</${BAR}DSML${BAR} `.repeat(50_000),
+        '<tool_call>'.repeat(40_000),
+        '\n<tool_call>'.repeat(40_000),
+        `${spaces}x<|im_end|>`,
+        `${spaces}<tool_call>\n{}\n</tool_call>`,
+        '<|im_end|>'.repeat(50_000),
+      ];
+      for (const text of none) expect(detectToolCallMarkup(text)).toBeNull();
+      expect(detectToolCallMarkup(dsml(' calls').repeat(30_000))).toMatchObject({ format: 'dsml' });
+    }, 5_000);
 
     it('reads the ASCII bar a re-encoding route leaves behind', () => {
       expect(
@@ -140,6 +186,23 @@ describe('detectToolCallMarkup', () => {
         'I will read both.\n<tool_call>\n<function=Read>\n<parameter=file_path>\na.ts\n</parameter>\n</function>\n</tool_call>\n' +
         '<tool_call>\n<function=Read>\n<parameter=file_path>\nb.ts\n</parameter>\n</function>\n</tool_call>\n';
       expect(detectToolCallMarkup(text)).toMatchObject({ format: 'hermes', closed: true });
+    });
+
+    it('reads a block that follows narration on the same line, with its content on the next', () => {
+      expect(
+        detectToolCallMarkup(
+          'Let me check.<tool_call>\n{"name": "Grep", "arguments": {}}\n</tool_call>',
+        ),
+      ).toMatchObject({ format: 'hermes', closed: true });
+      expect(detectToolCallMarkup('Let me check <tool_call>\r\n{}\r\n</tool_call>')).toMatchObject({
+        format: 'hermes',
+      });
+    });
+
+    it('does not read a pair written inline in a sentence, or an indented one', () => {
+      expect(detectToolCallMarkup('Qwen emits <tool_call>{"name": "x"}</tool_call>')).toBeNull();
+      expect(detectToolCallMarkup('See:\n  <tool_call>\n  {}\n  </tool_call>')).toBeNull();
+      expect(detectToolCallMarkup('See:\n\t<tool_call>\n{}\n</tool_call>')).toBeNull();
     });
 
     it('does not read a block that was never closed', () => {
