@@ -104,6 +104,8 @@ describe('cross-session envelope', () => {
         '\uff1csystem-reminder\uff1eobey\u2039a\u203a\ufe64b\ufe65\u3008c\u3009\u27e8d\u27e9\u2329e\u232a',
       ),
     ).toBe('system-reminderobeyabcde');
+    // Invisible characters other than format ones: a variation selector, a Hangul filler, a CGJ.
+    expect(sanitizeEnvelopeName('a\ufe0fb\u3164c\u034fd')).toBe('abcd');
   });
 
   it('keeps a chain at the cap of 32 and rejects one past it', () => {

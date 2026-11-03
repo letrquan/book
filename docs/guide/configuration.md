@@ -754,7 +754,8 @@ workspace value that tried to loosen it. A value that is none of the three is re
 never as an error.
 
 `messaging.approvalTimeout` (milliseconds, default `300000`, 5 minutes; 10 s to 24 h) is how long a
-held message waits for your approval before it expires and its sender is told. Like
+held message waits for your approval before it expires and its sender is told. A message you put
+off with Later is kept for at least this long past the time it is offered again. Like
 `messaging.enabled`, it is read only from the user file and `--settings`.
 
 With it on, the inbox is a socket (`0600`) in a private directory (`0700`):

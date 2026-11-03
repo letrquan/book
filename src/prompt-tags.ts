@@ -5,11 +5,12 @@
  * the tag no longer reads as markup, and everything else is left as written.
  *
  * The default rewrite finds a tag however it is spelled (#654): with a fullwidth or lookalike
- * bracket or slash (`＜`, `﹤`, `‹`, `⁄`), in fullwidth letters, with an invisible format character
- * anywhere in it (`<system\u200b-reminder>`), with whitespace after the `<` or around the `/` when
- * it ends as a tag does (`< /source>`, never `i < source.length`), and with any of those characters
- * written as a JSON string escape. Letters fold by NFKC only: a Cyrillic `ѕ` in `<ѕystem-reminder>`
- * is left as written.
+ * bracket, slash or hyphen (`＜`, `﹤`, `‹`, `⁄`, `‐`), in fullwidth letters, with an invisible
+ * character anywhere in it (a format character, as in `<system\u200b-reminder>`, a variation
+ * selector, a Hangul filler), with whitespace after the `<` or around the `/` when it ends as a tag
+ * does (`< /source>`, never `i < source.length`), and with any of those characters written as a
+ * JSON string escape. Letters fold by NFKC only: a Cyrillic `ѕ` in `<ѕystem-reminder>` is left as
+ * written.
  */
 
 /**
@@ -76,6 +77,11 @@ const LESS_THAN_LOOKALIKES = '\u2039\u27e8\u3008\u276c\u276e\u2770\u02c2\u1438\u
 const GREATER_THAN_LOOKALIKES = '\u203a\u27e9\u3009\u276d\u276f\u2771\u02c3\u1433\u29fd';
 /** Slashes that read as `/` and that NFKC leaves alone (it folds the fullwidth one). */
 const SLASH_LOOKALIKES = '\u2044\u2215\u29f8\u2571';
+/**
+ * Hyphens and dashes that read as `-` in a tag's name and that NFKC leaves alone (it folds the
+ * fullwidth and small hyphen-minus, and the non-breaking hyphen to U+2010).
+ */
+const HYPHEN_LOOKALIKES = '\u2010\u2012\u2013\u2014\u2015\u2043\u2212';
 
 /**
  * Every character that reads as `<`: the ASCII one, the four NFKC folds to it (`＜`, `﹤`, and
@@ -93,12 +99,17 @@ const LOOKALIKES = new Map<string, string>([
   ...[...LESS_THAN_LOOKALIKES].map((char): [string, string] => [char, '<']),
   ...[...GREATER_THAN_LOOKALIKES].map((char): [string, string] => [char, '>']),
   ...[...SLASH_LOOKALIKES].map((char): [string, string] => [char, '/']),
+  ...[...HYPHEN_LOOKALIKES].map((char): [string, string] => [char, '-']),
 ]);
 
 /** Where a tag may begin: a character that reads as `<`, or a JSON `\uXXXX` escape. */
 const OPENER = new RegExp(`[${LESS_THAN_READINGS}]|\\\\u[0-9A-Fa-f]{4}`, 'g');
-/** Invisible format characters: zero-width spaces and joiners, word joiners, the BOM, tag text. */
-const FORMAT_CHARACTER = /^\p{Cf}$/u;
+/**
+ * Characters a reader does not see: format characters (zero-width spaces and joiners, word
+ * joiners, the BOM, tag text) and the other default-ignorable ones (variation selectors, the
+ * combining grapheme joiner, Mongolian variation selectors, Hangul fillers).
+ */
+const INVISIBLE_CHARACTER = /^[\p{Cf}\p{Default_Ignorable_Code_Point}]$/u;
 const WHITESPACE = /^\s+$/;
 const NAME_CHARACTERS = /^[A-Za-z0-9_:-]+$/;
 const HEX_CODE_UNIT = /^[0-9A-Fa-f]{4}$/;
@@ -111,29 +122,36 @@ const OPAQUE = '\u0000';
 /** One character of the text: where it ends as written, and what matching reads it as. */
 interface Unit {
   end: number;
-  /** NFKC, the lookalikes folded, format characters gone: `''` for an invisible one. */
+  /** NFKC, the lookalikes folded, invisible characters gone: `''` for an invisible one. */
   read: string;
   /** A `\` that starts no `\uXXXX` escape: one of the backslashes a writer may put after a `<`. */
   backslash: boolean;
 }
 
-/** A character, folded for matching: NFKC, then the lookalikes, then format characters dropped. */
+/** A character, folded for matching: NFKC, then the lookalikes, then invisible characters dropped. */
 function foldCharacter(char: string): string {
   if (char.length === 1 && char.charCodeAt(0) < 0x80) return char;
   let folded = '';
   for (const part of char.normalize('NFKC')) {
-    if (FORMAT_CHARACTER.test(part)) continue;
+    if (INVISIBLE_CHARACTER.test(part)) continue;
     const read = LOOKALIKES.get(part) ?? part;
     folded += read === '\\' ? OPAQUE : read;
   }
   return folded;
 }
 
-/** The code unit a JSON `\uXXXX` escape at `at` spells, or undefined when none starts there. */
+/**
+ * The code unit a JSON `\uXXXX` escape at `at` spells, or undefined when none starts there. As JSON
+ * reads it, a backslash an odd run of backslashes comes before is itself escaped: `\\u0073` is
+ * a backslash and the letters `u0073`, not an `s`.
+ */
 function escapedCodeUnit(text: string, at: number): number | undefined {
   if (text.charCodeAt(at) !== 0x5c || text.charCodeAt(at + 1) !== 0x75) return undefined;
   const hex = text.slice(at + 2, at + 6);
-  return HEX_CODE_UNIT.test(hex) ? parseInt(hex, 16) : undefined;
+  if (!HEX_CODE_UNIT.test(hex)) return undefined;
+  let before = 0;
+  while (before < at && text.charCodeAt(at - before - 1) === 0x5c) before++;
+  return before % 2 === 0 ? parseInt(hex, 16) : undefined;
 }
 
 /**

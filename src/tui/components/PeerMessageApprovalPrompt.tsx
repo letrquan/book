@@ -67,7 +67,7 @@ export function PeerMessageApprovalPrompt({
   terminalWidth = 80,
 }: PeerMessageApprovalPromptProps) {
   const theme = useTheme();
-  const unverified = held.senderVerified === false;
+  const unverified = held.senderCheck === 'unverified';
   const sender = unverified ? 'unverified senders' : 'this sender';
   const options: Array<{ key: OptionKey; label: string; hint: string }> = [
     {
@@ -120,9 +120,14 @@ export function PeerMessageApprovalPrompt({
   const waiting =
     (fromSender > 1 ? ` · ${fromSender} held from ${sender}` : '') +
     (fromOthers > 0 ? ` · ${fromOthers} from others` : '');
-  // Later is offered again no sooner than the interval after it is chosen (#651), so the message
-  // may well expire first: the sheet shows both times.
-  const reofferAt = Date.now() + REOFFER_INTERVAL_MS;
+  // What the registry said about the address (#651): matched, matched by no live session, or not
+  // read, when it could not be.
+  const addressNote =
+    held.senderCheck === 'live'
+      ? ' · address matches a live session'
+      : unverified
+        ? ' · no live session has this address'
+        : ' · address not verified';
   const choices: Choice[] = options.map((option) => ({
     label: option.label,
     detail: option.hint,
@@ -147,9 +152,7 @@ export function PeerMessageApprovalPrompt({
           {held.claimedName !== undefined ? (
             <Text color={theme.inactive}> (peer claims name: {held.claimedName})</Text>
           ) : null}
-          <Text color={theme.inactive}>
-            {unverified ? ' · no live session has this address' : ' · address not verified'}
-          </Text>
+          <Text color={theme.inactive}>{addressNote}</Text>
         </Text>
         <Text wrap="wrap">
           <Text color={theme.inactive}>{'message  '}</Text>
@@ -161,7 +164,8 @@ export function PeerMessageApprovalPrompt({
           <Text color={theme.inactive}>{'expires  '}</Text>
           <Text color={theme.text}>{expiryTime(held.expiresAt)}</Text>
           <Text color={theme.inactive}>
-            ; Later asks again when idle, not before {expiryTime(reofferAt)}
+            ; Later asks again when idle in {REOFFER_INTERVAL_MS / 60_000} minutes or more, holding
+            it at least that long
           </Text>
         </Text>
       </Box>

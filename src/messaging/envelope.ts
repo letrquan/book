@@ -45,12 +45,13 @@ const ENVELOPE = new RegExp(
 );
 const ATTRIBUTE = / ([a-z-]+)="([^"]*)"/g;
 // Format and control characters, surrogates and the line and paragraph separators (Claude Code's
-// set), the characters that would break the attribute, every bracket that reads as `<` or `>`
+// set), the other default-ignorable characters (a variation selector, a Hangul filler), the
+// characters that would break the attribute, every bracket that reads as `<` or `>`
 // (`ANGLE_BRACKETS`, lookalikes included, #654), and the glyphs the TUI's held-message rows are
 // built from (`«»`, the dashes, the marks), so a name cannot draw a tag or a row's structure
 // (#620 PR 5).
 const NAME_STRIPPED = new RegExp(
-  `[\\p{Cf}\\p{Cc}\\p{Cs}\\p{Zl}\\p{Zp}"&«»—–·•●✓⚠›${ANGLE_BRACKETS}]`,
+  `[\\p{Cf}\\p{Default_Ignorable_Code_Point}\\p{Cc}\\p{Cs}\\p{Zl}\\p{Zp}"&«»—–·•●✓⚠›${ANGLE_BRACKETS}]`,
   'gu',
 );
 

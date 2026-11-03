@@ -323,10 +323,22 @@ describe('the held peer message in the TUI', () => {
     await waitFor(() => !words(view.lastFrame()).includes(SHEET));
   });
 
+  it('says when the registry matched the address, and when it could not be read (#651)', async () => {
+    const live = Object.assign(heldMessage('l1', 'from a live session'), {
+      senderCheck: 'live' as const,
+    });
+    const view = launch(fakeMessaging([live]));
+    await waitFor(() => words(view.lastFrame()).includes(SHEET));
+    expect(words(view.lastFrame())).toContain(
+      'peer-a [a1b2c3] (peer claims name: peer-a) · address matches a live session',
+    );
+    expect(words(view.lastFrame())).toContain('Deny all from this sender');
+  });
+
   it('says when it asks about every sender no live session vouches for, and when it asks again (#651)', async () => {
     const unverified = [1, 2].map((index) =>
       Object.assign(heldMessage(`u${index}`, `unverified ${index}`), {
-        senderVerified: false,
+        senderCheck: 'unverified' as const,
         sender: 'an unverified sender [d4d5d6]',
         claimedName: undefined,
       }),
@@ -338,7 +350,7 @@ describe('the held peer message in the TUI', () => {
     expect(frame).toContain('no live session has this address');
     expect(frame).not.toContain('address not verified');
     expect(frame).toContain('Deny all from unverified senders');
-    expect(frame).toContain('Later asks again when idle, not before');
+    expect(frame).toContain('Later asks again when idle in 5 minutes or more');
     expect(frame).toContain('everything from unverified senders');
     expect(frame).toContain('not delivered; no live session has its address to tell');
   });
