@@ -1872,6 +1872,14 @@ export function buildSeatbeltPolicy(
     filters: [...new Set(readableRoots.flatMap((root) => ancestorsOf(root, host)))].map(literal),
   });
   rules.push({ action: 'allow', operations: READ_WRITE, filters: tempRoots.map(subpath) });
+  // What is in a temp root, not the root itself: `subpath` matches the root as
+  // well, and the per-user `T` sits in a directory the user owns, so a command
+  // could move it aside and put a symlink into the workspace in its place. Book
+  // builds its own entries from `os.tmpdir()`, and the deny below holds only
+  // under the root's real path, so the next one would land where sandboxed
+  // commands write (#652). The roots are kept in place by the pins below too,
+  // which no later allow reopens.
+  rules.push({ action: 'deny', operations: ['file-write*'], filters: tempRoots.map(literal) });
   rules.push({
     action: 'deny',
     operations: READ_WRITE,
@@ -1938,10 +1946,12 @@ export function buildSeatbeltPolicy(
   ];
   // In place: the workspace root and every directory above it (a workspace
   // under a temp root or an `allowWrite` root could otherwise be moved, taking
-  // its protected paths with it to a path no rule names), the directories
-  // bubblewrap pins, and the directories above every hidden or read-only path.
+  // its protected paths with it to a path no rule names), the temp roots (#652),
+  // the directories bubblewrap pins, and the directories above every hidden or
+  // read-only path.
   const keptInPlace = new Set([
     ...(workspace ? [workspace, ...ancestorsOf(workspace, host)] : []),
+    ...tempRoots,
     ...paths.pinnedDirectories.map(canon),
     ...[...hiddenPaths, ...denyWrite].flatMap((path) => ancestorsOf(path, host)),
   ]);

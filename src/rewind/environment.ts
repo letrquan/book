@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
 import { join, resolve, sep } from 'path';
 import { SessionStore } from '../session/store.js';
+import { trustedTempRoot } from '../temp-root.js';
 import type { RewindSnapshotStoreInterface } from '../types/sessions.js';
 import { createRewindSnapshotStore } from './snapshot-store.js';
 
@@ -14,7 +14,7 @@ export interface EphemeralRewindEnvironment {
 
 export function createEphemeralRewindEnvironment(
   workspace: string,
-  temporaryRoot = tmpdir(),
+  temporaryRoot = trustedTempRoot(),
 ): EphemeralRewindEnvironment {
   const resolvedTemporaryRoot = resolve(temporaryRoot);
   const root = mkdtempSync(join(resolvedTemporaryRoot, 'book-rewind-'));

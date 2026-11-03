@@ -2,10 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'child_process';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'fs';
@@ -297,6 +299,36 @@ describe('buildSeatbeltPolicy', () => {
     expect(canCreate(policy, `${USER_TEMP}/book-index-new`)).toBe(false);
     expect(canRemove(policy, `${USER_TEMP}/book-rewind-a1`)).toBe(false);
     expect(canWrite(policy, `${USER_TEMP}/book-sandbox-test/x`)).toBe(true);
+  });
+
+  /**
+   * `subpath` matches the root as well as what is under it, and the per-user `T`
+   * sits in a directory the user owns: a command that moved it aside and put a
+   * symlink in its place would carry Book's own entries out from under their
+   * deny (#652).
+   */
+  it('keeps each temp root itself in place, while what is in it stays writable', () => {
+    const policy = policyFor();
+
+    for (const root of TEMP_ROOTS) {
+      expect(canRemove(policy, root), root).toBe(false);
+      expect(canCreate(policy, root), root).toBe(false);
+      expect(canWrite(policy, root), root).toBe(false);
+      expect(canWrite(policy, `${root}/scratch/file`), root).toBe(true);
+      expect(canCreate(policy, `${root}/new`), root).toBe(true);
+      expect(canRemove(policy, `${root}/old`), root).toBe(true);
+      expect(canRead(policy, root), root).toBe(true);
+    }
+  });
+
+  it('keeps a temp root in place even when an allowWrite entry names it', () => {
+    const policy = policyFor({ filesystem: { allowWrite: [USER_TEMP, '/private/tmp'] } });
+
+    for (const root of TEMP_ROOTS) {
+      expect(canRemove(policy, root), root).toBe(false);
+      expect(canCreate(policy, root), root).toBe(false);
+      expect(canWrite(policy, `${root}/scratch/file`), root).toBe(true);
+    }
   });
 
   it('writes a workspace inside a temp root whatever it is called', () => {
@@ -592,6 +624,22 @@ describe('renderSeatbeltProfile', () => {
       '(deny file-read* (require-all (subpath (param "P0")) (regex #"/(book-rewind-|book-index-|book-config-preflight-|book-socks)[^/]*(/|$)")))',
     );
   });
+
+  it('denies writes to each temp root as a path right after the temp roots are allowed (#652)', () => {
+    const { profile, parameters } = renderSeatbeltProfile(policyFor());
+    const name = (path: string): string =>
+      parameters.find((parameter) => parameter.endsWith(`=${path}`))?.split('=')[0] ?? '';
+    const [user, shared] = TEMP_ROOTS.map(name);
+    const lines = profile.split('\n');
+    const allow = lines.indexOf(
+      `(allow file-read* file-write* (subpath (param "${user}")) (subpath (param "${shared}")))`,
+    );
+
+    expect(allow).toBeGreaterThan(-1);
+    expect(lines[allow + 1]).toBe(
+      `(deny file-write* (literal (param "${user}")) (literal (param "${shared}")))`,
+    );
+  });
 });
 
 describe('BOOK_TEMP_PREFIXES', () => {
@@ -617,15 +665,39 @@ describe('BOOK_TEMP_PREFIXES', () => {
       for (const match of text.matchAll(/mkdtemp(?:Sync)?\(\s*join\([^']*'(book-[^']*)'/g)) {
         prefixes.add(match[1]);
       }
-      // A fixed name under tmpdir() built from a template, such as the messaging inbox's
+      // A fixed name under the temp root built from a template, such as the messaging inbox's
       // `book-socks-${uid}` (#620): the part before the first substitution, less its dash, is
       // the prefix, so the bare name (`$XDG_RUNTIME_DIR/book-socks`) is covered as well.
-      for (const match of text.matchAll(/tmpdir\(\)\s*,\s*`(book-[a-z-]*?)-?\$\{/g)) {
+      for (const match of text.matchAll(
+        /(?:tmpdir|trustedTempRoot)\(\)\s*,\s*`(book-[a-z-]*?)-?\$\{/g,
+      )) {
         prefixes.add(match[1]);
       }
     }
 
     expect([...prefixes].sort()).toEqual([...BOOK_TEMP_PREFIXES].sort());
+  });
+
+  /**
+   * An entry Book trusts is created under `trustedTempRoot()`, which refuses a temp directory
+   * that no longer resolves to the one Book started with (#652). A bare `tmpdir()` anywhere else
+   * in production code is a site that skipped the check; `seatbeltTempRoots` reads it only to
+   * name the roots a sandboxed command may write.
+   */
+  it('reads tmpdir() only in the trusted temp root and to name the temp roots', () => {
+    const sourceRoot = fileURLToPath(new URL('.', import.meta.url));
+    const readers: string[] = [];
+    for (const entry of readdirSync(sourceRoot, { recursive: true, encoding: 'utf8' })) {
+      const file = entry.split('\\').join('/');
+      if (!/\.tsx?$/.test(file) || /\.test\.tsx?$/.test(file)) continue;
+      if (file.startsWith('test/') || file.includes('__benchmarks__/')) continue;
+      // A call, not a mention: `os.tmpdir()` in a comment is preceded by a dot or a backtick.
+      if (/(?<![.\w`])tmpdir\(\)/.test(readFileSync(join(sourceRoot, entry), 'utf8'))) {
+        readers.push(file);
+      }
+    }
+
+    expect(readers.sort()).toEqual(['sandbox.ts', 'temp-root.ts']);
   });
 });
 
@@ -848,6 +920,98 @@ describe.skipIf(process.platform !== 'darwin')('the Seatbelt sandbox on a real M
     expect(read.status).not.toBe('success');
     expect(write.status).not.toBe('success');
     expect(readFileSync(join(entry, 'snapshot'), 'utf8')).toBe('host\n');
+  });
+
+  /**
+   * The per-user `$TMPDIR` sits in a directory the user owns, so moving it aside
+   * and putting a symlink in its place is a rename POSIX allows; Book would then
+   * build its own entries where the symlink points (#652). These run against a
+   * scratch temp root, never the runner's own: `TMPDIR` names a fresh directory
+   * under `/private/tmp`, itself a temp root, so the destination of each move is
+   * writable and only the deny on the root itself can stop it.
+   */
+  describe('a temp root itself (#652)', () => {
+    let root: string;
+    let savedTmpdir: string | undefined;
+
+    beforeEach(() => {
+      const scratch = realpathSync(mkdtempSync('/private/tmp/book-tmproot-'));
+      cleanup.push(scratch);
+      root = join(scratch, 'T');
+      mkdirSync(root);
+      savedTmpdir = process.env.TMPDIR;
+      process.env.TMPDIR = root;
+    });
+    afterEach(() => {
+      if (savedTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = savedTmpdir;
+    });
+
+    it('uses the scratch root as the temp root under test', () => {
+      expect(seatbeltTempRoots()).toContain(root);
+    });
+
+    it('cannot move the temp root aside', async () => {
+      const result = await sandboxedBash(`mv '${root}' '${root}.moved'`);
+
+      expect(result.status).not.toBe('success');
+      expect(result.content).toMatch(/Operation not permitted/);
+      expect(existsSync(root)).toBe(true);
+      expect(existsSync(`${root}.moved`)).toBe(false);
+    });
+
+    it('cannot remove the temp root, empty or not', async () => {
+      const empty = await sandboxedBash(`rmdir '${root}'`);
+      mkdirSync(root, { recursive: true });
+      writeFileSync(join(root, 'keep'), 'x');
+      const full = await sandboxedBash(`rm -rf '${root}'`);
+
+      expect(empty.status).not.toBe('success');
+      expect(empty.content).toMatch(/Operation not permitted/);
+      expect(full.status).not.toBe('success');
+      expect(full.content).toMatch(/Operation not permitted/);
+      expect(existsSync(root)).toBe(true);
+    });
+
+    it('cannot put a symlink or a directory where the temp root was', () => {
+      // The root has to exist when the profile is built, as it does in a session;
+      // it then goes away on the host, which a sandboxed command cannot make happen.
+      const target = join(workspace, 'redirected');
+      mkdirSync(target);
+      const exec = buildSeatbeltExecution(
+        SANDBOX_EXEC_PATH,
+        `ln -s '${target}' '${root}'; mkdir '${root}'; echo done`,
+        workspace,
+        sandboxSettings({ allowUnsandboxedCommands: false }),
+        realSandboxHost,
+        undefined,
+        seatbeltTempRoots(),
+      );
+      rmSync(root, { recursive: true, force: true });
+      const result = spawnSync(exec.file, exec.args, { cwd: workspace, encoding: 'utf8' });
+
+      expect(result.stdout).toContain('done');
+      expect(result.stderr).toMatch(/ln: .*Operation not permitted/);
+      expect(result.stderr).toMatch(/mkdir: .*Operation not permitted/);
+      expect(() => lstatSync(root)).toThrow();
+    });
+
+    it("still writes inside the temp root, and still denies Book's entries in it", async () => {
+      const entry = join(root, 'book-socks-501');
+      mkdirSync(entry);
+      writeFileSync(join(entry, 'key'), 'host\n');
+      const inside = await sandboxedBash(
+        `printf ok > '${join(root, 'scratch')}' && cat '${join(root, 'scratch')}'`,
+      );
+      const read = await sandboxedBash(`cat '${join(entry, 'key')}'`);
+      const write = await sandboxedBash(`printf x > '${join(entry, 'key')}'`);
+
+      expect(inside.status).toBe('success');
+      expect(readFileSync(join(root, 'scratch'), 'utf8')).toBe('ok');
+      expect(read.status).not.toBe('success');
+      expect(write.status).not.toBe('success');
+      expect(readFileSync(join(entry, 'key'), 'utf8')).toBe('host\n');
+    });
   });
 
   it('denies a case variant of a protected path, as APFS resolves it to the same one', async () => {

@@ -15,7 +15,6 @@
  */
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
 import { getNestedValue, setNestedValue } from './cli/utils.js';
 import { resolveSettings, settingsLayerPaths } from './settings-loader.js';
 import {
@@ -24,6 +23,7 @@ import {
   SETTINGS_TOP_LEVEL_KEYS,
   SettingsRepository,
 } from './settings-repository.js';
+import { trustedTempRoot } from './temp-root.js';
 import { projectFileWriteRefusal } from './workspace-files.js';
 import {
   blockedConfigWritePath,
@@ -176,7 +176,7 @@ function describeEffectiveBreak(options: SettingWriteOptions): string | undefine
   const candidate = structuredClone(layer.document);
   setNestedValue(candidate, options.key, options.value);
 
-  const directory = mkdtempSync(join(tmpdir(), 'book-config-preflight-'));
+  const directory = mkdtempSync(join(trustedTempRoot(), 'book-config-preflight-'));
   try {
     const candidatePath = join(directory, 'settings.json');
     writeFileSync(candidatePath, JSON.stringify(candidate));

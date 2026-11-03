@@ -1297,11 +1297,15 @@ system`; the read-only git directory note is appended for it all the same.
   sandboxed command, and nothing is created on your disk to mask it.
 - **Temp directories** are the host's own, not a private `/tmp`: macOS tools write to the per-user
   temp directory whatever `TMPDIR` says (`mktemp`, and the `xcrun` shim behind `/usr/bin/git`), so a
-  private one breaks them. `os.tmpdir()` and `/tmp` are therefore readable and writable, except
-  for Book's own entries in them (`book-rewind-*`, `book-index-*`, `book-config-preflight-*`, and
-  the messaging inbox's `book-socks*`) and a
+  private one breaks them. What is in `os.tmpdir()` and `/tmp` is therefore readable and writable,
+  except for Book's own entries in them (`book-rewind-*`, `book-index-*`, `book-config-preflight-*`,
+  and the messaging inbox's `book-socks*`) and a
   `BOOK_HOME` placed there. Book's home is denied by path wherever it is, and a temp directory that
-  is or contains the home directory is not used at all.
+  is or contains the home directory is not used at all. The temp directories themselves cannot be
+  renamed, removed or replaced (issue 652): the per-user `T` sits in a directory you own, and a
+  command that moved it aside and put a symlink to the workspace in its place would have Book create
+  its own entries where sandboxed commands write. Book also resolves `os.tmpdir()` once at startup
+  and refuses to create one of its own entries once it resolves anywhere else.
 - **Network** is the host's unless a domain rule is declared, in which case every socket is denied
   (below). Even when it is shared, a command can connect only to unix-domain sockets inside the
   workspace or an `allowWrite` path, plus the system DNS resolver: the ssh-agent, Docker and other
