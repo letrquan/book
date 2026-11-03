@@ -2192,6 +2192,11 @@ describe('buildSandboxExecution workspace control files', () => {
 
       expect(accessAt(exec.args, '/work/.book/agents')).toBe('writable');
       expect(accessAt(exec.args, '/work/.book/agents/new.md')).toBe('writable');
+      // Pinned, so the read-only entry cannot be carried off by renaming it (#634).
+      expect(accessAt(exec.args, '/work/.book/agents/locked')).toBe('writable');
+      expect(lastMountFor(exec.args, '/work/.book/agents/locked').index).toBeGreaterThan(
+        lastMountFor(exec.args, '/work/.book').index,
+      );
       expect(accessAt(exec.args, '/work/.book/agents/locked/policy')).toBe('read-only');
       expect(accessAt(exec.args, '/work/.book/settings.json')).toBe('read-only');
       expect(accessAt(exec.args, '/work/.book/settings.local.json')).toBe('absent');
@@ -2258,6 +2263,88 @@ describe('buildSandboxExecution workspace control files', () => {
           hostWith(crowded),
         ),
       ).toThrow(/Refused to run this command in the sandbox: \/work\/\.book holds/);
+    });
+  });
+
+  /**
+   * A read-only bind keeps the entry itself in place, but renaming a directory
+   * above it carries the mount away and a fresh directory takes the path (#634).
+   */
+  describe('denyWrite pins', () => {
+    it('pins each directory between the workspace and the entry, before any protected mount', () => {
+      const settings = sandboxSettings();
+      settings.filesystem.denyWrite = ['/work/conf/locked/policy'];
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        settings,
+        hostWith({
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/conf': 'dir',
+          '/work/conf/locked': 'dir',
+          '/work/conf/locked/policy': 'dir',
+        }),
+      );
+
+      for (const pin of ['/work/conf', '/work/conf/locked']) {
+        expect(lastMountFor(exec.args, pin).flag).toBe('--bind');
+        // A pin is a bind from the host, so it has to come before anything the
+        // namespace mounts below it.
+        expect(lastMountFor(exec.args, pin).index).toBeLessThan(
+          mountsFor(exec.args, '/work/.book').index,
+        );
+      }
+      expect(lastMountFor(exec.args, '/work/conf').index).toBeLessThan(
+        lastMountFor(exec.args, '/work/conf/locked').index,
+      );
+      expect(accessAt(exec.args, '/work/conf/locked/policy')).toBe('read-only');
+      expect(accessAt(exec.args, '/work/conf/other')).toBe('writable');
+    });
+
+    it('pins nothing inside a read-only protected directory', () => {
+      const settings = sandboxSettings();
+      settings.filesystem.denyWrite = ['/work/.git/objects/pack'];
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        settings,
+        hostWith({
+          '/work': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/HEAD': 'file',
+          '/work/.git/objects': 'dir',
+          '/work/.git/objects/pack': 'dir',
+        }),
+      );
+
+      expect(lastMountFor(exec.args, '/work/.git').flag).toBe('--ro-bind');
+      expect(exec.args).not.toContain('/work/.git/objects');
+      expect(accessAt(exec.args, '/work/.git/objects')).toBe('read-only');
+    });
+
+    it('pins between an allowWrite root and the entry in it, after the root', () => {
+      const settings = sandboxSettings();
+      settings.filesystem.allowWrite = ['/data'];
+      settings.filesystem.denyWrite = ['/data/a/b'];
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        settings,
+        hostWith({ '/work': 'dir', '/data': 'dir', '/data/a': 'dir', '/data/a/b': 'dir' }),
+      );
+
+      expect(lastMountFor(exec.args, '/data/a').flag).toBe('--bind');
+      expect(lastMountFor(exec.args, '/data/a').index).toBeGreaterThan(
+        lastMountFor(exec.args, '/data').index,
+      );
+      expect(accessAt(exec.args, '/data/a/b')).toBe('read-only');
     });
   });
 
@@ -3862,6 +3949,92 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
           expect(result.content).not.toContain('sk-secret');
           expect(readFileSync(join(repo, '.book', 'cache', 'entry'), 'utf8')).toBe('cached');
         } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+    });
+
+    /**
+     * A read-only bind stops writes to the entry and makes the entry itself
+     * un-renameable, but renaming its *parent* carries the mount away and a fresh
+     * directory takes the old path (#634). The directories between the writable
+     * root and the entry are pinned with self-binds, as for the control files.
+     */
+    describe('denyWrite entries inside the workspace stay in place (#634)', () => {
+      it('leaves the host file alone when the command renames its parent away', async () => {
+        const repo = freshRepo();
+        const policy = join(repo, 'conf', 'locked', 'policy.json');
+        mkdirSync(dirname(policy), { recursive: true });
+        writeFileSync(policy, 'original\n');
+        try {
+          const result = await sandboxedBash(
+            'printf direct >> conf/locked/policy.json; mv conf conf-old && mkdir -p conf/locked && printf swapped > conf/locked/policy.json; echo done',
+            repo,
+            { filesystem: { denyWrite: [join(repo, 'conf', 'locked')] } },
+          );
+
+          expect(result.content).toContain('done');
+          expect(readFileSync(policy, 'utf8')).toBe('original\n');
+          expect(existsSync(join(repo, 'conf-old'))).toBe(false);
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('pins every directory between the workspace and a deeper entry', async () => {
+        const repo = freshRepo();
+        const policy = join(repo, 'a', 'b', 'c', 'locked', 'policy.json');
+        mkdirSync(dirname(policy), { recursive: true });
+        writeFileSync(policy, 'original\n');
+        try {
+          const moves = await Promise.all(
+            ['mv a a-old', 'mv a/b a/b-old', 'mv a/b/c a/b/c-old'].map((command) =>
+              sandboxedBash(command, repo, {
+                filesystem: { denyWrite: [join(repo, 'a', 'b', 'c', 'locked')] },
+              }),
+            ),
+          );
+          // Siblings of the pinned directories stay writable.
+          const sibling = await sandboxedBash(
+            'mkdir -p a/b/other && printf ok > a/b/other/f',
+            repo,
+            {
+              filesystem: { denyWrite: [join(repo, 'a', 'b', 'c', 'locked')] },
+            },
+          );
+
+          for (const move of moves) expect(move.status).not.toBe('success');
+          expect(readFileSync(policy, 'utf8')).toBe('original\n');
+          expect(sibling.status).toBe('success');
+          expect(readFileSync(join(repo, 'a', 'b', 'other', 'f'), 'utf8')).toBe('ok');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it('pins the directories inside an allowWrite root outside the workspace', async () => {
+        const repo = freshRepo();
+        const data = mkdtempSync(join(tmpdir(), 'book-sandbox-data-'));
+        const policy = join(data, 'conf', 'locked', 'policy.json');
+        mkdirSync(dirname(policy), { recursive: true });
+        writeFileSync(policy, 'original\n');
+        try {
+          const result = await sandboxedBash(
+            `cd '${data}' && mv conf conf-old && mkdir -p conf/locked && printf swapped > conf/locked/policy.json; echo done`,
+            repo,
+            {
+              filesystem: {
+                allowWrite: [data],
+                denyWrite: [join(data, 'conf', 'locked')],
+              },
+            },
+          );
+
+          expect(result.content).toContain('done');
+          expect(readFileSync(policy, 'utf8')).toBe('original\n');
+          expect(existsSync(join(data, 'conf-old'))).toBe(false);
+        } finally {
+          rmSync(data, { recursive: true, force: true });
           rmSync(repo, { recursive: true, force: true });
         }
       });

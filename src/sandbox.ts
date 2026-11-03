@@ -1417,10 +1417,72 @@ function settleSettingsDirectory(
   ];
 }
 
-/** A host path bound writable: the spelling the namespace sees it at, and its canonical form. */
+/** A host path bound writable, with the step of the mount order it is bound at. */
 interface WritableRoot {
+  /** The spelling the namespace sees it at. */
   at: string;
   canonical: string;
+  /** 0: the workspace and its pins; 1: an `allowWrite` root; 2: an opt-in on a protected path. */
+  phase: 0 | 1 | 2;
+}
+
+/**
+ * The directories to pin for the `denyWrite` entries, by the phase of the
+ * writable root each entry lies in (#634).
+ *
+ * A read-only bind makes the entry itself un-renameable, but renaming a
+ * directory above it carries the mount away, and a fresh directory takes the
+ * old path. A writable self-bind of each directory strictly between the root
+ * and the entry makes that rename fail with `EBUSY`, as `pinnedDirectories`
+ * does for the control files. Nothing is pinned inside a read-only protected
+ * directory, where nothing can be renamed, or at a path already bound.
+ *
+ * A pin is a bind from the host, so it covers whatever the namespace mounted
+ * below it before: each phase's pins are emitted right after that phase's
+ * roots, before the protected mounts and every `denyWrite` bind, and
+ * shallowest first.
+ */
+function denyWritePins(
+  denied: string[],
+  roots: WritableRoot[],
+  paths: ProtectedWorkspacePaths,
+  host: SandboxHost,
+): [string[], string[], string[]] {
+  const readOnly = paths.mounts
+    .filter((mount) => mount.kind === 'directory' && mount.present)
+    .map((mount) => canonicalPath(mount.path, host));
+  const pins: [string[], string[], string[]] = [[], [], []];
+  const bound = new Set(roots.map((root) => root.at));
+  for (const target of denied) {
+    const container = roots
+      .filter((root) => !isOutside(root.canonical, target, host.path))
+      .sort((left, right) => right.canonical.length - left.canonical.length)[0];
+    if (!container) continue;
+    const between = host.path
+      .relative(container.canonical, target)
+      .split(host.path.sep)
+      .filter(Boolean)
+      .slice(0, -1);
+    let at = container.at;
+    let canonical = container.canonical;
+    for (const segment of between) {
+      at = host.path.join(at, segment);
+      canonical = host.path.join(canonical, segment);
+      const inReadOnly = readOnly.some(
+        (dir) =>
+          dir !== container.canonical &&
+          !isOutside(container.canonical, dir, host.path) &&
+          !isOutside(dir, canonical, host.path),
+      );
+      if (inReadOnly || !host.isDirectory(at)) break;
+      if (bound.has(at)) continue;
+      bound.add(at);
+      pins[container.phase].push(at);
+    }
+  }
+  const depth = (path: string): number => path.split(host.path.sep).length;
+  for (const phase of pins) phase.sort((left, right) => depth(left) - depth(right));
+  return pins;
 }
 
 /**
@@ -1517,15 +1579,25 @@ export function buildSandboxExecution(
     settings.filesystem.allowWrite.filter((p) => !isProtectedArea(p)),
   );
   const optInRoots = present(settings.filesystem.allowWrite.filter(isProtectedArea));
-  const root = (at: string): WritableRoot => ({ at, canonical: canonicalPath(at, host) });
+  const root = (at: string, phase: WritableRoot['phase']): WritableRoot => ({
+    at,
+    canonical: canonicalPath(at, host),
+    phase,
+  });
   const writableRoots: WritableRoot[] = [
-    ...(host.exists(workspace) ? [root(workspace)] : []),
-    ...pinned.map(root),
-    ...allowWriteRoots.map(root),
-    ...optInRoots.map(root),
+    ...(host.exists(workspace) ? [root(workspace, 0)] : []),
+    ...pinned.map((at) => root(at, 0)),
+    ...allowWriteRoots.map((at) => root(at, 1)),
+    ...optInRoots.map((at) => root(at, 2)),
   ];
   const deniedWrites = present(settings.filesystem.denyWrite).map((target) =>
     canonicalPath(target, host),
+  );
+  const [workspacePins, allowWritePins, optInPins] = denyWritePins(
+    deniedWrites,
+    writableRoots,
+    paths,
+    host,
   );
 
   const mounts: NamespaceMount[] = [];
@@ -1544,8 +1616,8 @@ export function buildSandboxExecution(
   // is a protected mount, so an `allowWrite` entry naming it reopens what it names,
   // while control paths strictly below it (hooks, config, pointer files) stay
   // read-only unless an entry names them directly.
-  for (const at of pinned) mounts.push(writableBind(at));
-  for (const at of allowWriteRoots) mounts.push(writableBind(at));
+  for (const at of [...pinned, ...workspacePins]) mounts.push(writableBind(at));
+  for (const at of [...allowWriteRoots, ...allowWritePins]) mounts.push(writableBind(at));
   // The credential masks are left for the end, after everything that could
   // bind the directory holding one.
   for (const mount of paths.mounts) {
@@ -1554,7 +1626,7 @@ export function buildSandboxExecution(
   }
   // ...and only now the opt-ins for the protected areas themselves.
   const deferredOptInCanonicals = optInRoots.map((target) => canonicalPath(target, host));
-  for (const at of optInRoots) mounts.push(writableBind(at));
+  for (const at of [...optInRoots, ...optInPins]) mounts.push(writableBind(at));
 
   // An allowWrite opt-in on a git dir reopens what it names, but not the control
   // paths strictly below it (hooks, config, pointer files). Emit each of those
