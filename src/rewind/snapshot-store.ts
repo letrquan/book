@@ -336,7 +336,8 @@ type WalkedEntry = {
  * mode and file, and stat facts that have not moved since a capture they were already safely old
  * for. A same-size edit inside one timestamp tick of the capture, one whose mtime a tool put back,
  * or a directory swapped in whose file has the old one's facts, is read again instead of restoring
- * stale bytes.
+ * stale bytes. The ids are numbers here, so two NTFS ids past 2^53 can round to one; the facts
+ * still decide then.
  */
 interface CachedSnapshotEntry {
   kind: RewindSnapshotEntry['kind'];

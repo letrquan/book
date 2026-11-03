@@ -24,6 +24,14 @@ import { rewriteRestoringMtime } from '../test/restored-mtime.js';
  * would.
  */
 const reads = vi.hoisted(() => ({ paths: [] as string[], swapped: new Set<string>() }));
+/**
+ * Another file's id, which no real file has: a negative one. Not `ino + 1`, which an NTFS id past
+ * 2^53 rounds back to itself as a number.
+ */
+const swapIdentity = vi.hoisted(() => (stat: object) => {
+  const ids = stat as { ino: number };
+  ids.ino = -1 - ids.ino;
+});
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
   return {
@@ -34,7 +42,7 @@ vi.mock('fs', async (importOriginal) => {
     },
     lstatSync: (...args: Parameters<typeof actual.lstatSync>) => {
       const stat = actual.lstatSync(...args);
-      if (stat && reads.swapped.has(String(args[0]))) (stat as { ino: number }).ino += 1;
+      if (stat && reads.swapped.has(String(args[0]))) swapIdentity(stat);
       return stat;
     },
   };
@@ -49,7 +57,7 @@ vi.mock('fs/promises', async (importOriginal) => {
     },
     lstat: async (...args: Parameters<typeof actual.lstat>) => {
       const stat = await actual.lstat(...args);
-      if (reads.swapped.has(String(args[0]))) (stat as { ino: number }).ino += 1;
+      if (reads.swapped.has(String(args[0]))) swapIdentity(stat);
       return stat;
     },
   };
