@@ -8,6 +8,7 @@ import { ThemeContext } from '../theme.js';
 import { DEFAULT_THEME } from '../../types/theme.js';
 import {
   MarkdownBlock,
+  expandRunTabs,
   streamingMarkdownWindow,
   useThrottledValue,
   wrapParagraphLines,
@@ -868,13 +869,117 @@ describe('MarkdownBlock prose with tabs (#565)', () => {
 
 describe('MarkdownBlock prose with tabs and no width (#578)', () => {
   it.each([
-    ['a paragraph', 'ab\tcd\tef'],
-    ['a list item', '- ab\tcd\tef'],
-  ])('draws no raw tab in %s', (_name, content) => {
+    // A list item's text starts after its marker, in column 4 (#605): `ab` ends in column 6, so
+    // its first tab takes two cells to the stop at 8 rather than six.
+    ['a paragraph', 'ab\tcd\tef', 'ab      cd      ef'],
+    ['a list item', '- ab\tcd\tef', 'ab  cd      ef'],
+  ])('draws no raw tab in %s', (_name, content, row) => {
     const view = render(withTheme(React.createElement(MarkdownBlock, { content })));
     const output = frame(view.lastFrame);
     expect(output).not.toContain('\t');
-    expect(output).toContain('ab      cd      ef');
+    expect(output).toContain(row);
+  });
+});
+
+describe('expandRunTabs (#605)', () => {
+  const run = (text: string, bold?: boolean) => ({ text, bold });
+  const joined = (runs: Array<{ text: string }>) => runs.map((r) => r.text).join('');
+
+  it('stops at the 8-column stops, counted from the column the text starts at', () => {
+    expect(expandRunTabs([run('ab\tcd')])).toEqual([run('ab      cd')]);
+    expect(expandRunTabs([run('ab\tcd')], 4)).toEqual([run('ab  cd')]);
+    expect(expandRunTabs([run('\tx')], 4)).toEqual([run('    x')]);
+    expect(expandRunTabs([run('\tx')], 8)).toEqual([run(`${' '.repeat(8)}x`)]);
+  });
+
+  it('carries the column across styled runs and restarts it at the start after a line break', () => {
+    const runs = [run('ab', true), run('\t'), run('cd', true), run('\nx\ty')];
+    expect(expandRunTabs(runs, 4).map((r) => r.text)).toEqual(['ab', '  ', 'cd', '\nx   y']);
+  });
+
+  it('keeps each run its own style, and returns a run without a tab as it was', () => {
+    const plain = run('plain', true);
+    const [kept, expanded] = expandRunTabs([plain, run('\tz', false)]);
+    expect(kept).toBe(plain);
+    expect(expanded).toEqual(run('   z', false));
+    const none = [run('no tab', true)];
+    expect(expandRunTabs(none)).toBe(none);
+  });
+
+  it('measures each character of a line once, however many styled runs it has', () => {
+    // 3000 runs of one line, a tab in every thousandth. Measuring the line so far for every run
+    // (as it did) takes millions of characters; the line's own length is a few thousand.
+    const runs = Array.from({ length: 3000 }, (_, i) =>
+      run(i % 1000 === 999 ? '\t' : 'ab', i % 2 === 0),
+    );
+    let measured = 0;
+    const measure = (text: string) => {
+      measured += text.length;
+      return displayWidth(text);
+    };
+
+    const expanded = expandRunTabs(runs, 0, measure);
+
+    expect(joined(expanded)).toBe(expandTabs(joined(runs), displayWidth));
+    expect(expanded.map((r) => r.bold)).toEqual(runs.map((r) => r.bold));
+    expect(measured).toBeLessThanOrEqual(3 * joined(expanded).length);
+  });
+});
+
+describe('MarkdownBlock list items with tabs start after their marker (#605)', () => {
+  const WIDTH = 73;
+
+  function rows(content: string, width: number | undefined = WIDTH): string[] {
+    const view = render(
+      withTheme(
+        React.createElement(MarkdownBlock, width ? { content, terminalWidth: width } : { content }),
+      ),
+    );
+    return frame(view.lastFrame).split('\n');
+  }
+
+  it.each([
+    ['with a width', WIDTH],
+    ['without one', undefined],
+  ])('puts a bullet item on the stops a terminal would, %s', (_name, width) => {
+    // The marker is in column 2, the text from column 4: `cd` lands on the stop at 8, `ef` on 16.
+    const [row] = rows('- ab\tcd\tef', width);
+    expect(row).toBe('  \u2022 ab  cd      ef');
+    expect(row!.indexOf('cd')).toBe(8);
+    expect(row!.indexOf('ef')).toBe(16);
+  });
+
+  it('counts the wider marker of a numbered list, and of a task item', () => {
+    expect(rows('1. a\tb\tc')[0]).toBe('  1. a  b       c');
+    expect(rows('- [ ] a\tb')[0]).toBe('  [ ] a b');
+    // One marker column for the whole list: item 1 is as far in as item 10.
+    const ten = rows(Array.from({ length: 10 }, (_, i) => `${i + 1}. a${i}\tb`).join('\n'));
+    expect(new Set(ten.map((row) => row.indexOf('b'))).size).toBe(1);
+    expect(ten[0]!.indexOf('b')).toBe(16);
+  });
+
+  it('counts the lists an item is nested in', () => {
+    const [outer, inner, last] = rows('- outer\n  - in\ttab\n- second\tx');
+    expect(outer).toBe('  \u2022 outer');
+    // The inner marker is in column 8 and its text in column 10: `tab` is on the stop at 16.
+    expect(inner).toBe('        \u2022 in    tab');
+    expect(inner!.indexOf('tab')).toBe(16);
+    expect(last!.indexOf('x')).toBe(16);
+    const deep = rows('- one\n  - two\n    - three\tx')[2]!;
+    expect(deep.indexOf('x')).toBe(24);
+  });
+
+  it('measures a paragraph of a loose item from the item text, not from the marker', () => {
+    const lines = rows('- a\n\n  para\tb\n\n- d\te');
+    expect(lines.find((row) => row.includes('para'))!.indexOf('b')).toBe(16);
+    expect(lines.find((row) => row.includes('d '))!.indexOf('e')).toBe(8);
+  });
+
+  it('leaves a paragraph, and text in a blockquote, counted from their own left edge', () => {
+    expect(rows('ab\tcd\tef')[0]).toBe('ab      cd      ef');
+    // After the rail, as a code block's text is.
+    expect(rows('> ab\tcd\tef')[0]).toBe('\u2502 ab      cd      ef');
+    expect(rows('- item\n\n  > ab\tcd')[1]).toBe('    \u2502 ab      cd');
   });
 });
 

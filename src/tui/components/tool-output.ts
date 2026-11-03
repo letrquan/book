@@ -7,8 +7,8 @@ export interface ToolOutputDisplayOptions {
   /** Optional hint appended to the footer when output is hidden. */
   hint?: string;
   /**
-   * Select initial lines, final lines, or a balanced initial/final preview. Read in `cut` mode
-   * only: a `wrap` display is always the head of the output.
+   * Select initial lines, final lines, or a balanced initial/final preview. A `wrap` display
+   * shows the head or the tail of the output; it reads `head-tail` as `head`.
    */
   strategy?: 'head' | 'tail' | 'head-tail';
   /** What becomes of a line wider than `maxLineWidth`; see {@link LongLineMode}. Default `cut`. */
@@ -19,7 +19,8 @@ export interface ToolOutputDisplayOptions {
  * What a display does with a line wider than `maxLineWidth`:
  * - `cut`: shorten it to the width (the row counts as a shortened line); `maxLines` bounds lines.
  * - `wrap`: continue it on the rows after it, so no line is shortened; `maxLines` then bounds the
- *   rows, and a line the bound cuts into keeps its first rows and counts as shortened, not hidden.
+ *   rows, and a line the bound cuts into keeps its rows beside the lines already shown (its first
+ *   rows for the head, its last for the tail) and counts as shortened, not hidden.
  * - `whole`: leave it as it is, for a caller that wraps the text itself (Markdown).
  */
 export type LongLineMode = 'cut' | 'wrap' | 'whole';
@@ -114,7 +115,9 @@ export function prepareToolOutputDisplay(
   output: string,
   { maxLines, maxLineWidth, hint, strategy = 'head', longLines = 'cut' }: ToolOutputDisplayOptions,
 ): ToolOutputDisplay {
-  if (longLines === 'wrap') return wrappedToolOutputDisplay(output, maxLines, maxLineWidth, hint);
+  if (longLines === 'wrap') {
+    return wrappedToolOutputDisplay(output, maxLines, maxLineWidth, hint, strategy === 'tail');
+  }
   const rawLines = splitOutputLines(output);
   const lineLimit = Math.max(0, Math.floor(maxLines));
   const widthLimit =
@@ -148,7 +151,7 @@ export function prepareToolOutputDisplay(
 
 const SGR = /\u001b\[[0-9;]*m/y;
 
-/** One row of {@link wrapRows}: its text, and the offsets in the line it was cut from. */
+/** One row of a wrapped line: its text, and the offsets in the line it was cut from. */
 interface WrappedRow {
   text: string;
   start: number;
@@ -156,15 +159,14 @@ interface WrappedRow {
 }
 
 /**
- * `line` wrapped at display width `width` into at most `maxRows` rows (it stops once it has them,
- * so a huge line costs only the rows kept). An ANSI SGR sequence stays whole and takes no width.
+ * Hands `onRow` the rows of `line` wrapped at display width `width`, first to last, until it
+ * returns false. An ANSI SGR sequence stays whole and takes no width.
  */
-function wrapRows(line: string, width: number, maxRows: number): WrappedRow[] {
-  const rows: WrappedRow[] = [];
+function eachWrapRow(line: string, width: number, onRow: (row: WrappedRow) => boolean): void {
   let current = '';
   let currentWidth = 0;
   let start = 0;
-  for (let i = 0; i < line.length && rows.length < maxRows;) {
+  for (let i = 0; i < line.length;) {
     SGR.lastIndex = i;
     const sgr = SGR.exec(line);
     if (sgr) {
@@ -175,58 +177,109 @@ function wrapRows(line: string, width: number, maxRows: number): WrappedRow[] {
     const ch = String.fromCodePoint(line.codePointAt(i)!);
     const chWidth = displayWidth(ch);
     if (currentWidth > 0 && currentWidth + chWidth > width) {
-      rows.push({ text: current, start, end: i });
+      if (!onRow({ text: current, start, end: i })) return;
       current = '';
       currentWidth = 0;
       start = i;
-      if (rows.length >= maxRows) return rows;
     }
     i += ch.length;
     current += ch;
     currentWidth += chWidth;
   }
-  if (rows.length < maxRows) rows.push({ text: current, start, end: line.length });
-  return rows;
+  onRow({ text: current, start, end: line.length });
 }
 
 /**
- * The head of `output` with each line wrapped at display width `maxLineWidth`, at most `maxLines`
- * rows. Nothing is shortened except by the row bound: a line it cuts into keeps its first rows,
- * counts as shortened (some of it is on screen), and is not counted as hidden; only the lines
- * after it are.
+ * The first `room` rows of `line` wrapped at display width `width`, and whether the line has more
+ * (it stops once it has them, so a huge line costs only the rows kept).
+ */
+function firstWrapRows(
+  line: string,
+  width: number,
+  room: number,
+): { rows: WrappedRow[]; cut: boolean } {
+  const rows: WrappedRow[] = [];
+  eachWrapRow(line, width, (row) => {
+    rows.push(row);
+    return rows.length <= room;
+  });
+  return rows.length > room ? { rows: rows.slice(0, room), cut: true } : { rows, cut: false };
+}
+
+/**
+ * The last `room` rows of `line` wrapped at display width `width`, and whether the line has rows
+ * before them. Rows are cut from the start of a line, so all of them are found, but only a window
+ * of at most `2 * room` is held: a huge line costs a pass and no more memory than a short one.
+ */
+function lastWrapRows(
+  line: string,
+  width: number,
+  room: number,
+): { rows: WrappedRow[]; cut: boolean } {
+  const rows: WrappedRow[] = [];
+  let cut = false;
+  eachWrapRow(line, width, (row) => {
+    rows.push(row);
+    if (rows.length > 2 * room) {
+      rows.splice(0, rows.length - room);
+      cut = true;
+    }
+    return true;
+  });
+  if (rows.length > room) {
+    rows.splice(0, rows.length - room);
+    cut = true;
+  }
+  return { rows, cut };
+}
+
+/**
+ * The head of `output` (the tail, with `fromEnd`) with each line wrapped at display width
+ * `maxLineWidth`, at most `maxLines` rows. Nothing is shortened except by the row bound: a line it
+ * cuts into keeps its first rows (its last, for the tail), counts as shortened (some of it is on
+ * screen), and is not counted as hidden; only the lines beyond it are. Reading from the end shows
+ * the rows a head display shows when the bound cuts nothing.
  */
 function wrappedToolOutputDisplay(
   output: string,
   maxLines: number,
   maxLineWidth: number,
   hint: string | undefined,
+  fromEnd: boolean,
 ): ToolOutputDisplay {
   const rawLines = splitOutputLines(output);
   const rowLimit = Math.max(0, Math.floor(maxLines));
   const width = Math.max(1, Math.floor(maxLineWidth));
-  const lines: string[] = [];
-  const sourceLines: string[] = [];
-  const rowSources: WrappedRowSource[] = [];
-  let shownLines = 0;
+  // The lines taken, each with the rows kept of it, in the order they were read: the first line
+  // first for the head, the last line first for the tail.
+  const taken: { line: string; rows: WrappedRow[] }[] = [];
+  let rowCount = 0;
   let truncatedLines = 0;
-  for (const rawLine of rawLines) {
-    if (lines.length >= rowLimit) break;
-    const room = rowLimit - lines.length;
-    const line = expandTabs(rawLine);
-    const rows = wrapRows(line, width, room + 1);
-    const kept = rows.slice(0, room);
-    for (const row of kept) {
-      lines.push(row.text);
-      rowSources.push({ line: sourceLines.length, start: row.start, end: row.end });
-    }
-    sourceLines.push(line);
-    shownLines++;
-    if (rows.length > room) {
+  for (let step = 0; step < rawLines.length && rowCount < rowLimit; step++) {
+    const line = expandTabs(rawLines[fromEnd ? rawLines.length - 1 - step : step]!);
+    const room = rowLimit - rowCount;
+    const { rows, cut } = fromEnd
+      ? lastWrapRows(line, width, room)
+      : firstWrapRows(line, width, room);
+    taken.push({ line, rows });
+    rowCount += rows.length;
+    if (cut) {
       truncatedLines = 1;
       break;
     }
   }
-  const hiddenLines = rawLines.length - shownLines;
+  if (fromEnd) taken.reverse();
+  const lines: string[] = [];
+  const sourceLines: string[] = [];
+  const rowSources: WrappedRowSource[] = [];
+  for (const { line, rows } of taken) {
+    for (const row of rows) {
+      lines.push(row.text);
+      rowSources.push({ line: sourceLines.length, start: row.start, end: row.end });
+    }
+    sourceLines.push(line);
+  }
+  const hiddenLines = rawLines.length - taken.length;
   const truncated = hiddenLines > 0 || truncatedLines > 0;
   const footer = truncated
     ? formatToolOutputFooter({ hiddenLines, truncatedLines, hint })

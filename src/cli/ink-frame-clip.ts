@@ -83,12 +83,13 @@ const TAB_STOP = 8;
 
 /**
  * Replaces every tab with spaces up to the next tab stop, as the terminal would move the cursor,
- * counting visible columns from the start of the row. `measure` skips ANSI escapes.
+ * counting visible columns from the start of the row, or from `startColumn` for text that is drawn
+ * that many columns in. `measure` skips ANSI escapes.
  */
-export function expandTabs(row: string, measure: StringWidth): string {
+export function expandTabs(row: string, measure: StringWidth, startColumn = 0): string {
   const parts = row.split('\t');
   let expanded = parts[0] ?? '';
-  let column = measure(expanded);
+  let column = startColumn + measure(expanded);
   for (let index = 1; index < parts.length; index++) {
     const part = parts[index] ?? '';
     const pad = TAB_STOP - (column % TAB_STOP);

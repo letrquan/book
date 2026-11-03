@@ -534,6 +534,14 @@ describe('frame-clipped Ink output', () => {
     expect(expandTabs('no tab', stringWidth)).toBe('no tab');
   });
 
+  it('counts the columns from the one the text starts at, when it is drawn in from the edge', () => {
+    // Four columns in, `ab` ends in column 6: the tab takes two cells, not six.
+    expect(expandTabs('ab\tcd', stringWidth, 4)).toBe('ab  cd');
+    expect(expandTabs('\tx', stringWidth, 4)).toBe(`${' '.repeat(4)}x`);
+    expect(expandTabs('\tx', stringWidth, 8)).toBe(`${' '.repeat(8)}x`);
+    expect(expandTabs('ab\tcd', stringWidth, 0)).toBe(expandTabs('ab\tcd', stringWidth));
+  });
+
   it('expands a tab after styled text by its visible column', () => {
     expect(expandTabs(`${RED}red${NO_COLOUR}\tx`, stringWidth)).toBe(
       `${RED}red${NO_COLOUR}${' '.repeat(5)}x`,
