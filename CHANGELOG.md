@@ -41,20 +41,24 @@ All notable changes to this project are documented in this file.
   provider your own settings define, and it enters the workspace-provider fingerprint only when set,
   so existing trust approvals stay valid. Without `api`, nothing changes. Replaying OpenAI's encrypted
   reasoning items is not part of this change.
-- **A macOS sandbox backend** (#616, #624). With `sandbox.enabled: true`, macOS now runs `Bash` and
+- **A macOS sandbox backend** (#616, #624, #652, #681). With `sandbox.enabled: true`, macOS now
+  runs `Bash` and
   `Check` under `sandbox-exec` (Seatbelt), with a profile generated per command from the same
   resolved policy as bubblewrap. Before this, macOS had no backend, so commands ran unsandboxed or
   were refused, depending on `sandbox.failIfUnavailable`. The workspace and `allowWrite` paths are
   writable; `.book/`, git directories, hooks and config stay read-only; the home directory, Book's
-  home and `.book/settings.local.json` are unreadable; declared domain rules fail closed to no
+  home and every copy of `.book/settings.local.json` (the writer's temp file, its lock and editor
+  copies, present at launch or not) are unreadable; declared domain rules fail closed to no
   network; and paths reach the profile only as `-D` parameters, never as profile text. A missing
   `/usr/bin/sandbox-exec` falls under `failIfUnavailable` exactly as a missing `bwrap` does, and
   `book doctor` names the backend. Unlike bubblewrap, temp directories are the host's own, because
-  macOS `mktemp` and the `xcrun` shim ignore `TMPDIR`; Book's own temp entries are denied. A new
+  macOS `mktemp` and the `xcrun` shim ignore `TMPDIR`; Book's own temp entries are denied, and the
+  temp roots themselves cannot be moved or replaced. A new
   `Sandbox (macOS Seatbelt)` CI job runs the real-sandbox tests on `macos-latest`. Windows still has
   no backend.
 - **Experimental: cross-session messaging between the Book sessions on one machine** (#620, #628,
-  #635, #638, #642, #643, #645). Every interactive TUI now keeps a record of itself in
+  #635, #638, #642, #643, #645, #650, #651, #653, #654, #655, #658, #691). Every interactive TUI
+  now keeps a record of itself in
   `<BOOK_HOME>/live-sessions/` while it runs (a name such as `book-3f`, its workspace and branch,
   and whether it is `busy`, `waiting` or `idle`), the next read sweeps a record whose process is
   gone, and `book doctor` counts the live sessions. Turning on `messaging.enabled`, which only
@@ -65,21 +69,31 @@ All notable changes to this project are documented in this file.
   in Claude Code's `<cross-session-message>` envelope and frame shapes, under its rate limits and
   relay-loop detection. `SessionSend` asks in `default` and `acceptEdits`, is refused in `dontAsk`
   and is not offered in plan mode, and a permission rule names the recipient
-  (`SessionSend(book-3f)`). The receiving TUI delivers a message as a turn of its own once it is
-  idle, with every harness tag in the body neutralized and a paragraph saying it is another
+  (`SessionSend(book-3f)`). A rule is judged against the session `to` reaches, however it is
+  spelled: a bare-name allow covers the `name [ref]` and `uds:` spellings while the name is
+  unique, and a shared name needs a rule naming that exact ref or address. Deny and ask rules and
+  hook matchers hold on every spelling, a send that reaches no live session is refused before any
+  prompt, and "Always allow" saves only the bare name. The receiving TUI delivers a message as a
+  turn of its own once it is
+  idle, with every harness tag in the body neutralized, in lookalike, fullwidth, spaced and
+  invisible-character spellings too, and a paragraph saying it is another
   session's request and never the user's approval. The sender sees a `✓` or `⚠` row, and its model
   gets a `[Cross-session delivery notice]` for anything but a delivery. A message from the other
   permission class (`bypassPermissions` and `auto` on one side, every other mode on the other) is
   held for your approval: a row, and a sheet to deliver it, deny it, deny everything from that
-  sender, or decide later. It expires after `messaging.approvalTimeout` (5 minutes).
+  sender, or decide later. It expires after `messaging.approvalTimeout` (5 minutes). Every sender
+  whose address no live session advertises is grouped as one unverified sender, a message you
+  approved survives a later deny-all, and Later asks again for that sender no sooner than 5
+  minutes later, keeping the message held until then.
   `messaging.inbound` (`accept`, `hold` or `refuse`) decides for every message instead, and a
   workspace settings layer may only tighten it. A delivered peer turn is pinned to its permission
   class, so switching into `bypassPermissions` or `auto` while it runs keeps its tool calls asking.
   The pin also follows the turns that carry the peer's work on, and the background jobs and `Task`
-  subagents it starts, and a prompting-class peer turn cannot start a managed agent. It has known
-  gaps: a background job's completion can still run unpinned after a restart, past 20 jobs in one
-  turn, or on a second completion (#650), and a pinned completion turn can still write memory
-  without a prompt (#655). Messages not yet delivered expire when the session exits, and their
+  subagents it starts, and a prompting-class peer turn cannot start a managed agent. The class is
+  kept on the job's or managed agent's own record, so every completion it sends is pinned, after
+  your own turn and across a restart; a pinned turn gets no memory write root; and a notice turn
+  continues the longest relay among the waiting notices. `SessionList` rows drop invisible
+  characters. Messages not yet delivered expire when the session exits, and their
   senders are told. `SessionSend` with `notify_when_idle: true` asks for one
   `[Cross-session idle notice]` when that session next goes idle or exits, with the start of its
   last reply only for a subscriber its receive policy would accept. Typing `@name` for a live
@@ -88,10 +102,13 @@ All notable changes to this project are documented in this file.
   subagents have no inbox and no messaging tools, Windows is not supported yet, and a message waits
   for the turn in progress to end. See "Cross-session messaging" in the configuration guide.
 - **Peer awareness: the model hears when a file it read changed on disk, and which Book session in
-  the same worktree changed it** (#620, #641, #646). Before each turn, every file the model read or
+  the same worktree changed it** (#620, #641, #646, #648, #649). Before each turn, every file the
+  model read or
   wrote this session is checked against what it last saw, and a change gets a line in that turn's
-  `<session-state>` with a diff of up to 20 lines (provider keys redacted); at most 10 files are
-  named a turn. A file is read again when its size, mtime or ctime moved, or when it changed within
+  `<session-state>` with a diff of up to 20 lines (provider keys redacted, even with invisible
+  characters inside); at most 10 files are named a turn. The diff is read only from the file the
+  model observed, at most 16 MiB, and never through a hard link or a swapped directory. A file is
+  read again when its size, mtime or ctime moved, or when it changed within
   2 s of the read its last verdict came from, so a same-size edit inside one mtime tick, or a file
   put back with its old mtime, is not missed. In the TUI the live-session record also carries the
   session's worktree, branch and last 20 edited paths. The `<session-state>` names up to three
@@ -100,7 +117,8 @@ All notable changes to this project are documented in this file.
   `⚠` row warns you when this session and another both edited one path within 10 minutes. None of
   it needs `messaging.enabled`, and the changed-on-disk notice also runs in print mode and the SDK.
 - **Tool discovery names every deferred tool, runs a direct call to one just in time, and loads
-  `WebFetch` or `WebSearch` when what you typed asks for it** (#619, #623, #637, #639). The system
+  `WebFetch` or `WebSearch` when what you typed asks for it** (#619, #623, #637, #639, #656). The
+  system
   prompt's deferred-tool list now names every authorized deferred tool, grouped by category with a
   hint of eight words or fewer, and stays byte-identical as tools are loaded or evicted.
   `ToolSearch` takes `select:Name[,Name]` to load exact tools. A direct call to an authorized
@@ -108,13 +126,32 @@ All notable changes to this project are documented in this file.
   next turn as `select:` would. It meets every gate a call after `select:` meets, a tool outside
   the agent role, the mode, `allowed-tools` or the run's state is still refused, and invalid
   arguments get the tool's argument names and types. A `permissions.deny` or `ask` rule, or a
-  `PreToolUse` or `PostToolUse` hook matcher, that names `ToolSearch` turns direct calls and
-  routing off, keeping discovery behind `ToolSearch` as before. Before a turn's first model call, a
+  `PreToolUse` or `PostToolUse` hook matcher, that names `ToolSearch` (alone, in an `A|B`
+  alternation, or as a pattern on every tool such as `*(select:*)`) turns direct calls and
+  routing off, keeping discovery behind `ToolSearch` as before; a bare `*` catch-all does not.
+  Before a turn's first model call, a
   URL you typed loads `WebFetch`, and search words (`search`, `look up`, `latest`, `news`, `tìm`,
   `tin tức`) load `WebSearch`, under the same authorization and budgets
   (`toolDiscovery.intentRouting`, default on). `npm run eval:tools` measures discovery per arm and
   model on five tasks, with a no-key `--mock` mode and an `--estimate` of a real run's cost.
   `SYSTEM_PROMPT_VERSION` is now `book-system-prompt-v8`.
+
+- **Steering: what you type while Book works reaches the running turn** (#661, #665, #670, #673).
+  While a run is working, Enter on a plain prompt is delivered after the current tool call, inside
+  the same run, and the transcript shows it as your own row where the model read it. Tab queues a
+  prompt for the end of the run, which is what Enter did before. Ctrl+X then Ctrl+S sends a waiting
+  steer at once: it stops the reply the model is writing, never a running tool, keeps that reply's
+  text, and answers the steer in the same run. A `/` command keeps its busy rules, and a `!` line
+  or any draft that cannot steer is queued as before. The placeholder reads
+  `Enter sends after the current tool call · Tab queues`.
+- **Prices for router and BYOK models from settings** (#663, #672).
+  `provider.<id>.models.<model>.pricing` in `~/.book/settings.json` or a `--settings` file prices
+  a model Book's table does not know, for `/cost`, `/usage`, the TUI status line, `book status`
+  (which reads the user file only) and `--max-budget-usd`. A price in a workspace settings layer
+  is ignored, so a repository cannot zero a price to defeat a budget, and `book doctor` reports
+  it. `npm run eval:edit` scores an unpriced model by verification and reports its cost as
+  unknown. The built-in table no longer prices a model by a longer id's entry: `claude-haiku-5` is
+  not priced as `claude-haiku-5-5`.
 
 ### Changed
 
@@ -134,6 +171,12 @@ All notable changes to this project are documented in this file.
   and your task list (`/task`) stay above the prompt as before. Print mode and the SDK are
   unchanged.
 
+- **Under bubblewrap, a protected git file is bound only inside the writable roots** (#692). An
+  included git config or a linked work tree's `.git` pointer is bound read-only only inside the
+  workspace or an `allowWrite` root, at the spelling the sandbox shows; one outside every writable
+  root is no longer visible inside the sandbox. Absolute include paths and relative worktree
+  `gitdir` paths are resolved as git resolves them.
+
 ### Fixed
 
 - **`npm run eval:edit` counts every token a task spent** (#631). Each task's `totalTokens` was the
@@ -147,8 +190,41 @@ All notable changes to this project are documented in this file.
   abort lands. The test for it now asserts that its fake agent tool ran: it used to pass without
   reaching the case at all, because that tool was deferred and refused.
 
+- **Esc during a tool call settles its row** (#669, #673). A tool cancelled with its run kept
+  saying `Running…` and dropped its step from history. It now settles as cancelled and keeps its
+  step, and output whose `PostToolUse` hooks the cancel skipped is withheld.
+- **A reply that is a tool call written out as text is not a finished answer** (#667, #677).
+  DeepSeek DSML, DeepSeek V3 tool tokens and `<tool_call>` tags that a router left in the text
+  ended the run as completed. Such a reply is now asked again once, and if the retry is the same,
+  the run ends `failed` with `malformed_tool_call` and print mode exits 1.
+- **A refused write gets a write-worded remedy** (#668, #676). `Write`, `Edit`, `MultiEdit`,
+  `NotebookEdit` and `ApplyPatch` outside the workspace now say to write under a path inside it,
+  and that only the user can add a directory to `additionalDirectories` (a project-declared one
+  also needs `book trust dir <path>`), instead of the read tools' remedy.
+- **Hook matchers `*` and `A|B` match** (#656, #679). A `PreToolUse` or `PostToolUse` matcher of
+  `*` now matches every tool, and a Claude Code-style `A|B` matches either one; both matched
+  nothing before, so the hook silently never ran. `book doctor` flags a matcher name that matches
+  no tool and suggests the right one (`apply_patch` → `ApplyPatch`).
+- **A skill's `allowed-tools` apply from the call after `InvokeSkill`** (#657, #679), for the rest
+  of that response, not only from the next turn.
+- **`/rewind` after `/resume` lists only the prompts you sent** (#666, #688), not the work-state,
+  `[continuation]` and stop-hook turns the loop writes; a typed command stays listed.
+- **An expanded failed command counts a cut line as shortened, not hidden** (#605, #688), as the
+  Read and Bash bodies do, and tabs in list items and quotes stop at the terminal's columns after
+  the marker or rail.
+- **`/rewind` snapshots and the skill loaders catch a same-size edit** (#647, #685). They trusted
+  a file as unchanged on an equal size and mtime, so an edit within one mtime tick, or one whose
+  mtime was put back, slipped through. Rewind now also keys on ctime with a 2 s margin, and the
+  skill loaders compare the bytes they read with what discovery saw.
+
 ### Security
 
+- **Under bubblewrap, `.book/settings.local.json` never reaches a sandboxed command** (#633,
+  #680). `.book` was shown through the workspace bind with that file masked by name, so a key
+  saved while a command ran (the writer's temp file and rename, or a first save) could be read.
+  `.book` is now an empty read-only view with its other entries bound back, so no spelling of the
+  local settings file is ever inside the sandbox. An entry the host adds after a command starts is
+  not visible to that command.
 - **`sandbox.filesystem.denyWrite` only removes write access and never makes a path visible**
   (#625, #630). This is a behaviour change. Under bubblewrap, an entry outside the workspace and
   the `allowWrite` roots used to be bound read-only into the sandbox, so it added read access. A
@@ -160,7 +236,9 @@ All notable changes to this project are documented in this file.
   the workspace. Also, an entry at or above `.book`, or spelled through a symlink, no longer unmasks
   `.book/settings.local.json`: the masks are applied after the `denyWrite` binds. The same rule fixes
   the unreleased macOS backend (#624), where `denyWrite` granted reads and unix-socket connections
-  under the path.
+  under the path. An entry and the workspace also stay in place when a sandboxed command renames
+  a parent directory, because every directory between a writable root and an entry is pinned
+  (#634).
 
 ## [0.4.0-beta.1] - 2026-10-24
 
