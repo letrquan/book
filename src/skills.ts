@@ -96,6 +96,11 @@ export interface Skill {
   invocationCount: number;
   entryByteSize: number;
   entryMtimeMs: number;
+  /**
+   * The digest of the bytes discovery read this descriptor from: a load refuses any others (#647).
+   * Absent from a descriptor built without discovery, which its size and mtime alone guard.
+   */
+  entryDigest?: string;
   resources: SkillResource[];
   issues: SkillIssue[];
   valid: boolean;
@@ -270,38 +275,56 @@ export function skillRoots(
   return [...byPath.values()];
 }
 
-function readFrontmatterPrefix(path: string): {
+/** The most of a SKILL.md that is read: a valid one is never longer. */
+const MAX_SKILL_ENTRY_BYTES = MAX_SKILL_BODY_BYTES + MAX_SKILL_HEADER_BYTES;
+
+/**
+ * A SKILL.md's bytes, at most one past {@link MAX_SKILL_ENTRY_BYTES}. Discovery takes a skill's
+ * descriptor and digest from one such read, and a load compares its own read with that digest, so
+ * the frontmatter a skill runs under is always the one in the bytes it loads.
+ */
+function readSkillEntry(path: string): Buffer {
+  const fd = openSync(path, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(MAX_SKILL_ENTRY_BYTES + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const count = readSync(fd, buffer, total, buffer.length - total, total);
+      if (count === 0) break;
+      total += count;
+    }
+    return buffer.subarray(0, total);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function digestOf(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** The frontmatter a SKILL.md opens with, looked for in its first {@link MAX_SKILL_HEADER_BYTES}. */
+function frontmatterOf(entry: Buffer): {
   frontmatter: Record<string, unknown>;
   headerText: string;
   issues: SkillIssue[];
 } {
-  const issues: SkillIssue[] = [];
-  const fd = openSync(path, 'r');
-  const chunks: Buffer[] = [];
-  let total = 0;
-  try {
-    while (total < MAX_SKILL_HEADER_BYTES) {
-      const chunk = Buffer.alloc(Math.min(4096, MAX_SKILL_HEADER_BYTES - total));
-      const count = readSync(fd, chunk, 0, chunk.length, total);
-      if (count === 0) break;
-      chunks.push(chunk.subarray(0, count));
-      total += count;
-      const text = Buffer.concat(chunks).toString('utf8');
-      if (/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(text)) {
-        const match = text.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/);
-        const headerText = match?.[0] ?? '';
-        return { frontmatter: parseFrontmatter(headerText).frontmatter, headerText, issues };
-      }
-    }
-  } finally {
-    closeSync(fd);
+  const prefix = entry.subarray(0, MAX_SKILL_HEADER_BYTES).toString('utf8');
+  const headerText = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(prefix)?.[0];
+  if (headerText !== undefined) {
+    return { frontmatter: parseFrontmatter(headerText).frontmatter, headerText, issues: [] };
   }
-  issues.push({
-    code: 'invalid_frontmatter',
-    message: `Missing YAML frontmatter or closing delimiter within ${MAX_SKILL_HEADER_BYTES} bytes.`,
-    severity: 'error',
-  });
-  return { frontmatter: {}, headerText: '', issues };
+  return {
+    frontmatter: {},
+    headerText: '',
+    issues: [
+      {
+        code: 'invalid_frontmatter',
+        message: `Missing YAML frontmatter or closing delimiter within ${MAX_SKILL_HEADER_BYTES} bytes.`,
+        severity: 'error',
+      },
+    ],
+  };
 }
 
 function stringField(frontmatter: Record<string, unknown>, name: string): string | undefined {
@@ -461,7 +484,8 @@ function descriptorFromEntry(
   directoryName: string,
   flat = false,
 ): Skill {
-  const { frontmatter, headerText, issues: headerIssues } = readFrontmatterPrefix(entryPath);
+  const entryBytes = readSkillEntry(entryPath);
+  const { frontmatter, headerText, issues: headerIssues } = frontmatterOf(entryBytes);
   const issues = [...headerIssues];
   const declaredName = stringField(frontmatter, 'name');
   const name = declaredName ?? directoryName;
@@ -538,23 +562,27 @@ function descriptorFromEntry(
     }
   }
 
-  let entryByteSize = 0;
+  // The size is that of the bytes the descriptor and its digest came from, not of a later `stat`:
+  // a file that shrank in between must not pass for one within the limit, without a digest.
+  const tooLarge = entryBytes.length > MAX_SKILL_ENTRY_BYTES;
+  let entryByteSize = entryBytes.length;
   let entryMtimeMs = 0;
   try {
     const entryInfo = statSync(entryPath);
-    entryByteSize = entryInfo.size;
     entryMtimeMs = entryInfo.mtimeMs;
-    if (entryByteSize > MAX_SKILL_BODY_BYTES + MAX_SKILL_HEADER_BYTES) {
-      issues.push({
-        code: 'body_too_large',
-        message: `SKILL.md exceeds the ${MAX_SKILL_BODY_BYTES}-byte body budget.`,
-        severity: 'error',
-      });
-    }
+    // Shown only: a file too large to load is read no further than one byte past the limit.
+    if (tooLarge) entryByteSize = Math.max(entryInfo.size, entryBytes.length);
   } catch {
     issues.push({
       code: 'skill_unreadable',
       message: 'Skill entrypoint is unreadable.',
+      severity: 'error',
+    });
+  }
+  if (tooLarge) {
+    issues.push({
+      code: 'body_too_large',
+      message: `SKILL.md exceeds the ${MAX_SKILL_BODY_BYTES}-byte body budget.`,
       severity: 'error',
     });
   }
@@ -610,6 +638,7 @@ function descriptorFromEntry(
     invocationCount: 0,
     entryByteSize,
     entryMtimeMs,
+    ...(tooLarge ? {} : { entryDigest: digestOf(entryBytes) }),
     resources: resourceResult.resources,
     issues,
     valid: !issues.some((issue) => issue.severity === 'error'),
@@ -715,11 +744,17 @@ export function loadSkillBody(skill: Skill): LoadedSkillBody {
   if (!isInside(canonicalRoot, canonicalEntry)) {
     throw new Error(`Skill entrypoint escapes its root: ${skill.path}`);
   }
+  const changed = () =>
+    new Error(`Skill "${skill.name}" changed after discovery; reload skills before use.`);
   const current = statSync(canonicalEntry);
-  if (current.size !== skill.entryByteSize || current.mtimeMs !== skill.entryMtimeMs) {
-    throw new Error(`Skill "${skill.name}" changed after discovery; reload skills before use.`);
-  }
-  const buffer = readFileSync(canonicalEntry);
+  // A new size is a change, refused before a read. Bytes of the same size are compared with the
+  // ones discovery read the descriptor from: no timestamp can tell a same-size edit inside one tick
+  // of a coarse clock, or one whose mtime was put back (#647), and a chmod or a touch moves them
+  // without a change. A descriptor built without discovery has no digest; its mtime stands in.
+  if (current.size !== skill.entryByteSize) throw changed();
+  if (skill.entryDigest === undefined && current.mtimeMs !== skill.entryMtimeMs) throw changed();
+  const buffer = readSkillEntry(canonicalEntry);
+  if (skill.entryDigest !== undefined && digestOf(buffer) !== skill.entryDigest) throw changed();
   if (buffer.includes(0)) {
     throw new Error(`Skill "${skill.name}" contains binary content.`);
   }
