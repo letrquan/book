@@ -19,6 +19,7 @@ import type {
   ToolResult,
   ToolContext,
   NestedToolObserver,
+  PermissionSubject,
   UserQuestionRequest,
   UserQuestionResponse,
 } from '../types/tools.js';
@@ -3236,6 +3237,29 @@ export async function runAgentLoop(
           return undefined;
         }
 
+        // A tool whose primary argument can spell one target several ways is judged by the target
+        // the call reaches, not by how it was typed (#653): `SessionSend` by the session its `to`
+        // resolves to now. Allow rules and session approvals match the spellings that name that
+        // target alone, deny and ask rules every spelling, and the prompt and "Always allow" see
+        // the canonical one. The tool is handed the subject back when the call runs, so it acts on
+        // the target that was judged, or on nothing.
+        let permissionSubject: PermissionSubject | undefined;
+        try {
+          permissionSubject = await registeredTool?.canonicalizeForPermission?.(
+            call.arguments,
+            toolContext,
+          );
+        } catch (error) {
+          toolResults[callIndex] = toolFailure(
+            `SKIPPED: ${canonName} could not be checked for permission: ${error instanceof Error ? error.message : String(error)}`,
+            { toolCallId: call.id, code: 'permission_check_failed', status: 'error' },
+          );
+          return undefined;
+        }
+        const judgedCall: ToolCall = permissionSubject
+          ? { ...call, arguments: permissionSubject.args }
+          : call;
+
         syncHostMode();
         const planReadOnly = effectiveMode === 'plan' && READ_ONLY_PLAN_TOOLS.has(canonName);
         const planAutoApproved = planReadOnly && !PLAN_PERMISSION_REQUIRED_TOOLS.has(canonName);
@@ -3341,9 +3365,10 @@ export async function runAgentLoop(
         // `tools/shell.ts`): the same (platform, shell) pair goes to every gate below, so what
         // the permission check and the capability check call compound agree (#512).
         const scanShell = toolContext.shell ?? config.shell;
-        const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings, {
+        const verdict = evaluatePermissionDetail(canonName, judgedCall.arguments, config.settings, {
           platform: process.platform,
           shell: scanShell,
+          ...(permissionSubject ? { subject: permissionSubject } : {}),
           workspace: {
             root: toolContext.workspaceRoot,
             realRoot: workspaceRealRoot,
@@ -3454,8 +3479,9 @@ export async function runAgentLoop(
         const guardedReadInPlan =
           planAutoApproved && WORKSPACE_READ_TOOLS.has(canonName) && verdict.decision === 'ask';
 
-        // The rule that remembers exactly this call, if it has one.
-        const ownRule = permissionRuleForToolCall(call);
+        // The rule that remembers exactly this call, if it has one: for a canonicalized call, the
+        // rule for its canonical spelling.
+        const ownRule = permissionRuleForToolCall(judgedCall);
         // A session approve-all rule is an allow rule. For a call an `ask` rule matched, which
         // outranks every allow rule, and for a compound command under a Bash policy, which no glob
         // can read, only the call's own exact rule vouches for it: a widened rung (`Bash(git *)`,
@@ -3472,7 +3498,13 @@ export async function runAgentLoop(
             !approveAllRules.some(
               (rule) =>
                 (!exactSessionRuleOnly || rule === ownRule) &&
-                permissionRuleMatchesCall(rule, call, process.platform, scanShell),
+                permissionRuleMatchesCall(
+                  rule,
+                  judgedCall,
+                  process.platform,
+                  scanShell,
+                  permissionSubject?.allow,
+                ),
             )) &&
           (!autoSafeTool || userRuleAsked || guardedReadInPlan || peerMustAsk) &&
           (effectiveMode !== 'plan' || planReadOnly)
@@ -3498,7 +3530,9 @@ export async function runAgentLoop(
               if (verdict.decision === 'allow') permission = 'allow';
             }
             if (permission === undefined && effectiveMode !== 'dontAsk') {
-              const decision = await callbacks.onPermissionRequired(call);
+              // The prompt names the target as the rules judged it, and its "Always allow" saves
+              // the rule for that spelling.
+              const decision = await callbacks.onPermissionRequired(judgedCall);
               permission = permissionResultOf(decision);
               chosenRule = permissionRuleOf(decision);
               const reason = permissionReasonOf(decision);
@@ -3527,7 +3561,7 @@ export async function runAgentLoop(
               // tool, so it is named only for a call with no argument to scope a rule to. A call
               // that has one but no rule of its own (a Bash command that spans lines or holds `*`,
               // #521; an argument holding `*` or `?`) gets no rule, and the remedy says why.
-              const noRule = missingRuleReason(call);
+              const noRule = missingRuleReason(judgedCall);
               const remedyRule =
                 ownRule ?? (canonName === 'Bash' || noRule ? undefined : canonName);
               // What would actually let this call through if nobody could approve it. An
@@ -3607,12 +3641,17 @@ export async function runAgentLoop(
           ? {
               ...toolContext,
               currentToolTraceId: nestedTraceId ?? prepared.call.id,
+              permissionSubject,
               todos: toolContext.todos ? [...toolContext.todos] : undefined,
               tasks: toolContext.tasks ? [...toolContext.tasks] : undefined,
               agentPath: toolContext.agentPath ? [...toolContext.agentPath] : undefined,
             }
           : toolContext;
-        if (!parallel) context.currentToolTraceId = nestedTraceId ?? prepared.call.id;
+        if (!parallel) {
+          context.currentToolTraceId = nestedTraceId ?? prepared.call.id;
+          // Every serial call sets it, so one call's subject never reaches the next call.
+          context.permissionSubject = permissionSubject;
+        }
 
         return {
           index: callIndex,

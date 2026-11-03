@@ -103,7 +103,7 @@ function quotableRule(rule: string): string | undefined {
  */
 function noRuleClause(toolName: string, noRule: MissingRuleReason | undefined): string {
   if (noRule?.sessionAddress) {
-    return "have the message sent to the session's bare name, which a permissions.allow rule can name (none is derived from a `name [ref]` or `uds:` recipient: both come from a pid-named socket, and a rule for one could admit a later session)";
+    return "write a permissions.allow rule on the session's bare name, which covers it while no other live session holds that name (none is derived from a `name [ref]` or `uds:` recipient: both come from a pid-named socket, and a rule for one could admit a later session)";
   }
   if (toolName !== 'Bash') {
     return 'write a permissions.allow rule that covers only what you mean to allow (none is derived from this call: its argument holds a `*` or `?`, which a rule reads as a wildcard that admits other calls too)';

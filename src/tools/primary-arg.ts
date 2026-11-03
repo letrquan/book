@@ -62,7 +62,9 @@ export function toolPrimaryArg(toolName: string, args: Record<string, unknown>):
  * Whether a `SessionSend` call names its recipient by inbox — a `uds:` address, or a `[ref]` (six
  * hex of the socket path) — rather than by name. Both derive from the pid-named socket, so a rule
  * saved for one would outlive the session and could pre-approve a later one that reuses the pid:
- * such a call is approved once, never remembered.
+ * such a call is approved once, never remembered. The permission check asks with the recipient
+ * canonically spelled (#653), so that is a session whose name another live session also holds, or
+ * an address no session answers.
  */
 export function namesSessionByAddress(toolName: string, args: Record<string, unknown>): boolean {
   if (canonicalToolName(toolName) !== 'SessionSend') return false;

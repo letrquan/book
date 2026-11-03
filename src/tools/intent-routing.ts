@@ -15,7 +15,7 @@ import {
 } from '../input/session-mentions.js';
 import { peerLabel } from '../messaging/addressing.js';
 import { evaluatePermission, parseRule } from '../permissions.js';
-import { ruleRefusal } from './session-send.js';
+import { judgeSessionSend } from './session-send.js';
 import { refusalWithoutLookup, webUrlPolicyFromEnv } from './web-policy.js';
 
 const log = createDebugLogger('tools:discovery');
@@ -155,22 +155,21 @@ function resolveMention(
 }
 
 /**
- * Whether this turn's permission settings refuse a `SessionSend` to `target` outright: a deny rule
- * on any spelling that reaches it (`ruleRefusal`'s check, plus the address itself), or `dontAsk`,
- * which refuses a call no allow rule admits.
+ * Whether this turn's permission settings refuse a `SessionSend` to `to` among `rows` outright, as
+ * the permission check would judge it (`judgeSessionSend`): a deny rule on any spelling that reaches
+ * the session, or `dontAsk`, which refuses a call no allow rule admits.
  */
 function sendRefused(
   request: IntentRoutingRequest,
-  target: PeerSessionRow & { socketPath: string },
+  rows: readonly PeerSessionRow[],
   to: string,
 ): boolean {
-  const settings = request.config.settings;
-  const verdict = evaluatePermission(SESSION_SEND, { to, message: '' }, settings);
+  const { subject } = judgeSessionSend(rows, { to, message: '' });
+  const verdict = evaluatePermission(SESSION_SEND, subject.args, request.config.settings, {
+    subject,
+  });
   if (verdict === 'deny') return true;
-  const mode = request.context.currentMode;
-  if (mode === 'dontAsk' && verdict !== 'allow') return true;
-  const refusal = ruleRefusal({ agentConfig: request.config, currentMode: mode }, to, '', target);
-  return refusal?.structuredError?.code === 'permission_denied';
+  return request.context.currentMode === 'dontAsk' && verdict !== 'allow';
 }
 
 /** One note per session, keyed by what the mention reaches: two spellings of one session note once. */
@@ -318,7 +317,7 @@ export async function turnIntentRouters(
   if (mentions.length === 0) return DEFAULT_INTENT_ROUTERS;
   return [
     ...DEFAULT_INTENT_ROUTERS,
-    sessionMentionRouter(listing, mentions, (target, to) => sendRefused(request, target, to)),
+    sessionMentionRouter(listing, mentions, (_target, to) => sendRefused(request, rows, to)),
   ];
 }
 

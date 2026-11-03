@@ -1,16 +1,15 @@
 import type {
   IdleSubscribeResult,
+  PeerAddressResolution,
   PeerSendOutcome,
   PeerSessionRow,
   SessionMessagingHandle,
 } from '../types/messaging.js';
-import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
+import type { PermissionSubject, ToolDefinition, ToolResult } from '../types/tools.js';
 import { foldControlCharacters } from '../control-characters.js';
-import { peerLabel } from '../messaging/addressing.js';
+import { addressNeedsRef, listingRows } from '../input/session-mentions.js';
+import { peerLabel, peerRef, resolvePeerAddress } from '../messaging/addressing.js';
 import { encodeUdsAddress } from '../messaging/wire.js';
-import { evaluatePermissionDetail } from '../permissions.js';
-import type { ResolvedSettings } from '../settings.js';
-import { toolPrimaryArg } from './primary-arg.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 export const SESSION_SEND_DESCRIPTION = `Send a message to another Book session running on this machine (SessionList lists them).
@@ -22,107 +21,53 @@ export const SESSION_SEND_DESCRIPTION = `Send a message to another Book session 
 - To hear when that session finishes what it is doing, pass \`notify_when_idle: true\`. It is one-shot and opt-in: exactly one [Cross-session idle notice] arrives when it next goes idle (its turn finished with nothing queued) or exits. It reaches you if this session would accept a message from that one (the same permission class, say); otherwise only your user sees it. If that session does not go idle within 12 hours (it may still be busy, or may have ended abruptly), the notice says the subscription expired instead. Omit \`message\` for a pure subscription, which costs that session nothing; include one to deliver it now AND subscribe.
 - Never poll SessionList in a loop or send "are you done?" messages: use \`notify_when_idle\` instead.`;
 
-/**
- * A refusal when a `deny` or `ask` rule names the session `to` resolved to by another of its
- * spellings. The loop matched the call's rules on `to` as written, before it was resolved, but the
- * name, `name [ref]` and the `uds:` address of a reply all reach the same session, and a rule on
- * any of them applies. A deny refuses; an ask the call's own spelling did not raise sends the
- * model back with the spelling the rule names, which the loop then asks about (except in
- * `bypassPermissions`, where no ask rule asks). `to` is the argument exactly as the loop judged it.
- */
-export function ruleRefusal(
-  context: Pick<ToolContext, 'agentConfig' | 'currentMode'>,
-  to: string,
-  message: string,
-  target: PeerSessionRow & { socketPath: string },
-): ToolResult | undefined {
-  const settings = context.agentConfig?.settings;
-  if (!settings) return undefined;
-  const asked = evaluatePermissionDetail('SessionSend', { to, message }, settings);
-  const label = foldControlCharacters(peerLabel(target));
-  // The spellings that reach the session, each judged as the loop judges a call's `to`.
-  const judged = toolPrimaryArg('SessionSend', { to, message });
-  for (const spelling of [target.name, peerLabel(target), encodeUdsAddress(target.socketPath)]) {
-    if (toolPrimaryArg('SessionSend', { to: spelling, message }) === judged) continue;
-    const verdict = evaluatePermissionDetail('SessionSend', { to: spelling, message }, settings);
-    if (verdict.decision === 'deny') {
-      return toolFailure('SKIPPED: Permission denied', {
-        code: 'permission_denied',
-        status: 'blocked',
-        content: `A deny rule (${verdict.matchedRule}) names ${label}, the session ${quoted(to)} reaches.`,
-      });
-    }
-    if (
-      verdict.source === 'ask' &&
-      asked.source !== 'ask' &&
-      context.currentMode !== 'bypassPermissions'
-    ) {
-      return toolFailure(
-        `An ask rule (${verdict.matchedRule}) names ${label}, but this call spelled it ${quoted(to)}, which the rule does not match.`,
-        {
-          code: 'ask_rule_spelling',
-          status: 'blocked',
-          remediation: `Call SessionSend again with \`to\` set to ${quoted(spelling)}, so the rule asks the user.`,
-        },
-      );
-    }
-  }
-  // A deny or ask rule written with a ref also binds every session of that name: read as the bare
-  // name it is stricter, never looser. (An allow rule keeps its ref: it admits that session only.)
-  const byName = refStrippedRestrictions(settings);
-  if (byName) {
-    const verdict = evaluatePermissionDetail('SessionSend', { to: target.name, message }, byName);
-    if (verdict.decision === 'deny') {
-      return toolFailure('SKIPPED: Permission denied', {
-        code: 'permission_denied',
-        status: 'blocked',
-        content: `A deny rule (${verdict.matchedRule}) names a session called ${quoted(target.name)}, as ${label} is.`,
-      });
-    }
-    // Not when this very call was asked, or when the ask names this session itself: then the rule
-    // was honoured above, and refusing would leave it impossible to satisfy.
-    const ownAsk = evaluatePermissionDetail(
-      'SessionSend',
-      { to: peerLabel(target), message },
-      settings,
-    );
-    if (
-      verdict.source === 'ask' &&
-      asked.source !== 'ask' &&
-      ownAsk.source !== 'ask' &&
-      context.currentMode !== 'bypassPermissions'
-    ) {
-      return toolFailure(
-        `An ask rule (${verdict.matchedRule}) names a session called ${quoted(target.name)}, as ${label} is, and no spelling of ${label} lets that rule ask.`,
-        {
-          code: 'ask_rule_spelling',
-          status: 'blocked',
-          remediation:
-            'Do not send it: tell your user the rule names another session of that name.',
-        },
-      );
-    }
-  }
-  return undefined;
+/** A `SessionSend` call as the permission check judged it. */
+export interface SessionSendJudgment {
+  /** `to` as the call spelled it, trimmed. */
+  to: string;
+  /** The session `to` reached when it was judged, or why it reached none. */
+  resolution: PeerAddressResolution;
+  subject: PermissionSubject;
 }
 
-/** A trailing ` [ref]` on a `SessionSend` rule's recipient. */
-const RULE_REF = /^(SessionSend\(.*?)\s*\[[0-9a-fA-F]{6}\]\)$/;
-
 /**
- * The settings with only the `deny` and `ask` rules on `SessionSend` that carry a ref, each read as
- * the rule on the bare name, or undefined when there are none.
+ * What the permission check judges a `SessionSend` by (#653): the session `to` reaches among the
+ * live sessions `rows` (this one's own included), in each spelling that reaches it, so a rule on the
+ * session applies however the call spells it.
+ *
+ * - `allow` rules and session approvals match the spellings that name that session alone: its
+ *   `name [ref]`, its `uds:` address, and its bare name while no other live session holds the name,
+ *   which is when a bare name reaches it (`resolvePeerAddress`).
+ * - `deny` and `ask` rules match every spelling: the one the call typed, the bare name even while it
+ *   is shared, `name [ref]` and the `uds:` address. One written with a ref also binds every session
+ *   of that name (`evaluatePermissionDetail`).
+ * - The prompt shows the canonical spelling, and "Always allow" saves the rule for it: the bare
+ *   name while it is unique; `name [ref]` while it is shared, for which no rule is saved
+ *   (`namesSessionByAddress`).
+ *
+ * A `to` that reaches no session is judged as typed, and the call then fails without sending.
  */
-function refStrippedRestrictions(settings: ResolvedSettings): ResolvedSettings | undefined {
-  const strip = (rules: readonly string[]) =>
-    rules.flatMap((rule) => {
-      const match = RULE_REF.exec(rule.trim());
-      return match ? [`${match[1]})`] : [];
-    });
-  const deny = strip(settings.permissions.deny ?? []);
-  const ask = strip(settings.permissions.ask ?? []);
-  if (deny.length === 0 && ask.length === 0) return undefined;
-  return { ...settings, permissions: { ...settings.permissions, allow: [], deny, ask } };
+export function judgeSessionSend(
+  rows: readonly PeerSessionRow[],
+  args: Record<string, unknown>,
+): SessionSendJudgment {
+  const to = typeof args.to === 'string' ? args.to.trim() : '';
+  const resolution = resolvePeerAddress(rows, to);
+  if (!resolution.ok) return { to, resolution, subject: { args, allow: [to], restrict: [to] } };
+  const { target } = resolution;
+  // Never the bare name, even for a row without its ref: a shared name must keep one.
+  const label = peerLabel({ name: target.name, ref: target.ref ?? peerRef(target.socketPath) });
+  const address = encodeUdsAddress(target.socketPath);
+  const shared = addressNeedsRef(rows, target);
+  return {
+    to,
+    resolution,
+    subject: {
+      args: { ...args, to: shared ? label : target.name },
+      allow: shared ? [label, address] : [target.name, label, address],
+      restrict: [...new Set([to, target.name, label, address])],
+    },
+  };
 }
 
 function quoted(text: string): string {
@@ -274,6 +219,11 @@ export function sessionSendResult(outcome: PeerSendOutcome): ToolResult {
 }
 
 export function createSessionSendTool(messaging: SessionMessagingHandle): ToolDefinition {
+  /**
+   * Each judged call, by the subject the permission check judged it by: the loop hands that subject
+   * back to `execute`, which sends to the session it resolved to, or to none.
+   */
+  const judged = new WeakMap<PermissionSubject, SessionSendJudgment>();
   return {
     name: 'SessionSend',
     description: SESSION_SEND_DESCRIPTION,
@@ -311,6 +261,12 @@ export function createSessionSendTool(messaging: SessionMessagingHandle): ToolDe
       keywords: ['message', 'send', 'peer', 'other session', 'cross-session', 'reply', 'messaging'],
       available: () => messaging.available(),
     },
+    // The session `to` reaches now, read from the registry before the call is judged (#653).
+    canonicalizeForPermission: async (args) => {
+      const judgment = judgeSessionSend(listingRows(await messaging.list()), args);
+      judged.set(judgment.subject, judgment);
+      return judgment.subject;
+    },
     execute: async (args, context) => {
       const to = typeof args.to === 'string' ? args.to.trim() : '';
       const message = typeof args.message === 'string' ? args.message : undefined;
@@ -323,7 +279,16 @@ export function createSessionSendTool(messaging: SessionMessagingHandle): ToolDe
           { code: 'invalid_arguments', retryable: false },
         );
       }
-      const resolution = await messaging.resolve(to);
+      // What the permission check judged this call by, and nothing else: resolving `to` again
+      // here could reach a session that started since, which no rule was checked against.
+      const judgment = context.permissionSubject && judged.get(context.permissionSubject);
+      if (!judgment || judgment.to !== to) {
+        return toolFailure(
+          'SessionSend sends only to a session its permission check resolved, and this call was not checked: nothing was sent.',
+          { code: 'permission_unchecked', status: 'blocked', retryable: false },
+        );
+      }
+      const { resolution } = judgment;
       if (!resolution.ok) {
         return sessionSendResult({
           status: 'unresolved',
@@ -332,11 +297,9 @@ export function createSessionSendTool(messaging: SessionMessagingHandle): ToolDe
           candidates: resolution.candidates,
         });
       }
-      const refusal = ruleRefusal(context, args.to as string, message ?? '', resolution.target);
-      if (refusal) return refusal;
       const outcome = await messaging.send({
         to,
-        // The session the rules were just checked against: the send refuses any other.
+        // The session the rules were checked against: the send refuses any other.
         target: resolution.target,
         ...(hasMessage ? { message } : {}),
         ...(notifyWhenIdle ? { notifyWhenIdle: true } : {}),

@@ -760,19 +760,29 @@ Permissions:
 names its recipient: `SessionSend(book-3f)` for the session of that name, or
 `SessionSend(book-3f [a1b2c3])` for exactly that one (a pattern's brackets are literal). A bare name
 reaches a session only while no other live session holds it; a shared name is answered with the
-refs, and a `name [ref]` call is not covered by a rule on the bare name, so it asks. "Always allow"
-is offered only for a call to a bare name, and saves that name: a `name [ref]` or `uds:` recipient
-comes from the session's pid-named socket, so a rule saved for it could admit a later session that
-reuses the pid, and such a call can only be approved once. A hook's matcher reads the recipient
-the same way: `SessionSend(prod-*)` matches a message to `prod-3f`. A `deny` or `ask` rule written with a ref binds every session of
-that name, which is stricter. A `deny` or `ask` rule applies however the call spells the
-session, `bypassPermissions` included for a deny: once it has resolved `to`, the tool checks the
-name, `name [ref]` and the session's `from` address, refusing a denied one and, for an ask, sending
-the model back with the spelling the rule names. Print mode, the SDK,
-managed agents and `Task` subagents have neither tool, and a skill or command whose
-`allowed-tools` leaves `SessionSend` out does not get it. A turn another session's message
-started cannot write memory, and neither can a completion or notice turn pinned to its class,
-since what it saved would load into every later session.
+refs. Before a call is judged, Book resolves its `to` against the live sessions, and the rules
+judge the session it reaches, whichever spelling it uses: the name, `name [ref]`, or the `uds:`
+address a reply copies from `from` (#653).
+
+- An `allow` rule covers the session when it names that session alone: by `name [ref]` (or its
+  `uds:` address), or by the bare name while no other live session holds the name. Once the name
+  is shared, a rule on the bare name no longer covers it, and the call asks.
+- A `deny` or `ask` rule applies on any spelling, in every mode: a deny refuses the call, in
+  `bypassPermissions` too, and an ask asks the user at once, in every mode but
+  `bypassPermissions` (`dontAsk` refuses it). One written with a ref binds every session of that
+  name, which is stricter.
+- The prompt names the session as the rules judged it, and "Always allow" saves its bare name,
+  whichever spelling the call used. While the name is shared, the call is asked about as
+  `name [ref]` and can only be approved once: a ref comes from the session's pid-named socket, so a
+  rule saved for it could admit a later session that reuses the pid.
+- The message goes to the session that was judged, or nowhere: a session that ends before the
+  send, while the prompt is open say, is reported gone, and its address is never resolved again.
+
+A hook's matcher reads the recipient as the call typed it: `SessionSend(prod-*)` matches a message
+to `prod-3f`. Print mode, the SDK, managed agents and `Task` subagents have neither tool, and a
+skill or command whose `allowed-tools` leaves `SessionSend` out does not get it. A turn another
+session's message started cannot write memory, and neither can a completion or notice turn pinned
+to its class, since what it saved would load into every later session.
 
 What a send returns:
 
