@@ -796,6 +796,10 @@ describe('a write no root serves (#668)', () => {
   ])('refuses $tool with a remedy about writing, not reading', async ({ run }) => {
     const result = await run();
 
+    // An `error`, not a `blocked` result: a blocked one feeds the loop's all-refused streak, whose
+    // remedy for this code is the read tools' ("lets Read, Glob or Grep serve it"), and only the
+    // early refusal of a Read, Glob or Grep may. If this ever becomes `blocked`, that remedy needs
+    // a write branch first.
     expect(result.status).toBe('error');
     // The code is what the loop's streak remedy and a managed child's notice classify a refusal by,
     // so it is the read refusal's.

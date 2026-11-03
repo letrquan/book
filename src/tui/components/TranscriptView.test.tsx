@@ -13,7 +13,12 @@ import { toolSuccess } from '../../tools/result.js';
 import type { Message } from '../../types/messages.js';
 import { useTranscriptHistoryLoader, type TranscriptHistoryLoader } from '../transcript-layout.js';
 import { setFrameSnapshotForTesting } from '../frame-buffer.js';
-import { halfPageScrollDirection, pagerChordsAvailable } from '../transcript-scroll.js';
+import {
+  halfPageScrollDirection,
+  pagerChordsAvailable,
+  WHEEL_NOTCH_ROWS,
+} from '../transcript-scroll.js';
+import { isTranscriptScrollActive, TRANSCRIPT_SCROLL_IDLE_MS } from '../scroll-activity.js';
 
 const { setTranscriptScrollHintSpy, writeClipboardMock } = vi.hoisted(() => ({
   setTranscriptScrollHintSpy: vi.fn(),
@@ -263,8 +268,19 @@ describe('TranscriptView', () => {
     // The glide is a chain of timers, one step a frame apart, and every step is drawn by React. On
     // real timers the test raced that scheduling: a runner that paused between two steps ran both
     // before React drew the first, the glide was drawn as one frame, and the test failed (#607).
-    // The fake clock runs a step, then draws it, so the frames do not depend on the machine.
-    vi.useFakeTimers();
+    // The fake clock runs a step, then draws it, so the frames do not depend on the machine. The
+    // glide is paced by setTimeout and setImmediate and reads performance.now(), and the scroll
+    // activity it marks reads Date, so those are the clocks that are faked, and nothing else.
+    vi.useFakeTimers({
+      toFake: [
+        'setTimeout',
+        'clearTimeout',
+        'setImmediate',
+        'clearImmediate',
+        'Date',
+        'performance',
+      ],
+    });
     const app = render(
       view(
         Array.from({ length: 60 }, (_, index) => `R${index}`),
@@ -287,13 +303,15 @@ describe('TranscriptView', () => {
 
       act(() => app.stdin.write('\x1b[<64;10;5M'));
       await tick(0);
-      expect(topRow(app.lastFrame())).toBe(start - 3);
+      expect(topRow(app.lastFrame())).toBe(start - WHEEL_NOTCH_ROWS);
 
       // A second notch 20 ms later is part of a run: it moves further than a lone notch.
       await tick(20);
       act(() => app.stdin.write('\x1b[<64;10;5M'));
+      // The glide is a few frames of 13 to 16 ms; this is far longer, so its last step is drawn.
+      const GLIDE_WINDOW_MS = 100;
       const drawn: number[] = [];
-      for (let ms = 0; ms < 100; ms++) {
+      for (let ms = 0; ms < GLIDE_WINDOW_MS; ms++) {
         await tick();
         drawn.push(topRow(app.lastFrame()));
       }
@@ -302,8 +320,13 @@ describe('TranscriptView', () => {
       // It lands over more than one frame, each one closer to where the run ends...
       expect(tops.length).toBeGreaterThan(1);
       expect(tops).toEqual([...tops].sort((left, right) => right - left));
-      // ... and the run ends further than a lone notch would have taken it: two notches of three.
-      expect(start - tops[tops.length - 1]!).toBeGreaterThan(6);
+      // ... and the run ends further than two lone notches would have taken it.
+      expect(start - tops[tops.length - 1]!).toBeGreaterThan(2 * WHEEL_NOTCH_ROWS);
+
+      // Once the scroll activity has gone idle, no timer and no active-scroll state outlives the test.
+      await tick(TRANSCRIPT_SCROLL_IDLE_MS);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(isTranscriptScrollActive()).toBe(false);
     } finally {
       app.unmount();
     }

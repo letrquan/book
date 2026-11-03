@@ -373,22 +373,31 @@ export function messagePathFor(resolved: ResolvedReadablePath): string {
 }
 
 /**
- * The refusal a read tool gives a path no root serves.
+ * The failure both outside-the-roots refusals share: one code and one message, so anything that
+ * classifies a refusal by its code (the agent loop's streak remedy, the managed-child notice) reads
+ * a read and a write alike. Only the remedy differs between the two callers below.
  *
  * The message names the directory list as well as the workspace: after #300 the workspace is not
- * the only root a read may cross, so "outside workspace" alone sent the model looking for a rule
- * that would never work. The code is unchanged, so a caller that classifies refusals by code
- * (the agent loop's streak remedy, the managed-child notice) is unaffected.
- *
- * Its remedy is about reading. A write tool gives {@link mutationOutsideWorkspaceResult}.
+ * the only root a file tool may cross, so "outside workspace" alone sent the model looking for a
+ * rule that would never work.
  */
-export function pathOutsideWorkspaceResult(inputPath: unknown): ToolResult {
+function outsideWorkspaceFailure(inputPath: unknown, remediation: string): ToolResult {
   return toolFailure(`Path outside workspace and additionalDirectories: ${inputPath}`, {
     code: 'path_outside_workspace',
-    remediation:
-      'Add its directory to additionalDirectories, or start Book in a directory that contains it. ' +
-      'No permission rule and no permission mode can change which roots a read may cross.',
+    remediation,
   });
+}
+
+/**
+ * The refusal a read tool gives a path no root serves. Its remedy is about reading; a write tool
+ * gives {@link mutationOutsideWorkspaceResult}.
+ */
+export function pathOutsideWorkspaceResult(inputPath: unknown): ToolResult {
+  return outsideWorkspaceFailure(
+    inputPath,
+    'Add its directory to additionalDirectories, or start Book in a directory that contains it. ' +
+      'No permission rule and no permission mode can change which roots a read may cross.',
+  );
 }
 
 /**
@@ -396,22 +405,26 @@ export function pathOutsideWorkspaceResult(inputPath: unknown): ToolResult {
  * write root serves: the workspace, an approved `additionalDirectories` entry, or the memory
  * directory for a memory file.
  *
- * The code and the message are {@link pathOutsideWorkspaceResult}'s, so the agent loop's streak
- * remedy and a managed child's notice, which classify a refusal by its code, are unaffected. The
- * remedy is not: it used to be the read tools', which answered a model that had only wanted a
- * scratch file in `/tmp` with settings and a restart, and never named the move that works (#668).
- * It leads with that move, a path inside the workspace. It does not suggest `.book/`, whose files
- * are Book's own control files, and it does not suggest writing the file through `Bash`.
+ * The code and the message are {@link pathOutsideWorkspaceResult}'s. The remedy is not: it used to
+ * be the read tools', which answered a model that had only wanted a scratch file in `/tmp` with
+ * settings and a restart, and never named the move that works (#668). It leads with that move, a
+ * path inside the workspace, and says that only the user can widen the roots, so a run with nobody
+ * to ask is not sent to wait for an answer. It does not suggest `.book/`, whose files are Book's
+ * own control files, and it does not suggest writing the file through `Bash`.
+ *
+ * A tool's own refusal is an `error` result, not a `blocked` one, so it never feeds the loop's
+ * all-refused streak, whose remedy for this code names the read tools: only the early refusal of a
+ * Read, Glob or Grep does (`outsideWorkspaceRefusal`).
  */
 export function mutationOutsideWorkspaceResult(inputPath: unknown): ToolResult {
-  return toolFailure(`Path outside workspace and additionalDirectories: ${inputPath}`, {
-    code: 'path_outside_workspace',
-    remediation:
-      'The file-writing tools only create or change files inside the workspace and the directories ' +
+  return outsideWorkspaceFailure(
+    inputPath,
+    'The file-writing tools only create or change files inside the workspace and the directories ' +
       'in additionalDirectories, and no permission rule or mode changes that. Write the file under ' +
-      'a path inside the workspace instead, and delete it when you are done if it is only a scratch ' +
-      'file. If it has to live elsewhere, ask the user to add its directory to additionalDirectories.',
-  });
+      'a path inside the workspace instead, and delete it before you finish if it is only a ' +
+      'scratch file. Only the user can add a directory to additionalDirectories (a ' +
+      'project-declared one also needs `book trust dir <path>`).',
+  );
 }
 
 /** The workspace root after following links, or the root as given when it cannot be resolved. */

@@ -149,13 +149,13 @@ describe('printPipeErrorHandler', () => {
 
 /**
  * Removes the temp directories of a print-mode suite. A run can leave a child with the workspace as
- * its cwd (the abort test's Bash command is one), and on Windows a process still tearing down keeps
- * its directory from being removed, so the removal waits for the release (#597, as #350 did for the
- * shell suite). The wait stays under the 20 s hook timeout, so a directory that is never released
- * fails with its EPERM instead of a timeout.
+ * its cwd (the abort test's Bash command is one, and it exits by itself within 3 s), and on Windows
+ * a process still tearing down keeps its directory from being removed, so the removal waits for the
+ * release (#597, as #350 did for the shell suite). The wait is several times that and well under the
+ * 20 s hook timeout, so a directory that is never released fails with its EPERM, not a timeout.
  */
 async function removeTempDirs(dirs: readonly string[]): Promise<void> {
-  await Promise.all(dirs.map((dir) => removeWhenReleased(dir, 15_000)));
+  await Promise.all(dirs.map((dir) => removeWhenReleased(dir, 10_000)));
 }
 
 describe('runMainAction — slash commands in print mode', () => {

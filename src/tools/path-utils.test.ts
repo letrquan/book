@@ -223,7 +223,11 @@ describe('the refusal of a path no root serves (#668)', () => {
     const remedy = mutationOutsideWorkspaceResult('/tmp/x.py').structuredError?.remediation ?? '';
 
     expect(remedy).toContain('inside the workspace');
-    expect(remedy).toContain('additionalDirectories');
+    // Widening the roots is the user's, and a project-declared directory counts only once trusted.
+    // The remedy says so rather than telling the model to ask: a print or SDK run has nobody to ask.
+    expect(remedy).toContain('Only the user can add a directory to additionalDirectories');
+    expect(remedy).toContain('book trust dir');
+    expect(remedy).not.toMatch(/\bask\b/i);
     // A write is not a read, and the control directory is not a scratch directory.
     expect(remedy).not.toMatch(/\bread\b/i);
     expect(remedy).not.toContain('.book');
