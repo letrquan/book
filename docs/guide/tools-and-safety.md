@@ -851,11 +851,12 @@ trigger (`manual`, `auto`, `manual|auto`, or `*` for both). A tool matcher names
 trailing ` *` also matches the bare command, and an `Edit` or `Write` matcher also sees the files
 an `ApplyPatch` call edits). `*` matches every tool, as an absent or empty matcher does, and Claude
 Code's `A|B` matches either alternative (`Edit|Write`, `Bash(ls *)|Read`), split on a `|` outside
-the parentheses only. Names are compared as written, never as regular expressions, so a matcher
+the parentheses only; an alternative ends at the `)` that closes its pattern, and text after that
+`)` is ignored. Names are compared as written, never as regular expressions, so a matcher
 such as `Notebook.*` or `mcp__memory__.*` matches no tool. `book doctor` flags an alternative that
 matches nothing: a name no tool Book registers has, a regular expression, an MCP server name where
-a tool's belongs, or a pattern with no tool before it. It leaves full `mcp__server__tool` names
-alone, because it does not start the servers.
+a tool's belongs, or a pattern with no tool before it. It also notes text it ignores after a `)`. It
+leaves full `mcp__server__tool` names alone, because it does not start the servers.
 
 `PreCompact` receives `trigger`, `focus`, and, when the span about to be summarized
 contains text addressed to a summarizer, `suspect_inputs`: a list of `{ eventRef, excerpt }`; exit

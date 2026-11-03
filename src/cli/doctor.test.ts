@@ -732,6 +732,19 @@ describe('runDoctorCommand tool-hook matchers (#656)', () => {
     );
   });
 
+  it("says when text after an alternative's closing `)` is ignored", async () => {
+    writeUserSettings({
+      hooks: { PreToolUse: [{ command: 'a.sh', matcher: 'Bash(rm -rf *))' }] },
+    });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain(
+      '[!] PreToolUse matcher "Bash(rm -rf *))": the "Bash" alternative ends at the ")" that closes its pattern, so ")" after it is ignored',
+    );
+    expect(output).not.toContain('this hook never runs');
+  });
+
   it('says nothing of a catch-all, registered tools, MCP tools or the compact events', async () => {
     writeUserSettings({
       hooks: {

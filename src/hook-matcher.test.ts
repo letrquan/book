@@ -48,6 +48,21 @@ describe('hookMatcherAlternatives (#656)', () => {
     expect(hookMatcherAlternatives('Bash(ls *|Read')).toEqual([{ tool: 'Bash', pattern: null }]);
   });
 
+  it('ends an alternative at the `)` that closes its pattern, so a stray `)` cannot narrow it', () => {
+    // Read to the last `)`, these would match only commands ending in `)`; before #656 the reading
+    // stopped at the first `)`, which is what a hook still sees.
+    expect(hookMatcherAlternatives('Bash(rm -rf *))')).toEqual([
+      { tool: 'Bash', pattern: 'rm -rf *', ignored: ')' },
+    ]);
+    expect(hookMatcherAlternatives('Bash())|Read')).toEqual([
+      { tool: 'Bash', pattern: null, ignored: ')' },
+      { tool: 'Read', pattern: null },
+    ]);
+    expect(hookMatcherAlternatives('Bash(a) (b)')).toEqual([
+      { tool: 'Bash', pattern: 'a', ignored: '(b)' },
+    ]);
+  });
+
   it('keeps a pattern written after `*`', () => {
     expect(hookMatcherAlternatives('*(src/**)')).toEqual([{ tool: '*', pattern: 'src/**' }]);
   });

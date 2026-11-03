@@ -116,11 +116,20 @@ async function hookMatcherWarnings(hooks: {
         unmatchedHookTool(tool, pattern, known, suggest),
       );
       const neverRuns = problems.every((problem) => problem !== undefined);
+      const matcher = renderUntrustedText(entry.matcher!);
       for (const problem of new Set(problems)) {
         if (problem === undefined) continue;
         lines.push(
-          `  [!] ${event} matcher "${renderUntrustedText(entry.matcher!)}": ${problem}` +
+          `  [!] ${event} matcher "${matcher}": ${problem}` +
             (neverRuns ? '; this hook never runs' : ''),
+        );
+      }
+      // A stray `)` is not read into the pattern, so the hook sees what it did before #656; say
+      // so, since what the matcher reads is not what it shows.
+      for (const { tool, ignored } of alternatives) {
+        if (ignored === undefined) continue;
+        lines.push(
+          `  [!] ${event} matcher "${matcher}": the "${renderUntrustedText(tool)}" alternative ends at the ")" that closes its pattern, so "${renderUntrustedText(ignored)}" after it is ignored`,
         );
       }
     }

@@ -503,6 +503,13 @@ describe('runHooks — `*` and `A|B` tool matchers (#656)', () => {
     expect(await ran(matcher, patch('docs/main.md'))).toBe(0);
   });
 
+  it('still sees the calls a stray `)` would hide (security review of #679)', async () => {
+    expect(
+      await ran('Bash(rm -rf *))', { toolName: 'Bash', toolArgs: { command: 'rm -rf b' } }),
+    ).toBe(1);
+    expect(await ran('Bash())', { toolName: 'Bash', toolArgs: { command: 'git status' } })).toBe(1);
+  });
+
   it('keeps a `|` inside the parentheses part of the pattern', async () => {
     const matcher = 'Bash(echo a|b)';
     expect(await ran(matcher, { toolName: 'Bash', toolArgs: { command: 'echo a|b' } })).toBe(1);

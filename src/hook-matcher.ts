@@ -23,6 +23,27 @@ export interface HookMatcherAlternative {
   readonly tool: string;
   /** The primary-argument pattern between the parentheses, trimmed, or `null` for every call. */
   readonly pattern: string | null;
+  /** Text after the `)` that closes the pattern, trimmed, which is not read; absent when none. */
+  readonly ignored?: string;
+}
+
+/**
+ * An alternative cut at the `)` that closes its first `(`, and the text after that `)`. A stray `)`
+ * (`Bash(rm *))`) then cannot carry into the pattern and narrow the calls a hook sees, where the
+ * reading before #656 stopped at the first `)`; a nested pair (`Bash(echo (a))`) stays whole.
+ * Without a closing `)` the text is left whole.
+ */
+function closeAlternative(part: string): { text: string; rest: string } {
+  const open = part.indexOf('(');
+  if (open === -1) return { text: part, rest: '' };
+  let depth = 0;
+  for (let index = open; index < part.length; index++) {
+    if (part[index] === '(') depth++;
+    else if (part[index] === ')' && --depth === 0) {
+      return { text: part.slice(0, index + 1), rest: part.slice(index + 1) };
+    }
+  }
+  return { text: part, rest: '' };
 }
 
 /** The text split on each `|` outside parentheses. An unclosed `(` keeps the rest in its part. */
@@ -46,9 +67,9 @@ function splitTopLevel(text: string): string[] {
 /**
  * The alternatives a tool-event matcher lists, in order, or `undefined` when it lists none (absent,
  * empty, blank, or nothing but separators), which matches every tool call as no matcher does. Each
- * is read as `parseRule` reads a permission rule: the tool is the text before the first `(`, and
- * the pattern runs to the last `)`. A `*` alternative is listed as written: it matches every tool,
- * and the caller reads the rest.
+ * is read as `parseRule` reads a permission rule (the tool is the text before the first `(`, the
+ * pattern runs to the closing `)`), once cut at the `)` that closes its first `(`. A `*`
+ * alternative is listed as written: it matches every tool, and the caller reads the rest.
  */
 export function hookMatcherAlternatives(
   matcher: string | undefined,
@@ -57,8 +78,10 @@ export function hookMatcherAlternatives(
   const alternatives = splitTopLevel(matcher)
     .filter((part) => part.trim() !== '')
     .map((part): HookMatcherAlternative => {
-      const { toolName, pattern } = parseRule(part);
-      return { tool: toolName, pattern };
+      const { text, rest } = closeAlternative(part);
+      const { toolName, pattern } = parseRule(text);
+      const ignored = rest.trim();
+      return ignored ? { tool: toolName, pattern, ignored } : { tool: toolName, pattern };
     });
   return alternatives.length > 0 ? alternatives : undefined;
 }
