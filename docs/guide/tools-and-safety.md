@@ -792,7 +792,11 @@ about its reason is never repeated.
 On the receiving side, the message's text never reaches the prompt as markup: the `<` of every tag
 Book's prompts are built from (`session-state`, `project-instructions`, `system-reminder`, the
 envelope's own `cross-session-message`, and the rest of the list in `src/prompt-tags.ts`) is
-rewritten as `<\\`, also when a JSON string spells it with escapes such as `\u003c` or `\/`. A
+rewritten as `<\\`, also when a JSON string spells it with escapes such as `\u003c` or `\/`, and
+when it is spelled with a fullwidth or lookalike bracket or slash (`＜`, `﹤`, `‹`, `⁄`), in fullwidth
+letters, with an invisible format character inside it, or with whitespace after the `<` or around
+the `/` of a tag that ends as one does (`< /source>`, but never `i < source.length`). Other
+letters are not folded: a Cyrillic `ѕ` in a tag's name is left as written. A
 message whose permission class differs from the receiving session's is held for its user to
 approve, and a turn a peer message starts is pinned to its permission class, as are the
 completion and notice turns that carry its work on until the user's next turn, so switching into
