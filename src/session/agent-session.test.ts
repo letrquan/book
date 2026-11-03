@@ -771,14 +771,66 @@ describe('AgentSession', () => {
         callbacks: { onEvent: () => {}, onTurnStart: () => {} },
       });
 
-      const reloaded = new SessionStore(fixture.root).load(sessionId).transcript;
+      const loaded = new SessionStore(fixture.root).load(sessionId);
+      const reloaded = loaded.transcript;
       expect(reloaded.find((message) => message.id === 'work-state-1')?.derivedContent).toBe(true);
       const legacyReloaded = reloaded.find((message) => message.id === 'legacy-1');
       expect(legacyReloaded?.content).toBe('appended before the flag was persisted');
       expect(legacyReloaded?.derivedContent).toBeUndefined();
+      // Neither is a prompt the user sent, so a resumed session lists no rewind point for them.
+      expect(loaded.rewindTargets).toEqual([]);
     } finally {
       fixture.cleanup();
     }
+  });
+
+  it("marks a turn the loop wrote as host-written, and a steer as the user's own (#666)", async () => {
+    const records: SessionRecord[] = [];
+    const workState: Message = {
+      id: 'work-state-1',
+      role: 'user',
+      content: '[work-state] Current plan, restated by the host.',
+      includeInContext: true,
+      kind: 'conversation',
+      derivedContent: true,
+      timestamp: 30,
+    };
+    const steer: Message = {
+      id: 'steer-1',
+      role: 'user',
+      content: 'and update the docs',
+      includeInContext: true,
+      kind: 'conversation',
+      steered: true,
+      timestamp: 31,
+    };
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, _prompt, _history, callbacks) => {
+        callbacks.onUserMessageAppended?.(workState);
+        callbacks.onUserMessageAppended?.(steer);
+        return [workState, steer];
+      },
+    });
+
+    await session.run({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      prompt: 'prompt',
+      history: [],
+      sessionId: 'session-1',
+      timelineStore: { append: (_id, record) => records.push(record) },
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    const written = (eventId: string) =>
+      records.find((record) => record.eventId === eventId)?.data as {
+        hostWritten?: boolean;
+        steered?: boolean;
+      };
+    expect(written('work-state-1').hostWritten).toBe(true);
+    // The user's own words are not the host's, whatever else they are.
+    expect(written('steer-1').hostWritten).toBeUndefined();
+    expect(written('steer-1').steered).toBe(true);
   });
 
   it('does not persist finalized assistant messages after the host becomes stale', async () => {

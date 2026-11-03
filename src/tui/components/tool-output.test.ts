@@ -249,6 +249,148 @@ describe('an expanded row keeps a long line whole (#550)', () => {
   });
 });
 
+describe('a wrapped display of the tail (#605)', () => {
+  const WIDTH = 70;
+  // 160 columns: three rows at 70 (70, 70, 20), the last one `…0-END`'s tail.
+  const LONG = `start-${'0'.repeat(150)}-END`;
+  const tail = (output: string, maxLines: number) =>
+    prepareToolOutputDisplay(output, {
+      maxLines,
+      maxLineWidth: WIDTH,
+      longLines: 'wrap',
+      strategy: 'tail',
+    });
+
+  it('shows the last lines, each wrapped onto the rows below it', () => {
+    const display = tail(`gone\n${LONG}\nlast`, 4);
+    expect(display.lines).toEqual([
+      LONG.slice(0, 70),
+      LONG.slice(70, 140),
+      LONG.slice(140),
+      'last',
+    ]);
+    expect(display.lines.join('')).toBe(`${LONG}last`);
+    for (const row of display.lines) expect(displayWidth(row)).toBeLessThanOrEqual(WIDTH);
+    // The four rows are the last two lines whole: nothing is cut, and `gone` is out of sight.
+    expect(display.hiddenLines).toBe(1);
+    expect(display.truncatedLines).toBe(0);
+    expect(display.footer).toBe('… +1 line');
+  });
+
+  it('counts the lines before the last rows as hidden, and a whole line as shown', () => {
+    const display = tail('one\ntwo\nthree\nfour', 2);
+    expect(display.lines).toEqual(['three', 'four']);
+    expect(display.hiddenLines).toBe(2);
+    expect(display.truncatedLines).toBe(0);
+    expect(display.footer).toBe('… +2 lines');
+  });
+
+  it('counts a line the bound cuts into as shortened, not hidden, and keeps its last rows', () => {
+    const display = tail(`first\n${LONG}\n${LONG}`, 5);
+    expect(display.lines).toEqual([
+      LONG.slice(70, 140),
+      LONG.slice(140),
+      LONG.slice(0, 70),
+      LONG.slice(70, 140),
+      LONG.slice(140),
+    ]);
+    // The second line is on screen for two of its three rows: only `first` is out of sight.
+    expect(display.hiddenLines).toBe(1);
+    expect(display.truncatedLines).toBe(1);
+    expect(display.footer).toBe('… +1 line, 1 long line shortened');
+  });
+
+  it('names nothing as hidden when the bound cuts into the first line only', () => {
+    const display = tail(LONG, 2);
+    expect(display.lines).toEqual([LONG.slice(70, 140), LONG.slice(140)]);
+    expect(display.hiddenLines).toBe(0);
+    expect(display.truncatedLines).toBe(1);
+    expect(display.footer).toBe('… 1 long line shortened');
+  });
+
+  it('is the head display read from the other end: the same rows when the bound cuts nothing', () => {
+    const output = `${LONG}\nshort\n\n${LONG}`;
+    const head = prepareToolOutputDisplay(output, {
+      maxLines: 20,
+      maxLineWidth: WIDTH,
+      longLines: 'wrap',
+    });
+    const fromEnd = tail(output, 20);
+    expect(fromEnd.lines).toEqual(head.lines);
+    expect(fromEnd.footer).toBeUndefined();
+    expect(fromEnd.sourceLines).toEqual(head.sourceLines);
+    expect(fromEnd.rowSources).toEqual(head.rowSources);
+  });
+
+  it('records where each row came from, in reading order, a cut line whole', () => {
+    const display = tail(`${LONG}\nz`, 3);
+    expect(display.lines).toEqual([LONG.slice(70, 140), LONG.slice(140), 'z']);
+    expect(display.sourceLines).toEqual([LONG, 'z']);
+    expect(display.rowSources).toEqual([
+      { line: 0, start: 70, end: 140 },
+      { line: 0, start: 140, end: 160 },
+      { line: 1, start: 0, end: 1 },
+    ]);
+    for (const [i, row] of (display.rowSources ?? []).entries()) {
+      expect(display.sourceLines?.[row.line]?.slice(row.start, row.end)).toBe(display.lines[i]);
+    }
+  });
+
+  it('expands tabs before it wraps, as the head display does', () => {
+    const display = prepareToolOutputDisplay('x\na\tbcdefghij\nz', {
+      maxLines: 3,
+      maxLineWidth: 10,
+      longLines: 'wrap',
+      strategy: 'tail',
+    });
+    expect(display.sourceLines).toEqual([`a${' '.repeat(7)}bcdefghij`, 'z']);
+    expect(display.lines).toEqual([`a${' '.repeat(7)}bc`, 'defghij', 'z']);
+    expect(display.hiddenLines).toBe(1);
+    expect(display.truncatedLines).toBe(0);
+  });
+
+  it('shows nothing, and hides every line, with no room for a row', () => {
+    const display = tail('a\nb', 0);
+    expect(display.lines).toEqual([]);
+    expect(display.hiddenLines).toBe(2);
+    expect(display.footer).toBe('… +2 lines');
+  });
+
+  it('reads head-tail as the head', () => {
+    const output = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n');
+    const headTail = prepareToolOutputDisplay(output, {
+      maxLines: 4,
+      maxLineWidth: WIDTH,
+      longLines: 'wrap',
+      strategy: 'head-tail',
+    });
+    expect(headTail.lines).toEqual(['line 1', 'line 2', 'line 3', 'line 4']);
+    expect(headTail.hiddenLines).toBe(6);
+  });
+
+  it('still draws the head of an output shown in full, failed or not', () => {
+    const output = Array.from({ length: 2100 }, (_, i) => `line ${i + 1}`).join('\n');
+    for (const success of [true, false]) {
+      const display = toolOutputDisplay(output, {
+        success,
+        showAllToolOutput: true,
+        terminalWidth: WIDTH,
+      });
+      expect([success, display.lines[0]]).toEqual([success, 'line 1']);
+      expect(display.lines).toHaveLength(2000);
+      expect(display.hiddenLines).toBe(100);
+    }
+  });
+
+  it('keeps the last rows of a line far wider than the bound, as it would of a short one', () => {
+    const huge = 'abcdefghij'.repeat(30_000);
+    const display = tail(huge, 3);
+    expect(display.lines.join('')).toBe(huge.slice(-(70 + 70 + (huge.length % 70 || 70))));
+    expect(display.truncatedLines).toBe(1);
+    expect(display.hiddenLines).toBe(0);
+  });
+});
+
 describe('prepareToolOutputDisplay', () => {
   it('returns a collapsed preview with summary metadata', () => {
     const output = Array.from({ length: 8 }, (_, i) => `line ${i + 1}`).join('\n');

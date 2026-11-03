@@ -31,6 +31,7 @@ import {
   nestedGrid,
   transcriptGrid,
 } from './layout.js';
+import { prepareToolOutputDisplay } from './components/tool-output.js';
 import { displayWidth } from './components/word-wrap.js';
 import { enrichToolResultPresentation, toolFailure, toolSuccess } from '../tools/result.js';
 import { fileTools } from '../tools/file.js';
@@ -967,12 +968,41 @@ describe('composeToolErrorDetail with a failed command', () => {
       expect(rows(detail)).toBeLessThanOrEqual(TOOL_ERROR_EXPANDED_MAX_ROWS);
     });
 
-    it('counts a line the bound cuts into as hidden, and keeps its last rows', () => {
+    it('counts a line the bound cuts into as shortened, not hidden, and keeps its last rows (#605)', () => {
       const long = 'y'.repeat(room * 2500);
       const detail = composeToolErrorDetail(row, `first\n${long}`, grid, expanded);
       expect(detail.lines).toHaveLength(EXPANDED_OUTPUT_MAX_LINES);
-      expect(detail.hint).toBe('… +2 lines');
+      // Its last 2000 rows are on screen: only `first` is out of sight.
+      expect(detail.hint).toBe('… +1 line, 1 long line shortened');
       expect(detail.lines.every((line) => line === 'y'.repeat(room))).toBe(true);
+    });
+
+    it('names a cut line alone when nothing before it is hidden (#605)', () => {
+      const long = 'y'.repeat(room * 2500);
+      const detail = composeToolErrorDetail(row, long, grid, expanded);
+      expect(detail.lines).toHaveLength(EXPANDED_OUTPUT_MAX_LINES);
+      expect(detail.hint).toBe('… 1 long line shortened');
+      expect(detail.hintBelow).toBeUndefined();
+    });
+
+    it('reads the rows and the footer the Read/Bash body draws for the same output (#605)', () => {
+      const out = [
+        assertion(1),
+        'z'.repeat(room * 3 + 5),
+        ...source(40),
+        'y'.repeat(room * 2100),
+        'last',
+      ].join('\n');
+      const detail = composeToolErrorDetail(row, out, grid, expanded);
+      const body = prepareToolOutputDisplay(out, {
+        maxLines: EXPANDED_OUTPUT_MAX_LINES,
+        maxLineWidth: room,
+        longLines: 'wrap',
+        strategy: 'tail',
+      });
+      expect(body.truncatedLines).toBe(1);
+      expect(detail.lines).toEqual(body.lines);
+      expect(detail.hint).toBe(body.footer);
     });
 
     it('shows no stdout fallback when the output block draws that stdout below', () => {

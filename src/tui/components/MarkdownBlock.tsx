@@ -4,6 +4,7 @@ import { marked, Tokens, Token } from 'marked';
 import { useTheme } from '../theme.js';
 import { useDensity } from '../density.js';
 import { useTranscriptLayoutChange } from '../transcript-layout.js';
+import { expandTabs as expandToTabStops, type StringWidth } from '../../tab-stops.js';
 import { displayWidth, wordWrap } from './word-wrap.js';
 import { expandTabs } from './tool-output.js';
 import { highlightCode, type StyledLine } from './syntax-highlight.js';
@@ -20,6 +21,12 @@ import {
 
 /** Columns a list is indented from the surrounding prose. */
 const LIST_INDENT = 2;
+
+/** Columns a list nested in a list item is indented from the item's text. */
+const NESTED_LIST_INDENT = 2;
+
+/** Columns a blockquote's rail takes before its text: the border and one column of padding. */
+const BLOCKQUOTE_GUTTER = 2;
 
 interface MarkdownBlockProps {
   /** Raw markdown string to render. */
@@ -49,6 +56,18 @@ interface RenderContext {
   isStreaming: boolean;
   /** Nested blockquote depth for width budgeting. */
   blockquoteDepth: number;
+  /**
+   * Columns from the left edge of the Markdown block to the box a token is drawn in: the markers
+   * of the lists it is in, the rails of the blockquotes. A tab in its text stops at the 8-column
+   * stops counted from the block's edge, so the text starts where a terminal would put it,
+   * after what is drawn to its left on the row, and a list's cells line up with a paragraph's.
+   *
+   * Not counted: where the block itself sits in the transcript, which it is not told; a code
+   * block's rail and line numbers, because its tabs are the code's indentation and count from the
+   * code's own left edge (#547); and the wrapping of a long line, because a tab is expanded
+   * ahead of the wrapper, which must see the widths, so a continuation row follows the line.
+   */
+  column: number;
 }
 
 export function wrapParagraphLines(rawText: string, terminalWidth: number): string[] {
@@ -165,27 +184,34 @@ function plainTextFromTokens(tokens: Token[]): string {
 }
 
 /**
- * `runs` with each tab replaced by spaces up to the next 8-column tab stop, counted from the start
- * of the text column (the run's first character, or the one after a line break). `displayWidth`
- * counts a tab as no cells while the terminal moves to the next stop, so a row holding one comes
- * out wider on screen than the width it was wrapped to (#565). Runs without a tab come back as
- * they are.
+ * `runs` with each tab replaced by spaces up to the next 8-column tab stop. The stops are counted
+ * from `startColumn`, the column the text begins at (a list item's text begins after its marker),
+ * and again from it after a line break. `displayWidth` counts a tab as no cells while the terminal
+ * moves to the next stop, so a row holding one comes out wider on screen than the width it was
+ * wrapped to (#565). Runs without a tab come back as they are.
+ *
+ * The column the line has reached is carried from one run to the next, so each piece of text is
+ * measured once however many styled runs the line holds. A tab stop depends on that column alone.
+ * The line is expanded whole, ahead of the wrapper (which has to see the widths), so a row the
+ * wrapper then continues keeps the stops of the line it continues.
  */
-function expandRunTabs(runs: InlineRun[]): InlineRun[] {
+export function expandRunTabs<Run extends { text: string }>(
+  runs: Run[],
+  startColumn = 0,
+  measure: StringWidth = displayWidth,
+): Run[] {
   if (!runs.some((run) => run.text.includes('\t'))) return runs;
-  // The expanded text of the line so far: a run's tabs stop at the columns it holds, and a tab
-  // stop depends on the text before it only, so the prefix's expansion is a prefix of the whole's.
-  let lineSoFar = '';
+  let column = startColumn;
   return runs.map((run) => {
     let text = '';
     run.text.split('\n').forEach((piece, index) => {
       if (index > 0) {
         text += '\n';
-        lineSoFar = '';
+        column = startColumn;
       }
-      const expanded = expandTabs(lineSoFar + piece).slice(lineSoFar.length);
+      const expanded = piece.includes('\t') ? expandToTabStops(piece, measure, column) : piece;
       text += expanded;
-      lineSoFar += expanded;
+      column += measure(expanded);
     });
     return text === run.text ? run : { ...run, text };
   });
@@ -291,8 +317,12 @@ function inlineRunsFromTokens(
   return runs;
 }
 
-function wrappedInlineRuns(inlineRuns: InlineRun[], terminalWidth: number): InlineRun[][] {
-  const runs = expandRunTabs(inlineRuns);
+function wrappedInlineRuns(
+  inlineRuns: InlineRun[],
+  terminalWidth: number,
+  column = 0,
+): InlineRun[][] {
+  const runs = expandRunTabs(inlineRuns, column);
   const rawText = runs.map((run) => run.text).join('');
   const lines = wrapParagraphLines(rawText, terminalWidth);
   let searchOffset = 0;
@@ -629,7 +659,7 @@ function renderBlockToken(
         theme,
       );
       if (terminalWidth) {
-        const wrappedLines = wrappedInlineRuns(runs, terminalWidth);
+        const wrappedLines = wrappedInlineRuns(runs, terminalWidth, context.column);
         return (
           <Box key={`p-${index}`} flexDirection="column" flexGrow={1}>
             {wrappedLines.map((lineRuns, li) => (
@@ -642,7 +672,7 @@ function renderBlockToken(
       }
       return (
         <Box key={`p-${index}`} flexDirection="row" flexGrow={1}>
-          <InlineRuns runs={expandRunTabs(runs)} />
+          <InlineRuns runs={expandRunTabs(runs, context.column)} />
         </Box>
       );
     }
@@ -730,7 +760,9 @@ function renderBlockToken(
       const t = token as Tokens.Blockquote;
       // Incremental budget: border + paddingLeft ≈ 2 columns per quote level.
       const childWidth =
-        terminalWidth !== undefined ? Math.max(1, Math.floor(terminalWidth) - 2) : undefined;
+        terminalWidth !== undefined
+          ? Math.max(1, Math.floor(terminalWidth) - BLOCKQUOTE_GUTTER)
+          : undefined;
       return (
         <Box
           key={`bq-${index}`}
@@ -748,6 +780,7 @@ function renderBlockToken(
               ...context,
               textColor: theme.mdBlockquoteText,
               blockquoteDepth: context.blockquoteDepth + 1,
+              column: context.column + BLOCKQUOTE_GUTTER,
             }),
           )}
         </Box>
@@ -769,8 +802,15 @@ function renderBlockToken(
       // fixed width leaves a dead column after every bullet.
       const markerWidth =
         Math.max(...t.items.map((item, ii) => displayWidth(markerFor(item, ii))), 1) + 1;
+      // Where every item's text begins: after the list's own indent, the item's and its marker.
+      const textColumn =
+        context.column + (context.depth > 0 ? NESTED_LIST_INDENT : 0) + LIST_INDENT + markerWidth;
       return (
-        <Box key={`list-${index}`} flexDirection="column" marginLeft={context.depth > 0 ? 2 : 0}>
+        <Box
+          key={`list-${index}`}
+          flexDirection="column"
+          marginLeft={context.depth > 0 ? NESTED_LIST_INDENT : 0}
+        >
           {t.items.map((item, ii) => {
             const marker = markerFor(item, ii);
             const markerColor = item.task
@@ -801,7 +841,7 @@ function renderBlockToken(
                           )
                         : [{ text: textToken.text, color: context.textColor ?? theme.text }];
                       if (itemWidth) {
-                        const wrapped = wrappedInlineRuns(childRuns, itemWidth);
+                        const wrapped = wrappedInlineRuns(childRuns, itemWidth, textColumn);
                         return (
                           <Box key={`lit-${index}-${ii}-${ci}`} flexDirection="column">
                             {wrapped.map((lineRuns, li) => (
@@ -814,7 +854,7 @@ function renderBlockToken(
                       }
                       return (
                         <Box key={`lit-${index}-${ii}-${ci}`}>
-                          <InlineRuns runs={expandRunTabs(childRuns)} />
+                          <InlineRuns runs={expandRunTabs(childRuns, textColumn)} />
                         </Box>
                       );
                     }
@@ -823,7 +863,7 @@ function renderBlockToken(
                       theme,
                       index * 1000 + ii * 100 + ci,
                       itemWidth,
-                      { ...context, depth: context.depth + 1 },
+                      { ...context, depth: context.depth + 1, column: textColumn },
                     );
                   })}
                 </Box>
@@ -943,6 +983,7 @@ const MarkdownRenderer = React.memo(function MarkdownRenderer({
               depth: 0,
               isStreaming,
               blockquoteDepth: 0,
+              column: 0,
             })}
           </React.Fragment>
         );
