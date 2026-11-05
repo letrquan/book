@@ -220,8 +220,11 @@ describe('a run cancelled while a PreToolUse hook runs (#698)', () => {
       'start',
       [],
       loopCallbacks({
-        onToolCall: () => {
-          setTimeout(() => controller.abort({ bookTerminalReason: 'user_cancelled' }), 400);
+        // Esc once the hook has started, not on a timer that could land before the call does.
+        onHookEvent: (event: string) => {
+          if (event === 'PreToolUse') {
+            setTimeout(() => controller.abort({ bookTerminalReason: 'user_cancelled' }), 50);
+          }
         },
         onToolResult: (result: ToolResult) => results.push(result),
         onDone: () => done++,
@@ -265,7 +268,7 @@ describe('a run cancelled while the UserPromptSubmit hook runs', () => {
       },
     } as unknown as Provider;
 
-    await runAgentLoop(
+    const history = await runAgentLoop(
       config,
       createRegistry(),
       'start',
@@ -289,5 +292,7 @@ describe('a run cancelled while the UserPromptSubmit hook runs', () => {
 
     expect(requests).toBe(0);
     expect(outcome?.status).toBe('cancelled');
+    // The prompt is kept, as for any cancelled run: a resumed session still has it.
+    expect(history.map((message) => message.content)).toContain('start');
   });
 });

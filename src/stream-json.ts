@@ -1,4 +1,3 @@
-import type { AttemptDiscardReason } from './types/providers.js';
 import type { AgentTerminalOutcome } from './types/terminal.js';
 
 /** Known event types in the stream-json wire format. */
@@ -40,7 +39,7 @@ export type StreamJsonEvent =
    * emitted for it so far. Only the replacement attempt reaches the transcript,
    * so a consumer that concatenates blindly would keep text no history records.
    */
-  | { type: 'attempt_discarded'; reason?: AttemptDiscardReason }
+  | { type: 'attempt_discarded'; reason?: string }
   | {
       type: 'retry';
       phase?: string;

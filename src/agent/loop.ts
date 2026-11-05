@@ -608,9 +608,10 @@ export async function runAgentLoop(
       : await submitUserPrompt(userMessage);
   } catch (error) {
     // `runHooks` rejects with the abort reason when the run is cancelled under a hook (#698).
+    // The run goes on as any other cancelled run does, so the prompt still reaches the history
+    // and the first abort check ends it `cancelled`; only a block, a policy decision, drops it.
     if (!signal?.aborted) throw error;
-    finishTerminal(classifyAbortReason(signal.reason, false));
-    return newHistory;
+    submitted = { outcome: 'passed', prompt: userMessage };
   }
   if (submitted.outcome === 'blocked') {
     newHistory.push({
