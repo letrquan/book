@@ -1,5 +1,5 @@
 import { realpathSync } from 'fs';
-import { isAbsolute, relative, resolve, sep } from 'path';
+import { isAbsolute, join, relative, resolve, sep } from 'path';
 import type { ResolvedSettings } from './settings.js';
 import type {
   PermissionDecision,
@@ -1070,6 +1070,57 @@ export function workspacePathSpellings(workspace: string, raw: string): string[]
   ];
 }
 
+/**
+ * What an `allow` rule reads a path as: where it leads, not how it is spelled. An allow widens, and
+ * a glob's `*` crosses `/`, so `Write(src/**)` must not come to cover `src/../.git/config`, or a
+ * `src/notes.md` that is a link somewhere else. A path with no `..` and no link on its way below the
+ * root keeps every spelling it has. Any other is offered only its destination: relative to the
+ * workspace, absolute, and absolute under the root as it is spelled, so a workspace opened through a
+ * link still matches its own rules. Not relative to an approved directory (`spellingsOfPath`). One no
+ * root serves is the tool's to refuse, whatever a rule says.
+ */
+function allowSpellingsOfPath(
+  paths: ResolvedPathScope,
+  raw: string,
+  includeReadOnly: boolean,
+): string[] {
+  const asGiven = [raw, ...spellingsOfPath(paths, raw, includeReadOnly, false)];
+  const detail = paths.detail(raw, includeReadOnly);
+  if (!('path' in detail)) return asGiven;
+  const { filePath, canonicalPath, root, inWorkspace } = detail.path;
+  const belowRoot = relative(canonicalizePath(root), canonicalPath);
+  const climbs = raw.split(/[\\/]/).includes('..');
+  if (!climbs && relative(resolve(root), filePath) === belowRoot) return asGiven;
+  return [
+    ...(inWorkspace ? [toPosix(belowRoot)] : []),
+    toPosix(canonicalPath),
+    toPosix(join(resolve(root), belowRoot)),
+  ];
+}
+
+/** What a path-rule tool's call is offered to `allow` rules as; see `allowSpellingsOfPath`. */
+function allowRuleSpellings(
+  paths: ResolvedPathScope,
+  toolName: string,
+  args: Record<string, unknown>,
+): string[] {
+  const raw = pathArgument(toolName, args);
+  return raw
+    ? allowSpellingsOfPath(paths, raw, toolName === 'Read')
+    : [toolPrimaryArg(toolName, args)];
+}
+
+/** What one `ApplyPatch` file is offered to rules as: `restrictive` for `deny` and `ask`. */
+function patchPathSpellings(
+  paths: ResolvedPathScope,
+  path: string,
+  restrictive: boolean,
+): readonly string[] {
+  return restrictive
+    ? [path, ...spellingsOfPath(paths, path, false, true)]
+    : allowSpellingsOfPath(paths, path, false);
+}
+
 /** The other spellings of a path-rule tool's target; see `spellingsOfPath`. */
 function pathRuleSpellings(
   paths: ResolvedPathScope,
@@ -1349,7 +1400,7 @@ export function evaluatePermissionDetail(
       const cache = restrictive ? restrictiveSpellings : spellings;
       let known = cache.get(path);
       if (!known) {
-        known = paths ? [path, ...spellingsOfPath(paths, path, false, restrictive)] : [path];
+        known = paths ? patchPathSpellings(paths, path, restrictive) : [path];
         cache.set(path, known);
       }
       return known;
@@ -1411,11 +1462,10 @@ export function evaluatePermissionDetail(
       ...restrictiveCandidates,
       ...pathRuleSpellings(paths, tool, args, true),
     ];
-    // `allow` is offered only the spellings a `Write` would have written: the raw argument, the
-    // path as given, and its canonical form. It is not offered the form relative to an honored
-    // root, so a workspace-shaped allow such as `Edit(src/**)` cannot come to mean
-    // `/srv/app/src/**` — a grant the user never wrote (PR #334 finding 10).
-    candidates.push(...pathRuleSpellings(paths, tool, args, false));
+    // `allow` is offered where the path leads (`allowSpellingsOfPath`). It is not offered the form
+    // relative to an honored root, so a workspace-shaped allow such as `Edit(src/**)` cannot come to
+    // mean `/srv/app/src/**` — a grant the user never wrote (PR #334 finding 10).
+    candidates.splice(0, candidates.length, ...allowRuleSpellings(paths, tool, args));
   }
   // `deny` and `ask` restrict, so they fold case for a path-rule tool and take the wider set of
   // spellings; `allow` keeps exact matching, because folding there would widen what a rule

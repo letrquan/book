@@ -952,3 +952,135 @@ describe.skipIf(onWindows)('a folder that becomes a link while a file is changed
     expect(readFileSync(join(workspace, 'real.ipynb'), 'utf8')).not.toBe(notebook);
   });
 });
+
+describe('an allow rule reads a path as where it leads', () => {
+  const allowing =
+    (...allow: string[]) =>
+    (config: AgentConfig): void => {
+      config.settings.permissions.allow = allow;
+    };
+
+  describe.each(['default', 'accept-edits'] as const)('in %s', (mode) => {
+    it('a climbing spelling is not covered by the folder it climbs out of', async () => {
+      const { prompt } = await drive(mode, [[read('.git/config')], [write('src/../.git/config')]], {
+        configure: allowing('Write(src/**)'),
+      });
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(readFileSync(join(workspace, '.git', 'config'), 'utf8')).toBe('[core]\n');
+    });
+
+    it('nor an absolute one', async () => {
+      const target = `${join(workspace, 'src')}/../.git/config`;
+      const rule = `Write(${join(workspace, 'src').replaceAll('\\', '/')}/**)`;
+      const { prompt } = await drive(mode, [[read('.git/config')], [write(target)]], {
+        configure: allowing(rule),
+      });
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(readFileSync(join(workspace, '.git', 'config'), 'utf8')).toBe('[core]\n');
+    });
+
+    it('nor an ApplyPatch', async () => {
+      const { prompt } = await drive(
+        mode,
+        [[read('.git/config')], [patch(update('src/../.git/config', '[core]', '[core] '))]],
+        { configure: allowing('ApplyPatch(src/**)') },
+      );
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(readFileSync(join(workspace, '.git', 'config'), 'utf8')).toBe('[core]\n');
+    });
+
+    it.skipIf(onWindows)('nor a link inside it', async () => {
+      symlinkSync(join('..', '.git', 'config'), join(workspace, 'src', 'notes.md'));
+      const { prompt } = await drive(mode, [[read('src/notes.md')], [write('src/notes.md')]], {
+        configure: allowing('Write(src/**)'),
+      });
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(readFileSync(join(workspace, '.git', 'config'), 'utf8')).toBe('[core]\n');
+    });
+  });
+
+  it('a rule still covers the path however it is spelled, when it leads there', async () => {
+    mkdirSync(join(workspace, 'other'));
+    for (const target of [
+      'src/a.ts',
+      './src/b.ts',
+      'other/../src/c.ts',
+      join(workspace, 'src/d.ts'),
+    ]) {
+      const { results, prompt } = await drive('default', [[write(target)]], {
+        configure: allowing('Write(src/**)'),
+      });
+      expect(prompt).not.toHaveBeenCalled();
+      expect(byId(results, 'w')?.status).toBe('success');
+    }
+  });
+
+  it('a rule for where a link leads covers the link', async () => {
+    mkdirSync(join(workspace, 'packages', 'lib'), { recursive: true });
+    symlinkSync(join(workspace, 'packages', 'lib'), join(workspace, 'lib'), 'junction');
+    const covered = await drive('default', [[write('lib/a.ts')]], {
+      configure: allowing('Write(packages/**)'),
+    });
+    expect(covered.prompt).not.toHaveBeenCalled();
+    const spelled = await drive('default', [[write('lib/b.ts')]], {
+      configure: allowing('Write(lib/**)'),
+    });
+    expect(spelled.prompt).toHaveBeenCalledTimes(1);
+  });
+
+  describe('a workspace opened through a link', () => {
+    let opened: string;
+
+    beforeEach(() => {
+      opened = join(tempDir('book-accept-edits-alias-'), 'project');
+      symlinkSync(workspace, opened, 'junction');
+    });
+
+    it.each([
+      ['relative', () => 'Write(src/**)'],
+      ['absolute through the link', () => `Write(${opened.replaceAll('\\', '/')}/src/**)`],
+      ['absolute where it leads', () => `Write(${workspace.replaceAll('\\', '/')}/src/**)`],
+    ])('matches a rule written %s', async (_label, rule) => {
+      const { results, prompt } = await drive('default', [[write('src/new.ts')]], {
+        root: opened,
+        configure: allowing(rule()),
+      });
+      expect(prompt).not.toHaveBeenCalled();
+      expect(byId(results, 'w')?.status).toBe('success');
+    });
+
+    it('and a call spelled absolutely through the link', async () => {
+      const { prompt } = await drive('default', [[write(join(opened, 'src', 'new.ts'))]], {
+        root: opened,
+        configure: allowing('Write(src/**)'),
+      });
+      expect(prompt).not.toHaveBeenCalled();
+    });
+
+    it('a climbing spelling still asks', async () => {
+      const { prompt } = await drive('default', [[write('src/../.git/brand-new')]], {
+        root: opened,
+        configure: allowing('Write(src/**)'),
+      });
+      expect(prompt).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('a bare rule still covers every path', async () => {
+    const { prompt } = await drive(
+      'default',
+      [[read('.git/config')], [write('src/../.git/config')]],
+      { configure: allowing('Write') },
+    );
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it('a deny or ask rule still reads every spelling', async () => {
+    const asked = await drive('accept-edits', [[write('src/../src/new.ts')]], {
+      configure: (config) => {
+        config.settings.permissions.ask = ['Write(src/../src/new.ts)'];
+      },
+    });
+    expect(asked.prompt).toHaveBeenCalledTimes(1);
+  });
+});

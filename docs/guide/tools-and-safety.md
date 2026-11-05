@@ -731,6 +731,14 @@ links — in every mode. So `deny: ["Read(.env)"]` also stops a `Read` of
 `bypassPermissions` whatever the call writes it as, `ApplyPatch` included. `ApplyPatch` matches its
 targets' spellings the same way, and `deny` and `ask` fold case as they do for a single-path tool.
 
+An `allow` path rule matches where the path leads, not how it is spelled. `allow: ["Write(src/**)"]`
+covers `other/../src/a.ts`, and it does not cover `src/../.git/config`, or a `src/notes.md` that is a
+link to a file outside `src/`. A rule for a folder that is a link has to name where the link leads:
+with `lib` linked to `packages/lib`, `Edit(packages/lib/**)` covers `lib/a.ts` and `Edit(lib/**)` does
+not. "Always allow" on a path spelled through a link or a `..` lasts for the session, since the rule
+it saves names the spelling, so the call asks again in the next one. A workspace opened through a
+link still matches its own rules, relative or absolute.
+
 A path inside an approved `additionalDirectories` entry is offered the same root-relative spelling
 to `deny` and `ask` — `deny: ["Write(.env)"]` stops `/srv/app/.env` as well as the workspace's own
 — and **not** to `allow`. That asymmetry is deliberate: `deny` and `ask` restrict, so a wider set of
