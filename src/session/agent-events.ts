@@ -2,6 +2,7 @@ import type { AgentRecord, AgentRuntimeEvent, EvidenceItem } from '../agents/typ
 import type { HostCommandResult } from '../types/commands.js';
 import type { GoalStatusEvent } from '../types/goal.js';
 import type { Message, Usage } from '../types/messages.js';
+import type { AttemptDiscardReason } from '../types/providers.js';
 import type { AgentRunAmbientSnapshot, AgentRunContext, AgentRunResult } from '../types/runs.js';
 import type { ShellJobEvent } from '../jobs/shell-manager.js';
 import { isTerminalStatus, type AgentTerminalOutcome } from '../types/terminal.js';
@@ -44,7 +45,7 @@ export type AgentEvent =
       }
     >
   | { type: 'evidence_update'; evidence: EvidenceItem }
-  | { type: 'attempt_discarded'; reason: 'empty_response' }
+  | { type: 'attempt_discarded'; reason: AttemptDiscardReason }
   | { type: 'notice'; message: string; title?: string }
   /**
    * A steer the host handed the running loop was appended to history (#661), at the point the

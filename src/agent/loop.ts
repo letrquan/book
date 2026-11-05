@@ -2425,7 +2425,7 @@ export async function runAgentLoop(
           // The attempt's deltas are already with the host; tell it to drop
           // them so the retry's answer does not queue up behind an abandoned
           // reasoning block that no history will ever record.
-          callbacks.onAttemptDiscarded?.();
+          callbacks.onAttemptDiscarded?.('empty_response');
           // The host shows a retry label from this and clears it when the
           // re-sent stream speaks, so a re-issue that skipped it left the run
           // silent. Same delay a transport re-issue waits.
@@ -2472,7 +2472,7 @@ export async function runAgentLoop(
               responseId: responseMetadata?.responseId,
             },
           );
-          callbacks.onAttemptDiscarded?.();
+          callbacks.onAttemptDiscarded?.('content_filter');
           retrySameTurn = true;
           continue;
         }
@@ -2506,7 +2506,7 @@ export async function runAgentLoop(
             promptTokens: turnUsage?.promptTokens,
             completionTokens: turnUsage?.completionTokens,
           });
-          callbacks.onAttemptDiscarded?.();
+          callbacks.onAttemptDiscarded?.('error_envelope');
           retrySameTurn = true;
           continue;
         }
@@ -2541,7 +2541,7 @@ export async function runAgentLoop(
         };
         // Nothing of this attempt is left in the transcript, so the output it produced is not
         // the run's partial output either.
-        callbacks.onAttemptDiscarded?.();
+        callbacks.onAttemptDiscarded?.('malformed_tool_call');
         assistantOutputProduced = outputBeforeAttempt;
         if (toolMarkupRetryTurn !== turn) {
           toolMarkupRetryTurn = turn;

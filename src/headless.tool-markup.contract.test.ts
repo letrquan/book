@@ -108,7 +108,10 @@ describe('a reply that is tool-call markup, in print mode (#667)', () => {
     // An unexecuted Grep is not the model's answer.
     expect(result.answer).toBe('');
     // Both replies are taken back from a reader that builds the transcript from the stream.
-    expect(events.filter((candidate) => candidate.type === 'attempt_discarded')).toHaveLength(2);
+    expect(events.filter((candidate) => candidate.type === 'attempt_discarded')).toEqual([
+      { type: 'attempt_discarded', reason: 'malformed_tool_call' },
+      { type: 'attempt_discarded', reason: 'malformed_tool_call' },
+    ]);
     expect(events.filter((candidate) => candidate.type === 'error')).toHaveLength(1);
     expect(events.find((candidate) => candidate.type === 'error')).toMatchObject({
       error: expect.stringContaining('tool call written out as plain text'),
@@ -121,7 +124,9 @@ describe('a reply that is tool-call markup, in print mode (#667)', () => {
 
     const { events } = await runStreamJson(provider);
 
-    expect(events.find((event) => event.type === 'attempt_discarded')).toBeDefined();
+    expect(events.find((event) => event.type === 'attempt_discarded')).toMatchObject({
+      reason: 'malformed_tool_call',
+    });
     expect(events.find((event) => event.type === 'retry')).toMatchObject({
       phase: 'reissue',
       attempt: 1,
