@@ -35,8 +35,6 @@ import {
 } from './path-utils.js';
 import {
   observeFile,
-  forgetObservation,
-  pathIsGone,
   requireFreshObservation,
   requireObservationForMutation,
 } from './file-provenance.js';
@@ -1508,13 +1506,11 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
   const shownPath = messagePathFor(resolved);
   return withMutationLocks([canonicalPath], async () => {
     // A file deleted outside the file tools (`rm` through Bash) leaves its observation behind. With
-    // nothing on disk there is nothing to protect, so the call is a create, as ApplyPatch's
-    // `*** Add File` is, and the refusal's remedy ("Call Read") could never be met (#674).
-    if (await pathIsGone(filePath)) forgetObservation(ctx, filePath);
-    else {
-      const stale = await requireFreshObservation(ctx, filePath, shownPath);
-      if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
-    }
+    // nothing on disk there is nothing to protect, so this is a create, as ApplyPatch's
+    // `*** Add File` is (#674). A dangling symlink still counts as something there: Write must not
+    // create through it.
+    const stale = await requireFreshObservation(ctx, filePath, shownPath, { creates: true });
+    if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
     let before;
     try {
       before = await readTextSnapshot(filePath, true);
@@ -1610,10 +1606,7 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   const { filePath, canonicalPath } = resolved;
   const shownPath = messagePathFor(resolved);
   return withMutationLocks([canonicalPath], async () => {
-    // A missing file is "not found" below, not stale: Read cannot bring it back (#674).
-    const stale = (await pathIsGone(filePath))
-      ? undefined
-      : await requireFreshObservation(ctx, filePath, shownPath);
+    const stale = await requireFreshObservation(ctx, filePath, shownPath);
     if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
     let snapshot;
     try {
@@ -1714,9 +1707,7 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
   }
 
   return withMutationLocks([canonicalPath], async () => {
-    const stale = (await pathIsGone(filePath))
-      ? undefined
-      : await requireFreshObservation(ctx, filePath, shownPath);
+    const stale = await requireFreshObservation(ctx, filePath, shownPath);
     if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
     const snapshot = await readTextSnapshot(filePath).catch(() => null);
     if (!snapshot) return toolFailure(`File not found: ${args.filePath}`);

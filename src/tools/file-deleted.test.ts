@@ -13,6 +13,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileTools } from './file.js';
+import { notebookTools } from './notebook.js';
+import { patchTools } from './patch.js';
 import type { ToolContext } from '../types/tools.js';
 
 // #674: a file the model read and then deleted outside the file tools (`rm` through Bash).
@@ -21,6 +23,21 @@ const read = tool('Read');
 const write = tool('Write');
 const edit = tool('Edit');
 const multiEdit = tool('MultiEdit');
+const notebookEdit = notebookTools.find((t) => t.name === 'NotebookEdit')!;
+const applyPatch = patchTools[0];
+
+// A Windows account without the symlink privilege cannot make the link the dangling-link cases need.
+const canSymlink = (() => {
+  const probe = mkdtempSync(join(tmpdir(), 'book-symlink-probe-'));
+  try {
+    symlinkSync(join(probe, 'missing'), join(probe, 'link'), 'file');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
 
 let dir: string;
 let ctx: ToolContext;
@@ -121,18 +138,84 @@ describe('a path that still has something at it keeps the stale refusal', () => 
     expect(result.structuredError?.code).toBe('stale_file_observation');
   });
 
-  it('refuses a Write through a dangling symlink and creates nothing at its target', async () => {
-    await observe('link.txt');
-    unlinkSync(join(dir, 'link.txt'));
-    const target = join(dir, 'target-that-does-not-exist.txt');
-    try {
+  it.skipIf(!canSymlink)(
+    'refuses a Write through a dangling symlink and creates nothing at its target',
+    async () => {
+      await observe('link.txt');
+      unlinkSync(join(dir, 'link.txt'));
+      const target = join(dir, 'target-that-does-not-exist.txt');
       symlinkSync(target, join(dir, 'link.txt'), 'file');
-    } catch {
-      return; // a Windows account without the symlink privilege
-    }
-    const result = await write.execute({ filePath: 'link.txt', content: 'mine\n' }, ctx);
-    expect(result.status).toBe('error');
-    expect(result.structuredError?.code).toBe('stale_file_observation');
-    expect(existsSync(target)).toBe(false);
+      const result = await write.execute({ filePath: 'link.txt', content: 'mine\n' }, ctx);
+      expect(result.status).toBe('error');
+      expect(result.structuredError?.code).toBe('stale_file_observation');
+      expect(existsSync(target)).toBe(false);
+      // A refused Write leaves what the model saw as it was.
+      expect(ctx.fileObservationLedger?.size).toBe(1);
+    },
+  );
+});
+
+describe('the other mutation tools on a file that was deleted', () => {
+  it('ApplyPatch reports Update File and Delete File as not found, not stale', async () => {
+    await observe('patched.txt');
+    unlinkSync(join(dir, 'patched.txt'));
+
+    const updated = await applyPatch.execute(
+      {
+        patch: '*** Begin Patch\n*** Update File: patched.txt\n@@\n-old\n+new\n*** End Patch',
+      },
+      ctx,
+    );
+    expect(updated.status).toBe('error');
+    expect(updated.structuredError?.code).not.toBe('stale_file_observation');
+    expect(updated.structuredError?.message).toContain('File not found');
+
+    const deleted = await applyPatch.execute(
+      { patch: '*** Begin Patch\n*** Delete File: patched.txt\n*** End Patch' },
+      ctx,
+    );
+    expect(deleted.status).toBe('error');
+    expect(deleted.structuredError?.code).not.toBe('stale_file_observation');
+    expect(deleted.structuredError?.message).toContain('File not found');
   });
+
+  it('NotebookEdit reports a deleted notebook as not found, not stale', async () => {
+    await observe(
+      'nb.ipynb',
+      JSON.stringify({ cells: [], metadata: {}, nbformat: 4, nbformat_minor: 5 }),
+    );
+    unlinkSync(join(dir, 'nb.ipynb'));
+    const result = await notebookEdit.execute(
+      { notebook_path: 'nb.ipynb', new_source: 'print(1)', cell_type: 'code', edit_mode: 'insert' },
+      ctx,
+    );
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.code).not.toBe('stale_file_observation');
+    expect(result.structuredError?.message).toContain('Notebook not found');
+  });
+
+  it.skipIf(!canSymlink)(
+    'Edit and MultiEdit report a dangling symlink as not found, not stale',
+    async () => {
+      await observe('dangling.txt');
+      unlinkSync(join(dir, 'dangling.txt'));
+      symlinkSync(join(dir, 'nowhere.txt'), join(dir, 'dangling.txt'), 'file');
+
+      const edited = await edit.execute(
+        { filePath: 'dangling.txt', oldString: 'old', newString: 'new' },
+        ctx,
+      );
+      expect(edited.status).toBe('error');
+      expect(edited.structuredError?.code).not.toBe('stale_file_observation');
+      expect(edited.structuredError?.message).toContain('File not found');
+
+      const multi = await multiEdit.execute(
+        { filePath: 'dangling.txt', edits: [{ oldString: 'old', newString: 'new' }] },
+        ctx,
+      );
+      expect(multi.structuredError?.code).not.toBe('stale_file_observation');
+      expect(multi.structuredError?.message).toContain('File not found');
+      expect(existsSync(join(dir, 'nowhere.txt'))).toBe(false);
+    },
+  );
 });

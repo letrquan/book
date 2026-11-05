@@ -169,26 +169,17 @@ export function forgetObservation(ctx: ToolContext, absolutePath: string): void 
   ctx.runtime?.fileChanges.forget(key);
 }
 
-/**
- * True when nothing is at the path: `lstat` finds no entry (or a parent that is no directory). A
- * dangling symlink is an entry, so it is not gone, and a Write must not become a way to create
- * through one (#674). Any other failure (a permission error, say) is not "gone" either: the caller
- * keeps its ordinary checks.
- */
-export async function pathIsGone(absolutePath: string): Promise<boolean> {
-  try {
-    await lstat(absolutePath);
-    return false;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    return code === 'ENOENT' || code === 'ENOTDIR';
-  }
-}
-
 export async function requireFreshObservation(
   ctx: ToolContext,
   absolutePath: string,
   displayPath: string,
+  /**
+   * `creates`: the caller writes a file when none is there (Write). A path with nothing at it has
+   * nothing to protect for any caller, and each reports it in its own words ("not found", or a
+   * create); a dangling symlink is something at the path, so a caller that creates keeps the
+   * refusal rather than write through the link (#674).
+   */
+  options?: { creates?: boolean },
 ): Promise<string | undefined> {
   const workspaceId = workspaceIdentity(ctx.workspaceRoot);
   // Looked up by the same derivation `observeFile` filed it under, not by the display spelling:
@@ -208,8 +199,26 @@ export async function requireFreshObservation(
     return currentHash === remembered.sha256
       ? undefined
       : staleMessage(ctx, absolutePath, displayPath, remembered);
-  } catch {
+  } catch (error) {
+    // The file is gone, not changed: a Read cannot bring it back, so the refusal's remedy could
+    // never be met (#674). `lstat` tells nothing-at-all from a link whose target is missing.
+    if (isMissing(error) && (!options?.creates || (await nothingAt(absolutePath)))) return undefined;
     return staleMessage(ctx, absolutePath, displayPath, remembered);
+  }
+}
+
+function isMissing(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+/** Whether `lstat` finds no entry at the path. A dangling symlink is an entry. */
+async function nothingAt(absolutePath: string): Promise<boolean> {
+  try {
+    await lstat(absolutePath);
+    return false;
+  } catch (error) {
+    return isMissing(error);
   }
 }
 

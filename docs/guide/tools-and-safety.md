@@ -170,9 +170,10 @@ Mutation reliability guardrails, tuned for heterogeneous models:
 - **Read-before-edit is enforced.** `Edit`/`MultiEdit` (and `Write` over an existing file) fail
   with `file_not_observed` until the file has been Read or `@`-mentioned this session, and fail
   with `stale_file_observation` when it changed since last observed. A file that was deleted
-  outside the file tools (`rm` through Bash) is neither: `Write` creates it again, and `Edit` and
-  `MultiEdit` report it as not found. Anything still at the path, even a directory or a dangling
-  symlink, keeps the refusal.
+  outside the file tools (`rm` through Bash) is neither: `Write` creates it again, and `Edit`,
+  `MultiEdit`, `NotebookEdit` and `ApplyPatch` report it as not found. Anything still at the path,
+  even a directory, keeps the refusal, and so does a dangling symlink for `Write`, which must not
+  create through the link.
 - **Whitespace-tolerant recovery.** When an exact `oldString` match fails, Book tries two
   deterministic relaxations — trailing-whitespace-insensitive and uniform-indent-shift — and
   applies one only when it matches a single location; the result notes the tolerance used.
