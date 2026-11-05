@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, feat/704-function-size-ratchet]
   workflow_dispatch:
 
 permissions:
