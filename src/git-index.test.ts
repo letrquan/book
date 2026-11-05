@@ -184,16 +184,17 @@ describe('visitGitIndex', () => {
     const tracked: Record<string, string> = {};
     for (let i = 0; i < 600; i++) tracked[`dir/f${String(i).padStart(4, '0')}`] = String(i);
     repository(dir, tracked);
-    git(dir, ['commit', '-q', '-m', 'base']);
     git(dir, ['update-index', '--split-index']);
-    // Scattered deletes, so the bitmap holds runs of zeros and literal words.
-    for (const i of [0, 1, 63, 64, 65, 200, 201, 599]) {
-      git(dir, ['rm', '-q', '--cached', `dir/f${String(i).padStart(4, '0')}`]);
-    }
+    // Scattered deletes, so the bitmap holds runs of zeros and literal words. Each git process is
+    // a slow start on Windows (this test timed out there at 15 of them), so the deletes go in one
+    // `git rm`, the two additions in one `git add`, and there is no commit, which the split needs not.
+    const deleted = [0, 1, 63, 64, 65, 200, 201, 599].map(
+      (i) => `dir/f${String(i).padStart(4, '0')}`,
+    );
+    git(dir, ['rm', '-q', '--cached', '--', ...deleted]);
     write(dir, 'dir/f0300', 'changed');
-    git(dir, ['add', 'dir/f0300']);
     write(dir, 'new.txt', 'new');
-    git(dir, ['add', 'new.txt']);
+    git(dir, ['add', '--', 'dir/f0300', 'new.txt']);
 
     expect(walked(join(dir, '.git')).map((entry) => entry.path)).toEqual(
       lsFiles(dir).map((entry) => entry.path),
