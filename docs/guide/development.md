@@ -26,6 +26,7 @@ npm run test:unit    # Deterministic unit suite
 npm run test:contract
 npm run test:integration # Isolated PTY/process suite (one worker)
 npm run check        # Format, lint, types, architecture, unit, and contract checks
+npm run architecture:baseline # Record functions that shrank in the size ratchet
 npm run test:watch   # Watch mode
 npm run test:coverage
 npm run build        # tsup → dist/

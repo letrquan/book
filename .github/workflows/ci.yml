@@ -121,6 +121,30 @@ jobs:
           STABILIZATION_BRANCH: main
           STABILIZATION_REGRESSION_LABELS: regression:lifecycle,regression:accounting
 
+  # Rule 4 of the function size ratchet in scripts/check-architecture.ts: against the base branch,
+  # the baseline may not gain a key or raise a number. `npm run check` on the matrix covers rules 1
+  # to 3 on every OS; this compares two JSON files, so one leg is enough. It compares with the merge
+  # commit's first parent, the base this merge was built from. The live tip of the base branch would
+  # read another PR's later lowering as a raise here, on a late or re-run job.
+  function-size-baseline:
+    name: Function size baseline
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run architecture:check -- --base-ref HEAD^1
+
   # The macOS sandbox backend (Seatbelt) is proven only here: the darwin suite in
   # src/sandbox-seatbelt.test.ts spawns a real sandbox-exec. A job of its own rather
   # than a matrix leg, so an unrelated macOS failure cannot turn the Stability policy

@@ -77,6 +77,7 @@
     "format": "prettier --write \"{src,scripts}/**/*.{ts,tsx}\" \"*.config.ts\" \"*.md\" \"docs/**/*.md\"",
     "format:check": "prettier --check \"{src,scripts}/**/*.{ts,tsx}\" \"*.config.ts\" \"*.md\" \"docs/**/*.md\"",
     "architecture:check": "tsx scripts/check-architecture.ts",
+    "architecture:baseline": "tsx scripts/check-architecture.ts --update-baseline",
     "deadcode:check": "knip",
     "deadcode:report": "knip --reporter markdown --no-exit-code",
     "deadcode:json": "knip --reporter json --no-exit-code",
