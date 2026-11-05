@@ -1,9 +1,9 @@
-import { execFileSync } from 'child_process';
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
 import { dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { parseArgs } from 'util';
 import ts from 'typescript';
+import { gitIn } from '../src/test/git-fixtures.js';
 
 interface Violation {
   kind:
@@ -74,6 +74,12 @@ const FUNCTION_SIZE_LIMITS = { codeLines: 150, complexity: 30 };
 /** Where the baseline lives, relative to the repository root. */
 export const BASELINE_REPO_PATH = 'scripts/function-size-baseline.json';
 const UPDATE_COMMAND = 'npm run architecture:baseline';
+/**
+ * What extracting a function may add, per new function: its signature, the captured values it now
+ * takes as parameters (22 for the largest closure in runAgentLoop, see #705), and its own base
+ * complexity. A new function gets 150 code lines free in any case, so this opens nothing new.
+ */
+const MOVE_ALLOWANCE = { codeLines: 30, complexity: 1 };
 const UNNAMED = '<anon>';
 
 export interface FunctionSize {
@@ -142,7 +148,25 @@ function targetName(target: ts.Node): string | undefined {
   return undefined;
 }
 
-/** The name a function or class goes by, from its declaration or the target it is assigned to. */
+function assignedName(outer: ts.Node, value: ts.Node): string | undefined {
+  if (ts.isExportAssignment(outer)) return 'default';
+  if (ts.isBinaryExpression(outer)) {
+    const assigns = outer.operatorToken.kind === ts.SyntaxKind.EqualsToken && outer.right === value;
+    return assigns ? targetName(outer.left) : undefined;
+  }
+  if (
+    ts.isVariableDeclaration(outer) ||
+    ts.isPropertyAssignment(outer) ||
+    ts.isPropertyDeclaration(outer) ||
+    ts.isParameter(outer) ||
+    ts.isBindingElement(outer)
+  ) {
+    return outer.initializer === value ? targetName(outer.name) : undefined;
+  }
+  return undefined;
+}
+
+/** The name a function or class goes by: its own, else its assignment target, else its call. */
 function scopeName(node: ts.FunctionLikeDeclaration | ts.ClassLikeDeclaration): string {
   if (ts.isConstructorDeclaration(node)) return 'constructor';
   const own = node.name && targetName(node.name);
@@ -154,23 +178,14 @@ function scopeName(node: ts.FunctionLikeDeclaration | ts.ClassLikeDeclaration): 
   if (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) return 'default';
 
   let inner: ts.Node = node;
-  while (isWrapper(inner.parent)) inner = inner.parent;
-  const outer = inner.parent;
-  if (ts.isExportAssignment(outer)) return 'default';
-  if (ts.isBinaryExpression(outer)) {
-    const assigns = outer.operatorToken.kind === ts.SyntaxKind.EqualsToken && outer.right === inner;
-    return (assigns && targetName(outer.left)) || UNNAMED;
+  let call: ts.CallExpression | ts.NewExpression | undefined;
+  while (isWrapper(inner.parent)) {
+    inner = inner.parent;
+    if (!call && (ts.isCallExpression(inner) || ts.isNewExpression(inner))) call = inner;
   }
-  if (
-    ts.isVariableDeclaration(outer) ||
-    ts.isPropertyAssignment(outer) ||
-    ts.isPropertyDeclaration(outer) ||
-    ts.isParameter(outer) ||
-    ts.isBindingElement(outer)
-  ) {
-    return (outer.initializer === inner && targetName(outer.name)) || UNNAMED;
-  }
-  return UNNAMED;
+  // A callback nobody assigned goes by the call it is passed to, so that an unrelated `useEffect`
+  // added above `useInput` renames nothing: only callbacks of one callee share ordinals.
+  return assignedName(inner.parent, inner) ?? (call && targetName(call.expression)) ?? UNNAMED;
 }
 
 /**
@@ -245,6 +260,9 @@ function measureFile(path: string, text: string): Map<string, FunctionSize> {
           codeLines: codeLinesUpTo[last] - (first > 0 ? codeLinesUpTo[first - 1] : 0),
           complexity: 1,
         };
+        // A property really named `x~2` can meet the second function named `x`. Dropping one of
+        // them would take it out of measurement.
+        if (sizes.has(key)) throw new Error(`Two functions share the key ${key}. Rename one.`);
         sizes.set(key, size);
       }
       const inner = new Map<string, number>();
@@ -265,7 +283,6 @@ export function measureFunctionSizes(srcRoot: string): Map<string, FunctionSize>
     const sourceName = relative(root, file).replaceAll('\\', '/');
     if (sourceName.startsWith('test/') || sourceName.startsWith('tui/__benchmarks__/')) continue;
     for (const [key, size] of measureFile(sourceName, readFileSync(file, 'utf-8'))) {
-      if (sizes.has(key)) throw new Error(`Two functions share the key ${key}.`);
       sizes.set(key, size);
     }
   }
@@ -336,8 +353,10 @@ function checkFunctionSizes(
  * Rule 4: a pull request may not buy its way past rules 1 and 2 by editing the baseline, so against
  * the base branch the baseline may not gain a key or raise a number. The one exception is an
  * extraction, which is the point of the ratchet: a new key may name the base key it came from with
- * `movedFrom`, at no more than that entry's numbers, when that entry is gone or smaller here. The
- * field means nothing once the key exists on the base branch.
+ * `movedFrom`. Per source, what is left there plus everything that claims it may not exceed that
+ * entry's numbers by more than MOVE_ALLOWANCE per claimant. So one entry cannot be spent twice, and
+ * a source has to shrink by what moved out. The field means nothing once the key exists on the base
+ * branch.
  */
 export function checkBaselineAgainstBase(
   head: FunctionSizeBaseline,
@@ -347,6 +366,7 @@ export function checkBaselineAgainstBase(
   const report = (source: string, detail: string) =>
     violations.push({ kind: 'function-size', source, target: 'base branch baseline', detail });
 
+  const claimants = new Map<string, string[]>();
   for (const key of Object.keys(head).sort()) {
     const entry = head[key];
     const onBase = entryOf(base, key);
@@ -358,31 +378,40 @@ export function checkBaselineAgainstBase(
             'Nothing here can raise a number; shrink the function, or the owner merges past this.',
         );
       }
-      continue;
-    }
-    if (entry.movedFrom === undefined) {
+    } else if (entry.movedFrom === undefined) {
       report(
         key,
         'The baseline gains this key. A new function must fit the limits; if it was extracted ' +
           'from a baselined function, say so with movedFrom.',
       );
-      continue;
-    }
-    const source = entryOf(base, entry.movedFrom);
-    if (!source) {
+    } else if (!entryOf(base, entry.movedFrom)) {
       report(key, `movedFrom names ${entry.movedFrom}, which the base branch does not list.`);
-      continue;
+    } else {
+      claimants.set(entry.movedFrom, [...(claimants.get(entry.movedFrom) ?? []), key]);
     }
-    if (isAbove(entry, source)) {
+  }
+
+  for (const [sourceKey, keys] of claimants) {
+    const source = base[sourceKey];
+    const left = entryOf(head, sourceKey);
+    const total = keys.reduce<FunctionSize>(
+      (sum, key) => ({
+        codeLines: sum.codeLines + head[key].codeLines,
+        complexity: sum.complexity + head[key].complexity,
+      }),
+      { codeLines: left?.codeLines ?? 0, complexity: left?.complexity ?? 0 },
+    );
+    const ceiling = {
+      codeLines: source.codeLines + keys.length * MOVE_ALLOWANCE.codeLines,
+      complexity: source.complexity + keys.length * MOVE_ALLOWANCE.complexity,
+    };
+    if (isAbove(total, ceiling)) {
       report(
-        key,
-        `Has ${describeSize(entry)}, above the ${describeSize(source)} of ${entry.movedFrom}, ` +
-          'the entry it says it moved from.',
+        sourceKey,
+        `${keys.join(', ')} moved from this entry of ${describeSize(source)}, but with what is ` +
+          `left here they come to ${describeSize(total)}, above the ${describeSize(ceiling)} ` +
+          'allowed. The source must be gone or smaller by what moved out.',
       );
-    }
-    const left = entryOf(head, entry.movedFrom);
-    if (left && left.codeLines >= source.codeLines && left.complexity >= source.complexity) {
-      report(key, `movedFrom names ${entry.movedFrom}, which must be gone or smaller in this PR.`);
     }
   }
   return violations;
@@ -443,24 +472,18 @@ export function parseBaseline(text: string): FunctionSizeBaseline {
 }
 
 /**
- * The baseline at a git ref, or null when that ref has none yet, which is true only of the pull
- * request that adds it. A ref that does not resolve throws: it must never read as "nothing to
- * compare", or a bad fetch would turn rule 4 off.
+ * The baseline at a git ref, or null when that ref's tree does not list it, which is true only of
+ * the pull request that adds it. Any git failure throws: it must never read as "nothing to compare",
+ * or a bad fetch would turn rule 4 off.
  */
-export function baselineAtRef(ref: string, repoRoot: string): FunctionSizeBaseline | null {
-  const git = (...args: string[]) =>
-    execFileSync('git', args, {
-      cwd: repoRoot,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  git('rev-parse', '--verify', '--quiet', `${ref}^{commit}`);
-  try {
-    git('cat-file', '-e', `${ref}:${BASELINE_REPO_PATH}`);
-  } catch {
-    return null;
-  }
-  return parseBaseline(git('show', `${ref}:${BASELINE_REPO_PATH}`));
+export async function baselineAtRef(
+  ref: string,
+  repoRoot: string,
+): Promise<FunctionSizeBaseline | null> {
+  await gitIn(repoRoot, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`);
+  const listed = await gitIn(repoRoot, 'ls-tree', ref, '--', BASELINE_REPO_PATH);
+  if (listed.trim() === '') return null;
+  return parseBaseline(await gitIn(repoRoot, 'show', `${ref}:${BASELINE_REPO_PATH}`));
 }
 
 function resolveImport(source: string, specifier: string): string | null {
@@ -606,24 +629,37 @@ export function checkArchitecture(
   return violations;
 }
 
-const currentFile = fileURLToPath(import.meta.url);
-if (process.argv[1] && resolve(process.argv[1]) === currentFile) {
+/** The command line. `repoRoot` holds `src/` and the baseline file. Returns the exit code. */
+export async function runArchitectureCli(args: string[], repoRoot: string): Promise<number> {
   const { values, positionals } = parseArgs({
+    args,
     allowPositionals: true,
     options: {
       // Lowers numbers and removes entries. With no baseline file at all, it generates one.
       'update-baseline': { type: 'boolean', default: false },
-      // Rule 4: compare the baseline with the one at this git ref. A pull request's CI passes this.
+      // Rule 4 alone: compare the baseline with the one at this git ref. A pull request's CI does.
       'base-ref': { type: 'string' },
     },
   });
-  const root = resolve(positionals[0] ?? 'src');
-  const repoRoot = resolve(dirname(currentFile), '..');
+  const repoSource = resolve(repoRoot, 'src');
+  const root = positionals[0] ? resolve(positionals[0]) : repoSource;
+  const updating = values['update-baseline'];
+  const baseRef = values['base-ref'];
+  // The baseline's keys are relative to the repository's src/. Against any other root every entry
+  // reads as gone, and an update would empty the file.
+  const isRepoSource = root === repoSource;
+  if ((updating || baseRef) && !isRepoSource) {
+    console.error(
+      `--update-baseline and --base-ref work on the repository's own src/ only, not ${root}.`,
+    );
+    return 1;
+  }
+
   const baselinePath = resolve(repoRoot, BASELINE_REPO_PATH);
   const readBaseline = () =>
     existsSync(baselinePath) ? parseBaseline(readFileSync(baselinePath, 'utf-8')) : null;
 
-  if (values['update-baseline']) {
+  if (updating) {
     const sizes = measureFunctionSizes(root);
     const current = readBaseline();
     const next = current ? lowerBaseline(current, sizes) : generateBaseline(sizes);
@@ -631,23 +667,34 @@ if (process.argv[1] && resolve(process.argv[1]) === currentFile) {
     console.log(`${BASELINE_REPO_PATH}: ${Object.keys(next).length} entries.`);
   }
 
-  const baseline = readBaseline() ?? {};
-  const violations = checkArchitecture(root, baseline);
-  const baseRef = values['base-ref'];
+  let violations: Violation[];
   if (baseRef) {
-    const base = baselineAtRef(baseRef, repoRoot);
-    if (base) violations.push(...checkBaselineAgainstBase(baseline, base));
-    else console.log(`${baseRef} has no ${BASELINE_REPO_PATH} yet, so nothing to compare with.`);
+    const base = await baselineAtRef(baseRef, repoRoot);
+    if (!base) {
+      console.log(`${baseRef} has no ${BASELINE_REPO_PATH} yet, so nothing to compare with.`);
+      return 0;
+    }
+    violations = checkBaselineAgainstBase(readBaseline() ?? {}, base);
+  } else {
+    violations = checkArchitecture(root, isRepoSource ? (readBaseline() ?? {}) : {});
   }
 
-  if (violations.length > 0) {
-    for (const violation of violations) {
-      console.error(
-        `[${violation.kind}] ${violation.source} -> ${violation.target}: ${violation.detail}`,
-      );
-    }
-    process.exitCode = 1;
-  } else {
-    console.log('Architecture checks passed.');
+  for (const violation of violations) {
+    console.error(
+      `[${violation.kind}] ${violation.source} -> ${violation.target}: ${violation.detail}`,
+    );
   }
+  if (violations.length > 0) return 1;
+  console.log(
+    baseRef ? `The baseline gains nothing on ${baseRef}.` : 'Architecture checks passed.',
+  );
+  return 0;
+}
+
+const currentFile = fileURLToPath(import.meta.url);
+if (process.argv[1] && resolve(process.argv[1]) === currentFile) {
+  process.exitCode = await runArchitectureCli(
+    process.argv.slice(2),
+    resolve(dirname(currentFile), '..'),
+  );
 }

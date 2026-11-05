@@ -1,6 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import {
@@ -12,9 +11,11 @@ import {
   lowerBaseline,
   measureFunctionSizes,
   parseBaseline,
+  runArchitectureCli,
   serializeBaseline,
   type FunctionSizeBaseline,
 } from './check-architecture.js';
+import { gitIn } from '../src/test/git-fixtures.js';
 
 describe('checkArchitecture', () => {
   it('rejects a new non-TUI import from tui/', () => {
@@ -350,18 +351,53 @@ export default function () {}
       );
     });
 
+    it('names a callback nobody assigned from the call it is passed to', () => {
+      const sizes = measure({
+        'a.tsx': `export function View() {
+  useEffect(() => {}, []);
+  useInput(() => {});
+  useEffect(() => {}, []);
+  items.map(() => 1);
+  run().then(() => 1).catch(() => 2);
+  return new Promise(() => {});
+}
+`,
+      });
+      expect([...sizes.keys()]).toEqual([
+        'a.tsx#View',
+        'a.tsx#View>useEffect',
+        'a.tsx#View>useInput',
+        'a.tsx#View>useEffect~2',
+        'a.tsx#View>map',
+        'a.tsx#View>then',
+        'a.tsx#View>catch',
+        'a.tsx#View>Promise',
+      ]);
+    });
+
+    it('does not rename a callback when one of another callee is added above it', () => {
+      const body = (above: string) =>
+        `export function View() {\n${above}  useInput(() => {});\n}\n`;
+      expect(measure({ 'a.tsx': body('') }).has('a.tsx#View>useInput')).toBe(true);
+      const added = measure({
+        'a.tsx': body('  useEffect(() => {}, []);\n  items.map(() => 1);\n'),
+      });
+      expect(added.has('a.tsx#View>useInput')).toBe(true);
+    });
+
     it('gives unnamed functions an ordinal within their own scope, in source order', () => {
       const sizes = measure({
-        'a.ts': `[1].map(() => 1);
-[2].map(() => 2);
+        'a.ts': `export const table = [() => 1, () => 2];
+(() => 3)();
 export function f() {
-  [3].map(() => 3);
+  return [() => 4];
 }
 `,
       });
       expect([...sizes.keys()]).toEqual([
         'a.ts#<anon>1',
         'a.ts#<anon>2',
+        'a.ts#<anon>3',
         'a.ts#f',
         'a.ts#f><anon>1',
       ]);
@@ -373,6 +409,11 @@ export function f() {
           'const both = pair(() => 1, () => 2);\nconst one = { a() {} };\nconst two = { a() {} };\n',
       });
       expect([...sizes.keys()]).toEqual(['a.ts#both', 'a.ts#both~2', 'a.ts#a', 'a.ts#a~2']);
+    });
+
+    it('refuses two functions that would share a key, rather than dropping one', () => {
+      const text = "const one = { x: () => 1, 'x~2': () => 2 };\nconst two = { x: () => 3 };\n";
+      expect(() => measure({ 'a.ts': text })).toThrow('share the key a.ts#x~2');
     });
   });
 
@@ -600,39 +641,68 @@ export function f() {
 
     describe('movedFrom', () => {
       const moved = { codeLines: 400, complexity: 35, movedFrom: 'a.ts#old' };
-      const headWithSource = (source: FunctionSizeBaseline[string] | undefined) => ({
+      const headWith = (
+        claims: Record<string, FunctionSizeBaseline[string]>,
+        left?: FunctionSizeBaseline[string],
+      ): FunctionSizeBaseline => ({
         'a.ts#other': base['a.ts#other'],
-        'b.ts#moved': moved,
-        ...(source ? { 'a.ts#old': source } : {}),
+        ...claims,
+        ...(left ? { 'a.ts#old': left } : {}),
+      });
+      const claim = (codeLines: number, complexity: number) => ({
+        codeLines,
+        complexity,
+        movedFrom: 'a.ts#old',
       });
 
       it('accepts a move whose source is gone', () => {
-        expect(checkBaselineAgainstBase(headWithSource(undefined), base)).toEqual([]);
+        expect(checkBaselineAgainstBase(headWith({ 'b.ts#moved': moved }), base)).toEqual([]);
       });
 
-      it('accepts a move whose source is smaller', () => {
-        const smaller = { codeLines: 120, complexity: 35 };
-        expect(checkBaselineAgainstBase(headWithSource(smaller), base)).toEqual([]);
+      it('accepts a move whose source shrank by what moved out', () => {
+        const head = headWith({ 'b.ts#moved': moved }, { codeLines: 120, complexity: 6 });
+        expect(checkBaselineAgainstBase(head, base)).toEqual([]);
       });
 
-      it('rejects a move whose numbers are above the source', () => {
-        const head = {
-          'a.ts#other': base['a.ts#other'],
-          'b.ts#moved': { codeLines: 501, complexity: 35, movedFrom: 'a.ts#old' },
-        };
+      it('accepts one source split between two new functions', () => {
+        const head = headWith({ 'b.ts#one': claim(300, 20), 'b.ts#two': claim(260, 22) });
+        expect(checkBaselineAgainstBase(head, base)).toEqual([]);
+      });
+
+      it('allows a new function its signature and base complexity, and no more', () => {
+        const atAllowance = headWith({ 'b.ts#moved': claim(530, 41) });
+        expect(checkBaselineAgainstBase(atAllowance, base)).toEqual([]);
+        for (const over of [claim(531, 41), claim(530, 42)]) {
+          expect(checkBaselineAgainstBase(headWith({ 'b.ts#moved': over }), base)).toEqual([
+            expect.objectContaining({
+              source: 'a.ts#old',
+              detail: expect.stringContaining('gone or smaller'),
+            }),
+          ]);
+        }
+      });
+
+      it('rejects a move whose source is unchanged', () => {
+        const head = headWith({ 'b.ts#moved': moved }, base['a.ts#old']);
         expect(checkBaselineAgainstBase(head, base)).toEqual([
           expect.objectContaining({
-            source: 'b.ts#moved',
-            detail: expect.stringContaining('above'),
+            source: 'a.ts#old',
+            detail: expect.stringContaining('gone or smaller'),
           }),
         ]);
       });
 
-      it('rejects a move whose source is unchanged', () => {
-        expect(checkBaselineAgainstBase(headWithSource(base['a.ts#old']), base)).toEqual([
+      it('rejects a source that shrank by less than what moved out', () => {
+        const head = headWith({ 'b.ts#moved': moved }, { codeLines: 499, complexity: 39 });
+        expect(checkBaselineAgainstBase(head, base)).toHaveLength(1);
+      });
+
+      it('rejects spending one source twice', () => {
+        const head = headWith({ 'b.ts#one': claim(500, 40), 'b.ts#two': claim(500, 40) });
+        expect(checkBaselineAgainstBase(head, base)).toEqual([
           expect.objectContaining({
-            source: 'b.ts#moved',
-            detail: expect.stringContaining('gone or smaller'),
+            source: 'a.ts#old',
+            detail: expect.stringContaining('b.ts#one, b.ts#two'),
           }),
         ]);
       });
@@ -692,21 +762,19 @@ export function f() {
     });
 
     describe('reading the base baseline from git', () => {
-      const git = (cwd: string, ...args: string[]): string =>
-        execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
-      const repoWith = (files: Record<string, string>): string => {
+      const repoWith = async (files: Record<string, string>): Promise<string> => {
         const dir = tempDir();
-        git(dir, 'init', '-q');
+        await gitIn(dir, 'init', '-q');
         writeFiles(dir, { 'README.md': 'x\n', ...files });
-        git(dir, 'add', '.');
-        git(
+        await gitIn(dir, 'add', '.');
+        await gitIn(
           dir,
           '-c',
-          'user.name=t',
+          'user.name=Test',
           '-c',
-          'user.email=t@e',
+          'user.email=test@example.com',
           '-c',
-          'commit.gpgsign=false',
+          'commit.gpgSign=false',
           'commit',
           '-qm',
           'x',
@@ -714,23 +782,100 @@ export function f() {
         return dir;
       };
 
-      it('reads the file at the ref', () => {
-        const dir = repoWith({
+      it('reads the file at the ref', async () => {
+        const dir = await repoWith({
           [BASELINE_REPO_PATH]: '{ "a.ts#f": { "codeLines": 200, "complexity": 1 } }\n',
         });
-        expect(baselineAtRef('HEAD', dir)).toEqual({
+        await expect(baselineAtRef('HEAD', dir)).resolves.toEqual({
           'a.ts#f': { codeLines: 200, complexity: 1 },
         });
       });
 
-      it('returns null when the ref has no baseline yet', () => {
-        expect(baselineAtRef('HEAD', repoWith({}))).toBeNull();
+      it('returns null when the ref has no baseline yet', async () => {
+        await expect(baselineAtRef('HEAD', await repoWith({}))).resolves.toBeNull();
       });
 
-      // A ref that does not resolve must fail the step, not read as "no baseline yet".
-      it('throws on a ref that does not resolve', () => {
-        expect(() => baselineAtRef('origin/nope', repoWith({}))).toThrow();
+      // Neither must read as "no baseline yet": that would turn rule 4 off.
+      it('throws on a ref that does not resolve', async () => {
+        await expect(baselineAtRef('origin/nope', await repoWith({}))).rejects.toThrow();
       });
+
+      it('throws when git itself fails', async () => {
+        await expect(baselineAtRef('HEAD', tempDir())).rejects.toThrow();
+      });
+
+      it('compares the working baseline with the ref, and rule 4 alone', async () => {
+        vi.spyOn(console, 'log').mockImplementation(() => {});
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const entry = '{ "a.ts#f": { "codeLines": 200, "complexity": 1 } }\n';
+        const dir = await repoWith({ [BASELINE_REPO_PATH]: entry });
+        // A function over the limit with no entry, which rule 1 would reject.
+        writeFiles(dir, { 'src/long.ts': longFunction('long', 151) });
+        await expect(runArchitectureCli(['--base-ref', 'HEAD'], dir)).resolves.toBe(0);
+
+        writeFiles(dir, {
+          [BASELINE_REPO_PATH]: '{ "a.ts#f": { "codeLines": 201, "complexity": 1 } }\n',
+        });
+        await expect(runArchitectureCli(['--base-ref', 'HEAD'], dir)).resolves.toBe(1);
+        expect(errors).toHaveBeenCalledWith(expect.stringContaining('raises'));
+        vi.restoreAllMocks();
+      });
+    });
+  });
+
+  describe('the command line', () => {
+    const repo = (files: Record<string, string>): string => {
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      return source(files);
+    };
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+    const readEntries = (dir: string): FunctionSizeBaseline =>
+      parseBaseline(readFileSync(join(dir, BASELINE_REPO_PATH), 'utf-8'));
+    const scripts = { 'scripts/.keep': '' };
+
+    it('generates the file when there is none, and only then', async () => {
+      const dir = repo({ ...scripts, 'src/long.ts': longFunction('long', 200) });
+      await expect(runArchitectureCli(['--update-baseline'], dir)).resolves.toBe(0);
+      expect(readEntries(dir)).toEqual({ 'long.ts#long': { codeLines: 200, complexity: 1 } });
+      await expect(runArchitectureCli([], dir)).resolves.toBe(0);
+
+      writeFiles(dir, { 'src/new.ts': longFunction('fresh', 151) });
+      await expect(runArchitectureCli(['--update-baseline'], dir)).resolves.toBe(1);
+      expect(Object.keys(readEntries(dir))).toEqual(['long.ts#long']);
+    });
+
+    it('fails an update that would have to raise a number, and leaves the number', async () => {
+      const dir = repo({ ...scripts, 'src/long.ts': longFunction('long', 201) });
+      writeFiles(dir, {
+        [BASELINE_REPO_PATH]: '{ "long.ts#long": { "codeLines": 200, "complexity": 1 } }\n',
+      });
+      await expect(runArchitectureCli(['--update-baseline'], dir)).resolves.toBe(1);
+      expect(readEntries(dir)['long.ts#long'].codeLines).toBe(200);
+    });
+
+    it.each([['--update-baseline'], ['--base-ref=HEAD']])(
+      'refuses %s with another source root, and leaves the file alone',
+      async (flag) => {
+        const entry = '{ "agent/long.ts#long": { "codeLines": 200, "complexity": 1 } }\n';
+        const dir = repo({
+          [BASELINE_REPO_PATH]: entry,
+          'src/agent/long.ts': longFunction('long', 200),
+        });
+        await expect(runArchitectureCli([flag, join(dir, 'src', 'agent')], dir)).resolves.toBe(1);
+        expect(readFileSync(join(dir, BASELINE_REPO_PATH), 'utf-8')).toBe(entry);
+      },
+    );
+
+    it('does not read the baseline against another source root', async () => {
+      const dir = repo({
+        [BASELINE_REPO_PATH]: '{ "agent/long.ts#long": { "codeLines": 200, "complexity": 1 } }\n',
+        'src/agent/small.ts': 'export function f() {}\n',
+      });
+      await expect(runArchitectureCli([join(dir, 'src', 'agent')], dir)).resolves.toBe(0);
+      expect(existsSync(join(dir, BASELINE_REPO_PATH))).toBe(true);
     });
   });
 });
