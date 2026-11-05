@@ -23,6 +23,7 @@ import {
 } from './redacted-secret-guard.js';
 import {
   readTextSnapshot,
+  deletePathFor,
   removeFileAtomically,
   restoreTextEncoding,
   withMutationLocks,
@@ -447,7 +448,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
             staged.push({
               operation: entry.operation,
               absolutePath: entry.filePath,
-              writePath: entry.filePath,
+              writePath: deletePathFor(entry.filePath, entry.canonicalPath),
               messagePath: entry.messagePath,
               memory: entry.memory,
               before,
@@ -545,7 +546,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
             throwIfAborted(ctx.signal);
             committed.push(file);
             if (file.operation.kind === 'delete')
-              await removeFileAtomically(file.absolutePath, ctx.signal);
+              await removeFileAtomically(file.writePath, ctx.signal);
             else
               await writeFileAtomically(
                 file.writePath,
@@ -575,7 +576,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
                   undefined,
                   file.before.mode,
                 );
-              else await removeFileAtomically(file.absolutePath).catch(() => undefined);
+              else await removeFileAtomically(file.writePath).catch(() => undefined);
             } catch {
               rollbackFailed = true;
             }

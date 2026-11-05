@@ -14,6 +14,7 @@ import { onAbort as listenForAbort } from '../async.js';
 import { createDebugLogger } from '../debug-log.js';
 import { runHooks } from '../hooks.js';
 import {
+  acceptEditsCovers,
   ALWAYS_ALLOWED_TOOLS,
   evaluatePermissionDetail,
   missingRuleReason,
@@ -25,6 +26,7 @@ import {
   WORKSPACE_READ_JUDGING_MODES,
   WORKSPACE_READ_REFUSAL_MODES,
   WORKSPACE_READ_TOOLS,
+  type WorkspaceScope,
 } from '../permissions.js';
 import { redactToolResultSecrets } from '../provider-secrets.js';
 import type { SessionRuntime } from '../session/runtime.js';
@@ -44,7 +46,6 @@ import {
   toolResultErrorMessage,
   toolResultSucceeded,
 } from '../tools/result.js';
-import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import type { PeerAwarenessHandle, PeerPermissionClass } from '../types/messaging.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
@@ -451,33 +452,33 @@ export async function prepareToolCall(
   // while `deny: ["Write(.env)"]` in the same list held. Modes decide
   // whether the user is *asked*; they do not decide whether a rule the user
   // already wrote applies.
-  const judgeReads = WORKSPACE_READ_JUDGING_MODES.has(mode.current());
   // The session shell, read the way the Bash tool reads it (`sessionShell` in
   // `tools/shell.ts`): the same (platform, shell) pair goes to every gate below, so what
   // the permission check and the capability check call compound agree (#512).
   const scanShell = toolContext.shell ?? config.shell;
+  const workspaceScope: WorkspaceScope = {
+    root: toolContext.workspaceRoot,
+    realRoot: workspaceRealRoot,
+    readOnlyRoots: toolContext.readOnlyRoots,
+    memorySearchRoot: toolContext.memorySearchRoot,
+    additionalRoots,
+    memoryWrite: toolContext.memoryWrite,
+    // A home directory, or anything containing one, keeps the prompt even where it was
+    // honored: that is the whole of what `additionalDirectories` widens, and a home holds
+    // SSH and provider keys and Book's own trust store.
+    homeGuards: homeGuardPaths,
+    judgeReads: WORKSPACE_READ_JUDGING_MODES.has(mode.current()),
+    autoAllowReads: WORKSPACE_READ_JUDGING_MODES.has(mode.current()) && !workspaceHoldsHome,
+    // Wider than `judgeReads`: `dontAsk` prompts for nothing, so a target no root serves
+    // is refused there anyway, and refusing it as the target it is gives the model the
+    // directory that would serve it instead of a permission no rule can grant.
+    refuseUnreachableReads: WORKSPACE_READ_REFUSAL_MODES.has(mode.current()),
+  };
   const verdict = evaluatePermissionDetail(canonName, judgedCall.arguments, config.settings, {
     platform: process.platform,
     shell: scanShell,
     ...(permissionSubject ? { subject: permissionSubject } : {}),
-    workspace: {
-      root: toolContext.workspaceRoot,
-      realRoot: workspaceRealRoot,
-      readOnlyRoots: toolContext.readOnlyRoots,
-      memorySearchRoot: toolContext.memorySearchRoot,
-      additionalRoots,
-      memoryWrite: toolContext.memoryWrite,
-      // A home directory, or anything containing one, keeps the prompt even where it was
-      // honored: that is the whole of what `additionalDirectories` widens, and a home holds
-      // SSH and provider keys and Book's own trust store.
-      homeGuards: homeGuardPaths,
-      judgeReads,
-      autoAllowReads: judgeReads && !workspaceHoldsHome,
-      // Wider than `judgeReads`: `dontAsk` prompts for nothing, so a target no root serves
-      // is refused there anyway, and refusing it as the target it is gives the model the
-      // directory that would serve it instead of a permission no rule can grant.
-      refuseUnreachableReads: WORKSPACE_READ_REFUSAL_MODES.has(mode.current()),
-    },
+    workspace: workspaceScope,
   });
   if (verdict.decision === 'deny') {
     // Consent was requested a few lines up; close it out, or the registry
@@ -611,8 +612,8 @@ export async function prepareToolCall(
     (!autoSafeTool || userRuleAsked || guardedReadInPlan || peerMustAsk) &&
     (mode.current() !== 'plan' || planReadOnly)
   ) {
-    const autoApproved = mode.current() === 'accept-edits' && isFileMutatingTool(canonName);
-    if (!autoApproved || userRuleAsked) {
+    // `accept-edits` approves ordinary edits; anything else falls through, as in `default`.
+    if (!acceptEditsCovers(mode.current(), canonName, call, workspaceScope) || userRuleAsked) {
       let permission: 'allow' | 'deny' | 'always' | undefined;
       let chosenRule: string | undefined;
       let noApprover = false;
@@ -755,6 +756,7 @@ export async function prepareToolCall(
     context.currentToolTraceId = nestedTraceId ?? prepared.call.id;
     // Every serial call sets it, so one call's subject never reaches the next call.
     context.permissionSubject = permissionSubject;
+    context.judgedEditTargets = workspaceScope.judgedEditTargets;
   }
 
   return {

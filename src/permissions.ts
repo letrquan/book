@@ -1,5 +1,5 @@
 import { realpathSync } from 'fs';
-import { isAbsolute, relative, resolve, sep } from 'path';
+import { isAbsolute, join, relative, resolve, sep } from 'path';
 import type { ResolvedSettings } from './settings.js';
 import type {
   PermissionDecision,
@@ -19,7 +19,7 @@ import {
   type ScanShell,
 } from './tools/shell-chaining.js';
 import { strictRmOfMarkdownUnder } from './tools/strict-rm.js';
-import { UNPROMPTED_READ_TOOLS } from './tools/tool-capabilities.js';
+import { isFileMutatingTool, UNPROMPTED_READ_TOOLS } from './tools/tool-capabilities.js';
 import {
   canonicalizePath,
   isBookLocalSettingsPath,
@@ -31,7 +31,7 @@ import {
   type ReadablePathDetail,
 } from './tools/path-utils.js';
 import { containsPath, pathHoldsHome, rootHoldsHome } from './additional-roots.js';
-import { sandboxCoverage } from './sandbox.js';
+import { sandboxCoverage, workspaceControlPathJudge } from './sandbox.js';
 
 /**
  * Parse a permission rule string like "Bash(git *)" or "Read(./.env)" into
@@ -148,6 +148,8 @@ export interface WorkspaceScope {
    * `judgeReads`; false for a workspace that holds a home directory.
    */
   autoAllowReads: boolean;
+  /** Set by {@link acceptEditsCovers}: where it found each target of the call it approved. */
+  judgedEditTargets?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -495,6 +497,8 @@ export function permissionRuleForToolCall(call: ToolCall): string | undefined {
   // loop asks with the recipient in its canonical spelling (#653): the bare name, which a rule can
   // keep, while no other live session holds it, and `name [ref]` while one does.
   if (namesSessionByAddress(toolName, call.arguments)) return undefined;
+  // No one rule covers a patch of several files: a rule for its first file would not allow it.
+  if (toolName === 'ApplyPatch' && patchFilePaths(call.arguments).length > 1) return undefined;
   const scope = ruleScopeOf(toolName, toolPrimaryArg(toolName, call.arguments));
   if (!scope || RULE_WILDCARD.test(scope.taken)) return undefined;
   return `${toolName}(${scope.pattern})`;
@@ -515,6 +519,11 @@ export interface MissingRuleReason {
    * is a session whose name another live session also holds.
    */
   sessionAddress?: boolean;
+  /**
+   * An `ApplyPatch` of several files, which no one rule covers: the rule for each file that has
+   * one. Together they allow the patch, since an allow must cover every file it names.
+   */
+  patchRules?: string[];
 }
 
 /**
@@ -536,6 +545,17 @@ export function missingRuleReason(call: ToolCall): MissingRuleReason | undefined
   }
   if (namesSessionByAddress(toolName, call.arguments)) {
     return { lineBreak: false, wildcard: false, sessionAddress: true };
+  }
+  const patchFiles = toolName === 'ApplyPatch' ? patchFilePaths(call.arguments) : [];
+  if (patchFiles.length > 1) {
+    const scopes = patchFiles.map((file) => ruleScopeOf(toolName, file));
+    return {
+      lineBreak: false,
+      wildcard: false,
+      patchRules: scopes.flatMap((one) =>
+        one && !RULE_WILDCARD.test(one.taken) ? [`${toolName}(${one.pattern})`] : [],
+      ),
+    };
   }
   const scope = ruleScopeOf(toolName, toolPrimaryArg(toolName, call.arguments));
   return scope && RULE_WILDCARD.test(scope.taken)
@@ -639,6 +659,13 @@ export function permissionRuleMatchesCall(
       subject.allow.some((spelling) => ruleMatches(judged, toolName, spelling)),
     );
   }
+  // A patch names several files, and an allow covers it only if it covers each of them, as
+  // `evaluatePermissionDetail` has it: the first path is not the call.
+  const patchFiles = toolName === 'ApplyPatch' ? patchOperations(call.arguments) : [];
+  if (patchFiles.length > 0) {
+    const parsed = parseRule(rule);
+    return patchFiles.every((operation) => ruleMatches(parsed, toolName, operation.path));
+  }
   const primaryArg = toolPrimaryArg(toolName, call.arguments);
   if (toolName === 'WebFetch' && primaryArg) {
     try {
@@ -654,6 +681,11 @@ export function permissionRuleMatchesCall(
 function patchOperations(args: Record<string, unknown>): PatchOperation[] {
   const parsed = parsePatch(args.patch);
   return 'operations' in parsed ? parsed.operations : [];
+}
+
+/** The distinct files a patch names, in the order it names them. */
+function patchFilePaths(args: Record<string, unknown>): string[] {
+  return [...new Set(patchOperations(args).map((operation) => operation.path))];
 }
 
 function ruleMatchesPatch(rule: ParsedRule, paths: readonly string[], fold: boolean): boolean {
@@ -1038,6 +1070,57 @@ export function workspacePathSpellings(workspace: string, raw: string): string[]
   ];
 }
 
+/**
+ * What an `allow` rule reads a path as: where it leads, not how it is spelled. An allow widens, and
+ * a glob's `*` crosses `/`, so `Write(src/**)` must not come to cover `src/../.git/config`, or a
+ * `src/notes.md` that is a link somewhere else. A path with no `..` and no link on its way below the
+ * root keeps every spelling it has. Any other is offered only its destination: relative to the
+ * workspace, absolute, and absolute under the root as it is spelled, so a workspace opened through a
+ * link still matches its own rules. Not relative to an approved directory (`spellingsOfPath`). One no
+ * root serves is the tool's to refuse, whatever a rule says.
+ */
+function allowSpellingsOfPath(
+  paths: ResolvedPathScope,
+  raw: string,
+  includeReadOnly: boolean,
+): string[] {
+  const asGiven = [raw, ...spellingsOfPath(paths, raw, includeReadOnly, false)];
+  const detail = paths.detail(raw, includeReadOnly);
+  if (!('path' in detail)) return asGiven;
+  const { filePath, canonicalPath, root, inWorkspace } = detail.path;
+  const belowRoot = relative(canonicalizePath(root), canonicalPath);
+  const climbs = raw.split(/[\\/]/).includes('..');
+  if (!climbs && relative(resolve(root), filePath) === belowRoot) return asGiven;
+  return [
+    ...(inWorkspace ? [toPosix(belowRoot)] : []),
+    toPosix(canonicalPath),
+    toPosix(join(resolve(root), belowRoot)),
+  ];
+}
+
+/** What a path-rule tool's call is offered to `allow` rules as; see `allowSpellingsOfPath`. */
+function allowRuleSpellings(
+  paths: ResolvedPathScope,
+  toolName: string,
+  args: Record<string, unknown>,
+): string[] {
+  const raw = pathArgument(toolName, args);
+  return raw
+    ? allowSpellingsOfPath(paths, raw, toolName === 'Read')
+    : [toolPrimaryArg(toolName, args)];
+}
+
+/** What one `ApplyPatch` file is offered to rules as: `restrictive` for `deny` and `ask`. */
+function patchPathSpellings(
+  paths: ResolvedPathScope,
+  path: string,
+  restrictive: boolean,
+): readonly string[] {
+  return restrictive
+    ? [path, ...spellingsOfPath(paths, path, false, true)]
+    : allowSpellingsOfPath(paths, path, false);
+}
+
 /** The other spellings of a path-rule tool's target; see `spellingsOfPath`. */
 function pathRuleSpellings(
   paths: ResolvedPathScope,
@@ -1183,6 +1266,13 @@ const MEMORY_WRITE_TOOLS: ReadonlySet<string> = new Set([
   'ApplyPatch',
 ]);
 
+/** The paths a file mutation names: one per `ApplyPatch` operation, or its one path argument. */
+function mutationTargets(tool: string, args: Record<string, unknown>): Array<string | undefined> {
+  return tool === 'ApplyPatch'
+    ? patchOperations(args).map((operation) => operation.path)
+    : [pathArgument(tool, args)];
+}
+
 /**
  * Whether a call is a write whose every target is a memory file the memory write root serves.
  * ApplyPatch can name several files, and one that is not a memory target sends the whole patch
@@ -1199,16 +1289,55 @@ function writesOnlyMemory(
     additionalRoots: scope.additionalRoots,
     memoryWrite: scope.memoryWrite,
   };
-  const targets =
-    tool === 'ApplyPatch'
-      ? patchOperations(args).map((operation) => operation.path)
-      : [pathArgument(tool, args)];
+  const targets = mutationTargets(tool, args);
   return (
     targets.length > 0 &&
     targets.every(
       (target) => target !== undefined && resolveMutationPath(roots, target)?.memory === true,
     )
   );
+}
+
+/**
+ * Whether `accept-edits` approves this file mutation on its own: every target is an ordinary edit.
+ *
+ * The mode is about the code a person is working on. It does not cover Book's and git's control
+ * files ({@link workspaceControlPathJudge}), nor a home directory a root holds, which a read keeps
+ * asking for too (`isGuarded`; everything, where `scope.autoAllowReads` says a workspace holds one).
+ * Such a call falls through to the verdict `default` would act on: a prompt, or the allow rule that
+ * already covers it.
+ *
+ * A target no root serves, and a call with no target, are the tool's to refuse, as in `default`. A
+ * memory file is judged by the memory guard and never prompts; it is tested first because the memory
+ * directory sits under a home.
+ */
+export function acceptEditsCovers(
+  mode: string,
+  tool: string,
+  call: { arguments: Record<string, unknown> },
+  scope: WorkspaceScope,
+): boolean {
+  if (mode !== 'accept-edits' || !isFileMutatingTool(tool)) return false;
+  const paths = resolvedPathScope(scope);
+  const isControlPath = workspaceControlPathJudge([scope.root, ...(scope.additionalRoots ?? [])]);
+  const roots: PathRoots = {
+    workspaceRoot: scope.root,
+    additionalRoots: scope.additionalRoots,
+    memoryWrite: scope.memoryWrite,
+  };
+  const judged = new Map<string, string>();
+  const covered = mutationTargets(tool, call.arguments).every((target) => {
+    if (target === undefined) return true;
+    const resolved = resolveMutationPath(roots, target);
+    // Pinned even where no root serves it: the tool refuses that now, and must not serve it later.
+    judged.set(target, resolved?.canonicalPath ?? '');
+    if (!resolved || resolved.memory) return true;
+    return (
+      scope.autoAllowReads && !paths.isGuarded(resolved.canonicalPath) && !isControlPath(resolved)
+    );
+  });
+  if (covered) scope.judgedEditTargets = judged;
+  return covered;
 }
 
 /**
@@ -1273,7 +1402,7 @@ export function evaluatePermissionDetail(
       const cache = restrictive ? restrictiveSpellings : spellings;
       let known = cache.get(path);
       if (!known) {
-        known = paths ? [path, ...spellingsOfPath(paths, path, false, restrictive)] : [path];
+        known = paths ? patchPathSpellings(paths, path, restrictive) : [path];
         cache.set(path, known);
       }
       return known;
@@ -1335,11 +1464,10 @@ export function evaluatePermissionDetail(
       ...restrictiveCandidates,
       ...pathRuleSpellings(paths, tool, args, true),
     ];
-    // `allow` is offered only the spellings a `Write` would have written: the raw argument, the
-    // path as given, and its canonical form. It is not offered the form relative to an honored
-    // root, so a workspace-shaped allow such as `Edit(src/**)` cannot come to mean
-    // `/srv/app/src/**` — a grant the user never wrote (PR #334 finding 10).
-    candidates.push(...pathRuleSpellings(paths, tool, args, false));
+    // `allow` is offered where the path leads (`allowSpellingsOfPath`). It is not offered the form
+    // relative to an honored root, so a workspace-shaped allow such as `Edit(src/**)` cannot come to
+    // mean `/srv/app/src/**` — a grant the user never wrote (PR #334 finding 10).
+    candidates.splice(0, candidates.length, ...allowRuleSpellings(paths, tool, args));
   }
   // `deny` and `ask` restrict, so they fold case for a path-rule tool and take the wider set of
   // spellings; `allow` keeps exact matching, because folding there would widen what a rule

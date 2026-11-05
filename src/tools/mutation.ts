@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { throwIfAborted } from '../async.js';
+import { canonicalizePath, foldedPath } from './path-utils.js';
 
 export type LineEnding = 'lf' | 'crlf';
 
@@ -85,6 +86,29 @@ export function restoreTextEncoding(
   return Buffer.from(`${snapshot.bom ? '\ufeff' : ''}${body}`, 'utf8');
 }
 
+/**
+ * A write or delete is handed a path in a canonical folder, so a link in that folder now is one
+ * that replaced it since the path was resolved, and the change would land somewhere nobody judged.
+ */
+function assertFolderUnmoved(filePath: string): void {
+  const folder = dirname(filePath);
+  if (foldedPath(canonicalizePath(folder)) !== foldedPath(folder)) {
+    throw new Error(`${folder} changed while it was being written to`);
+  }
+}
+
+/**
+ * Where a delete of `filePath` acts: its own name in its folder after links, since removing a link
+ * removes the link. Throws when that no longer leads to `canonicalPath`, where it was resolved.
+ */
+export function deletePathFor(filePath: string, canonicalPath: string): string {
+  const path = join(canonicalizePath(dirname(filePath)), basename(filePath));
+  if (foldedPath(canonicalizePath(path)) !== foldedPath(canonicalPath)) {
+    throw new Error(`${filePath} changed while it was being deleted`);
+  }
+  return path;
+}
+
 export async function writeFileAtomically(
   filePath: string,
   bytes: Uint8Array,
@@ -97,6 +121,7 @@ export async function writeFileAtomically(
   try {
     await writeFile(temporary, bytes, { flag: 'wx', mode });
     throwIfAborted(signal);
+    assertFolderUnmoved(filePath);
     await rename(temporary, filePath);
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);
@@ -105,6 +130,7 @@ export async function writeFileAtomically(
 
 export async function removeFileAtomically(filePath: string, signal?: AbortSignal): Promise<void> {
   throwIfAborted(signal);
+  assertFolderUnmoved(filePath);
   await rm(filePath, { force: false });
 }
 

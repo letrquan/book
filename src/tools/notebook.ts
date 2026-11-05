@@ -1,9 +1,10 @@
-import { readFile, writeFile } from 'fs/promises';
+import { readFile, stat } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { extname } from 'path';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
+import { writeFileAtomically } from './mutation.js';
 import {
   messagePathFor,
   mutationOutsideWorkspaceResult,
@@ -171,6 +172,12 @@ function createCell(cellType: CellType, source: string, existingIds: Set<string>
   return cell;
 }
 
+/** Replace the notebook in one step, keeping its mode, at the path that was resolved. */
+async function saveNotebook(path: string, text: string, signal?: AbortSignal): Promise<void> {
+  const mode = (await stat(path)).mode & 0o777;
+  await writeFileAtomically(path, Buffer.from(text, 'utf8'), signal, mode);
+}
+
 async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const notebookPath = args.notebook_path;
   if (typeof notebookPath !== 'string' || notebookPath.trim() === '') {
@@ -199,7 +206,7 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
 
   const resolved = resolveMutationPath(ctx, notebookPath);
   if (!resolved) return mutationOutsideWorkspaceResult(notebookPath);
-  const { filePath, relativePath } = resolved;
+  const { filePath, canonicalPath, relativePath } = resolved;
   const shownPath = messagePathFor(resolved);
   const stale = await requireFreshObservation(ctx, filePath, shownPath);
   if (stale) return fail(stale);
@@ -281,7 +288,7 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   const { diff, stats } = await renderDiffWithStatsAsync(original, updated, 3, ctx.signal);
   throwIfAborted(ctx.signal);
   try {
-    await writeFile(filePath, updated, 'utf-8');
+    await saveNotebook(canonicalPath, updated, ctx.signal);
   } catch (error) {
     return fail(
       `Failed to write notebook: ${error instanceof Error ? error.message : String(error)}`,

@@ -96,6 +96,17 @@ function quotableRule(rule: string): string | undefined {
   return printableRule(rule) === rule ? rule : undefined;
 }
 
+/** How many of a patch's per-file rules a remedy spells out. */
+const PATCH_RULES_SHOWN = 5;
+
+/** The rules a patch of several files needs, the first few of them, for a remedy to name. */
+function patchRuleList(rules: readonly string[]): string {
+  const shown = rules.flatMap((rule) => quotableRule(rule) ?? []).slice(0, PATCH_RULES_SHOWN);
+  if (shown.length === 0) return '';
+  const more = rules.length - shown.length;
+  return `: ${shown.map((rule) => `"${rule}"`).join(', ')}${more > 0 ? ` and ${more} more` : ''}`;
+}
+
 /**
  * What to do when a call has no rule of its own, naming the reason it has none: a Bash command
  * that spans lines (a rule holds one line), one holding `*`, or both; or another tool's argument
@@ -104,6 +115,9 @@ function quotableRule(rule: string): string | undefined {
 function noRuleClause(toolName: string, noRule: MissingRuleReason | undefined): string {
   if (noRule?.sessionAddress) {
     return 'give the two sessions distinct names (`BOOK_SESSION_NAME` when one starts), so that a permissions.allow rule on the bare name covers it: while another live session holds the same name, a send to it can be approved only once (no rule is derived from its `name [ref]`, which comes from a pid-named socket, so a rule for it could admit a later session)';
+  }
+  if (noRule?.patchRules) {
+    return `have each file patched in its own call, or add a permissions.allow rule for each file the patch names${patchRuleList(noRule.patchRules)} (no single rule covers a patch of several files)`;
   }
   if (toolName !== 'Bash') {
     return 'write a permissions.allow rule that covers only what you mean to allow (none is derived from this call: its argument holds a `*` or `?`, which a rule reads as a wildcard that admits other calls too)';

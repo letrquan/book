@@ -470,6 +470,9 @@ rule is the URL's origin with `/**` appended, and an origin holding a `*` (the U
 one in a host, `http://*.example.com/x`) has no rule either, since `WebFetch(http://*.example.com/**)`
 would admit any http host whose URL contains `.example.com/`. A `?` or `*` in the path or query
 is not part of the origin, so `https://example.com/a?b=1` still saves `WebFetch(https://example.com/**)`.
+An `ApplyPatch` of several files has no rule either, and "Always allow" is not offered for it: an
+allow, a session rule included, covers a patch only when it covers every file the patch names, so a
+rule for one file would not allow it. One `ApplyPatch(<file>)` rule per file does.
 The `--scrollback` prompt (`Allow? [y]es/[n]o/[a]lways`) offers `[a]lways`, and accepts `a`, on
 the same terms.
 
@@ -520,14 +523,14 @@ Permission _modes_ decide whether you are prompted; they never relax a `deny` ru
 `bypassPermissions`, and it is evaluated before the prompt, so a denied call never reaches one.
 Modes differ only in what happens to calls that no `deny` rule matched:
 
-| Mode                | Unmatched calls                                                                                                                              |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `default`           | Checked against `allow`/`ask`, then prompted — except workspace reads, which run unless a rule covers them                                   |
-| `acceptEdits`       | As `default`, and file mutations are approved without a prompt too                                                                           |
-| `plan`              | Read-only tools only; mutations are refused until you approve a plan                                                                         |
-| `auto`              | Run without a prompt, except a call an `ask` rule covers, and any compound Bash command while a Bash `deny` or `ask` rule exists (see above) |
-| `dontAsk`           | Refused except for the tools below that never prompt — the mode never prompts, and a user `allow` rule does not exempt a call                |
-| `bypassPermissions` | Run without a prompt                                                                                                                         |
+| Mode                | Unmatched calls                                                                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `default`           | Checked against `allow`/`ask`, then prompted — except workspace reads, which run unless a rule covers them                                                   |
+| `acceptEdits`       | As `default`, and file mutations are approved without a prompt too, except Book's and git's control files and a home directory a root holds: those still ask |
+| `plan`              | Read-only tools only; mutations are refused until you approve a plan                                                                                         |
+| `auto`              | Run without a prompt, except a call an `ask` rule covers, and any compound Bash command while a Bash `deny` or `ask` rule exists (see above)                 |
+| `dontAsk`           | Refused except for the tools below that never prompt — the mode never prompts, and a user `allow` rule does not exempt a call                                |
+| `bypassPermissions` | Run without a prompt                                                                                                                                         |
 
 Some tools never prompt. `TodoWrite` (the agent's checklist) and `Advisor` (offered
 only once you choose a model with `/advisor`; it sends the conversation to that model) are always
@@ -679,6 +682,33 @@ A `permissions.ask` rule that names such a target is still asked, in `default` a
 and allowing the call only lets the tool refuse it itself. With nobody to answer, the refusal names
 the unreachable target in both modes, never the ask rule, which could not help.
 
+**What `acceptEdits` does not cover.** The mode approves ordinary edits. A file mutation still asks, as in `default`, when any target it names is one of
+these; an `ApplyPatch` with one among many asks for the whole patch and writes nothing until you
+approve it.
+
+- Book's and git's control files. Anything below the root that serves the target, at any depth, in
+  `.book/` (settings, commands, agents, skills) or `.husky/`, named `.bookrc.json` or `.mcp.json`, or
+  in or named `.git`; and any other path the sandbox keeps read-only for a command: a git directory
+  this work tree uses (a linked worktree's shared one, where an approved directory reaches it), the
+  directory `core.hooksPath` names and, when that directory is `_`, the folder above it; and a file
+  the git config includes, whether or not it is there yet.
+- A home directory a root holds, yours or Book's own: a target inside a home the serving root holds,
+  and every target in a workspace that holds one, the same places a read keeps asking.
+
+Targets are compared after following links, with case and the other differences a folding file
+system ignores set aside, so a link in the workspace to `.git/config` asks too, and so does a path
+through a link that dangles, since nothing says where it would land. Nothing here changes who
+decides: an `allow` rule that covers the call, an "Always allow" from this session, `auto` and
+`bypassPermissions` run it without a prompt, a `deny` rule that covers the call still blocks it, and
+a memory write still needs none. Where nothing can answer (print mode, the SDK, a managed agent with no approver), the
+call is refused and the refusal names the rule that would allow it. A patcher in a worktree edits
+its work tree as before: a root is judged on its own, so one that merely sits below a home, or below
+an approved directory's `.book`, is not guarded by either.
+
+Everything else is an ordinary edit, including `.gitignore`, `.gitattributes`, `.gitmodules`,
+`.github/`, and instruction files and other tools' folders such as `CLAUDE.md`, `AGENTS.md`,
+`.claude/`, `.agents/` and `.opencode/`.
+
 **Writes in an approved directory.** An approved `additionalDirectories` entry is a root for the
 write tools too: `Write`, `Edit`, `MultiEdit`, `ApplyPatch` and `NotebookEdit` accept an absolute
 path inside one, and the write is judged, guarded and observed exactly as the same write in the
@@ -700,6 +730,14 @@ links — in every mode. So `deny: ["Read(.env)"]` also stops a `Read` of
 `/abs/path/to/workspace/.env` or `src/../.env`, and `deny: ["Write(.env)"]` holds under `auto` and
 `bypassPermissions` whatever the call writes it as, `ApplyPatch` included. `ApplyPatch` matches its
 targets' spellings the same way, and `deny` and `ask` fold case as they do for a single-path tool.
+
+An `allow` path rule matches where the path leads, not how it is spelled. `allow: ["Write(src/**)"]`
+covers `other/../src/a.ts`, and it does not cover `src/../.git/config`, or a `src/notes.md` that is a
+link to a file outside `src/`. A rule for a folder that is a link has to name where the link leads:
+with `lib` linked to `packages/lib`, `Edit(packages/lib/**)` covers `lib/a.ts` and `Edit(lib/**)` does
+not. "Always allow" on a path spelled through a link or a `..` lasts for the session, since the rule
+it saves names the spelling, so the call asks again in the next one. A workspace opened through a
+link still matches its own rules, relative or absolute.
 
 A path inside an approved `additionalDirectories` entry is offered the same root-relative spelling
 to `deny` and `ask` — `deny: ["Write(.env)"]` stops `/srv/app/.env` as well as the workspace's own

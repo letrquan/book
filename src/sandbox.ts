@@ -22,7 +22,12 @@ import {
   type SeatbeltPolicy,
   type SeatbeltRule,
 } from './sandbox-seatbelt.js';
-import { isOutside, resolveWorkspacePath, type PathComparison } from './tools/path-utils.js';
+import {
+  foldedPath,
+  isOutside,
+  resolveWorkspacePath,
+  type PathComparison,
+} from './tools/path-utils.js';
 import type { CommandExecution } from './types/runtime.js';
 import type { ToolResult } from './types/tools.js';
 import { globToRegex } from './tools/glob-regex.js';
@@ -891,6 +896,11 @@ export interface ProtectedWorkspacePaths {
    * read-only mode so an allowWrite opt-in on a git dir can re-apply them.
    */
   gitDirControlMounts: ProtectedMount[];
+  /**
+   * Every git config file a config names, there or not and link or not. No mount can cover a file
+   * that is not there or a link, but a file tool can create either, and git would read it.
+   */
+  configFiles: string[];
 }
 
 /**
@@ -932,6 +942,30 @@ export function describeControlPathRefusal(refusal: ControlPathRefusal): string 
     'the settings, hooks or repository config the host then reads through it. Replace the ' +
     'symlink with the file or directory it names, or run this command without the sandbox.'
   );
+}
+
+/**
+ * A path a git config states, as git resolves it: `~/` from the home directory, an absolute path as
+ * written, and anything else against `base`.
+ */
+function gitConfigPath(value: string, base: string, host: SandboxHost): string {
+  if (value.startsWith('~/')) return host.path.join(host.homedir(), value.slice(2));
+  return host.path.isAbsolute(value) ? host.path.resolve(value) : host.path.join(base, value);
+}
+
+/**
+ * The directories one `core.hooksPath` makes control paths. husky v9 sets `.husky/_`, whose stubs
+ * only run `.husky/<hook>`, so the folder above a `_` counts too. Strictly below a root, compared
+ * after links: a `_` at a root must not freeze it.
+ */
+function hookDirectories(directory: string, roots: string[], host: SandboxHost): string[] {
+  if (host.path.basename(directory) !== '_') return [directory];
+  const parent = canonicalPath(host.path.dirname(directory), host);
+  const canonicalRoots = roots.map((root) => canonicalPath(root, host));
+  const belowRoot =
+    !canonicalRoots.includes(parent) &&
+    canonicalRoots.some((root) => !isOutside(root, parent, host.path));
+  return belowRoot ? [directory, host.path.dirname(directory)] : [directory];
 }
 
 /**
@@ -985,6 +1019,7 @@ export function protectedWorkspacePaths(
     mounts: [],
     refusals: [],
     gitDirControlMounts: [],
+    configFiles: [],
   };
   const seen = new Set<string>();
 
@@ -1136,6 +1171,9 @@ export function protectedWorkspacePaths(
     return host.path.join(rel ? host.path.resolve(root, rel) : root, host.path.basename(resolved));
   };
 
+  const inReach = (path: string): boolean =>
+    insideWorkspace(path, root, host) || heldBy(writableRoots, path, host);
+
   // Config files already read, so an `include` chain that names one of them ends
   // at the file rather than descending for ever.
   const configsRead = new Set<string>();
@@ -1143,36 +1181,30 @@ export function protectedWorkspacePaths(
     const at = spelledInWorkspace(file);
     if (configsRead.has(at)) return;
     configsRead.add(at);
-    const size = host.fileSize(at);
+    result.configFiles.push(at);
+    // Git follows a link here, so the settings in the file it leads to count. No mount can pin the
+    // link, which is why it is read through and not added below.
+    const source = host.entryKind(at) === 'symlink' ? canonicalPath(at, host) : at;
+    const size = host.fileSize(source);
     if (size !== null && size > MAX_GIT_CONFIG_BYTES) {
       // Truncating a config reads as one with no `hooksPath` in it, which is the
       // answer that leaves the hooks directory writable. Refusing says so instead.
       result.refusals.push({ path: at, reason: 'oversized-git-config' });
       return;
     }
-    const text = host.readFile(at, MAX_GIT_CONFIG_BYTES);
+    const text = host.readFile(source, MAX_GIT_CONFIG_BYTES);
     if (text === null) return;
-    if (reachable || insideWorkspace(at, root, host) || heldBy(writableRoots, at, host)) {
-      addFile(at);
-    }
+    if (source === at && (reachable || inReach(at))) addFile(at);
     for (const hooksPath of readCoreHooksPaths(text)) {
-      const directory = host.path.isAbsolute(hooksPath)
-        ? hooksPath
-        : host.path.join(workTree, hooksPath);
-      if (insideWorkspace(directory, root, host) || heldBy(writableRoots, directory, host)) {
-        addDirectory(directory);
+      const hooks = gitConfigPath(hooksPath, workTree, host);
+      for (const directory of hookDirectories(hooks, [root, ...writableRoots], host)) {
+        if (inReach(directory)) addDirectory(directory);
       }
     }
     if (depth >= MAX_WALK_DEPTH) return;
     for (const included of readGitConfigIncludes(text)) {
-      // As git resolves it: `~/` from the home directory, an absolute path as
-      // written, and anything else against the including file's directory.
-      const target = included.startsWith('~/')
-        ? host.path.join(host.homedir(), included.slice(2))
-        : host.path.isAbsolute(included)
-          ? host.path.resolve(included)
-          : host.path.join(host.path.dirname(at), included);
-      readConfig(target, workTree, depth + 1, reachable);
+      const includedFile = gitConfigPath(included, host.path.dirname(at), host);
+      readConfig(includedFile, workTree, depth + 1, reachable);
     }
   };
 
@@ -1324,6 +1356,111 @@ function protectedPathsFor(
     denyDirectories: expanded([...settings.filesystem.denyWrite, ...settings.filesystem.denyRead]),
     writableRoots: expanded(settings.filesystem.allowWrite).filter((path) => host.exists(path)),
   });
+}
+
+/**
+ * The entries Book and git read as their own control files, by name, at any depth below a root.
+ *
+ * {@link protectedWorkspacePaths} lists what a namespace can mount, so it says nothing about a file
+ * that is not there yet (`.bookrc.json`, a first `.git/config`) or a repository it did not walk to
+ * (`vendor/lib/.git`). A file tool can create any of those, so {@link workspaceControlPathJudge}
+ * needs the names as well as the list. `.mcp.json` is here and not in that list: it names commands
+ * to launch, and for a sandboxed command its own approval is what stands in the way. `.husky` is the
+ * folder a later `husky` install points git at, whether or not a config names it yet.
+ */
+const CONTROL_ENTRY_NAMES: ReadonlySet<string> = new Set([
+  '.book',
+  '.bookrc.json',
+  '.git',
+  '.husky',
+  '.mcp.json',
+]);
+
+/** A file tool's target: as written, after links, and the root that serves it. */
+export interface ControlPathTarget {
+  filePath: string;
+  canonicalPath: string;
+  root: string;
+}
+
+/**
+ * Whether a file tool's target is one of Book's or git's control files, for one call's `roots`.
+ *
+ * One definition with the sandbox's: every path {@link protectedWorkspacePaths} shields from a
+ * sandboxed command, read in its strict shape (`allowGitWrites` is about what a command may do, and
+ * nothing in a git dir is an ordinary edit), plus {@link CONTROL_ENTRY_NAMES}. The list is read once
+ * for the call, at its first target, and never kept past it: a config can name another hooks
+ * directory between two calls. Each root is read with the others as writable roots, so a linked
+ * worktree's shared git dir counts wherever an approved directory reaches it.
+ *
+ * Judged by the root that serves the target, as the home guard is. A name counts below that root
+ * only, and what another root protects does not reach a root it merely holds: an approved `~` does
+ * not make a worktree at `~/.book/worktrees/x` a settings directory.
+ *
+ * The target comes as written and after links, and each is compared to each spelling of a protected
+ * path, so a link in the workspace does not hide what it reaches and a control path that is itself
+ * a link does not hide what it stands for. A link that dangles has no destination to compare, and
+ * a config too large to read may name any hooks directory: both count as control paths.
+ */
+export function workspaceControlPathJudge(
+  roots: readonly string[],
+  givenHost: SandboxHost = realSandboxHost,
+): (target: ControlPathTarget) => boolean {
+  const host = memoizedHost(givenHost);
+  const { sep } = host.path;
+  const spellingsOf = (path: string): string[] => [
+    host.path.resolve(path),
+    canonicalPath(path, host),
+  ];
+  const folded = (path: string): string[] => spellingsOf(path).map((one) => foldedPath(one, sep));
+  let lists: Array<{ root: string; paths: ProtectedWorkspacePaths }> | undefined;
+  const protectedLists = (): NonNullable<typeof lists> =>
+    (lists ??= roots.map((root) => ({
+      root,
+      paths: protectedWorkspacePaths(root, host, {
+        allowGitWrites: false,
+        writableRoots: [...roots],
+      }),
+    })));
+  return (target) => {
+    const written = [target.filePath, target.canonicalPath];
+    const paths = written.map((path) => foldedPath(path, sep));
+    const served = folded(target.root);
+    const namesControlEntry = served.some((base) =>
+      paths.some(
+        (path) =>
+          !isOutside(base, path, host.path) &&
+          host.path
+            .relative(base, path)
+            .split(sep)
+            .some((segment) => CONTROL_ENTRY_NAMES.has(segment)),
+      ),
+    );
+    const passesDanglingLink = spellingsOf(target.root).some((base) =>
+      written.some((path) =>
+        workspaceComponents(path, base, host).some(
+          (part) => host.entryKind(part) === 'symlink' && host.realpath(part) === null,
+        ),
+      ),
+    );
+    if (namesControlEntry || passesDanglingLink) return true;
+    const reaches = (place: string): boolean =>
+      folded(place).some((held) => paths.some((path) => !isOutside(held, path, host.path)));
+    const holdsServingRoot = (place: string): boolean =>
+      folded(place).some((held) =>
+        served.some((base) => held !== base && !isOutside(held, base, host.path)),
+      );
+    return protectedLists().some(
+      ({ root, paths: list }) =>
+        list.refusals.some((refusal) => refusal.reason === 'oversized-git-config') ||
+        [
+          ...list.mounts.map((mount) => mount.path),
+          ...list.gitDirControlMounts.map((mount) => mount.path),
+          ...list.refusals.map((refusal) => refusal.path),
+          ...list.configFiles,
+        ].some((place) => reaches(place) && (root === target.root || !holdsServingRoot(place))),
+    );
+  };
 }
 
 /**
