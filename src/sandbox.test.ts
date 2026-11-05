@@ -3367,6 +3367,51 @@ describe('buildSandboxExecution workspace control files', () => {
       });
     });
 
+    it('pins the directories between a root and the workspace it holds', () => {
+      const args = build(
+        '/top/mid/ws',
+        { allowWrite: ['/top'] },
+        {},
+        { '/top': 'dir', '/top/mid': 'dir', '/top/mid/ws': 'dir' },
+      );
+
+      expect(withFlag(args, '--bind').map(([, at]) => at)).toEqual([
+        '/top',
+        '/top/mid',
+        '/top/mid/ws',
+      ]);
+    });
+
+    it('binds entries that overlap at one spelling, so a deny entry covers them all', () => {
+      const args = build(
+        WORKSPACE_REAL,
+        {
+          allowWrite: ['/alias', '/data', '/other/sub'],
+          denyRead: ['/data/secret'],
+          denyWrite: ['/alias/locked'],
+        },
+        { '/alias': '/data', '/other/sub': '/data/sub' },
+        {
+          '/data': 'dir',
+          '/data/secret': 'dir',
+          '/data/locked': 'dir',
+          '/data/sub': 'dir',
+          '/other': 'dir',
+        },
+      );
+
+      const bound = withFlag(args, '--bind').map(([, at]) => at);
+      expect(bound).toEqual(expect.arrayContaining(['/data', '/data/sub']));
+      expect(bound).not.toContain('/alias');
+      expect(bound).not.toContain('/other/sub');
+      expect(withFlag(args, '--symlink')).toEqual([
+        ['/data', '/alias'],
+        ['/data/sub', '/other/sub'],
+      ]);
+      expect(accessAt(args, '/data/secret')).toBe('empty');
+      expect(accessAt(args, '/data/locked/x')).toBe('read-only');
+    });
+
     it('pins nothing twice, nothing missing and nothing in a read-only directory', () => {
       const bound = (args: string[]): string[] => withFlag(args, '--bind').map(([, at]) => at);
 
@@ -5340,6 +5385,40 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
             expect(result.content).toContain('done');
             expect(result.content).not.toContain('hunter');
             expect(readFileSync(join(locked, 'policy'), 'utf8')).toBe('original\n');
+          } finally {
+            rmSync(base, { recursive: true, force: true });
+          }
+        });
+
+        it('keeps the deny entries in force when two entries name one directory', async () => {
+          const base = freshBase();
+          const repo = repoUnder(base, 'real', 'proj');
+          const data = join(base, 'data');
+          mkdirSync(join(data, 'secrets'), { recursive: true });
+          writeFileSync(join(data, 'secrets', 'key'), 'hunter2');
+          symlinkSync(data, join(base, 'alias'));
+          const alias = join(base, 'alias');
+          try {
+            const result = await sandboxedBash(
+              [
+                `cat '${join(data, 'secrets', 'key')}' '${join(alias, 'secrets', 'key')}'`,
+                `printf ok > '${join(alias, 'x')}'`,
+                `printf ok > '${join(data, 'y')}'`,
+                'echo done',
+              ].join('; '),
+              repo,
+              {
+                filesystem: {
+                  allowWrite: [alias, data],
+                  denyRead: [join(data, 'secrets')],
+                },
+              },
+            );
+
+            expect(result.content).toContain('done');
+            expect(result.content).not.toContain('hunter');
+            expect(readFileSync(join(data, 'x'), 'utf8')).toBe('ok');
+            expect(readFileSync(join(data, 'y'), 'utf8')).toBe('ok');
           } finally {
             rmSync(base, { recursive: true, force: true });
           }

@@ -1315,8 +1315,9 @@ export function protectedWorkspacePaths(
 function protectedPathsFor(
   workspaceRoot: string,
   settings: ResolvedSettings['sandbox'],
-  host: SandboxHost,
+  givenHost: SandboxHost,
 ): ProtectedWorkspacePaths {
+  const host = memoizedHost(givenHost);
   const expanded = (paths: string[]): string[] => paths.map((path) => expandPath(path, host));
   return protectedWorkspacePaths(workspaceRoot, host, {
     allowGitWrites: settings.filesystem.allowGitWrites,
@@ -1554,9 +1555,9 @@ function shallowestFirst(paths: string[], host: SandboxHost): string[] {
 }
 
 /**
- * The directories to pin above the `denyWrite` entries and the `allowWrite`
- * entries, by the layer of the writable root each one lies in (#634): the
- * deepest root strictly above it, as an entry is a root of its own.
+ * The directories to pin above the `denyWrite` and `denyRead` entries, the
+ * `allowWrite` entries and the workspace, by the layer of the writable root each
+ * lies in (#634): the deepest root strictly above it, as each can be a root itself.
  *
  * A bind makes the entry itself un-renameable, but renaming a directory above it
  * carries the mount away, and a fresh directory takes the old path. A writable
@@ -1744,11 +1745,11 @@ interface AllowWriteSpellings {
  *
  * An entry inside the workspace goes to the workspace's own spelling, and one
  * above it to the spelling that shows the workspace there. One holding a
- * protected path outside the workspace goes to its real path. An entry inside
- * any of those roots moves with it: left at its own spelling it would be a view
- * of its own, which the `denyWrite` entries and protected files, each applied in
- * one root only, would not all cover. Anything else holds nothing protected and
- * stays as spelled.
+ * protected path outside the workspace, or overlapping another entry, goes to its
+ * real path. An entry inside any of those roots moves with it: left at its own
+ * spelling it would be a view of its own, which the `denyWrite` and `denyRead`
+ * entries and protected files, each applied in one root only, would not all
+ * cover. Anything else stays as spelled.
  */
 function allowWriteSpellings(
   entries: string[],
@@ -1789,7 +1790,17 @@ function allowWriteSpellings(
     const canonical = canonicalPath(entry, host);
     if (holdsWorkspace(canonical) || !isOutside(canonicalWorkspace, canonical, host.path)) continue;
     const holdsProtected = protectedOutside.some((path) => !isOutside(canonical, path, host.path));
-    if (holdsProtected && !inAnchored(canonical)) anchored.push({ canonical, at: canonical });
+    const overlaps = entries.some((other) => {
+      if (other === entry) return false;
+      const otherCanonical = canonicalPath(other, host);
+      return (
+        !isOutside(canonical, otherCanonical, host.path) ||
+        !isOutside(otherCanonical, canonical, host.path)
+      );
+    });
+    if ((holdsProtected || overlaps) && !inAnchored(canonical)) {
+      anchored.push({ canonical, at: canonical });
+    }
   }
   for (const entry of entries) {
     const canonical = canonicalPath(entry, host);
@@ -1968,6 +1979,7 @@ export function buildSandboxExecution(
       ...present(settings.filesystem.denyRead).map((target) => canonicalPath(target, host)),
       ...[...allowWriteRoots, ...optInRoots].map((at) => canonicalPath(at, host)),
       ...protectedOutside,
+      ...(canonicalWorkspace !== null ? [canonicalWorkspace] : []),
     ],
     writableRoots,
     paths,
