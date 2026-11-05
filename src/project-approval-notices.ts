@@ -10,6 +10,7 @@
  * lives here so there is one wording and one read.
  */
 import { join } from 'path';
+import { shippedHomeFiles } from './book-home-files.js';
 import { collectSkippedInstructionNotices } from './claude-md.js';
 import { collectSkippedCommandNotices } from './commands/loader.js';
 import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
@@ -31,6 +32,7 @@ import { providerTrustCommand } from './trust-command.js';
 import {
   formatIgnoredWorkspaceSandboxKey,
   ignoredWorkspaceSandboxKeys,
+  isShippedUserSettingsFile,
   isUserSettingsFile,
   loadSettingsFile,
   settingsLayerPaths,
@@ -140,8 +142,10 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
 
   const projectPath = join(input.workspace, '.book', 'settings.json');
   // At `$HOME` this is the user's own file, which the loader read as the user layer and
-  // withheld nothing from (#429).
-  const projectSettings = isUserSettingsFile(projectPath) ? null : loadSettingsFile(projectPath);
+  // withheld nothing from (#429), unless the workspace's repository tracks it.
+  const projectSettings = isUserSettingsFile(projectPath, input.workspace)
+    ? null
+    : loadSettingsFile(projectPath);
   const notices: string[] = [];
 
   const allow = partitionProjectAllowRules(
@@ -235,7 +239,11 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
   // knows how that file is resolved.
   const userPath = settingsLayerPaths(input.workspace)[0];
   const activation = workspaceLayerThatEnabledSandbox([
-    { path: userPath, trust: 'trusted', document: loadSettingsFile(userPath) },
+    {
+      path: userPath,
+      trust: 'trusted',
+      document: isShippedUserSettingsFile(input.workspace) ? null : loadSettingsFile(userPath),
+    },
     { path: projectPath, trust: 'repository', document: projectSettings },
     { path: localPath, trust: 'local', document: localSettings },
   ]);
@@ -249,13 +257,51 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
   return [...notices, ...providerNotices];
 }
 
+/** Shipped paths a notice names before it summarizes the rest. */
+const SHIPPED_HOME_PATHS_SHOWN = 3;
+
+/**
+ * The one warning for a Book home the workspace's repository ships files in
+ * (`book-home-files.ts`), or none. Those files are read as the repository's, so the user's own
+ * settings and decisions belong in a home outside it. The names are the repository's: no control
+ * characters.
+ */
+export function collectShippedHomeNotices(workspace: string, home?: string): string[] {
+  const shipped = shippedHomeFiles(workspace, home);
+  if (!shipped) return [];
+  const where = renderUntrustedText(shipped.home, 400);
+  const repository = renderUntrustedText(shipped.repository, 400);
+  let what: string;
+  if (shipped.unreadable) {
+    what = `is inside the repository at ${repository}, whose index could not be read: Book reads every file in it`;
+  } else if (shipped.whole) {
+    what = `is tracked by the repository at ${repository}: Book reads every file in it`;
+  } else {
+    const named = shipped.paths
+      .slice(0, SHIPPED_HOME_PATHS_SHOWN)
+      .map((path) => renderUntrustedText(path, 200))
+      .join(', ');
+    const more = shipped.paths.length - SHIPPED_HOME_PATHS_SHOWN;
+    what =
+      `holds files the repository at ${repository} tracks (${named}` +
+      `${more > 0 ? `, and ${more} more` : ''}): Book reads them`;
+  }
+  return [
+    `⚠  Book's home ${where} ${what} as the repository's, not as yours (settings.json at most as ` +
+      'project settings). Set BOOK_HOME to a directory outside the repository for your own ' +
+      'settings and decisions.',
+  ];
+}
+
 /**
  * One warning per project file the loaders refused because it links out of the repository or to
  * a file that is not Markdown (#539, #543): instruction files, REVIEW.md and project command
- * files. Not tied to `--no-settings`: they are read whatever the settings layers are.
+ * files, after the one for a Book home the repository ships files in. Not tied to
+ * `--no-settings`: they are read whatever the settings layers are.
  */
 export function collectSkippedProjectFileNotices(workspace: string): string[] {
   return [
+    ...collectShippedHomeNotices(workspace),
     ...collectSkippedInstructionNotices(workspace),
     ...collectSkippedReviewNotices(workspace),
     ...collectSkippedCommandNotices(workspace),

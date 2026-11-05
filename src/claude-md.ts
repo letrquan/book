@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { resolveBookHome } from './book-home.js';
+import { shippedHomeFiles } from './book-home-files.js';
 import {
   ancestorsFromRoot,
   findRepositoryRoot,
@@ -155,7 +156,10 @@ export function inspectProjectInstructions(
   };
 
   add(join(systemHome, '.claude', 'CLAUDE.md'), 'user');
-  add(join(bookHome, 'AGENTS.md'), 'user');
+  // An AGENTS.md the workspace's repository ships under Book's home is not the user's
+  // (`book-home-files.ts`).
+  const bookAgents = join(bookHome, 'AGENTS.md');
+  if (!shippedHomeFiles(workspaceRoot, bookHome)?.ships(bookAgents)) add(bookAgents, 'user');
 
   for (const dir of ancestorsFromRoot(workspaceRoot)) {
     const root = containerFor(dir);
