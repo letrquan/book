@@ -13,6 +13,15 @@ export interface ToolOutputDisplayOptions {
   strategy?: 'head' | 'tail' | 'head-tail';
   /** What becomes of a line wider than `maxLineWidth`; see {@link LongLineMode}. Default `cut`. */
   longLines?: LongLineMode;
+  /**
+   * For a caller that lays the text out itself (Markdown, #700): the column the rows are drawn
+   * from, counted from the left edge of the item. A row that fits keeps its tabs, because only
+   * the caller knows what a tab sits in (a code block counts from its own code line, a list item
+   * from its text); a row that has to be cut is cut as the screen shows it, its tabs expanded
+   * from this column. A command's output leaves this out: it counts its stops from its own line
+   * start, which is what the command's terminal showed. A `wrap` display ignores it.
+   */
+  tabOrigin?: number;
 }
 
 /**
@@ -73,8 +82,8 @@ function outputLinesEnd(output: string): number {
  * four spaces a user message's tab gets, keep the columns of `make`, `ls`, TSV and `column` output
  * aligned the way the command's own terminal shows them.
  */
-export function expandTabs(line: string): string {
-  return line.indexOf('\t') === -1 ? line : expandToTabStops(line, displayWidth);
+export function expandTabs(line: string, startColumn = 0): string {
+  return line.indexOf('\t') === -1 ? line : expandToTabStops(line, displayWidth, startColumn);
 }
 
 /**
@@ -113,7 +122,14 @@ export function countOutputLines(output: string): number {
  */
 export function prepareToolOutputDisplay(
   output: string,
-  { maxLines, maxLineWidth, hint, strategy = 'head', longLines = 'cut' }: ToolOutputDisplayOptions,
+  {
+    maxLines,
+    maxLineWidth,
+    hint,
+    strategy = 'head',
+    longLines = 'cut',
+    tabOrigin,
+  }: ToolOutputDisplayOptions,
 ): ToolOutputDisplay {
   if (longLines === 'wrap') {
     return wrappedToolOutputDisplay(output, maxLines, maxLineWidth, hint, strategy === 'tail');
@@ -127,10 +143,13 @@ export function prepareToolOutputDisplay(
   let truncatedLines = 0;
   const lines = visibleRawLines.map((rawLine) => {
     // Shortened means cut from the row as the screen shows it, so compare with the expanded line.
-    const line = expandTabs(rawLine);
+    const line = expandTabs(rawLine, tabOrigin ?? 0);
     const next = truncateDisplay(line, widthLimit);
-    if (displayWidth(next) < displayWidth(line) || next !== line) truncatedLines++;
-    return next;
+    if (displayWidth(next) < displayWidth(line) || next !== line) {
+      truncatedLines++;
+      return next;
+    }
+    return tabOrigin === undefined ? next : rawLine;
   });
   const hiddenLines = Math.max(0, rawLines.length - visibleRawLines.length);
   const truncated = hiddenLines > 0 || truncatedLines > 0;
