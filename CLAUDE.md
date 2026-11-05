@@ -74,6 +74,8 @@ src/
                         idle notices, peer awareness (peer-awareness.ts)
   agent/
     loop.ts             Core agent loop (runAgentLoop)
+    tool-call-lifecycle.ts  One tool call's life: the permission gate (prepareToolCall; the order of
+                        its gates is the contract), its run, and settling its result
     context.ts          System prompt builder (cached kernel/session-context zones),
                         message formatter
     goal.ts / continuation.ts  `/goal` condition tracking and unattended continuation
