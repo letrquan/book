@@ -27,6 +27,8 @@ import type { CommandExecution } from './types/runtime.js';
 import { globToRegex } from './tools/glob-regex.js';
 
 export interface Sandbox {
+  /** Of a command's notices, the ones this sandbox has not shown the user yet. */
+  unseenNotices?(notices: readonly string[]): readonly string[];
   /**
    * Resolve a shell command into a sandboxed argv spawn.
    *
@@ -1526,6 +1528,185 @@ function denyWritePins(
   return pins;
 }
 
+/** The system directories every command gets, read-only. */
+const SYSTEM_DIRECTORIES = ['/usr', '/lib', '/lib64', '/bin', '/sbin', '/etc', '/opt'];
+
+/**
+ * Where every symlink on a path's way to its target lives: the link's own
+ * directory, resolved, plus its name. A link's target can hold more links, so a
+ * chain is followed to its end.
+ */
+function linksAlong(path: string, host: SandboxHost, seen = new Set<string>()): string[] {
+  const resolved = host.path.resolve(path);
+  const locations: string[] = [];
+  for (const current of [resolved, ...ancestorsOf(resolved, host)].reverse()) {
+    if (host.entryKind(current) !== 'symlink') continue;
+    const directory = canonicalPath(host.path.dirname(current), host);
+    const location = host.path.join(directory, host.path.basename(current));
+    if (seen.has(location)) continue;
+    seen.add(location);
+    locations.push(location);
+    const target = host.linkTarget(current);
+    if (target !== null) {
+      locations.push(...linksAlong(host.path.resolve(directory, target), host, seen));
+    }
+  }
+  return locations;
+}
+
+/**
+ * The `allowWrite` entries spelled through a link in a writable directory, each
+ * with the notice that says so, by the entry's expanded path. Such a link can
+ * change, so Book does not follow it: the entry is not bound. Both backends
+ * apply this. `writableRoots` are the canonical roots besides the entries.
+ */
+function entriesThroughWritableLinks(
+  allowWrite: string[],
+  writableRoots: string[],
+  host: SandboxHost,
+): Map<string, string> {
+  const entries = allowWrite
+    .map((entry) => expandPath(entry, host))
+    .filter((entry) => host.exists(entry));
+  const writable = [...writableRoots, ...entries.map((entry) => canonicalPath(entry, host))];
+  const notices = new Map<string, string>();
+  for (const entry of entries) {
+    const link = linksAlong(entry, host).find((location) =>
+      writable.some((root) => !isOutside(root, location, host.path)),
+    );
+    if (link === undefined) continue;
+    notices.set(
+      entry,
+      `sandbox.filesystem.allowWrite entry ${entry} is not bound: it is spelled through the link ` +
+        `${link}, in a writable directory. Such a link can change, so Book does not follow it. ` +
+        `Spell the entry without that link; it leads to ${canonicalPath(entry, host)} now.`,
+    );
+  }
+  return notices;
+}
+
+/**
+ * The spelling of a directory above the workspace that shows the workspace at
+ * the workspace's own spelling, which is where every protection is (#682). When
+ * the workspace is open at its real path, that is the directory's real path.
+ * Null when there is none: the workspace is opened through a link that does not
+ * run through this directory (`<base>/opened -> <base>/real/ws`, with
+ * `<base>/real` the entry), so any bind of it shows the workspace a second time,
+ * at a path no protection names.
+ */
+function spellingAboveWorkspace(
+  canonical: string,
+  workspace: string,
+  canonicalWorkspace: string,
+  host: SandboxHost,
+): string | null {
+  const below = host.path.relative(canonical, canonicalWorkspace);
+  const up = below.split(host.path.sep).map(() => '..');
+  const at = host.path.resolve(workspace, ...up);
+  const fits = canonicalPath(at, host) === canonical && host.path.resolve(at, below) === workspace;
+  return fits ? at : null;
+}
+
+/** Where each `allowWrite` entry is bound. An entry in neither map is not bound. */
+interface AllowWriteSpellings {
+  at: Map<string, string>;
+  /** An entry outside the workspace bound elsewhere, by its spelling: see {@link spellingLinks}. */
+  moved: Map<string, string>;
+  /** An entry above the workspace that no spelling lines up with it: why it is not bound. */
+  notices: string[];
+}
+
+/**
+ * Bind every `allowWrite` entry so that the namespace has one path to the
+ * workspace, the one the protections are emitted at. bwrap follows a bind
+ * source's links on the host and creates the destination as written, so a root
+ * spelled through a link is a second view of whatever it holds.
+ *
+ * An entry inside the workspace goes to the workspace's own spelling, and one
+ * above it to the spelling that shows the workspace there. An entry inside one
+ * of those roots moves with it: left at its own spelling it would be a view of
+ * its own, which the `denyWrite` entries and protected files, each applied in
+ * one root only, would not all cover. Anything else cannot reach the workspace
+ * and stays as spelled.
+ */
+function allowWriteSpellings(
+  entries: string[],
+  workspace: string,
+  canonicalWorkspace: string | null,
+  host: SandboxHost,
+): AllowWriteSpellings {
+  const at = new Map<string, string>();
+  const moved = new Map<string, string>();
+  const notices: string[] = [];
+  if (canonicalWorkspace === null) {
+    for (const entry of entries) at.set(entry, entry);
+    return { at, moved, notices };
+  }
+  const isAbove = (canonical: string): boolean =>
+    canonical !== canonicalWorkspace && !isOutside(canonical, canonicalWorkspace, host.path);
+  const above: Array<{ canonical: string; at: string }> = [];
+  for (const entry of entries) {
+    const canonical = canonicalPath(entry, host);
+    if (!isAbove(canonical)) continue;
+    const spelling = spellingAboveWorkspace(canonical, workspace, canonicalWorkspace, host);
+    if (spelling !== null) {
+      above.push({ canonical, at: spelling });
+      continue;
+    }
+    const view = host.path.resolve(canonical, host.path.relative(canonical, canonicalWorkspace));
+    notices.push(
+      `sandbox.filesystem.allowWrite entry ${entry} is not bound: it holds the workspace, open at ` +
+        `${workspace}, and would show it a second time at ${view}, where the workspace's ` +
+        `protections do not apply. Open the workspace at its real path (${canonicalWorkspace}) ` +
+        'to use this entry.',
+    );
+  }
+  for (const entry of entries) {
+    const canonical = canonicalPath(entry, host);
+    if (!isOutside(canonicalWorkspace, canonical, host.path)) {
+      const rest = host.path.relative(canonicalWorkspace, canonical);
+      at.set(entry, rest ? host.path.resolve(workspace, rest) : workspace);
+      continue;
+    }
+    const root = above.find((candidate) => !isOutside(candidate.canonical, canonical, host.path));
+    if (root) {
+      const rest = host.path.relative(root.canonical, canonical);
+      const bound = rest ? host.path.resolve(root.at, rest) : root.at;
+      at.set(entry, bound);
+      if (bound !== entry) moved.set(entry, bound);
+    } else if (!isAbove(canonical)) {
+      at.set(entry, entry);
+    }
+  }
+  return { at, moved, notices };
+}
+
+/**
+ * Keep a moved entry working at the spelling the user wrote, which is the one
+ * `$HOME` and the user's scripts use: a link there, in the namespace's own
+ * filesystem, resolves to the one view of the directory and changes nothing on
+ * the host.
+ *
+ * bwrap aborts the whole invocation on a link that collides with a mount, so a
+ * spelling at or above one, or below one, gets none. Below a bind of a system
+ * directory, the host's own link is already there and resolves the same way.
+ * `/tmp` is a private tmpfs: it takes links below it, but cannot itself be one.
+ */
+function spellingLinks(moved: Map<string, string>, mounted: string[], host: SandboxHost): string[] {
+  const args: string[] = [];
+  const linked: string[] = [];
+  for (const spelling of shallowestFirst([...moved.keys()], host)) {
+    const collides = (path: string): boolean =>
+      !isOutside(path, spelling, host.path) || !isOutside(spelling, path, host.path);
+    if (mounted.some(collides) || !isOutside(spelling, '/tmp', host.path)) continue;
+    // Already reached through the link above it.
+    if (linked.some((above) => !isOutside(above, spelling, host.path))) continue;
+    linked.push(spelling);
+    args.push('--symlink', moved.get(spelling) as string, spelling);
+  }
+  return args;
+}
+
 /**
  * Build the bubblewrap argument vector for one command.
  *
@@ -1576,7 +1757,7 @@ export function buildSandboxExecution(
   args.push('--dev', '/dev');
 
   // Minimal system directories, read-only.
-  for (const dir of ['/usr', '/lib', '/lib64', '/bin', '/sbin', '/etc', '/opt']) {
+  for (const dir of SYSTEM_DIRECTORIES) {
     bindIfPresent(args, '--ro-bind', dir, host);
   }
 
@@ -1617,24 +1798,25 @@ export function buildSandboxExecution(
   // these and nothing else.
   const workspace = expandPath(workspaceRoot, host);
   const canonicalWorkspace = host.exists(workspace) ? canonicalPath(workspace, host) : null;
-  // An `allowWrite` entry inside the workspace is bound at the workspace's own
-  // spelling, where the protections are: one spelled through a link to it would
-  // otherwise be a second view of the same directories that none of them cover.
-  const spelledInWorkspace = (target: string): string => {
-    const canonical = canonicalPath(target, host);
-    if (canonicalWorkspace === null || isOutside(canonicalWorkspace, canonical, host.path)) {
-      return target;
-    }
-    const rest = host.path.relative(canonicalWorkspace, canonical);
-    return rest ? host.path.resolve(workspace, rest) : workspace;
-  };
-  const pinned = paths.pinnedDirectories.map((dir) => host.path.resolve(dir));
-  const allowWriteRoots = present(
-    settings.filesystem.allowWrite.filter((p) => !isProtectedArea(p)),
-  ).map(spelledInWorkspace);
-  const optInRoots = present(settings.filesystem.allowWrite.filter(isProtectedArea)).map(
-    spelledInWorkspace,
+  const throughLinks = entriesThroughWritableLinks(
+    settings.filesystem.allowWrite,
+    canonicalWorkspace !== null ? [canonicalWorkspace] : [],
+    host,
   );
+  const spellings = allowWriteSpellings(
+    present(settings.filesystem.allowWrite).filter((entry) => !throughLinks.has(entry)),
+    workspace,
+    canonicalWorkspace,
+    host,
+  );
+  const boundAt = (entries: string[]): string[] => [
+    ...new Set(present(entries).flatMap((entry) => spellings.at.get(entry) ?? [])),
+  ];
+  const pinned = paths.pinnedDirectories.map((dir) => host.path.resolve(dir));
+  const allowWriteRoots = boundAt(
+    settings.filesystem.allowWrite.filter((p) => !isProtectedArea(p)),
+  );
+  const optInRoots = boundAt(settings.filesystem.allowWrite.filter(isProtectedArea));
   const root = (at: string, layer: WritableRoot['layer']): WritableRoot => ({
     at,
     canonical: canonicalPath(at, host),
@@ -1650,6 +1832,16 @@ export function buildSandboxExecution(
     canonicalPath(target, host),
   );
   const pins = denyWritePins(deniedWrites, writableRoots, paths, host);
+  // Where the namespace shows a canonical path: the spelling of the deepest
+  // writable root holding it plus the rest, or null when no root holds it.
+  const inWritableRoot = (canonical: string): string | null => {
+    const container = writableRoots
+      .filter((candidate) => !isOutside(candidate.canonical, canonical, host.path))
+      .sort((left, right) => right.canonical.length - left.canonical.length)[0];
+    if (!container) return null;
+    const rest = host.path.relative(container.canonical, canonical);
+    return rest ? host.path.resolve(container.at, rest) : container.at;
+  };
   // A protected file is bound only where the command could write it: inside the
   // workspace or a writable root, and at that root's own spelling plus the rest,
   // as `denyWrite` is applied. Anywhere else (a config an `[include]` names, a
@@ -1658,13 +1850,8 @@ export function buildSandboxExecution(
   // still reads it for `core.hooksPath`.
   const protectedAt = (mount: ProtectedMount): ProtectedMount | null => {
     if (mount.kind !== 'file') return mount;
-    const canonical = canonicalPath(mount.path, host);
-    const container = writableRoots
-      .filter((candidate) => !isOutside(candidate.canonical, canonical, host.path))
-      .sort((left, right) => right.canonical.length - left.canonical.length)[0];
-    if (!container) return null;
-    const rest = host.path.relative(container.canonical, canonical);
-    return { ...mount, path: rest ? host.path.resolve(container.at, rest) : container.at };
+    const at = inWritableRoot(canonicalPath(mount.path, host));
+    return at === null ? null : { ...mount, path: at };
   };
 
   const mounts: NamespaceMount[] = [];
@@ -1738,13 +1925,8 @@ export function buildSandboxExecution(
   // the credential masks, emitted at the workspace's spelling, do not cover.
   const readOnlyBinds = new Set<string>();
   for (const denied of deniedWrites) {
-    const container = writableRoots
-      .filter((candidate) => !isOutside(candidate.canonical, denied, host.path))
-      .sort((left, right) => right.canonical.length - left.canonical.length)[0];
-    if (container) {
-      const rest = host.path.relative(container.canonical, denied);
-      readOnlyBinds.add(rest ? host.path.resolve(container.at, rest) : container.at);
-    }
+    const at = inWritableRoot(denied);
+    if (at !== null) readOnlyBinds.add(at);
     for (const writable of writableRoots) {
       if (!isOutside(denied, writable.canonical, host.path)) readOnlyBinds.add(writable.at);
     }
@@ -1777,8 +1959,11 @@ export function buildSandboxExecution(
   // there is already gone, and has no mount point left in the read-only tmpfs,
   // so bwrap would abort the whole invocation trying to create one. Decided on
   // canonical paths, since a workspace layer may add a deny entry spelled
-  // through a link into `.book`.
+  // through a link into `.book`. The mask goes where the namespace shows the
+  // path, as a `denyWrite` entry does: at the entry's own spelling it would hide
+  // nothing from a root that shows the path at another.
   const viewCanonical = view ? { ...view, at: canonicalPath(view.at, host) } : null;
+  const masked: string[] = [];
   for (const target of present(settings.filesystem.denyRead)) {
     const canonical = canonicalPath(target, host);
     if (
@@ -1788,9 +1973,19 @@ export function buildSandboxExecution(
     ) {
       continue;
     }
-    if (host.isDirectory(target)) args.push('--tmpfs', target);
-    else args.push('--ro-bind', '/dev/null', target);
+    const at = inWritableRoot(canonical) ?? target;
+    masked.push(at);
+    if (host.isDirectory(target)) args.push('--tmpfs', at);
+    else args.push('--ro-bind', '/dev/null', at);
   }
+
+  args.push(
+    ...spellingLinks(
+      spellings.moved,
+      [...SYSTEM_DIRECTORIES, '/proc', '/dev', ...mounts.map((mount) => mount.at), ...masked],
+      host,
+    ),
+  );
 
   // bwrap can only share or unshare the network wholesale. A declared
   // per-domain policy cannot be enforced as written, so fail closed rather
@@ -1803,7 +1998,8 @@ export function buildSandboxExecution(
   // parses it, and nothing outside the sandbox ever does.
   args.push('--', '/bin/bash', '-c', command);
 
-  return { file: bwrapPath, args };
+  const notices = [...throughLinks.values(), ...spellings.notices];
+  return { file: bwrapPath, args, ...(notices.length > 0 ? { notices } : {}) };
 }
 
 /** Every directory above `path`, nearest first, ending at the root. */
@@ -1924,8 +2120,16 @@ export function buildSeatbeltPolicy(
   const bookHomePath = bookHome ? canon(bookHome) : null;
   const workspaceInBookHome =
     workspace !== null && bookHomePath !== null && !isOutside(bookHomePath, workspace, host.path);
-  const allowWrite = presentAll(settings.filesystem.allowWrite.filter((p) => !isProtectedArea(p)));
-  const optIns = presentAll(settings.filesystem.allowWrite.filter(isProtectedArea));
+  const throughLinks = entriesThroughWritableLinks(
+    settings.filesystem.allowWrite,
+    [...(workspace ? [workspace] : []), ...tempRoots],
+    host,
+  );
+  const entries = settings.filesystem.allowWrite.filter(
+    (entry) => !throughLinks.has(expandPath(entry, host)),
+  );
+  const allowWrite = presentAll(entries.filter((p) => !isProtectedArea(p)));
+  const optIns = presentAll(entries.filter(isProtectedArea));
   const denyWrite = presentAll(settings.filesystem.denyWrite);
   const denyReadEntries = settings.filesystem.denyRead
     .map((path) => expandPath(path, host))
@@ -2093,6 +2297,7 @@ export function buildSeatbeltPolicy(
     network: hasDomainPolicy(settings) ? 'none' : 'host',
     unixSocketRoots: [...(workspace ? [workspace] : []), ...allowWrite, ...optIns],
     unixSocketDenied: denyReadEntries.map((entry) => entry.path),
+    ...(throughLinks.size > 0 ? { notices: [...throughLinks.values()] } : {}),
   };
 }
 
@@ -2110,11 +2315,18 @@ export function buildSeatbeltExecution(
   tempRoots: string[] = [],
   bookHome?: string,
 ): CommandExecution {
-  return seatbeltExecution(
-    sandboxExecPath,
-    buildSeatbeltPolicy(workspaceRoot, settings, host, protectedPaths, tempRoots, bookHome),
-    command,
+  const policy = buildSeatbeltPolicy(
+    workspaceRoot,
+    settings,
+    host,
+    protectedPaths,
+    tempRoots,
+    bookHome,
   );
+  return {
+    ...seatbeltExecution(sandboxExecPath, policy, command),
+    ...(policy.notices ? { notices: policy.notices } : {}),
+  };
 }
 
 /**
@@ -2127,6 +2339,8 @@ export interface SandboxDecisionContext {
   workspaceRoot: string;
   /** The session's sandbox, built once per distinct settings object. */
   runtime?: { sandbox(settings: ResolvedSettings['sandbox']): Sandbox | null };
+  /** Where a notice for the user goes; the console, when the host has no sink. */
+  onNotice?: (notice: string) => void;
 }
 
 /**
@@ -2234,6 +2448,12 @@ export function decideSandboxExecution(
     return { sandboxed: false, error: error instanceof Error ? error.message : String(error) };
   }
   if (exec) {
+    if (exec.notices) {
+      for (const notice of sandbox?.unseenNotices?.(exec.notices) ?? exec.notices) {
+        if (ctx.onNotice) ctx.onNotice(notice);
+        else console.warn(`⚠  ${notice}`);
+      }
+    }
     return {
       sandboxed: true,
       exec,
@@ -2244,6 +2464,14 @@ export function decideSandboxExecution(
     return { sandboxed: false, error: 'Sandbox unavailable and failIfUnavailable is set' };
   }
   return unsandboxed('unavailable');
+}
+
+/**
+ * A command's output with the notices for the `allowWrite` entries its sandbox
+ * left out, so the model learns why a path it was told about is not writable.
+ */
+export function withSandboxNotices(text: string, exec?: CommandExecution): string {
+  return exec?.notices ? `${text}\n\n${exec.notices.join('\n')}` : text;
 }
 
 /**
@@ -2367,6 +2595,20 @@ function warnUnenforceablePolicy(settings: ResolvedSettings['sandbox'], backend:
 }
 
 /**
+ * Which of a command's notices this sandbox has not shown yet. The check runs on
+ * every command, as an entry can stop qualifying during a session, and the model
+ * reads the notices each time in the output; the user needs each one only once.
+ */
+function unseenNoticesFilter(): (notices: readonly string[]) => readonly string[] {
+  const shown = new Set<string>();
+  return (notices) => {
+    const unseen = notices.filter((notice) => !shown.has(notice));
+    for (const notice of unseen) shown.add(notice);
+    return unseen;
+  };
+}
+
+/**
  * The macOS sandbox: `sandbox-exec` with a Seatbelt profile generated per
  * command from the same resolved policy the bubblewrap argv is built from.
  * A missing `sandbox-exec` follows `failIfUnavailable` exactly as a missing
@@ -2402,6 +2644,7 @@ function createSeatbeltSandbox(settings: ResolvedSettings['sandbox']): Sandbox |
         bookHome,
       );
     },
+    unseenNotices: unseenNoticesFilter(),
     describe(): string {
       return [
         `Seatbelt (${sandboxExec})`,
@@ -2471,6 +2714,7 @@ export function createSandbox(settings: ResolvedSettings['sandbox']): Sandbox | 
         protectedPaths,
       );
     },
+    unseenNotices: unseenNoticesFilter(),
     describe(): string {
       return [
         `bubblewrap (${bwrap})`,

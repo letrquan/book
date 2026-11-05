@@ -28,6 +28,8 @@ export interface CommandExecution {
   file: string;
   args: string[];
   env?: Record<string, string>;
+  /** Why the sandbox left a configured path out of this command, for the user and the model. */
+  notices?: readonly string[];
 }
 
 /** The program that interprets a Bash tool command string. */

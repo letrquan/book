@@ -325,6 +325,68 @@ describe('buildSeatbeltPolicy', () => {
     }
   });
 
+  describe('an allowWrite entry spelled through a link', () => {
+    const cases: Array<{ name: string; entry: string; link: string; leadsTo: string }> = [
+      {
+        name: 'inside the directory it names',
+        entry: '/data/up',
+        link: '/data',
+        leadsTo: '/data',
+      },
+      {
+        name: 'in the workspace',
+        entry: `${WS}/cache`,
+        link: '/data',
+        leadsTo: '/data',
+      },
+      {
+        name: 'in the workspace, naming a protected directory',
+        entry: `${WS}/hooks-link`,
+        link: `${WS}/.git/hooks`,
+        leadsTo: `${WS}/.git/hooks`,
+      },
+      {
+        name: 'in a temp root',
+        entry: `${USER_TEMP}/cache`,
+        link: '/data',
+        leadsTo: '/data',
+      },
+    ];
+
+    for (const { name, entry, link, leadsTo } of cases) {
+      it(`is left out, with a notice, when the link is ${name}`, () => {
+        const tree = repoTree({ '/data/keep': 'file', [entry]: { link } });
+
+        const policy = policyFor({ filesystem: { allowWrite: [entry] } }, tree);
+        const exec = buildSeatbeltExecution(
+          '/usr/bin/sandbox-exec',
+          'true',
+          WS,
+          sandboxSettings({ filesystem: { allowWrite: [entry] } }),
+          memoryHost(tree),
+          undefined,
+          TEMP_ROOTS,
+        );
+
+        expect(canWrite(policy, `${leadsTo}/file`)).toBe(false);
+        expect(policy.notices).toHaveLength(1);
+        expect(policy.notices?.[0]).toContain(`entry ${entry} is not bound`);
+        expect(policy.notices?.[0]).toContain('in a writable directory');
+        expect(exec.notices).toEqual(policy.notices);
+      });
+    }
+
+    it('is kept when the link is in no writable directory', () => {
+      const policy = policyFor(
+        { filesystem: { allowWrite: ['/alias'] } },
+        repoTree({ '/data/keep': 'file', '/alias': { link: '/data' } }),
+      );
+
+      expect(canWrite(policy, '/data/file')).toBe(true);
+      expect(policy.notices).toBeUndefined();
+    });
+  });
+
   it('keeps a temp root in place even when an allowWrite entry names it', () => {
     const policy = policyFor({ filesystem: { allowWrite: [USER_TEMP, '/private/tmp'] } });
 

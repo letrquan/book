@@ -207,6 +207,30 @@ describe('Check and the sandbox', () => {
     expect(calls).toEqual([{ file: 'fake-wrapper', args: ['echo hello'] }]);
   });
 
+  it('repeats what the sandbox left out in the output of a passing and of a failing check', async () => {
+    const withExit = (code: number): ToolContext => {
+      const ctx = contextWith({ wrapped: 'echo hello' });
+      ctx.sandbox = SANDBOX_ENABLED;
+      ctx.runtime = {
+        sandbox: () => ({
+          wrap: () => ({
+            file: process.execPath,
+            args: ['-e', `process.exit(${code})`],
+            notices: ['an entry was left out'],
+          }),
+          describe: () => 'fake wrapper',
+        }),
+      } as unknown as ToolContext['runtime'];
+      return ctx;
+    };
+
+    const passed = await run(withExit(0), 'wrapped');
+    const failed = await run(withExit(1), 'wrapped');
+
+    expect(passed.content).toContain('an entry was left out');
+    expect(failed.structuredError?.message).toContain('an entry was left out');
+  });
+
   it('refuses the check when it would run unsandboxed and unsandboxed commands are refused', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'book-check-refused-'));
     const sideEffect = join(dir, 'must-not-appear.txt');

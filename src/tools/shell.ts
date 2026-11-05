@@ -7,7 +7,11 @@ import type {
 } from '../types/runtime.js';
 import { resolveShell, shellExecution, spawnCommandExecution } from '../shell-selection.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
-import { decideSandboxExecution, withGitConfigReadOnlyNotice } from '../sandbox.js';
+import {
+  decideSandboxExecution,
+  withGitConfigReadOnlyNotice,
+  withSandboxNotices,
+} from '../sandbox.js';
 import { buildChildEnv } from '../child-env.js';
 import { isTerminalShellStatus, ShellJobManager } from '../jobs/shell-manager.js';
 import { terminateForegroundProcess } from '../jobs/process-tree.js';
@@ -487,7 +491,12 @@ async function bashForeground(
       if (cancelled || timedOut || backgrounded || bufferExceeded) return;
       void finish(
         code === 0
-          ? ok((built.sandboxed ? '[sandboxed] ' : '') + (stdout || '(no output)'))
+          ? ok(
+              withSandboxNotices(
+                (built.sandboxed ? '[sandboxed] ' : '') + (stdout || '(no output)'),
+                built.exec,
+              ),
+            )
           : // The git directory is read-only in the sandbox by default (issue
             // 373), and git reports the consequence in words that name no
             // cause — an index lock, `FETCH_HEAD`, or, with
@@ -504,12 +513,15 @@ async function bashForeground(
             // transcript row, which then shows no stdout and is passed over by Ctrl+E. `Check`
             // makes the same choice.
             fail(
-              withGitConfigReadOnlyNotice(
-                stderr.trim() ? stderr : `Exit code: ${code}`,
-                `${stdout}\n${stderr}`,
-                built.sandboxed,
-                built.command,
-                built.gitDirReadOnly,
+              withSandboxNotices(
+                withGitConfigReadOnlyNotice(
+                  stderr.trim() ? stderr : `Exit code: ${code}`,
+                  `${stdout}\n${stderr}`,
+                  built.sandboxed,
+                  built.command,
+                  built.gitDirReadOnly,
+                ),
+                built.exec,
               ),
               stdout,
               // For the transcript row only: the model reads the message and the
@@ -575,6 +587,7 @@ async function bashBackground(
         `Use BashOutput with shell_id="${shell.id}" to read output.`,
         `Use KillShell with shell_id="${shell.id}" to stop it.`,
         built.sandboxed ? '[sandboxed]' : undefined,
+        ...(built.exec?.notices ?? []),
       ]
         .filter(Boolean)
         .join('\n'),

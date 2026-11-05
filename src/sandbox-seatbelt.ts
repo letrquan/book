@@ -63,6 +63,8 @@ export interface SeatbeltRule {
 export interface SeatbeltPolicy {
   /** File rules, in the order they apply; a later rule overrides an earlier one. */
   rules: readonly SeatbeltRule[];
+  /** Why a configured `allowWrite` entry is not in the rules, for the user. */
+  notices?: readonly string[];
   /**
    * `host` shares the host network, `none` denies every socket. `none` is what a
    * declared domain policy fails closed to: Seatbelt, like bubblewrap, has no

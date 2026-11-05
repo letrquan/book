@@ -3,7 +3,11 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { buildChildEnv } from '../child-env.js';
-import { decideSandboxExecution, withGitConfigReadOnlyNotice } from '../sandbox.js';
+import {
+  decideSandboxExecution,
+  withGitConfigReadOnlyNotice,
+  withSandboxNotices,
+} from '../sandbox.js';
 import { toolFailure, toolSuccess } from '../tools/result.js';
 import { resolveToolTimeoutMs } from '../tools/timeouts.js';
 
@@ -131,12 +135,15 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
         const fallback = exitCode === undefined ? error.message : `Exit code: ${exitCode}`;
         resolve(
           toolFailure(
-            withGitConfigReadOnlyNotice(
-              stderr.trim() ? stderr : fallback,
-              `${stdout}\n${stderr}`,
-              decision.sandboxed,
-              command,
-              decision.gitDirReadOnly,
+            withSandboxNotices(
+              withGitConfigReadOnlyNotice(
+                stderr.trim() ? stderr : fallback,
+                `${stdout}\n${stderr}`,
+                decision.sandboxed,
+                command,
+                decision.gitDirReadOnly,
+              ),
+              decision.exec,
             ),
             {
               content: stdout,
@@ -150,7 +157,10 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
       // says which of the two things ran.
       resolve(
         toolSuccess(
-          (decision.sandboxed ? '[sandboxed] ' : '') + (stdout || stderr || '(no output)'),
+          withSandboxNotices(
+            (decision.sandboxed ? '[sandboxed] ' : '') + (stdout || stderr || '(no output)'),
+            decision.exec,
+          ),
         ),
       );
     };

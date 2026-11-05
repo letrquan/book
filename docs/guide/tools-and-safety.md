@@ -1242,6 +1242,22 @@ than bound one by one, since each entry is a mount of its own. An `allowWrite` e
 a link to somewhere in the workspace is bound at the workspace's own spelling, where these
 protections are, rather than at a second spelling none of them covers.
 
+An entry spelled through a link to a directory above the workspace is bound the same way: where the
+workspace's own path lies under it, which is the directory's real path when the workspace is open at
+its real path. Inside the sandbox the entry's spelling is a link to that bind, so `allowWrite: ["~"]`
+with a home reached through a link keeps working and shows the workspace once, protected. An entry
+inside such a directory moves with it, and `denyWrite` and `denyRead` entries apply where the sandbox
+shows the path, whichever spelling they use.
+
+An `allowWrite` entry spelled through a link in a writable directory (the workspace, or another
+entry) is refused: such a link can change, so Book does not follow it. So is an entry above the
+workspace that no spelling lines up with the workspace, because the workspace is opened through a
+link that does not run through that directory. A refused entry is not bound and the command still
+runs. A notice in the transcript names the entry and what to spell instead (on stderr in print mode,
+a `notice` event under `stream-json`), and each command's output repeats it for the model. Both
+backends apply the first rule; the second is specific to bubblewrap, since Seatbelt matches resolved
+paths.
+
 A git dir is found by following a `.git` **file** (`gitdir: …`), a `commondir` file,
 `.git/worktrees/*`, and nested `.git/modules/*` — including a submodule path with several segments,
 whose git dir is at `.git/modules/libs/deep` under the container directory `libs` — so linked
