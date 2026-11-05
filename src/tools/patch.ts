@@ -12,8 +12,10 @@ import {
   messagePathFor,
   mutationDisplayPath,
   mutationOutsideWorkspaceResult,
+  canonicalizePath,
   resolveMutationPath,
 } from './path-utils.js';
+import { basename, dirname, join } from 'node:path';
 import { toolFailure, toolSuccess } from './result.js';
 import { PROVIDER_KEY_MARKER } from '../provider-secrets.js';
 import {
@@ -447,7 +449,8 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
             staged.push({
               operation: entry.operation,
               absolutePath: entry.filePath,
-              writePath: entry.filePath,
+              // Removing a link removes the link: a rollback puts a file back where it stood.
+              writePath: join(canonicalizePath(dirname(entry.filePath)), basename(entry.filePath)),
               messagePath: entry.messagePath,
               memory: entry.memory,
               before,
@@ -545,7 +548,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
             throwIfAborted(ctx.signal);
             committed.push(file);
             if (file.operation.kind === 'delete')
-              await removeFileAtomically(file.absolutePath, ctx.signal);
+              await removeFileAtomically(file.writePath, ctx.signal);
             else
               await writeFileAtomically(
                 file.writePath,
@@ -575,7 +578,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
                   undefined,
                   file.before.mode,
                 );
-              else await removeFileAtomically(file.absolutePath).catch(() => undefined);
+              else await removeFileAtomically(file.writePath).catch(() => undefined);
             } catch {
               rollbackFailed = true;
             }

@@ -68,6 +68,7 @@ import {
   WORKSPACE_READ_JUDGING_MODES,
   WORKSPACE_READ_REFUSAL_MODES,
   WORKSPACE_READ_TOOLS,
+  type WorkspaceScope,
 } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
@@ -3396,12 +3397,11 @@ export async function runAgentLoop(
         // while `deny: ["Write(.env)"]` in the same list held. Modes decide
         // whether the user is *asked*; they do not decide whether a rule the user
         // already wrote applies.
-        const judgeReads = WORKSPACE_READ_JUDGING_MODES.has(effectiveMode);
         // The session shell, read the way the Bash tool reads it (`sessionShell` in
         // `tools/shell.ts`): the same (platform, shell) pair goes to every gate below, so what
         // the permission check and the capability check call compound agree (#512).
         const scanShell = toolContext.shell ?? config.shell;
-        const workspaceScope = {
+        const workspaceScope: WorkspaceScope = {
           root: toolContext.workspaceRoot,
           realRoot: workspaceRealRoot,
           readOnlyRoots: toolContext.readOnlyRoots,
@@ -3412,8 +3412,8 @@ export async function runAgentLoop(
           // honored: that is the whole of what `additionalDirectories` widens, and a home holds
           // SSH and provider keys and Book's own trust store.
           homeGuards: homeGuardPaths,
-          judgeReads,
-          autoAllowReads: judgeReads && !workspaceHoldsHome,
+          judgeReads: WORKSPACE_READ_JUDGING_MODES.has(effectiveMode),
+          autoAllowReads: WORKSPACE_READ_JUDGING_MODES.has(effectiveMode) && !workspaceHoldsHome,
           // Wider than `judgeReads`: `dontAsk` prompts for nothing, so a target no root serves
           // is refused there anyway, and refusing it as the target it is gives the model the
           // directory that would serve it instead of a permission no rule can grant.
@@ -3706,6 +3706,7 @@ export async function runAgentLoop(
           context.currentToolTraceId = nestedTraceId ?? prepared.call.id;
           // Every serial call sets it, so one call's subject never reaches the next call.
           context.permissionSubject = permissionSubject;
+          context.judgedEditTargets = workspaceScope.judgedEditTargets;
         }
 
         return {

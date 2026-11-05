@@ -1127,15 +1127,15 @@ describe('buildSandboxExecution workspace control files', () => {
           '/work/.git/modules/sub/config': 'file',
           '/work/sub': 'dir',
           '/work/sub/.git': 'file',
-          '/work/.husky': 'dir',
-          '/work/.husky/_': 'dir',
+          '/work/tools': 'dir',
+          '/work/tools/hooks': 'dir',
           '/work/config': 'dir',
           '/work/config/gitconfig': 'file',
         },
         {
           '/work/sub/.git': 'gitdir: ../.git/modules/sub\n',
           '/work/.git/config':
-            '[core]\n\thooksPath = .husky/_\n[include]\n\tpath = ../config/gitconfig\n',
+            '[core]\n\thooksPath = tools/hooks\n[include]\n\tpath = ../config/gitconfig\n',
           '/work/config/gitconfig': '# config\n',
         },
       );
@@ -1144,7 +1144,7 @@ describe('buildSandboxExecution workspace control files', () => {
       // that are not inside a present read-only dir are pinned:
       const roPaths = protectedWorkspacePaths(WORKSPACE, host);
       expect(roPaths.pinnedDirectories).toContain('/work/sub');
-      expect(roPaths.pinnedDirectories).toContain('/work/.husky');
+      expect(roPaths.pinnedDirectories).toContain('/work/tools');
       expect(roPaths.pinnedDirectories).toContain('/work/config');
       expect(roPaths.pinnedDirectories).not.toContain('/work/.git');
 
@@ -1163,11 +1163,11 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(mountSub.flag).toBe('--ro-bind');
       expect(pinSub.index).toBeLessThan(mountSub.index);
 
-      const pinHusky = mountsFor(roExec.args, '/work/.husky');
-      const mountHusky = mountsFor(roExec.args, '/work/.husky/_');
-      expect(pinHusky.flag).toBe('--bind');
-      expect(mountHusky.flag).toBe('--ro-bind');
-      expect(pinHusky.index).toBeLessThan(mountHusky.index);
+      const pinTools = mountsFor(roExec.args, '/work/tools');
+      const mountTools = mountsFor(roExec.args, '/work/tools/hooks');
+      expect(pinTools.flag).toBe('--bind');
+      expect(mountTools.flag).toBe('--ro-bind');
+      expect(pinTools.index).toBeLessThan(mountTools.index);
 
       const pinConfig = mountsFor(roExec.args, '/work/config');
       const mountConfig = mountsFor(roExec.args, '/work/config/gitconfig');
@@ -1179,7 +1179,7 @@ describe('buildSandboxExecution workspace control files', () => {
       const optOutPaths = protectedWorkspacePaths(WORKSPACE, host, { allowGitWrites: true });
       expect(optOutPaths.pinnedDirectories).toEqual(['/work/.git']);
       expect(optOutPaths.pinnedDirectories).not.toContain('/work/sub');
-      expect(optOutPaths.pinnedDirectories).not.toContain('/work/.husky');
+      expect(optOutPaths.pinnedDirectories).not.toContain('/work/tools');
       expect(optOutPaths.pinnedDirectories).not.toContain('/work/config');
     });
 
@@ -1347,6 +1347,69 @@ describe('buildSandboxExecution workspace control files', () => {
       );
 
       expect(mountsFor(exec.args, '/work/.husky/_').flag).toBe('--ro-bind');
+    });
+
+    it('protects the folder above a hooks directory named _, which holds the hooks', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+          '/work/.husky': 'dir',
+          '/work/.husky/_': 'dir',
+        },
+        { '/work/.git/config': '[core]\n\thooksPath = .husky/_\n' },
+      );
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        WORKSPACE,
+        sandboxSettings(),
+        host,
+      );
+
+      expect(mountsFor(exec.args, '/work/.husky').flag).toBe('--ro-bind');
+    });
+
+    it('does not freeze the workspace for a hooks directory named _ at its root', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+          '/work/_': 'dir',
+        },
+        { '/work/.git/config': '[core]\n\thooksPath = _\n' },
+      );
+
+      const paths = protectedWorkspacePaths(WORKSPACE, host);
+
+      expect(paths.mounts.map((mount) => mount.path)).toContain('/work/_');
+      expect(paths.mounts.map((mount) => mount.path)).not.toContain('/work');
+    });
+
+    it('names every config a config includes, there or not', () => {
+      const host = hostWith(
+        {
+          '/work': 'dir',
+          '/work/.book': 'dir',
+          '/work/.git': 'dir',
+          '/work/.git/hooks': 'dir',
+          '/work/.git/config': 'file',
+        },
+        { '/work/.git/config': '[include]\n\tpath = ../team.gitconfig\n' },
+      );
+
+      const paths = protectedWorkspacePaths(WORKSPACE, host);
+
+      expect(paths.configFiles).toContain('/work/team.gitconfig');
+      expect(paths.mounts.map((mount) => mount.path)).not.toContain('/work/team.gitconfig');
+      expect(paths.refusals).toEqual([]);
     });
 
     it('resolves a core.hooksPath that starts with ~/ from the home directory', () => {
@@ -3840,6 +3903,36 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
         expect(result.content.toLowerCase()).toMatch(/read-only file system/);
         expect(existsSync(join(repo, '.book', 'settings.local.json'))).toBe(false);
         expect(readFileSync(join(repo, '.book', 'settings.json'), 'utf8')).toBe('{}\n');
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses to change a script husky runs, and a hooks directory a linked include names', async () => {
+      const repo = freshRepo();
+      try {
+        mkdirSync(join(repo, '.husky', '_'), { recursive: true });
+        writeFileSync(join(repo, '.husky', 'pre-commit'), 'old\n');
+        mkdirSync(join(repo, 'configs'));
+        mkdirSync(join(repo, 'tools'));
+        writeFileSync(join(repo, 'configs', 'real'), '[core]\n\thooksPath = tools\n');
+        symlinkSync(join('configs', 'real'), join(repo, 'linked.gitconfig'));
+        writeFileSync(
+          join(repo, '.git', 'config'),
+          '[core]\n\thooksPath = .husky/_\n[include]\n\tpath = ../linked.gitconfig\n',
+        );
+
+        const husky = await sandboxedBash(`printf 'x' >> .husky/pre-commit`, repo);
+        expect(husky.status).not.toBe('success');
+        expect(husky.content.toLowerCase()).toMatch(/read-only file system/);
+        expect(readFileSync(join(repo, '.husky', 'pre-commit'), 'utf8')).toBe('old\n');
+
+        const tools = await sandboxedBash(`printf 'x' > tools/pre-push`, repo);
+        expect(tools.status).not.toBe('success');
+        expect(existsSync(join(repo, 'tools', 'pre-push'))).toBe(false);
+
+        const ordinary = await sandboxedBash(`printf 'ok' > notes.txt`, repo);
+        expect(ordinary.status).toBe('success');
       } finally {
         rmSync(repo, { recursive: true, force: true });
       }

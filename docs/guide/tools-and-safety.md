@@ -687,10 +687,11 @@ these; an `ApplyPatch` with one among many asks for the whole patch and writes n
 approve it.
 
 - Book's and git's control files. Anything below the root that serves the target, at any depth, in
-  `.book/` (settings, commands, agents, skills), named `.bookrc.json` or `.mcp.json`, or in or named
-  `.git`; and any other path the sandbox keeps read-only for a command: a git directory this work
-  tree uses (a linked worktree's shared one, where an approved directory reaches it), a file its
-  git config includes, and the directory `core.hooksPath` names.
+  `.book/` (settings, commands, agents, skills) or `.husky/`, named `.bookrc.json` or `.mcp.json`, or
+  in or named `.git`; and any other path the sandbox keeps read-only for a command: a git directory
+  this work tree uses (a linked worktree's shared one, where an approved directory reaches it), the
+  directory `core.hooksPath` names and, when that directory is `_`, the folder above it; and a file
+  the git config includes, whether or not it is there yet.
 - A home directory a root holds, yours or Book's own: a target inside a home the serving root holds,
   and every target in a workspace that holds one, the same places a read keeps asking.
 
@@ -698,15 +699,15 @@ Targets are compared after following links, with case and the other differences 
 system ignores set aside, so a link in the workspace to `.git/config` asks too, and so does a path
 through a link that dangles, since nothing says where it would land. Nothing here changes who
 decides: an `allow` rule that covers the call, an "Always allow" from this session, `auto` and
-`bypassPermissions` run it without a prompt, a `deny` rule still blocks it, and a memory write still
-needs none. Where nothing can answer (print mode, the SDK, a managed agent with no approver), the
+`bypassPermissions` run it without a prompt, a `deny` rule that covers the call still blocks it, and
+a memory write still needs none. Where nothing can answer (print mode, the SDK, a managed agent with no approver), the
 call is refused and the refusal names the rule that would allow it. A patcher in a worktree edits
 its work tree as before: a root is judged on its own, so one that merely sits below a home, or below
 an approved directory's `.book`, is not guarded by either.
 
-Everything else is an ordinary edit, including `.gitignore`, `.github/`, `.husky/` when no
-`core.hooksPath` names it, and instruction files and other tools' folders such as `CLAUDE.md`,
-`AGENTS.md`, `.claude/`, `.agents/` and `.opencode/`.
+Everything else is an ordinary edit, including `.gitignore`, `.gitattributes`, `.gitmodules`,
+`.github/`, and instruction files and other tools' folders such as `CLAUDE.md`, `AGENTS.md`,
+`.claude/`, `.agents/` and `.opencode/`.
 
 **Writes in an approved directory.** An approved `additionalDirectories` entry is a root for the
 write tools too: `Write`, `Edit`, `MultiEdit`, `ApplyPatch` and `NotebookEdit` accept an absolute

@@ -4,6 +4,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -19,6 +20,7 @@ import type { Provider } from '../provider/index.js';
 import { realSandboxHost, workspaceControlPathJudge } from '../sandbox.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { isolateBookHome } from '../test/isolated-book-home.js';
+import { removeFileAtomically, writeFileAtomically } from '../tools/mutation.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
@@ -87,6 +89,7 @@ async function drive(
   options: {
     answers?: Array<PermissionResult | PermissionDecision>;
     configure?: (config: AgentConfig) => void;
+    registry?: ReturnType<typeof createDefaultRegistry>;
     root?: string;
   } = {},
 ): Promise<Driven> {
@@ -107,10 +110,18 @@ async function drive(
     onDone: () => {},
     onPermissionRequired: prompt,
   };
-  await runAgentLoop(config, createDefaultRegistry(), 'go', [], callbacks, mode, {
-    provider: scripted(turns),
-    isNewSession: false,
-  });
+  await runAgentLoop(
+    config,
+    options.registry ?? createDefaultRegistry(),
+    'go',
+    [],
+    callbacks,
+    mode,
+    {
+      provider: scripted(turns),
+      isNewSession: false,
+    },
+  );
   return { results, prompt };
 }
 
@@ -163,6 +174,7 @@ describe('acceptEdits and control files', () => {
       ['a project skill', '.book/skills/tidy/SKILL.md'],
       ['the legacy config', '.bookrc.json'],
       ['the project MCP declaration', '.mcp.json'],
+      ['a script husky runs', '.husky/pre-commit'],
       ['the git config', '.git/config'],
       ['a hook', '.git/hooks/pre-commit'],
       ['a new file in the git dir', '.git/brand-new'],
@@ -197,6 +209,17 @@ describe('acceptEdits and control files', () => {
       put(join(workspace, '.git', 'config'), '[include]\n\tpath = ../shared.gitconfig\n');
       put(join(workspace, 'shared.gitconfig'), '[user]\n');
       await expectAsks(write('shared.gitconfig'), join(workspace, 'shared.gitconfig'));
+    });
+
+    it('a file the config includes that is not there yet', async () => {
+      put(join(workspace, '.git', 'config'), '[include]\n\tpath = ../team.gitconfig\n');
+      await expectAsks(write('team.gitconfig'), join(workspace, 'team.gitconfig'));
+    });
+
+    it('the script above the hooks directory husky sets', async () => {
+      put(join(workspace, '.git', 'config'), '[core]\n\thooksPath = tools/hk/_\n');
+      mkdirSync(join(workspace, 'tools', 'hk', '_'), { recursive: true });
+      await expectAsks(write('tools/hk/pre-commit'), join(workspace, 'tools/hk/pre-commit'));
     });
 
     it('the directory core.hooksPath names, and a new file in it', async () => {
@@ -255,6 +278,21 @@ describe('acceptEdits and control files', () => {
       symlinkSync('real-settings', join(workspace, '.book'));
       await expectAsks(write('real-settings/settings.json'));
       await expectAsks(write('.book/settings.json'));
+    });
+
+    it('as a file the config includes, and what it leads to', async () => {
+      put(join(workspace, '.git', 'config'), '[include]\n\tpath = ../team.gitconfig\n');
+      put(join(workspace, 'configs', 'real.gitconfig'), '[user]\n');
+      symlinkSync(join('configs', 'real.gitconfig'), join(workspace, 'team.gitconfig'));
+      await expectAsks(write('team.gitconfig'));
+      await expectAsks(write('configs/real.gitconfig'));
+    });
+
+    it('as an include whose file names a hooks directory', async () => {
+      put(join(workspace, '.git', 'config'), '[include]\n\tpath = ../team.gitconfig\n');
+      put(join(workspace, 'configs', 'real.gitconfig'), '[core]\n\thooksPath = tools/hooks\n');
+      symlinkSync(join('configs', 'real.gitconfig'), join(workspace, 'team.gitconfig'));
+      await expectAsks(write('tools/hooks/pre-push'), join(workspace, 'tools/hooks/pre-push'));
     });
 
     it('that dangles', async () => {
@@ -328,6 +366,20 @@ describe('acceptEdits and control files', () => {
 
     it('ApplyPatch, deleting a file', async () => {
       await expectAsks(patch('*** Delete File: .git/config'), join(workspace, '.git', 'config'));
+    });
+
+    it('ApplyPatch deleting and then adding a control file asks each time', async () => {
+      const config = join(workspace, '.git', 'config');
+      const { results, prompt } = await drive('accept-edits', [
+        [patch('*** Delete File: .git/config')],
+        [patch(add('.git/config'))],
+      ]);
+      expect(prompt).toHaveBeenCalledTimes(2);
+      expect(results.map((result) => result.structuredError?.code)).toEqual([
+        'permission_denied',
+        'permission_denied',
+      ]);
+      expect(readFileSync(config, 'utf8')).toBe('[core]\n');
     });
 
     it('ApplyPatch with one control path among many writes nothing', async () => {
@@ -565,6 +617,39 @@ describe('acceptEdits and a home directory a root holds', () => {
     expect(readFileSync(join(holder, 'beside.txt'), 'utf8')).toBe('new\n');
   });
 
+  describe('the files a home carries', () => {
+    let home: string;
+    let keys: string;
+    let settings: string;
+
+    beforeEach(() => {
+      const holder = tempDir('book-accept-edits-holder-');
+      home = join(holder, 'home');
+      mkdirSync(join(home, '.book'), { recursive: true });
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('USERPROFILE', home);
+      vi.stubEnv('BOOK_HOME', join(home, '.book'));
+      keys = join(home, '.ssh', 'authorized_keys');
+      settings = join(home, '.book', 'settings.json');
+    });
+
+    it('a workspace at the home asks for each', async () => {
+      await expectAsks(write(keys), keys, { root: home });
+      await expectAsks(write(settings), settings, { root: home });
+    });
+
+    it.each([
+      ['the home itself', () => home],
+      ['a directory holding it', () => dirname(home)],
+    ])('an approved directory that is %s asks for each', async (_label, approved) => {
+      const configure = (config: AgentConfig): void => {
+        config.settings.additionalDirectories = [approved()];
+      };
+      await expectAsks(write(keys), keys, { configure });
+      await expectAsks(write(settings), settings, { configure });
+    });
+  });
+
   it('an approved directory carries the same control paths', async () => {
     const approved = tempDir('book-accept-edits-approved-');
     const configure = (config: AgentConfig): void => {
@@ -765,5 +850,105 @@ describe('a root is judged on its own', () => {
     expect(judge(target('b.ts'))).toBe(false);
     expect(judge(target('c.ts'))).toBe(false);
     expect(readFile.mock.calls.length).toBe(reads);
+  });
+});
+
+describe('a path that changes after it was judged', () => {
+  /** The registry, with `change` run between the gate and the tool, as a concurrent process could. */
+  function changingBeforeTheTool(change: () => void): ReturnType<typeof createDefaultRegistry> {
+    const registry = createDefaultRegistry();
+    const prepare = registry.prepare.bind(registry);
+    vi.spyOn(registry, 'prepare').mockImplementation((call, context) => {
+      if (call.id === 'w') change();
+      return prepare(call, context);
+    });
+    return registry;
+  }
+
+  it.skipIf(onWindows)('is not written through', async () => {
+    mkdirSync(join(workspace, 'plain'));
+    const { results, prompt } = await drive('accept-edits', [[write('plain/config')]], {
+      registry: changingBeforeTheTool(() => {
+        rmSync(join(workspace, 'plain'), { recursive: true });
+        symlinkSync('.git', join(workspace, 'plain'));
+      }),
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'w')?.status).not.toBe('success');
+    expect(readFileSync(join(workspace, '.git', 'config'), 'utf8')).toBe('[core]\n');
+  });
+
+  it('a path that stays put is written', async () => {
+    const { results, prompt } = await drive('accept-edits', [[write('src/new.ts')]], {
+      registry: changingBeforeTheTool(() => {}),
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'w')?.status).toBe('success');
+  });
+
+  it.skipIf(onWindows)('a judged path does not hold once the call was asked about', async () => {
+    mkdirSync(join(workspace, 'real'));
+    symlinkSync('real', join(workspace, 'through'));
+    const { results, prompt } = await drive('default', [[write('through/new.ts')]], {
+      answers: ['allow'],
+    });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(byId(results, 'w')?.status).toBe('success');
+    expect(readFileSync(join(workspace, 'real', 'new.ts'), 'utf8')).toBe('new\n');
+  });
+});
+
+describe.skipIf(onWindows)('a folder that becomes a link while a file is changed', () => {
+  it('writeFileAtomically leaves what it now leads to alone', async () => {
+    symlinkSync('.git', join(workspace, 'plain'));
+    await expect(
+      writeFileAtomically(join(workspace, 'plain', 'config'), Buffer.from('x')),
+    ).rejects.toThrow('changed while it was being written to');
+    expect(readFileSync(join(workspace, '.git', 'config'), 'utf8')).toBe('[core]\n');
+    expect(
+      readdirSync(join(workspace, '.git')).filter((name) => name.includes('book-tmp')),
+    ).toEqual([]);
+  });
+
+  it('removeFileAtomically leaves what it now leads to alone', async () => {
+    symlinkSync('.git', join(workspace, 'plain'));
+    await expect(removeFileAtomically(join(workspace, 'plain', 'config'))).rejects.toThrow(
+      'changed while it was being written to',
+    );
+    expect(existsSync(join(workspace, '.git', 'config'))).toBe(true);
+  });
+
+  it('ApplyPatch deletes a link, not what it leads to', async () => {
+    put(join(workspace, 'real.txt'), 'kept\n');
+    symlinkSync('real.txt', join(workspace, 'plain.txt'));
+    const { results } = await drive('default', [[patch('*** Delete File: plain.txt')]], {
+      answers: ['allow'],
+    });
+    expect(byId(results, 'p')?.status).toBe('success');
+    expect(existsSync(join(workspace, 'plain.txt'))).toBe(false);
+    expect(readFileSync(join(workspace, 'real.txt'), 'utf8')).toBe('kept\n');
+  });
+
+  it('NotebookEdit through a link changes the notebook and keeps the link', async () => {
+    const notebook = JSON.stringify({ cells: [], metadata: {}, nbformat: 4, nbformat_minor: 5 });
+    put(join(workspace, 'real.ipynb'), notebook);
+    symlinkSync('real.ipynb', join(workspace, 'plain.ipynb'));
+    const { results } = await drive(
+      'default',
+      [
+        [read('plain.ipynb')],
+        [
+          {
+            id: 'n',
+            name: 'NotebookEdit',
+            arguments: { notebook_path: 'plain.ipynb', new_source: 'x', edit_mode: 'insert' },
+          },
+        ],
+      ],
+      { answers: ['allow'] },
+    );
+    expect(byId(results, 'n')?.status).toBe('success');
+    expect(lstatSync(join(workspace, 'plain.ipynb')).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(workspace, 'real.ipynb'), 'utf8')).not.toBe(notebook);
   });
 });

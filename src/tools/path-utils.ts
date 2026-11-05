@@ -107,6 +107,12 @@ export interface PathRoots {
   workspaceRoot: string;
   readOnlyRoots?: readonly string[];
   /**
+   * Where `accept-edits` found each target of the call it approved on its own, by the path as the
+   * call spells it (`ToolContext.judgedEditTargets`). A write lands where it was judged to land, or
+   * not at all: {@link resolveMutationPath} serves no other place.
+   */
+  judgedEditTargets?: ReadonlyMap<string, string>;
+  /**
    * Book's project memory directory as a search root (`ToolContext.memorySearchRoot`), for the
    * tools that walk a tree: a path in it is served unless a dot-entry lies between it and the root.
    */
@@ -243,12 +249,21 @@ export function resolveMutationPath(
     ? resolveMemoryWritePath(context.workspaceRoot, context.memoryWrite.root, inputPath)
     : null;
   if (memory) return memory;
+  // A path that moved since it was judged is refused like one no root serves: the call is not the
+  // one that was approved, and asking again is the loop's to do on the model's next attempt.
+  const judged = context.judgedEditTargets?.get(inputPath);
+  const movedSinceJudged = (canonicalPath: string): boolean =>
+    judged !== undefined && canonicalPath !== judged;
   const inWorkspace = resolveWorkspacePath(context.workspaceRoot, inputPath);
-  if (inWorkspace) return { ...inWorkspace, root: context.workspaceRoot, inWorkspace: true };
+  if (inWorkspace) {
+    if (movedSinceJudged(inWorkspace.canonicalPath)) return null;
+    return { ...inWorkspace, root: context.workspaceRoot, inWorkspace: true };
+  }
   if (!isAbsolute(inputPath)) return null;
   for (const root of context.additionalRoots ?? []) {
     const match = resolveWorkspacePath(root, inputPath);
     if (!match) continue;
+    if (movedSinceJudged(match.canonicalPath)) return null;
     const rel = relative(resolve(context.workspaceRoot), match.filePath);
     return { ...match, relativePath: rel.replace(/\\/g, '/'), root, inWorkspace: false };
   }
@@ -469,6 +484,32 @@ export function canonicalizePath(inputPath: string): string {
  */
 export function isUnderRoot(canonicalPath: string, root: string): boolean {
   return !isOutside(canonicalizePath(root), canonicalPath);
+}
+
+/**
+ * An entry name as a file system that folds names reads it: case (NTFS, APFS, a case-insensitive
+ * mount), Unicode form, the code points HFS+ ignores, an NTFS stream suffix, and the trailing dots
+ * and spaces Win32 drops. Comparing folded names on every platform can only make two different
+ * paths read as one, so use it where that errs on the safe side.
+ */
+function foldedEntryName(name: string): string {
+  return name
+    .normalize('NFC')
+    .replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g, '')
+    .replace(/:.*$/, '')
+    .replace(/[. ]+$/, '')
+    .toLowerCase();
+}
+
+/**
+ * A whole path with each name folded ({@link foldedEntryName}). The first segment is the drive,
+ * whose `:` is no stream suffix, or empty.
+ */
+export function foldedPath(path: string, separator: string = sep): string {
+  return path
+    .split(separator)
+    .map((segment, index) => (index === 0 ? segment.toLowerCase() : foldedEntryName(segment)))
+    .join(separator);
 }
 
 /**

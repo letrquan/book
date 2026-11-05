@@ -148,6 +148,8 @@ export interface WorkspaceScope {
    * `judgeReads`; false for a workspace that holds a home directory.
    */
   autoAllowReads: boolean;
+  /** Set by {@link acceptEditsCovers}: where it found each target of the call it approved. */
+  judgedEditTargets?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -1272,13 +1274,17 @@ export function acceptEditsCovers(
     additionalRoots: scope.additionalRoots,
     memoryWrite: scope.memoryWrite,
   };
-  return mutationTargets(tool, call.arguments).every((target) => {
+  const judged = new Map<string, string>();
+  const covered = mutationTargets(tool, call.arguments).every((target) => {
     const resolved = target === undefined ? null : resolveMutationPath(roots, target);
     if (!resolved || resolved.memory) return true;
+    judged.set(target as string, resolved.canonicalPath);
     return (
       scope.autoAllowReads && !paths.isGuarded(resolved.canonicalPath) && !isControlPath(resolved)
     );
   });
+  if (covered) scope.judgedEditTargets = judged;
+  return covered;
 }
 
 /**
