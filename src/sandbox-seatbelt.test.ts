@@ -376,6 +376,22 @@ describe('buildSeatbeltPolicy', () => {
       });
     }
 
+    it('keeps an ordinary nested entry and the directories above it where they are', () => {
+      const entry = `${WS}/a/b/build`;
+      const policy = policyFor(
+        { filesystem: { allowWrite: [entry] } },
+        repoTree({ [`${entry}/keep`]: 'file' }),
+      );
+
+      expect(policy.notices).toBeUndefined();
+      expect(canWrite(policy, `${entry}/keep`)).toBe(true);
+      expect(canRemove(policy, `${entry}/keep`)).toBe(true);
+      for (const path of [entry, `${WS}/a/b`, `${WS}/a`]) {
+        expect(canRemove(policy, path), path).toBe(false);
+      }
+      expect(canCreate(policy, `${WS}/a/other`)).toBe(true);
+    });
+
     it('is kept when the link is in no writable directory', () => {
       const policy = policyFor(
         { filesystem: { allowWrite: ['/alias'] } },

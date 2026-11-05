@@ -1258,6 +1258,9 @@ a `notice` event under `stream-json`), and each command's output repeats it for 
 backends apply the first rule; the second is specific to bubblewrap, since Seatbelt matches resolved
 paths.
 
+An entry nested in a writable root stays where it was declared: the directories above it are pinned,
+as they are above a `denyWrite` entry, so removing one inside the sandbox fails with `EBUSY`.
+
 A git dir is found by following a `.git` **file** (`gitdir: …`), a `commondir` file,
 `.git/worktrees/*`, and nested `.git/modules/*` — including a submodule path with several segments,
 whose git dir is at `.git/modules/libs/deep` under the container directory `libs` — so linked

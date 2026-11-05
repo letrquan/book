@@ -1476,19 +1476,20 @@ function shallowestFirst(paths: string[], host: SandboxHost): string[] {
 }
 
 /**
- * The directories to pin for the `denyWrite` entries, by the layer of the
- * writable root each entry lies in (#634).
+ * The directories to pin above the `denyWrite` entries and the `allowWrite`
+ * entries, by the layer of the writable root each one lies in (#634): the
+ * deepest root strictly above it, as an entry is a root of its own.
  *
- * A read-only bind makes the entry itself un-renameable, but renaming a
- * directory above it carries the mount away, and a fresh directory takes the
- * old path. A writable self-bind of each directory strictly between the root
- * and the entry makes that rename fail with `EBUSY`, as `pinnedDirectories`
- * does for the control files. Nothing is pinned inside a read-only protected
- * directory, where nothing can be renamed, or at a path already bound. The
- * caller emits each layer shallowest first, so no later bind covers a pin.
+ * A bind makes the entry itself un-renameable, but renaming a directory above it
+ * carries the mount away, and a fresh directory takes the old path. A writable
+ * self-bind of each directory strictly between the root and the entry makes that
+ * rename fail with `EBUSY`, as `pinnedDirectories` does for the control files, so
+ * the directory stays where it was declared. Nothing is pinned inside a read-only
+ * protected directory, where nothing can be renamed, or at a path already bound.
+ * The caller emits each layer shallowest first, so no later bind covers a pin.
  */
-function denyWritePins(
-  denied: string[],
+function pinsAbove(
+  targets: string[],
   roots: WritableRoot[],
   paths: ProtectedWorkspacePaths,
   host: SandboxHost,
@@ -1498,9 +1499,9 @@ function denyWritePins(
     .map((mount) => canonicalPath(mount.path, host));
   const pins: Record<WritableRoot['layer'], string[]> = { base: [], 'opt-in': [] };
   const bound = new Set(roots.map((root) => root.at));
-  for (const target of denied) {
+  for (const target of targets) {
     const container = roots
-      .filter((root) => !isOutside(root.canonical, target, host.path))
+      .filter((root) => root.canonical !== target && !isOutside(root.canonical, target, host.path))
       .sort((left, right) => right.canonical.length - left.canonical.length)[0];
     if (!container) continue;
     const between = host.path
@@ -1831,7 +1832,12 @@ export function buildSandboxExecution(
   const deniedWrites = present(settings.filesystem.denyWrite).map((target) =>
     canonicalPath(target, host),
   );
-  const pins = denyWritePins(deniedWrites, writableRoots, paths, host);
+  const pins = pinsAbove(
+    [...deniedWrites, ...[...allowWriteRoots, ...optInRoots].map((at) => canonicalPath(at, host))],
+    writableRoots,
+    paths,
+    host,
+  );
   // Where the namespace shows a canonical path: the spelling of the deepest
   // writable root holding it plus the rest, or null when no root holds it.
   const inWritableRoot = (canonical: string): string | null => {
@@ -2266,6 +2272,9 @@ export function buildSeatbeltPolicy(
     ...tempRoots,
     ...paths.pinnedDirectories.map(canon),
     ...[...hiddenPaths, ...denyWrite].flatMap((path) => ancestorsOf(path, host)),
+    // An `allowWrite` entry stays where it was declared, as a bind keeps it under
+    // bubblewrap: there is no mount here to keep the entry itself in place.
+    ...[...allowWrite, ...optIns].flatMap((path) => [path, ...ancestorsOf(path, host)]),
   ]);
   const notCreatable = new Set(
     [...(workspace ? [workspace] : []), ...deniedPaths].flatMap((path) => ancestorsOf(path, host)),

@@ -3218,6 +3218,80 @@ describe('buildSandboxExecution workspace control files', () => {
       }
     });
 
+    it('pins the directories above a nested entry, as above a denyWrite entry', () => {
+      const bound = (args: string[]): string[] => withFlag(args, '--bind').map(([, at]) => at);
+      const nested = {
+        '/real/ws/a': 'dir',
+        '/real/ws/a/b': 'dir',
+        '/real/ws/a/b/build': 'dir',
+      } as const;
+
+      expect(
+        bound(build(WORKSPACE_REAL, { allowWrite: ['/real/ws/a/b/build'] }, {}, nested)),
+      ).toEqual([WORKSPACE_REAL, '/real/ws/a', '/real/ws/a/b', '/real/ws/a/b/build']);
+      // Under a root above the workspace, whichever spelling reached it.
+      expect(
+        bound(
+          build(
+            WORKSPACE_REAL,
+            { allowWrite: ['/alias', '/alias/x/y'] },
+            { '/alias': '/real' },
+            { '/real/x': 'dir', '/real/x/y': 'dir' },
+          ),
+        ),
+      ).toEqual(['/real', WORKSPACE_REAL, '/real/x', '/real/x/y']);
+      // Directly below its root there is nothing between them.
+      expect(bound(build(WORKSPACE_REAL, { allowWrite: ['/real/ws/a'] }, {}, nested))).toEqual([
+        WORKSPACE_REAL,
+        '/real/ws/a',
+      ]);
+      // Outside every root there is nothing above it to pin.
+      expect(
+        bound(build(WORKSPACE_REAL, { allowWrite: ['/data/x'] }, {}, { '/data/x': 'dir' })),
+      ).toEqual([WORKSPACE_REAL, '/data/x']);
+    });
+
+    it('pins nothing twice, nothing missing and nothing in a read-only directory', () => {
+      const bound = (args: string[]): string[] => withFlag(args, '--bind').map(([, at]) => at);
+
+      // A directory in between that is itself an entry is bound once, as an entry.
+      expect(
+        bound(
+          build(
+            WORKSPACE_REAL,
+            { allowWrite: ['/real/ws/a/b/c', '/real/ws/a'] },
+            {},
+            { '/real/ws/a': 'dir', '/real/ws/a/b': 'dir', '/real/ws/a/b/c': 'dir' },
+          ),
+        ),
+      ).toEqual([WORKSPACE_REAL, '/real/ws/a', '/real/ws/a/b', '/real/ws/a/b/c']);
+      // A directory the host does not report as one is no bind source.
+      expect(
+        bound(
+          build(
+            WORKSPACE_REAL,
+            { allowWrite: ['/real/ws/gone/c'] },
+            {},
+            { '/real/ws/gone/c': 'dir' },
+          ),
+        ),
+      ).toEqual([WORKSPACE_REAL, '/real/ws/gone/c']);
+      // Read-only protected directories hold their entries as they are.
+      const optIns = build(
+        WORKSPACE_REAL,
+        { allowWrite: ['/real/ws/.git/hooks/sub/deep', '/real/ws/.book/cache/deep'] },
+        {},
+        {
+          '/real/ws/.git/hooks/sub': 'dir',
+          '/real/ws/.git/hooks/sub/deep': 'dir',
+          '/real/ws/.book/cache': 'dir',
+          '/real/ws/.book/cache/deep': 'dir',
+        },
+      );
+      expect(bound(optIns)).not.toContain('/real/ws/.git/hooks/sub');
+      expect(bound(optIns)).not.toContain('/real/ws/.book/cache');
+    });
+
     it('binds an ordinary directory nested in a writable root, and says nothing', () => {
       const exec = execFor(
         WORKSPACE_REAL,
@@ -5501,6 +5575,70 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
               links: [[['alias'], ['real']]],
               allowWrite: [['alias']],
               denyWrite: [['alias']],
+            },
+            {
+              name: 'a nested entry, with directories to pin above it',
+              dirs: [['real', 'proj', 'a', 'b', 'build']],
+              links: [],
+              allowWrite: [['real', 'proj', 'a', 'b', 'build']],
+              writes: [
+                [
+                  ['real', 'proj', 'a', 'b', 'build', 'x'],
+                  ['real', 'proj', 'a', 'b', 'build', 'x'],
+                ],
+                [
+                  ['real', 'proj', 'a', 'y'],
+                  ['real', 'proj', 'a', 'y'],
+                ],
+              ],
+            },
+            {
+              name: 'a nested entry with another entry in between',
+              dirs: [['real', 'proj', 'a', 'b', 'c']],
+              links: [],
+              allowWrite: [
+                ['real', 'proj', 'a', 'b', 'c'],
+                ['real', 'proj', 'a'],
+              ],
+              writes: [
+                [
+                  ['real', 'proj', 'a', 'x'],
+                  ['real', 'proj', 'a', 'x'],
+                ],
+                [
+                  ['real', 'proj', 'a', 'b', 'c', 'y'],
+                  ['real', 'proj', 'a', 'b', 'c', 'y'],
+                ],
+              ],
+            },
+            {
+              name: 'a nested entry under a root spelled through a link',
+              dirs: [['real', 'x', 'y']],
+              links: [[['alias'], ['real']]],
+              allowWrite: [['alias'], ['alias', 'x', 'y']],
+              writes: [
+                [
+                  ['alias', 'x', 'y', 'z'],
+                  ['real', 'x', 'y', 'z'],
+                ],
+              ],
+            },
+            {
+              name: 'a nested entry that is not there',
+              links: [],
+              allowWrite: [['real', 'proj', 'gone', 'build']],
+            },
+            {
+              name: 'a nested entry in the settings directory',
+              dirs: [['real', 'proj', '.book', 'cache', 'deep']],
+              links: [],
+              allowWrite: [['real', 'proj', '.book', 'cache', 'deep']],
+              writes: [
+                [
+                  ['real', 'proj', '.book', 'cache', 'deep', 'x'],
+                  ['real', 'proj', '.book', 'cache', 'deep', 'x'],
+                ],
+              ],
             },
           ];
 
