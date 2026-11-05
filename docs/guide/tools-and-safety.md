@@ -910,7 +910,13 @@ approve its own hooks. Non-interactive runs skip unapproved hooks with a warning
 
 `book doctor` lists each withheld hook with everything the fingerprint covers — command, matcher,
 and environment — because approval covers all of them: `npm test` carrying
-`NODE_OPTIONS=--require ./payload.js` is not the `npm test` it looks like. Record the decision with
+`NODE_OPTIONS=--require ./payload.js` is not the `npm test` it looks like. Those fields, and a
+workspace provider's id and origin, are printed with every control character as a visible escape (a
+newline as `\n`, an ANSI escape as `\x1b`, a bidi override as `\u202e`), so those characters cannot
+break the line or reorder it. A hook's `book doctor` entry also says when its command holds a real
+line break, which text spelling `\n` would read the same as, and when a value is too long to show
+and ends in `…`: approval covers all of it, so read it in `.book/settings.json` first. Record the
+decision with
 
 ```bash
 book trust hook <fingerprint>          # or --all-pending for every withheld hook
