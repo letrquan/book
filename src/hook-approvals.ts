@@ -16,6 +16,7 @@
  * or for the user.
  */
 import { createHash } from 'crypto';
+import { CONTROL_CHARACTERS } from './control-characters.js';
 import { HOOK_EVENTS, type HookEntry, type HookEvent, type ProjectHookChoice } from './settings.js';
 import { updateWorkspaceTrust } from './workspace-trust.js';
 
@@ -89,6 +90,15 @@ export function partitionProjectHooks(
   return partition;
 }
 
+/** One control character as text a reader can see: a mnemonic, `\xNN` for C0 and C1, or `\uNNNN`. */
+function visibleEscape(character: string): string {
+  if (character === '\n') return '\\n';
+  if (character === '\r') return '\\r';
+  if (character === '\t') return '\\t';
+  const hex = character.charCodeAt(0).toString(16);
+  return hex.length <= 2 ? `\\x${hex.padStart(2, '0')}` : `\\u${hex.padStart(4, '0')}`;
+}
+
 /**
  * Render repository-authored text for a terminal that is about to ask the user
  * to trust it.
@@ -96,18 +106,24 @@ export function partitionProjectHooks(
  * A hook command and its environment values are written by the party being
  * gated. Printed raw, a value carrying newlines or ANSI escapes can forge
  * further lines of the report — including an `[x] …` line for a hook that is
- * nothing of the kind. Control characters become visible escapes, and an
- * over-long value is truncated so one entry cannot push the rest of the
- * disclosure off screen.
+ * nothing of the kind — and a bidi override or a line separator can make the
+ * line read as something it does not say. Every character of
+ * {@link CONTROL_CHARACTERS} becomes a visible escape, and an over-long value
+ * is truncated so one entry cannot push the rest of the disclosure off screen.
+ *
+ * The limit counts the escaped length. The walk is by code point and an escape
+ * goes in whole or not at all, so the cut never leaves half of one, or half of
+ * a surrogate pair: a backslash the value itself holds is kept, so half an
+ * escape could not be told from text and removed afterwards.
  */
 export function renderUntrustedText(value: string, maxLength = 200): string {
-  const escaped = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, (character) => {
-    if (character === '\n') return '\\n';
-    if (character === '\r') return '\\r';
-    if (character === '\t') return '\\t';
-    return `\\x${character.codePointAt(0)!.toString(16).padStart(2, '0')}`;
-  });
-  return escaped.length > maxLength ? `${escaped.slice(0, maxLength)}…` : escaped;
+  let rendered = '';
+  for (const character of value) {
+    const shown = character.replace(CONTROL_CHARACTERS, visibleEscape);
+    if (rendered.length + shown.length > maxLength) return `${rendered}…`;
+    rendered += shown;
+  }
+  return rendered;
 }
 
 /**

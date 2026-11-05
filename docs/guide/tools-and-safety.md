@@ -906,7 +906,10 @@ approve its own hooks. Non-interactive runs skip unapproved hooks with a warning
 
 `book doctor` lists each withheld hook with everything the fingerprint covers — command, matcher,
 and environment — because approval covers all of them: `npm test` carrying
-`NODE_OPTIONS=--require ./payload.js` is not the `npm test` it looks like. Record the decision with
+`NODE_OPTIONS=--require ./payload.js` is not the `npm test` it looks like. Text a repository wrote
+is printed with every control character as a visible escape (a newline as `\n`, an ANSI escape as
+`\x1b`, a bidi override as `\u202e`), so it cannot forge a line of the report or read in another
+order. Record the decision with
 
 ```bash
 book trust hook <fingerprint>          # or --all-pending for every withheld hook
