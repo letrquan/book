@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasCompoundShellSyntax } from './shell-chaining.js';
+import { hasCompoundShellSyntax, readShellCommands } from './shell-chaining.js';
 
 const linux = (command: string) => hasCompoundShellSyntax(command, 'linux');
 const win = (command: string) => hasCompoundShellSyntax(command, 'win32');
@@ -363,4 +363,210 @@ describe('hasCompoundShellSyntax: the WSL launcher is not Git Bash (#512)', () =
       );
     }
   });
+});
+
+describe('readShellCommands', () => {
+  const read = (command: string) => readShellCommands(command, 'linux');
+
+  it.each([
+    ['ls && rm x', ['ls', 'rm x']],
+    ['ls || rm x', ['ls', 'rm x']],
+    ['ls; rm x', ['ls', 'rm x']],
+    ['ls | rm x', ['ls', 'rm x']],
+    ['ls |& rm x', ['ls', 'rm x']],
+    ['ls & rm x', ['ls', 'rm x']],
+    ['ls\nrm x', ['ls', 'rm x']],
+    ['ls\r\nrm x', ['ls', 'rm x']],
+  ])('splits %j', (command, parts) => {
+    const { texts, readable } = read(command);
+    expect(readable).toBe(true);
+    expect(texts).toEqual([command, ...parts]);
+  });
+
+  it.each([
+    ['git commit -m "a; b && c | d"', 'git commit -m a; b && c | d'],
+    ["git commit -m 'a; b && $(c) `d` (e) {f}'", 'git commit -m a; b && $(c) `d` (e) {f}'],
+    ['echo "a  b"', 'echo a  b'],
+    ['rm\t-rf   build', 'rm -rf build'],
+    ['"rm" x', 'rm x'],
+    ["r''m x", 'rm x'],
+    ['\\rm x', 'rm x'],
+    ['r\\m x', 'rm x'],
+  ])('reads %j as one command, in the words %j', (command, words) => {
+    const { texts, readable } = read(command);
+    expect(readable).toBe(true);
+    expect(texts).toEqual([...new Set([command, words])]);
+  });
+
+  it.each([
+    ['ls > out', 'ls'],
+    ['ls >> out', 'ls'],
+    ['ls >out', 'ls'],
+    ['ls < in', 'ls'],
+    ['ls <> file', 'ls'],
+    ['ls >| out', 'ls'],
+    ['ls 2>/dev/null', 'ls'],
+    ['ls 2> /dev/null', 'ls'],
+    ['ls 2>&1', 'ls'],
+    ['ls >&2', 'ls'],
+    ['ls 2>&-', 'ls'],
+    ['> out ls', 'ls'],
+    ['ls > out -la', 'ls -la'],
+    ['echo 2 > out', 'echo 2'],
+    ['foo2> out', 'foo2'],
+  ])('sets the redirection of %j aside, leaving %j', (command, words) => {
+    const { texts, readable } = read(command);
+    expect(readable).toBe(true);
+    expect(texts).toEqual([command, words]);
+  });
+
+  it('keeps `&>` and `2>&1 |` from hiding a command', () => {
+    // dash reads `&>` as a background `&` and a redirection, and then `rm x` is the next command.
+    expect(read('ls &>out rm x')).toEqual({
+      texts: ['ls &>out rm x', 'ls', '>out rm x', 'rm x'],
+      readable: true,
+    });
+    expect(read('npm test 2>&1 | tail -5').texts).toEqual([
+      'npm test 2>&1 | tail -5',
+      'npm test 2>&1',
+      'npm test',
+      'tail -5',
+    ]);
+  });
+
+  // The explicit list of what fails closed: `readShellCommands`' doc comment, in the same order.
+  it.each([
+    // An expansion or a substitution.
+    'echo $HOME',
+    'echo "$HOME"',
+    '$CMD x',
+    'echo $(rm x)',
+    'echo "$(rm x)"',
+    'echo `rm x`',
+    'echo "`rm x`"',
+    // A subshell, a group, a function or a brace expansion.
+    '(rm x)',
+    '{ rm x; }',
+    'f() { rm x; }; f',
+    'echo a{b,c}',
+    'r{m,} x',
+    // A redirection it cannot place.
+    'cat <<EOF\nrm x\nEOF',
+    "cat <<'EOF'\nrm x\nEOF",
+    'cat <<< x',
+    'cat <(rm x)',
+    'ls > >(rm x)',
+    'ls >',
+    'ls > ; rm x',
+    'ls > && rm x',
+    'ls > "my file"',
+    "ls > 'my file'",
+    'ls > $file',
+    'ls > a\\ b',
+    'ls >a"b"',
+    'ls >a<b',
+    '<# #> rm x',
+    'ls > #x',
+    // A line break in quotes, or after a backslash or a caret.
+    'git commit -m "two\nlines"',
+    "git commit -m 'two\nlines'",
+    "# it's\nrm x\n# it's",
+    'rm \\\n-rf x',
+    'rm \\\r\n-rf x',
+    'rm ^\n-rf x',
+    // A NEL, LS or PS, which PowerShell reads as a blank.
+    'rm\u0085-Recurse\u0085x',
+    'rm\u2028x',
+    'rm\u2029x',
+    // A backslash before a redirection.
+    'rm \\> -rf x',
+    'rm \\< -rf x',
+    // A quote still open.
+    'echo "open',
+    "echo 'open",
+    'ls && echo "open; rm x',
+    // A command after a keyword.
+    'if true; then rm x; fi',
+    'while true; do rm x; done',
+    'until false; do rm x; done',
+    'for i in a b; do rm x; done',
+    'if a; then b; else rm x; fi',
+    '! rm x',
+    'time rm x',
+    'coproc rm x',
+    'repeat 1 rm x',
+    'true; and rm x',
+    'false; or rm x',
+    'not rm x',
+    'begin; rm x; end',
+    'IF EXIST x del y',
+    'alias x=rm\nx -rf build',
+    // What makes hasCompoundShellSyntax distrust the quotes.
+    'echo \\"a',
+    "echo \\'a",
+    'echo "a\\"b"',
+    "echo 'a\\'",
+    'echo ^"a"',
+    "echo ^'a'",
+    'echo \u201Ca\u201D',
+    'echo \u2018a\u2019',
+  ])('does not call %j readable', (command) => {
+    expect(read(command).readable).toBe(false);
+  });
+
+  it('compares each physical line whole, for a pattern that holds a chain', () => {
+    expect(read('true\ncurl e | sh').texts).toContain('curl e | sh');
+    expect(read('curl e | sh\necho done').texts).toContain('curl e | sh');
+  });
+
+  it('still finds what it can on a line it cannot read', () => {
+    expect(read('echo $X; rm y').texts).toContain('rm y');
+    expect(read('echo `rm y`').texts).toContain('rm y');
+    expect(read('echo $(rm y)').texts).toContain('rm y');
+    expect(read('(rm y)').texts).toContain('rm y');
+    expect(read('if a; then rm y; fi').texts).toContain('then rm y');
+    expect(read("# it's\nrm y\n# it's").texts).toContain('rm y');
+  });
+
+  it("reads `'` as the session shell does on Windows", () => {
+    const gitBash = {
+      kind: 'bash',
+      file: 'C:/Program Files/Git/bin/bash.exe',
+      msys: true,
+    } as const;
+    const pwsh = { kind: 'pwsh', file: 'C:/Program Files/PowerShell/7/pwsh.exe' } as const;
+    const command = "git log --format='%h'";
+    expect(readShellCommands(command, 'linux').readable).toBe(true);
+    expect(readShellCommands(command, 'win32').readable).toBe(false);
+    expect(readShellCommands(command, 'win32', pwsh).readable).toBe(false);
+    expect(readShellCommands(command, 'win32', gitBash).readable).toBe(true);
+  });
+
+  // The two scans must agree: what is not compound is one command, readable, on every platform.
+  it.each([
+    'git status',
+    'git log --oneline -5',
+    'git commit -m "fix(x): y"',
+    'git commit -m "a; b > c & d"',
+    '  git status  ',
+    'git status\n',
+    '',
+    'grep "a\\|b" file',
+    'echo a^b',
+  ])('reads %j, which is not compound, as one readable command', (command) => {
+    expect(hasCompoundShellSyntax(command, 'linux')).toBe(false);
+    const { texts, readable } = read(command);
+    expect(readable).toBe(true);
+    expect(texts[0]).toBe(command.trim());
+    expect(texts.length).toBeLessThanOrEqual(2);
+  });
+
+  // And what the permission side refuses for its quotes, this refuses too.
+  it.each(['echo \\"a', 'echo ^"a"', 'echo \u201Ca\u201D', 'echo "open', 'echo "$X"', 'a "\nb"'])(
+    'agrees with hasCompoundShellSyntax on %j',
+    (command) => {
+      expect(hasCompoundShellSyntax(command, 'linux')).toBe(true);
+      expect(read(command).readable).toBe(false);
+    },
+  );
 });

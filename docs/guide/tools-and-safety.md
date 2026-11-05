@@ -884,16 +884,76 @@ prompt through `/dev/tty`, and a Ctrl+C in the terminal goes to Book, not to the
 `matcher` filters `PreToolUse`/`PostToolUse` by tool call and `PreCompact`/`PostCompact` by
 trigger (`manual`, `auto`, `manual|auto`, or `*` for both). A tool matcher names a tool exactly
 (`Bash`, `mcp__github__create_issue`) and may narrow it with a glob on its primary argument, in the
-`Tool(pattern)` form permission rules use (`Bash(git *)`, `Edit(src/**)`; `*` matches anything, a
-trailing ` *` also matches the bare command, and an `Edit` or `Write` matcher also sees the files
-an `ApplyPatch` call edits). `*` matches every tool, as an absent or empty matcher does, and Claude
-Code's `A|B` matches either alternative (`Edit|Write`, `Bash(ls *)|Read`), split on a `|` outside
+`Tool(pattern)` form permission rules use (`Bash(git *)`, `Edit(src/**)`; an `Edit` or `Write`
+matcher also sees the files an `ApplyPatch` call edits). `*` matches every tool, as an absent or
+empty matcher does, and Claude Code's `A|B` matches either alternative (`Edit|Write`,
+`Bash(ls *)|Read`), split on a `|` outside
 the parentheses only; an alternative ends at the `)` that closes its pattern, and text after that
 `)` is ignored. Names are compared as written, never as regular expressions, so a matcher
 such as `Notebook.*` or `mcp__memory__.*` matches no tool. `book doctor` flags an alternative that
 matches nothing: a name no tool Book registers has, a regular expression, an MCP server name where
 a tool's belongs, or a pattern with no tool before it. It also notes text it ignores after a `)`. It
 leaves full `mcp__server__tool` names alone, because it does not start the servers.
+
+A hook's pattern is read as a permission rule's is: `*` is any run of characters, `/` included, `?`
+is exactly one character, everything else is itself, and a leading `./` is dropped from the pattern
+and the argument. So `Bash(ls *)` matches `ls -la` and not a bare `ls`; write `Bash(ls)|Bash(ls *)`
+for both. What differs from a rule is what the pattern is compared with, and how strictly:
+
+- **Case.** A hook compares case as written. A `deny` or `ask` rule on a path tool folds it.
+- **MCP.** A bare `mcp__server` names no tool in a hook. As a rule, it covers that server's tools.
+- **`?` in Bash.** It is always a wildcard in a hook. An exact `Bash` allow rule, one without a `*`,
+  keeps it literal.
+- **Paths.** A hook on a file tool or a patch reads the path as written, relative to the workspace,
+  absolute, and with links followed, as a `deny` or `ask` rule does, so `ApplyPatch(.env)` sees
+  `sub/../.env` and the absolute path. It has no form relative to an `additionalDirectories` root, so
+  `Write(.env)` as a rule covers `/srv/app/.env` and as a hook does not.
+- **`WebFetch`.** A rule compares the URL as parsed, and a hook compares it as written.
+- **Patches.** Any `ApplyPatch`, `Edit` or `Write` hook compares every file the patch touches, whatever
+  the operation, so `Edit(.env)` runs on `*** Delete File: .env`. As rules, `Edit` covers updates only,
+  and `Write` updates and adds.
+- **Bash.** A hook splits the command line, and a rule does not, as follows.
+
+A `Bash(pattern)` hook compares its pattern with the whole command and with each command the line
+chains, split outside quotes on `&&`, `||`, `;`, `|`, `&` and line breaks. Each is compared as written
+and as the shell reads its words: quotes and backslashes removed, blanks collapsed to one space, and
+a redirection with its target set aside. So `Bash(rm *)` runs on `ls && rm -rf build`, on `rm\t-rf x`,
+on `"rm" x` and on `rm x 2>/dev/null`. It does not run on `cd src && npm test`, `ls | head` or
+`npm test 2>&1 | tail`.
+
+A line Book cannot read in full fails closed: it selects a `Bash(pattern)` `PreToolUse` hook whatever
+the pattern, because the command the hook is for could be in the part it cannot see. That is a line
+with any of these:
+
+- `$` or a backtick outside single quotes (`echo $HOME`, `git commit -m "$(cat msg)"`);
+- `(`, `)`, `{` or `}` outside quotes (a subshell, a group, a function, a brace expansion);
+- a heredoc or here-string, a process substitution, or a redirection whose target is not one plain
+  word (`ls > "my file"`);
+- a line break inside quotes (`git commit -m` with a two-line message in the quotes), or after a
+  backslash or a caret;
+- a Unicode line separator (NEL, LS or PS) outside quotes, which PowerShell reads as a blank;
+- a backslash before `<` or `>`;
+- a quote still open at the end;
+- a command that opens with `if`, `then`, `elif`, `else`, `while`, `until`, `do`, `time`, `coproc`,
+  `repeat`, `and`, `or`, `not`, `begin`, `alias` or `!`;
+- a backslash before a quote, a caret before a quote outside quotes, or a typographic quote;
+- on Windows, any `'`, unless the session shell reads it as POSIX does (a bash or sh on the MSYS
+  runtime, such as Git Bash), as the permission rules read it.
+
+A hook has no prompt to send such a line to, so a script that is a bare `exit 2` refuses all of them.
+A narrowed blocking hook should read `tool_args.command` and decide. Only that case fails closed:
+
+- A `PostToolUse` hook runs only where its pattern matches what the line was read as. Its `modify`
+  replaces the output, so a hook must not run on a command it never named.
+- A `*(pattern)` hook on a Bash call compares the same text, and likewise runs only on a match,
+  because its pattern need not be about a shell command at all.
+
+The pattern still compares text, as a rule's does, so a command another command runs is that command's
+text: `sudo rm x`, `env rm x`, `FOO=1 rm x`, `/bin/rm x`, `bash -c "rm x"` and `eval "rm x"` do not
+select `Bash(rm *)`. So do PowerShell's `. rm x` and `return rm x`, and cmd.exe's `r^m x` and
+`%VAR%`, whose syntax the scan does not read. A pattern that holds a chain itself compares the text
+as written, one line at a time, so `Bash(curl * | sh)` does not select `curl e|sh`. To judge any of
+those, match the bare `Bash` and filter inside the script.
 
 `PreCompact` receives `trigger`, `focus`, and, when the span about to be summarized
 contains text addressed to a summarizer, `suspect_inputs`: a list of `{ eventRef, excerpt }`; exit

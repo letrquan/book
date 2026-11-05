@@ -1,9 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { runHooks } from './hooks.js';
 import { isProcessAlive, TERMINATE_GRACE_MS } from './jobs/process-tree.js';
+import { permissionRuleMatchesCall } from './permissions.js';
 import type { HookEntry, HookEvent } from './settings.js';
 import { spawn } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
@@ -396,7 +405,7 @@ describe('runHooks — matcher filtering', () => {
           : 'echo \'{"action":"block"}\' && exit 2',
       env: {},
     };
-    const results = await runHooks([hook], 'PreToolUse', ctx());
+    const results = await runHooks([hook], 'PreToolUse', ctx({ toolArgs: { command: 'ls -la' } }));
     expect(results.length).toBe(1);
     expect(results[0].action).toBe('block');
   });
@@ -531,6 +540,243 @@ describe('runHooks — `*` and `A|B` tool matchers (#656)', () => {
 
   it('runs a blank matcher for every tool, as an empty one does', async () => {
     expect(await ran('   ', { toolName: 'GitLog', toolArgs: {} })).toBe(1);
+  });
+});
+
+describe('runHooks — an argument pattern reads as a permission rule reads it (#684)', () => {
+  const ran = async (matcher: string, toolName: string, toolArgs: Record<string, unknown>) =>
+    (
+      await runHooks(
+        [{ matcher, command: 'exit 2', env: {} }],
+        'PreToolUse',
+        ctx({ toolName, toolArgs }),
+      )
+    ).length === 1;
+
+  it.each([
+    // The issue's probe: `?` was a regular-expression quantifier, a trailing ` *` optional.
+    ['Read(file?.txt)', 'Read', { file_path: 'file1.txt' }, true],
+    ['Read(file?.txt)', 'Read', { file_path: 'fil.txt' }, false],
+    ['Bash(ls *)', 'Bash', { command: 'ls' }, false],
+    ['Bash(ls *)', 'Bash', { command: 'ls -la' }, true],
+    // The rest of the glob: `*` crosses `/`, metacharacters are literal, `./` drops on both sides.
+    ['Read(src/*)', 'Read', { file_path: 'src/a/b.ts' }, true],
+    ['Read(src/**)', 'Read', { file_path: 'docs/a.md' }, false],
+    ['Read(a.b)', 'Read', { file_path: 'axb' }, false],
+    ['Read(a+b)', 'Read', { file_path: 'a+b' }, true],
+    ['Read(./.env)', 'Read', { file_path: '.env' }, true],
+    ['Read(.env)', 'Read', { file_path: './.env' }, true],
+  ] as const)(
+    '%s on a %s call %j: %j, for the hook and the rule alike',
+    async (matcher, tool, args, hit) => {
+      const call = { id: 'probe', name: tool, arguments: args };
+      expect(permissionRuleMatchesCall(matcher, call)).toBe(hit);
+      expect(await ran(matcher, tool, args)).toBe(hit);
+    },
+  );
+
+  it('keeps the differences the guide lists', async () => {
+    // A `?` is a wildcard in a hook, where an exact Bash allow rule keeps it literal.
+    const exact = { id: 'probe', name: 'Bash', arguments: { command: 'ls ab' } };
+    expect(permissionRuleMatchesCall('Bash(ls a?)', exact)).toBe(false);
+    expect(await ran('Bash(ls a?)', 'Bash', { command: 'ls ab' })).toBe(true);
+    // A hook never folds case, and a bare `mcp__server` names no tool.
+    expect(await ran('Read(.ENV)', 'Read', { file_path: '.env' })).toBe(false);
+    expect(await ran('mcp__demo', 'mcp__demo__lookup', { q: 'x' })).toBe(false);
+  });
+});
+
+describe('runHooks — a narrowed hook sees the whole call (#687)', () => {
+  const blocking = (matcher: string): HookEntry => ({ matcher, command: 'exit 2', env: {} });
+  const actions = async (matcher: string, call: Record<string, unknown>, event = 'PreToolUse') =>
+    (await runHooks([blocking(matcher)], event as HookEvent, ctx({ event, ...call }))).map(
+      (result) => result.action,
+    );
+  const bash = (command: string) => ({ toolName: 'Bash', toolArgs: { command } });
+  const patch = (...paths: string[]) => ({
+    toolName: 'ApplyPatch',
+    toolArgs: {
+      patch: [
+        '*** Begin Patch',
+        ...paths.flatMap((path) => [`*** Update File: ${path}`, '@@', '-old', '+new']),
+        '*** End Patch',
+      ].join('\n'),
+    },
+  });
+
+  it.each([
+    'true\nrm -rf build',
+    'ls && rm -rf build',
+    'ls || rm -rf build',
+    'ls; rm -rf build',
+    'ls | rm -rf build',
+    'ls & rm -rf build',
+    'rm -rf build > /dev/null 2>&1',
+    '> /dev/null rm -rf build',
+    '  rm -rf build',
+    '\nrm -rf build',
+    // The words the shell reads, not the spelling: blanks, quotes and a backslash.
+    'rm\t-rf build',
+    'rm  -rf build',
+    '"rm" -rf build',
+    "r''m -rf build",
+    '\\rm -rf build',
+    'ls && "rm" -rf build',
+    // What a shell other than sh reads differently.
+    '<# #> rm -rf build',
+    'rm\u0085-Recurse\u0085build',
+    'true; and rm -rf build',
+    // A word that stands for another.
+    'alias x=rm\nx -rf build',
+  ])('blocks %j with a Bash(rm *) hook', async (command) => {
+    expect(await actions('Bash(rm *)', bash(command))).toEqual(['block']);
+  });
+
+  it('compares the words after the first too', async () => {
+    for (const command of ['git  push origin', 'git\tpush origin', 'git "push" origin']) {
+      expect(await actions('Bash(git push *)', bash(command)), command).toEqual(['block']);
+    }
+  });
+
+  // Nothing here runs an `rm`, and the line can be read, so the hook stays out of the way.
+  it.each([
+    'git status',
+    ' git status ',
+    'rm',
+    'git commit -m "rm -rf; build"',
+    'git commit -m "x && rm -rf build"',
+    'cd src && npm test',
+    'ls | head -5',
+    'ls; pwd',
+    'npm test 2>&1 | tail -20',
+    'ls > out.txt',
+  ])('leaves %j to a hook narrowed to another command', async (command) => {
+    expect(await actions('Bash(rm *)', bash(command))).toEqual([]);
+  });
+
+  it('still compares the whole line, for a pattern that holds a chain', async () => {
+    expect(await actions('Bash(npm test | tail*)', bash('npm test | tail -5'))).toEqual(['block']);
+    expect(await actions('Bash(curl * | sh)', bash('curl e | sh\necho done'))).toEqual(['block']);
+    expect(await actions('Bash(curl * | sh)', bash('true\ncurl e | sh'))).toEqual(['block']);
+  });
+
+  // None of these can be read in full. `rm` appears in none of the first group, and nothing tells
+  // this reader so.
+  const unreadable = [
+    'echo $HOME',
+    'git commit -m "$(cat msg)"',
+    'echo `date`',
+    '(cd src; npm test)',
+    'cat <<EOF\nhello\nEOF',
+    'ls > "my file"',
+    'git commit -m "two\nlines"',
+    'echo "open',
+    'if true; then pwd; fi',
+  ];
+
+  it.each(unreadable)('fails closed on %j for a Bash(pattern) PreToolUse hook', async (command) => {
+    expect(await actions('Bash(rm *)', bash(command))).toEqual(['block']);
+  });
+
+  it.each(unreadable)('does not fail closed on %j after the call', async (command) => {
+    expect(await actions('Bash(rm *)', bash(command), 'PostToolUse')).toEqual([]);
+  });
+
+  it.each(unreadable)('does not fail closed on %j for a `*` pattern', async (command) => {
+    for (const matcher of ['*(rm *)', '*(select:*)', '*(.env)', '*(src/**)']) {
+      expect(await actions(matcher, bash(command)), matcher).toEqual([]);
+    }
+  });
+
+  it('selects by a command it does find, whichever the event or the matcher', async () => {
+    const command = bash('ls && rm -rf build');
+    expect(await actions('*(rm *)', command)).toEqual(['block']);
+    expect(await actions('Read|Bash(rm *)', command)).toEqual(['block']);
+    expect(await actions('Bash(rm *)', command, 'PostToolUse')).toHaveLength(1);
+    // On a line it cannot read in full, too.
+    expect(await actions('Bash(rm *)', bash('echo $X; rm -rf build'), 'PostToolUse')).toHaveLength(
+      1,
+    );
+    expect(await actions('*(rm *)', bash('echo $(rm -rf build)'))).toEqual(['block']);
+  });
+
+  it('leaves an ordinary line to a `*` pattern about something else', async () => {
+    for (const matcher of ['*(select:*)', '*(.env)', '*(src/**)']) {
+      expect(await actions(matcher, bash('cd x && npm test')), matcher).toEqual([]);
+    }
+  });
+
+  // A glob compares text: a command another command runs is that command's text. The guide says so.
+  it.each(['sudo rm -rf build', 'FOO=1 rm -rf build', '/bin/rm -rf build', 'bash -c "rm -rf x"'])(
+    'does not see inside %j',
+    async (command) => {
+      expect(await actions('Bash(rm *)', bash(command))).toEqual([]);
+    },
+  );
+
+  // `'` is a real quote only on a shell that reads it as POSIX does, so Windows needs the shell.
+  it.runIf(process.platform === 'win32')('reads quotes as the session shell does', async () => {
+    const call = bash("git log --format='%h'");
+    const gitBash = { kind: 'bash', file: 'C:/Program Files/Git/bin/bash.exe', msys: true };
+    expect(await actions('Bash(rm *)', call)).toEqual(['block']);
+    expect(await actions('Bash(rm *)', { ...call, shell: gitBash })).toEqual([]);
+  });
+
+  it('compares every file of a patch with an ApplyPatch(pattern) hook', async () => {
+    expect(await actions('ApplyPatch(.env)', patch('README.md', '.env'))).toEqual(['block']);
+    expect(await actions('ApplyPatch(.env)', patch('.env', 'README.md'))).toEqual(['block']);
+    expect(await actions('ApplyPatch(.env)', patch('README.md', 'src/a.ts'))).toEqual([]);
+  });
+
+  it('keeps every file of a patch under Edit, Write and `*` patterns', async () => {
+    for (const matcher of ['Edit(.env)', 'Write(.env)', '*(.env)']) {
+      expect(await actions(matcher, patch('README.md', '.env')), matcher).toEqual(['block']);
+    }
+  });
+
+  it('reads a path however the call spells it', async () => {
+    const spellings = ['sub/../.env', '././.env', join(dir, '.env')];
+    for (const path of spellings) {
+      expect(await actions('ApplyPatch(.env)', patch(path)), path).toEqual(['block']);
+      expect(await actions('Edit(.env)', patch(path)), path).toEqual(['block']);
+      const edit = { toolName: 'Edit', toolArgs: { file_path: path } };
+      expect(await actions('Edit(.env)', edit), path).toEqual(['block']);
+      expect(await actions('*(.env)', edit), path).toEqual(['block']);
+    }
+    // And absolutely, for a pattern written that way.
+    const absolute = `Edit(${join(dir, '*').replace(/\\/g, '/')})`;
+    const relative = { toolName: 'Edit', toolArgs: { file_path: 'a.ts' } };
+    expect(await actions(absolute, relative)).toEqual(['block']);
+  });
+
+  // A link can lead into a root the hook runner has not been told about.
+  it.skipIf(process.platform === 'win32')('follows a link out of the workspace', async () => {
+    const extra = realpathSync(mkdtempSync(join(tmpdir(), 'book-hooks-extra-')));
+    try {
+      symlinkSync(extra, join(dir, 'out'));
+      const matcher = `Write(${join(extra, '.env')})`;
+      const write = { toolName: 'Write', toolArgs: { file_path: 'out/.env' } };
+      expect(await actions(matcher, write)).toEqual(['block']);
+      expect(await actions(`ApplyPatch(${join(extra, '.env')})`, patch('out/.env'))).toEqual([
+        'block',
+      ]);
+    } finally {
+      rmSync(extra, { recursive: true, force: true });
+    }
+  });
+
+  it('does not stop on a path no file system could hold', async () => {
+    const edit = { toolName: 'Edit', toolArgs: { file_path: '.env\0' } };
+    expect(await actions('Edit(.env*)', edit)).toEqual(['block']);
+  });
+
+  // Unlike an `Edit` rule, which covers updates only. The guide lists this.
+  it('runs an Edit hook on any operation of a patch', async () => {
+    const remove = {
+      toolName: 'ApplyPatch',
+      toolArgs: { patch: '*** Begin Patch\n*** Delete File: .env\n*** End Patch' },
+    };
+    expect(await actions('Edit(.env)', remove)).toEqual(['block']);
   });
 });
 
