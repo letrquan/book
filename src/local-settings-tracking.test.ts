@@ -638,13 +638,16 @@ describe('the reasons', () => {
   });
 
   describe('the printed remedy works, run as printed', () => {
-    /** Runs the command in the reason from the workspace, as a user would paste it. */
-    function runRemedy(workspace: string): void {
-      const reason = localSettingsRefusal(join(workspace, LOCAL));
+    /**
+     * Runs the command in the reason from the workspace, as a user would paste it. `asked` wraps
+     * only the questions: the command runs in the real platform's shell.
+     */
+    function runRemedy(workspace: string, asked: <T>(ask: () => T) => T = (ask) => ask()): void {
+      const reason = asked(() => localSettingsRefusal(join(workspace, LOCAL)));
       const command = /`(git [^`]+)`/.exec(reason ?? '')?.[1];
       expect(command).toBeDefined();
       execSync(command!, { cwd: workspace, stdio: 'pipe' });
-      expect(localSettingsTracking(join(workspace, LOCAL)).state).toBe('untracked');
+      expect(asked(() => localSettingsTracking(join(workspace, LOCAL)).state)).toBe('untracked');
     }
 
     it('in the workspace’s own repository', () => {
@@ -702,13 +705,15 @@ describe('the reasons', () => {
         mkdirSync(join(dir, '.BOOK'));
         linkSync(join(dir, LOCAL), join(dir, '.BOOK', 'settings.local.json'));
       }
-      const original = process.platform;
-      Object.defineProperty(process, 'platform', { value: 'darwin' });
-      try {
-        runRemedy(dir);
-      } finally {
-        Object.defineProperty(process, 'platform', { value: original });
-      }
+      runRemedy(dir, (ask) => {
+        const original = process.platform;
+        Object.defineProperty(process, 'platform', { value: 'darwin' });
+        try {
+          return ask();
+        } finally {
+          Object.defineProperty(process, 'platform', { value: original });
+        }
+      });
     });
   });
 
