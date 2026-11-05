@@ -91,6 +91,7 @@ function run(
   maxBuffer = DEFAULT_MAX_BUFFER_BYTES,
 ): Promise<RunResult> {
   const env = internalGitEnv(options.env);
+  void env;
   const timeoutMs = options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
   const signal = options.signal;
   // An already-aborted signal must not start the child at all: the work it was asked to do is over,
