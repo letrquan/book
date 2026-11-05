@@ -626,6 +626,16 @@ describe('runDoctorCommand project-declared hooks', () => {
     expect(output).toContain('book trust hook --all-pending');
   });
 
+  it('shows a bidi override in a withheld hook as an escape', async () => {
+    writeProjectHooks({ PreToolUse: [{ command: 'echo safe \u202e hs', matcher: 'Bash\u2066' }] });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('[!] PreToolUse: echo safe \\u202e hs (not in effect)');
+    expect(output).toContain('matcher:     Bash\\u2066');
+    expect(output).not.toMatch(/[\u202e\u2066]/);
+  });
+
   // Approval covers matcher and env too, so a report of the command alone
   // understates the grant: this one reads as `npm test` and is not.
   it('discloses the matcher and environment approval would cover', async () => {
@@ -820,6 +830,19 @@ describe('runDoctorCommand tool-hook matchers (#656)', () => {
 
     expect(output).toContain('no tool is named "Nope\\n  [x] all good"');
     expect(output).not.toContain('\n  [x] all good');
+  });
+
+  it('shows a bidi override in a matcher as an escape', async () => {
+    writeUserSettings({
+      hooks: { PreToolUse: [{ command: 'a.sh', matcher: 'Nope\u202e' }] },
+    });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain(
+      '[!] PreToolUse matcher "Nope\\u202e": no tool is named "Nope\\u202e"',
+    );
+    expect(output).not.toContain('\u202e');
   });
 
   it('knows the tools a session registers around its own handles', async () => {
