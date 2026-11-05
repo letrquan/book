@@ -52,7 +52,8 @@ let dirs: string[] = [];
 let workspace: string;
 
 function tempDir(prefix: string): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  // Native: on Windows the temp directory is spelled in 8.3 form, and only this expands it.
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
   dirs.push(dir);
   return dir;
 }
