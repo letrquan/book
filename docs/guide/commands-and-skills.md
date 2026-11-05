@@ -87,6 +87,10 @@ options, and it is not a sandbox. `Bash(git *)` still admits `git -c alias.x='!â
 `git -c core.fsmonitor=â€¦ status`, which run other programs; when that matters, narrow the pattern
 (`Bash(git status)`, `Bash(git log *)`).
 
+`ApplyPatch(<glob>)` in `allowed-tools` covers every file the patch touches: each path, with its `.`
+and `..` segments resolved, has to fit a rule, and a patch Book cannot parse fits none. A
+`permissions.allow` rule on `ApplyPatch` reads a patch the same way.
+
 **A list that names a delegation tool holds the children too.** A child started with `Task` or
 `AgentSpawn` while a command's or skill's `allowed-tools` are in force gets only what its role and
 those lists both admit, rule by rule, so a list with `Bash(git *)` and `Task` gives a child that may
@@ -98,7 +102,7 @@ started. Lists are read as written, so name what the child needs (`EvidencePubli
 `EvidenceReview`, `Check`) or the child goes without; a path rule is matched against the child's own
 path, which in a `patcher`'s worktree is not your checkout's. An agent started outside the list keeps
 its own set, so `AgentSend` to it is refused with `child_outside_tool_ceiling` while the list is in
-force.
+force, and it waits until a turn without the list.
 
 Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/queue`, `/exit`,
 `/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent

@@ -218,6 +218,36 @@ describe('managed agent capabilities', () => {
       expect(bash.execute).toHaveBeenCalledOnce();
     });
 
+    it('holds every file of a patch to an ApplyPatch glob in the ceiling', async () => {
+      const parent = createRegistry();
+      const applyPatch: ToolDefinition = {
+        ...tool('ApplyPatch'),
+        parameters: { type: 'object', properties: { patch: { type: 'string' } } },
+      };
+      parent.register(applyPatch);
+      const registry = createCapabilityRegistry(parent, ['ApplyPatch'], {
+        ceiling: [['ApplyPatch(src/*)', 'Task']],
+      });
+      const call = (...paths: string[]): ToolCall => ({
+        id: 'p',
+        name: 'ApplyPatch',
+        arguments: {
+          patch: [
+            '*** Begin Patch',
+            ...paths.flatMap((path) => [`*** Add File: ${path}`, '+b']),
+            '*** End Patch',
+          ].join('\n'),
+        },
+      });
+
+      const outside = await registry.execute(call('src/a.ts', 'other/b.ts'), context);
+      const inside = await registry.execute(call('src/a.ts', 'src/b.ts'), context);
+
+      expect(outside.structuredError?.code).toBe('capability_denied');
+      expect(inside.status).toBe('success');
+      expect(applyPatch.execute).toHaveBeenCalledOnce();
+    });
+
     it('names the ceiling, not read-only isolation, when the ceiling refuses a read-only child', async () => {
       const parent = createRegistry();
       parent.register(tool('Read'));

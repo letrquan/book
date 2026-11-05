@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ToolCall } from '../types/tools.js';
 import {
   COMPOUND_COMMAND_REFUSAL,
   compoundCommandRefusal,
@@ -452,5 +453,84 @@ describe('compoundCommandRefusal names the Windows single-quote rule (#566)', ()
     expect(
       compoundCommandRefusal(call('Bash', { command: 'a && b' }), 'win32', { kind: 'cmd' }),
     ).toBe(COMPOUND_COMMAND_REFUSAL);
+  });
+});
+
+describe('ApplyPatch(<glob>) covers every file the patch touches', () => {
+  const patch = (...body: string[]): ToolCall => ({
+    id: 'p',
+    name: 'ApplyPatch',
+    arguments: { patch: ['*** Begin Patch', ...body, '*** End Patch'].join('\n') },
+  });
+  const update = (path: string) => [`*** Update File: ${path}`, '@@', '-a', '+b'];
+  const add = (path: string) => [`*** Add File: ${path}`, '+b'];
+  const del = (path: string) => [`*** Delete File: ${path}`];
+  const allowed = (rules: string[], call: ToolCall, platform: NodeJS.Platform = 'linux') =>
+    isToolCallAllowed(parseCapabilityRules(rules), call, undefined, platform);
+
+  it('admits a patch whose files are all inside the glob', () => {
+    const call = patch(...update('src/a.ts'), ...add('src/b.ts'), ...del('./src/c.ts'));
+    expect(allowed(['ApplyPatch(src/*)'], call)).toBe(true);
+  });
+
+  it.each([
+    ['second', patch(...update('src/a.ts'), ...add('other/b.ts'))],
+    ['last', patch(...add('src/a.ts'), ...add('src/b.ts'), ...del('other/c.ts'))],
+    ['first', patch(...add('other/a.ts'), ...add('src/b.ts'))],
+  ])('refuses a patch whose %s file is outside the glob', (_position, call) => {
+    expect(allowed(['ApplyPatch(src/*)'], call)).toBe(false);
+  });
+
+  it('reads a file by the path it names once its segments are resolved', () => {
+    expect(allowed(['ApplyPatch(src/*)'], patch(...add('src/../other/b.ts')))).toBe(false);
+    expect(allowed(['ApplyPatch(src/*)'], patch(...add('src/../src/b.ts')))).toBe(true);
+    expect(allowed(['ApplyPatch(src/*)'], patch(...add('/abs/src/b.ts')))).toBe(false);
+  });
+
+  it('reads a Windows path in the spelling the rule is compared in', () => {
+    const call = patch(...add('SRC\\b.ts'));
+    expect(allowed(['ApplyPatch(src/*)'], call, 'win32')).toBe(true);
+    expect(allowed(['ApplyPatch(src/*)'], call, 'linux')).toBe(false);
+  });
+
+  it('refuses a move, whose target the tool has no way to apply, inside the glob or out', () => {
+    const move = (target: string) =>
+      patch('*** Update File: src/a.ts', `*** Move to: ${target}`, '@@', '-a', '+b');
+    expect(allowed(['ApplyPatch(src/*)'], move('other/b.ts'))).toBe(false);
+    expect(allowed(['ApplyPatch(src/*)'], move('src/b.ts'))).toBe(false);
+  });
+
+  it.each([
+    ['no envelope', { patch: '*** Add File: src/a.ts\n+b\n' }],
+    [
+      'a hunk that does not parse',
+      { patch: '*** Begin Patch\n*** Update File: src/a.ts\n*** End Patch' },
+    ],
+    ['no patch at all', {}],
+    ['a patch that is not text', { patch: 7 }],
+  ])('fails closed on %s under a glob', (_name, args) => {
+    const call: ToolCall = { id: 'p', name: 'ApplyPatch', arguments: args };
+    expect(allowed(['ApplyPatch(src/*)'], call)).toBe(false);
+  });
+
+  it('lets each file fit a different rule', () => {
+    const call = patch(...add('src/a.ts'), ...add('test/b.ts'));
+    expect(allowed(['ApplyPatch(src/*)', 'ApplyPatch(test/*)'], call)).toBe(true);
+    expect(allowed(['ApplyPatch(src/*)', 'Write(test/*)'], call)).toBe(false);
+  });
+
+  it('leaves a malformed patch to the tool under a bare rule or a wildcard', () => {
+    const malformed: ToolCall = { id: 'p', name: 'ApplyPatch', arguments: { patch: 'nonsense' } };
+    expect(allowed(['ApplyPatch'], malformed)).toBe(true);
+    expect(allowed(['*'], malformed)).toBe(true);
+    expect(isToolCallAllowed(parseCapabilityRules(['*']), malformed, new Set(['ApplyPatch']))).toBe(
+      false,
+    );
+    expect(allowed(['Read'], malformed)).toBe(false);
+  });
+
+  it('accepts the legacy tool name', () => {
+    const call = { ...patch(...add('src/a.ts'), ...add('other/b.ts')), name: 'apply_patch' };
+    expect(allowed(['ApplyPatch(src/*)'], call)).toBe(false);
   });
 });

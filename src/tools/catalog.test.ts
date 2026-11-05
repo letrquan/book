@@ -166,6 +166,29 @@ describe('tool surface discovery', () => {
     expect(surface.capabilityRuleSets()).toEqual([['Bash(git *)', 'Task']]);
   });
 
+  it('holds every file of a patch to a parent list with an ApplyPatch glob', () => {
+    const surface = createToolSurface({
+      config: config(),
+      context: context(),
+      definitions: [definition('ApplyPatch')],
+      capabilityRules: ['ApplyPatch(src/*)'],
+    });
+    surface.activeDefinitions();
+    const call = (...paths: string[]) => ({
+      id: 'p',
+      name: 'ApplyPatch',
+      arguments: {
+        patch: [
+          '*** Begin Patch',
+          ...paths.flatMap((path) => [`*** Add File: ${path}`, '+b']),
+          '*** End Patch',
+        ].join('\n'),
+      },
+    });
+    expect(surface.canExecute(call('src/a.ts', 'src/b.ts'))).toBe(true);
+    expect(surface.canExecute(call('src/a.ts', 'other/b.ts'))).toBe(false);
+  });
+
   it('reports no rule sets on a surface nothing narrows', () => {
     const surface = createToolSurface({
       config: config(),

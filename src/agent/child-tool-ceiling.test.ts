@@ -432,7 +432,11 @@ describe("a child under its parent's allowed-tools (#696)", () => {
         arguments: { agentId: id, message: 'write more' },
       });
       const underSkill = await run.parent([[INVOKE, send(wide, 'send-wide'), SPAWN]]);
-      expect(underSkill.get('send-wide')?.structuredError?.code).toBe('child_outside_tool_ceiling');
+      const refusal = underSkill.get('send-wide')?.structuredError;
+      expect(refusal?.code).toBe('child_outside_tool_ceiling');
+      expect(refusal?.retryable).toBe(false);
+      expect(refusal?.message).toContain('waits until a turn without them');
+      expect(refusal?.remediation).toContain('Do not retry');
       const narrow = spawnedId(underSkill.get(SPAWN.id));
       await settled(run.manager, narrow);
       expect(run.childRuns).toHaveLength(2);

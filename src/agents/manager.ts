@@ -1308,10 +1308,10 @@ export class AgentManager {
     const held = new Set((record.toolCeiling ?? []).map((set) => JSON.stringify(set)));
     if (!senderRuleSets.every((set) => held.has(JSON.stringify(set)))) {
       throw new AgentManagerError(
-        `Agent ${record.displayName ?? record.name} was not started under the allowed-tools in force, so it may hold tools they leave out, and this message was not sent.`,
+        `Agent ${record.displayName ?? record.name} was not started under the allowed-tools in force, so it may hold tools they leave out, and this message was not sent. The agent waits until a turn without them, so sending again now gets the same refusal.`,
         'child_outside_tool_ceiling',
         false,
-        'Spawn a new agent under these allowed-tools.',
+        'Do not retry this send. If the step needs an agent now, spawn a new one under these allowed-tools.',
         { agentId },
       );
     }
