@@ -578,6 +578,68 @@ describe('runHooks — an argument pattern reads as a permission rule reads it (
   });
 });
 
+describe('runHooks — a narrowed hook sees the whole call (#687)', () => {
+  const blocking = (matcher: string): HookEntry => ({ matcher, command: 'exit 2', env: {} });
+  const actions = async (matcher: string, call: Record<string, unknown>, event = 'PreToolUse') =>
+    (await runHooks([blocking(matcher)], event as HookEvent, ctx({ event, ...call }))).map(
+      (result) => result.action,
+    );
+  const bash = (command: string) => ({ toolName: 'Bash', toolArgs: { command } });
+  const patch = (...paths: string[]) => ({
+    toolName: 'ApplyPatch',
+    toolArgs: {
+      patch: [
+        '*** Begin Patch',
+        ...paths.flatMap((path) => [`*** Update File: ${path}`, '@@', '-old', '+new']),
+        '*** End Patch',
+      ].join('\n'),
+    },
+  });
+
+  it.each([
+    'true\nrm -rf build',
+    'ls && rm -rf build',
+    'ls; rm -rf build',
+    'ls | rm -rf build',
+    'echo $(rm -rf build)',
+    '  rm -rf build',
+    '\nrm -rf build',
+  ])('blocks %j with a Bash(rm *) hook', async (command) => {
+    expect(await actions('Bash(rm *)', bash(command))).toEqual(['block']);
+  });
+
+  it('reads a command the same way under `*(pattern)`, an alternation and PostToolUse', async () => {
+    const command = bash('ls && rm -rf build');
+    expect(await actions('*(rm *)', command)).toEqual(['block']);
+    expect(await actions('Read|Bash(rm *)', command)).toEqual(['block']);
+    expect(await actions('Bash(rm *)', command, 'PostToolUse')).toHaveLength(1);
+  });
+
+  // Nothing here runs a second command, so a hook that named another stays out of the way.
+  it.each(['git status', 'rm', 'git commit -m "rm -rf; build"', ' git status '])(
+    'leaves %j to a hook narrowed to another command',
+    async (command) => {
+      expect(await actions('Bash(rm *)', bash(command))).toEqual([]);
+    },
+  );
+
+  it('selects a compound command whatever the pattern: Book does not split shell', async () => {
+    expect(await actions('Bash(rm *)', bash('ls | head -5'))).toEqual(['block']);
+  });
+
+  it('compares every file of a patch with an ApplyPatch(pattern) hook', async () => {
+    expect(await actions('ApplyPatch(.env)', patch('README.md', '.env'))).toEqual(['block']);
+    expect(await actions('ApplyPatch(.env)', patch('.env', 'README.md'))).toEqual(['block']);
+    expect(await actions('ApplyPatch(.env)', patch('README.md', 'src/a.ts'))).toEqual([]);
+  });
+
+  it('keeps every file of a patch under Edit, Write and `*` patterns', async () => {
+    for (const matcher of ['Edit(.env)', 'Write(.env)', '*(.env)']) {
+      expect(await actions(matcher, patch('README.md', '.env')), matcher).toEqual(['block']);
+    }
+  });
+});
+
 describe('runHooks — env vars', () => {
   it('passes BOOK_WORKSPACE to the hook', async () => {
     const scriptPath = join(dir, 'test-hook.sh');

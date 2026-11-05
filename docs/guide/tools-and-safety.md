@@ -900,6 +900,16 @@ for both. Three differences remain:
 - A bare `mcp__server` names no tool in a hook. As a rule, it covers that server's tools.
 - `?` is always a wildcard in a hook. An exact `Bash` allow rule, one without a `*`, keeps it literal.
 
+A glob reads one line, and Book does not split shell commands, so a `Bash(pattern)` hook runs on
+every compound command whatever its pattern, compound as [the permission rules](#permission-rules-and-modes)
+read it: a line break, a chain, pipe, redirect, group or `$` outside quotes, or a `$` or backtick in
+double quotes. On Windows any `'` counts too, in every shell. A command that only quotes the text
+(`git commit -m "rm; stuff"`) is not compound. So `Bash(rm *)` also runs on `ls && rm -rf build` and
+on `ls | head`, where a `deny` or `ask` rule would send the command to the permission prompt. A hook
+that blocks with a bare `exit 2` refuses all of those, so a narrowed blocking hook should read
+`tool_args.command` and decide. An `ApplyPatch(pattern)` hook compares every file the patch touches,
+as `Edit` and `Write` hooks do.
+
 `PreCompact` receives `trigger`, `focus`, and, when the span about to be summarized
 contains text addressed to a summarizer, `suspect_inputs`: a list of `{ eventRef, excerpt }`; exit
 2 (or `{"action":"block","message":…}`) refuses the compaction and the TUI shows the message. For a

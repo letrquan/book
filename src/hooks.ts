@@ -3,7 +3,8 @@ import { buildChildEnv } from './child-env.js';
 import type { HookEntry, HookEvent } from './settings.js';
 import { hookMatcherAlternatives, type HookMatcherAlternative } from './hook-matcher.js';
 import { globToRegex } from './tools/glob-regex.js';
-import { toolPrimaryArg } from './tools/primary-arg.js';
+import { getPrimaryArg, toolPrimaryArg } from './tools/primary-arg.js';
+import { hasCompoundShellSyntax } from './tools/shell-chaining.js';
 import { parsePatch } from './tools/patch.js';
 import { runTaskkill, signalProcessGroup } from './jobs/process-tree.js';
 
@@ -205,23 +206,24 @@ function matchesAlternative(
 ): boolean {
   try {
     // `*` is every tool, and an Edit or Write matcher also sees what ApplyPatch edits.
-    const coversPatch = tool === '*' || tool === 'Edit' || tool === 'Write';
     const compatibleTool =
-      tool === '*' || tool === toolName || (toolName === 'ApplyPatch' && coversPatch);
+      tool === '*' ||
+      tool === toolName ||
+      (toolName === 'ApplyPatch' && (tool === 'Edit' || tool === 'Write'));
     if (!compatibleTool) return false;
     if (pattern === null) return true; // match-all
 
-    const patchTargets =
-      toolName === 'ApplyPatch' && args
-        ? (() => {
-            const parsed = parsePatch(args.patch);
-            return 'operations' in parsed
-              ? parsed.operations.map((operation) => operation.path)
-              : [];
-          })()
-        : [];
-    if (patchTargets.length > 0 && coversPatch) {
-      return patchTargets.some((path) => matchesArgumentPattern(pattern, path));
+    if (toolName === 'Bash' && typeof args.command === 'string') {
+      return matchesBashCommand(pattern, args.command);
+    }
+
+    // Every file a patch edits, whichever matcher got here. A patch that does not parse edits
+    // nothing: the tool refuses it, so the primary argument below is good enough for the hook.
+    if (toolName === 'ApplyPatch') {
+      const parsed = parsePatch(args.patch);
+      if ('operations' in parsed && parsed.operations.length > 0) {
+        return parsed.operations.some(({ path }) => matchesArgumentPattern(pattern, path));
+      }
     }
 
     // Extract primary arg from tool arguments using shared utility, the tool's own where it names
@@ -232,6 +234,25 @@ function matchesAlternative(
   } catch {
     return false; // malformed matcher — skip
   }
+}
+
+/**
+ * Whether a `Bash(pattern)` matcher selects a command (#687). A glob reads one line, so it cannot
+ * see what a `&&`, a `;`, a pipe or a second line runs, and the model writes the command. Book does
+ * not split shell commands to look inside them (see `hasBashAdjudicationPolicy`, where such a
+ * command goes to the prompt under a Bash deny or ask rule), so a compound one selects the hook
+ * whatever the pattern, and the hook, given the whole command in `tool_args`, decides.
+ *
+ * The scan takes the platform's defaults, because `HookContext` has no session shell: on Windows
+ * any `'` then counts as compound, so a hook runs on more calls, never fewer. A command that is not
+ * compound is one line once trimmed, which is what the Bash tool runs; its first line as written is
+ * what this has always read.
+ */
+function matchesBashCommand(pattern: string, command: string): boolean {
+  if (hasCompoundShellSyntax(command)) return true;
+  return [getPrimaryArg({ command }), command.trim()].some((argument) =>
+    matchesArgumentPattern(pattern, argument),
+  );
 }
 
 /**
