@@ -21,7 +21,7 @@ import {
   readSettingsDocument,
   SettingsRepository,
 } from '../settings-repository.js';
-import { projectFileWriteRefusal } from '../workspace-files.js';
+import { projectFileShapeRefusal, projectFileWriteRefusal } from '../workspace-files.js';
 import { resolveBookHome } from '../book-home.js';
 import {
   ADVISOR_OFF_VALUE,
@@ -82,13 +82,34 @@ function refusedWrite(path: string): { ok: false; error: string } | undefined {
 }
 
 /**
- * The refusal for a save that also clears what it supersedes from the local layer, checked before
- * the user file is written. A local file git tracks is not a layer: nothing in it outranks the
- * save, so there is nothing to clear and no reason to refuse.
+ * What a save that supersedes the local layer has to clear, asked before the user file is written.
+ * `layer` is the file to clear, when there is one. A local file git tracks is not a layer: nothing
+ * in it outranks the save, so there is nothing to clear and no reason to refuse. Nor is one that
+ * does not exist, whatever the index says: asking only about a file on disk is what lets a user who
+ * removed the file, or who has a broken repository and no local file, save to their own settings.
  */
-function refusedLocalClear(workspace: string): { ok: false; error: string } | undefined {
+function localLayerToClear(workspace: string): { ok: false; error: string } | LocalLayerToClear {
   const path = localSettingsPath(workspace);
-  return unreadLocalSettingsReason(path) === undefined ? refusedWrite(path) : undefined;
+  if (unreadLocalSettingsReason(path) !== undefined) return { ok: true };
+  const reason = projectFileShapeRefusal(path);
+  if (reason) return { ok: false, error: `${path}: ${reason}` };
+  return existsSync(path) ? { ok: true, layer: path } : { ok: true };
+}
+
+interface LocalLayerToClear {
+  ok: true;
+  layer?: string;
+}
+
+function removeFromLocalLayer(
+  { layer }: LocalLayerToClear,
+  paths: string[],
+): { ok: boolean; error?: string } {
+  if (layer === undefined) return { ok: true };
+  const result = new SettingsRepository(layer, { gitAlreadyAsked: true }).remove(paths);
+  return result.ok
+    ? { ok: true }
+    : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
 }
 
 /** Read a settings document at `path` as a plain object ({} if absent/invalid). */
@@ -193,11 +214,11 @@ export function persistUserSettingClearingLocal(
 ): { ok: boolean; error?: string } {
   // Checked before the user file is written: the clear that follows must happen for the write to
   // take effect, and a refused one would otherwise pass silently.
-  const refused = refusedLocalClear(workspace);
-  if (refused) return refused;
+  const local = localLayerToClear(workspace);
+  if (!local.ok) return local;
   const result = persistSettingsGlobal({ [key]: value });
   if (!result.ok) return result;
-  clearLocalSettings(workspace, [key]);
+  removeFromLocalLayer(local, [key]);
   return { ok: true };
 }
 
@@ -206,11 +227,11 @@ export function removeUserSettingClearingLocal(
   workspace: string,
   key: string,
 ): { ok: boolean; error?: string } {
-  const refused = refusedLocalClear(workspace);
-  if (refused) return refused;
+  const local = localLayerToClear(workspace);
+  if (!local.ok) return local;
   const result = new SettingsRepository(globalSettingsPath()).remove([key]);
   if (!result.ok) return { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
-  clearLocalSettings(workspace, [key]);
+  removeFromLocalLayer(local, [key]);
   return { ok: true };
 }
 
@@ -327,12 +348,9 @@ export function clearLocalSettings(
   workspace: string,
   paths: string[],
 ): { ok: boolean; error?: string } {
-  const path = localSettingsPath(workspace);
-  if (!existsSync(path) || unreadLocalSettingsReason(path) !== undefined) return { ok: true };
-  const result = new SettingsRepository(path).remove(paths);
-  return result.ok
-    ? { ok: true }
-    : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+  if (!existsSync(localSettingsPath(workspace))) return { ok: true };
+  const local = localLayerToClear(workspace);
+  return local.ok ? removeFromLocalLayer(local, paths) : local;
 }
 
 /**
@@ -352,29 +370,29 @@ export function persistProviderSave(
   selection?: string,
 ): { ok: boolean; error?: string } {
   // As in persistUserSettingClearingLocal: the local clear is part of the save.
-  const refused = refusedLocalClear(workspace);
-  if (refused) return refused;
+  const local = localLayerToClear(workspace);
+  if (!local.ok) return local;
   const result = persistSettingsGlobal({
     [`provider.${providerId}`]: provider,
     ...(selection !== undefined ? { model: selection } : {}),
   });
   if (!result.ok) return result;
-  clearSupersededLocalProviderKeys(workspace, providerId, selection !== undefined);
+  if (local.layer !== undefined) {
+    clearSupersededLocalProviderKeys(local.layer, providerId, selection !== undefined);
+  }
   return { ok: true };
 }
 
 /**
- * The deletions of {@link persistProviderSave}, on key paths rather than dotted strings: a model
- * id such as `vendor/model.v2` has a dot in it. Never throws; a no-op when the local file is absent.
+ * The deletions of {@link persistProviderSave} from the local layer at `path`, on key paths rather
+ * than dotted strings: a model id such as `vendor/model.v2` has a dot in it. Never throws.
  */
 function clearSupersededLocalProviderKeys(
-  workspace: string,
+  path: string,
   providerId: string,
   activated: boolean,
 ): void {
-  const path = localSettingsPath(workspace);
-  if (!existsSync(path) || unreadLocalSettingsReason(path) !== undefined) return;
-  new SettingsRepository(path).update((candidate) => {
+  new SettingsRepository(path, { gitAlreadyAsked: true }).update((candidate) => {
     const registry = candidate.provider;
     const entry =
       typeof registry === 'object' && registry !== null && !Array.isArray(registry)
@@ -565,6 +583,10 @@ export function removePermissionRuleLocal(
   list: 'allow' | 'ask' | 'deny',
   rule: string,
 ): { ok: boolean; error?: string; notLocal?: boolean } {
+  // A local file git tracks is not a layer, so no rule in force came from it.
+  if (unreadLocalSettingsReason(localSettingsPath(workspace)) !== undefined) {
+    return { ok: false, notLocal: true };
+  }
   const refused = refusedWrite(localSettingsPath(workspace));
   if (refused) return refused;
   const existing = readSettingsLocal(workspace);

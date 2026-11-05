@@ -15,7 +15,7 @@ import type { core } from 'zod';
 import { deleteNestedValue, setNestedValue } from './cli/utils.js';
 import { bookSettingsSchema } from './settings.js';
 import { redactSettingValue } from './settings-redaction.js';
-import { projectFileWriteRefusal } from './workspace-files.js';
+import { projectFileShapeRefusal, projectFileWriteRefusal } from './workspace-files.js';
 
 export type SettingsDocumentReadResult =
   | { status: 'absent'; path: string }
@@ -41,6 +41,11 @@ export type SettingsMutationResult =
 
 export interface SettingsRepositoryOptions {
   writeAtomic?: (path: string, contents: string) => void;
+  /**
+   * The caller just asked whether git leaves this file to the user, and it does. The answer can
+   * mean parsing a large index, and one save should not pay for it twice.
+   */
+  gitAlreadyAsked?: boolean;
 }
 
 export const SETTINGS_TOP_LEVEL_KEYS = Object.freeze(Object.keys(bookSettingsSchema.shape).sort());
@@ -121,12 +126,14 @@ function validateTopLevelKeys(
 
 export class SettingsRepository {
   private readonly writeAtomic: (path: string, contents: string) => void;
+  private readonly gitAlreadyAsked: boolean;
 
   constructor(
     readonly path: string,
     options: SettingsRepositoryOptions = {},
   ) {
     this.writeAtomic = options.writeAtomic ?? writeFileAtomic;
+    this.gitAlreadyAsked = options.gitAlreadyAsked ?? false;
   }
 
   read(): SettingsDocumentReadResult {
@@ -156,7 +163,9 @@ export class SettingsRepository {
     mutation: (candidate: Record<string, unknown>) => void,
     values: Record<string, unknown>,
   ): SettingsMutationResult {
-    const refusal = projectFileWriteRefusal(this.path);
+    const refusal = this.gitAlreadyAsked
+      ? projectFileShapeRefusal(this.path)
+      : projectFileWriteRefusal(this.path);
     if (refusal) {
       return { ok: false, path: this.path, diagnostics: [{ path: this.path, message: refusal }] };
     }

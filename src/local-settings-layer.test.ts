@@ -32,6 +32,7 @@ import {
   persistSettingLocal,
   persistSkillActivationLocal,
   persistUserSettingClearingLocal,
+  removePermissionRuleLocal,
   removeProviderLocal,
   removeUserSettingClearingLocal,
   turnOffAdvisorModel,
@@ -314,19 +315,113 @@ describe('what happens around a tracked local settings file', () => {
       bodyIsUntouched();
     });
 
-    it('does not migrate legacy rules into it', () => {
+    describe('legacy rules', () => {
+      const withWarnings = (run: () => void): string => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          run();
+          return warn.mock.calls.join('');
+        } finally {
+          warn.mockRestore();
+        }
+      };
+
+      beforeEach(() => {
+        writeFileSync(
+          join(home, 'permissions.json'),
+          JSON.stringify({ rules: [{ toolName: 'Bash', effect: 'allow' }] }),
+        );
+      });
+
+      it('does not migrate into it, adds no second notice, and leaves no marker', () => {
+        track();
+        expect(withWarnings(() => expect(migrateLegacyPermissions(workspace)).toBe(false))).toBe(
+          '',
+        );
+        bodyIsUntouched();
+        expect(existsSync(join(workspace, '.book', 'migrations.json'))).toBe(false);
+      });
+
+      it('migrates once git no longer tracks it', () => {
+        track();
+        migrateLegacyPermissions(workspace);
+        git(workspace, 'rm', '-q', '--cached', '.book/settings.local.json');
+        withWarnings(() => expect(migrateLegacyPermissions(workspace)).toBe(true));
+        expect(JSON.parse(readFileSync(localPath, 'utf-8')).permissions.allow).toEqual(['Bash']);
+      });
+
+      it('says nothing once migrated, whatever has happened to the file since', () => {
+        writeFileSync(
+          join(workspace, '.book', 'migrations.json'),
+          JSON.stringify({ legacyPermissions: 1 }),
+        );
+        rmSync(localPath);
+        mkdirSync(localPath);
+        expect(
+          withWarnings(() =>
+            expect(migrateLegacyPermissions(workspace, undefined, DEFAULT_SETTINGS)).toBe(false),
+          ),
+        ).toBe('');
+      });
+
+      it('still says when a file in the way stops the migration', () => {
+        rmSync(localPath);
+        mkdirSync(localPath);
+        expect(
+          withWarnings(() =>
+            expect(migrateLegacyPermissions(workspace, undefined, DEFAULT_SETTINGS)).toBe(false),
+          ),
+        ).toContain('not a regular file');
+      });
+    });
+
+    describe('saves to the user file, with no local file on disk', () => {
+      const saves = (): void => {
+        expect(persistUserSettingClearingLocal(workspace, 'model', 'mine').ok).toBe(true);
+        expect(removeUserSettingClearingLocal(workspace, 'model').ok).toBe(true);
+        expect(clearLocalSettings(workspace, ['model']).ok).toBe(true);
+        expect(
+          persistProviderSave(workspace, 'gw', { type: 'openai', models: {} } as never, 'gw/m').ok,
+        ).toBe(true);
+        expect(writeProviderKey(workspace, 'gw', 'sk-new').ok).toBe(true);
+      };
+
+      it('go through when the index still lists it: the user followed the notice with rm', () => {
+        track();
+        rmSync(localPath);
+        saves();
+        expect(existsSync(localPath)).toBe(false);
+      });
+
+      it('go through when the index cannot be read', () => {
+        rmSync(localPath);
+        writeFileSync(join(workspace, '.git', 'index'), 'not an index');
+        saves();
+        expect(existsSync(localPath)).toBe(false);
+      });
+
+      it('go through when the .git file names nothing', () => {
+        rmSync(localPath);
+        rmSync(join(workspace, '.git'), { recursive: true, force: true });
+        writeFileSync(join(workspace, '.git'), `gitdir: ${join(workspace, 'gone')}\n`);
+        saves();
+        expect(existsSync(localPath)).toBe(false);
+      });
+    });
+
+    it('still refuses a save that stops at a file in the way', () => {
+      rmSync(localPath);
+      mkdirSync(localPath);
+      expect(persistUserSettingClearingLocal(workspace, 'model', 'mine').ok).toBe(false);
+      expect(writeProviderKey(workspace, 'gw', 'sk-new').ok).toBe(false);
+    });
+
+    it('takes a rule back from no layer it could come from: not local', () => {
       track();
-      writeFileSync(
-        join(home, 'permissions.json'),
-        JSON.stringify({ rules: [{ toolName: 'Bash', effect: 'allow' }] }),
-      );
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        expect(migrateLegacyPermissions(workspace)).toBe(false);
-        expect(warn.mock.calls.join('')).toContain('git tracks it');
-      } finally {
-        warn.mockRestore();
-      }
+      expect(removePermissionRuleLocal(workspace, 'allow', 'Bash(echo *)')).toEqual({
+        ok: false,
+        notLocal: true,
+      });
       bodyIsUntouched();
     });
 

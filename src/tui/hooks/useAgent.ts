@@ -3124,6 +3124,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // is memoized on this callback.
   const addLocalMessageRef = useRef(addLocalMessage);
   addLocalMessageRef.current = addLocalMessage;
+  // "Always allow" rules no settings file holds: in force only in this session's live settings, so
+  // only they can be taken back there.
+  const sessionOnlyAllowRules = useRef(new Set<string>());
 
   // Add an allow rule from the "Always allow" approval flow (CC-aligned) and
   // surface it live in settings so the next call is auto-allowed.
@@ -3145,6 +3148,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       // it would otherwise be gone at the next launch with nothing to explain why.
       const persisted = persistPermissionRuleLocal(config.workspace, 'allow', rule);
       if (!persisted.ok) {
+        sessionOnlyAllowRules.current.add(rule);
         addLocalMessageRef.current(
           `⚠  Allowed for this session only: ${persisted.error ?? 'the rule was not saved'}.`,
         );
@@ -3157,8 +3161,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // was one keystroke to add and a hand-edited JSON file to remove.
   const removePermissionRule = useCallback(
     (entry: { list: 'allow' | 'ask' | 'deny'; rule: string }) => {
-      const result = removePermissionRuleLocal(config.workspace, entry.list, entry.rule);
-      if (!result.ok) return result;
+      const sessionOnly =
+        entry.list === 'allow' && sessionOnlyAllowRules.current.delete(entry.rule);
+      const result: ReturnType<typeof removePermissionRuleLocal> = sessionOnly
+        ? { ok: true }
+        : removePermissionRuleLocal(config.workspace, entry.list, entry.rule);
+      // A rule from a layer this panel cannot edit stays. One the file would not let go of still
+      // leaves this session: a refused write must not keep auto-allowing what the user took back.
+      if (!result.ok && result.notLocal) return result;
       setLiveConfig((c) => ({
         ...c,
         settings: {
@@ -3169,7 +3179,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           },
         },
       }));
-      return result;
+      return result.ok
+        ? result
+        : { ...result, error: `Removed for this session only: ${result.error ?? 'not saved'}` };
     },
     [config.workspace],
   );

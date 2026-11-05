@@ -14,14 +14,19 @@ Settings are loaded in priority order (later wins):
 A `.book/settings.local.json` that git tracks is not read: a local file a repository ships isn't
 local. The whole file is skipped, for every key, and one notice names it and the remedy: on stderr
 in print mode and the SDK, among the start-up notices in the TUI, and on the `Local` line of
-`book doctor`. Review the file, then run `git rm --cached .book/settings.local.json` to make it your
-own. Book answers from the git index, for the file where its name stands and where a link takes it,
-in the nearest repository and any above it. When it cannot read the nearest repository's index it
-counts the file as tracked, and the notice says that instead. Book does not write a tracked local
-file either: a save to the local layer, `book config set --local` among them, is refused with the same
-message, and "Always allow" then lasts for the session and says so. A save to the user file goes
-through, since nothing in the tracked file outranks it. An untracked file works as it always has,
-gitignored or not.
+`book doctor`. Review the file, then run the `git rm --cached` the notice prints to make it your own.
+
+Book answers from the git index, in the nearest repository and any above it. An entry has to name
+this very file: a path that differs only in case counts only where the file system says it reaches
+this file. A link cannot move a tracked file out of sight, so the file is also looked up where a link
+takes it, when that is inside the repository or a link the repository tracks led there; your own
+link to a file elsewhere, such as your dotfiles, stays your own. When Book cannot read the nearest
+repository's index it counts the file as tracked, and the notice says that instead.
+
+Book does not write a tracked local file either: a save to the local layer, `book config set --local`
+among them, is refused with the same message, and "Always allow" then lasts for the session and says
+so. `/permissions` can still take such a rule back. A save to the user file goes through, since
+nothing in the tracked file outranks it. An untracked file works as it always has, gitignored or not.
 
 In a session started in your home directory with `BOOK_HOME` unset, the workspace's
 `.book/settings.json` is the user file itself: it is read once, as the user layer, and nothing in

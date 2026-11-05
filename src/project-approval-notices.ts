@@ -35,7 +35,7 @@ import {
   isUserSettingsFile,
   loadLocalSettingsFile,
   loadSettingsFile,
-  settingsLayerPaths,
+  userSettingsPath,
   workspaceLayerThatEnabledSandbox,
 } from './settings-loader.js';
 import { TRUSTED_SETTINGS_LOCATION } from './settings-scope.js';
@@ -235,7 +235,7 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
   // had already decided, and a report that omitted it would name a repository for
   // the user's own decision. Its path comes from the loader, the one place that
   // knows how that file is resolved.
-  const userPath = settingsLayerPaths(input.workspace)[0];
+  const userPath = userSettingsPath();
   const activation = workspaceLayerThatEnabledSandbox([
     { path: userPath, trust: 'trusted', document: loadSettingsFile(userPath) },
     { path: projectPath, trust: 'repository', document: projectSettings },

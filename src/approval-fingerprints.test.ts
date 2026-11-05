@@ -7,7 +7,11 @@ import {
   partitionProjectHooks,
   shortFingerprint,
 } from './hook-approvals.js';
-import { mcpServerFingerprint } from './mcp-approvals.js';
+import {
+  evaluateMcpServerApproval,
+  mcpConfigChangedSinceDecision,
+  mcpServerFingerprint,
+} from './mcp-approvals.js';
 import { legacyBaseUrlFingerprint, workspaceProviderFingerprint } from './provider-approvals.js';
 
 const WHOLE_DIGEST = /^[0-9a-f]{64}$/;
@@ -31,6 +35,35 @@ describe('approval fingerprints', () => {
     const short = hookFingerprint('PreToolUse', entry).slice(0, 16);
     expect(partitionProjectHooks([hook], { [short]: 'approved' }).pending).toEqual([hook]);
     expect(partitionProjectHooks([hook], { [short]: 'rejected' }).pending).toEqual([hook]);
+  });
+});
+
+describe('an MCP decision recorded before fingerprints used the whole digest', () => {
+  const config = { command: 'server', args: [] } as never;
+  const whole = mcpServerFingerprint(config);
+  const short = whole.slice(0, 16);
+
+  it('does not read as a changed configuration', () => {
+    expect(mcpConfigChangedSinceDecision(short, whole)).toBe(false);
+    expect(mcpConfigChangedSinceDecision(whole, whole)).toBe(false);
+  });
+
+  it('reads as one when the digest really differs', () => {
+    expect(mcpConfigChangedSinceDecision('0'.repeat(16), whole)).toBe(true);
+    expect(mcpConfigChangedSinceDecision('0'.repeat(64), whole)).toBe(true);
+    // Only the old length is taken as the old form: any other start is just a different value.
+    expect(mcpConfigChangedSinceDecision(whole.slice(0, 15), whole)).toBe(true);
+    expect(mcpConfigChangedSinceDecision(whole.slice(0, 17), whole)).toBe(true);
+  });
+
+  it('never counts as a decision, approved or rejected', () => {
+    for (const choice of ['approved', 'rejected'] as const) {
+      const settings = {
+        mcp: { projectServers: { s: { fingerprint: short, choice } } },
+      } as never;
+      const server = { name: 's', source: 'project', config } as never;
+      expect(evaluateMcpServerApproval(settings, server)).toBe('unknown');
+    }
   });
 });
 

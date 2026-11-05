@@ -1,5 +1,15 @@
-import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { execFileSync, execSync } from 'child_process';
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -60,7 +70,12 @@ describe('localSettingsTracking', () => {
     write(join(dir, '.gitignore'), '.book/settings.local.json\n');
     write(join(dir, LOCAL));
     git(dir, 'add', '-f', '.gitignore', '.book/settings.local.json');
-    expect(localSettingsTracking(join(dir, LOCAL))).toEqual({ state: 'tracked', direct: true });
+    expect(localSettingsTracking(join(dir, LOCAL))).toEqual({
+      state: 'tracked',
+      repository: dir,
+      path: '.book/settings.local.json',
+      direct: true,
+    });
   });
 
   it('asks the index, not the disk: a tracked file deleted from the work tree still counts', () => {
@@ -68,7 +83,7 @@ describe('localSettingsTracking', () => {
     write(join(dir, LOCAL));
     git(dir, 'add', '-f', '.book/settings.local.json');
     rmSync(join(dir, LOCAL));
-    expect(localSettingsTracking(join(dir, LOCAL))).toEqual({ state: 'tracked', direct: true });
+    expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('tracked');
     expect(unreadLocalSettingsReason(join(dir, LOCAL))).toBeUndefined();
     expect(localSettingsRefusal(join(dir, LOCAL))).toContain('git rm --cached');
   });
@@ -88,7 +103,9 @@ describe('localSettingsTracking', () => {
     git(dir, 'add', '-f', 'packages/app/.book/settings.local.json');
     expect(localSettingsTracking(join(workspace, LOCAL))).toEqual({
       state: 'tracked',
-      direct: true,
+      repository: dir,
+      path: 'packages/app/.book/settings.local.json',
+      direct: false,
     });
     // The same name at the root is another file.
     write(join(dir, LOCAL));
@@ -123,14 +140,83 @@ describe('localSettingsTracking', () => {
     expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('tracked');
   });
 
-  it('reads a split index, whose own file lists only what changed', () => {
-    git(dir, 'init', '-q');
-    write(join(dir, LOCAL));
-    git(dir, 'add', '-f', '.book/settings.local.json');
-    git(dir, 'update-index', '--split-index');
-    write(join(dir, 'other.txt'));
-    git(dir, 'add', 'other.txt');
-    expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('tracked');
+  describe('a split index', () => {
+    /** A repository whose tracked files are all in its shared index, the file among the last. */
+    function splitRepository(): string {
+      git(dir, 'init', '-q');
+      for (let i = 0; i < 200; i++) write(join(dir, 'files', `f${String(i).padStart(3, '0')}.txt`));
+      const workspace = join(dir, 'zz');
+      write(join(workspace, LOCAL));
+      git(dir, 'add', '-f', '.');
+      git(dir, 'commit', '-q', '-m', 'base');
+      git(dir, 'update-index', '--split-index');
+      expect(readdirSync(join(dir, '.git')).some((n) => n.startsWith('sharedindex.'))).toBe(true);
+      return workspace;
+    }
+
+    it('counts a path its shared index holds', () => {
+      const workspace = splitRepository();
+      expect(localSettingsTracking(join(workspace, LOCAL)).state).toBe('tracked');
+    });
+
+    it('counts a path only its own file lists', () => {
+      git(dir, 'init', '-q');
+      write(join(dir, 'a.txt'));
+      git(dir, 'add', 'a.txt');
+      git(dir, 'update-index', '--split-index');
+      write(join(dir, LOCAL));
+      git(dir, 'add', '-f', '.book/settings.local.json');
+      expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('tracked');
+    });
+
+    it('counts a path whose shared entry was replaced', () => {
+      const workspace = splitRepository();
+      write(join(workspace, LOCAL), '{ "model": "changed" }');
+      git(dir, 'add', '-f', 'zz/.book/settings.local.json');
+      expect(git(dir, 'ls-files', 'zz').trim()).toBe('zz/.book/settings.local.json');
+      expect(localSettingsTracking(join(workspace, LOCAL)).state).toBe('tracked');
+    });
+
+    it('stops counting a path `git rm --cached` deleted from it, as git does', () => {
+      const workspace = splitRepository();
+      git(dir, 'rm', '-q', '--cached', 'zz/.book/settings.local.json');
+      expect(git(dir, 'ls-files', 'zz').trim()).toBe('');
+      expect(localSettingsTracking(join(workspace, LOCAL)).state).toBe('untracked');
+      git(dir, 'commit', '-q', '-m', 'untrack');
+      expect(localSettingsTracking(join(workspace, LOCAL)).state).toBe('untracked');
+    });
+
+    it('ignores a leftover shared index its link does not name', () => {
+      const workspace = splitRepository();
+      git(dir, 'rm', '-q', '--cached', 'zz/.book/settings.local.json');
+      git(dir, 'update-index', '--no-split-index');
+      expect(readdirSync(join(dir, '.git')).some((n) => n.startsWith('sharedindex.'))).toBe(true);
+      expect(localSettingsTracking(join(workspace, LOCAL)).state).toBe('untracked');
+    });
+
+    it('counts as unreadable when the shared index it names is missing', () => {
+      const workspace = splitRepository();
+      for (const name of readdirSync(join(dir, '.git'))) {
+        if (name.startsWith('sharedindex.')) rmSync(join(dir, '.git', name));
+      }
+      write(join(dir, '.git', 'sharedindex.leftover'), 'x');
+      expect(localSettingsTracking(join(workspace, LOCAL)).state).toBe('unknown');
+    });
+
+    it('reads one in a linked worktree', () => {
+      git(dir, 'init', '-q');
+      write(join(dir, 'README.md'));
+      git(dir, 'add', 'README.md');
+      git(dir, 'commit', '-q', '-m', 'base');
+      const linked = join(dir, 'linked');
+      git(dir, 'worktree', 'add', '-q', linked);
+      write(join(linked, LOCAL));
+      git(linked, 'add', '-f', '.book/settings.local.json');
+      git(linked, 'update-index', '--split-index');
+      expect(localSettingsTracking(join(linked, LOCAL)).state).toBe('tracked');
+      git(linked, 'rm', '-q', '--cached', '.book/settings.local.json');
+      expect(localSettingsTracking(join(linked, LOCAL)).state).toBe('untracked');
+    });
   });
 
   it('reads a linked worktree through its `.git` file, from that worktree’s own index', () => {
@@ -197,14 +283,17 @@ describe('localSettingsTracking', () => {
     expect(localSettingsTracking(join(parent, 'sub', LOCAL)).state).toBe('untracked');
   });
 
-  it('counts a submodule that is not initialized, since nothing below it can vouch for the file', () => {
+  it('leaves the user’s file under a submodule entry nothing checked out', () => {
+    // A submodule entry ships nothing into its folder until the submodule has its own `.git`.
     git(dir, 'init', '-q');
     git(dir, 'update-index', '--add', '--cacheinfo', `160000,${'a'.repeat(40)},.book`);
     write(join(dir, LOCAL));
-    expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('tracked');
+    expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('untracked');
   });
 
-  it('counts a directory a sparse index folds, which may hold the file', () => {
+  it('leaves the user’s file under a directory a sparse index folds', () => {
+    // A folded directory is one the checkout left out, so a file on disk there is not its doing.
+    // The entry exists as soon as the repository tracks anything in that directory.
     git(dir, 'init', '-q');
     write(join(dir, 'kept', 'a.txt'));
     write(join(dir, '.book', 'settings.json'));
@@ -212,15 +301,51 @@ describe('localSettingsTracking', () => {
     git(dir, 'commit', '-q', '-m', 'base');
     git(dir, 'sparse-checkout', 'set', '--cone', '--sparse-index', 'kept');
     write(join(dir, LOCAL));
-    expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('tracked');
+    expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('untracked');
   });
 
-  it('folds ASCII case, since a file system may', () => {
-    git(dir, 'init', '-q');
-    write(join(dir, LOCAL));
-    const blob = git(dir, 'hash-object', '-w', '.book/settings.local.json').trim();
-    git(dir, 'update-index', '--add', '--cacheinfo', `100644,${blob},.BOOK/Settings.Local.JSON`);
-    expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('tracked');
+  describe('another spelling of the path', () => {
+    function listSpelling(spelling: string): void {
+      git(dir, 'init', '-q');
+      write(join(dir, LOCAL));
+      const blob = git(dir, 'hash-object', '-w', '.book/settings.local.json').trim();
+      git(dir, 'update-index', '--add', '--cacheinfo', `100644,${blob},${spelling}`);
+    }
+
+    it('is another file, unless the file system says it reaches this one', () => {
+      listSpelling('.BOOK/settings.local.json');
+      // Decided by the file system under test: Linux here, a folding one on other CI legs.
+      const folds = existsSync(join(dir, '.BOOK', 'settings.local.json'));
+      expect(localSettingsTracking(join(dir, LOCAL)).state).toBe(folds ? 'tracked' : 'untracked');
+    });
+
+    it('leaves the user’s file alone beside a different one in another case', () => {
+      listSpelling('.book/SETTINGS.LOCAL.JSON');
+      write(join(dir, '.book', 'SETTINGS.LOCAL.JSON'), '{ "model": "theirs" }');
+      if (!existsSync(join(dir, LOCAL))) return;
+      const folds = readdirSync(join(dir, '.book')).length === 1;
+      expect(localSettingsTracking(join(dir, LOCAL)).state).toBe(folds ? 'tracked' : 'untracked');
+    });
+
+    it('counts when the disk says both spellings reach one file', () => {
+      listSpelling('.BOOK/settings.local.json');
+      // A hard link stands in for a folding file system, so every leg runs this branch.
+      if (!existsSync(join(dir, '.BOOK', 'settings.local.json'))) {
+        mkdirSync(join(dir, '.BOOK'));
+        linkSync(join(dir, LOCAL), join(dir, '.BOOK', 'settings.local.json'));
+      }
+      expect(localSettingsTracking(join(dir, LOCAL))).toMatchObject({
+        state: 'tracked',
+        path: '.BOOK/settings.local.json',
+        direct: false,
+      });
+    });
+
+    it('says nothing about a save when the other spelling is another file', () => {
+      listSpelling('.BOOK/settings.local.json');
+      if (existsSync(join(dir, '.BOOK', 'settings.local.json'))) return;
+      expect(localSettingsRefusal(join(dir, LOCAL))).toBeUndefined();
+    });
   });
 
   describe.skipIf(process.platform === 'win32')('links', () => {
@@ -229,7 +354,12 @@ describe('localSettingsTracking', () => {
       write(join(dir, 'config', 'settings.local.json'));
       symlinkSync('config', join(dir, '.book'));
       git(dir, 'add', '-f', '.book', 'config/settings.local.json');
-      expect(localSettingsTracking(join(dir, LOCAL))).toEqual({ state: 'tracked', direct: false });
+      expect(localSettingsTracking(join(dir, LOCAL))).toEqual({
+        state: 'tracked',
+        repository: dir,
+        path: 'config/settings.local.json',
+        direct: false,
+      });
     });
 
     it('counts a tracked link in the file’s own place', () => {
@@ -238,7 +368,10 @@ describe('localSettingsTracking', () => {
       mkdirSync(join(dir, '.book'));
       symlinkSync('../x.json', join(dir, LOCAL));
       git(dir, 'add', '-f', '.book/settings.local.json');
-      expect(localSettingsTracking(join(dir, LOCAL))).toEqual({ state: 'tracked', direct: true });
+      expect(localSettingsTracking(join(dir, LOCAL))).toMatchObject({
+        state: 'tracked',
+        direct: true,
+      });
     });
 
     it('counts an untracked link to a file the repository tracks', () => {
@@ -247,7 +380,11 @@ describe('localSettingsTracking', () => {
       git(dir, 'add', 'x.json');
       mkdirSync(join(dir, '.book'));
       symlinkSync('../x.json', join(dir, LOCAL));
-      expect(localSettingsTracking(join(dir, LOCAL))).toEqual({ state: 'tracked', direct: false });
+      expect(localSettingsTracking(join(dir, LOCAL))).toMatchObject({
+        state: 'tracked',
+        path: 'x.json',
+        direct: false,
+      });
     });
 
     it('leaves a tracked `.book` link to a folder holding the user’s own untracked file', () => {
@@ -269,7 +406,7 @@ describe('localSettingsTracking', () => {
       expect(localSettingsTracking(join(repo, LOCAL)).state).toBe('untracked');
     });
 
-    it('asks the repository a link lands in', () => {
+    it('asks the repository a tracked link lands in, wherever that is', () => {
       const other = join(dir, 'other');
       mkdirSync(other);
       git(other, 'init', '-q');
@@ -278,8 +415,51 @@ describe('localSettingsTracking', () => {
       const repo = join(dir, 'repo');
       mkdirSync(repo);
       git(repo, 'init', '-q');
-      symlinkSync(other, join(repo, '.book'));
-      expect(localSettingsTracking(join(repo, LOCAL)).state).toBe('tracked');
+      symlinkSync('../other', join(repo, '.book'));
+      git(repo, 'add', '-f', '.book');
+      expect(localSettingsTracking(join(repo, LOCAL))).toMatchObject({
+        state: 'tracked',
+        repository: other,
+        path: 'settings.local.json',
+      });
+    });
+
+    it('leaves the user’s own link to a file another repository tracks: their dotfiles', () => {
+      const dotfiles = join(dir, 'dotfiles');
+      mkdirSync(dotfiles);
+      git(dotfiles, 'init', '-q');
+      write(join(dotfiles, 'book-local.json'));
+      git(dotfiles, 'add', 'book-local.json');
+      const repo = join(dir, 'repo');
+      mkdirSync(join(repo, '.book'), { recursive: true });
+      git(repo, 'init', '-q');
+      symlinkSync(join(dotfiles, 'book-local.json'), join(repo, LOCAL));
+      expect(localSettingsTracking(join(repo, LOCAL)).state).toBe('untracked');
+    });
+
+    it('leaves the user’s own `.book` link to a folder another repository tracks', () => {
+      const dotfiles = join(dir, 'dotfiles');
+      mkdirSync(dotfiles);
+      git(dotfiles, 'init', '-q');
+      write(join(dotfiles, 'settings.local.json'));
+      git(dotfiles, 'add', '-f', 'settings.local.json');
+      const repo = join(dir, 'repo');
+      mkdirSync(repo);
+      git(repo, 'init', '-q');
+      symlinkSync(dotfiles, join(repo, '.book'));
+      expect(localSettingsTracking(join(repo, LOCAL)).state).toBe('untracked');
+    });
+
+    it('leaves a link in no repository at all', () => {
+      const dotfiles = join(dir, 'dotfiles');
+      mkdirSync(dotfiles);
+      git(dotfiles, 'init', '-q');
+      write(join(dotfiles, 'book-local.json'));
+      git(dotfiles, 'add', 'book-local.json');
+      const plain = join(dir, 'plain');
+      mkdirSync(join(plain, '.book'), { recursive: true });
+      symlinkSync(join(dotfiles, 'book-local.json'), join(plain, LOCAL));
+      expect(localSettingsTracking(join(plain, LOCAL)).state).toBe('untracked');
     });
 
     it('reads through a workspace reached by a link', () => {
@@ -389,5 +569,86 @@ describe('the reasons', () => {
   it('asks nothing of an absent file when reading', () => {
     expect(unreadLocalSettingsReason(join(dir, LOCAL))).toBeUndefined();
     expect(unreadLocalSettingsReason('\0absent-settings-layer')).toBeUndefined();
+  });
+
+  describe('the printed remedy works, run as printed', () => {
+    /** Runs the command in the reason from the workspace, as a user would paste it. */
+    function runRemedy(workspace: string): void {
+      const reason = localSettingsRefusal(join(workspace, LOCAL));
+      const command = /`(git [^`]+)`/.exec(reason ?? '')?.[1];
+      expect(command).toBeDefined();
+      execSync(command!, { cwd: workspace, stdio: 'pipe' });
+      expect(localSettingsTracking(join(workspace, LOCAL)).state).toBe('untracked');
+    }
+
+    it('in the workspace’s own repository', () => {
+      git(dir, 'init', '-q');
+      write(join(dir, LOCAL));
+      git(dir, 'add', '-f', '.book/settings.local.json');
+      runRemedy(dir);
+    });
+
+    it('from a workspace in a subdirectory', () => {
+      git(dir, 'init', '-q');
+      const workspace = join(dir, 'packages', 'app');
+      write(join(workspace, LOCAL));
+      git(dir, 'add', '-f', 'packages/app/.book/settings.local.json');
+      runRemedy(workspace);
+    });
+
+    it('when a repository above the nearest one lists it', () => {
+      git(dir, 'init', '-q');
+      const nested = join(dir, 'nested');
+      write(join(nested, LOCAL));
+      git(dir, 'add', '-f', 'nested/.book/settings.local.json');
+      git(nested, 'init', '-q');
+      runRemedy(nested);
+    });
+
+    it('when `.book` is a submodule that lists it', () => {
+      const module = join(dir, 'module');
+      mkdirSync(module);
+      git(module, 'init', '-q');
+      write(join(module, 'settings.local.json'));
+      git(module, 'add', '-f', 'settings.local.json');
+      git(module, 'commit', '-q', '-m', 'base');
+      const parent = join(dir, 'parent');
+      mkdirSync(parent);
+      git(parent, 'init', '-q');
+      git(parent, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', module, '.book');
+      runRemedy(parent);
+    });
+
+    it.skipIf(process.platform === 'win32')('when a link leads to what the index lists', () => {
+      git(dir, 'init', '-q');
+      write(join(dir, 'config', 'settings.local.json'));
+      symlinkSync('config', join(dir, '.book'));
+      git(dir, 'add', '-f', '.book', 'config/settings.local.json');
+      runRemedy(dir);
+    });
+
+    it('when the index lists another spelling that reaches this file', () => {
+      git(dir, 'init', '-q');
+      write(join(dir, LOCAL));
+      const blob = git(dir, 'hash-object', '-w', '.book/settings.local.json').trim();
+      git(dir, 'update-index', '--add', '--cacheinfo', `100644,${blob},.BOOK/settings.local.json`);
+      if (!existsSync(join(dir, '.BOOK', 'settings.local.json'))) {
+        mkdirSync(join(dir, '.BOOK'));
+        linkSync(join(dir, LOCAL), join(dir, '.BOOK', 'settings.local.json'));
+      }
+      runRemedy(dir);
+    });
+  });
+
+  it('offers no command for an index path it cannot paste safely', () => {
+    git(dir, 'init', '-q');
+    write(join(dir, 'x$(id).json'));
+    git(dir, 'add', 'x$(id).json');
+    mkdirSync(join(dir, '.book'));
+    if (process.platform === 'win32') return;
+    symlinkSync('../x$(id).json', join(dir, LOCAL));
+    const reason = localSettingsRefusal(join(dir, LOCAL));
+    expect(reason).toContain('git tracks it');
+    expect(reason).not.toContain('$(id)');
   });
 });

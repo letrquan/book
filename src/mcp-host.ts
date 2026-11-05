@@ -22,6 +22,7 @@ import {
 } from './mcp-config.js';
 import {
   evaluateMcpServerApproval,
+  mcpConfigChangedSinceDecision,
   mcpServerFingerprint,
   persistMcpProjectServerChoice,
 } from './mcp-approvals.js';
@@ -142,7 +143,9 @@ export class McpSessionHost {
               ? 'rejected'
               : 'pending-approval',
         configChangedSinceApproval:
-          approval === 'unknown' && recorded !== undefined && recorded.fingerprint !== fingerprint,
+          approval === 'unknown' &&
+          recorded !== undefined &&
+          mcpConfigChangedSinceDecision(recorded.fingerprint, fingerprint),
       });
     }
     this.rebuildSnapshot();

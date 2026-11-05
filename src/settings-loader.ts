@@ -11,8 +11,8 @@ import {
   type ResolvedSettings,
 } from './settings.js';
 import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
-import { projectFileWriteRefusal } from './workspace-files.js';
-import { unreadLocalSettingsReason } from './local-settings-tracking.js';
+import { projectFileShapeRefusal } from './workspace-files.js';
+import { localSettingsRefusal, unreadLocalSettingsReason } from './local-settings-tracking.js';
 import { resolveBookHome } from './book-home.js';
 import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
@@ -638,7 +638,7 @@ export function settingsLayerPaths(
   return layers;
 }
 
-function userSettingsPath(paths: SettingsResolutionPaths): string {
+export function userSettingsPath(paths: SettingsResolutionPaths = {}): string {
   return (
     paths.userSettingsPath ??
     (paths.home
@@ -1018,12 +1018,10 @@ export function migrateLegacyPermissions(
   const markerPath = join(workspace, '.book', 'migrations.json');
   const localPath = join(workspace, '.book', 'settings.local.json');
   // Before the marker is read: it is one of the files this writes.
-  for (const path of [markerPath, localPath]) {
-    const refusal = projectFileWriteRefusal(path);
-    if (refusal) {
-      console.warn(`⚠  Permission rules not migrated: ${path}: ${refusal}.`);
-      return false;
-    }
+  const markerRefusal = projectFileShapeRefusal(markerPath);
+  if (markerRefusal) {
+    console.warn(`⚠  Permission rules not migrated: ${markerPath}: ${markerRefusal}.`);
+    return false;
   }
   try {
     const marker = JSON.parse(readFileSync(markerPath, 'utf-8')) as {
@@ -1032,6 +1030,14 @@ export function migrateLegacyPermissions(
     if ((marker.legacyPermissions ?? 0) >= LEGACY_PERMISSIONS_MIGRATION_VERSION) return false;
   } catch {
     // Missing or malformed markers are safely rebuilt after a successful migration.
+  }
+  // Nothing goes into a local file git tracks, and the launch's own notice already names it. No
+  // marker either, so the rules migrate once the file is the user's.
+  if (localSettingsRefusal(localPath) !== undefined) return false;
+  const localRefusal = projectFileShapeRefusal(localPath);
+  if (localRefusal) {
+    console.warn(`⚠  Permission rules not migrated: ${localPath}: ${localRefusal}.`);
+    return false;
   }
 
   let legacyRules: Array<{ toolName: string; pattern?: string; effect: string }> = [];
@@ -1047,7 +1053,7 @@ export function migrateLegacyPermissions(
 
   if (legacyRules.length === 0) return false;
 
-  const result = new SettingsRepository(localPath).update((existing) => {
+  const result = new SettingsRepository(localPath, { gitAlreadyAsked: true }).update((existing) => {
     const permissions = (existing.permissions ?? {}) as {
       allow?: string[];
       ask?: string[];

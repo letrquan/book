@@ -5,7 +5,7 @@
 import { lstatSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
 import { resolveBookHome } from './book-home.js';
-import { isLocalSettingsPath, localSettingsRefusal } from './local-settings-tracking.js';
+import { hasBookLocalSettingsShape, localSettingsRefusal } from './local-settings-tracking.js';
 
 function safeMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -18,10 +18,9 @@ function safeMessage(error: unknown): string {
  * default `.book/debug.log`), including the read a write starts from.
  *
  * Such a file is written only while it is a regular file or does not exist yet, in a `.book`
- * folder that is a real directory or does not exist yet. Anything else (a link, a FIFO, a device,
- * a directory in the file's place) is left exactly as it is: not read for the write, not written
- * through, and not replaced. Nor is a `.book/settings.local.json` that git tracks, which the loader
- * does not read either: a save there would look done and never take effect. The answer is the
+ * folder that is a real directory or does not exist yet ({@link projectFileShapeRefusal}). Nor is a
+ * `.book/settings.local.json` that git tracks written, whether or not it is on disk: the loader
+ * would not read it, so a save there would look done and never take effect. The answer is the
  * reason, without the path or a full stop, for the caller's one-line notice: `<path>: <reason>`.
  *
  * The user-global files (`<BOOK_HOME>/settings.json` and `<BOOK_HOME>/mcp.json`) keep their
@@ -30,6 +29,18 @@ function safeMessage(error: unknown): string {
  * checkouts of other repositories.
  */
 export function projectFileWriteRefusal(path: string): string | undefined {
+  const shape = projectFileShapeRefusal(path);
+  if (shape !== undefined) return shape;
+  const target = resolve(path);
+  return hasBookLocalSettingsShape(target) ? localSettingsRefusal(target) : undefined;
+}
+
+/**
+ * The half of {@link projectFileWriteRefusal} that looks only at what is on disk: anything but a
+ * regular file or nothing, in a `.book` folder that is a real directory or nothing, is left exactly
+ * as it is: not read for the write, not written through, and not replaced.
+ */
+export function projectFileShapeRefusal(path: string): string | undefined {
   const target = resolve(path);
   const home = resolve(resolveBookHome());
   if (target === join(home, 'settings.json') || target === join(home, 'mcp.json')) {
@@ -46,9 +57,7 @@ export function projectFileWriteRefusal(path: string): string | undefined {
       }
     }
     const stats = lstatSync(target, { throwIfNoEntry: false });
-    if (!stats || stats.isFile()) {
-      return isLocalSettingsPath(target) ? localSettingsRefusal(target) : undefined;
-    }
+    if (!stats || stats.isFile()) return undefined;
   } catch (error) {
     return `could not be inspected (${safeMessage(error)}), so Book left it unchanged`;
   }

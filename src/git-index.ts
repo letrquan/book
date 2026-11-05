@@ -210,22 +210,107 @@ function readVarint(file: ChunkedFile, at: number): { value: number; next: numbe
   return { value, next: offset };
 }
 
+/** What a split index says about its shared index: which one, and which of its entries are gone. */
+interface SplitIndexLink {
+  /** The shared index's object name in hex; undefined when it names none (all zeros). */
+  sharedIndex: string | undefined;
+  /** Positions in the shared index of entries this index deleted. */
+  deleted: ReadonlySet<number>;
+}
+
+const BITS_IN_EWAH_WORD = 64;
+
 /**
- * The entries of the git index at `indexPath`, in the index's own order (by path, then stage),
- * stopping before the first entry `past` returns true for: entries are sorted, so a caller after
- * one region of the tree reads no further than it. `undefined` when there is no index file.
+ * The set bits of the EWAH bitmap at `at` (git's `ewah/`): a bit count, a word count, that many
+ * 64-bit words, and the position of the last run word. Each run word holds a running bit, how many
+ * whole words of it to repeat, and how many literal words follow; a literal word's lowest bit
+ * comes first. Throws on a bitmap that does not fit `limit` or that claims more bits than it holds.
+ */
+function readEwahBitmap(data: Buffer, at: number, limit: number): Set<number> {
+  if (at + 8 > limit) throw new Error('split index bitmap is cut short');
+  const bitCount = data.readUInt32BE(at);
+  const wordCount = data.readUInt32BE(at + 4);
+  const wordsAt = at + 8;
+  if (wordsAt + wordCount * 8 + 4 > limit) throw new Error('split index bitmap is cut short');
+  const positions = new Set<number>();
+  const set = (position: number): void => {
+    if (position < bitCount) positions.add(position);
+  };
+  let position = 0;
+  let word = 0;
+  while (word < wordCount) {
+    const high = data.readUInt32BE(wordsAt + word * 8);
+    const low = data.readUInt32BE(wordsAt + word * 8 + 4);
+    word += 1;
+    const runBits = (((low >>> 1) | ((high & 1) << 31)) >>> 0) * BITS_IN_EWAH_WORD;
+    const literalWords = high >>> 1;
+    if (position + runBits > bitCount + BITS_IN_EWAH_WORD || word + literalWords > wordCount) {
+      throw new Error('split index bitmap claims more than it holds');
+    }
+    if (low & 1) for (let bit = 0; bit < runBits; bit++) set(position + bit);
+    position += runBits;
+    for (let literal = 0; literal < literalWords; literal++) {
+      const literalHigh = data.readUInt32BE(wordsAt + word * 8);
+      const literalLow = data.readUInt32BE(wordsAt + word * 8 + 4);
+      word += 1;
+      for (let bit = 0; bit < 32; bit++) {
+        if ((literalLow >>> bit) & 1) set(position + bit);
+        if ((literalHigh >>> bit) & 1) set(position + 32 + bit);
+      }
+      position += BITS_IN_EWAH_WORD;
+    }
+  }
+  return positions;
+}
+
+/** The `link` extension among the extensions from `at` to the checksum; undefined when none is. */
+function readSplitIndexLink(
+  file: ChunkedFile,
+  at: number,
+  end: number,
+  nameBytes: number,
+): SplitIndexLink | undefined {
+  let offset = at;
+  while (offset + 8 <= end) {
+    const header = file.need(offset + 8);
+    const signature = header.toString('latin1', offset, offset + 4);
+    const length = header.readUInt32BE(offset + 4);
+    const dataAt = offset + 8;
+    if (dataAt + length > end) throw new Error('index extension runs past its file');
+    if (signature === 'link') {
+      if (length < nameBytes) throw new Error('split index link is cut short');
+      const data = file.need(dataAt + length);
+      const name = data.toString('hex', dataAt, dataAt + nameBytes);
+      return {
+        sharedIndex: /^0+$/.test(name) ? undefined : name,
+        // A link with no bitmaps deleted nothing; the replace bitmap that follows is about entry
+        // contents, and a replaced entry keeps its path.
+        deleted:
+          length === nameBytes
+            ? new Set()
+            : readEwahBitmap(data, dataAt + nameBytes, dataAt + length),
+      };
+    }
+    offset = dataAt + length;
+  }
+  return undefined;
+}
+
+/**
+ * Walks the entries of the index file at `indexPath`, in its own order (by path, then stage),
+ * until `visit` returns true. `undefined` when there is no such file. With `wantLink`, an index
+ * walked to its end also reads its split-index link.
  *
  * Reads index versions 2, 3 and 4 (`feature.manyFiles` writes 4). `nameBytes` is the repository's
  * object name length ({@link objectNameBytes}). Throws on anything it does not fully understand:
- * another signature or version, an entry cut short, a name whose recorded length disagrees with
- * it. A split index's own file lists only what changed since its shared index; that one is a
- * second index file (`sharedindex.<hash>` beside it), which {@link indexFilesOf} returns too.
+ * another signature or version, an entry cut short, a name whose recorded length disagrees with it.
  */
-export function readGitIndex(
+function scanIndexFile(
   indexPath: string,
   nameBytes: number,
-  past: (path: string) => boolean = () => false,
-): GitIndexEntry[] | undefined {
+  visit: (path: string, mode: number, position: number) => boolean,
+  wantLink: boolean,
+): { link?: SplitIndexLink } | undefined {
   const fd = openRegularFile(indexPath);
   if (fd === undefined) return undefined;
   try {
@@ -237,7 +322,6 @@ export function readGitIndex(
       throw new Error(`${indexPath} is git index version ${version}`);
     }
     const count = header.readUInt32BE(8);
-    const entries: GitIndexEntry[] = [];
     let offset = 12;
     let previous = '';
     for (let index = 0; index < count; index++) {
@@ -275,34 +359,99 @@ export function readGitIndex(
         throw new Error(`${indexPath} has an entry of the wrong length`);
       }
       previous = path;
-      if (path.length > 0 && past(path)) break;
-      entries.push({ path, mode });
+      if (visit(path, mode, index)) return {};
     }
-    return entries;
+    if (!wantLink) return {};
+    return { link: readSplitIndexLink(file, offset, fstatSync(fd).size - nameBytes, nameBytes) };
   } finally {
     closeSync(fd);
   }
 }
 
 /**
- * The index files of `gitDir`: its `index`, and each split-index `sharedindex.<hash>` beside it.
- * Reading every shared index and taking the union over-counts at most (a path the current shared
- * index no longer lists, or one the split index deleted), never under-counts.
+ * The entries of the one index file at `indexPath`, stopping before the first entry `past` returns
+ * true for: entries are sorted, so a caller after one region of the tree reads no further than it.
+ * `undefined` when there is no index file. A split index's own file lists only what changed since
+ * its shared index, with an empty path for a shared entry it replaced; {@link visitGitIndex} reads
+ * a repository's whole index.
  */
-export function indexFilesOf(gitDir: string): string[] {
-  refuseUnc(gitDir);
-  let names: string[];
+export function readGitIndex(
+  indexPath: string,
+  nameBytes: number,
+  past: (path: string) => boolean = () => false,
+): GitIndexEntry[] | undefined {
+  const entries: GitIndexEntry[] = [];
+  const scanned = scanIndexFile(
+    indexPath,
+    nameBytes,
+    (path, mode) => {
+      if (path.length > 0 && past(path)) return true;
+      entries.push({ path, mode });
+      return false;
+    },
+    false,
+  );
+  return scanned && entries;
+}
+
+/** Whether `directory` holds any shared index file. Absent directories hold none. */
+function holdsSharedIndex(directory: string): boolean {
   try {
-    names = readdirSync(gitDir);
+    return readdirSync(directory).some((name) => name.startsWith('sharedindex.'));
   } catch (e) {
-    if (errorCode(e) === 'ENOENT') return [];
+    const code = errorCode(e);
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
     throw e;
   }
-  return [
+}
+
+/**
+ * Walks every path the index of `gitDir` lists until `visit` returns true, as git sees it: in a
+ * split index, what the index file itself lists plus what the one shared index its `link` names
+ * still holds after the link's delete bitmap, so a path git no longer tracks is not visited. Each
+ * file is in order, but the two are not merged. `past` says that nothing further in one sorted
+ * file can matter, which a split index's own file cannot use: its `link` is after its entries.
+ * A repository with no index visits nothing. Throws as {@link scanIndexFile} does, and when the
+ * shared index named is missing.
+ */
+export function visitGitIndex(
+  gitDir: string,
+  visit: (path: string, mode: number) => boolean,
+  past: (path: string) => boolean = () => false,
+): void {
+  refuseUnc(gitDir);
+  const commonDir = commonDirOf(gitDir);
+  const nameBytes = objectNameBytes(commonDir);
+  // A leftover shared index only costs reading to the end of the index file. Without one there
+  // can be no split index to read, and the sorted read stops early.
+  const mayBeSplit = holdsSharedIndex(gitDir) || holdsSharedIndex(commonDir);
+  let found = false;
+  const own = scanIndexFile(
     join(gitDir, 'index'),
-    ...names
-      .filter((name) => /^sharedindex\.[0-9a-f]{40,64}$/.test(name))
-      .sort()
-      .map((name) => join(gitDir, name)),
-  ];
+    nameBytes,
+    (path, mode) => {
+      if (path.length === 0) return false;
+      if (!mayBeSplit && past(path)) return true;
+      found = visit(path, mode);
+      return found;
+    },
+    mayBeSplit,
+  );
+  const sharedIndex = own?.link?.sharedIndex;
+  if (found || !own?.link || sharedIndex === undefined) return;
+  const { deleted } = own.link;
+  const fileName = `sharedindex.${sharedIndex}`;
+  const scanShared = (directory: string) =>
+    scanIndexFile(
+      join(directory, fileName),
+      nameBytes,
+      (path, mode, position) => {
+        if (past(path)) return true;
+        return !deleted.has(position) && visit(path, mode);
+      },
+      false,
+    );
+  if (scanShared(gitDir) === undefined && scanShared(commonDir) === undefined) {
+    throw new Error(`${join(gitDir, 'index')} names a shared index that is missing`);
+  }
 }
