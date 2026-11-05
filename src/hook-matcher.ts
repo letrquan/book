@@ -10,9 +10,10 @@ import { parseRule } from './permissions.js';
  * The grammar is Claude Code's, with names where Claude Code has regular expressions:
  * - absent, empty or blank: every tool call;
  * - `*`: every tool;
- * - `Tool` or `Tool(pattern)`: one tool by its exact name, every call of it or those whose primary
- *   argument the pattern matches (the permission-rule format, read by `parseRule`; `*(pattern)` is
- *   the pattern on any tool);
+ * - `Tool` or `Tool(pattern)`: one tool by its exact name, every call of it or those the pattern
+ *   selects (the permission-rule format, read by `parseRule`; `*(pattern)` is the pattern on any
+ *   tool). The pattern is compared with the call's primary argument, each file of a patch, or each
+ *   command of a Bash line; the hook runner's `matchesAlternative` says which;
  * - `A|B`: any of the alternatives, each read as above. The text splits on a `|` outside
  *   parentheses only, so `Bash(a|b)` is one alternative whose pattern holds a `|`.
  */

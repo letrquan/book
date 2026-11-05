@@ -184,7 +184,7 @@ export interface PermissionEvaluationOptions {
 export const WORKSPACE_READ_TOOLS: ReadonlySet<string> = new Set(['Read', 'Glob', 'Grep']);
 
 /** Tools whose rules name one file path, so a rule must match the file however it is spelled. */
-const PATH_RULE_TOOLS: ReadonlySet<string> = new Set([
+export const PATH_RULE_TOOLS: ReadonlySet<string> = new Set([
   'Read',
   'Write',
   'Edit',
@@ -310,8 +310,17 @@ function ruleMatchesCandidate(
 ): boolean {
   if (!toolNameMatchesRule(rule.toolName, toolName)) return false;
   if (rule.pattern === null) return true; // match-all
-  const normalizedArg = normalizePathArg(primaryArg);
-  const normalizedPattern = rule.pattern.startsWith('./') ? rule.pattern.slice(2) : rule.pattern;
+  return patternMatchesArgument(rule.pattern, primaryArg, fold);
+}
+
+/**
+ * A `Tool(pattern)` pattern against one argument, both with a leading `./` dropped: how a permission
+ * rule and a hook matcher (#684) compare. `fold` is for a restricting path rule, see
+ * {@link caseFoldingPathRule}; a hook never folds.
+ */
+export function patternMatchesArgument(pattern: string, argument: string, fold = false): boolean {
+  const normalizedArg = normalizePathArg(argument);
+  const normalizedPattern = normalizePathArg(pattern);
   if (!fold) return globToRegex(normalizedPattern).test(normalizedArg);
   return globToRegex(caseFoldingPathRule(normalizedPattern)).test(
     caseFoldingPathRule(normalizedArg),
@@ -1005,6 +1014,28 @@ function spellingsOfPath(
     }
   }
   return [...new Set(spellings)].filter((spelling) => spelling !== '' && spelling !== raw);
+}
+
+/**
+ * A path as written, where its links lead, and the spellings a `deny` or `ask` rule also reads it
+ * by, for a reader that knows only the workspace: a hook matcher, so `ApplyPatch(.env)` sees
+ * `sub/../.env` and the absolute path (#687). With no approved roots of its own, it has no form
+ * relative to one, and without one it asks for the links itself: a link can lead into a root it has
+ * not been told about.
+ */
+export function workspacePathSpellings(workspace: string, raw: string): string[] {
+  if (!raw) return [raw];
+  const scope = {
+    root: workspace,
+    judgeReads: false,
+    refuseUnreachableReads: false,
+    autoAllowReads: false,
+  };
+  return [
+    raw,
+    toPosix(canonicalizePath(resolve(workspace, raw))),
+    ...spellingsOfPath(resolvedPathScope(scope), raw, false, true),
+  ];
 }
 
 /** The other spellings of a path-rule tool's target; see `spellingsOfPath`. */

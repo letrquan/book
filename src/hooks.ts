@@ -2,7 +2,9 @@ import { spawn } from 'child_process';
 import { buildChildEnv } from './child-env.js';
 import type { HookEntry, HookEvent } from './settings.js';
 import { hookMatcherAlternatives, type HookMatcherAlternative } from './hook-matcher.js';
+import { PATH_RULE_TOOLS, patternMatchesArgument, workspacePathSpellings } from './permissions.js';
 import { toolPrimaryArg } from './tools/primary-arg.js';
+import { readShellCommands, type ScanShell } from './tools/shell-chaining.js';
 import { parsePatch } from './tools/patch.js';
 import { runTaskkill, signalProcessGroup } from './jobs/process-tree.js';
 
@@ -21,6 +23,11 @@ export interface HookContext {
    * only: the hook is still given `toolArgs` as the call made them.
    */
   toolTargets?: readonly string[];
+  /**
+   * For tool-related events: the session shell, which decides how a Bash command's quotes read when
+   * a matcher compares its pattern with it. Matched only, like {@link toolTargets}.
+   */
+  shell?: ScanShell;
   /** For UserPromptSubmit: the user's raw prompt. */
   userPrompt?: string;
   /** For PostToolUse: the tool result output (truncated). */
@@ -142,9 +149,7 @@ export async function runHooks(
       if (event === 'PreCompact' || event === 'PostCompact') {
         if (!matchesCompactTrigger(entry.matcher, ctx.trigger)) continue;
       } else if (ctx.toolName) {
-        if (!matchesHookMatcher(entry.matcher, ctx.toolName, ctx.toolArgs ?? {}, ctx.toolTargets)) {
-          continue;
-        }
+        if (!matchesHookMatcher(entry.matcher, ctx.toolName, event, ctx)) continue;
       }
     }
 
@@ -185,68 +190,63 @@ function matchesCompactTrigger(matcher: string, trigger?: 'manual' | 'auto'): bo
 function matchesHookMatcher(
   matcher: string,
   toolName: string,
-  args: Record<string, unknown>,
-  targets?: readonly string[],
+  event: HookEvent,
+  ctx: HookContext,
 ): boolean {
   const alternatives = hookMatcherAlternatives(matcher);
   if (!alternatives) return true;
-  return alternatives.some((alternative) =>
-    matchesAlternative(alternative, toolName, args, targets),
-  );
+  return alternatives.some((alternative) => matchesAlternative(alternative, toolName, event, ctx));
 }
 
 /** Whether one alternative of a matcher matches a tool call. */
 function matchesAlternative(
   { tool, pattern }: HookMatcherAlternative,
   toolName: string,
-  args: Record<string, unknown>,
-  targets?: readonly string[],
+  event: HookEvent,
+  ctx: HookContext,
 ): boolean {
   try {
     // `*` is every tool, and an Edit or Write matcher also sees what ApplyPatch edits.
-    const coversPatch = tool === '*' || tool === 'Edit' || tool === 'Write';
     const compatibleTool =
-      tool === '*' || tool === toolName || (toolName === 'ApplyPatch' && coversPatch);
+      tool === '*' ||
+      tool === toolName ||
+      (toolName === 'ApplyPatch' && (tool === 'Edit' || tool === 'Write'));
     if (!compatibleTool) return false;
     if (pattern === null) return true; // match-all
 
-    const patchTargets =
-      toolName === 'ApplyPatch' && args
-        ? (() => {
-            const parsed = parsePatch(args.patch);
-            return 'operations' in parsed
-              ? parsed.operations.map((operation) => operation.path)
-              : [];
-          })()
-        : [];
-    if (patchTargets.length > 0 && coversPatch) {
-      return patchTargets.some((path) => matchesArgumentPattern(pattern, path));
+    const args = ctx.toolArgs ?? {};
+    const selectedBy = (argument: string) => patternMatchesArgument(pattern, argument);
+
+    if (toolName === 'Bash' && typeof args.command === 'string') {
+      const { texts, readable } = readShellCommands(args.command, process.platform, ctx.shell);
+      if (texts.some(selectedBy)) return true;
+      // A line nobody can read in full might run the command this hook is for, so it fails closed
+      // (#687), but only where that is what the hook asked for. A `*` pattern need not be about a
+      // shell command at all, and a PostToolUse hook's `modify` replaces the output of a command
+      // it never named, so neither runs on this alone.
+      return !readable && tool === 'Bash' && event === 'PreToolUse';
     }
 
-    // Extract primary arg from tool arguments using shared utility, the tool's own where it names
-    // one (`SessionSend` matches on its recipient), or every spelling of the target its tool knows.
-    return (targets ?? [toolPrimaryArg(toolName, args)]).some((target) =>
-      matchesArgumentPattern(pattern, target),
-    );
+    // Every file a patch edits. One that does not parse edits nothing: the tool refuses it.
+    if (toolName === 'ApplyPatch') {
+      const parsed = parsePatch(args.patch);
+      if ('operations' in parsed) {
+        return parsed.operations.some(({ path }) =>
+          workspacePathSpellings(ctx.workspace, path).some(selectedBy),
+        );
+      }
+    }
+
+    // The primary argument, the tool's own where it names one (`SessionSend` matches on its
+    // recipient), every spelling of the target its tool knows, or of a file tool's path.
+    const primary = toolPrimaryArg(toolName, args);
+    const targets =
+      ctx.toolTargets ??
+      (PATH_RULE_TOOLS.has(toolName) ? workspacePathSpellings(ctx.workspace, primary) : [primary]);
+    return targets.some(selectedBy);
   } catch {
     return false; // malformed matcher — skip
   }
-}
-
-/**
- * A matcher's argument glob against one argument, both with a leading `./` dropped. `*` is zero or
- * more of anything, and a trailing " *" (space-star) means "optionally followed by a space and more
- * arguments" (CC convention).
- */
-function matchesArgumentPattern(pattern: string, argument: string): boolean {
-  const normalizedArgument = argument.startsWith('./') ? argument.slice(2) : argument;
-  const normalizedPattern = pattern.startsWith('./') ? pattern.slice(2) : pattern;
-  const reStr = normalizedPattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '.*')
-    .replace(/ \*$/g, '( .*)?') // trailing " *" = optional args
-    .replace(/\*/g, '.*');
-  return new RegExp(`^${reStr}$`).test(normalizedArgument);
 }
 
 async function runSingleHook(
