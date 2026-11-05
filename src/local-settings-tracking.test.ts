@@ -132,6 +132,15 @@ describe('localSettingsTracking', () => {
     });
   }
 
+  it('is not put off by a large repository config, which `.gitmodules` can fill', () => {
+    git(dir, 'init', '-q');
+    write(join(dir, LOCAL));
+    writeFileSync(join(dir, '.git', 'config'), `${'#'.repeat(2 * 1024 * 1024)}\n`);
+    expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('untracked');
+    git(dir, 'add', '-f', '.book/settings.local.json');
+    expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('tracked');
+  });
+
   it('reads a repository whose object names are SHA-256', () => {
     git(dir, 'init', '-q', '--object-format=sha256');
     write(join(dir, LOCAL));
@@ -312,6 +321,17 @@ describe('localSettingsTracking', () => {
       git(dir, 'update-index', '--add', '--cacheinfo', `100644,${blob},${spelling}`);
     }
 
+    /** Runs `body` with `process.platform` saying `platform`. */
+    function onPlatform(platform: NodeJS.Platform, body: () => void): void {
+      const original = process.platform;
+      Object.defineProperty(process, 'platform', { value: platform });
+      try {
+        body();
+      } finally {
+        Object.defineProperty(process, 'platform', { value: original });
+      }
+    }
+
     it('is another file, unless the file system says it reaches this one', () => {
       listSpelling('.BOOK/settings.local.json');
       // Decided by the file system under test: Linux here, a folding one on other CI legs.
@@ -322,23 +342,8 @@ describe('localSettingsTracking', () => {
     it('leaves the user’s file alone beside a different one in another case', () => {
       listSpelling('.book/SETTINGS.LOCAL.JSON');
       write(join(dir, '.book', 'SETTINGS.LOCAL.JSON'), '{ "model": "theirs" }');
-      if (!existsSync(join(dir, LOCAL))) return;
       const folds = readdirSync(join(dir, '.book')).length === 1;
       expect(localSettingsTracking(join(dir, LOCAL)).state).toBe(folds ? 'tracked' : 'untracked');
-    });
-
-    it('counts when the disk says both spellings reach one file', () => {
-      listSpelling('.BOOK/settings.local.json');
-      // A hard link stands in for a folding file system, so every leg runs this branch.
-      if (!existsSync(join(dir, '.BOOK', 'settings.local.json'))) {
-        mkdirSync(join(dir, '.BOOK'));
-        linkSync(join(dir, LOCAL), join(dir, '.BOOK', 'settings.local.json'));
-      }
-      expect(localSettingsTracking(join(dir, LOCAL))).toMatchObject({
-        state: 'tracked',
-        path: '.BOOK/settings.local.json',
-        direct: false,
-      });
     });
 
     it('says nothing about a save when the other spelling is another file', () => {
@@ -346,6 +351,67 @@ describe('localSettingsTracking', () => {
       if (existsSync(join(dir, '.BOOK', 'settings.local.json'))) return;
       expect(localSettingsRefusal(join(dir, LOCAL))).toBeUndefined();
     });
+
+    // Where spellings may alias, an entry reaching this file on disk counts however it reads. A
+    // hard link stands in for what a folding file system does, so every leg runs these, on a
+    // platform whose file systems are taken to fold. A real casefold mount was run by hand too.
+    describe('where spellings may alias', () => {
+      for (const spelling of [
+        '.BOOK/settings.local.json',
+        '.book/\u017Fettings.local.json',
+        '.book/settings.local.j\u017Fon',
+        '.boo\u212A/settings.local.json',
+        '.bo\u200Cok/settings.local.json',
+        'BOOK~1/settings.local.json',
+      ]) {
+        it(`counts ${JSON.stringify(spelling)} when it reaches this file`, () => {
+          listSpelling(spelling);
+          const alias = join(dir, spelling);
+          if (!existsSync(alias)) {
+            mkdirSync(dirname(alias), { recursive: true });
+            linkSync(join(dir, LOCAL), alias);
+          }
+          onPlatform('darwin', () => {
+            expect(localSettingsTracking(join(dir, LOCAL))).toMatchObject({
+              state: 'tracked',
+              path: spelling,
+              direct: false,
+            });
+          });
+        });
+
+        it(`leaves ${JSON.stringify(spelling)} when it reaches another file`, () => {
+          listSpelling(spelling);
+          const alias = join(dir, spelling);
+          // Only meaningful where the two really are different files.
+          if (existsSync(alias)) return;
+          mkdirSync(dirname(alias), { recursive: true });
+          writeFileSync(alias, '{ "model": "theirs" }');
+          onPlatform('darwin', () => {
+            expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('untracked');
+          });
+        });
+      }
+
+      it('is not fooled by a spelling at another depth, or that sorts after the file', () => {
+        listSpelling('zz/.book/\u017Fettings.local.json');
+        onPlatform('darwin', () => {
+          expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('untracked');
+        });
+      });
+    });
+
+    it.skipIf(process.platform === 'win32')(
+      'does not take a tracked link in the other case for a folding file system',
+      () => {
+        git(dir, 'init', '-q');
+        write(join(dir, LOCAL));
+        symlinkSync('.book', join(dir, '.BOOK'));
+        git(dir, 'add', '-f', '.BOOK');
+        if (readdirSync(dir).filter((name) => name.toLowerCase() === '.book').length !== 2) return;
+        expect(localSettingsTracking(join(dir, LOCAL)).state).toBe('untracked');
+      },
+    );
   });
 
   describe.skipIf(process.platform === 'win32')('links', () => {
@@ -636,7 +702,13 @@ describe('the reasons', () => {
         mkdirSync(join(dir, '.BOOK'));
         linkSync(join(dir, LOCAL), join(dir, '.BOOK', 'settings.local.json'));
       }
-      runRemedy(dir);
+      const original = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
+      try {
+        runRemedy(dir);
+      } finally {
+        Object.defineProperty(process, 'platform', { value: original });
+      }
     });
   });
 
@@ -650,5 +722,21 @@ describe('the reasons', () => {
     const reason = localSettingsRefusal(join(dir, LOCAL));
     expect(reason).toContain('git tracks it');
     expect(reason).not.toContain('$(id)');
+  });
+
+  it.skipIf(process.platform === 'win32')('prints no control character from a path', () => {
+    const module = join(dir, 'mod\u009b31m');
+    mkdirSync(module);
+    git(module, 'init', '-q');
+    write(join(module, 'settings.local.json'));
+    git(module, 'add', '-f', 'settings.local.json');
+    const repo = join(dir, 'repo');
+    mkdirSync(repo);
+    git(repo, 'init', '-q');
+    symlinkSync(module, join(repo, '.book'));
+    git(repo, 'add', '-f', '.book');
+    const reason = localSettingsRefusal(join(repo, LOCAL));
+    expect(reason).toContain('git tracks it');
+    expect(reason).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
   });
 });

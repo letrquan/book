@@ -3,8 +3,7 @@ import { join, resolve } from 'path';
 import { reachesUncPath } from './unc-path.js';
 
 /**
- * What a git repository tracks, read from its files: the `.git` pointer, `commondir`, `config` and
- * the index. Synchronous, and git is never spawned, so no program the repository configures runs
+ * What a git repository tracks, read from its files: the `.git` pointer, `commondir` and the index. Synchronous, and git is never spawned, so no program the repository configures runs
  * and a synchronous caller (settings resolution) can ask. Every read is bounded and opens without
  * blocking, because the files of a checkout unpacked from an archive are the archive's. Nothing
  * that is, or reaches through a link, a UNC location on Windows is opened, so no read sends a
@@ -107,17 +106,6 @@ export function commonDirOf(gitDir: string): string {
   return common ? resolve(gitDir, common) : gitDir;
 }
 
-const MAX_CONFIG_BYTES = 1024 * 1024;
-
-/**
- * Bytes in one object name in the repository whose common dir is `commonDir`: 32 when its config
- * sets `extensions.objectFormat = sha256`, else 20 (SHA-1). Throws on a config it cannot read.
- */
-export function objectNameBytes(commonDir: string): number {
-  const config = readBoundedText(join(commonDir, 'config'), MAX_CONFIG_BYTES) ?? '';
-  return /^[ \t]*objectformat[ \t]*=[ \t]*"?sha256"?[ \t]*(?:[#;].*)?$/im.test(config) ? 32 : 20;
-}
-
 /** One index entry. */
 export interface GitIndexEntry {
   /**
@@ -129,8 +117,12 @@ export interface GitIndexEntry {
   mode: number;
 }
 
-/** An index bigger than this is not read. */
-const MAX_INDEX_FILE_BYTES = 512 * 1024 * 1024;
+/**
+ * The most of an index file held in memory at once, so one entry or extension bigger than this is
+ * not read. The file itself has no limit: how many files a repository tracks is up to the
+ * repository, and a limit on that would make a large checkout unreadable.
+ */
+const MAX_WINDOW_BYTES = 512 * 1024 * 1024;
 const READ_CHUNK_BYTES = 1024 * 1024;
 const INDEX_SIGNATURE = 0x44495243; // "DIRC"
 const EXTENDED_FLAG = 0x4000;
@@ -140,71 +132,104 @@ const STAT_BYTES = 40;
 const MODE_OFFSET = 24;
 
 /**
- * Reads a file from its start in chunks, so a caller that stops early reads only what it needed.
- * Every offset handed to it is from the start of the file.
+ * A window on a file read from its start, so a caller that stops early reads only what it needed
+ * and a long read holds only what it is looking at. Every offset is from the start of the file;
+ * {@link forgetBefore} says which bytes are no longer needed.
  */
-class ChunkedFile {
-  private buffer = Buffer.alloc(0);
+class FileWindow {
+  private buffer = Buffer.alloc(READ_CHUNK_BYTES);
+  /** The file offset of `buffer[0]`. */
+  private start = 0;
   private filled = 0;
-  private ended = false;
 
   constructor(
     private readonly fd: number,
     private readonly path: string,
   ) {}
 
-  /** Makes bytes `[0, end)` available; throws when the file ends first or would exceed the limit. */
-  need(end: number): Buffer {
-    if (end <= this.filled) return this.buffer;
-    if (end > MAX_INDEX_FILE_BYTES) {
-      throw new Error(`${this.path} is larger than ${MAX_INDEX_FILE_BYTES} bytes`);
+  /** Makes bytes up to `end` available; throws when the file ends first or they would not fit. */
+  private need(end: number): void {
+    const wanted = end - this.start;
+    if (wanted <= this.filled) return;
+    if (wanted > MAX_WINDOW_BYTES) {
+      throw new Error(`${this.path} has more than ${MAX_WINDOW_BYTES} bytes in one place`);
     }
-    if (end > this.buffer.length) {
-      const size = Math.min(
-        MAX_INDEX_FILE_BYTES,
-        Math.max(end, this.buffer.length * 2, READ_CHUNK_BYTES),
+    if (wanted > this.buffer.length) {
+      const grown = Buffer.alloc(
+        Math.min(MAX_WINDOW_BYTES, Math.max(wanted, this.buffer.length * 2)),
       );
-      const grown = Buffer.alloc(size);
       this.buffer.copy(grown, 0, 0, this.filled);
       this.buffer = grown;
     }
-    while (this.filled < end) {
-      if (this.ended) throw new Error(`${this.path} ends inside an entry`);
+    while (this.filled < wanted) {
       const n = readSync(
         this.fd,
         this.buffer,
         this.filled,
         this.buffer.length - this.filled,
-        this.filled,
+        this.start + this.filled,
       );
-      if (n === 0) this.ended = true;
-      else this.filled += n;
+      if (n === 0) throw new Error(`${this.path} ends inside an entry`);
+      this.filled += n;
     }
-    return this.buffer;
+  }
+
+  /** Lets the bytes before `offset` go, once there are enough of them to be worth moving. */
+  forgetBefore(offset: number): void {
+    const gone = offset - this.start;
+    if (gone < READ_CHUNK_BYTES) return;
+    if (gone < this.filled) this.buffer.copy(this.buffer, 0, gone, this.filled);
+    this.filled = Math.max(0, this.filled - gone);
+    this.start = offset;
+  }
+
+  byte(at: number): number {
+    this.need(at + 1);
+    return this.buffer[at - this.start];
+  }
+
+  uint16(at: number): number {
+    this.need(at + 2);
+    return this.buffer.readUInt16BE(at - this.start);
+  }
+
+  uint32(at: number): number {
+    this.need(at + 4);
+    return this.buffer.readUInt32BE(at - this.start);
+  }
+
+  latin1(from: number, to: number): string {
+    this.need(to);
+    return this.buffer.toString('latin1', from - this.start, to - this.start);
+  }
+
+  /** The bytes from `from` to `to`, valid until the next call on this window. */
+  bytes(from: number, to: number): Buffer {
+    this.need(to);
+    return this.buffer.subarray(from - this.start, to - this.start);
   }
 
   /** The offset of the first NUL at or after `from`, reading on as far as it takes. */
   nulFrom(from: number): number {
     let searched = from;
     while (true) {
-      const view = this.need(Math.max(searched, from + 1)).subarray(0, this.filled);
-      const found = view.indexOf(0, searched);
-      if (found !== -1) return found;
-      searched = this.filled;
-      this.need(this.filled + 1);
+      this.need(Math.max(searched + 1, from + 1));
+      const found = this.buffer.subarray(0, this.filled).indexOf(0, searched - this.start);
+      if (found !== -1) return found + this.start;
+      searched = this.start + this.filled;
     }
   }
 }
 
 /** Git's offset varint (`varint.c`): seven bits a byte, high bit set on all but the last, plus one per continuation. */
-function readVarint(file: ChunkedFile, at: number): { value: number; next: number } {
+function readVarint(file: FileWindow, at: number): { value: number; next: number } {
   let offset = at;
-  let byte = file.need(offset + 1)[offset++];
+  let byte = file.byte(offset++);
   let value = byte & 0x7f;
   while (byte & 0x80) {
     value += 1;
     if (value > 0xffffff) throw new Error('index path prefix length out of range');
-    byte = file.need(offset + 1)[offset++];
+    byte = file.byte(offset++);
     value = value * 128 + (byte & 0x7f);
   }
   return { value, next: offset };
@@ -265,33 +290,30 @@ function readEwahBitmap(data: Buffer, at: number, limit: number): Set<number> {
 
 /** The `link` extension among the extensions from `at` to the checksum; undefined when none is. */
 function readSplitIndexLink(
-  file: ChunkedFile,
+  file: FileWindow,
   at: number,
   end: number,
   nameBytes: number,
 ): SplitIndexLink | undefined {
   let offset = at;
   while (offset + 8 <= end) {
-    const header = file.need(offset + 8);
-    const signature = header.toString('latin1', offset, offset + 4);
-    const length = header.readUInt32BE(offset + 4);
+    const signature = file.latin1(offset, offset + 4);
+    const length = file.uint32(offset + 4);
     const dataAt = offset + 8;
     if (dataAt + length > end) throw new Error('index extension runs past its file');
     if (signature === 'link') {
       if (length < nameBytes) throw new Error('split index link is cut short');
-      const data = file.need(dataAt + length);
-      const name = data.toString('hex', dataAt, dataAt + nameBytes);
+      const data = file.bytes(dataAt, dataAt + length);
+      const name = data.toString('hex', 0, nameBytes);
       return {
         sharedIndex: /^0+$/.test(name) ? undefined : name,
         // A link with no bitmaps deleted nothing; the replace bitmap that follows is about entry
         // contents, and a replaced entry keeps its path.
-        deleted:
-          length === nameBytes
-            ? new Set()
-            : readEwahBitmap(data, dataAt + nameBytes, dataAt + length),
+        deleted: length === nameBytes ? new Set() : readEwahBitmap(data, nameBytes, length),
       };
     }
     offset = dataAt + length;
+    file.forgetBefore(offset);
   }
   return undefined;
 }
@@ -302,7 +324,7 @@ function readSplitIndexLink(
  * walked to its end also reads its split-index link.
  *
  * Reads index versions 2, 3 and 4 (`feature.manyFiles` writes 4). `nameBytes` is the repository's
- * object name length ({@link objectNameBytes}). Throws on anything it does not fully understand:
+ * object name length: 20, or 32 for SHA-256. Throws on anything it does not fully understand:
  * another signature or version, an entry cut short, a name whose recorded length disagrees with it.
  */
 function scanIndexFile(
@@ -314,25 +336,23 @@ function scanIndexFile(
   const fd = openRegularFile(indexPath);
   if (fd === undefined) return undefined;
   try {
-    const file = new ChunkedFile(fd, indexPath);
-    const header = file.need(12);
-    if (header.readUInt32BE(0) !== INDEX_SIGNATURE) throw new Error(`${indexPath} is no git index`);
-    const version = header.readUInt32BE(4);
+    const file = new FileWindow(fd, indexPath);
+    if (file.uint32(0) !== INDEX_SIGNATURE) throw new Error(`${indexPath} is no git index`);
+    const version = file.uint32(4);
     if (version < 2 || version > 4) {
       throw new Error(`${indexPath} is git index version ${version}`);
     }
-    const count = header.readUInt32BE(8);
+    const count = file.uint32(8);
     let offset = 12;
     let previous = '';
     for (let index = 0; index < count; index++) {
       const start = offset;
-      const fixed = file.need(start + STAT_BYTES + nameBytes + 2);
-      const mode = fixed.readUInt32BE(start + MODE_OFFSET);
-      const flags = fixed.readUInt16BE(start + STAT_BYTES + nameBytes);
+      file.forgetBefore(start);
+      const mode = file.uint32(start + MODE_OFFSET);
+      const flags = file.uint16(start + STAT_BYTES + nameBytes);
       let nameAt = start + STAT_BYTES + nameBytes + 2;
       if (flags & EXTENDED_FLAG) {
         if (version < 3) throw new Error(`${indexPath} has an extended entry in version 2`);
-        file.need(nameAt + 2);
         nameAt += 2;
       }
       const recordedLength = flags & NAME_LENGTH_MASK;
@@ -341,17 +361,15 @@ function scanIndexFile(
         const { value: strip, next } = readVarint(file, nameAt);
         if (strip > previous.length) throw new Error(`${indexPath} strips past its previous path`);
         const nul = file.nulFrom(next);
-        path =
-          previous.slice(0, previous.length - strip) + file.need(nul).toString('latin1', next, nul);
+        path = previous.slice(0, previous.length - strip) + file.latin1(next, nul);
         offset = nul + 1;
       } else {
         const nul = file.nulFrom(nameAt);
-        path = file.need(nul).toString('latin1', nameAt, nul);
+        path = file.latin1(nameAt, nul);
         // The entry is padded with one to eight NULs to a multiple of eight bytes.
         const end = start + ((nameAt - start + (nul - nameAt) + 8) & ~7);
-        const padding = file.need(end);
         for (let at = nul; at < end; at++) {
-          if (padding[at] !== 0) throw new Error(`${indexPath} has an entry with bad padding`);
+          if (file.byte(at) !== 0) throw new Error(`${indexPath} has an entry with bad padding`);
         }
         offset = end;
       }
@@ -405,26 +423,15 @@ function holdsSharedIndex(directory: string): boolean {
   }
 }
 
-/**
- * Walks every path the index of `gitDir` lists until `visit` returns true, as git sees it: in a
- * split index, what the index file itself lists plus what the one shared index its `link` names
- * still holds after the link's delete bitmap, so a path git no longer tracks is not visited. Each
- * file is in order, but the two are not merged. `past` says that nothing further in one sorted
- * file can matter, which a split index's own file cannot use: its `link` is after its entries.
- * A repository with no index visits nothing. Throws as {@link scanIndexFile} does, and when the
- * shared index named is missing.
- */
-export function visitGitIndex(
+/** One attempt at {@link visitGitIndex}, with one object name length. */
+function visitIndexFiles(
   gitDir: string,
+  commonDir: string,
+  mayBeSplit: boolean,
+  nameBytes: number,
   visit: (path: string, mode: number) => boolean,
-  past: (path: string) => boolean = () => false,
+  past: (path: string) => boolean,
 ): void {
-  refuseUnc(gitDir);
-  const commonDir = commonDirOf(gitDir);
-  const nameBytes = objectNameBytes(commonDir);
-  // A leftover shared index only costs reading to the end of the index file. Without one there
-  // can be no split index to read, and the sorted read stops early.
-  const mayBeSplit = holdsSharedIndex(gitDir) || holdsSharedIndex(commonDir);
   let found = false;
   const own = scanIndexFile(
     join(gitDir, 'index'),
@@ -453,5 +460,40 @@ export function visitGitIndex(
     );
   if (scanShared(gitDir) === undefined && scanShared(commonDir) === undefined) {
     throw new Error(`${join(gitDir, 'index')} names a shared index that is missing`);
+  }
+}
+
+/**
+ * Walks every path the index of `gitDir` lists until `visit` returns true, as git sees it: in a
+ * split index, what the index file itself lists plus what the one shared index its `link` names
+ * still holds after the link's delete bitmap, so a path git no longer tracks is not visited. Each
+ * file is in order, but the two are not merged. `past` says that nothing further in one sorted
+ * file can matter, which a split index's own file cannot use: its `link` is after its entries.
+ * A repository with no index visits nothing. Throws as {@link scanIndexFile} does, and when the
+ * shared index named is missing.
+ *
+ * The object name length is taken from the index itself: the reader is strict enough that an index
+ * read with the wrong length fails within an entry or two, so SHA-1 is tried and then SHA-256,
+ * and `visit` can see the start of a failed attempt. The repository's config, the other place that
+ * says, is not read: it holds whatever `.gitmodules` put there, in any amount.
+ */
+export function visitGitIndex(
+  gitDir: string,
+  visit: (path: string, mode: number) => boolean,
+  past: (path: string) => boolean = () => false,
+): void {
+  refuseUnc(gitDir);
+  const commonDir = commonDirOf(gitDir);
+  // A leftover shared index only costs reading to the end of the index file. Without one there
+  // can be no split index to read, and the sorted read stops early.
+  const mayBeSplit = holdsSharedIndex(gitDir) || holdsSharedIndex(commonDir);
+  try {
+    visitIndexFiles(gitDir, commonDir, mayBeSplit, 20, visit, past);
+  } catch (sha1Failure) {
+    try {
+      visitIndexFiles(gitDir, commonDir, mayBeSplit, 32, visit, past);
+    } catch {
+      throw sha1Failure;
+    }
   }
 }

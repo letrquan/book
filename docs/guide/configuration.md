@@ -17,8 +17,8 @@ in print mode and the SDK, among the start-up notices in the TUI, and on the `Lo
 `book doctor`. Review the file, then run the `git rm --cached` the notice prints to make it your own.
 
 Book answers from the git index, in the nearest repository and any above it. An entry has to name
-this very file: a path that differs only in case counts only where the file system says it reaches
-this file. A link cannot move a tracked file out of sight, so the file is also looked up where a link
+this very file: one that reads differently counts only where the file system says it reaches this
+file, which is a question for a file system that folds names, not for how the two read. A link cannot move a tracked file out of sight, so the file is also looked up where a link
 takes it, when that is inside the repository or a link the repository tracks led there; your own
 link to a file elsewhere, such as your dotfiles, stays your own. When Book cannot read the nearest
 repository's index it counts the file as tracked, and the notice says that instead.

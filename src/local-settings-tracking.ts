@@ -16,9 +16,10 @@ import { isUncSpelling, reachesUncPath } from './unc-path.js';
  * - The question goes to the index, read from its files (`git-index.ts`): git is never spawned, so
  *   no program the repository configures runs, and settings resolution, which is synchronous, can
  *   ask. Every repository at or above the file is asked, since whichever lists it ships it.
- * - An entry counts only if it names this file. A path that merely resembles it (another case, say,
- *   on a case-sensitive file system) is another file; it counts only where the file system says
- *   that spelling reaches this one.
+ * - An entry counts only if it names this file. A path that isn't this file isn't this file, so
+ *   another spelling never counts by how it reads. Where a file system may fold names, an entry
+ *   that could be another spelling of the path counts if the disk says it reaches this file; what a
+ *   file system folds (case, Unicode equivalents, a short name) is the file system's to say.
  * - A link cannot move a tracked file out of sight: the file is also asked about where a link takes
  *   it, when that is inside the workspace's repository or a link that repository tracks led there.
  *   A link of the user's own to somewhere else is their setup, whatever tracks the far end.
@@ -39,11 +40,6 @@ export type LocalSettingsTracking =
   | { state: 'unknown'; repository: string };
 
 const MODE_LINK = 0o120000;
-
-/** Two spellings of a file on some file system compare equal in this form. */
-function comparable(path: string): string {
-  return path.normalize('NFC').replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
-}
 
 /** An index path, stored as one character per byte (`GitIndexEntry.path`), as text. */
 function indexPathText(path: string): string {
@@ -72,21 +68,68 @@ interface Wanted {
   absolute: string;
   /** As the index would store it. */
   exact: string;
-  folded: string;
+  /** The same, lowercased, for an ASCII path. */
+  lowered: string | undefined;
+  /** How many `/` it has: no file system folds one away. */
+  depth: number;
+}
+
+function slashes(path: string): number {
+  let count = 0;
+  for (let at = path.indexOf('/'); at !== -1; at = path.indexOf('/', at + 1)) count += 1;
+  return count;
 }
 
 function wantedIn(root: string, absolute: string): Wanted {
-  const text = relative(root, absolute).split(sep).join('/');
-  return { absolute, exact: indexPathOf(text), folded: comparable(text) };
+  const exact = indexPathOf(relative(root, absolute).split(sep).join('/'));
+  return {
+    absolute,
+    exact,
+    lowered: /[\x80-\xff]/.test(exact) ? undefined : exact.toLowerCase(),
+    depth: slashes(exact),
+  };
 }
 
-/** Whether the entry `path` names `wanted`: the very bytes, or a spelling the disk agrees with. */
-function namesPath(root: string, path: string, wanted: Wanted, ascii: boolean): boolean {
+/** The last name in `path` in the other case, or undefined when it has no letters to change. */
+function otherCaseOf(path: string): string | undefined {
+  const name = basename(path);
+  const upper = name.toUpperCase();
+  const other = upper === name ? name.toLowerCase() : upper;
+  return other === name ? undefined : join(dirname(path), other);
+}
+
+/**
+ * Whether another spelling of `location` can reach it here. Windows and macOS are taken as yes,
+ * since what they fold goes beyond case, and even a case-sensitive macOS volume folds Unicode
+ * equivalents. Anywhere else (a case-insensitive Linux mount, a casefold directory) the disk is
+ * asked, for each name below `root`: a name and its other case reaching one entry. A link can't
+ * fake that: `lstat` sees the link, not what it points at.
+ */
+function spellingsMayAlias(root: string, location: string): boolean {
+  if (process.platform === 'win32' || process.platform === 'darwin') return true;
+  for (let path = location; path !== root && path !== dirname(path); path = dirname(path)) {
+    const other = otherCaseOf(path);
+    if (other !== undefined && reachSameEntry(path, other)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the entry `path` names `wanted`: the very bytes or, where spellings may alias, an entry
+ * the disk says reaches the same place. Only plain ASCII is ruled out by reading it: ASCII folds
+ * only to ASCII, but any other byte, or a `~` (a Windows short name), can spell anything.
+ */
+function namesPath(root: string, path: string, wanted: Wanted, spellingsAlias: boolean): boolean {
   if (path === wanted.exact) return true;
-  // Every spelling of an ASCII path has its length, which spares most entries the rest.
-  if (ascii && path.length !== wanted.exact.length) return false;
-  const text = indexPathText(path);
-  return comparable(text) === wanted.folded && reachSameEntry(join(root, text), wanted.absolute);
+  if (!spellingsAlias) return false;
+  if (wanted.lowered !== undefined && !/[\x80-\xff~]/.test(path)) {
+    if (path.length !== wanted.lowered.length || path.toLowerCase() !== wanted.lowered) {
+      return false;
+    }
+  } else if (slashes(path) !== wanted.depth) {
+    return false;
+  }
+  return reachSameEntry(join(root, indexPathText(path)), wanted.absolute);
 }
 
 interface IndexAnswer {
@@ -99,23 +142,23 @@ interface IndexAnswer {
 function askIndex(gitDir: string, root: string, location: string): IndexAnswer {
   const file = wantedIn(root, location);
   const folder = wantedIn(root, dirname(location));
-  const ascii = !/[\u0080-￿]/.test(file.folded);
+  const spellingsAlias = spellingsMayAlias(root, location);
   const answer: IndexAnswer = { folderIsTrackedLink: false };
   visitGitIndex(
     gitDir,
     (path, mode) => {
-      if (namesPath(root, path, file, ascii)) {
+      if (namesPath(root, path, file, spellingsAlias)) {
         answer.listedAs = path;
         return true;
       }
-      if (mode === MODE_LINK && namesPath(root, path, folder, ascii)) {
+      if (mode === MODE_LINK && namesPath(root, path, folder, spellingsAlias)) {
         answer.folderIsTrackedLink = true;
       }
       return false;
     },
-    // Entries are sorted by bytes, and the all-lowercase spelling of an ASCII path is the last of
-    // its spellings in that order, so nothing past it can name the file.
-    ascii ? (path) => path > file.folded : undefined,
+    // Entries are sorted by bytes, so nothing past the very bytes can be them. A spelling can sort
+    // anywhere: a byte past ASCII sorts after every ASCII one.
+    spellingsAlias ? undefined : (path) => path > file.exact,
   );
   return answer;
 }
@@ -264,6 +307,11 @@ function removeFromIndexCommand(tracking: {
   return repository === null ? null : `git -C ${repository} rm --cached -- ${path}`;
 }
 
+/** A path for a terminal: below the workspace, its names can be a repository's (a submodule's). */
+function printable(path: string): string {
+  return path.replace(/[\u0000-\u001f\u007f-\u009f]/g, '?');
+}
+
 /** The sentence for a file Book does not treat as local: no path and no full stop. */
 function describeTracking(tracking: LocalSettingsTracking): string | undefined {
   switch (tracking.state) {
@@ -275,14 +323,14 @@ function describeTracking(tracking: LocalSettingsTracking): string | undefined {
         "git tracks it, and a local file a repository ships isn't local, so Book neither reads " +
         'nor writes it. Review it, then ' +
         (command === null
-          ? `remove it from the index of ${JSON.stringify(tracking.repository)} with \`git rm --cached\``
+          ? `remove it from the index of ${printable(tracking.repository)} with \`git rm --cached\``
           : `run \`${command}\``) +
         ' to make it your own'
       );
     }
     case 'unknown':
       return (
-        `Book could not read the git index of ${tracking.repository}, so it cannot tell whether ` +
+        `Book could not read the git index of ${printable(tracking.repository)}, so it cannot tell whether ` +
         'git tracks this file, and neither reads nor writes it. `git status` shows what is wrong'
       );
   }
