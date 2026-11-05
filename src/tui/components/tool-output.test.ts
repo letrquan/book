@@ -10,6 +10,11 @@ import {
 import { displayWidth } from './word-wrap.js';
 
 describe('expandTabs', () => {
+  it('counts the stops from the column the line is drawn from (#700)', () => {
+    expect(expandTabs('a\tb', 5)).toBe(`a${' '.repeat(2)}b`);
+    expect(expandTabs('a\tb', 0)).toBe(`a${' '.repeat(7)}b`);
+  });
+
   it('moves to the next 8-column stop', () => {
     expect(expandTabs('a\tb')).toBe(`a${' '.repeat(7)}b`);
   });
@@ -388,6 +393,19 @@ describe('a wrapped display of the tail (#605)', () => {
     expect(display.lines.join('')).toBe(huge.slice(-(70 + 70 + (huge.length % 70 || 70))));
     expect(display.truncatedLines).toBe(1);
     expect(display.hiddenLines).toBe(0);
+  });
+});
+
+describe('prepareToolOutputDisplay tab origin (#700)', () => {
+  it.each([
+    ['cut', 'cut' as const],
+    ['whole', 'whole' as const],
+  ])('counts the stops from the origin when it is told one, %s', (_name, longLines) => {
+    const options = { maxLines: 5, maxLineWidth: 40, longLines };
+    expect(prepareToolOutputDisplay('a\tb', options).lines).toEqual([`a${' '.repeat(7)}b`]);
+    expect(prepareToolOutputDisplay('a\tb', { ...options, tabOrigin: 5 }).lines).toEqual([
+      `a${' '.repeat(2)}b`,
+    ]);
   });
 });
 

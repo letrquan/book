@@ -8,7 +8,7 @@ import { MarkdownBlock, useThrottledValue } from './MarkdownBlock.js';
 import { CommandPanel } from './CommandPanel.js';
 import { ThemeContext, useTheme } from '../theme.js';
 import { useDensityMetrics } from '../density.js';
-import { CONTENT_COLUMN, GUTTER_WIDTH, transcriptGrid } from '../layout.js';
+import { CONTENT_COLUMN, GUTTER_WIDTH, THOUGHT_BODY_COLUMN, transcriptGrid } from '../layout.js';
 import type { Message } from '../../types/messages.js';
 import type { RetryPhase } from '../../types/runtime.js';
 import type { PendingPermissionRequest } from '../../session/agent-interactions.js';
@@ -335,7 +335,11 @@ function ThinkBlock({
             {streamedText}
           </Text>
         ) : (
-          <MarkdownBlock content={text} terminalWidth={bodyWidth} />
+          <MarkdownBlock
+            content={text}
+            terminalWidth={bodyWidth}
+            originColumn={screenReader ? 0 : THOUGHT_BODY_COLUMN}
+          />
         )}
       </Box>
     </Box>
@@ -703,6 +707,7 @@ export function AgentMessageInner({
                           <MarkdownBlock
                             content={part.text}
                             terminalWidth={mdWidth}
+                            originColumn={screenReader ? 0 : GUTTER_WIDTH}
                             isStreaming={isStreaming && toolCalls.length === 0}
                             trimTrailingMargin={
                               trimTrailingSpacing && i === contentParts.length - 1

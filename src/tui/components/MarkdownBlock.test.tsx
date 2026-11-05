@@ -998,6 +998,72 @@ describe('MarkdownBlock list items with tabs start after their marker (#605)', (
   });
 });
 
+describe('MarkdownBlock tab stops start at the block origin (#700)', () => {
+  const WIDTH = 73;
+
+  /** The rows of `content` drawn by a block whose left edge is on `originColumn` of its item. */
+  function rows(content: string, originColumn?: number, width: number | undefined = WIDTH) {
+    const view = render(
+      withTheme(
+        React.createElement(MarkdownBlock, {
+          content,
+          ...(width ? { terminalWidth: width } : {}),
+          ...(originColumn === undefined ? {} : { originColumn }),
+        }),
+      ),
+    );
+    return frame(view.lastFrame).split('\n');
+  }
+
+  it.each([
+    ['with a width', WIDTH],
+    ['without one', undefined],
+  ])('reaches the absolute stop in a paragraph, a list item and a quote, %s', (_name, width) => {
+    // Block column = screen column - 2. `cd` is expected on screen column 8, 16 and 8 as a
+    // terminal would put it, so on block columns 6, 14 and 6 (counted from the block's edge they
+    // were 8, 12 and 8: two columns to the right of the terminal's own for the paragraph).
+    const [paragraph] = rows('ab\tcd', 2, width);
+    expect(paragraph).toBe('ab    cd');
+    expect(paragraph!.indexOf('cd') + 2).toBe(8);
+
+    // The marker is on screen column 4, the text from 6: `ab` ends on 8, so `cd` takes stop 16.
+    const [item] = rows('- ab\tcd', 2, width);
+    expect(item!.indexOf('cd') + 2).toBe(16);
+
+    // The rail takes screen columns 2 and 3, so `ab` starts on 4 and ends on 6: `cd` takes stop 8.
+    const [quote] = rows('> ab\tcd', 2, width);
+    expect(quote!.indexOf('cd') + 2).toBe(8);
+  });
+
+  it('counts nothing for a block flush with its item', () => {
+    expect(rows('ab\tcd')[0]).toBe(rows('ab\tcd', 0)[0]);
+    expect(rows('ab\tcd', 0)[0]).toBe('ab      cd');
+  });
+
+  it('counts the origin before the lists and quotes the text sits in', () => {
+    const inner = rows('- outer\n  - in\ttab', 5)[1]!;
+    // The inner text starts 10 columns past the origin (as in the block's own, where it starts on
+    // 10 and `tab` takes stop 16): on screen column 15, so `in` ends on 17 and `tab` takes stop 24.
+    expect(inner.indexOf('tab') + 5).toBe(24);
+  });
+
+  it('leaves the tabs of a code block counted from its own code line', () => {
+    expect(rows('```\nab\tcd\n```', 5).find((row) => row.includes('cd'))).toContain(
+      `ab${' '.repeat(6)}cd`,
+    );
+  });
+
+  it('never carries a row past the width when the origin pushes a tab stop out', () => {
+    for (let lead = 55; lead < 71; lead++) {
+      const output = rows(`${'a'.repeat(lead)}\tnext word here`, 5);
+      for (const row of output) {
+        expect(displayWidth(row), `lead ${lead}`).toBeLessThanOrEqual(WIDTH);
+      }
+      expect(output.join('').replace(/\s+/g, '')).toContain('nextwordhere');
+    }
+  });
+});
+
 describe('useThrottledValue', () => {
   // The trailing-emit / within-window cadence is the contract's non-trivial
   // half, but fake-timer tests are flaky under ink-testing-library (React

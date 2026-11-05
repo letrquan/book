@@ -10,7 +10,7 @@ import { useDebugMount } from '../debug.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { wordWrap } from './word-wrap.js';
 import { ChoiceList, DecisionSheet, type Choice } from './chrome.js';
-import { PANEL_CHROME, frameGrid } from '../layout.js';
+import { PANEL_CHROME, SHEET_BODY_COLUMN, frameGrid } from '../layout.js';
 import { PROMPT_MARK } from '../marks.js';
 
 const uiLog = createUiDebugLogger('tui:planapproval');
@@ -94,7 +94,11 @@ export function PlanApprovalDetails({
       }
       width={width}
     >
-      <MarkdownBlock content={normalizedPlan} terminalWidth={Math.max(12, width - PANEL_CHROME)} />
+      <MarkdownBlock
+        content={normalizedPlan}
+        terminalWidth={Math.max(12, width - PANEL_CHROME)}
+        originColumn={SHEET_BODY_COLUMN}
+      />
     </DecisionSheet>
   );
 }

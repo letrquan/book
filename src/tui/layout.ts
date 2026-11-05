@@ -116,6 +116,19 @@ export const SHEET_COLUMN_GAP = 4;
 /** Column where content begins on every row, nested or not. */
 export const CONTENT_COLUMN = GUTTER_WIDTH;
 
+/**
+ * Column a sheet's body begins on, measured from the sheet's left edge: the padding that stands in
+ * for each wall a box would have drawn ({@link PANEL_CHROME} covers both sides).
+ */
+export const SHEET_BODY_COLUMN = PANEL_CHROME / 2;
+
+/**
+ * Column the body of a thought begins on, measured from the item's left edge: the content column
+ * the thought sits on, the rail and its padding ({@link GUTTER_WIDTH} in all), then the indent
+ * under the header.
+ */
+export const THOUGHT_BODY_COLUMN = CONTENT_COLUMN + GUTTER_WIDTH + CONTENT_COLUMN;
+
 /** Below this width the label column collapses and rows render inline. */
 const LABEL_COLUMN_MIN_WIDTH = 76;
 

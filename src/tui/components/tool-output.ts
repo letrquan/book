@@ -13,6 +13,13 @@ export interface ToolOutputDisplayOptions {
   strategy?: 'head' | 'tail' | 'head-tail';
   /** What becomes of a line wider than `maxLineWidth`; see {@link LongLineMode}. Default `cut`. */
   longLines?: LongLineMode;
+  /**
+   * Column the rows are drawn from, counted from the left edge of the item, when their tabs are to
+   * stop where the terminal would put them on screen (Markdown prose, #700). A command's output
+   * counts its stops from its own line start, which is what the command's terminal showed, and
+   * leaves this at 0. A `wrap` display counts from 0 whatever this says.
+   */
+  tabOrigin?: number;
 }
 
 /**
@@ -73,8 +80,8 @@ function outputLinesEnd(output: string): number {
  * four spaces a user message's tab gets, keep the columns of `make`, `ls`, TSV and `column` output
  * aligned the way the command's own terminal shows them.
  */
-export function expandTabs(line: string): string {
-  return line.indexOf('\t') === -1 ? line : expandToTabStops(line, displayWidth);
+export function expandTabs(line: string, startColumn = 0): string {
+  return line.indexOf('\t') === -1 ? line : expandToTabStops(line, displayWidth, startColumn);
 }
 
 /**
@@ -113,7 +120,14 @@ export function countOutputLines(output: string): number {
  */
 export function prepareToolOutputDisplay(
   output: string,
-  { maxLines, maxLineWidth, hint, strategy = 'head', longLines = 'cut' }: ToolOutputDisplayOptions,
+  {
+    maxLines,
+    maxLineWidth,
+    hint,
+    strategy = 'head',
+    longLines = 'cut',
+    tabOrigin = 0,
+  }: ToolOutputDisplayOptions,
 ): ToolOutputDisplay {
   if (longLines === 'wrap') {
     return wrappedToolOutputDisplay(output, maxLines, maxLineWidth, hint, strategy === 'tail');
@@ -127,7 +141,7 @@ export function prepareToolOutputDisplay(
   let truncatedLines = 0;
   const lines = visibleRawLines.map((rawLine) => {
     // Shortened means cut from the row as the screen shows it, so compare with the expanded line.
-    const line = expandTabs(rawLine);
+    const line = expandTabs(rawLine, tabOrigin);
     const next = truncateDisplay(line, widthLimit);
     if (displayWidth(next) < displayWidth(line) || next !== line) truncatedLines++;
     return next;

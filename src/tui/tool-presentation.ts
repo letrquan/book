@@ -1241,6 +1241,11 @@ export interface ToolOutputDisplayInput {
    * always cuts.
    */
   longLines?: 'wrap' | 'whole';
+  /**
+   * Column the output is drawn from in its item, for a caller that wraps it as prose (Markdown) and
+   * wants its tabs on the terminal's own stops (#700). Command output leaves it out.
+   */
+  tabOrigin?: number;
 }
 
 /**
@@ -1281,6 +1286,7 @@ export function toolOutputDisplay(output: string, input: ToolOutputDisplayInput)
     maxLineWidth: toolOutputContentWidth(terminalWidth),
     hint: showAllToolOutput ? undefined : expandHint || undefined,
     strategy: showAllToolOutput ? 'head' : success ? 'head-tail' : 'tail',
+    ...(input.tabOrigin !== undefined ? { tabOrigin: input.tabOrigin } : {}),
   });
 }
 

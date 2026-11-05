@@ -37,6 +37,13 @@ interface MarkdownBlockProps {
   isStreaming?: boolean;
   /** Remove the final block's bottom margin when another transcript turn follows immediately. */
   trimTrailingMargin?: boolean;
+  /**
+   * Column the block's left edge sits on, measured from the left edge of the transcript item it
+   * is drawn in (a constant from `layout.ts`). A tab in the text stops where a terminal would put
+   * it, on the absolute 8-column stops, rather than counting from the block's own edge (#700).
+   * Defaults to 0: the block is flush with its item.
+   */
+  originColumn?: number;
 }
 
 type InlineStyle = {
@@ -57,15 +64,16 @@ interface RenderContext {
   /** Nested blockquote depth for width budgeting. */
   blockquoteDepth: number;
   /**
-   * Columns from the left edge of the Markdown block to the box a token is drawn in: the markers
-   * of the lists it is in, the rails of the blockquotes. A tab in its text stops at the 8-column
-   * stops counted from the block's edge, so the text starts where a terminal would put it,
-   * after what is drawn to its left on the row, and a list's cells line up with a paragraph's.
+   * Columns from the left edge of the transcript item to the box a token is drawn in: the
+   * block's own `originColumn`, the markers of the lists it is in, the rails of the blockquotes.
+   * A tab in its text stops at the 8-column stops counted from the item's edge, so the text
+   * starts where a terminal would put it, after what is drawn to its left on the row, and a
+   * list's cells line up with a paragraph's.
    *
-   * Not counted: where the block itself sits in the transcript, which it is not told; a code
-   * block's rail and line numbers, because its tabs are the code's indentation and count from the
-   * code's own left edge (#547); and the wrapping of a long line, because a tab is expanded
-   * ahead of the wrapper, which must see the widths, so a continuation row follows the line.
+   * Not counted: a code block's rail and line numbers, because its tabs are the code's
+   * indentation and count from the code's own left edge (#547); and the wrapping of a long line,
+   * because a tab is expanded ahead of the wrapper, which must see the widths, so a continuation
+   * row follows the line.
    */
   column: number;
 }
@@ -956,6 +964,7 @@ interface MarkdownRendererProps {
   isStreaming: boolean;
   theme: ReturnType<typeof useTheme>;
   density: ReturnType<typeof useDensity>;
+  originColumn: number;
 }
 
 const MarkdownRenderer = React.memo(function MarkdownRenderer({
@@ -964,6 +973,7 @@ const MarkdownRenderer = React.memo(function MarkdownRenderer({
   isStreaming,
   theme,
   density,
+  originColumn,
 }: MarkdownRendererProps) {
   const tokens = useMemo(
     // A link definition draws nothing, so it must never be the neighbour a gap
@@ -983,7 +993,7 @@ const MarkdownRenderer = React.memo(function MarkdownRenderer({
               depth: 0,
               isStreaming,
               blockquoteDepth: 0,
-              column: 0,
+              column: originColumn,
             })}
           </React.Fragment>
         );
@@ -1005,7 +1015,12 @@ function railCaptionProps(theme: ReturnType<typeof useTheme>) {
   };
 }
 
-export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: MarkdownBlockProps) {
+export function MarkdownBlock({
+  content,
+  terminalWidth,
+  isStreaming = false,
+  originColumn = 0,
+}: MarkdownBlockProps) {
   const theme = useTheme();
   const density = useDensity();
   const notifyLayoutChange = useTranscriptLayoutChange();
@@ -1032,6 +1047,7 @@ export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: M
       isStreaming={isStreaming}
       theme={theme}
       density={density}
+      originColumn={originColumn}
     />
   );
 }
