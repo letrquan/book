@@ -3251,6 +3251,122 @@ describe('buildSandboxExecution workspace control files', () => {
       ).toEqual([WORKSPACE_REAL, '/data/x']);
     });
 
+    it('pins the directories above a nested denyRead entry, too', () => {
+      const bound = (args: string[]): string[] => withFlag(args, '--bind').map(([, at]) => at);
+
+      expect(
+        bound(
+          build(
+            WORKSPACE_REAL,
+            { denyRead: ['/real/ws/a/secrets', '/real/ws/b/key'] },
+            {},
+            {
+              '/real/ws/a/secrets': 'dir',
+              '/real/ws/b/key': 'file',
+              '/real/ws/b': 'dir',
+              '/real/ws/a': 'dir',
+            },
+          ),
+        ),
+      ).toEqual([WORKSPACE_REAL, '/real/ws/a', '/real/ws/b']);
+    });
+
+    it('says one thing once for the same entry listed twice', () => {
+      const exec = execFor(
+        '/opened',
+        { allowWrite: ['/real', '/real'] },
+        { '/opened': WORKSPACE_REAL },
+      );
+
+      expect(exec.notices).toHaveLength(1);
+    });
+
+    describe('git directories outside the workspace', () => {
+      /** /real/wt is a linked worktree of /real/main. */
+      const worktree = (): Record<string, 'dir' | 'file' | 'symlink'> => ({
+        '/real': 'dir',
+        '/real/wt': 'dir',
+        '/real/wt/.git': 'file',
+        '/real/main': 'dir',
+        '/real/main/.git': 'dir',
+        '/real/main/.git/HEAD': 'file',
+        '/real/main/.git/config': 'file',
+        '/real/main/.git/objects': 'dir',
+        '/real/main/.git/refs': 'dir',
+        '/real/main/.git/hooks': 'dir',
+        '/real/main/.git/hooks/pre-commit': 'file',
+        '/real/main/.git/worktrees': 'dir',
+        '/real/main/.git/worktrees/wt': 'dir',
+        '/real/main/.git/worktrees/wt/HEAD': 'file',
+        '/real/main/.git/worktrees/wt/commondir': 'file',
+        '/real/main/.git/worktrees/wt/gitdir': 'file',
+      });
+      const files = {
+        '/real/wt/.git': 'gitdir: /real/main/.git/worktrees/wt\n',
+        '/real/main/.git/worktrees/wt/commondir': '../..\n',
+        '/real/main/.git/worktrees/wt/gitdir': '/real/wt/.git\n',
+      };
+      const argsFor = (
+        filesystem: Partial<ResolvedSettings['sandbox']['filesystem']>,
+        links: Record<string, string> = {},
+      ): string[] => {
+        const settings = sandboxSettings();
+        Object.assign(settings.filesystem, filesystem);
+        const paths = worktree();
+        for (const link of Object.keys(links)) paths[link] = 'symlink';
+        return buildSandboxExecution(
+          '/usr/bin/bwrap',
+          'true',
+          '/real/wt',
+          settings,
+          hostWith(paths, files, links),
+        ).args;
+      };
+
+      it('binds the common git dir read-only under a root that holds it', () => {
+        for (const allowWrite of [['/real'], ['/real/main']]) {
+          const args = argsFor({ allowWrite });
+
+          expect(accessAt(args, '/real/main/.git/hooks/pre-commit'), `${allowWrite}`).toBe(
+            'read-only',
+          );
+          expect(accessAt(args, '/real/main/.git/config'), `${allowWrite}`).toBe('read-only');
+          expect(accessAt(args, '/real/main/other'), `${allowWrite}`).toBe('writable');
+        }
+      });
+
+      it('binds a root spelled through a link at its real path, so there is one view', () => {
+        const args = argsFor({ allowWrite: ['/alias', '/real/main'] }, { '/alias': '/real/main' });
+
+        expect(withFlag(args, '--bind')).toContainEqual(['/real/main', '/real/main']);
+        expect(withFlag(args, '--bind').map(([, at]) => at)).not.toContain('/alias');
+        expect(withFlag(args, '--symlink')).toEqual([['/real/main', '/alias']]);
+        expect(accessAt(args, '/real/main/.git/hooks/pre-commit')).toBe('read-only');
+      });
+
+      it('leaves it out of the namespace when no root holds it', () => {
+        const args = argsFor({});
+
+        expect(args.filter((arg) => arg.startsWith('/real/main'))).toEqual([]);
+      });
+
+      it('keeps its control files read-only when git dirs are writable', () => {
+        const args = argsFor({ allowWrite: ['/real/main'], allowGitWrites: true });
+
+        expect(accessAt(args, '/real/main/.git/objects/x')).toBe('writable');
+        expect(accessAt(args, '/real/main/.git/hooks/pre-commit')).toBe('read-only');
+        expect(accessAt(args, '/real/main/.git/config')).toBe('read-only');
+      });
+
+      it('pins the directories above it, and reopens what an opt-in names', () => {
+        const args = argsFor({ allowWrite: ['/real'] });
+        const optIn = argsFor({ allowWrite: ['/real/main/.git/hooks'] });
+
+        expect(withFlag(args, '--bind')).toContainEqual(['/real/main', '/real/main']);
+        expect(accessAt(optIn, '/real/main/.git/hooks/pre-commit')).toBe('writable');
+      });
+    });
+
     it('pins nothing twice, nothing missing and nothing in a read-only directory', () => {
       const bound = (args: string[]): string[] => withFlag(args, '--bind').map(([, at]) => at);
 
@@ -3324,7 +3440,11 @@ describe('unbindablePaths', () => {
  * The sandbox is injected so the refusal is exercised on any host, bwrap or not.
  */
 describe('decideSandboxExecution refuses a workspace it cannot protect', () => {
-  const sandboxStub = { wrap: () => null, describe: () => 'stub' };
+  const sandboxStub = {
+    wrap: () => null,
+    unseenNotices: (notices: readonly string[]) => notices,
+    describe: () => 'stub',
+  };
 
   it('refuses a symlinked control path, naming it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'book-sbx-refuse-'));
@@ -3359,7 +3479,11 @@ describe('decideSandboxExecution refuses a workspace it cannot protect', () => {
           workspaceRoot: dir,
           sandbox: sandboxSettings(),
           runtime: {
-            sandbox: () => ({ wrap: () => ({ file: '/bwrap', args: [] }), describe: () => '' }),
+            sandbox: () => ({
+              wrap: () => ({ file: '/bwrap', args: [] }),
+              unseenNotices: (notices: readonly string[]) => notices,
+              describe: () => '',
+            }),
           },
         },
         'echo hi',
@@ -3392,7 +3516,11 @@ describe('decideSandboxExecution refuses a workspace it cannot protect', () => {
             },
           }),
           runtime: {
-            sandbox: () => ({ wrap: wrapSpy, describe: () => '' }),
+            sandbox: () => ({
+              wrap: wrapSpy,
+              unseenNotices: (notices: readonly string[]) => notices,
+              describe: () => '',
+            }),
           },
         },
         'echo hi',
@@ -5309,6 +5437,188 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
           }
         });
 
+        describe('git directories outside the workspace', () => {
+          const git = (cwd: string, ...args: string[]): void => {
+            execFileSync(
+              'git',
+              ['-c', 'user.name=book', '-c', 'user.email=book@example.test', ...args],
+              { cwd, stdio: 'ignore' },
+            );
+          };
+          /** `<base>/real/wt`, a linked worktree of `<base>/real/main`. */
+          function linkedWorktree(base: string): { main: string; wt: string } {
+            const main = join(base, 'real', 'main');
+            const wt = join(base, 'real', 'wt');
+            mkdirSync(main, { recursive: true });
+            git(main, 'init', '--quiet');
+            git(main, 'commit', '--allow-empty', '--quiet', '-m', 'first');
+            git(main, 'worktree', 'add', '--quiet', wt);
+            mkdirSync(join(main, '.git', 'hooks'), { recursive: true });
+            writeFileSync(join(main, '.git', 'hooks', 'pre-commit'), HOOK);
+            symlinkSync(join(base, 'real'), join(base, 'aliasroot'));
+            symlinkSync(main, join(base, 'alias'));
+            return { main, wt };
+          }
+
+          const shapes: Array<{ name: string; entries: string[][]; through: string[] }> = [
+            { name: 'a root above both', entries: [['real']], through: ['real', 'main'] },
+            {
+              name: 'that root through a link',
+              entries: [['aliasroot']],
+              through: ['aliasroot', 'main'],
+            },
+            { name: 'its own work tree', entries: [['real', 'main']], through: ['real', 'main'] },
+            { name: 'that work tree through a link', entries: [['alias']], through: ['alias'] },
+            {
+              name: 'that work tree under two spellings',
+              entries: [['real', 'main'], ['alias']],
+              through: ['alias'],
+            },
+          ];
+
+          for (const { name, entries, through } of shapes) {
+            for (const allowGitWrites of [false, true]) {
+              it(`stays protected under ${name}, allowGitWrites ${allowGitWrites}`, async () => {
+                const base = freshBase();
+                const { main, wt } = linkedWorktree(base);
+                const spell = (segments: string[]): string => join(base, ...segments);
+                const gitDir = join(spell(through), '.git');
+                try {
+                  const result = await sandboxedBash(
+                    [
+                      `printf x >> '${join(gitDir, 'hooks', 'pre-commit')}'`,
+                      `printf x >> '${join(gitDir, 'config')}'`,
+                      `printf ok > '${join(gitDir, 'objects', 'probe')}'`,
+                      `printf ok > '${join(spell(through), 'sibling')}'`,
+                      'echo ran',
+                    ].join('; '),
+                    wt,
+                    { filesystem: { allowWrite: entries.map(spell), allowGitWrites } },
+                  );
+
+                  expect(result.content).toContain('ran');
+                  expect(readFileSync(join(main, '.git', 'hooks', 'pre-commit'), 'utf8')).toBe(
+                    HOOK,
+                  );
+                  expect(readFileSync(join(main, '.git', 'config'), 'utf8')).not.toMatch(/x$/);
+                  // The rest of the root is what it was, and the git dir follows the setting.
+                  expect(readFileSync(join(main, 'sibling'), 'utf8')).toBe('ok');
+                  expect(existsSync(join(main, '.git', 'objects', 'probe'))).toBe(allowGitWrites);
+                } finally {
+                  rmSync(base, { recursive: true, force: true });
+                }
+              });
+            }
+          }
+
+          it('runs when a common dir out of reach has a symlinked hooks directory', async () => {
+            const base = freshBase();
+            const { main, wt } = linkedWorktree(base);
+            rmSync(join(main, '.git', 'hooks'), { recursive: true });
+            mkdirSync(join(main, '.githooks'));
+            symlinkSync(join('..', '.githooks'), join(main, '.git', 'hooks'));
+            try {
+              const result = await sandboxedBash('echo ran', wt);
+
+              expect(result.status, result.content).toBe('success');
+              expect(result.content).toContain('ran');
+            } finally {
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+
+          it('applies a core.hooksPath from the common config to the worktree', async () => {
+            const base = freshBase();
+            const { main, wt } = linkedWorktree(base);
+            git(main, 'config', 'core.hooksPath', '.githooks');
+            mkdirSync(join(wt, '.githooks'));
+            writeFileSync(join(wt, '.githooks', 'pre-commit'), HOOK);
+            try {
+              const result = await sandboxedBash(
+                `printf x >> '${join(wt, '.githooks', 'pre-commit')}'; echo ran`,
+                wt,
+              );
+
+              expect(result.content).toContain('ran');
+              expect(readFileSync(join(wt, '.githooks', 'pre-commit'), 'utf8')).toBe(HOOK);
+            } finally {
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+
+          it('protects the git dir of a repository the workspace is below', async () => {
+            const base = freshBase();
+            const main = join(base, 'real', 'main');
+            const workspace = join(main, 'sub');
+            mkdirSync(workspace, { recursive: true });
+            git(main, 'init', '--quiet');
+            mkdirSync(join(main, '.git', 'hooks'), { recursive: true });
+            writeFileSync(join(main, '.git', 'hooks', 'pre-commit'), HOOK);
+            try {
+              const result = await sandboxedBash(
+                `printf x >> '${join(main, '.git', 'hooks', 'pre-commit')}'; printf ok > '${join(main, 'sibling')}'; echo ran`,
+                workspace,
+                { filesystem: { allowWrite: [main] } },
+              );
+
+              expect(result.content).toContain('ran');
+              expect(readFileSync(join(main, '.git', 'hooks', 'pre-commit'), 'utf8')).toBe(HOOK);
+              expect(readFileSync(join(main, 'sibling'), 'utf8')).toBe('ok');
+            } finally {
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+        });
+
+        describe('a link whose target climbs through another link', () => {
+          /** `<base>/safe/a` names `<base>/through/p/link/../..`, and that link leads under `<base>/ws`. */
+          function climbingLink(base: string, through: string[]): string {
+            mkdirSync(join(base, ...through, 'p'), { recursive: true });
+            mkdirSync(join(base, 'safe'));
+            const link = join(base, 'safe', 'a');
+            symlinkSync(join(base, 'ws', 'sub', 'inner'), join(base, ...through, 'p', 'link'));
+            symlinkSync(`${join(base, ...through)}/p/link/../..`, link);
+            return link;
+          }
+
+          it('resolves as the kernel resolves it', async () => {
+            const base = freshBase();
+            const repo = repoUnder(base, 'ws');
+            mkdirSync(join(repo, 'sub', 'inner'), { recursive: true });
+            const link = climbingLink(base, ['unrelated']);
+            try {
+              expect(realSandboxHost.realpath(link)).toBe(repo);
+              const result = await sandboxedBash(
+                `printf x >> '${join(link, '.git', 'hooks', 'pre-commit')}'; echo ran`,
+                repo,
+                { filesystem: { allowWrite: [link] } },
+              );
+
+              expect(result.content).toContain('ran');
+              expect(readFileSync(join(repo, '.git', 'hooks', 'pre-commit'), 'utf8')).toBe(HOOK);
+            } finally {
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+
+          it('counts the link it climbs through when that one is in a writable directory', async () => {
+            const base = freshBase();
+            const repo = repoUnder(base, 'ws');
+            mkdirSync(join(repo, 'sub', 'inner'), { recursive: true });
+            const link = climbingLink(base, ['data']);
+            try {
+              const result = await sandboxedBash('echo ran', repo, {
+                filesystem: { allowWrite: [link, join(base, 'data')] },
+              });
+
+              expect(result.content).toContain('ran');
+              expect(result.content).toContain(`entry ${link} is not bound`);
+            } finally {
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+        });
+
         describe('an entry spelled through a link in a writable directory', () => {
           const cases: Array<{
             name: string;
@@ -5408,6 +5718,15 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
             }
           });
 
+          it('does not count a refused entry among the writable ones', () => {
+            const description = createSandbox(
+              sandboxSettings({ filesystem: { allowWrite: ['/a', '/b'] } }),
+            )?.describe(1);
+
+            expect(description).toContain('1 extra writable path(s)');
+            expect(description).toContain('1 allowWrite entries refused');
+          });
+
           it('tells the user once per sandbox, and on the console with no host to tell', () => {
             const base = freshBase();
             const repo = repoUnder(base, 'real', 'proj');
@@ -5426,8 +5745,12 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
               const first = decideSandboxExecution({ ...context, onNotice }, 'true', repo);
               const second = decideSandboxExecution({ ...context, onNotice }, 'true', repo);
 
-              expect(first.exec?.notices).toHaveLength(1);
-              expect(second.exec?.notices).toEqual(first.exec?.notices);
+              expect(first.notices).toHaveLength(1);
+              expect(second.notices).toEqual(first.notices);
+              // What gets spawned, and can be written to a job's spec, stays what it was.
+              expect(first.exec).toEqual({ file: first.exec?.file, args: first.exec?.args });
+              expect(first.unseenNotices).toEqual(first.notices);
+              expect(second.unseenNotices).toEqual([]);
               expect(onNotice).toHaveBeenCalledTimes(1);
               expect(onNotice.mock.calls[0][0]).toContain(`entry ${entry} is not bound`);
               expect(warn).not.toHaveBeenCalled();
@@ -6314,6 +6637,7 @@ describe('decideSandboxExecution when the sandbox cannot build a policy', () => 
               wrap: () => {
                 throw new Error('Seatbelt profile path is not absolute: "x"');
               },
+              unseenNotices: (notices: readonly string[]) => notices,
               describe: () => 'stub',
             }),
           },

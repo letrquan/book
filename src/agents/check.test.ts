@@ -207,8 +207,8 @@ describe('Check and the sandbox', () => {
     expect(calls).toEqual([{ file: 'fake-wrapper', args: ['echo hello'] }]);
   });
 
-  it('repeats what the sandbox left out in the output of a passing and of a failing check', async () => {
-    const withExit = (code: number): ToolContext => {
+  it('tells the model what the sandbox left out once, and again when a check fails', async () => {
+    const withExit = (code: number, shown: boolean): ToolContext => {
       const ctx = contextWith({ wrapped: 'echo hello' });
       ctx.sandbox = SANDBOX_ENABLED;
       ctx.runtime = {
@@ -218,16 +218,19 @@ describe('Check and the sandbox', () => {
             args: ['-e', `process.exit(${code})`],
             notices: ['an entry was left out'],
           }),
+          unseenNotices: (notices: readonly string[]) => (shown ? [] : notices),
           describe: () => 'fake wrapper',
         }),
       } as unknown as ToolContext['runtime'];
       return ctx;
     };
 
-    const passed = await run(withExit(0), 'wrapped');
-    const failed = await run(withExit(1), 'wrapped');
+    const first = await run(withExit(0, false), 'wrapped');
+    const later = await run(withExit(0, true), 'wrapped');
+    const failed = await run(withExit(1, true), 'wrapped');
 
-    expect(passed.content).toContain('an entry was left out');
+    expect(first.content).toContain('an entry was left out');
+    expect(later.content).not.toContain('an entry was left out');
     expect(failed.structuredError?.message).toContain('an entry was left out');
   });
 

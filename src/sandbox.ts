@@ -24,11 +24,17 @@ import {
 } from './sandbox-seatbelt.js';
 import { isOutside, resolveWorkspacePath, type PathComparison } from './tools/path-utils.js';
 import type { CommandExecution } from './types/runtime.js';
+import type { ToolResult } from './types/tools.js';
 import { globToRegex } from './tools/glob-regex.js';
 
+/** A wrapped command, and why the sandbox left a configured path out of it. */
+export interface SandboxExecution extends CommandExecution {
+  notices?: readonly string[];
+}
+
 export interface Sandbox {
-  /** Of a command's notices, the ones this sandbox has not shown the user yet. */
-  unseenNotices?(notices: readonly string[]): readonly string[];
+  /** Of a command's notices, the ones this sandbox has not shown yet, marked as shown. */
+  unseenNotices(notices: readonly string[]): readonly string[];
   /**
    * Resolve a shell command into a sandboxed argv spawn.
    *
@@ -46,9 +52,13 @@ export interface Sandbox {
     command: string,
     workspaceRoot: string,
     protectedPaths?: ProtectedWorkspacePaths,
-  ): CommandExecution | null;
-  /** One-line description of the policy actually enforced, for diagnostics. */
-  describe(): string;
+  ): SandboxExecution | null;
+  /**
+   * One-line description of the policy actually enforced, for diagnostics.
+   * `refused` is how many `allowWrite` entries are not bound for the workspace in
+   * question, which this object does not know.
+   */
+  describe(refused?: number): string;
 }
 
 /**
@@ -427,7 +437,9 @@ export const realSandboxHost: SandboxHost = {
   },
   realpath: (path) => {
     try {
-      return realpathSync(path);
+      // The kernel's answer, which is the one bwrap gets. The JS implementation
+      // resolves `..` in a link's target before following the links it names.
+      return realpathSync.native(path);
     } catch {
       return null;
     }
@@ -444,12 +456,6 @@ function expandPath(path: string, host: SandboxHost): string {
   if (path === '~') return host.homedir();
   if (path.startsWith('~/')) return host.path.join(host.homedir(), path.slice(2));
   return host.path.resolve(path);
-}
-
-/** bwrap fails the whole invocation if a bind source does not exist. */
-function bindIfPresent(args: string[], flag: string, path: string, host: SandboxHost): void {
-  const target = expandPath(path, host);
-  if (host.exists(target)) args.push(flag, target, target);
 }
 
 /**
@@ -499,6 +505,12 @@ function canonicalPath(path: string, host: SandboxHost): string {
     if (parent === existing) return absolute;
     existing = parent;
   }
+}
+
+/** True when `path` is at or below one of `roots`, compared on canonical paths. */
+function heldBy(roots: string[], path: string, host: SandboxHost): boolean {
+  const canonical = canonicalPath(path, host);
+  return roots.some((root) => !isOutside(canonicalPath(root, host), canonical, host.path));
 }
 
 /**
@@ -555,6 +567,12 @@ interface GitDirRef {
 
 interface WorkspaceGitDirsResult {
   gitDirs: GitDirRef[];
+  /**
+   * Git dirs of this work tree outside the workspace and every writable root.
+   * They are not in the namespace, but the host's git reads their config, whose
+   * `core.hooksPath` can name a directory that is.
+   */
+  outOfReach: GitDirRef[];
   pointerPaths: string[];
   refusals: ControlPathRefusal[];
 }
@@ -587,18 +605,27 @@ function looksLikeGitDir(dir: string, host: SandboxHost): boolean {
  * and can name a plain file, which `<dir>/hooks` is not a directory bubblewrap
  * can mount.
  */
-function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): WorkspaceGitDirsResult {
+function workspaceGitDirs(
+  workspaceRoot: string,
+  host: SandboxHost,
+  writableRoots: string[] = [],
+): WorkspaceGitDirsResult {
   const root = host.path.resolve(workspaceRoot);
   const canonicalRoot = canonicalPath(root, host);
   const found: GitDirRef[] = [];
+  const outOfReach: GitDirRef[] = [];
   const pointerPaths: string[] = [];
   const refusals: ControlPathRefusal[] = [];
   const dotGit = host.path.join(root, '.git');
   const add = (candidate: string, workTree: string): void => {
     const dir = host.path.resolve(candidate);
-    if (found.some((entry) => entry.dir === dir)) return;
-    if (!host.isDirectory(dir) || !insideWorkspace(dir, root, host)) return;
+    if ([...found, ...outOfReach].some((entry) => entry.dir === dir)) return;
+    if (!host.isDirectory(dir)) return;
     if (dir !== dotGit && !looksLikeGitDir(dir, host)) return;
+    if (!insideWorkspace(dir, root, host) && !heldBy(writableRoots, dir, host)) {
+      outOfReach.push({ dir, workTree: host.path.resolve(workTree) });
+      return;
+    }
     if (canonicalPath(dir, host) === canonicalRoot) {
       if (!refusals.some((r) => r.path === dir)) {
         refusals.push({ path: dir, reason: 'workspace-root-is-git-dir' });
@@ -607,27 +634,43 @@ function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): WorkspaceGi
     }
     found.push({ dir, workTree: host.path.resolve(workTree) });
   };
-  if (!host.exists(dotGit)) return { gitDirs: found, pointerPaths, refusals };
-  if (host.isDirectory(dotGit)) {
-    add(dotGit, root);
-  } else {
-    const target = /^gitdir:\s*(.+)$/m.exec(host.readFile(dotGit) ?? '')?.[1]?.trim();
-    if (!target) return { gitDirs: found, pointerPaths, refusals };
-    const resolvedTarget = host.path.isAbsolute(target) ? target : host.path.join(root, target);
+  // A `.git` directory, or a file naming one.
+  const follow = (pointer: string, workTree: string): void => {
+    if (host.isDirectory(pointer)) {
+      add(pointer, workTree);
+      return;
+    }
+    const target = /^gitdir:\s*(.+)$/m.exec(host.readFile(pointer) ?? '')?.[1]?.trim();
+    if (!target) return;
+    const resolvedTarget = host.path.isAbsolute(target) ? target : host.path.join(workTree, target);
     pointerPaths.push(resolvedTarget);
-    add(resolvedTarget, root);
+    add(resolvedTarget, workTree);
+  };
+  if (host.exists(dotGit)) {
+    follow(dotGit, root);
+  } else {
+    // A workspace below a repository's root belongs to the repository above it.
+    const above = ancestorsOf(canonicalRoot, host).find((dir) =>
+      host.exists(host.path.join(dir, '.git')),
+    );
+    if (above !== undefined) follow(host.path.join(above, '.git'), above);
   }
   // A linked worktree's own dir holds only `config.worktree`, `HEAD` and the
   // `gitdir` naming its work tree; the hooks and the shared config live in the
   // common dir.
-  for (let index = 0; index < found.length; index++) {
-    const { dir, workTree } = found[index];
+  const visited = new Set<GitDirRef>();
+  for (;;) {
+    const next = [...found, ...outOfReach].find((entry) => !visited.has(entry));
+    if (!next) break;
+    visited.add(next);
+    const { dir, workTree } = next;
     const common = host.readFile(host.path.join(dir, 'commondir'))?.trim();
     if (common) {
       const resolvedCommon = host.path.isAbsolute(common) ? common : host.path.join(dir, common);
       pointerPaths.push(resolvedCommon);
       add(resolvedCommon, workTree);
     }
+    if (outOfReach.includes(next)) continue;
     for (const name of host.readDir(host.path.join(dir, 'worktrees'))) {
       const linked = host.path.join(dir, 'worktrees', name);
       // `gitdir` inside a linked worktree's dir names the work tree's own
@@ -678,7 +721,7 @@ function workspaceGitDirs(workspaceRoot: string, host: SandboxHost): WorkspaceGi
     pointerPaths.push(resolvedTarget);
     add(resolvedTarget, workTree);
   }
-  return { gitDirs: found, pointerPaths, refusals };
+  return { gitDirs: found, outOfReach, pointerPaths, refusals };
 }
 
 /**
@@ -921,6 +964,12 @@ export interface ProtectedWorkspacePathsOptions {
    */
   allowGitWrites?: boolean;
   denyDirectories?: string[];
+  /**
+   * The `allowWrite` entries. A git dir of this work tree outside the workspace
+   * is reachable through one, so it is protected like one inside. `buildSandboxExecution`
+   * then binds it only under a root holding it, at that root's spelling.
+   */
+  writableRoots?: string[];
 }
 
 export function protectedWorkspacePaths(
@@ -1005,7 +1054,13 @@ export function protectedWorkspacePaths(
     if (mount) result.mounts.push(mount);
   };
 
-  const { gitDirs, pointerPaths, refusals: gitDirRefusals } = workspaceGitDirs(root, host);
+  const writableRoots = options.writableRoots ?? [];
+  const {
+    gitDirs,
+    outOfReach,
+    pointerPaths,
+    refusals: gitDirRefusals,
+  } = workspaceGitDirs(root, host, writableRoots);
   result.refusals.push(...gitDirRefusals);
   const boundCanonical: string[] = [];
   const gitDirMounts = new Set<ProtectedMount>();
@@ -1084,7 +1139,7 @@ export function protectedWorkspacePaths(
   // Config files already read, so an `include` chain that names one of them ends
   // at the file rather than descending for ever.
   const configsRead = new Set<string>();
-  const readConfig = (file: string, workTree: string, depth: number): void => {
+  const readConfig = (file: string, workTree: string, depth: number, reachable = true): void => {
     const at = spelledInWorkspace(file);
     if (configsRead.has(at)) return;
     configsRead.add(at);
@@ -1097,12 +1152,16 @@ export function protectedWorkspacePaths(
     }
     const text = host.readFile(at, MAX_GIT_CONFIG_BYTES);
     if (text === null) return;
-    addFile(at);
+    if (reachable || insideWorkspace(at, root, host) || heldBy(writableRoots, at, host)) {
+      addFile(at);
+    }
     for (const hooksPath of readCoreHooksPaths(text)) {
       const directory = host.path.isAbsolute(hooksPath)
         ? hooksPath
         : host.path.join(workTree, hooksPath);
-      if (insideWorkspace(directory, root, host)) addDirectory(directory);
+      if (insideWorkspace(directory, root, host) || heldBy(writableRoots, directory, host)) {
+        addDirectory(directory);
+      }
     }
     if (depth >= MAX_WALK_DEPTH) return;
     for (const included of readGitConfigIncludes(text)) {
@@ -1113,7 +1172,7 @@ export function protectedWorkspacePaths(
         : host.path.isAbsolute(included)
           ? host.path.resolve(included)
           : host.path.join(host.path.dirname(at), included);
-      readConfig(target, workTree, depth + 1);
+      readConfig(target, workTree, depth + 1, reachable);
     }
   };
 
@@ -1139,6 +1198,11 @@ export function protectedWorkspacePaths(
     // part of that config, and is followed to the same depth.
     for (const name of ['config', 'config.worktree']) {
       readConfig(host.path.join(gitDir.dir, name), gitDir.workTree, 0);
+    }
+  }
+  for (const gitDir of outOfReach) {
+    for (const name of ['config', 'config.worktree']) {
+      readConfig(host.path.join(gitDir.dir, name), gitDir.workTree, 0, false);
     }
   }
 
@@ -1245,6 +1309,20 @@ export function protectedWorkspacePaths(
   }
 
   return result;
+}
+
+/** The control paths for a command under `settings`, as both backends compute them. */
+function protectedPathsFor(
+  workspaceRoot: string,
+  settings: ResolvedSettings['sandbox'],
+  host: SandboxHost,
+): ProtectedWorkspacePaths {
+  const expanded = (paths: string[]): string[] => paths.map((path) => expandPath(path, host));
+  return protectedWorkspacePaths(workspaceRoot, host, {
+    allowGitWrites: settings.filesystem.allowGitWrites,
+    denyDirectories: expanded([...settings.filesystem.denyWrite, ...settings.filesystem.denyRead]),
+    writableRoots: expanded(settings.filesystem.allowWrite).filter((path) => host.exists(path)),
+  });
 }
 
 /**
@@ -1532,25 +1610,65 @@ function pinsAbove(
 /** The system directories every command gets, read-only. */
 const SYSTEM_DIRECTORIES = ['/usr', '/lib', '/lib64', '/bin', '/sbin', '/etc', '/opt'];
 
+/** Every command's private `/tmp`: a tmpfs that takes links below it, but cannot itself be one. */
+const PRIVATE_TMP = '/tmp';
+
+/** How many links a path may go through, as the kernel limits it. */
+const MAX_LINK_HOPS = 40;
+
+/**
+ * `host` with what building one command's policy asks repeatedly answered once.
+ * Each `canonicalPath` is a walk of realpath calls, and this runs for every
+ * command.
+ */
+function memoizedHost(host: SandboxHost): SandboxHost {
+  const once = <T>(probe: (path: string) => T): ((path: string) => T) => {
+    const answers = new Map<string, T>();
+    return (path) => {
+      if (!answers.has(path)) answers.set(path, probe(path));
+      return answers.get(path) as T;
+    };
+  };
+  return {
+    ...host,
+    exists: once(host.exists),
+    isDirectory: once(host.isDirectory),
+    entryKind: once(host.entryKind),
+    linkTarget: once(host.linkTarget),
+    realpath: once(host.realpath),
+  };
+}
+
 /**
  * Where every symlink on a path's way to its target lives: the link's own
- * directory, resolved, plus its name. A link's target can hold more links, so a
- * chain is followed to its end.
+ * directory, resolved, plus its name. Walked as the kernel walks it, a component
+ * at a time, with a link's target taking the link's place and `..` going up from
+ * wherever the walk has got to. Resolving a target as text would skip a link it
+ * climbs through.
  */
-function linksAlong(path: string, host: SandboxHost, seen = new Set<string>()): string[] {
-  const resolved = host.path.resolve(path);
+function linksAlong(path: string, host: SandboxHost): string[] {
+  const { sep } = host.path;
+  const components = (text: string): string[] =>
+    text.split(sep).filter((part) => part !== '' && part !== '.');
+  const root = host.path.resolve(sep);
+  const pending = components(host.path.resolve(path));
   const locations: string[] = [];
-  for (const current of [resolved, ...ancestorsOf(resolved, host)].reverse()) {
-    if (host.entryKind(current) !== 'symlink') continue;
-    const directory = canonicalPath(host.path.dirname(current), host);
-    const location = host.path.join(directory, host.path.basename(current));
-    if (seen.has(location)) continue;
-    seen.add(location);
-    locations.push(location);
-    const target = host.linkTarget(current);
-    if (target !== null) {
-      locations.push(...linksAlong(host.path.resolve(directory, target), host, seen));
+  let current = root;
+  while (pending.length > 0 && locations.length < MAX_LINK_HOPS) {
+    const part = pending.shift() as string;
+    if (part === '..') {
+      current = host.path.dirname(current);
+      continue;
     }
+    const next = host.path.join(current, part);
+    const target = host.entryKind(next) === 'symlink' ? host.linkTarget(next) : null;
+    if (target === null) {
+      current = next;
+      continue;
+    }
+    locations.push(next);
+    if (host.path.isAbsolute(target)) current = root;
+    pending.unshift(...components(target));
   }
   return locations;
 }
@@ -1618,49 +1736,60 @@ interface AllowWriteSpellings {
 }
 
 /**
- * Bind every `allowWrite` entry so that the namespace has one path to the
- * workspace, the one the protections are emitted at. bwrap follows a bind
- * source's links on the host and creates the destination as written, so a root
- * spelled through a link is a second view of whatever it holds.
+ * Bind every `allowWrite` entry so that the namespace has one path to what the
+ * protections cover: the workspace at its own spelling, and any protected path
+ * outside it at its real one. bwrap follows a bind source's links on the host and
+ * creates the destination as written, so a root spelled through a link is a
+ * second view of whatever it holds.
  *
  * An entry inside the workspace goes to the workspace's own spelling, and one
- * above it to the spelling that shows the workspace there. An entry inside one
- * of those roots moves with it: left at its own spelling it would be a view of
- * its own, which the `denyWrite` entries and protected files, each applied in
- * one root only, would not all cover. Anything else cannot reach the workspace
- * and stays as spelled.
+ * above it to the spelling that shows the workspace there. One holding a
+ * protected path outside the workspace goes to its real path. An entry inside
+ * any of those roots moves with it: left at its own spelling it would be a view
+ * of its own, which the `denyWrite` entries and protected files, each applied in
+ * one root only, would not all cover. Anything else holds nothing protected and
+ * stays as spelled.
  */
 function allowWriteSpellings(
   entries: string[],
   workspace: string,
   canonicalWorkspace: string | null,
+  protectedOutside: string[],
   host: SandboxHost,
 ): AllowWriteSpellings {
   const at = new Map<string, string>();
   const moved = new Map<string, string>();
-  const notices: string[] = [];
+  const notices = new Set<string>();
   if (canonicalWorkspace === null) {
     for (const entry of entries) at.set(entry, entry);
-    return { at, moved, notices };
+    return { at, moved, notices: [] };
   }
-  const isAbove = (canonical: string): boolean =>
+  const holdsWorkspace = (canonical: string): boolean =>
     canonical !== canonicalWorkspace && !isOutside(canonical, canonicalWorkspace, host.path);
-  const above: Array<{ canonical: string; at: string }> = [];
+  const anchored: Array<{ canonical: string; at: string }> = [];
   for (const entry of entries) {
     const canonical = canonicalPath(entry, host);
-    if (!isAbove(canonical)) continue;
+    if (!holdsWorkspace(canonical)) continue;
     const spelling = spellingAboveWorkspace(canonical, workspace, canonicalWorkspace, host);
     if (spelling !== null) {
-      above.push({ canonical, at: spelling });
+      anchored.push({ canonical, at: spelling });
       continue;
     }
     const view = host.path.resolve(canonical, host.path.relative(canonical, canonicalWorkspace));
-    notices.push(
+    notices.add(
       `sandbox.filesystem.allowWrite entry ${entry} is not bound: it holds the workspace, open at ` +
         `${workspace}, and would show it a second time at ${view}, where the workspace's ` +
         `protections do not apply. Open the workspace at its real path (${canonicalWorkspace}) ` +
         'to use this entry.',
     );
+  }
+  const inAnchored = (canonical: string): { canonical: string; at: string } | undefined =>
+    anchored.find((root) => !isOutside(root.canonical, canonical, host.path));
+  for (const entry of entries) {
+    const canonical = canonicalPath(entry, host);
+    if (holdsWorkspace(canonical) || !isOutside(canonicalWorkspace, canonical, host.path)) continue;
+    const holdsProtected = protectedOutside.some((path) => !isOutside(canonical, path, host.path));
+    if (holdsProtected && !inAnchored(canonical)) anchored.push({ canonical, at: canonical });
   }
   for (const entry of entries) {
     const canonical = canonicalPath(entry, host);
@@ -1669,17 +1798,17 @@ function allowWriteSpellings(
       at.set(entry, rest ? host.path.resolve(workspace, rest) : workspace);
       continue;
     }
-    const root = above.find((candidate) => !isOutside(candidate.canonical, canonical, host.path));
+    const root = inAnchored(canonical);
     if (root) {
       const rest = host.path.relative(root.canonical, canonical);
       const bound = rest ? host.path.resolve(root.at, rest) : root.at;
       at.set(entry, bound);
       if (bound !== entry) moved.set(entry, bound);
-    } else if (!isAbove(canonical)) {
+    } else if (!holdsWorkspace(canonical)) {
       at.set(entry, entry);
     }
   }
-  return { at, moved, notices };
+  return { at, moved, notices: [...notices] };
 }
 
 /**
@@ -1691,7 +1820,6 @@ function allowWriteSpellings(
  * bwrap aborts the whole invocation on a link that collides with a mount, so a
  * spelling at or above one, or below one, gets none. Below a bind of a system
  * directory, the host's own link is already there and resolves the same way.
- * `/tmp` is a private tmpfs: it takes links below it, but cannot itself be one.
  */
 function spellingLinks(moved: Map<string, string>, mounted: string[], host: SandboxHost): string[] {
   const args: string[] = [];
@@ -1699,7 +1827,7 @@ function spellingLinks(moved: Map<string, string>, mounted: string[], host: Sand
   for (const spelling of shallowestFirst([...moved.keys()], host)) {
     const collides = (path: string): boolean =>
       !isOutside(path, spelling, host.path) || !isOutside(spelling, path, host.path);
-    if (mounted.some(collides) || !isOutside(spelling, '/tmp', host.path)) continue;
+    if (mounted.some(collides) || !isOutside(spelling, PRIVATE_TMP, host.path)) continue;
     // Already reached through the link above it.
     if (linked.some((above) => !isOutside(above, spelling, host.path))) continue;
     linked.push(spelling);
@@ -1738,9 +1866,10 @@ export function buildSandboxExecution(
   command: string,
   workspaceRoot: string,
   settings: ResolvedSettings['sandbox'],
-  host: SandboxHost = realSandboxHost,
+  givenHost: SandboxHost = realSandboxHost,
   protectedPaths?: ProtectedWorkspacePaths,
-): CommandExecution {
+): SandboxExecution {
+  const host = memoizedHost(givenHost);
   const args: string[] = [];
 
   // Fresh PID/IPC/UTS namespaces, and the sandbox dies if the spawning process
@@ -1754,15 +1883,17 @@ export function buildSandboxExecution(
   // success and does nothing. The TIOCSTI hardening --new-session buys is moot
   // anyway: all three spawn sites pipe stdio and never hand over a tty.
   args.push('--unshare-pid', '--unshare-ipc', '--unshare-uts', '--die-with-parent');
-  args.push('--proc', '/proc');
-  args.push('--dev', '/dev');
+  const systemMounts: NamespaceMount[] = [
+    { at: '/proc', access: 'read-only', args: ['--proc', '/proc'] },
+    { at: '/dev', access: 'read-only', args: ['--dev', '/dev'] },
+    // Minimal system directories, read-only.
+    ...SYSTEM_DIRECTORIES.map((dir) => expandPath(dir, host))
+      .filter((dir) => host.exists(dir))
+      .map(readOnlyBind),
+  ];
+  for (const mount of systemMounts) args.push(...mount.args);
 
-  // Minimal system directories, read-only.
-  for (const dir of SYSTEM_DIRECTORIES) {
-    bindIfPresent(args, '--ro-bind', dir, host);
-  }
-
-  args.push('--tmpfs', '/tmp');
+  args.push('--tmpfs', PRIVATE_TMP);
 
   // Declared filesystem policy overrides the defaults below.
   //
@@ -1776,14 +1907,7 @@ export function buildSandboxExecution(
   // its way down would not be an opt-in but the default back the protections
   // exist to remove. Only a trusted layer can hold one: a workspace layer's
   // `allowWrite` entries are dropped by the loader (#373).
-  const paths =
-    protectedPaths ??
-    protectedWorkspacePaths(workspaceRoot, host, {
-      allowGitWrites: settings.filesystem.allowGitWrites,
-      denyDirectories: [...settings.filesystem.denyWrite, ...settings.filesystem.denyRead].map(
-        (p) => expandPath(p, host),
-      ),
-    });
+  const paths = protectedPaths ?? protectedPathsFor(workspaceRoot, settings, host);
   const isProtectedArea = (path: string): boolean => {
     const canonical = canonicalPath(expandPath(path, host), host);
     return paths.mounts.some(
@@ -1804,10 +1928,16 @@ export function buildSandboxExecution(
     canonicalWorkspace !== null ? [canonicalWorkspace] : [],
     host,
   );
+  const protectedOutside = [...paths.mounts, ...paths.gitDirControlMounts]
+    .map((mount) => canonicalPath(mount.path, host))
+    .filter(
+      (path) => canonicalWorkspace === null || isOutside(canonicalWorkspace, path, host.path),
+    );
   const spellings = allowWriteSpellings(
     present(settings.filesystem.allowWrite).filter((entry) => !throughLinks.has(entry)),
     workspace,
     canonicalWorkspace,
+    protectedOutside,
     host,
   );
   const boundAt = (entries: string[]): string[] => [
@@ -1833,7 +1963,12 @@ export function buildSandboxExecution(
     canonicalPath(target, host),
   );
   const pins = pinsAbove(
-    [...deniedWrites, ...[...allowWriteRoots, ...optInRoots].map((at) => canonicalPath(at, host))],
+    [
+      ...deniedWrites,
+      ...present(settings.filesystem.denyRead).map((target) => canonicalPath(target, host)),
+      ...[...allowWriteRoots, ...optInRoots].map((at) => canonicalPath(at, host)),
+      ...protectedOutside,
+    ],
     writableRoots,
     paths,
     host,
@@ -1848,15 +1983,19 @@ export function buildSandboxExecution(
     const rest = host.path.relative(container.canonical, canonical);
     return rest ? host.path.resolve(container.at, rest) : container.at;
   };
-  // A protected file is bound only where the command could write it: inside the
-  // workspace or a writable root, and at that root's own spelling plus the rest,
-  // as `denyWrite` is applied. Anywhere else (a config an `[include]` names, a
-  // linked work tree's `.git` pointer) it is not in the namespace at all, so
-  // there is nothing there to protect, and a bind would only add it. The host
-  // still reads it for `core.hooksPath`.
+  // A protected file, or anything protected outside the workspace, is bound only
+  // where the command could write it: inside the workspace or a writable root, and
+  // at that root's own spelling plus the rest, as `denyWrite` is applied. Anywhere
+  // else (a config an `[include]` names, a linked work tree's `.git` pointer, the
+  // common git dir) it is not in the namespace at all, so there is nothing there to
+  // protect, and a bind would only add it. The host still reads it for
+  // `core.hooksPath`.
+  const canonicalWorkspaceSpelling = canonicalPath(workspace, host);
   const protectedAt = (mount: ProtectedMount): ProtectedMount | null => {
-    if (mount.kind !== 'file') return mount;
-    const at = inWritableRoot(canonicalPath(mount.path, host));
+    const canonical = canonicalPath(mount.path, host);
+    const outside = isOutside(canonicalWorkspaceSpelling, canonical, host.path);
+    if (mount.kind !== 'file' && !outside) return mount;
+    const at = inWritableRoot(canonical);
     return at === null ? null : { ...mount, path: at };
   };
 
@@ -1954,7 +2093,8 @@ export function buildSandboxExecution(
     const applied = protectedMount(mount, host);
     if (applied) mounts.push(applied);
   }
-  for (const mount of settleSettingsDirectory(mounts, view, host)) args.push(...mount.args);
+  const settled = settleSettingsDirectory(mounts, view, host);
+  for (const mount of settled) args.push(...mount.args);
 
   // bwrap cannot unmount a subpath, so a denied path is masked instead. The
   // mask has to match the kind: --tmpfs needs to mkdir its target, so pointing
@@ -1969,7 +2109,7 @@ export function buildSandboxExecution(
   // path, as a `denyWrite` entry does: at the entry's own spelling it would hide
   // nothing from a root that shows the path at another.
   const viewCanonical = view ? { ...view, at: canonicalPath(view.at, host) } : null;
-  const masked: string[] = [];
+  const masks: NamespaceMount[] = [];
   for (const target of present(settings.filesystem.denyRead)) {
     const canonical = canonicalPath(target, host);
     if (
@@ -1980,15 +2120,18 @@ export function buildSandboxExecution(
       continue;
     }
     const at = inWritableRoot(canonical) ?? target;
-    masked.push(at);
-    if (host.isDirectory(target)) args.push('--tmpfs', at);
-    else args.push('--ro-bind', '/dev/null', at);
+    masks.push({
+      at,
+      access: 'masked',
+      args: host.isDirectory(target) ? ['--tmpfs', at] : ['--ro-bind', '/dev/null', at],
+    });
   }
+  for (const mask of masks) args.push(...mask.args);
 
   args.push(
     ...spellingLinks(
       spellings.moved,
-      [...SYSTEM_DIRECTORIES, '/proc', '/dev', ...mounts.map((mount) => mount.at), ...masked],
+      [...systemMounts, ...settled, ...masks].map((mount) => mount.at),
       host,
     ),
   );
@@ -2079,11 +2222,12 @@ export function seatbeltTempRoots(host: SandboxHost = realSandboxHost): string[]
 export function buildSeatbeltPolicy(
   workspaceRoot: string,
   settings: ResolvedSettings['sandbox'],
-  host: SandboxHost = realSandboxHost,
+  givenHost: SandboxHost = realSandboxHost,
   protectedPaths?: ProtectedWorkspacePaths,
   tempRoots: string[] = [],
   bookHome?: string,
 ): SeatbeltPolicy {
+  const host = memoizedHost(givenHost);
   // One command canonicalises the same mount paths many times over; each is a
   // walk of realpath calls, so they are computed once per policy.
   const canonical = new Map<string, string>();
@@ -2099,14 +2243,7 @@ export function buildSeatbeltPolicy(
   const literal = (path: string): SeatbeltPathFilter => ({ match: 'literal', path });
   const READ_WRITE = ['file-read*', 'file-write*'] as const;
 
-  const paths =
-    protectedPaths ??
-    protectedWorkspacePaths(workspaceRoot, host, {
-      allowGitWrites: settings.filesystem.allowGitWrites,
-      denyDirectories: [...settings.filesystem.denyWrite, ...settings.filesystem.denyRead].map(
-        (p) => expandPath(p, host),
-      ),
-    });
+  const paths = protectedPaths ?? protectedPathsFor(workspaceRoot, settings, host);
   const isProtectedArea = (path: string): boolean => {
     const target = canon(expandPath(path, host));
     return paths.mounts.some((mount) => !isOutside(canon(mount.path), target, host.path));
@@ -2275,6 +2412,12 @@ export function buildSeatbeltPolicy(
     // An `allowWrite` entry stays where it was declared, as a bind keeps it under
     // bubblewrap: there is no mount here to keep the entry itself in place.
     ...[...allowWrite, ...optIns].flatMap((path) => [path, ...ancestorsOf(path, host)]),
+    // So does anything protected outside the workspace, the common git dir of a
+    // linked worktree for one, as `pinnedDirectories` does inside it.
+    ...paths.mounts
+      .map((mount) => canon(mount.path))
+      .filter((path) => workspace === null || isOutside(workspace, path, host.path))
+      .flatMap((path) => ancestorsOf(path, host)),
   ]);
   const notCreatable = new Set(
     [...(workspace ? [workspace] : []), ...deniedPaths].flatMap((path) => ancestorsOf(path, host)),
@@ -2323,7 +2466,7 @@ export function buildSeatbeltExecution(
   protectedPaths?: ProtectedWorkspacePaths,
   tempRoots: string[] = [],
   bookHome?: string,
-): CommandExecution {
+): SandboxExecution {
   const policy = buildSeatbeltPolicy(
     workspaceRoot,
     settings,
@@ -2360,12 +2503,19 @@ export interface SandboxDecisionContext {
  * skipped, which is what `allowUnsandboxedCommands` governs; it is absent when
  * no sandbox was configured at all. `error` means do not run anything.
  */
-export interface SandboxDecision {
+export interface SandboxDecision extends SandboxNotices {
   sandboxed: boolean;
   exec?: CommandExecution;
   reason?: SandboxSkipReason;
   error?: string;
   gitDirReadOnly?: boolean;
+}
+
+/** Why the sandbox left a configured path out of a command. */
+export interface SandboxNotices {
+  notices?: readonly string[];
+  /** The notices this sandbox had not shown before this command. */
+  unseenNotices?: readonly string[];
 }
 
 /**
@@ -2436,37 +2586,30 @@ export function decideSandboxExecution(
   // decision to tighten.
   let protectedPaths: ProtectedWorkspacePaths | undefined;
   if (sandbox) {
-    const denyDirectories = [
-      ...ctx.sandbox.filesystem.denyWrite,
-      ...ctx.sandbox.filesystem.denyRead,
-    ].map((p) => expandPath(p, realSandboxHost));
-
-    protectedPaths = protectedWorkspacePaths(ctx.workspaceRoot, realSandboxHost, {
-      allowGitWrites: ctx.sandbox.filesystem.allowGitWrites,
-      denyDirectories,
-    });
+    protectedPaths = protectedPathsFor(ctx.workspaceRoot, ctx.sandbox, realSandboxHost);
     const refusal = protectedPaths.refusals[0];
     if (refusal) return { sandboxed: false, error: describeControlPathRefusal(refusal) };
   }
   // A wrap that cannot build its policy refuses the command rather than
   // returning null, which would read as "no sandbox" and could run it outside.
-  let exec: CommandExecution | null | undefined;
+  let wrapped: SandboxExecution | null | undefined;
   try {
-    exec = sandbox?.wrap(command, ctx.workspaceRoot, protectedPaths);
+    wrapped = sandbox?.wrap(command, ctx.workspaceRoot, protectedPaths);
   } catch (error) {
     return { sandboxed: false, error: error instanceof Error ? error.message : String(error) };
   }
-  if (exec) {
-    if (exec.notices) {
-      for (const notice of sandbox?.unseenNotices?.(exec.notices) ?? exec.notices) {
-        if (ctx.onNotice) ctx.onNotice(notice);
-        else console.warn(`⚠  ${notice}`);
-      }
+  if (sandbox && wrapped) {
+    const { notices, ...exec } = wrapped;
+    const unseenNotices = notices ? sandbox.unseenNotices(notices) : [];
+    for (const notice of unseenNotices) {
+      if (ctx.onNotice) ctx.onNotice(notice);
+      else console.warn(`⚠  ${notice}`);
     }
     return {
       sandboxed: true,
       exec,
       gitDirReadOnly: !ctx.sandbox.filesystem.allowGitWrites,
+      ...(notices ? { notices, unseenNotices } : {}),
     };
   }
   if (ctx.sandbox.failIfUnavailable) {
@@ -2476,11 +2619,37 @@ export function decideSandboxExecution(
 }
 
 /**
- * A command's output with the notices for the `allowWrite` entries its sandbox
- * left out, so the model learns why a path it was told about is not writable.
+ * A command's result with the notices the model needs: the ones not shown yet,
+ * and all of them when the command did not succeed, since a path the sandbox left
+ * out can be why.
  */
-export function withSandboxNotices(text: string, exec?: CommandExecution): string {
-  return exec?.notices ? `${text}\n\n${exec.notices.join('\n')}` : text;
+export function withSandboxNotices(result: ToolResult, notices: SandboxNotices): ToolResult {
+  const succeeded = result.status === 'success';
+  const lines = succeeded ? notices.unseenNotices : notices.notices;
+  if (!lines?.length) return result;
+  const note = lines.join('\n');
+  return !succeeded && result.structuredError
+    ? {
+        ...result,
+        structuredError: {
+          ...result.structuredError,
+          message: `${result.structuredError.message}\n\n${note}`,
+        },
+      }
+    : { ...result, content: `${result.content}\n\n${note}` };
+}
+
+/**
+ * The notices a command in `workspaceRoot` would get now, for `book doctor`. Empty
+ * when the sandbox cannot build its policy: the command would be refused, and that
+ * has its own message.
+ */
+export function sandboxNoticesFor(sandbox: Sandbox, workspaceRoot: string): readonly string[] {
+  try {
+    return sandbox.wrap('true', workspaceRoot)?.notices ?? [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -2575,12 +2744,17 @@ function writesAGlobalConfig(command: string): boolean {
 }
 
 /** The one-line policy summary both backends share after their own first part. */
-function describePolicy(settings: ResolvedSettings['sandbox'], unbindable: string[]): string[] {
+function describePolicy(
+  settings: ResolvedSettings['sandbox'],
+  unbindable: string[],
+  refused: number,
+): string[] {
   return [
     settings.filesystem.allowGitWrites
       ? 'git directories writable (hooks, config and pointer files read-only)'
       : 'git directories read-only',
-    `${settings.filesystem.allowWrite.length} extra writable path(s)`,
+    `${settings.filesystem.allowWrite.length - refused} extra writable path(s)`,
+    ...(refused > 0 ? [`${refused} allowWrite entries refused`] : []),
     `${settings.filesystem.denyWrite.length} read-only path(s)`,
     `${settings.filesystem.denyRead.length} masked path(s)`,
     unbindable.length > 0 ? `${unbindable.length} skipped (missing)` : 'all paths resolved',
@@ -2605,13 +2779,13 @@ function warnUnenforceablePolicy(settings: ResolvedSettings['sandbox'], backend:
 
 /**
  * Which of a command's notices this sandbox has not shown yet. The check runs on
- * every command, as an entry can stop qualifying during a session, and the model
- * reads the notices each time in the output; the user needs each one only once.
+ * every command, as an entry can stop qualifying during a session, but the user
+ * and the model need each notice once, and the model again when a command fails.
  */
 function unseenNoticesFilter(): (notices: readonly string[]) => readonly string[] {
   const shown = new Set<string>();
   return (notices) => {
-    const unseen = notices.filter((notice) => !shown.has(notice));
+    const unseen = [...new Set(notices)].filter((notice) => !shown.has(notice));
     for (const notice of unseen) shown.add(notice);
     return unseen;
   };
@@ -2641,7 +2815,7 @@ function createSeatbeltSandbox(settings: ResolvedSettings['sandbox']): Sandbox |
   const bookHome = resolveBookHome();
   const tempRoots = seatbeltTempRoots(realSandboxHost);
   return {
-    wrap(command, workspaceRoot, protectedPaths): CommandExecution {
+    wrap(command, workspaceRoot, protectedPaths): SandboxExecution {
       return buildSeatbeltExecution(
         sandboxExec,
         command,
@@ -2654,14 +2828,14 @@ function createSeatbeltSandbox(settings: ResolvedSettings['sandbox']): Sandbox |
       );
     },
     unseenNotices: unseenNoticesFilter(),
-    describe(): string {
+    describe(refused = 0): string {
       return [
         `Seatbelt (${sandboxExec})`,
         hasDomainPolicy(settings)
           ? 'network disabled'
           : 'host network shared (unix sockets outside the workspace refused)',
         `home directory unreadable; host temp directories writable (${tempRoots.join(', ')})`,
-        ...describePolicy(settings, unbindable),
+        ...describePolicy(settings, unbindable, refused),
       ].join('; ');
     },
   };
@@ -2713,7 +2887,7 @@ export function createSandbox(settings: ResolvedSettings['sandbox']): Sandbox | 
       command: string,
       workspaceRoot: string,
       protectedPaths?: ProtectedWorkspacePaths,
-    ): CommandExecution {
+    ): SandboxExecution {
       return buildSandboxExecution(
         bwrap,
         command,
@@ -2724,11 +2898,11 @@ export function createSandbox(settings: ResolvedSettings['sandbox']): Sandbox | 
       );
     },
     unseenNotices: unseenNoticesFilter(),
-    describe(): string {
+    describe(refused = 0): string {
       return [
         `bubblewrap (${bwrap})`,
         hasDomainPolicy(settings) ? 'network disabled' : 'host network shared',
-        ...describePolicy(settings, unbindable),
+        ...describePolicy(settings, unbindable, refused),
       ].join('; ');
     },
   };

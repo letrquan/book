@@ -1259,7 +1259,16 @@ backends apply the first rule; the second is specific to bubblewrap, since Seatb
 paths.
 
 An entry nested in a writable root stays where it was declared: the directories above it are pinned,
-as they are above a `denyWrite` entry, so removing one inside the sandbox fails with `EBUSY`.
+as they are above a `denyWrite` or `denyRead` entry, so removing one inside the sandbox fails with
+`EBUSY`. `book doctor` lists the entries it would refuse for the workspace.
+
+The repository's git directories can lie outside the workspace: the common dir of a linked worktree,
+or the `.git` of a repository the workspace is a subdirectory of. Where an `allowWrite` root holds one,
+it gets the same protection as a git dir inside the workspace, at that root's real path. It is
+read-only, or with `allowGitWrites` writable with its hooks, config and pointer files read-only, and
+an `allowWrite` entry naming a path in it reopens what it names. Where no root holds it, it stays out
+of the sandbox, but its config is still read, so a `core.hooksPath` that names a directory in the
+workspace is protected.
 
 A git dir is found by following a `.git` **file** (`gitdir: …`), a `commondir` file,
 `.git/worktrees/*`, and nested `.git/modules/*` — including a submodule path with several segments,

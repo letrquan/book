@@ -392,6 +392,49 @@ describe('buildSeatbeltPolicy', () => {
       expect(canCreate(policy, `${WS}/a/other`)).toBe(true);
     });
 
+    it('keeps the directories above a nested denyRead entry in place', () => {
+      const policy = policyFor(
+        { filesystem: { denyRead: [`${WS}/a/secrets/key`] } },
+        repoTree({ [`${WS}/a/secrets/key`]: 'file' }),
+      );
+
+      for (const path of [`${WS}/a/secrets`, `${WS}/a`]) {
+        expect(canRemove(policy, path), path).toBe(false);
+      }
+      expect(canRead(policy, `${WS}/a/secrets/key`)).toBe(false);
+    });
+
+    it('protects a common git dir outside the workspace under a root that holds it', () => {
+      const main = `${HOME}/main`;
+      const tree: Record<string, MemoryNode> = {
+        [`${WS}/.git`]: { text: `gitdir: ${main}/.git/worktrees/work\n` },
+        [`${main}/.git/HEAD`]: 'file',
+        [`${main}/.git/config`]: 'file',
+        [`${main}/.git/objects`]: 'dir',
+        [`${main}/.git/refs`]: 'dir',
+        [`${main}/.git/hooks/pre-commit`]: 'file',
+        [`${main}/.git/worktrees/work/HEAD`]: 'file',
+        [`${main}/.git/worktrees/work/commondir`]: { text: '../..\n' },
+        [`${main}/.git/worktrees/work/gitdir`]: { text: `${WS}/.git\n` },
+        [`${main}/src/index.ts`]: 'file',
+        '/private/tmp': 'dir',
+      };
+
+      for (const allowGitWrites of [false, true]) {
+        const policy = policyFor({ filesystem: { allowWrite: [main], allowGitWrites } }, tree);
+
+        expect(canWrite(policy, `${main}/.git/hooks/pre-commit`), `${allowGitWrites}`).toBe(false);
+        expect(canWrite(policy, `${main}/.git/config`), `${allowGitWrites}`).toBe(false);
+        expect(canWrite(policy, `${main}/.git/objects/x`), `${allowGitWrites}`).toBe(
+          allowGitWrites,
+        );
+        expect(canWrite(policy, `${main}/src/index.ts`), `${allowGitWrites}`).toBe(true);
+      }
+      const underHome = policyFor({ filesystem: { allowWrite: [HOME] } }, tree);
+      expect(canWrite(underHome, `${main}/.git/hooks/pre-commit`)).toBe(false);
+      expect(canRemove(underHome, main)).toBe(false);
+    });
+
     it('is kept when the link is in no writable directory', () => {
       const policy = policyFor(
         { filesystem: { allowWrite: ['/alias'] } },

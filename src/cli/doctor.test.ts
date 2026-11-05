@@ -23,13 +23,18 @@ import {
 // Only the backend probe is stubbed; `sandboxPolicySummary` and everything else
 // stay real. Whether the developer's machine has bubblewrap installed must not
 // decide which branch of the policy report these tests exercise.
+const sandboxStub = vi.hoisted(() => ({ notices: undefined as readonly string[] | undefined }));
 vi.mock('../sandbox.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../sandbox.js')>();
   return {
     ...actual,
     createSandbox: (settings: Parameters<typeof actual.createSandbox>[0]) =>
       settings.enabled
-        ? { wrap: () => ({ file: 'bwrap', args: [] }), describe: () => 'stub backend' }
+        ? {
+            wrap: () => ({ file: 'bwrap', args: [], notices: sandboxStub.notices }),
+            describe: (refused = 0) =>
+              refused > 0 ? `stub backend, ${refused} refused` : 'stub backend',
+          }
         : null,
   };
 });
@@ -145,6 +150,19 @@ describe('runDoctorCommand sandbox policy', () => {
     // Sandboxing is off, so the auto-allow key cannot bite: doctor must not
     // report a policy stronger than the one actually enforced.
     expect(output).toMatch(/Auto-allow Bash: inert/);
+  });
+
+  it('reports an allowWrite entry the sandbox refuses, and tells the backend how many', async () => {
+    writeUserSettings({ sandbox: { enabled: true } });
+    sandboxStub.notices = ['an entry is not bound'];
+    try {
+      const output = await doctorOutput();
+
+      expect(output).toContain('  Enforcing: stub backend, 1 refused');
+      expect(output).toContain('  Refused: an entry is not bound');
+    } finally {
+      sandboxStub.notices = undefined;
+    }
   });
 
   it('names the backend this platform sandboxes with', async () => {

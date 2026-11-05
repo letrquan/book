@@ -11,6 +11,7 @@ import {
   decideSandboxExecution,
   withGitConfigReadOnlyNotice,
   withSandboxNotices,
+  type SandboxNotices,
 } from '../sandbox.js';
 import { buildChildEnv } from '../child-env.js';
 import { isTerminalShellStatus, ShellJobManager } from '../jobs/shell-manager.js';
@@ -138,6 +139,8 @@ interface EffectiveCommand {
   sandboxed: boolean;
   /** Set along `sandboxed`, per `decideSandboxExecution`; read by the failure note. */
   gitDirReadOnly?: boolean;
+  /** Set along `sandboxed`: why the sandbox left a configured path out of this command. */
+  sandboxNotices?: SandboxNotices;
   error?: string;
 }
 
@@ -199,6 +202,7 @@ function buildEffectiveCommand(
       exec: decision.exec,
       sandboxed: true,
       gitDirReadOnly: decision.gitDirReadOnly,
+      sandboxNotices: { notices: decision.notices, unseenNotices: decision.unseenNotices },
     };
   }
   return plain;
@@ -238,7 +242,7 @@ async function bashForeground(
     fallback: DEFAULT_BASH_TIMEOUT_MS,
   });
 
-  return new Promise((resolve) => {
+  const result = await new Promise<ToolResult>((resolve) => {
     let proc: ChildProcess;
     try {
       proc = spawnEffective(built, {
@@ -491,12 +495,7 @@ async function bashForeground(
       if (cancelled || timedOut || backgrounded || bufferExceeded) return;
       void finish(
         code === 0
-          ? ok(
-              withSandboxNotices(
-                (built.sandboxed ? '[sandboxed] ' : '') + (stdout || '(no output)'),
-                built.exec,
-              ),
-            )
+          ? ok((built.sandboxed ? '[sandboxed] ' : '') + (stdout || '(no output)'))
           : // The git directory is read-only in the sandbox by default (issue
             // 373), and git reports the consequence in words that name no
             // cause — an index lock, `FETCH_HEAD`, or, with
@@ -513,15 +512,12 @@ async function bashForeground(
             // transcript row, which then shows no stdout and is passed over by Ctrl+E. `Check`
             // makes the same choice.
             fail(
-              withSandboxNotices(
-                withGitConfigReadOnlyNotice(
-                  stderr.trim() ? stderr : `Exit code: ${code}`,
-                  `${stdout}\n${stderr}`,
-                  built.sandboxed,
-                  built.command,
-                  built.gitDirReadOnly,
-                ),
-                built.exec,
+              withGitConfigReadOnlyNotice(
+                stderr.trim() ? stderr : `Exit code: ${code}`,
+                `${stdout}\n${stderr}`,
+                built.sandboxed,
+                built.command,
+                built.gitDirReadOnly,
               ),
               stdout,
               // For the transcript row only: the model reads the message and the
@@ -539,6 +535,7 @@ async function bashForeground(
     ctx.signal?.addEventListener('abort', onAbort, { once: true });
     if (ctx.signal?.aborted) onAbort();
   });
+  return built.sandboxNotices ? withSandboxNotices(result, built.sandboxNotices) : result;
 }
 
 async function bashBackground(
@@ -587,7 +584,8 @@ async function bashBackground(
         `Use BashOutput with shell_id="${shell.id}" to read output.`,
         `Use KillShell with shell_id="${shell.id}" to stop it.`,
         built.sandboxed ? '[sandboxed]' : undefined,
-        ...(built.exec?.notices ?? []),
+        // All of them: this command's outcome comes later, through BashOutput.
+        ...(built.sandboxNotices?.notices ?? []),
       ]
         .filter(Boolean)
         .join('\n'),

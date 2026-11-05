@@ -103,7 +103,7 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
     maxBuffer: 10 * 1024 * 1024,
   };
 
-  return new Promise((resolve) => {
+  const result = await new Promise<ToolResult>((resolve) => {
     const settle = (
       error: (Error & { killed?: boolean; signal?: string | null; code?: unknown }) | null,
       stdout: string,
@@ -135,15 +135,12 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
         const fallback = exitCode === undefined ? error.message : `Exit code: ${exitCode}`;
         resolve(
           toolFailure(
-            withSandboxNotices(
-              withGitConfigReadOnlyNotice(
-                stderr.trim() ? stderr : fallback,
-                `${stdout}\n${stderr}`,
-                decision.sandboxed,
-                command,
-                decision.gitDirReadOnly,
-              ),
-              decision.exec,
+            withGitConfigReadOnlyNotice(
+              stderr.trim() ? stderr : fallback,
+              `${stdout}\n${stderr}`,
+              decision.sandboxed,
+              command,
+              decision.gitDirReadOnly,
             ),
             {
               content: stdout,
@@ -157,10 +154,7 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
       // says which of the two things ran.
       resolve(
         toolSuccess(
-          withSandboxNotices(
-            (decision.sandboxed ? '[sandboxed] ' : '') + (stdout || stderr || '(no output)'),
-            decision.exec,
-          ),
+          (decision.sandboxed ? '[sandboxed] ' : '') + (stdout || stderr || '(no output)'),
         ),
       );
     };
@@ -174,6 +168,7 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
     }
     exec(command, options, settle);
   });
+  return withSandboxNotices(result, decision);
 }
 
 export const checkTools: ToolDefinition[] = [
