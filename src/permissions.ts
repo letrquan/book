@@ -19,7 +19,7 @@ import {
   type ScanShell,
 } from './tools/shell-chaining.js';
 import { strictRmOfMarkdownUnder } from './tools/strict-rm.js';
-import { UNPROMPTED_READ_TOOLS } from './tools/tool-capabilities.js';
+import { isFileMutatingTool, UNPROMPTED_READ_TOOLS } from './tools/tool-capabilities.js';
 import {
   canonicalizePath,
   isBookLocalSettingsPath,
@@ -30,8 +30,8 @@ import {
   type PathRoots,
   type ReadablePathDetail,
 } from './tools/path-utils.js';
-import { containsPath, pathHoldsHome, rootHoldsHome } from './additional-roots.js';
-import { sandboxCoverage } from './sandbox.js';
+import { containsPath, homeGuards, pathHoldsHome, rootHoldsHome } from './additional-roots.js';
+import { isWorkspaceControlPath, sandboxCoverage } from './sandbox.js';
 
 /**
  * Parse a permission rule string like "Bash(git *)" or "Read(./.env)" into
@@ -1209,6 +1209,50 @@ function writesOnlyMemory(
       (target) => target !== undefined && resolveMutationPath(roots, target)?.memory === true,
     )
   );
+}
+
+/**
+ * Whether `accept-edits` approves this file mutation on its own: every target is an ordinary edit.
+ *
+ * The mode is about the code a person is working on. It does not cover Book's and git's control
+ * files ({@link isWorkspaceControlPath}), nor a home directory a root holds, which a read keeps
+ * asking for too (`isGuarded`; everything, in a workspace that holds one). Such a call falls through
+ * to the verdict `default` would act on: a prompt, or the allow rule that already covers it.
+ *
+ * A target no root serves, and a call with no target, are the tool's to refuse, as in `default`. A
+ * memory file is judged by the memory guard and never prompts; it is tested first because the memory
+ * directory sits under a home.
+ */
+export function acceptEditsCovers(
+  mode: string,
+  tool: string,
+  call: { arguments: Record<string, unknown> },
+  roots: PathRoots,
+): boolean {
+  if (mode !== 'accept-edits' || !isFileMutatingTool(tool)) return false;
+  const targets =
+    tool === 'ApplyPatch'
+      ? patchOperations(call.arguments).map((operation) => operation.path)
+      : [pathArgument(tool, call.arguments)];
+  const homes = homeGuards();
+  const paths = resolvedPathScope({
+    root: roots.workspaceRoot,
+    additionalRoots: roots.additionalRoots,
+    homeGuards: homes,
+    judgeReads: false,
+    refuseUnreachableReads: false,
+    autoAllowReads: false,
+  });
+  const allRoots = [roots.workspaceRoot, ...(roots.additionalRoots ?? [])];
+  return targets.every((target) => {
+    const resolved = target === undefined ? null : resolveMutationPath(roots, target);
+    if (!resolved || resolved.memory) return true;
+    return (
+      !rootHoldsHome(roots.workspaceRoot, homes) &&
+      !paths.isGuarded(resolved.canonicalPath) &&
+      !isWorkspaceControlPath(resolved, allRoots)
+    );
+  });
 }
 
 /**

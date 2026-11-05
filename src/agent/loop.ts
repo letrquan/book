@@ -56,6 +56,7 @@ import {
   type ModelWindowStore,
 } from '../model-window-store.js';
 import {
+  acceptEditsCovers,
   ALWAYS_ALLOWED_TOOLS,
   evaluatePermissionDetail,
   permissionReasonOf,
@@ -87,7 +88,6 @@ import {
   stripReasoningTags,
 } from '../reasoning-tags.js';
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
-import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import { refusedBeforeRun } from '../tools/pre-execution-codes.js';
 import {
   REFUSAL_KIND_ORDER,
@@ -3563,7 +3563,8 @@ export async function runAgentLoop(
           (!autoSafeTool || userRuleAsked || guardedReadInPlan || peerMustAsk) &&
           (effectiveMode !== 'plan' || planReadOnly)
         ) {
-          const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);
+          // `accept-edits` approves ordinary edits; anything else falls through, as in `default`.
+          const autoApproved = acceptEditsCovers(effectiveMode, canonName, call, toolContext);
           if (!autoApproved || userRuleAsked) {
             let permission: 'allow' | 'deny' | 'always' | undefined;
             let chosenRule: string | undefined;

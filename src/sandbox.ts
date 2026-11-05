@@ -1327,6 +1327,90 @@ function protectedPathsFor(
 }
 
 /**
+ * The entries Book and git read as their own control files, by name, at any depth below a root.
+ *
+ * {@link protectedWorkspacePaths} lists what a namespace can mount, so it says nothing about a file
+ * that is not there yet (`.bookrc.json`, a first `.git/config`) or a repository it did not walk to
+ * (`vendor/lib/.git`). A file tool can create any of those, so {@link isWorkspaceControlPath} needs
+ * the names as well as the list.
+ */
+const CONTROL_ENTRY_NAMES: ReadonlySet<string> = new Set(['.book', '.bookrc.json', '.git']);
+
+/**
+ * An entry name as a file system that folds names reads it: case (NTFS, APFS, a case-insensitive
+ * mount), the code points HFS+ ignores, an NTFS stream suffix, and the trailing dots and spaces
+ * Win32 drops. Folding on every platform only ever turns a silent write into a prompt.
+ */
+function foldedEntryName(name: string): string {
+  return name
+    .replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g, '')
+    .replace(/:.*$/, '')
+    .replace(/[. ]+$/, '')
+    .toLowerCase();
+}
+
+/** A whole path in the one form two spellings of it are compared in. */
+function foldedPath(path: string): string {
+  return path.normalize('NFC').toLowerCase();
+}
+
+/**
+ * Whether a file tool's target is one of Book's or git's control files, under any of `roots`.
+ *
+ * One definition with the sandbox's: every path {@link protectedWorkspacePaths} shields from a
+ * sandboxed command, read in its strict shape (`allowGitWrites` is about what a command may do, and
+ * nothing in a git dir is an ordinary edit), plus {@link CONTROL_ENTRY_NAMES}. Every root is read
+ * with the others as writable roots, so a linked worktree's shared git dir counts wherever an
+ * approved directory reaches it. Computed afresh for each call, since a config can name another
+ * hooks directory between two of them.
+ *
+ * The target comes as written and after links, and each is compared to each spelling of a protected
+ * path, so a link in the workspace does not hide what it reaches and a control path that is itself
+ * a link does not hide what it stands for. A link that dangles has no destination to compare, and
+ * a config too large to read may name any hooks directory: both count as control paths.
+ */
+export function isWorkspaceControlPath(
+  target: { filePath: string; canonicalPath: string },
+  roots: readonly string[],
+  givenHost: SandboxHost = realSandboxHost,
+): boolean {
+  const host = memoizedHost(givenHost);
+  const spellings = [target.filePath, target.canonicalPath].map(foldedPath);
+  const covers = (place: string): boolean =>
+    [place, canonicalPath(place, host)]
+      .map(foldedPath)
+      .some((held) => spellings.some((path) => !isOutside(held, path, host.path)));
+  const namesControlEntry = (root: string): boolean =>
+    [host.path.resolve(root), canonicalPath(root, host)].map(foldedPath).some((base) =>
+      spellings.some(
+        (path) =>
+          !isOutside(base, path, host.path) &&
+          host.path
+            .relative(base, path)
+            .split(host.path.sep)
+            .some((segment) => CONTROL_ENTRY_NAMES.has(foldedEntryName(segment))),
+      ),
+    );
+  const passesDanglingLink = (root: string): boolean =>
+    workspaceComponents(target.filePath, root, host).some(
+      (component) => host.entryKind(component) === 'symlink' && host.realpath(component) === null,
+    );
+  return roots.some((root) => {
+    if (namesControlEntry(root) || passesDanglingLink(root)) return true;
+    const paths = protectedWorkspacePaths(root, host, {
+      allowGitWrites: false,
+      writableRoots: [...roots],
+    });
+    return (
+      paths.refusals.some((refusal) => refusal.reason === 'oversized-git-config') ||
+      [...paths.mounts, ...paths.gitDirControlMounts, ...paths.refusals].some((entry) =>
+        covers(entry.path),
+      )
+    );
+  });
+}
+
+/**
  * One mount bubblewrap applies from the workspace bind on: the path it lands
  * on, in the namespace's own spelling; what it leaves there; and its argv.
  *
