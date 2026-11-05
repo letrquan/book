@@ -5786,7 +5786,18 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
                 },
                 ctx,
               );
+              // The tree can go only once the command has ended: while it starts, bwrap
+              // creates its mount points through the workspace's bind.
+              const ended = await registry.execute(
+                {
+                  id: 'c3',
+                  name: 'BashOutput',
+                  arguments: { shell_id: /shell_\d+/.exec(started.content)?.[0], wait_ms: 30_000 },
+                },
+                ctx,
+              );
 
+              expect(ended.content).toContain('exit=0');
               expect(failed.status).not.toBe('success');
               expect(`${failed.content}\n${failed.structuredError?.message ?? ''}`).toContain(
                 notice,
