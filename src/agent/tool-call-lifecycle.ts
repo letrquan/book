@@ -885,7 +885,10 @@ export async function finalizeToolCall(
     }
   }
 
-  const modeAfterTool = context.currentMode ?? mode.current();
+  // Read from the shared context, not the call's own: a serial call runs on it and a call in a
+  // parallel wave on a copy, so a call in a parallel wave doesn't write the mode back; only a
+  // serial call can.
+  const modeAfterTool = toolContext.currentMode ?? mode.current();
   if (modeAfterTool !== mode.current()) {
     mode.set(modeAfterTool);
     callbacks.onModeChange?.(mode.current());
