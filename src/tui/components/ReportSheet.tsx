@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import { useMemo } from 'react';
 import type { LocalCommandDisplay } from '../../types/messages.js';
-import { panelContentWidth } from '../layout.js';
+import { SHEET_BODY_COLUMN, panelContentWidth } from '../layout.js';
 import { useTheme } from '../theme.js';
 import { CommandPanel } from './CommandPanel.js';
 import { DiffBlock, isUnifiedDiffLike, parseDiffLines } from './Diff.js';
@@ -75,5 +75,11 @@ export function ReportBody({
     );
   }
   if (sheet.display) return <Text>{sheet.content}</Text>;
-  return <MarkdownBlock content={sheet.content} terminalWidth={contentWidth} />;
+  return (
+    <MarkdownBlock
+      content={sheet.content}
+      terminalWidth={contentWidth}
+      originColumn={screenReader ? 0 : SHEET_BODY_COLUMN}
+    />
+  );
 }

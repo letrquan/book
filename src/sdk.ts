@@ -319,6 +319,7 @@ export function createAgentManager(config: AgentConfig): AgentManager {
 }
 export { runPairedEvaluation, evaluateSuccess } from './agents/evaluation.js';
 export { createAgentSessionSnapshot, reduceAgentSessionSnapshot } from './session/agent-events.js';
+export type { AttemptDiscardReason } from './types/providers.js';
 export type {
   AgentEvent,
   AgentSessionSnapshot,

@@ -1523,34 +1523,6 @@ export function App({
     [],
   );
 
-  useEffect(() => {
-    const completion = backgroundShells.pendingAgentCompletions[0];
-    if (!completion || queueDrainBlocked || shellCompletionDeliveryRef.current) return;
-    shellCompletionDeliveryRef.current = true;
-    void sendBackgroundShellCompletion(completion)
-      .then((accepted) => {
-        if (accepted) {
-          if (shellCompletionRetryTimerRef.current) {
-            clearTimeout(shellCompletionRetryTimerRef.current);
-            shellCompletionRetryTimerRef.current = null;
-          }
-          backgroundShells.acknowledgeAgentCompletion(completion.id, completion.completionSequence);
-        } else {
-          scheduleShellCompletionRetry();
-        }
-      })
-      .catch(() => scheduleShellCompletionRetry())
-      .finally(() => {
-        shellCompletionDeliveryRef.current = false;
-      });
-  }, [
-    backgroundShells.acknowledgeAgentCompletion,
-    backgroundShells.pendingAgentCompletions,
-    queueDrainBlocked,
-    scheduleShellCompletionRetry,
-    sendBackgroundShellCompletion,
-    shellCompletionRetryTick,
-  ]);
   // Tab (`cycleAgentFocus`) reaches only agents with a Background-panel row. Keyed on
   // the sorted, joined ids, not the summaries array: a child's status event replaces the array,
   // and a re-sort reorders it, without changing which rows exist, and neither must re-project
@@ -1643,6 +1615,39 @@ export function App({
     backgroundShells.lastCompletion,
     returnToMain,
     selectedShellId,
+  ]);
+
+  // Declared after the completion row's effect above, on purpose: a `notify: "agent"` job is in both
+  // queues in one render, and effects run in declaration order. The turn this starts defers any row
+  // `addLocalMessage` is given while it is in flight, so the row has to be added first or it lands
+  // under the model's reply to the completion (#675).
+  useEffect(() => {
+    const completion = backgroundShells.pendingAgentCompletions[0];
+    if (!completion || queueDrainBlocked || shellCompletionDeliveryRef.current) return;
+    shellCompletionDeliveryRef.current = true;
+    void sendBackgroundShellCompletion(completion)
+      .then((accepted) => {
+        if (accepted) {
+          if (shellCompletionRetryTimerRef.current) {
+            clearTimeout(shellCompletionRetryTimerRef.current);
+            shellCompletionRetryTimerRef.current = null;
+          }
+          backgroundShells.acknowledgeAgentCompletion(completion.id, completion.completionSequence);
+        } else {
+          scheduleShellCompletionRetry();
+        }
+      })
+      .catch(() => scheduleShellCompletionRetry())
+      .finally(() => {
+        shellCompletionDeliveryRef.current = false;
+      });
+  }, [
+    backgroundShells.acknowledgeAgentCompletion,
+    backgroundShells.pendingAgentCompletions,
+    queueDrainBlocked,
+    scheduleShellCompletionRetry,
+    sendBackgroundShellCompletion,
+    shellCompletionRetryTick,
   ]);
 
   const readSelectedShellTail = useCallback(

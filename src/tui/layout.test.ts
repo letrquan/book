@@ -5,6 +5,9 @@ import {
   MAX_PANEL_MEASURE,
   panelContentWidth,
   panelGrid,
+  RESULT_COLUMN,
+  SHEET_BODY_COLUMN,
+  THOUGHT_BODY_COLUMN,
   withLabelColumn,
   frameGrid,
   indentedGrid,
@@ -195,5 +198,13 @@ describe('sheetRowTextWidth', () => {
     // starts its text where every other row's does.
     expect(SHEET_GUTTER_INDENT).toBe(' '.repeat(GUTTER_WIDTH));
     expect(SHEET_GUTTER_INDENT.length).toBe(CONTENT_COLUMN);
+  });
+});
+
+describe('the columns a Markdown block starts on (#700)', () => {
+  it('puts a sheet body past its padding, a thought past the rail and its indent', () => {
+    expect(SHEET_BODY_COLUMN).toBe(2);
+    expect(THOUGHT_BODY_COLUMN).toBe(CONTENT_COLUMN + 1 + 1 + CONTENT_COLUMN);
+    expect(RESULT_COLUMN).toBe(5);
   });
 });

@@ -80,6 +80,14 @@ export interface ProviderStreamOptions {
   maxOutputTokens?: number;
 }
 
+/**
+ * Why the loop took an attempt back and re-asked the same turn: an empty completion, a
+ * `content_filter` stop, an upstream error envelope streamed as content, or a tool call written
+ * out as plain text.
+ */
+export type AttemptDiscardReason =
+  'empty_response' | 'content_filter' | 'error_envelope' | 'malformed_tool_call';
+
 export interface AgentLoopCallbacks {
   onText: (text: string) => void;
   /** Called with provider-native reasoning deltas, displayed separately from answer text. */
@@ -97,7 +105,7 @@ export interface AgentLoopCallbacks {
    * the deltas back instead would render a long thinking phase as silence, which
    * is the failure this whole path exists to stop showing people.
    */
-  onAttemptDiscarded?: () => void;
+  onAttemptDiscarded?: (reason: AttemptDiscardReason) => void;
   onTurnStart: (turn: number) => void;
   onDone: () => void;
   /** Final runtime outcome. Emitted once; onError remains diagnostic only. */

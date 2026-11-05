@@ -10,6 +10,8 @@
  * text is not mismeasured.
  */
 
+import { tabWidthAt } from '../../tab-stops.js';
+
 /**
  * Strip ANSI escape sequences from a string for accurate width measurement.
  */
@@ -568,17 +570,87 @@ export function hardWrapLine(text: string, maxWidth: number): string[] {
 }
 
 /**
+ * One line of text with a tab in it, wrapped greedily: the words of a row and the separators
+ * between them (a run of spaces and tabs) stay as they are, and a separator that opens a row, or
+ * that the next word does not fit after, is dropped. A separator is measured from where its row
+ * has got to, so a tab after a wrap reaches the next stop from the row's own start (#700).
+ */
+function wrapTabbedLine(line: string, maxWidth: number, startColumn: number): string {
+  const rows: string[] = [];
+  let row = '';
+  let width = 0;
+  let separator = '';
+  const advance = (sep: string, from: number, limit = Number.POSITIVE_INFINITY) => {
+    let at = from;
+    let taken = 0;
+    for (const ch of sep) {
+      const cells = ch === '\t' ? tabWidthAt(startColumn + at) : 1;
+      if (at + cells > limit) break;
+      at += cells;
+      taken += ch.length;
+    }
+    return { width: at - from, taken };
+  };
+
+  for (const [token] of line.matchAll(/[^ \t]+|[ \t]+/g)) {
+    if (token.startsWith(' ') || token.startsWith('\t')) {
+      separator = token;
+      continue;
+    }
+    const wordWidth = displayWidth(token);
+    if (row) {
+      const gap = advance(separator, width).width;
+      if (width + gap + wordWidth <= maxWidth) {
+        row += separator + token;
+        width += gap + wordWidth;
+        separator = '';
+        continue;
+      }
+      rows.push(row);
+      row = '';
+      width = 0;
+    }
+    separator = '';
+    if (wordWidth <= maxWidth) {
+      row = token;
+      width = wordWidth;
+      continue;
+    }
+    const chunks = hardWrapLine(token, maxWidth);
+    rows.push(...chunks.slice(0, -1));
+    row = chunks[chunks.length - 1] ?? '';
+    width = displayWidth(row);
+  }
+  if (row && separator) {
+    // A separator that ends the line stays as far as it fits the width.
+    const kept = advance(separator, width, maxWidth);
+    row += separator.slice(0, kept.taken);
+  }
+  if (row) rows.push(row);
+  return rows.join('\n');
+}
+
+/**
  * Soft-wrap text at word boundaries to fit within `maxWidth` columns.
  *
  * Words longer than maxWidth are hard-wrapped by display width (CJK/emoji
  * safe). Multiple consecutive spaces are collapsed when wrapping. Paragraph
  * breaks (blank lines / double-newline) are preserved.
  *
+ * With a `startColumn` a tab is a separator that takes the cells from where the row has got to up
+ * to the next 8-column stop, counted from that column, the one the rows are drawn from, so every
+ * output row has stops of its own (#700). The tabs stay in the text, to be expanded by whoever
+ * draws each row from the same column ({@link expandTabs} in `tab-stops.ts`). A tab at the end of
+ * a row, or one that would carry it past the width, is the break itself and is dropped there.
+ * Without one a tab is part of its word and measures as no cells, as `displayWidth` counts it,
+ * for the callers that do not expand tabs.
+ *
  * @param text    The text to wrap
  * @param maxWidth Maximum columns per line
+ * @param startColumn Column the rows start at, for the tab stops; leave out to not measure tabs
  * @returns Wrapped text with newlines inserted at word boundaries
  */
-export function wordWrap(text: string, maxWidth: number): string {
+export function wordWrap(text: string, maxWidth: number, startColumn?: number): string {
   if (maxWidth <= 0 || !text) return text;
 
   const paragraphs = text.split('\n');
@@ -588,6 +660,11 @@ export function wordWrap(text: string, maxWidth: number): string {
     // Preserve blank lines (paragraph separators).
     if (paragraph.trim().length === 0) {
       wrapped.push('');
+      continue;
+    }
+
+    if (startColumn !== undefined && paragraph.includes('\t')) {
+      wrapped.push(wrapTabbedLine(paragraph, maxWidth, startColumn));
       continue;
     }
 

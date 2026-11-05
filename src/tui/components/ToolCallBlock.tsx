@@ -30,7 +30,7 @@ import {
   toolResultSummary,
   type TranscriptMode,
 } from '../tool-presentation.js';
-import { CONTENT_COLUMN } from '../layout.js';
+import { CONTENT_COLUMN, RESULT_COLUMN } from '../layout.js';
 import { formatToolOutputFooter } from './tool-output.js';
 import { ItemMark, ResultBox, ResultLine } from './transcript-item.js';
 import { foldControlCharacters, stripTerminalControls } from '../../control-characters.js';
@@ -553,6 +553,8 @@ function OutputBlock({
         terminalWidth,
         expandHint,
         longLines: renderAsMarkdown ? 'whole' : 'wrap',
+        // Markdown prose is laid out as prose: its tabs stop where the screen's do (#700).
+        ...(renderAsMarkdown ? { tabOrigin: RESULT_COLUMN } : {}),
       }),
     [expandHint, output, renderAsMarkdown, showAllToolOutput, success, terminalWidth],
   );
@@ -579,7 +581,11 @@ function OutputBlock({
   if (renderAsMarkdown) {
     return (
       <Box flexDirection="column" width={contentWidth}>
-        <MarkdownBlock content={display.lines.join('\n')} terminalWidth={contentWidth} />
+        <MarkdownBlock
+          content={display.lines.join('\n')}
+          terminalWidth={contentWidth}
+          originColumn={RESULT_COLUMN}
+        />
         {display.footer ? (
           <Text color={theme.subtle} dimColor>
             {truncateDisplay(display.footer, footerWidth)}

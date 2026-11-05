@@ -247,6 +247,44 @@ describe('background shell completion row', () => {
     expect(addLocalMessage).toHaveBeenCalledWith('✕ Background shell `bash_7` failed (exit 1).');
   });
 
+  // #675: a `notify: "agent"` job is in both queues at once. The turn it starts defers any row
+  // added after it (`addLocalMessage` holds a row while a send is in flight), so the row has to
+  // be added first or it lands under the model's reply to the completion.
+  it('adds the row before the completion turn starts', async () => {
+    const order: string[] = [];
+    const record = completed({ id: 'shell_1', title: 'msgpin smoke job' });
+    const addLocalMessage = vi.fn((text: string) => {
+      order.push(`row:${text}`);
+    });
+    const sendBackgroundShellCompletion = vi.fn(async () => {
+      order.push('turn');
+      return true;
+    });
+    const state = {
+      shells: [],
+      lastCompletion: record,
+      pendingUiCompletions: [record],
+      pendingAgentCompletions: [{ ...record, completionSequence: 1 }],
+      refresh: vi.fn(),
+      stopOrDismiss: vi.fn(async () => undefined),
+      acknowledge: vi.fn(),
+      acknowledgeAgentCompletion: vi.fn(),
+    };
+    useAgentMock.mockReturnValue({
+      ...agentState(addLocalMessage),
+      sendBackgroundShellCompletion,
+    });
+    useTasksMock.mockReturnValue({ tasks: [], refresh: vi.fn() });
+    useBackgroundShellsMock.mockReturnValue(state);
+    render(<App config={config()} session={session} />);
+    await settle();
+
+    expect(order).toEqual([
+      'row:✓ Background shell `msgpin smoke job` (shell_1) exited (exit 0).',
+      'turn',
+    ]);
+  });
+
   it('says nothing while no job has finished', async () => {
     const addLocalMessage = await announce(undefined);
 
