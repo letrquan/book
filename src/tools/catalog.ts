@@ -830,6 +830,9 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
   const previewRestriction = (rawRules: string[]): ToolDefinition[] =>
     authorized(parseCapabilityRules(rawRules));
 
+  const capabilityRuleSets = (): string[][] =>
+    [...ruleSets.values()].map((rules) => rules.map((rule) => rule.raw));
+
   const restrict = (rawRules: string[]): void => {
     pushRestriction(rawRules);
   };
@@ -973,6 +976,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     restrict,
     pushRestriction,
     previewRestriction,
+    capabilityRuleSets,
     isActive,
     isAuthorized,
     admitDirect,

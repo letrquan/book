@@ -5,6 +5,7 @@ import { canonicalToolName } from './aliases.js';
 import { globToRegex } from './glob-regex.js';
 import { comparablePath } from './path-utils.js';
 import { toolPrimaryArg } from './primary-arg.js';
+import { parsePatch } from './patch.js';
 import { hasCompoundShellSyntax, type ScanShell } from './shell-chaining.js';
 import { strictRmMatchesGlob } from './strict-rm.js';
 
@@ -63,6 +64,46 @@ export function isToolDefinitionAllowed(
   );
 }
 
+/**
+ * A file as a rule reads it. `*` crosses `/`, so `Write(/memory/*.md)` would match
+ * `/memory/../elsewhere/x.md` as written: a file is matched by the path it names, with its `.` and
+ * `..` segments resolved. Rule and call are compared in one spelling (`/` separators, case folded on
+ * Windows), and the segments are resolved with the POSIX `normalize`: the platform's would turn
+ * `src/a.ts` into `src\a.ts` on Windows, which no `/` pattern matches.
+ */
+function ruleFilePath(path: string, platform: NodeJS.Platform): string {
+  return posix.normalize(comparablePath(path.replace(/^\.\//, ''), platform));
+}
+
+/**
+ * Whether the rules cover a patch. `ApplyPatch(<glob>)` covers every file the patch touches, and
+ * each file may fit a different rule. A patch this cannot read fits no glob, while a bare rule or
+ * `*` has no file to judge and leaves a malformed patch to the tool's own refusal.
+ */
+function isPatchAllowed(
+  rules: CapabilityRule[],
+  call: ToolCall,
+  wildcardExclusions: ReadonlySet<string>,
+  platform: NodeJS.Platform,
+): boolean {
+  const patterns: RegExp[] = [];
+  for (const rule of rules) {
+    if (rule.wildcard) {
+      if (!wildcardExclusions.has('ApplyPatch')) return true;
+    } else if (rule.tool === 'ApplyPatch') {
+      if (rule.pattern === undefined) return true;
+      patterns.push(globToRegex(comparablePath(rule.pattern, platform).replace(/^\.\//, '')));
+    }
+  }
+  if (patterns.length === 0) return false;
+  const parsed = parsePatch(call.arguments.patch);
+  if (!('operations' in parsed)) return false;
+  return parsed.operations.every(({ path }) => {
+    const target = ruleFilePath(path, platform);
+    return patterns.some((pattern) => pattern.test(target));
+  });
+}
+
 export function isToolCallAllowed(
   rules: CapabilityRule[],
   call: ToolCall,
@@ -71,14 +112,10 @@ export function isToolCallAllowed(
   shell?: ScanShell,
 ): boolean {
   const canonical = canonicalToolName(call.name);
+  if (canonical === 'ApplyPatch') return isPatchAllowed(rules, call, wildcardExclusions, platform);
   const isFileTool = FILE_PATH_TOOLS.has(canonical);
-  let primary = toolPrimaryArg(canonical, call.arguments).replace(/^\.\//, '');
-  // `*` crosses `/`, so `Write(/memory/*.md)` would match `/memory/../elsewhere/x.md` as written.
-  // A file is matched by the path it names, with its `.` and `..` segments resolved. Rule and call
-  // are compared in one spelling (`/` separators, case folded on Windows), and the segments are
-  // resolved with the POSIX `normalize`: the platform's would turn `src/a.ts` into `src\a.ts` on
-  // Windows, which no `/` pattern matches.
-  if (isFileTool) primary = posix.normalize(comparablePath(primary, platform));
+  const argument = toolPrimaryArg(canonical, call.arguments);
+  const primary = isFileTool ? ruleFilePath(argument, platform) : argument.replace(/^\.\//, '');
 
   return rules.some((rule) => {
     if (rule.wildcard) return !wildcardExclusions.has(canonical);

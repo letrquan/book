@@ -312,6 +312,8 @@ export async function runAgentLoop(
     manageSessionHooks?: boolean;
     commands?: SlashCommand[];
     allowedTools?: string[];
+    /** A managed child's frozen ceiling (#696): rule sets of its own, on top of `allowedTools`. */
+    toolCeiling?: string[][];
     modelOverride?: string;
     /** User-facing text to retain in history when userMessage is expanded context. */
     displayMessage?: string;
@@ -907,6 +909,7 @@ export async function runAgentLoop(
     capabilityRules: options?.allowedTools,
     isSubagent: options?.isSubagent,
   });
+  for (const rules of options?.toolCeiling ?? []) toolSurface.pushRestriction(rules);
   toolContext.toolDiscovery = toolSurface;
   // The session-state block's changed-on-disk and peer lines read these (#620 PR 4).
   const workspaceNotices: WorkspaceNoticeSources = {
