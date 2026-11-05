@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { readFile, stat } from 'fs/promises';
+import { lstat, readFile, stat } from 'fs/promises';
 import { normalize, relative, resolve } from 'path';
 import type {
   FileObservation,
@@ -167,6 +167,22 @@ export function forgetObservation(ctx: ToolContext, absolutePath: string): void 
   );
   ctx.fileObservationLedger?.delete(key);
   ctx.runtime?.fileChanges.forget(key);
+}
+
+/**
+ * True when nothing is at the path: `lstat` finds no entry (or a parent that is no directory). A
+ * dangling symlink is an entry, so it is not gone, and a Write must not become a way to create
+ * through one (#674). Any other failure (a permission error, say) is not "gone" either: the caller
+ * keeps its ordinary checks.
+ */
+export async function pathIsGone(absolutePath: string): Promise<boolean> {
+  try {
+    await lstat(absolutePath);
+    return false;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    return code === 'ENOENT' || code === 'ENOTDIR';
+  }
 }
 
 export async function requireFreshObservation(
