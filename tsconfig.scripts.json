@@ -2,6 +2,8 @@
   "extends": "./tsconfig.json",
   "compilerOptions": { "noEmit": true, "rootDir": "." },
   "include": [
+    "scripts/check-architecture.ts",
+    "scripts/check-architecture.test.ts",
     "scripts/compact-eval.ts",
     "scripts/compact-eval-worker.ts",
     "scripts/compact-replay.ts",

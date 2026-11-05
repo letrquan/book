@@ -165,6 +165,7 @@ The `tui/` tree (root `app.tsx`, `hooks/`, and `components/`) is broad but disco
 - **`tui/` is a leaf**: non-TUI code must not import from `tui/`.
 - **No blocking child-process APIs**: production code must not use `execFileSync` / `execSync` / `spawnSync`. Use async spawns.
 - **Process termination goes through `cli/exit.ts`**: a direct `process.exit()` is rejected outside the build entry points (`index.ts`, `sdk.ts`, `job-runner.ts`, `job-supervisor.ts`), which own their own process lifetime, and the `cli/exit.ts` seam itself.
+- **Functions may shrink but not grow**: a function with no entry in `scripts/function-size-baseline.json` may have at most 150 code lines and complexity 30, and a baselined function may not exceed its recorded numbers. Blank and comment lines do not count, and a nested function's lines count toward its parent, so moving code into a closure shrinks nothing. After shrinking one, run `npm run architecture:baseline`, which lowers numbers and removes entries and never adds an entry or raises a number. An extraction that stays over the limit adds its new key by hand with `"movedFrom": "<old key>"`, then runs the same command. On a pull request, CI also rejects a baseline that gains a key or raises a number against the base branch. No flag does this: if a number really has to rise, the owner merges past the red check.
 
 Other conventions:
 
@@ -219,6 +220,7 @@ npm run typecheck          # tsc --noEmit
 npm run check              # format:check + lint + typecheck + architecture:check + unit + contract
                            #   (the closest thing to a pre-commit gate)
 npm run architecture:check # enforce the layering rules above
+npm run architecture:baseline # record functions that shrank in the size ratchet
 npm run lint               # ESLint (--max-warnings 0)
 npm run format             # Prettier write
 npm run format:check       # Prettier check
