@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0-beta.2] - 2026-11-05
+
 ### Added
 
 - **A new startup splash: the book, assembled.** It replaces the startup fire. A newly created
@@ -216,6 +218,7 @@ All notable changes to this project are documented in this file.
   a file as unchanged on an equal size and mtime, so an edit within one mtime tick, or one whose
   mtime was put back, slipped through. Rewind now also keys on ctime with a 2 s margin, and the
   skill loaders compare the bytes they read with what discovery saw.
+- **The peer-hold, steering and hook-abort tests no longer depend on CI timing** (#683, #694, #707).
 
 ### Security
 

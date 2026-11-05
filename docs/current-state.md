@@ -1,6 +1,6 @@
 # Book Current State
 
-This is the implementation-backed product snapshot for Book as of 2026-10-28 (`0.4.0-beta.1` plus the
+This is the implementation-backed product snapshot for Book as of 2026-11-05 (`0.4.0-beta.2` plus the
 unreleased changes). Update this file when a user-facing surface changes; the README and
 [docs/guide/](guide/README.md) are the usage guide and this page is the status reference for roadmap
 and design documents.
@@ -21,7 +21,7 @@ awareness were checked, by reading `src/` on main at a8ad170d and the merged PRs
 
 ## Release Identity
 
-- Package version: `0.4.0-beta.1`, published as `@letrquan/book`.
+- Package version: `0.4.0-beta.2`, published as `@letrquan/book`.
 - Distribution: `npm install -g @letrquan/book`, a source checkout, or a GitHub tag. The command
   is `book`; the package is scoped because the unscoped name was taken.
 - License: PolyForm Small Business 1.0.0 — source-available, commercial use limited to companies
