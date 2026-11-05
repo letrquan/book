@@ -1242,8 +1242,9 @@ export interface ToolOutputDisplayInput {
    */
   longLines?: 'wrap' | 'whole';
   /**
-   * Column the output is drawn from in its item, for a caller that wraps it as prose (Markdown) and
-   * wants its tabs on the terminal's own stops (#700). Command output leaves it out.
+   * Column the output is drawn from in its item, for a caller that lays it out itself (Markdown)
+   * and expands the tabs of a row that fits on the terminal's own stops (#700). Command output
+   * leaves it out.
    */
   tabOrigin?: number;
 }

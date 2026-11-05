@@ -186,44 +186,49 @@ describe('wordWrap', () => {
 });
 
 describe('wordWrap with tabs (#700)', () => {
+  it('leaves a tab part of its word, measured as no cells, without a start column', () => {
+    // The callers that print the text as it is do not expand tabs, and count them as they always did.
+    expect(wordWrap('a\tb c', 3)).toBe('a\tb\nc');
+  });
+
   it('keeps a tab that fits and measures it to the next 8-column stop', () => {
-    expect(wordWrap('ab\tcd', 20)).toBe('ab\tcd');
+    expect(wordWrap('ab\tcd', 20, 0)).toBe('ab\tcd');
     // `a` ends in column 1 and the tab takes 7 cells: `b` would end in column 9.
-    expect(wordWrap('a\tb', 9)).toBe('a\tb');
-    expect(wordWrap('a\tb', 8)).toBe('a\nb');
+    expect(wordWrap('a\tb', 9, 0)).toBe('a\tb');
+    expect(wordWrap('a\tb', 8, 0)).toBe('a\nb');
   });
 
   it('counts the stops from the column the rows start at', () => {
     // From column 5, `a` ends in column 6 and the tab takes 2 cells: `b` ends in column 4.
     expect(wordWrap('a\tb', 4, 5)).toBe('a\tb');
-    expect(wordWrap('a\tb', 4)).toBe('a\nb');
+    expect(wordWrap('a\tb', 4, 0)).toBe('a\nb');
     expect(wordWrap('a\tb', 3, 5)).toBe('a\nb');
   });
 
   it('gives a continuation row stops of its own', () => {
     // The second row starts at column 0 again: `bb` ends in 2, so `c` fits after a tab to 8.
-    expect(wordWrap('aaaaaaaaaa bb\tc', 12)).toBe('aaaaaaaaaa\nbb\tc');
+    expect(wordWrap('aaaaaaaaaa bb\tc', 12, 0)).toBe('aaaaaaaaaa\nbb\tc');
     // Drawn from column 3, `xx` ends in column 5 and the tab takes 3 cells instead of 6.
     expect(wordWrap('xx\tyy', 7, 3)).toBe('xx\tyy');
-    expect(wordWrap('xx\tyy', 7)).toBe('xx\nyy');
+    expect(wordWrap('xx\tyy', 7, 0)).toBe('xx\nyy');
   });
 
   it('drops a tab that opens a row, closes it, or carries it past the width', () => {
-    expect(wordWrap('\tx', 20)).toBe('x');
-    expect(wordWrap('abc\tdef', 8)).toBe('abc\ndef');
-    expect(wordWrap('ab\t', 10)).toBe('ab\t');
-    expect(wordWrap('ab\t', 5)).toBe('ab');
-    expect(wordWrap('\t\t', 5)).toBe('');
+    expect(wordWrap('\tx', 20, 0)).toBe('x');
+    expect(wordWrap('abc\tdef', 8, 0)).toBe('abc\ndef');
+    expect(wordWrap('ab\t', 10, 0)).toBe('ab\t');
+    expect(wordWrap('ab\t', 5, 0)).toBe('ab');
+    expect(wordWrap('\t\t', 5, 0)).toBe('');
   });
 
   it('wraps each line of the text from the start column', () => {
-    expect(wordWrap('a\tb\nc\td', 9)).toBe('a\tb\nc\td');
+    expect(wordWrap('a\tb\nc\td', 9, 0)).toBe('a\tb\nc\td');
   });
 
   it('hard-wraps a word wider than the row and carries on after it', () => {
-    expect(wordWrap('abcdefghij\tk', 4)).toBe('abcd\nefgh\nij\nk');
-    expect(wordWrap('abcdef\tk', 8)).toBe('abcdef\nk');
-    expect(wordWrap('abcdefg\tk', 6)).toBe('abcdef\ng\nk');
+    expect(wordWrap('abcdefghij\tk', 4, 0)).toBe('abcd\nefgh\nij\nk');
+    expect(wordWrap('abcdef\tk', 8, 0)).toBe('abcdef\nk');
+    expect(wordWrap('abcdefg\tk', 6, 0)).toBe('abcdef\ng\nk');
   });
 
   it('never makes a row wider than the width once its tabs are expanded', () => {

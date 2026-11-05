@@ -95,6 +95,30 @@ describe('Markdown tab stops line up in every frame (#700)', () => {
     expect(columnOf(view.lastFrame() ?? '', 'R', 'S')).toBe(STOP);
   });
 
+  it('a tool result keeps the tabs of a code block counted from the code line', () => {
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="WebFetch"
+          args={{ url: 'https://example.com' }}
+          result={{
+            version: 2,
+            toolCallId: 'call-2',
+            status: 'success',
+            content: '```go\n\tIND\n\t\tDEEP\n```',
+          }}
+          isExpanded
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+    const rows = stripAnsi(view.lastFrame()).split('\n');
+    // A tab in code is its indentation: 8 cells, then 16, whatever column the block is on.
+    expect(rows.find((row) => row.includes('IND'))).toMatch(/\u2502 {9}IND/);
+    expect(rows.find((row) => row.includes('DEEP'))).toMatch(/\u2502 {17}DEEP/);
+  });
+
   it('a plan sheet', () => {
     const view = render(withTheme(<PlanApprovalDetails plan={'V\u0009W'} terminalWidth={80} />));
     expect(columnOf(view.lastFrame() ?? '', 'V', 'W')).toBe(STOP);

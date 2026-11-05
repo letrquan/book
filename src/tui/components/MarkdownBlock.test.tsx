@@ -1090,6 +1090,17 @@ describe('MarkdownBlock wrapped lines have tab stops per row (#700)', () => {
     expect(second!.indexOf('c') + 3).toBe(8);
   });
 
+  it('keeps every row inside the width when a styled run spans the tab at a wrap point', () => {
+    const text = '**bold\tbold** plain\t`code\tspan` more words here to wrap\t_tail_ end';
+    for (let width = 12; width < 50; width++) {
+      for (const row of rows(text, width)) {
+        expect(displayWidth(expandTabs(row, displayWidth)), `width ${width}`).toBeLessThanOrEqual(
+          width,
+        );
+      }
+    }
+  });
+
   it('measures a list item row from the item text and keeps every row inside the width', () => {
     const text = '- one\ttwo\tthree four five six seven eight nine ten\televen twelve thirteen';
     for (let width = 24; width < 60; width++) {

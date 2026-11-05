@@ -637,18 +637,20 @@ function wrapTabbedLine(line: string, maxWidth: number, startColumn: number): st
  * safe). Multiple consecutive spaces are collapsed when wrapping. Paragraph
  * breaks (blank lines / double-newline) are preserved.
  *
- * A tab is a separator that takes the cells from where the row has got to up to the next 8-column
- * stop, counted from `startColumn`, the column the rows are drawn from, so every output row has
- * stops of its own (#700). The tabs stay in the text, to be expanded by whoever draws each row
- * from the same column ({@link expandTabs} in `tab-stops.ts`). A tab at the end of a row, or
- * one that would carry it past the width, is the break itself and is dropped there.
+ * With a `startColumn` a tab is a separator that takes the cells from where the row has got to up
+ * to the next 8-column stop, counted from that column, the one the rows are drawn from, so every
+ * output row has stops of its own (#700). The tabs stay in the text, to be expanded by whoever
+ * draws each row from the same column ({@link expandTabs} in `tab-stops.ts`). A tab at the end of
+ * a row, or one that would carry it past the width, is the break itself and is dropped there.
+ * Without one a tab is part of its word and measures as no cells, as `displayWidth` counts it,
+ * for the callers that do not expand tabs.
  *
  * @param text    The text to wrap
  * @param maxWidth Maximum columns per line
- * @param startColumn Column the rows start at, for the tab stops; 0 for the left edge
+ * @param startColumn Column the rows start at, for the tab stops; leave out to not measure tabs
  * @returns Wrapped text with newlines inserted at word boundaries
  */
-export function wordWrap(text: string, maxWidth: number, startColumn = 0): string {
+export function wordWrap(text: string, maxWidth: number, startColumn?: number): string {
   if (maxWidth <= 0 || !text) return text;
 
   const paragraphs = text.split('\n');
@@ -661,7 +663,7 @@ export function wordWrap(text: string, maxWidth: number, startColumn = 0): strin
       continue;
     }
 
-    if (paragraph.includes('\t')) {
+    if (startColumn !== undefined && paragraph.includes('\t')) {
       wrapped.push(wrapTabbedLine(paragraph, maxWidth, startColumn));
       continue;
     }
