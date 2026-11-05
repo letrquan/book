@@ -1311,7 +1311,7 @@ export class AgentManager {
         `Agent ${record.displayName ?? record.name} was not started under the allowed-tools in force, so it may hold tools they leave out, and this message was not sent.`,
         'child_outside_tool_ceiling',
         false,
-        'Spawn a new agent under these allowed-tools, or send this once the skill or command has ended.',
+        'Spawn a new agent under these allowed-tools.',
         { agentId },
       );
     }
@@ -1863,7 +1863,7 @@ export class AgentManager {
       `Agent ${definition.name} would have no tool left: the allowed-tools in force (${ceiling.map(describeCapabilities).join('; ')}) leave none of its own (${describeCapabilities(definition.allowedTools)}).`,
       'child_tool_surface_empty',
       false,
-      "Do the step directly, use an agent role those allowed-tools cover, or add the tools the role needs to the skill's or command's allowed-tools.",
+      'Do the step directly, or use an agent role those allowed-tools cover.',
       { agent: definition.name, toolCeiling: ceiling },
     );
   }
@@ -1886,6 +1886,7 @@ export class AgentManager {
   private systemPrompt(
     record: AgentRecord,
     definition: ManagedAgentDef,
+    registry: ToolRegistry,
     snapshot?: AgentSnapshot,
   ): string {
     const evidence = this.evidenceContext(record).map((item) => ({
@@ -1910,7 +1911,7 @@ export class AgentManager {
         ? `Snapshot: ${snapshot.id} (${snapshot.manifest.length} changed paths)`
         : 'Snapshot: not used for workspace-readonly isolation',
       `Capabilities: ${describeCapabilities(definition.allowedTools)}`,
-      ...(record.toolCeiling ? [describeToolCeiling(record.toolCeiling)] : []),
+      ...(record.toolCeiling?.length ? [describeToolCeiling(registry)] : []),
       'Delegation is disabled at this depth. Do not attempt to apply work to the parent workspace.',
       '',
       '## Final response contract',
@@ -2178,7 +2179,7 @@ export class AgentManager {
       // The session's mode as the run starts, read for a child a peer turn spawned at no looser
       // than that turn's class (#620): a mode switched into bypass while it queued does not reach it.
       const runMode = peerTurnGateMode(this.permissionMode, record.peerTurnClass);
-      const systemPromptAppend = this.systemPrompt(record, definition, snapshot);
+      const systemPromptAppend = this.systemPrompt(record, definition, registry, snapshot);
       runtime.runAccounting.startExecution(runContext);
       runtime.recordRunAmbientSnapshot(
         runContext.runId,

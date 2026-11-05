@@ -165,8 +165,15 @@ export function describeCapabilities(rawRules: string[]): string {
   return rawRules.join(', ');
 }
 
-/** The system-prompt line that tells a child what its parent's ceiling leaves it (#696). */
-export function describeToolCeiling(ceiling: string[][]): string {
-  const sets = ceiling.map((set) => describeCapabilities(set)).join('; and also ');
-  return `Parent's allowed-tools: ${sets}. These hold you too: a capability above that they leave out is not available, and a call they do not cover is refused. If a step needs one, report it to the parent instead.`;
+/**
+ * The system-prompt line that tells a child what its parent's ceiling leaves it (#696). It names
+ * only tools the registry holds: a rule is text a repository wrote, `allowed-tools` is not validated,
+ * and this is a system prompt. A refused call says what refused it.
+ */
+export function describeToolCeiling(registry: ToolRegistry): string {
+  const tools = registry
+    .getDefinitions()
+    .map((definition) => canonicalToolName(definition.name))
+    .filter((name) => name !== 'ToolSearch');
+  return `Your parent's allowed-tools limit you to: ${describeCapabilities(tools)}. A capability above that is not listed here is not available, and a call they do not cover is refused. If a step needs one, report it to the parent.`;
 }
