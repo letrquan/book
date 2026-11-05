@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { runHooks } from './hooks.js';
-import { isProcessAlive } from './jobs/process-tree.js';
+import { isProcessAlive, TERMINATE_GRACE_MS } from './jobs/process-tree.js';
 import type { HookEntry, HookEvent } from './settings.js';
 import { spawn } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
@@ -138,7 +138,10 @@ describe('runHooks — cancellation', () => {
     setTimeout(() => controller.abort(new Error('hook cancelled')), 25);
 
     await expect(pending).rejects.toThrow('hook cancelled');
-    expect(Date.now() - startedAt).toBeLessThan(1000);
+    // Windows waits for taskkill, bounded by TERMINATE_GRACE_MS, plus shell and node startup; the
+    // point is that the hook ended long before its 30 s sleep.
+    const budget = process.platform === 'win32' ? TERMINATE_GRACE_MS + 3000 : 1000;
+    expect(Date.now() - startedAt).toBeLessThan(budget);
   });
 
   it('does not launch hooks for an already-aborted signal', async () => {

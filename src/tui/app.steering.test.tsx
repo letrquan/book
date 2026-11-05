@@ -390,11 +390,15 @@ describe('the two queues when a run ends', () => {
 
   it('puts steers the run never delivered at the front of the queue', async () => {
     const late = [steerItem('steer-late', 'late report', 2)];
-    const send = vi.fn(async () => ({
-      status: 'completed' as const,
-      messages: [],
-      pendingSteers: late,
-    }));
+    // Only the first run hands the steer back; the run that sends it ends clean, so nothing is
+    // queued a third time while the assertions poll.
+    const send = vi
+      .fn(async () => ({
+        status: 'completed' as const,
+        messages: [],
+        pendingSteers: [] as typeof late,
+      }))
+      .mockResolvedValueOnce({ status: 'completed' as const, messages: [], pendingSteers: late });
     const { view, state } = await startApp({ send });
 
     press(view, 'first prompt');
@@ -404,6 +408,10 @@ describe('the two queues when a run ends', () => {
     // The run ended without delivering the steer, so it is sent next as its own run.
     await waitUntil(() => expect(state.send).toHaveBeenCalledWith('late report'));
     expect(state.send).toHaveBeenCalledTimes(2);
+    expect((state.send.mock.calls as unknown[][]).map((call) => call[0])).toEqual([
+      'first prompt',
+      'late report',
+    ]);
   });
 
   it('recalls a waiting steer with Up so it can be edited', async () => {
