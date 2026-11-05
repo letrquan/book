@@ -1064,6 +1064,47 @@ describe('MarkdownBlock tab stops start at the block origin (#700)', () => {
   });
 });
 
+describe('MarkdownBlock wrapped lines have tab stops per row (#700)', () => {
+  function rows(content: string, width: number, originColumn = 0): string[] {
+    const view = render(
+      withTheme(
+        React.createElement(MarkdownBlock, { content, terminalWidth: width, originColumn }),
+      ),
+    );
+    return frame(view.lastFrame).split('\n');
+  }
+
+  it('starts the stops of a continuation row from the row, not from the line it continues', () => {
+    // The first row ends at column 10; `bb` opens the second, so its tab reaches column 8, where
+    // counting on from the line (the row `bb` sits at column 11 of) put it on 16.
+    const [first, second] = rows('aaaaaaaaaa bb\tc', 12);
+    expect(first).toBe('aaaaaaaaaa');
+    expect(second).toBe('bb      c');
+    expect(second!.indexOf('c')).toBe(8);
+  });
+
+  it('keeps the stops absolute on a continuation row of a block that starts further in', () => {
+    // Origin 3: `bb` ends in column 5, the tab takes 3 cells.
+    const [, second] = rows('aaaaaaaaaa bb\tc', 12, 3);
+    expect(second).toBe('bb   c');
+    expect(second!.indexOf('c') + 3).toBe(8);
+  });
+
+  it('measures a list item row from the item text and keeps every row inside the width', () => {
+    const text = '- one\ttwo\tthree four five six seven eight nine ten\televen twelve thirteen';
+    for (let width = 24; width < 60; width++) {
+      const lines = rows(text, width);
+      for (const row of lines) {
+        expect(displayWidth(expandTabs(row, displayWidth)), `width ${width}`).toBeLessThanOrEqual(
+          width,
+        );
+        expect(row).not.toContain('\t');
+      }
+      expect(lines.join('').replace(/[\s\u2022]+/g, '')).toBe(text.slice(1).replace(/\s+/g, ''));
+    }
+  });
+});
+
 describe('useThrottledValue', () => {
   // The trailing-emit / within-window cadence is the contract's non-trivial
   // half, but fake-timer tests are flaky under ink-testing-library (React

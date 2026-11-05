@@ -11,6 +11,11 @@ export type StringWidth = (text: string) => number;
 /** The terminal's tab stops: every eighth column. */
 const TAB_STOP = 8;
 
+/** Cells a tab takes from `column`: up to the next stop, a whole stop for a tab already on one. */
+export function tabWidthAt(column: number): number {
+  return TAB_STOP - (column % TAB_STOP);
+}
+
 /**
  * Replaces every tab with spaces up to the next tab stop, as the terminal would move the cursor,
  * counting visible columns from the start of the row, or from `startColumn` for text that is drawn
@@ -22,7 +27,7 @@ export function expandTabs(row: string, measure: StringWidth, startColumn = 0): 
   let column = startColumn + measure(expanded);
   for (let index = 1; index < parts.length; index++) {
     const part = parts[index] ?? '';
-    const pad = TAB_STOP - (column % TAB_STOP);
+    const pad = tabWidthAt(column);
     expanded += ' '.repeat(pad) + part;
     column += pad + measure(part);
   }

@@ -71,18 +71,21 @@ interface RenderContext {
    * list's cells line up with a paragraph's.
    *
    * Not counted: a code block's rail and line numbers, because its tabs are the code's
-   * indentation and count from the code's own left edge (#547); and the wrapping of a long line,
-   * because a tab is expanded ahead of the wrapper, which must see the widths, so a continuation
-   * row follows the line.
+   * indentation and count from the code's own left edge (#547). Each row of a wrapped line starts
+   * from this column again, so its stops are its own.
    */
   column: number;
 }
 
-export function wrapParagraphLines(rawText: string, terminalWidth: number): string[] {
+export function wrapParagraphLines(
+  rawText: string,
+  terminalWidth: number,
+  startColumn = 0,
+): string[] {
   if (terminalWidth <= 0) return rawText.split('\n');
   // wordWrap already hard-wraps overlong tokens with displayWidth semantics;
   // scanning every completed line a second time doubles paragraph render cost.
-  return wordWrap(rawText, terminalWidth).split('\n');
+  return wordWrap(rawText, terminalWidth, startColumn).split('\n');
 }
 
 /**
@@ -200,8 +203,8 @@ function plainTextFromTokens(tokens: Token[]): string {
  *
  * The column the line has reached is carried from one run to the next, so each piece of text is
  * measured once however many styled runs the line holds. A tab stop depends on that column alone.
- * The line is expanded whole, ahead of the wrapper (which has to see the widths), so a row the
- * wrapper then continues keeps the stops of the line it continues.
+ * A wrapped paragraph is expanded one row at a time, after the wrapper (which measures a tab from
+ * the row's own start), so a continuation row has stops of its own (#700).
  */
 export function expandRunTabs<Run extends { text: string }>(
   runs: Run[],
@@ -330,9 +333,11 @@ function wrappedInlineRuns(
   terminalWidth: number,
   column = 0,
 ): InlineRun[][] {
-  const runs = expandRunTabs(inlineRuns, column);
+  // The tabs stay in the text the wrapper measures: it gives each row stops of its own, and each
+  // row's runs are expanded from the column the row starts at once it is cut (#700).
+  const runs = inlineRuns;
   const rawText = runs.map((run) => run.text).join('');
-  const lines = wrapParagraphLines(rawText, terminalWidth);
+  const lines = wrapParagraphLines(rawText, terminalWidth, column);
   let searchOffset = 0;
   let runIndex = 0;
   let runOffset = 0;
@@ -367,7 +372,7 @@ function wrappedInlineRuns(
       localIndex++;
     }
     searchOffset = lineOffset + line.length;
-    return lineRuns;
+    return expandRunTabs(lineRuns, column);
   });
 }
 
@@ -693,7 +698,7 @@ function renderBlockToken(
       // to the next 8-column stop, so a raw tab makes the row wider on screen than it was cut to.
       const displayLines = (
         lines.length > 0 && lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines
-      ).map(expandTabs);
+      ).map((line) => expandTabs(line));
       const layout = layoutCodeBlock(displayLines, terminalWidth, {
         lang: t.lang,
         preferLineNumbers: displayLines.length > 5,

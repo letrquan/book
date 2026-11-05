@@ -104,7 +104,7 @@ describe('Markdown tab stops line up in every frame (#700)', () => {
     const view = render(
       withTheme(
         <Dialog title="Report" terminalWidth={80} maxBodyRows={10} scrollable={false}>
-          <ReportBody sheet={{ content: 'X\u0009Y' }} terminalWidth={80} />
+          <ReportBody sheet={{ title: 'Report', content: 'X\u0009Y' }} terminalWidth={80} />
         </Dialog>,
       ),
     );
@@ -113,7 +113,13 @@ describe('Markdown tab stops line up in every frame (#700)', () => {
 
   it('a screen-reader sheet draws flush, with nothing to its left', () => {
     const view = render(
-      withTheme(<ReportBody sheet={{ content: 'X\u0009Y' }} terminalWidth={80} screenReader />),
+      withTheme(
+        <ReportBody
+          sheet={{ title: 'Report', content: 'X\u0009Y' }}
+          terminalWidth={80}
+          screenReader
+        />,
+      ),
     );
     expect(columnOf(view.lastFrame() ?? '', 'X', 'Y')).toBe(STOP);
   });
