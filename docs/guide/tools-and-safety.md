@@ -894,21 +894,56 @@ leaves full `mcp__server__tool` names alone, because it does not start the serve
 A hook's pattern is read as a permission rule's is: `*` is any run of characters, `/` included, `?`
 is exactly one character, everything else is itself, and a leading `./` is dropped from the pattern
 and the argument. So `Bash(ls *)` matches `ls -la` and not a bare `ls`; write `Bash(ls)|Bash(ls *)`
-for both. Three differences remain:
+for both. What differs from a rule is what the pattern is compared with, and how strictly:
 
-- A hook compares case as written. A `deny` or `ask` rule on a path tool folds it.
-- A bare `mcp__server` names no tool in a hook. As a rule, it covers that server's tools.
-- `?` is always a wildcard in a hook. An exact `Bash` allow rule, one without a `*`, keeps it literal.
+- **Case.** A hook compares case as written. A `deny` or `ask` rule on a path tool folds it.
+- **MCP.** A bare `mcp__server` names no tool in a hook. As a rule, it covers that server's tools.
+- **`?` in Bash.** It is always a wildcard in a hook. An exact `Bash` allow rule, one without a `*`,
+  keeps it literal.
+- **Paths.** A hook on a file tool or a patch reads the path as written, relative to the workspace,
+  absolute, and with links followed, as a `deny` or `ask` rule does, so `ApplyPatch(.env)` sees
+  `sub/../.env` and the absolute path. It has no form relative to an `additionalDirectories` root, so
+  `Write(.env)` as a rule covers `/srv/app/.env` and as a hook does not.
+- **`WebFetch`.** A rule compares the URL as parsed, and a hook compares it as written.
+- **Patches.** Any `ApplyPatch`, `Edit` or `Write` hook compares every file the patch touches, whatever
+  the operation, so `Edit(.env)` runs on `*** Delete File: .env`. As rules, `Edit` covers updates only,
+  and `Write` updates and adds.
+- **Bash.** A hook splits the command line, and a rule does not, as follows.
 
-A glob reads one line, and Book does not split shell commands, so a `Bash(pattern)` hook runs on
-every compound command whatever its pattern, compound as [the permission rules](#permission-rules-and-modes)
-read it: a line break, a chain, pipe, redirect, group or `$` outside quotes, or a `$` or backtick in
-double quotes. On Windows any `'` counts too, in every shell. A command that only quotes the text
-(`git commit -m "rm; stuff"`) is not compound. So `Bash(rm *)` also runs on `ls && rm -rf build` and
-on `ls | head`, where a `deny` or `ask` rule would send the command to the permission prompt. A hook
-that blocks with a bare `exit 2` refuses all of those, so a narrowed blocking hook should read
-`tool_args.command` and decide. An `ApplyPatch(pattern)` hook compares every file the patch touches,
-as `Edit` and `Write` hooks do.
+A `Bash(pattern)` hook compares its pattern with the whole command and with each command the line
+chains, split outside quotes on `&&`, `||`, `;`, `|`, `&` and line breaks. Each is compared as written
+and as the shell reads its words: quotes and backslashes removed, blanks collapsed to one space, and
+a redirection with its target set aside. So `Bash(rm *)` runs on `ls && rm -rf build`, on `rm\t-rf x`,
+on `"rm" x` and on `rm x 2>/dev/null`. It does not run on `cd src && npm test`, `ls | head` or
+`npm test 2>&1 | tail`.
+
+A line Book cannot read in full fails closed: it selects a `Bash(pattern)` `PreToolUse` hook whatever
+the pattern, because the command the hook is for could be in the part it cannot see. That is a line
+with any of these:
+
+- `$` or a backtick outside single quotes (`echo $HOME`, `git commit -m "$(cat msg)"`);
+- `(`, `)`, `{` or `}` outside quotes (a subshell, a group, a function, a brace expansion);
+- a heredoc or here-string, a process substitution, or a redirection whose target is not one plain
+  word (`ls > "my file"`);
+- a line break inside quotes (`git commit -m` with a two-line message in the quotes), or after a
+  backslash or a caret;
+- a quote still open at the end;
+- a command that opens with `if`, `then`, `elif`, `else`, `while`, `until`, `do`, `time`, `coproc`
+  or `!`;
+- a backslash before a quote, a caret before a quote outside quotes, or a typographic quote;
+- on Windows, any `'`, whichever shell runs the command.
+
+A hook has no prompt to send such a line to, so a script that is a bare `exit 2` refuses all of them.
+A narrowed blocking hook should read `tool_args.command` and decide. Only that case fails closed:
+
+- A `PostToolUse` hook runs only where its pattern matches what the line was read as. Its `modify`
+  replaces the output, so a hook must not run on a command it never named.
+- A `*(pattern)` hook on a Bash call compares the same text, and likewise runs only on a match,
+  because its pattern need not be about a shell command at all.
+
+The pattern still compares text, as a rule's does, so a command another command runs is that command's
+text: `sudo rm x`, `env rm x`, `FOO=1 rm x`, `/bin/rm x`, `bash -c "rm x"` and `eval "rm x"` do not
+select `Bash(rm *)`. To judge those, match the bare `Bash` and filter inside the script.
 
 `PreCompact` receives `trigger`, `focus`, and, when the span about to be summarized
 contains text addressed to a summarizer, `suspect_inputs`: a list of `{ eventRef, excerpt }`; exit
