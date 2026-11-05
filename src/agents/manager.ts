@@ -31,6 +31,7 @@ import {
   createCapabilityRegistry,
   describeCapabilities,
   describeToolCeiling,
+  hasWorkingTool,
 } from './capabilities.js';
 import { checkWorktreeCapacity } from './resource-governor.js';
 import {
@@ -174,6 +175,7 @@ export class AgentManagerError extends Error {
       | 'agent_store_busy'
       | 'agent_store_unavailable'
       | 'agent_owned_by_other_process'
+      | 'child_outside_tool_ceiling'
       | 'child_tool_surface_empty',
     readonly retryable: boolean,
     readonly remediation: string,
@@ -1063,20 +1065,7 @@ export class AgentManager {
     }
     // Frozen here, for every run of this agent, so it keeps this set after the frames end (#696).
     const toolCeiling = request.toolCeiling?.length ? clone(request.toolCeiling) : undefined;
-    if (
-      toolCeiling &&
-      this.childRegistry(definition, definition.isolation, toolCeiling)
-        .getDefinitions()
-        .every((tool) => tool.name === 'ToolSearch')
-    ) {
-      throw new AgentManagerError(
-        `Agent ${definition.name} would have no tool left: the allowed-tools in force (${toolCeiling.map(describeCapabilities).join('; ')}) leave none of its own (${describeCapabilities(definition.allowedTools)}).`,
-        'child_tool_surface_empty',
-        false,
-        "Do the step directly, use an agent role those allowed-tools cover, or add the tools the role needs to the skill's or command's allowed-tools.",
-        { agent: definition.name, toolCeiling },
-      );
-    }
+    this.assertCeilingLeavesTools(definition, definition.isolation, toolCeiling);
     if (definition.isolation === 'worktree' && !this.repoRoot) {
       throw new Error(
         `${definition.name} requires Git worktree isolation. ${
@@ -1306,11 +1295,26 @@ export class AgentManager {
     message: string,
     evidenceIds: string[] = [],
     runContext?: Pick<AgentRunContext, 'rootRunId' | 'runId'>,
+    /** The rule sets in force on the model's side of this send, when it comes from a tool call. */
+    senderRuleSets: string[][] = [],
   ): Promise<AgentRecord> {
     await this.ensureInitialized();
     this.assertMutable(agentId);
     const record = this.hydrateAgent(agentId);
     if (!record) throw new Error(`Agent ${agentId} was not found.`);
+    // The set is frozen at the spawn, so a list in force now that the agent is not held to would let
+    // the model work through tools it is itself refused (#696). Compared as written: a list that
+    // differs at all counts as one the agent is not held to, which fails closed.
+    const held = new Set((record.toolCeiling ?? []).map((set) => JSON.stringify(set)));
+    if (!senderRuleSets.every((set) => held.has(JSON.stringify(set)))) {
+      throw new AgentManagerError(
+        `Agent ${record.displayName ?? record.name} was not started under the allowed-tools in force, so it may hold tools they leave out, and this message was not sent.`,
+        'child_outside_tool_ceiling',
+        false,
+        'Spawn a new agent under these allowed-tools, or send this once the skill or command has ended.',
+        { agentId },
+      );
+    }
     const trimmed = message.trim();
     if (!trimmed) throw new Error('AgentSend message must not be empty.');
     record.referencedEvidenceIds = Array.from(
@@ -1843,6 +1847,27 @@ export class AgentManager {
     );
   }
 
+  /**
+   * Refuse a ceiling that leaves the role nothing to work with. A role with no working tool of its
+   * own, or none in this host, has lost nothing to the ceiling, and is not refused for it.
+   */
+  private assertCeilingLeavesTools(
+    definition: ManagedAgentDef,
+    isolation: AgentIsolation,
+    ceiling: string[][] | undefined,
+  ): void {
+    if (!ceiling?.length || hasWorkingTool(this.childRegistry(definition, isolation, ceiling)))
+      return;
+    if (!hasWorkingTool(this.childRegistry(definition, isolation, undefined))) return;
+    throw new AgentManagerError(
+      `Agent ${definition.name} would have no tool left: the allowed-tools in force (${ceiling.map(describeCapabilities).join('; ')}) leave none of its own (${describeCapabilities(definition.allowedTools)}).`,
+      'child_tool_surface_empty',
+      false,
+      "Do the step directly, use an agent role those allowed-tools cover, or add the tools the role needs to the skill's or command's allowed-tools.",
+      { agent: definition.name, toolCeiling: ceiling },
+    );
+  }
+
   /** The tools a child of this definition gets: its role, under the ceiling its spawn froze. */
   private childRegistry(
     definition: ManagedAgentDef,
@@ -1950,6 +1975,9 @@ export class AgentManager {
       this.persist(record);
       let snapshot: AgentSnapshot | undefined;
       const isolation = record.isolation ?? definition.isolation;
+      // Before any worktree or hook: a ceiling that cannot be read or holds nothing starts nothing.
+      const registry = this.childRegistry(definition, isolation, record.toolCeiling);
+      this.assertCeilingLeavesTools(definition, isolation, record.toolCeiling);
       if (isolation === 'worktree') {
         snapshot = record.snapshotId
           ? this.snapshots.get(record.snapshotId)
@@ -2038,7 +2066,6 @@ export class AgentManager {
         { onHookEvent: this.hookEventSink, signal: controller.signal },
       );
 
-      const registry = this.childRegistry(definition, isolation, record.toolCeiling);
       if (
         definition.source !== 'builtin' &&
         definition.allowedTools.length > 0 &&
@@ -2328,6 +2355,7 @@ export class AgentManager {
           isNewSession: record.transcript.length === 0,
           manageSessionHooks: false,
           isSubagent: true,
+          ...(record.toolCeiling ? { toolCeiling: record.toolCeiling } : {}),
           // `record.prompt` is the task the delegating model wrote, not a person's
           // words, even though it takes the `user` position in the child's history.
           userMessageDerived: true,

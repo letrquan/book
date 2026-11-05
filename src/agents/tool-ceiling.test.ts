@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -74,9 +74,11 @@ async function restart(seeded: Record<string, unknown>) {
   store.dispose();
 
   const runs: string[][] = [];
+  const createWorktree = vi.fn();
   const manager = new AgentManager(config, EXPLORER_TOOLS.map(tool), {
     storeRoot: bookHome,
     findGitRoot: async () => undefined,
+    createWorktree,
     runLoop: async (_config, registry, _prompt, history) => {
       runs.push(registry.getDefinitions().map((definition) => definition.name));
       return history;
@@ -84,7 +86,7 @@ async function restart(seeded: Record<string, unknown>) {
   });
   await manager.list();
   const settled = await manager.wait('explorer-1', 10_000);
-  return { manager, runs, settled };
+  return { manager, runs, settled, createWorktree };
 }
 
 describe('a tool ceiling on the agent record (#696)', () => {
@@ -109,6 +111,7 @@ describe('a tool ceiling on the agent record (#696)', () => {
   });
 
   it.each([
+    ['null', null],
     ['a string', 'Read'],
     ['an unreadable rule', [[42]]],
     ['a flat list', ['Read']],
@@ -117,6 +120,35 @@ describe('a tool ceiling on the agent record (#696)', () => {
     try {
       expect(runs).toEqual([]);
       expect(settled.status).toBe('failed');
+      expect(settled.error).toContain('Unreadable tool ceiling');
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('fails an unreadable ceiling before any worktree is made', async () => {
+    const { manager, runs, settled, createWorktree } = await restart({
+      name: 'patcher',
+      profile: 'patcher',
+      role: 'patcher',
+      isolation: 'worktree',
+      toolCeiling: 'Read',
+    });
+    try {
+      expect(runs).toEqual([]);
+      expect(settled.status).toBe('failed');
+      expect(createWorktree).not.toHaveBeenCalled();
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('fails a later run that the ceiling leaves with nothing, naming the ceiling', async () => {
+    const { manager, runs, settled } = await restart({ toolCeiling: [['WebFetch']] });
+    try {
+      expect(runs).toEqual([]);
+      expect(settled.status).toBe('failed');
+      expect(settled.error).toContain('would have no tool left');
     } finally {
       manager.dispose();
     }
@@ -138,7 +170,7 @@ describe('a tool ceiling on the agent record (#696)', () => {
           return history;
         },
       });
-      return { agents, runs, createSnapshot };
+      return { agents, runs, createSnapshot, workspace: root };
     }
 
     it('records the ceiling apart from what the caller holds, and returns a copy', async () => {
@@ -168,6 +200,61 @@ describe('a tool ceiling on the agent record (#696)', () => {
         expect(spawned).not.toHaveProperty('toolCeiling');
         await agents.wait(spawned.id, 10_000);
         expect(runs).toEqual([EXPLORER_TOOLS]);
+      } finally {
+        agents.dispose();
+      }
+    });
+
+    /** A project agent named `custom`, with these lines of frontmatter. */
+    function customAgent(workspace: string, frontmatter: string[]): void {
+      const directory = join(workspace, '.book', 'agents');
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(directory, 'custom.md'),
+        [
+          '---',
+          'name: custom',
+          'description: custom',
+          'isolation: workspace-readonly',
+          ...frontmatter,
+          '---',
+          'Work.',
+        ].join('\n'),
+      );
+    }
+
+    it('does not blame the ceiling for a role with no tools of its own', async () => {
+      const { agents, runs, workspace } = manager();
+      customAgent(workspace, []);
+      try {
+        const spawned = await agents.spawn({
+          agent: 'custom',
+          prompt: 'think',
+          toolCeiling: [['Read', 'Task']],
+        });
+        await agents.wait(spawned.id, 10_000);
+        expect(runs).toEqual([[]]);
+      } finally {
+        agents.dispose();
+      }
+    });
+
+    it('refuses a role the ceiling leaves only the skill tools', async () => {
+      const { agents, runs, workspace } = manager([
+        ...EXPLORER_TOOLS,
+        'InvokeSkill',
+        'ReadSkillResource',
+      ]);
+      customAgent(workspace, ['tools: "*"']);
+      try {
+        await expect(
+          agents.spawn({
+            agent: 'custom',
+            prompt: 'look',
+            toolCeiling: [['Task', 'InvokeSkill', 'ReadSkillResource']],
+          }),
+        ).rejects.toMatchObject({ code: 'child_tool_surface_empty' });
+        expect(runs).toEqual([]);
       } finally {
         agents.dispose();
       }

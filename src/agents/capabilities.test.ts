@@ -3,6 +3,7 @@ import type { ToolCall, ToolContext, ToolDefinition } from '../types/tools.js';
 import { createRegistry } from '../tools/registry.js';
 import {
   createCapabilityRegistry,
+  hasWorkingTool,
   isToolCallAllowed,
   parseCapabilityRules,
 } from './capabilities.js';
@@ -239,11 +240,28 @@ describe('managed agent capabilities', () => {
     it('fails closed on a ceiling it cannot read', () => {
       const parent = createRegistry();
       parent.register(tool('Read'));
-      for (const ceiling of ['Read', [['']], [[42]], ['Read'], [null]]) {
+      for (const ceiling of [null, 0, 'Read', {}, [['']], [[42]], ['Read'], [null]]) {
         expect(() =>
           createCapabilityRegistry(parent, ['Read'], { ceiling: ceiling as never }),
-        ).toThrow();
+        ).toThrow(/Unreadable tool ceiling/);
       }
+    });
+
+    it('counts only a tool that does work as something left to run', () => {
+      const parent = createRegistry();
+      parent.registerAll([...toolSearchTools, tool('InvokeSkill'), tool('ReadSkillResource')]);
+      parent.register(tool('Read'));
+
+      expect(hasWorkingTool(createCapabilityRegistry(parent, ['*'], { ceiling: [['Read']] }))).toBe(
+        true,
+      );
+      expect(
+        hasWorkingTool(
+          createCapabilityRegistry(parent, ['*'], {
+            ceiling: [['Task', 'InvokeSkill', 'ReadSkillResource']],
+          }),
+        ),
+      ).toBe(false);
     });
   });
 
@@ -261,6 +279,7 @@ describe('managed agent capabilities', () => {
           pushRestriction: () => () => {},
           restrict: () => {},
           previewRestriction: () => [],
+          capabilityRuleSets: () => [],
           isActive: () => true,
           canExecute: () => true,
           activeDefinitions: () => [],

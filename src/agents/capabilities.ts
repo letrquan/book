@@ -32,6 +32,8 @@ const CHILD_LIFECYCLE_TOOLS = new Set([
 
 const CHILD_WILDCARD_EXCLUSIONS = new Set(['AskUserQuestion', ...CHILD_LIFECYCLE_TOOLS]);
 
+const NON_WORKING_TOOLS = new Set(['ToolSearch', 'InvokeSkill', 'ReadSkillResource']);
+
 const READONLY_DENIED_TOOLS = new Set([
   'Write',
   'ApplyPatch',
@@ -42,6 +44,13 @@ const READONLY_DENIED_TOOLS = new Set([
   'Check',
   'GitCommit',
 ]);
+
+/** What a refusal adds for a compound Bash command: why, and what to do instead. */
+function compoundSuffix(call: ToolCall, shell?: ScanShell): string {
+  return isCompoundShellCommand(call, process.platform, shell)
+    ? ` ${compoundCommandRefusal(call, process.platform, shell)} ${COMPOUND_COMMAND_REMEDIATION}`
+    : '';
+}
 
 function denied(
   call: ToolCall,
@@ -56,25 +65,27 @@ function denied(
       { toolCallId: call.id, code: 'capability_denied', status: 'blocked' },
     );
   }
-  const compound = isCompoundShellCommand(call, process.platform, shell)
-    ? ` ${compoundCommandRefusal(call, process.platform, shell)} ${COMPOUND_COMMAND_REMEDIATION}`
-    : '';
   return toolFailure(
-    `Capability denied: ${canonical} is outside this agent's tool policy.${compound} Report the blocked step and required capability to the parent.`,
+    `Capability denied: ${canonical} is outside this agent's tool policy.${compoundSuffix(call, shell)} Report the blocked step and required capability to the parent.`,
     { toolCallId: call.id, code: 'capability_denied', status: 'blocked' },
   );
 }
 
 /** A refusal by the parent's ceiling: the role may run the tool, so isolation is not the reason. */
 function deniedByCeiling(call: ToolCall, shell?: ScanShell): ToolResult {
-  const canonical = canonicalToolName(call.name);
-  const compound = isCompoundShellCommand(call, process.platform, shell)
-    ? ` ${compoundCommandRefusal(call, process.platform, shell)} ${COMPOUND_COMMAND_REMEDIATION}`
-    : '';
   return toolFailure(
-    `Capability denied: this call to ${canonical} is outside the allowed-tools this agent was started under, those of the parent's skill or command.${compound} Report the blocked step and required capability to the parent.`,
+    `Capability denied: this call to ${canonicalToolName(call.name)} is outside the allowed-tools this agent was started under, those of the parent's skill or command.${compoundSuffix(call, shell)} Report the blocked step and required capability to the parent.`,
     { toolCallId: call.id, code: 'capability_denied', status: 'blocked' },
   );
+}
+
+/** A ceiling read back from a record: anything but rule sets throws, so nothing runs unnarrowed. */
+function parseCeiling(ceiling: string[][]): CapabilityRule[][] {
+  try {
+    return ceiling.map(parseCapabilityRules);
+  } catch {
+    throw new Error(`Unreadable tool ceiling: ${JSON.stringify(ceiling)}`);
+  }
 }
 
 /**
@@ -91,7 +102,7 @@ export function createCapabilityRegistry(
   options: { isolation?: AgentIsolation; profile?: string; ceiling?: string[][] } = {},
 ): ToolRegistry {
   const rules = parseCapabilityRules(rawRules);
-  const ceiling = (options.ceiling ?? []).map(parseCapabilityRules);
+  const ceiling = options.ceiling === undefined ? [] : parseCeiling(options.ceiling);
   const registry = createRegistry();
 
   for (const definition of parent.getDefinitions()) {
@@ -100,25 +111,22 @@ export function createCapabilityRegistry(
       continue;
     if (
       canonical !== 'ToolSearch' &&
-      !isToolDefinitionAllowed(
+      (!isToolDefinitionAllowed(
         rules,
         definition,
         definition.name.startsWith('mcp__')
           ? new Set([...CHILD_WILDCARD_EXCLUSIONS, definition.name])
           : CHILD_WILDCARD_EXCLUSIONS,
-      )
+      ) ||
+        !ceiling.every((set) => isToolDefinitionAllowed(set, definition)))
     )
       continue;
     if (CHILD_LIFECYCLE_TOOLS.has(canonical)) continue;
-    if (
-      canonical !== 'ToolSearch' &&
-      !ceiling.every((set) => isToolDefinitionAllowed(set, definition))
-    )
-      continue;
 
     const wrapped: ToolDefinition = {
       ...definition,
       execute: async (args, context) => {
+        if (canonical === 'ToolSearch') return definition.execute(args, context);
         const call: ToolCall = {
           id: context.currentToolTraceId ?? '',
           name: canonical,
@@ -126,13 +134,9 @@ export function createCapabilityRegistry(
         };
         // The session shell, read as the permission gate reads it (#512).
         const shell = context.shell ?? context.agentConfig?.shell;
-        if (
-          canonical !== 'ToolSearch' &&
-          !isToolCallAllowed(rules, call, CHILD_WILDCARD_EXCLUSIONS, process.platform, shell)
-        )
+        if (!isToolCallAllowed(rules, call, CHILD_WILDCARD_EXCLUSIONS, process.platform, shell))
           return denied(call, options.profile, options.isolation, shell);
         if (
-          canonical !== 'ToolSearch' &&
           !ceiling.every((set) => isToolCallAllowed(set, call, undefined, process.platform, shell))
         )
           return deniedByCeiling(call, shell);
@@ -143,6 +147,17 @@ export function createCapabilityRegistry(
   }
 
   return registry;
+}
+
+/**
+ * Whether a child's registry holds a tool that does any work. These three only find tools or read
+ * instructions, and every skill's allowed-tools add the skill two, so a registry left with them has
+ * nothing to do.
+ */
+export function hasWorkingTool(registry: ToolRegistry): boolean {
+  return registry
+    .getDefinitions()
+    .some((definition) => !NON_WORKING_TOOLS.has(canonicalToolName(definition.name)));
 }
 
 export function describeCapabilities(rawRules: string[]): string {

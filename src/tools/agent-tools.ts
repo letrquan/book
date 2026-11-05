@@ -145,7 +145,7 @@ async function agentSpawn(args: Record<string, unknown>, ctx: ToolContext): Prom
     if (!agent || !prompt) throw new Error('agent and prompt are required.');
     const record = await manager(ctx).spawn({
       ...(ctx.peerTurnClass !== undefined ? { peerTurnClass: ctx.peerTurnClass } : {}),
-      toolCeiling: ctx.toolDiscovery?.capabilityRuleSets?.(),
+      toolCeiling: ctx.toolDiscovery?.capabilityRuleSets(),
       agent,
       description: typeof args.description === 'string' ? args.description.trim() : undefined,
       prompt,
@@ -232,6 +232,7 @@ async function agentSend(args: Record<string, unknown>, ctx: ToolContext): Promi
           ? args.evidenceIds.filter((value): value is string => typeof value === 'string')
           : [],
         ctx.runContext,
+        ctx.toolDiscovery?.capabilityRuleSets(),
       ),
     );
     return ok(summary, agentStatusPresentation(summary, 'Sent follow-up to'));

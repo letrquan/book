@@ -96,9 +96,9 @@ later run and after a restart, and a new spawn after the skill ends has its role
 spawn whose role would have no tool left is refused with `child_tool_surface_empty`, and nothing is
 started. Lists are read as written, so name what the child needs (`EvidencePublish`,
 `EvidenceReview`, `Check`) or the child goes without; a path rule is matched against the child's own
-path, which in a `patcher`'s worktree is not your checkout's. An agent started before the skill or
-command keeps its own set, and `AgentSend` does not narrow it, so leave `AgentSend` out of a list
-you mean to hold.
+path, which in a `patcher`'s worktree is not your checkout's. An agent started outside the list keeps
+its own set, so `AgentSend` to it is refused with `child_outside_tool_ceiling` while the list is in
+force.
 
 Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/queue`, `/exit`,
 `/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent

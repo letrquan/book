@@ -154,16 +154,16 @@ describe('tool surface discovery', () => {
       definitions: [definition('Read'), definition('Bash'), definition('Task')],
       capabilityRules: [' Bash(git *) ', 'Task'],
     });
-    expect(surface.capabilityRuleSets?.()).toEqual([['Bash(git *)', 'Task']]);
+    expect(surface.capabilityRuleSets()).toEqual([['Bash(git *)', 'Task']]);
 
     const dispose = surface.pushRestriction(['Read', '*']);
-    expect(surface.capabilityRuleSets?.()).toEqual([
+    expect(surface.capabilityRuleSets()).toEqual([
       ['Bash(git *)', 'Task'],
       ['Read', '*'],
     ]);
 
     dispose();
-    expect(surface.capabilityRuleSets?.()).toEqual([['Bash(git *)', 'Task']]);
+    expect(surface.capabilityRuleSets()).toEqual([['Bash(git *)', 'Task']]);
   });
 
   it('reports no rule sets on a surface nothing narrows', () => {
@@ -172,7 +172,7 @@ describe('tool surface discovery', () => {
       context: context(),
       definitions: [definition('Read')],
     });
-    expect(surface.capabilityRuleSets?.()).toEqual([]);
+    expect(surface.capabilityRuleSets()).toEqual([]);
   });
 
   it('restores the parent surface after a scoped restriction is disposed', () => {

@@ -10,6 +10,7 @@ import { isolateBookHome } from '../test/isolated-book-home.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import type { Provider } from '../provider/index.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
+import type { PermissionMode } from '../types/runtime.js';
 import type { ToolCall, ToolResult } from '../types/tools.js';
 import { runAgentLoop } from './loop.js';
 
@@ -102,6 +103,8 @@ interface ChildRun {
   workspace: string;
   /** The system prompt the manager wrote for the child. */
   systemPromptAppend?: string;
+  /** The calls the child asked permission for, by call id. */
+  permissionPrompts: string[];
 }
 
 const WRITE: ToolCall = {
@@ -142,6 +145,7 @@ function harness(childCalls: ToolCall[] = [WRITE]) {
         results: new Map(),
         workspace: childConfig.workspace,
         systemPromptAppend: options?.systemPromptAppend,
+        permissionPrompts: [],
       };
       childRuns.push(run);
       return runAgentLoop(
@@ -155,6 +159,10 @@ function harness(childCalls: ToolCall[] = [WRITE]) {
             run.results.set(result.toolCallId ?? '', result);
             childCallbacks.onToolResult(result);
           },
+          onPermissionRequired: async (call) => {
+            run.permissionPrompts.push(call.id);
+            return 'allow' as const;
+          },
         },
         mode,
         { ...options, provider: scripted([childCalls]) },
@@ -166,6 +174,8 @@ function harness(childCalls: ToolCall[] = [WRITE]) {
   const parent = async (
     turns: ToolCall[][],
     options: { allowedTools?: string[]; typedText?: string } = {},
+    mode: PermissionMode = 'bypassPermissions',
+    onPrompt?: (call: ToolCall) => void,
   ): Promise<Map<string, ToolResult>> => {
     const results = new Map<string, ToolResult>();
     await runAgentLoop(
@@ -173,8 +183,14 @@ function harness(childCalls: ToolCall[] = [WRITE]) {
       registry,
       'do the work',
       [],
-      callbacks({ onToolResult: (result) => results.set(result.toolCallId ?? '', result) }),
-      'bypassPermissions',
+      callbacks({
+        onToolResult: (result) => results.set(result.toolCallId ?? '', result),
+        onPermissionRequired: async (call) => {
+          onPrompt?.(call);
+          return 'allow' as const;
+        },
+      }),
+      mode,
       { provider: scripted(turns), isNewSession: false, runtime, ...options },
     );
     return results;
@@ -355,6 +371,74 @@ describe("a child under its parent's allowed-tools (#696)", () => {
       expect(record).not.toHaveProperty('toolCeiling');
       await settled(run.manager, record.id);
       expectWhole(run.childRuns[0]);
+    } finally {
+      run.dispose();
+    }
+  });
+
+  it('refuses a call the ceiling does not cover before any prompt, and runs one it does', async () => {
+    const outside: ToolCall = {
+      id: 'outside',
+      name: 'Bash',
+      arguments: { command: 'node --version' },
+    };
+    const inside: ToolCall = {
+      id: 'inside',
+      name: 'Bash',
+      arguments: { command: 'git --version' },
+    };
+    const run = harness([outside, inside]);
+    const directory = join(run.workspace, '.book', 'agents');
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(directory, 'shell.md'),
+      ['---', 'name: shell', 'description: shell', 'tools: Bash', '---', 'Run it.'].join('\n'),
+    );
+    const prompted: string[] = [];
+    try {
+      const results = await run.parent(
+        [[{ id: 'task', name: 'Task', arguments: { agent: 'shell', prompt: 'run them' } }]],
+        { allowedTools: ['Bash(git *)', 'Task'] },
+        'default',
+        (call) => prompted.push(call.name),
+      );
+      expect(results.get('task')?.status).toBe('success');
+      const child = run.childRuns[0];
+      expect(child.results.get(outside.id)?.structuredError?.code).toBe('arguments_not_allowed');
+      expect(child.results.get(inside.id)?.structuredError?.code).not.toBe('arguments_not_allowed');
+      // The refused call asked nobody; the one the ceiling covers still meets the gate.
+      expect(child.permissionPrompts).toEqual([inside.id]);
+      expect(prompted).toEqual(['Task']);
+    } finally {
+      run.dispose();
+    }
+  });
+
+  it('refuses to send to an agent started outside the list in force, and sends under the same list', async () => {
+    const run = harness();
+    try {
+      writeSkill(run.workspace, 'probe', ['Read', 'AgentSpawn', 'AgentSend']);
+      const wide = spawnedId((await run.parent([[SPAWN]])).get(SPAWN.id));
+      await settled(run.manager, wide);
+      expectWhole(run.childRuns[0]);
+
+      const send = (id: string, callId: string): ToolCall => ({
+        id: callId,
+        name: 'AgentSend',
+        arguments: { agentId: id, message: 'write more' },
+      });
+      const underSkill = await run.parent([[INVOKE, send(wide, 'send-wide'), SPAWN]]);
+      expect(underSkill.get('send-wide')?.structuredError?.code).toBe('child_outside_tool_ceiling');
+      const narrow = spawnedId(underSkill.get(SPAWN.id));
+      await settled(run.manager, narrow);
+      expect(run.childRuns).toHaveLength(2);
+
+      // A second run under the same skill, the same list: this agent is already held to it.
+      const again = await run.parent([[INVOKE, send(narrow, 'send-narrow')]]);
+      expect(again.get('send-narrow')?.status).toBe('success');
+      await vi.waitFor(() => expect(run.childRuns).toHaveLength(3));
+      await settled(run.manager, narrow);
+      expectNarrowed(run.childRuns[2]);
     } finally {
       run.dispose();
     }
