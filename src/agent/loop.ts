@@ -601,9 +601,17 @@ export async function runAgentLoop(
   };
 
   // UserPromptSubmit hook — can modify or block the user prompt.
-  const submitted = options?.skipUserPromptHooks
-    ? { outcome: 'passed' as const, prompt: userMessage }
-    : await submitUserPrompt(userMessage);
+  let submitted: Awaited<ReturnType<typeof submitUserPrompt>>;
+  try {
+    submitted = options?.skipUserPromptHooks
+      ? { outcome: 'passed', prompt: userMessage }
+      : await submitUserPrompt(userMessage);
+  } catch (error) {
+    // `runHooks` rejects with the abort reason when the run is cancelled under a hook (#698).
+    if (!signal?.aborted) throw error;
+    finishTerminal(classifyAbortReason(signal.reason, false));
+    return newHistory;
+  }
   if (submitted.outcome === 'blocked') {
     newHistory.push({
       id: crypto.randomUUID(),
@@ -3254,18 +3262,26 @@ export async function runAgentLoop(
           ? { ...call, arguments: permissionSubject.args }
           : call;
 
-        const preHookResults = await runHooks(
-          config.settings.hooks.PreToolUse,
-          'PreToolUse',
-          {
-            workspace: config.workspace,
-            event: 'PreToolUse',
-            toolName: canonName,
-            toolArgs: call.arguments,
-            ...(permissionSubject ? { toolTargets: permissionSubject.restrict } : {}),
-          },
-          { onHookEvent: callbacks.onHookEvent, signal },
-        );
+        let preHookResults: Awaited<ReturnType<typeof runHooks>>;
+        try {
+          preHookResults = await runHooks(
+            config.settings.hooks.PreToolUse,
+            'PreToolUse',
+            {
+              workspace: config.workspace,
+              event: 'PreToolUse',
+              toolName: canonName,
+              toolArgs: call.arguments,
+              ...(permissionSubject ? { toolTargets: permissionSubject.restrict } : {}),
+            },
+            { onHookEvent: callbacks.onHookEvent, signal },
+          );
+        } catch (error) {
+          // A cancel under the hook rejects with the abort reason (#698); the call never started.
+          if (!signal?.aborted) throw error;
+          toolResults[callIndex] = cancelledBeforeStart(call);
+          return undefined;
+        }
         const blocked = preHookResults.find((result) => result.action === 'block');
         if (blocked) {
           toolResults[callIndex] = toolFailure(
