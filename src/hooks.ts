@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import { buildChildEnv } from './child-env.js';
 import type { HookEntry, HookEvent } from './settings.js';
 import { hookMatcherAlternatives, type HookMatcherAlternative } from './hook-matcher.js';
+import { globToRegex } from './tools/glob-regex.js';
 import { toolPrimaryArg } from './tools/primary-arg.js';
 import { parsePatch } from './tools/patch.js';
 import { runTaskkill, signalProcessGroup } from './jobs/process-tree.js';
@@ -234,19 +235,14 @@ function matchesAlternative(
 }
 
 /**
- * A matcher's argument glob against one argument, both with a leading `./` dropped. `*` is zero or
- * more of anything, and a trailing " *" (space-star) means "optionally followed by a space and more
- * arguments" (CC convention).
+ * A matcher's argument glob against one argument, both with a leading `./` dropped, read by
+ * `globToRegex` as a permission rule's pattern is: `*` is any run of characters, `?` exactly one,
+ * and everything else itself (#684).
  */
 function matchesArgumentPattern(pattern: string, argument: string): boolean {
   const normalizedArgument = argument.startsWith('./') ? argument.slice(2) : argument;
   const normalizedPattern = pattern.startsWith('./') ? pattern.slice(2) : pattern;
-  const reStr = normalizedPattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '.*')
-    .replace(/ \*$/g, '( .*)?') // trailing " *" = optional args
-    .replace(/\*/g, '.*');
-  return new RegExp(`^${reStr}$`).test(normalizedArgument);
+  return globToRegex(normalizedPattern).test(normalizedArgument);
 }
 
 async function runSingleHook(

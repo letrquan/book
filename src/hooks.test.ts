@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { runHooks } from './hooks.js';
 import { isProcessAlive, TERMINATE_GRACE_MS } from './jobs/process-tree.js';
+import { permissionRuleMatchesCall } from './permissions.js';
 import type { HookEntry, HookEvent } from './settings.js';
 import { spawn } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
@@ -396,7 +397,7 @@ describe('runHooks — matcher filtering', () => {
           : 'echo \'{"action":"block"}\' && exit 2',
       env: {},
     };
-    const results = await runHooks([hook], 'PreToolUse', ctx());
+    const results = await runHooks([hook], 'PreToolUse', ctx({ toolArgs: { command: 'ls -la' } }));
     expect(results.length).toBe(1);
     expect(results[0].action).toBe('block');
   });
@@ -531,6 +532,49 @@ describe('runHooks — `*` and `A|B` tool matchers (#656)', () => {
 
   it('runs a blank matcher for every tool, as an empty one does', async () => {
     expect(await ran('   ', { toolName: 'GitLog', toolArgs: {} })).toBe(1);
+  });
+});
+
+describe('runHooks — an argument pattern reads as a permission rule reads it (#684)', () => {
+  const ran = async (matcher: string, toolName: string, toolArgs: Record<string, unknown>) =>
+    (
+      await runHooks(
+        [{ matcher, command: 'exit 2', env: {} }],
+        'PreToolUse',
+        ctx({ toolName, toolArgs }),
+      )
+    ).length === 1;
+
+  it.each([
+    // The issue's probe: `?` was a regular-expression quantifier, a trailing ` *` optional.
+    ['Read(file?.txt)', 'Read', { file_path: 'file1.txt' }, true],
+    ['Read(file?.txt)', 'Read', { file_path: 'fil.txt' }, false],
+    ['Bash(ls *)', 'Bash', { command: 'ls' }, false],
+    ['Bash(ls *)', 'Bash', { command: 'ls -la' }, true],
+    // The rest of the glob: `*` crosses `/`, metacharacters are literal, `./` drops on both sides.
+    ['Read(src/*)', 'Read', { file_path: 'src/a/b.ts' }, true],
+    ['Read(src/**)', 'Read', { file_path: 'docs/a.md' }, false],
+    ['Read(a.b)', 'Read', { file_path: 'axb' }, false],
+    ['Read(a+b)', 'Read', { file_path: 'a+b' }, true],
+    ['Read(./.env)', 'Read', { file_path: '.env' }, true],
+    ['Read(.env)', 'Read', { file_path: './.env' }, true],
+  ] as const)(
+    '%s on a %s call %j: %j, for the hook and the rule alike',
+    async (matcher, tool, args, hit) => {
+      const call = { id: 'probe', name: tool, arguments: args };
+      expect(permissionRuleMatchesCall(matcher, call)).toBe(hit);
+      expect(await ran(matcher, tool, args)).toBe(hit);
+    },
+  );
+
+  it('keeps the differences the guide lists', async () => {
+    // A `?` is a wildcard in a hook, where an exact Bash allow rule keeps it literal.
+    const exact = { id: 'probe', name: 'Bash', arguments: { command: 'ls ab' } };
+    expect(permissionRuleMatchesCall('Bash(ls a?)', exact)).toBe(false);
+    expect(await ran('Bash(ls a?)', 'Bash', { command: 'ls ab' })).toBe(true);
+    // A hook never folds case, and a bare `mcp__server` names no tool.
+    expect(await ran('Read(.ENV)', 'Read', { file_path: '.env' })).toBe(false);
+    expect(await ran('mcp__demo', 'mcp__demo__lookup', { q: 'x' })).toBe(false);
   });
 });
 
