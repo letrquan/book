@@ -775,6 +775,74 @@ describe('prepareToolCall: the mode', () => {
   });
 });
 
+describe('prepareToolCall: where accept-edits approves', () => {
+  const edit = { filePath: 'a.txt', content: 'x' };
+
+  it('an ordinary edit, with no prompt, pinned to the target it judged', async () => {
+    const { prepare, onPermissionRequired } = gate({ mode: 'accept-edits' });
+
+    const entry = entryOf(await prepare('Write', edit));
+
+    expect(onPermissionRequired).not.toHaveBeenCalled();
+    expect(entry.context.judgedEditTargets?.has('a.txt')).toBe(true);
+  });
+
+  it("one call's pinned targets do not reach the next", async () => {
+    const { prepare, run } = gate({ mode: 'accept-edits' });
+
+    entryOf(await prepare('Write', edit));
+    entryOf(await prepare('Bash', { command: 'ls' }));
+
+    expect(run.toolContext.judgedEditTargets).toBeUndefined();
+  });
+
+  it('after a hook, which can block it', async () => {
+    const { prepare } = gate({ mode: 'accept-edits' });
+    blockedByHook('no');
+
+    expect(codeOf(await prepare('Write', edit))).toBe('hook_blocked');
+  });
+
+  it('after a deny rule, which holds', async () => {
+    const { prepare, onPermissionRequired } = gate({
+      mode: 'accept-edits',
+      configure: withRules({ deny: ['Write(a.txt)'] }),
+    });
+
+    expect(codeOf(await prepare('Write', edit))).toBe('permission_denied');
+    expect(onPermissionRequired).not.toHaveBeenCalled();
+  });
+
+  it('short of an ask rule, which still asks', async () => {
+    const { prepare, onPermissionRequired } = gate({
+      mode: 'accept-edits',
+      configure: withRules({ ask: ['Write(a.txt)'] }),
+      answer: 'deny',
+    });
+
+    expect(codeOf(await prepare('Write', edit))).toBe('permission_denied');
+    expect(onPermissionRequired).toHaveBeenCalledOnce();
+  });
+
+  it('by the mode read after the hooks', async () => {
+    const entered = gate();
+    vi.mocked(runHooks).mockImplementationOnce(async () => {
+      entered.host.mode = 'accept-edits';
+      return [];
+    });
+    entryOf(await entered.prepare('Write', edit));
+    expect(entered.onPermissionRequired).not.toHaveBeenCalled();
+
+    const left = gate({ mode: 'accept-edits' });
+    vi.mocked(runHooks).mockImplementationOnce(async () => {
+      left.host.mode = 'default';
+      return [];
+    });
+    entryOf(await left.prepare('Write', edit));
+    expect(left.onPermissionRequired).toHaveBeenCalledOnce();
+  });
+});
+
 describe('prepareToolCall: a prepared call', () => {
   it('a serial call runs on the shared context, and sets its trace and subject there', async () => {
     const subject = { args: { to: 'x' }, allow: ['x'], restrict: ['x'] };
