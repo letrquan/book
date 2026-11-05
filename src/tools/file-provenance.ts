@@ -202,7 +202,8 @@ export async function requireFreshObservation(
   } catch (error) {
     // The file is gone, not changed: a Read cannot bring it back, so the refusal's remedy could
     // never be met (#674). `lstat` tells nothing-at-all from a link whose target is missing.
-    if (isMissing(error) && (!options?.creates || (await nothingAt(absolutePath)))) return undefined;
+    if (isMissing(error) && (!options?.creates || (await nothingAt(absolutePath))))
+      return undefined;
     return staleMessage(ctx, absolutePath, displayPath, remembered);
   }
 }
