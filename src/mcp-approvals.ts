@@ -32,7 +32,25 @@ export function mcpServerFingerprint(config: McpServerConfig): string {
     // one-way and neither the UI nor diagnostics render these values.
     headers: sortedRecord(config.headers),
   });
-  return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+/** How many digits a fingerprint recorded before they used the whole digest holds. */
+const RECORDED_SHORT_FINGERPRINT_LENGTH = 16;
+
+/**
+ * Whether a server's configuration differs from the one a recorded decision was made about.
+ *
+ * A decision recorded before fingerprints used the whole digest holds its first 16 digits. It no
+ * longer matches, so the user is asked again, but nothing changed, and saying it did would teach
+ * people to dismiss the one warning that matters. This only chooses the wording: approval compares
+ * the whole digest ({@link evaluateMcpServerApproval}), so a short match never counts as a decision.
+ */
+export function mcpConfigChangedSinceDecision(recorded: string, fingerprint: string): boolean {
+  if (recorded === fingerprint) return false;
+  return !(
+    recorded.length === RECORDED_SHORT_FINGERPRINT_LENGTH && fingerprint.startsWith(recorded)
+  );
 }
 
 export type McpServerApprovalState = 'approved' | 'rejected' | 'unknown';

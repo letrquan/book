@@ -11,6 +11,27 @@ Settings are loaded in priority order (later wins):
 3. `.book/settings.local.json` (local, should be gitignored)
 4. `--settings <path>` CLI flag
 
+A `.book/settings.local.json` that git tracks is not read, except for restrictions, which still
+apply: a local file a repository ships isn't local. The restrictions are `permissions.deny`,
+`permissions.ask`, the sandbox deny lists and the sandbox values that tighten it
+(`sandbox.enabled: true` and the like): what a checked-in `.book/settings.json` may set too. Every
+other key is ignored, and one notice names the file and the remedy: on stderr in print mode and the
+SDK, among the start-up notices in the TUI, and on the `Local` line of `book doctor`. Review the
+file, then run the `git rm --cached` the notice prints to make it your own.
+
+Book answers from the git index, in the nearest repository and any above it. An entry has to name
+this very file: one that reads differently counts only where the file system says it reaches this
+file, which is a question for a file system that folds names, not for how the two read. A link cannot move a tracked file out of sight, so the file is also looked up where a link
+takes it, when that is inside the repository or a link the repository tracks led there; your own
+link to a file elsewhere, such as your dotfiles, stays your own. When Book cannot read the nearest
+repository's index it counts the file as tracked, and the notice says that instead.
+
+Book does not write a tracked local file either: a save to the local layer, `book config set --local`
+among them, is refused with the same message, and "Always allow" then lasts for the session and says
+so. `/permissions` can still take such a rule back. A save to the user file goes through, and there
+is nothing to clear from the tracked file. An untracked file works as it always has, gitignored or
+not.
+
 In a session started in your home directory with `BOOK_HOME` unset, the workspace's
 `.book/settings.json` is the user file itself: it is read once, as the user layer, and nothing in
 it is held back as a repository declaration. Instruction files are compared by real path, so a
@@ -136,8 +157,8 @@ model, a transcript too long for the advisor's window, and any verdict on the re
 
 A `provider` entry names two things you care about: where a request goes (`baseURL`) and which
 credential rides along (`apiKey`, a literal or a `{env:VAR}` / `{file:path}` reference that Book
-reads for the entry). A checked-in `.book/settings.json`, a force-added `.book/settings.local.json`
-or a legacy `.bookrc.json` can write both, so a workspace layer does not get to decide them
+reads for the entry). A checked-in `.book/settings.json`, a `.book/settings.local.json` or a legacy
+`.bookrc.json` can write both, so a workspace layer does not get to decide them
 unchecked. Without this gate, a cloned repository could send your provider key, `BOOK_API_KEY`, any
 file under `~` or any environment variable, plus the transcript, to an endpoint it named. Your own
 layers (`~/.book/settings.json`, `--settings`) are trusted and unchanged.
@@ -506,10 +527,9 @@ setting and the reason rather than running the command anyway. Because `enabled`
 
 ### A workspace layer may only tighten `sandbox.*`
 
-A checked-in `.book/settings.json` is input from the repository, and so is a
-`.book/settings.local.json` a clone was force-fed — `.gitignore` does not keep one out of a fresh
-clone. So from **both** workspace layers these keys are honoured only in the direction that narrows
-the sandbox:
+A checked-in `.book/settings.json` is input from the repository, and a
+`.book/settings.local.json` is one more file inside the working tree. So from **both** workspace
+layers these keys are honoured only in the direction that narrows the sandbox:
 
 | key                                | honoured from a workspace layer | ignored   |
 | ---------------------------------- | ------------------------------- | --------- |

@@ -11,6 +11,7 @@ import {
   partitionProjectHooks,
   persistProjectHookChoice,
   renderUntrustedText,
+  shortFingerprint,
 } from './hook-approvals.js';
 import type { DeclaredHook } from './hook-approvals.js';
 import type { HookEntry, HookEvent, ProjectHookChoice } from './settings.js';
@@ -224,7 +225,7 @@ describe('describeDeclaredHook', () => {
 
     expect(described.headline).toBe('PreToolUse: npm test');
     expect(described.details).toEqual([
-      `fingerprint: ${hookFingerprint(hook.event, hook.entry)}`,
+      `fingerprint: ${shortFingerprint(hookFingerprint(hook.event, hook.entry))}`,
       'matcher:     Bash(*)',
       'env:         NODE_OPTIONS=--require ./payload.js',
     ]);
@@ -234,7 +235,7 @@ describe('describeDeclaredHook', () => {
     const hook: DeclaredHook = { event: 'Stop', entry: entry('notify.sh') };
 
     expect(describeDeclaredHook(hook).details).toEqual([
-      `fingerprint: ${hookFingerprint(hook.event, hook.entry)}`,
+      `fingerprint: ${shortFingerprint(hookFingerprint(hook.event, hook.entry))}`,
     ]);
   });
 

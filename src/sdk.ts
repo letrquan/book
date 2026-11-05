@@ -12,6 +12,7 @@ import { mcpServersToRecord, partitionMcpServersByApproval } from './mcp-approva
 import { resolveMcpServerList } from './mcp-config.js';
 import {
   collectSkippedProjectFileNotices,
+  collectUnreadLocalSettingsNotices,
   collectWithheldProjectNotices,
 } from './project-approval-notices.js';
 import { collectNodeSecurityNotices } from './node-advisory.js';
@@ -153,6 +154,7 @@ export async function* query(
           settingsEnabled: !options.noSettings,
           providerGate: config.workspaceProviderGate,
         }),
+        ...collectUnreadLocalSettingsNotices(config.workspace, !options.noSettings),
         // Instruction files, REVIEW.md and command files that link out of the repository are not
         // loaded (#539, #543).
         ...collectSkippedProjectFileNotices(config.workspace),

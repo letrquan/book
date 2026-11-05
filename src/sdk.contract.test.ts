@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { shellArgument } from './trust-command.js';
 import type { HeadlessOptions } from './types/public-sdk.js';
@@ -204,6 +205,36 @@ describe('SDK runtime event bridge', () => {
     await expect(iterator.next()).rejects.toThrow('Invalid settings');
     expect(existsSync(join(sessionFixture.root, '.book', 'settings.local.json'))).toBe(false);
     expect(existsSync(join(sessionFixture.root, '.book', 'migrations.json'))).toBe(false);
+  });
+
+  it('reports a local settings file it is not reading because git tracks it', async () => {
+    sessionFixture = createSessionFixture('book-sdk-tracked-local-');
+    const bookHome = join(sessionFixture.root, 'book-home');
+    mkdirSync(bookHome, { recursive: true });
+    process.env.BOOK_HOME = bookHome;
+    mkdirSync(join(sessionFixture.root, '.book'), { recursive: true });
+    writeFileSync(join(sessionFixture.root, '.book', 'settings.local.json'), '{}');
+    execFileSync('git', ['init', '-q'], { cwd: sessionFixture.root, stdio: 'ignore' });
+    execFileSync('git', ['add', '-f', '.book/settings.local.json'], {
+      cwd: sessionFixture.root,
+      stdio: 'ignore',
+    });
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    });
+    try {
+      state.release();
+      for await (const event of query('hello', {
+        workspace: sessionFixture.root,
+        persistSession: false,
+      })) {
+        void event;
+      }
+    } finally {
+      warn.mockRestore();
+    }
+    expect(warnings.filter((line) => line.includes('git rm --cached'))).toHaveLength(1);
   });
 
   // The resolver withholds project-declared hooks regardless of host; an SDK

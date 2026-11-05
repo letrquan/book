@@ -16,7 +16,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { getNestedValue, setNestedValue } from './cli/utils.js';
-import { resolveSettings, settingsLayerPaths } from './settings-loader.js';
+import { unreadLocalSettingsReason } from './local-settings-tracking.js';
+import { loadLocalSettingsFile, resolveSettings, settingsLayerPaths } from './settings-loader.js';
 import {
   formatSettingsDiagnostics,
   readSettingsDocument,
@@ -72,7 +73,8 @@ export interface ScopeDocument {
 /**
  * `forWrite`: the read a write starts from, which answers the way the write will
  * (`projectFileWriteRefusal`) before reading anything. A read for display reports the file the way
- * the loader reads it, since that is the layer in force.
+ * the loader reads it, since that is the layer in force: not as a layer, when git tracks a local
+ * file, and the reason says what still applies.
  */
 export function readScopeDocument(
   scope: SettingsScope,
@@ -80,7 +82,11 @@ export function readScopeDocument(
   { forWrite = false }: { forWrite?: boolean } = {},
 ): ScopeDocument {
   const path = settingsScopePath(scope, workspace);
-  const refusal = forWrite ? projectFileWriteRefusal(path) : undefined;
+  const refusal = forWrite
+    ? projectFileWriteRefusal(path)
+    : scope === 'local'
+      ? unreadLocalSettingsReason(path)
+      : undefined;
   if (refusal) return { scope, path, status: 'unreadable', error: refusal, document: {} };
   const result = readSettingsDocument(path);
   if (result.status === 'valid') {
@@ -252,7 +258,18 @@ function shadowingScopes(
     // A file the loader does not read as a layer of its own cannot shadow the write that just
     // changed it (#449). Skipped before the read, so it is not parsed only to be discarded. The
     // `--settings` override below is a separate file and stays reported.
-    if (!isLoaderLayer(workspace, candidate)) continue;
+    if (!isLoaderLayer(workspace, candidate)) {
+      // A local file git tracks is no layer of its own either, but a restriction in it still
+      // applies, and can outrank this write.
+      if (candidate === 'local') {
+        const path = settingsScopePath(candidate, workspace);
+        const restrictions = (loadLocalSettingsFile(path) ?? {}) as Record<string, unknown>;
+        if (getNestedValue(restrictions, key) !== undefined) {
+          shadowing.push({ scope: candidate, path, unreadable: false });
+        }
+      }
+      continue;
+    }
     const layer = readScopeDocument(candidate, workspace);
     if (layer.status === 'unreadable') {
       shadowing.push({

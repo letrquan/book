@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   existsSync,
@@ -490,6 +491,66 @@ describe('runDoctorCommand --no-settings', () => {
   });
 });
 
+describe('runDoctorCommand a local settings file git tracks', () => {
+  const git = (...args: string[]): void => {
+    execFileSync('git', args, { cwd: workspace, stdio: 'ignore' });
+  };
+
+  it('names the file and the remedy on one line, and reports nothing from it', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    const local = join(workspace, '.book', 'settings.local.json');
+    writeFileSync(local, JSON.stringify({ sandbox: { filesystem: { allowWrite: ['/'] } } }));
+    git('init', '-q');
+
+    const untracked = await doctorOutput(workspace);
+    expect(untracked).toMatch(/\[x\] Local: .*settings\.local\.json/);
+    expect(untracked).toContain('Ignored from');
+
+    git('add', '-f', '.book/settings.local.json');
+    const tracked = await doctorOutput(workspace);
+    expect(tracked).not.toMatch(/\[x\] Local:/);
+    expect(tracked.match(/git rm --cached \.book\/settings\.local\.json/g)).toHaveLength(1);
+    expect(tracked).toContain(`[!] Local: ${local} (git tracks it`);
+    expect(tracked).toContain('except for restrictions, which still apply');
+    expect(tracked).not.toContain('Ignored from');
+  });
+
+  it('does not blame a tracked file that would not load', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(join(workspace, '.book', 'settings.local.json'), JSON.stringify({ maxTurns: 0 }));
+    git('init', '-q');
+    git('add', '-f', '.book/settings.local.json');
+
+    const output = await doctorOutput(workspace);
+    expect(output).not.toContain('FAILED TO LOAD');
+    expect(output).toContain('git tracks it');
+  });
+
+  it('counts a restriction in it, and says which file turned the sandbox on', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    const local = join(workspace, '.book', 'settings.local.json');
+    writeFileSync(
+      local,
+      JSON.stringify({ permissions: { deny: ['Bash(rm *)'] }, sandbox: { enabled: true } }),
+    );
+    git('init', '-q');
+    git('add', '-f', '.book/settings.local.json');
+
+    const output = await doctorOutput(workspace);
+    expect(output).toContain('Deny rules:  1');
+    expect(output).toContain(`From ${local}: sandbox.enabled=true`);
+  });
+
+  it('says nothing of it under --no-settings', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(join(workspace, '.book', 'settings.local.json'), '{}');
+    git('init', '-q');
+    git('add', '-f', '.book/settings.local.json');
+
+    expect(await doctorOutput(workspace, { noSettings: true })).not.toContain('git tracks it');
+  });
+});
+
 /**
  * #449 (via #429). In a session started at `$HOME` with `BOOK_HOME` unset the Project file is the
  * User file, which the loader reads once; doctor says so rather than listing it as a second layer.
@@ -623,9 +684,11 @@ describe('runDoctorCommand project-declared hooks', () => {
 
     expect(output).toContain('matcher:     Bash(*)');
     expect(output).toContain('env:         NODE_OPTIONS=--require ./.book/payload.js');
-    // The fingerprint is the argument `book trust hook` takes, so it is printed.
-    const { hookFingerprint } = await import('../hook-approvals.js');
-    expect(output).toContain(hookFingerprint('PreToolUse', entry));
+    // The start of the fingerprint is an argument `book trust hook` takes, so it is printed.
+    const { hookFingerprint, shortFingerprint } = await import('../hook-approvals.js');
+    expect(output).toContain(
+      `fingerprint: ${shortFingerprint(hookFingerprint('PreToolUse', entry))}`,
+    );
   });
 
   // The command text belongs to the repository: it must not be able to draw

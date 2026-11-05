@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, realpathSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
+import { hasBookLocalSettingsShape } from '../local-settings-tracking.js';
 import type { ToolResult } from '../types/tools.js';
 import { reachesUncPath } from '../unc-path.js';
 import { toolFailure } from './result.js';
@@ -486,24 +487,6 @@ export function comparablePath(
 ): string {
   if (platform !== 'win32') return value;
   return value.replaceAll('\\', '/').toLowerCase();
-}
-
-/**
- * Whether a path has the *shape* of a root's Book-local settings file or directory, whatever root
- * is being asked about: the last segment is `.book`, or `settings.local.json` under one.
- *
- * The cheap half of {@link isBookLocalSettingsPath}, and the half worth running for every file a
- * Grep lists, because the rest of that answer costs a `realpath` per root. Sound rather than
- * exact — a `.book` somewhere below a root has the shape without being that root's — which is
- * what a prefilter has to be.
- */
-function hasBookLocalSettingsShape(
-  canonicalPath: string,
-  options: { directory?: boolean },
-): boolean {
-  const parts = canonicalPath.toLowerCase().split(/[\\/]/);
-  if (parts[parts.length - 1] === '.book') return options.directory === true;
-  return parts[parts.length - 2] === '.book' && parts[parts.length - 1] === 'settings.local.json';
 }
 
 /**

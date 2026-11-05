@@ -52,7 +52,7 @@ export function projectCommandFingerprint(body: string): string {
   const canonical = JSON.stringify(
     extractShellInjections(body).map((injection) => [injection.kind, injection.command]),
   );
-  return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 export type ProjectCommandApprovalState = 'not-required' | 'approved' | 'rejected' | 'unknown';

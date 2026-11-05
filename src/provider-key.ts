@@ -20,6 +20,7 @@
 import { existsSync } from 'fs';
 import { resolveSecret } from './config.js';
 import { deleteNestedValue } from './cli/utils.js';
+import { unreadLocalSettingsReason } from './local-settings-tracking.js';
 import { PROVIDER_CONNECTION_KEYS } from './provider-approvals.js';
 import { redactSecrets } from './provider-secrets.js';
 import {
@@ -36,7 +37,7 @@ import {
 } from './settings-repository.js';
 import { settingsScopePath } from './settings-scope.js';
 import type { RetryConfig } from './types/runtime.js';
-import { projectFileWriteRefusal } from './workspace-files.js';
+import { projectFileShapeRefusal } from './workspace-files.js';
 
 /** What the add-provider wizard's key step accepts: a literal key, `{env:VAR}` or `{file:path}`. */
 export function validateApiKey(raw: string): string {
@@ -103,6 +104,8 @@ export function providerKeyTarget(workspace: string, providerId: string): Provid
   }
   for (const scope of ['project', 'local'] as const) {
     const workspacePath = settingsScopePath(scope, workspace);
+    // A local file git tracks is not a layer, so it declares nothing.
+    if (scope === 'local' && unreadLocalSettingsReason(workspacePath) !== undefined) continue;
     const layer = readSettingsDocument(workspacePath);
     if (layer.status === 'valid' && providerEntryOf(layer.document, providerId)) {
       return { kind: 'workspace-only', providerId, path, declaredIn: workspacePath };
@@ -158,7 +161,10 @@ export function writeProviderKey(
   // Checked before the user file is written, as a `/model` save does: the local half reads the
   // local file, and a save that could only do one half stops with the notice instead.
   const localPath = settingsScopePath('local', workspace);
-  const localRefusal = projectFileWriteRefusal(localPath);
+  // A local file git tracks is not a layer, and one that does not exist is nothing to clear,
+  // whatever the index says: neither has a half to do, so neither stops the save.
+  const localIsLayer = unreadLocalSettingsReason(localPath) === undefined;
+  const localRefusal = localIsLayer ? projectFileShapeRefusal(localPath) : undefined;
   if (localRefusal) return { ok: false, error: `${localPath}: ${localRefusal}` };
   const written = new SettingsRepository(path).update((candidate) => {
     const entry = providerEntryOf(candidate, providerId);
@@ -173,13 +179,13 @@ export function writeProviderKey(
     };
   }
 
-  if (!existsSync(localPath)) return { ok: true, path };
+  if (!localIsLayer || !existsSync(localPath)) return { ok: true, path };
   const local = readSettingsDocument(localPath);
   const localEntry = local.status === 'valid' ? providerEntryOf(local.document, providerId) : null;
   if (!localEntry || !PROVIDER_CONNECTION_KEYS.some((key) => localEntry[key] !== undefined)) {
     return { ok: true, path };
   }
-  const cleared = new SettingsRepository(localPath).update((candidate) =>
+  const cleared = new SettingsRepository(localPath, { gitAlreadyAsked: true }).update((candidate) =>
     deleteProviderConnectionKeys(candidate, providerId),
   );
   return cleared.ok

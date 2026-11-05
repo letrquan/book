@@ -1,10 +1,11 @@
 /**
  * The rule for the files Book itself writes into a workspace. Its own module, with nothing but
- * `fs`, `path` and `BOOK_HOME` behind it, so the debug logger can use it too.
+ * `fs`, `path`, `BOOK_HOME` and the git index reader behind it, so the debug logger can use it too.
  */
 import { lstatSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
 import { resolveBookHome } from './book-home.js';
+import { hasBookLocalSettingsShape, localSettingsRefusal } from './local-settings-tracking.js';
 
 function safeMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -17,10 +18,10 @@ function safeMessage(error: unknown): string {
  * default `.book/debug.log`), including the read a write starts from.
  *
  * Such a file is written only while it is a regular file or does not exist yet, in a `.book`
- * folder that is a real directory or does not exist yet. Anything else (a link, a FIFO, a device,
- * a directory in the file's place) is left exactly as it is: not read for the write, not written
- * through, and not replaced. The answer is the reason, without the path or a full stop, for the
- * caller's one-line notice: `<path>: <reason>`.
+ * folder that is a real directory or does not exist yet ({@link projectFileShapeRefusal}). Nor is a
+ * `.book/settings.local.json` that git tracks written, whether or not it is on disk: the loader
+ * takes only restrictions from it, so a save there could look done and never take effect. The answer is the
+ * reason, without the path or a full stop, for the caller's one-line notice: `<path>: <reason>`.
  *
  * The user-global files (`<BOOK_HOME>/settings.json` and `<BOOK_HOME>/mcp.json`) keep their
  * behaviour: they are the user's own, and one kept elsewhere and linked into place is a setup this
@@ -28,6 +29,18 @@ function safeMessage(error: unknown): string {
  * checkouts of other repositories.
  */
 export function projectFileWriteRefusal(path: string): string | undefined {
+  const shape = projectFileShapeRefusal(path);
+  if (shape !== undefined) return shape;
+  const target = resolve(path);
+  return hasBookLocalSettingsShape(target) ? localSettingsRefusal(target) : undefined;
+}
+
+/**
+ * The half of {@link projectFileWriteRefusal} that looks only at what is on disk: anything but a
+ * regular file or nothing, in a `.book` folder that is a real directory or nothing, is left exactly
+ * as it is: not read for the write, not written through, and not replaced.
+ */
+export function projectFileShapeRefusal(path: string): string | undefined {
   const target = resolve(path);
   const home = resolve(resolveBookHome());
   if (target === join(home, 'settings.json') || target === join(home, 'mcp.json')) {

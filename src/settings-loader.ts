@@ -11,7 +11,9 @@ import {
   type ResolvedSettings,
 } from './settings.js';
 import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
-import { projectFileWriteRefusal } from './workspace-files.js';
+import { projectFileShapeRefusal } from './workspace-files.js';
+import { readBoundedText } from './git-index.js';
+import { localSettingsRefusal, unreadLocalSettingsReason } from './local-settings-tracking.js';
 import { resolveBookHome } from './book-home.js';
 import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
@@ -143,7 +145,8 @@ function mergeObject(
  *
  * - `trusted` — the user's own global file, or a path they passed on the CLI.
  * - `local` — `<workspace>/.book/settings.local.json`: gitignored and normally
- *   written by the user, or by Book on their behalf.
+ *   written by the user, or by Book on their behalf. One that git tracks is not
+ *   read, except for restrictions (`loadLocalSettingsFile`).
  * - `repository` — `<workspace>/.book/settings.json`: checked in and controlled
  *   by whoever wrote the repository. It may never grant itself trust.
  */
@@ -156,12 +159,12 @@ export type SettingsLayerTrust = 'trusted' | 'local' | 'repository';
  * flags are included because merely opening a clone must not opt the user into
  * unstable runtime behavior.
  *
- * The local layer is no safer than the checked-in one here. `.gitignore` does
- * not stop a *tracked* file from reaching a clone, so a repository that
- * force-adds `.book/settings.local.json` ships its own approvals with it. Both
- * workspace layers are therefore stripped. Trust decisions come from the
- * user-global store; experimental flags come from a trusted user-global or
- * explicit settings document (or from a process environment opt-in).
+ * The local layer is no safer than the checked-in one here: both are files inside
+ * the working tree. A `.book/settings.local.json` that git tracks is not read, except
+ * for restrictions, and the strip is the rule for one the index does not list. Both
+ * workspace layers are therefore stripped. Trust decisions come from the user-global store;
+ * experimental flags come from a trusted user-global or explicit settings document
+ * (or from a process environment opt-in).
  *
  * An empty `parent` names a key at the document root, which is how the
  * `additionalDirectories` decisions map is expressed: the setting it decides
@@ -587,6 +590,80 @@ function loadSettingsFile(path: string): BookSettings | null {
 }
 
 /**
+ * The lists a local settings file git tracks still contributes. Together with the tightening
+ * values in {@link WORKSPACE_SANDBOX_ONLY_TIGHTENING} they are the only things taken from such a
+ * file: a whitelist, so every other key, including one added later, is left out without anyone
+ * having to think of it. All of it is what a checked-in `.book/settings.json` may set too, and
+ * merged the same way, so a repository gains nothing by shipping these here.
+ */
+const LOCAL_FILE_RESTRICTION_LISTS: ReadonlyArray<readonly string[]> = [
+  ['permissions', 'deny'],
+  ['permissions', 'ask'],
+  ...SANDBOX_DENY_LIST_PATHS.map((path) => path.split('.')),
+];
+
+/** A settings file's restrictions are small; one larger than this contributes none. */
+const MAX_RESTRICTIONS_FILE_BYTES = 4 * 1024 * 1024;
+
+function setPath(document: Record<string, unknown>, path: readonly string[], value: unknown): void {
+  let container = document;
+  for (const key of path.slice(0, -1)) {
+    container[key] ??= {};
+    container = container[key] as Record<string, unknown>;
+  }
+  container[path[path.length - 1]] = value;
+}
+
+/** The restrictions a settings document holds, and nothing else from it. */
+export function localFileRestrictions(document: unknown): Partial<BookSettings> {
+  const restrictions: Record<string, unknown> = {};
+  if (typeof document !== 'object' || document === null || Array.isArray(document)) {
+    return restrictions;
+  }
+  const record = document as Record<string, unknown>;
+  for (const path of LOCAL_FILE_RESTRICTION_LISTS) {
+    const value = readPath(record, path);
+    if (Array.isArray(value) && value.length > 0) setPath(restrictions, path, value);
+  }
+  for (const [path, tightening] of WORKSPACE_SANDBOX_ONLY_TIGHTENING) {
+    if (tightening !== null && readPath(record, path) === tightening) {
+      setPath(restrictions, path, tightening);
+    }
+  }
+  return restrictions;
+}
+
+/**
+ * The restrictions of the file at `path`, or null when it holds none Book can use. Nothing about
+ * the file can fail the launch: it is opened without blocking, only while it is a regular file on
+ * no network share, and anything it cannot make sense of contributes nothing.
+ */
+function readLocalFileRestrictions(path: string): BookSettings | null {
+  try {
+    const text = readBoundedText(path, MAX_RESTRICTIONS_FILE_BYTES);
+    if (text === undefined) return null;
+    const restrictions = localFileRestrictions(normalizeRemovedSettings(JSON.parse(text)));
+    if (Object.keys(restrictions).length === 0) return null;
+    return bookSettingsSchema.safeParse(restrictions).success
+      ? (restrictions as BookSettings)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The local layer's file, the one way any reader of that layer loads it: null when it is absent.
+ * A local file a repository ships isn't local, so one git tracks is not read, except for
+ * restrictions, which still apply (`local-settings-tracking.ts`). A broken one breaks nothing.
+ */
+export function loadLocalSettingsFile(path: string): BookSettings | null {
+  return unreadLocalSettingsReason(path) === undefined
+    ? loadSettingsFile(path)
+    : readLocalFileRestrictions(path);
+}
+
+/**
  * Resolve settings from all scopes: user → project → local.
  * Priority: Local > Project > User.
  *
@@ -607,7 +684,9 @@ export interface SettingsResolutionPaths {
  *
  * Exported so callers that need to inspect the files themselves — `book doctor`
  * reporting removed keys, the credential error checking for a stale `auth`
- * block — resolve the same paths the loader does rather than rebuilding them.
+ * block — resolve the same paths the loader does rather than rebuilding them. A
+ * local file git tracks is not one of them: only its restrictions are taken, by
+ * {@link loadLocalSettingsFile}.
  */
 export function settingsLayerPaths(
   workspace: string,
@@ -616,16 +695,17 @@ export function settingsLayerPaths(
 ): string[] {
   const userPath = userSettingsPath(paths);
   const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');
+  const localPath = paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json');
   const layers = [
     userPath,
     ...(sameFile(projectPath, userPath) ? [] : [projectPath]),
-    paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json'),
+    ...(unreadLocalSettingsReason(localPath) === undefined ? [localPath] : []),
   ];
   if (overridePath) layers.push(overridePath);
   return layers;
 }
 
-function userSettingsPath(paths: SettingsResolutionPaths): string {
+export function userSettingsPath(paths: SettingsResolutionPaths = {}): string {
   return (
     paths.userSettingsPath ??
     (paths.home
@@ -711,7 +791,7 @@ export function resolveSettingsWithProviderGate(
   // Skipped when it is the user file itself, as it is for a workspace at `$HOME` (#429).
   const project = sameFile(projectPath, userPath) ? null : loadSettingsFile(projectPath);
   const localPath = paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json');
-  const local = withoutStaleAdvisorOff(loadSettingsFile(localPath), project);
+  const local = withoutStaleAdvisorOff(loadLocalSettingsFile(localPath), project);
   const override = overridePath ? loadSettingsFile(overridePath) : null;
 
   const trustedProviderIds = providerIdsOf([
@@ -1005,12 +1085,10 @@ export function migrateLegacyPermissions(
   const markerPath = join(workspace, '.book', 'migrations.json');
   const localPath = join(workspace, '.book', 'settings.local.json');
   // Before the marker is read: it is one of the files this writes.
-  for (const path of [markerPath, localPath]) {
-    const refusal = projectFileWriteRefusal(path);
-    if (refusal) {
-      console.warn(`⚠  Permission rules not migrated: ${path}: ${refusal}.`);
-      return false;
-    }
+  const markerRefusal = projectFileShapeRefusal(markerPath);
+  if (markerRefusal) {
+    console.warn(`⚠  Permission rules not migrated: ${markerPath}: ${markerRefusal}.`);
+    return false;
   }
   try {
     const marker = JSON.parse(readFileSync(markerPath, 'utf-8')) as {
@@ -1019,6 +1097,14 @@ export function migrateLegacyPermissions(
     if ((marker.legacyPermissions ?? 0) >= LEGACY_PERMISSIONS_MIGRATION_VERSION) return false;
   } catch {
     // Missing or malformed markers are safely rebuilt after a successful migration.
+  }
+  // Nothing goes into a local file git tracks, and the launch's own notice already names it. No
+  // marker either, so the rules migrate once the file is the user's.
+  if (localSettingsRefusal(localPath) !== undefined) return false;
+  const localRefusal = projectFileShapeRefusal(localPath);
+  if (localRefusal) {
+    console.warn(`⚠  Permission rules not migrated: ${localPath}: ${localRefusal}.`);
+    return false;
   }
 
   let legacyRules: Array<{ toolName: string; pattern?: string; effect: string }> = [];
@@ -1034,7 +1120,7 @@ export function migrateLegacyPermissions(
 
   if (legacyRules.length === 0) return false;
 
-  const result = new SettingsRepository(localPath).update((existing) => {
+  const result = new SettingsRepository(localPath, { gitAlreadyAsked: true }).update((existing) => {
     const permissions = (existing.permissions ?? {}) as {
       allow?: string[];
       ask?: string[];

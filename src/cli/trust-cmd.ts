@@ -36,8 +36,10 @@ import { discoverCommands } from '../commands/loader.js';
 import {
   collectDeclaredHooks,
   describeDeclaredHook,
+  fingerprintsNamedBy,
   hookFingerprint,
   partitionProjectHooks,
+  shortFingerprint,
   persistProjectHookChoice,
   renderUntrustedText,
 } from '../hook-approvals.js';
@@ -191,14 +193,30 @@ export async function runTrustCommand(
         decisions.push({ key: fingerprint, label: describeDeclaredHook(hook).headline });
       }
     } else {
-      const hook = byFingerprint.get(target!);
-      if (!hook) {
+      // The whole digest, or the start of one as `book doctor` prints it. A start that fits two
+      // hooks chooses neither, so what gets recorded is always the hook the user was looking at.
+      const matches = fingerprintsNamedBy(target ?? '', byFingerprint.keys());
+      if (matches.length > 1) {
+        const listed = matches
+          .map(
+            (fingerprint) =>
+              `  ${fingerprint}  ${describeDeclaredHook(byFingerprint.get(fingerprint)!).headline}`,
+          )
+          .join('\n');
+        return fail(
+          `book trust hook: "${target}" fits more than one project-declared hook in ${workspace}. ` +
+            `Give the whole fingerprint:\n${listed}`,
+        );
+      }
+      const fingerprint = matches[0];
+      const hook = fingerprint === undefined ? undefined : byFingerprint.get(fingerprint);
+      if (fingerprint === undefined || !hook) {
         // A typo would otherwise record a decision that matches no hook and
         // silently changes nothing.
         const known = partition.pending
           .map(
             (pending) =>
-              `  ${hookFingerprint(pending.event, pending.entry)}  ${describeDeclaredHook(pending).headline}`,
+              `  ${shortFingerprint(hookFingerprint(pending.event, pending.entry))}  ${describeDeclaredHook(pending).headline}`,
           )
           .join('\n');
         return fail(
@@ -206,7 +224,7 @@ export async function runTrustCommand(
             (known ? `\nAwaiting a decision:\n${known}` : '\nNothing is awaiting a decision.'),
         );
       }
-      decisions.push({ key: target!, label: describeDeclaredHook(hook).headline });
+      decisions.push({ key: fingerprint, label: describeDeclaredHook(hook).headline });
     }
   } else if (kind === 'dir') {
     // A directory is keyed by where it *really* is, not by the text the repository wrote, so the

@@ -37,7 +37,30 @@ export function hookFingerprint(event: HookEvent, entry: HookEntry): string {
     command: entry.command,
     env: sortedEnv,
   });
-  return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+/**
+ * How many hex digits of a fingerprint a report prints, and the fewest `book trust hook` takes. The
+ * decision is always recorded against the whole digest, so this is a handle and never the key.
+ */
+export const SHORT_FINGERPRINT_LENGTH = 16;
+
+/** A fingerprint as a report prints it: readable beside a command, and enough to type back. */
+export function shortFingerprint(fingerprint: string): string {
+  return fingerprint.slice(0, SHORT_FINGERPRINT_LENGTH);
+}
+
+/**
+ * The fingerprints a handle typed back names: the whole digest, or at least its first
+ * {@link SHORT_FINGERPRINT_LENGTH} digits. More than one answer chooses none of them.
+ */
+export function fingerprintsNamedBy(
+  handle: string,
+  fingerprints: Iterable<string>,
+): readonly string[] {
+  if (handle.length < SHORT_FINGERPRINT_LENGTH) return [];
+  return [...fingerprints].filter((fingerprint) => fingerprint.startsWith(handle));
 }
 
 /** Flatten a settings document into its declared hook entries, event paired. */
@@ -154,7 +177,7 @@ function isCutShort(value: string, maxLength = UNTRUSTED_TEXT_LIMIT): boolean {
 export function describeDeclaredHook(hook: DeclaredHook): { headline: string; details: string[] } {
   const { command, matcher } = hook.entry;
   const env = Object.entries(hook.entry.env ?? {}).sort(([a], [b]) => a.localeCompare(b));
-  const details = [`fingerprint: ${hookFingerprint(hook.event, hook.entry)}`];
+  const details = [`fingerprint: ${shortFingerprint(hookFingerprint(hook.event, hook.entry))}`];
   if (matcher !== undefined) details.push(`matcher:     ${renderUntrustedText(matcher)}`);
   for (const [key, value] of env) {
     details.push(`env:         ${renderUntrustedText(key, 64)}=${renderUntrustedText(value)}`);

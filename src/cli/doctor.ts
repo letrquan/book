@@ -7,6 +7,7 @@ import { collectAgentDiagnostics } from '../agents/diagnostics.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { resolveBookHome } from '../book-home.js';
+import { unreadLocalSettingsReason } from '../local-settings-tracking.js';
 import type { HookEntry } from '../settings.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { InboundLayer, InboundResolution } from '../messaging/receive-policy.js';
@@ -173,14 +174,21 @@ function describeCredentials(config: AgentConfig): string {
  */
 const ABSENT_LAYER = '\0absent-settings-layer';
 
-/** The settings files doctor reads, in the order they are layered. */
+/**
+ * The settings files doctor reads, in the order they are layered. A local file git tracks is not
+ * one of them, exactly as it is not one of the loader's; the report names it on a line of its own,
+ * and the sandbox section takes its restrictions from the loader.
+ */
 async function settingsLayers(workspace: string): Promise<Array<[string, string]>> {
   const { join, resolve } = await import('path');
   const root = resolve(workspace);
+  const localPath = join(root, '.book', 'settings.local.json');
   return [
     ['User', join(resolveBookHome(), 'settings.json')],
     ['Project', join(root, '.book', 'settings.json')],
-    ['Local', join(root, '.book', 'settings.local.json')],
+    ...(unreadLocalSettingsReason(localPath) === undefined
+      ? [['Local', localPath] as [string, string]]
+      : []),
   ];
 }
 
@@ -533,6 +541,11 @@ export async function runDoctorCommand(
       label === 'Project' && isUserSettingsFile(path) ? ' (the User file; read once, as User)' : '';
     console.log('  ' + marker + ' ' + label + ': ' + path + note);
   }
+  if (!options.noSettings) {
+    const localPath = join(config.workspace, '.book', 'settings.local.json');
+    const unread = unreadLocalSettingsReason(localPath);
+    if (unread !== undefined) console.log(`  [!] Local: ${localPath} (${unread})`);
+  }
   // Everything below is resolved from defaults in this mode. Saying so once
   // stops the report reading as a description of the user's configuration.
   if (options.noSettings) {
@@ -857,6 +870,7 @@ export async function runDoctorCommand(
     const {
       formatIgnoredWorkspaceSandboxKey,
       ignoredWorkspaceSandboxKeys,
+      loadLocalSettingsFile,
       loadSettingsFile,
       workspaceLayerThatEnabledSandbox,
     } = await import('../settings-loader.js');
@@ -865,6 +879,15 @@ export async function runDoctorCommand(
       path,
       document: label === 'Project' && isUserSettingsFile(path) ? null : loadSettingsFile(path),
     }));
+    // A local file git tracks is not listed above, but a sandbox restriction in it still applies.
+    const trackedLocalPath = join(config.workspace, '.book', 'settings.local.json');
+    if (unreadLocalSettingsReason(trackedLocalPath) !== undefined) {
+      layers.push({
+        label: 'Local',
+        path: trackedLocalPath,
+        document: loadLocalSettingsFile(trackedLocalPath),
+      });
+    }
     // The user-global layer is read here even though nothing about it is
     // reported: it is the baseline for what a workspace layer turned *on*, and
     // a repository repeating `enabled: true` after the user already set it
