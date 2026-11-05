@@ -7,7 +7,12 @@ import type {
 } from '../types/runtime.js';
 import { resolveShell, shellExecution, spawnCommandExecution } from '../shell-selection.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
-import { decideSandboxExecution, withGitConfigReadOnlyNotice } from '../sandbox.js';
+import {
+  decideSandboxExecution,
+  withGitConfigReadOnlyNotice,
+  withSandboxNotices,
+  type SandboxNotices,
+} from '../sandbox.js';
 import { buildChildEnv } from '../child-env.js';
 import { isTerminalShellStatus, ShellJobManager } from '../jobs/shell-manager.js';
 import { terminateForegroundProcess } from '../jobs/process-tree.js';
@@ -134,6 +139,8 @@ interface EffectiveCommand {
   sandboxed: boolean;
   /** Set along `sandboxed`, per `decideSandboxExecution`; read by the failure note. */
   gitDirReadOnly?: boolean;
+  /** Set along `sandboxed`: why the sandbox left a configured path out of this command. */
+  sandboxNotices?: SandboxNotices;
   error?: string;
 }
 
@@ -195,6 +202,7 @@ function buildEffectiveCommand(
       exec: decision.exec,
       sandboxed: true,
       gitDirReadOnly: decision.gitDirReadOnly,
+      sandboxNotices: { notices: decision.notices, unseenNotices: decision.unseenNotices },
     };
   }
   return plain;
@@ -234,7 +242,7 @@ async function bashForeground(
     fallback: DEFAULT_BASH_TIMEOUT_MS,
   });
 
-  return new Promise((resolve) => {
+  const result = await new Promise<ToolResult>((resolve) => {
     let proc: ChildProcess;
     try {
       proc = spawnEffective(built, {
@@ -527,6 +535,7 @@ async function bashForeground(
     ctx.signal?.addEventListener('abort', onAbort, { once: true });
     if (ctx.signal?.aborted) onAbort();
   });
+  return built.sandboxNotices ? withSandboxNotices(result, built.sandboxNotices) : result;
 }
 
 async function bashBackground(
@@ -575,6 +584,8 @@ async function bashBackground(
         `Use BashOutput with shell_id="${shell.id}" to read output.`,
         `Use KillShell with shell_id="${shell.id}" to stop it.`,
         built.sandboxed ? '[sandboxed]' : undefined,
+        // All of them: this command's outcome comes later, through BashOutput.
+        ...(built.sandboxNotices?.notices ?? []),
       ]
         .filter(Boolean)
         .join('\n'),

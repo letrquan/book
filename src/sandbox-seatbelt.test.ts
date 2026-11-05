@@ -325,6 +325,127 @@ describe('buildSeatbeltPolicy', () => {
     }
   });
 
+  describe('an allowWrite entry spelled through a link', () => {
+    const cases: Array<{ name: string; entry: string; link: string; leadsTo: string }> = [
+      {
+        name: 'inside the directory it names',
+        entry: '/data/up',
+        link: '/data',
+        leadsTo: '/data',
+      },
+      {
+        name: 'in the workspace',
+        entry: `${WS}/cache`,
+        link: '/data',
+        leadsTo: '/data',
+      },
+      {
+        name: 'in the workspace, naming a protected directory',
+        entry: `${WS}/hooks-link`,
+        link: `${WS}/.git/hooks`,
+        leadsTo: `${WS}/.git/hooks`,
+      },
+      {
+        name: 'in a temp root',
+        entry: `${USER_TEMP}/cache`,
+        link: '/data',
+        leadsTo: '/data',
+      },
+    ];
+
+    for (const { name, entry, link, leadsTo } of cases) {
+      it(`is left out, with a notice, when the link is ${name}`, () => {
+        const tree = repoTree({ '/data/keep': 'file', [entry]: { link } });
+
+        const policy = policyFor({ filesystem: { allowWrite: [entry] } }, tree);
+        const exec = buildSeatbeltExecution(
+          '/usr/bin/sandbox-exec',
+          'true',
+          WS,
+          sandboxSettings({ filesystem: { allowWrite: [entry] } }),
+          memoryHost(tree),
+          undefined,
+          TEMP_ROOTS,
+        );
+
+        expect(canWrite(policy, `${leadsTo}/file`)).toBe(false);
+        expect(policy.notices).toHaveLength(1);
+        expect(policy.notices?.[0]).toContain(`entry ${entry} is not bound`);
+        expect(policy.notices?.[0]).toContain('in a writable directory');
+        expect(exec.notices).toEqual(policy.notices);
+      });
+    }
+
+    it('keeps an ordinary nested entry and the directories above it where they are', () => {
+      const entry = `${WS}/a/b/build`;
+      const policy = policyFor(
+        { filesystem: { allowWrite: [entry] } },
+        repoTree({ [`${entry}/keep`]: 'file' }),
+      );
+
+      expect(policy.notices).toBeUndefined();
+      expect(canWrite(policy, `${entry}/keep`)).toBe(true);
+      expect(canRemove(policy, `${entry}/keep`)).toBe(true);
+      for (const path of [entry, `${WS}/a/b`, `${WS}/a`]) {
+        expect(canRemove(policy, path), path).toBe(false);
+      }
+      expect(canCreate(policy, `${WS}/a/other`)).toBe(true);
+    });
+
+    it('keeps the directories above a nested denyRead entry in place', () => {
+      const policy = policyFor(
+        { filesystem: { denyRead: [`${WS}/a/secrets/key`] } },
+        repoTree({ [`${WS}/a/secrets/key`]: 'file' }),
+      );
+
+      for (const path of [`${WS}/a/secrets`, `${WS}/a`]) {
+        expect(canRemove(policy, path), path).toBe(false);
+      }
+      expect(canRead(policy, `${WS}/a/secrets/key`)).toBe(false);
+    });
+
+    it('protects a common git dir outside the workspace under a root that holds it', () => {
+      const main = `${HOME}/main`;
+      const tree: Record<string, MemoryNode> = {
+        [`${WS}/.git`]: { text: `gitdir: ${main}/.git/worktrees/work\n` },
+        [`${main}/.git/HEAD`]: 'file',
+        [`${main}/.git/config`]: 'file',
+        [`${main}/.git/objects`]: 'dir',
+        [`${main}/.git/refs`]: 'dir',
+        [`${main}/.git/hooks/pre-commit`]: 'file',
+        [`${main}/.git/worktrees/work/HEAD`]: 'file',
+        [`${main}/.git/worktrees/work/commondir`]: { text: '../..\n' },
+        [`${main}/.git/worktrees/work/gitdir`]: { text: `${WS}/.git\n` },
+        [`${main}/src/index.ts`]: 'file',
+        '/private/tmp': 'dir',
+      };
+
+      for (const allowGitWrites of [false, true]) {
+        const policy = policyFor({ filesystem: { allowWrite: [main], allowGitWrites } }, tree);
+
+        expect(canWrite(policy, `${main}/.git/hooks/pre-commit`), `${allowGitWrites}`).toBe(false);
+        expect(canWrite(policy, `${main}/.git/config`), `${allowGitWrites}`).toBe(false);
+        expect(canWrite(policy, `${main}/.git/objects/x`), `${allowGitWrites}`).toBe(
+          allowGitWrites,
+        );
+        expect(canWrite(policy, `${main}/src/index.ts`), `${allowGitWrites}`).toBe(true);
+      }
+      const underHome = policyFor({ filesystem: { allowWrite: [HOME] } }, tree);
+      expect(canWrite(underHome, `${main}/.git/hooks/pre-commit`)).toBe(false);
+      expect(canRemove(underHome, main)).toBe(false);
+    });
+
+    it('is kept when the link is in no writable directory', () => {
+      const policy = policyFor(
+        { filesystem: { allowWrite: ['/alias'] } },
+        repoTree({ '/data/keep': 'file', '/alias': { link: '/data' } }),
+      );
+
+      expect(canWrite(policy, '/data/file')).toBe(true);
+      expect(policy.notices).toBeUndefined();
+    });
+  });
+
   it('keeps a temp root in place even when an allowWrite entry names it', () => {
     const policy = policyFor({ filesystem: { allowWrite: [USER_TEMP, '/private/tmp'] } });
 

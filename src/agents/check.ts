@@ -3,7 +3,11 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { buildChildEnv } from '../child-env.js';
-import { decideSandboxExecution, withGitConfigReadOnlyNotice } from '../sandbox.js';
+import {
+  decideSandboxExecution,
+  withGitConfigReadOnlyNotice,
+  withSandboxNotices,
+} from '../sandbox.js';
 import { toolFailure, toolSuccess } from '../tools/result.js';
 import { resolveToolTimeoutMs } from '../tools/timeouts.js';
 
@@ -99,7 +103,7 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
     maxBuffer: 10 * 1024 * 1024,
   };
 
-  return new Promise((resolve) => {
+  const result = await new Promise<ToolResult>((resolve) => {
     const settle = (
       error: (Error & { killed?: boolean; signal?: string | null; code?: unknown }) | null,
       stdout: string,
@@ -164,6 +168,7 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
     }
     exec(command, options, settle);
   });
+  return withSandboxNotices(result, decision);
 }
 
 export const checkTools: ToolDefinition[] = [

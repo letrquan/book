@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -2886,6 +2887,587 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(roBindsAfter.filter((idx) => idx > hooksMount.index)).toEqual([]);
     });
   });
+
+  describe('an allowWrite root above the workspace', () => {
+    const WORKSPACE_REAL = '/real/ws';
+    /** /real/ws is the workspace, with the control files a second view would expose. */
+    const tree: Record<string, 'dir' | 'file' | 'symlink'> = {
+      '/real': 'dir',
+      '/real/ws': 'dir',
+      '/real/ws/.git': 'dir',
+      '/real/ws/.git/HEAD': 'file',
+      '/real/ws/.git/hooks': 'dir',
+      '/real/ws/.book': 'dir',
+      '/real/ws/.book/settings.json': 'file',
+      '/real/ws/.book/settings.local.json': 'file',
+    };
+
+    function execFor(
+      workspace: string,
+      filesystem: Partial<ResolvedSettings['sandbox']['filesystem']>,
+      links: Record<string, string>,
+      extra: Record<string, 'dir' | 'file' | 'symlink'> = {},
+    ) {
+      const settings = sandboxSettings();
+      Object.assign(settings.filesystem, filesystem);
+      const paths = { ...tree, ...extra };
+      for (const link of Object.keys(links)) paths[link] = 'symlink';
+      return buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        workspace,
+        settings,
+        hostWith(paths, {}, links),
+      );
+    }
+
+    const build = (...args: Parameters<typeof execFor>): string[] => execFor(...args).args;
+
+    /** Every `[flag, source, destination]` a flag took, in argv order. */
+    function withFlag(args: string[], flag: string): Array<[string, string]> {
+      const found: Array<[string, string]> = [];
+      args.forEach((arg, index) => {
+        if (arg === flag) found.push([args[index + 1], args[index + 2]]);
+      });
+      return found;
+    }
+
+    const shapes: Array<{ name: string; entry: string; links: Record<string, string> }> = [
+      { name: 'a link to its parent', entry: '/alias', links: { '/alias': '/real' } },
+      {
+        name: 'a chain of two links',
+        entry: '/a2',
+        links: { '/a2': '/a1', '/a1': '/real' },
+      },
+      { name: 'a relative link', entry: '/alias', links: { '/alias': 'real' } },
+    ];
+
+    for (const { name, entry, links } of shapes) {
+      it(`binds ${name} where the workspace's own path lies, and links its spelling there`, () => {
+        const args = build(WORKSPACE_REAL, { allowWrite: [entry] }, links);
+
+        expect(withFlag(args, '--bind')).toContainEqual(['/real', '/real']);
+        expect(withFlag(args, '--bind').map(([, at]) => at)).not.toContain(entry);
+        expect(withFlag(args, '--symlink')).toEqual([['/real', entry]]);
+        expect(accessAt(args, '/real/sibling')).toBe('writable');
+        expect(accessAt(args, '/real/ws/.git/hooks/pre-commit')).toBe('read-only');
+        expect(accessAt(args, '/real/ws/.book/settings.json')).toBe('read-only');
+        expect(accessAt(args, '/real/ws/.book/settings.local.json')).toBe('absent');
+      });
+    }
+
+    it('binds a link to its grandparent there, too', () => {
+      const args = build(
+        '/top/mid/ws',
+        { allowWrite: ['/gp'] },
+        { '/gp': '/top' },
+        {
+          '/top': 'dir',
+          '/top/mid': 'dir',
+          '/top/mid/ws': 'dir',
+          '/top/mid/ws/.git': 'dir',
+          '/top/mid/ws/.git/HEAD': 'file',
+        },
+      );
+
+      expect(withFlag(args, '--bind')).toContainEqual(['/top', '/top']);
+      expect(withFlag(args, '--symlink')).toEqual([['/top', '/gp']]);
+      expect(accessAt(args, '/top/mid/ws/.git/hooks/x')).toBe('read-only');
+    });
+
+    it('leaves a plain parent where it is spelled, as before', () => {
+      const args = build(WORKSPACE_REAL, { allowWrite: ['/real'] }, {});
+
+      expect(withFlag(args, '--bind').map(([, at]) => at)).toEqual(['/real', WORKSPACE_REAL]);
+      expect(withFlag(args, '--symlink')).toEqual([]);
+      expect(accessAt(args, '/real/ws/.git/hooks/pre-commit')).toBe('read-only');
+    });
+
+    it('leaves a link that reaches neither the workspace nor a root above it alone', () => {
+      const args = build(
+        WORKSPACE_REAL,
+        { allowWrite: ['/cache'] },
+        { '/cache': '/data' },
+        {
+          '/data': 'dir',
+        },
+      );
+
+      expect(withFlag(args, '--bind')).toContainEqual(['/cache', '/cache']);
+      expect(args).not.toContain('/data');
+      expect(withFlag(args, '--symlink')).toEqual([]);
+    });
+
+    it('binds one directory once, whichever spellings name it', () => {
+      const args = build(
+        WORKSPACE_REAL,
+        { allowWrite: ['/alias', '/real', '/other'] },
+        {
+          '/alias': '/real',
+          '/other': '/real',
+        },
+      );
+
+      expect(withFlag(args, '--bind').map(([, at]) => at)).toEqual(['/real', WORKSPACE_REAL]);
+      expect(withFlag(args, '--symlink')).toEqual([
+        ['/real', '/alias'],
+        ['/real', '/other'],
+      ]);
+    });
+
+    it('moves an entry inside such a root along with it, so it is not a view of its own', () => {
+      const args = build(
+        WORKSPACE_REAL,
+        { allowWrite: ['/alias', '/alias/sub'], denyWrite: ['/real/sub/locked'] },
+        { '/alias': '/real' },
+        { '/real/sub': 'dir', '/real/sub/locked': 'dir' },
+      );
+
+      expect(withFlag(args, '--bind').map(([, at]) => at)).toContain('/real/sub');
+      expect(withFlag(args, '--bind').map(([, at]) => at)).not.toContain('/alias/sub');
+      expect(withFlag(args, '--symlink')).toEqual([['/real', '/alias']]);
+      expect(accessAt(args, '/real/sub/locked')).toBe('read-only');
+    });
+
+    it('applies deny entries spelled through the link where the root shows them', () => {
+      const args = build(
+        WORKSPACE_REAL,
+        {
+          allowWrite: ['/alias'],
+          denyWrite: ['/alias/locked'],
+          denyRead: ['/alias/secret', '/alias/secret.txt'],
+        },
+        { '/alias': '/real' },
+        { '/real/locked': 'dir', '/real/secret': 'dir', '/real/secret.txt': 'file' },
+      );
+
+      expect(accessAt(args, '/real/locked/x')).toBe('read-only');
+      expect(accessAt(args, '/real/secret')).toBe('empty');
+      expect(accessAt(args, '/real/secret.txt')).toBe('masked');
+      expect(args.filter((arg) => arg.startsWith('/alias/'))).toEqual([]);
+    });
+
+    it('applies a denyRead entry spelled through a link where the workspace shows it', () => {
+      const args = build(
+        WORKSPACE_REAL,
+        { denyRead: ['/alias/ws/secret', '/alias/ws/secret.txt'] },
+        { '/alias': '/real' },
+        { '/real/ws/secret': 'dir', '/real/ws/secret.txt': 'file' },
+      );
+
+      expect(accessAt(args, '/real/ws/secret')).toBe('empty');
+      expect(accessAt(args, '/real/ws/secret.txt')).toBe('masked');
+      expect(args.filter((arg) => arg.startsWith('/alias'))).toEqual([]);
+    });
+
+    it('keeps a root the workspace is opened under at that spelling', () => {
+      const args = build('/l/ws', { allowWrite: ['/l'] }, { '/l': '/real' });
+
+      expect(withFlag(args, '--bind')).toContainEqual(['/l', '/l']);
+      expect(withFlag(args, '--symlink')).toEqual([]);
+      expect(accessAt(args, '/l/ws/.git/hooks/pre-commit')).toBe('read-only');
+    });
+
+    it('binds the real parent of a workspace opened through a link at the link', () => {
+      const args = build(
+        '/l/ws',
+        { allowWrite: ['/real', '/other'] },
+        { '/l': '/real', '/other': '/real' },
+      );
+
+      expect(withFlag(args, '--bind').map(([, at]) => at)).toEqual(['/l', '/l/ws']);
+      expect(withFlag(args, '--symlink')).toEqual([
+        ['/l', '/real'],
+        ['/l', '/other'],
+      ]);
+      expect(accessAt(args, '/l/ws/.git/hooks/pre-commit')).toBe('read-only');
+    });
+
+    it('leaves out a root it cannot line up with the way the workspace is opened', () => {
+      const exec = execFor('/opened', { allowWrite: ['/real'] }, { '/opened': WORKSPACE_REAL });
+
+      expect(withFlag(exec.args, '--bind').map(([, at]) => at)).toEqual(['/opened']);
+      expect(exec.notices).toHaveLength(1);
+      expect(exec.notices?.[0]).toMatch(/entry \/real is not bound.*\/opened.*\/real\/ws/s);
+    });
+
+    it('never makes a link that bwrap would abort on', () => {
+      const cases: Array<{
+        name: string;
+        workspace?: string;
+        allowWrite: string[];
+        denyRead?: string[];
+        links: Record<string, string>;
+        extra?: Record<string, 'dir' | 'file' | 'symlink'>;
+      }> = [
+        {
+          name: 'the link is under a read-only system directory',
+          allowWrite: ['/opt/up'],
+          links: { '/opt/up': '/real' },
+          extra: { '/opt': 'dir' },
+        },
+        {
+          name: 'a mask outside every root lands below the spelling',
+          allowWrite: ['/alias'],
+          denyRead: ['/alias/out/x'],
+          links: { '/alias': '/real', '/real/out': '/elsewhere' },
+          extra: { '/elsewhere': 'dir', '/elsewhere/x': 'dir' },
+        },
+        {
+          name: 'the spelling is the private /tmp',
+          workspace: '/var/tmp/ws',
+          allowWrite: ['/tmp'],
+          links: { '/tmp': '/var/tmp' },
+          extra: {
+            '/var': 'dir',
+            '/var/tmp': 'dir',
+            '/var/tmp/ws': 'dir',
+            '/var/tmp/ws/.git': 'dir',
+            '/var/tmp/ws/.git/HEAD': 'file',
+          },
+        },
+      ];
+
+      for (const { name, workspace, allowWrite, denyRead, links, extra } of cases) {
+        const args = build(
+          workspace ?? WORKSPACE_REAL,
+          { allowWrite, denyRead: denyRead ?? [] },
+          links,
+          extra,
+        );
+        expect(withFlag(args, '--symlink'), name).toEqual([]);
+      }
+    });
+
+    it('does not bind an entry spelled through a link in a writable directory', () => {
+      const cases: Array<{
+        name: string;
+        allowWrite: string[];
+        links: Record<string, string>;
+        extra?: Record<string, 'dir' | 'file' | 'symlink'>;
+        /** What must not come out writable. */
+        absent: string[];
+      }> = [
+        {
+          name: 'the link is inside the directory it names',
+          allowWrite: ['/real/up'],
+          links: { '/real/up': '/real' },
+          absent: ['/real', '/real/up'],
+        },
+        {
+          name: 'the link is inside the workspace',
+          allowWrite: ['/real/ws/up'],
+          links: { '/real/ws/up': '/real' },
+          absent: ['/real', '/real/ws/up'],
+        },
+        {
+          name: 'the link is in another writable entry',
+          allowWrite: ['/data', '/data/l'],
+          links: { '/data/l': '/real' },
+          extra: { '/data': 'dir' },
+          absent: ['/real', '/data/l'],
+        },
+        {
+          name: 'the second link of a chain is',
+          allowWrite: ['/alias'],
+          links: { '/alias': '/real/next', '/real/next': '/real' },
+          absent: ['/real', '/alias'],
+        },
+        {
+          name: 'the entry does not hold the workspace',
+          allowWrite: ['/data/up'],
+          links: { '/data/up': '/data' },
+          extra: { '/data': 'dir' },
+          absent: ['/data', '/data/up'],
+        },
+        {
+          name: 'the link in the workspace leads elsewhere',
+          allowWrite: ['/real/ws/cache'],
+          links: { '/real/ws/cache': '/data' },
+          extra: { '/data': 'dir' },
+          absent: ['/data', '/real/ws/cache'],
+        },
+        {
+          name: 'the link in the workspace leads inside it',
+          allowWrite: ['/real/ws/l'],
+          links: { '/real/ws/l': '/real/ws/sub' },
+          extra: { '/real/ws/sub': 'dir' },
+          absent: ['/real/ws/sub', '/real/ws/l'],
+        },
+        {
+          name: 'the link in the workspace names a protected directory',
+          allowWrite: ['/real/ws/l'],
+          links: { '/real/ws/l': '/real/ws/.git/hooks' },
+          absent: ['/real/ws/.git/hooks', '/real/ws/l'],
+        },
+        {
+          name: 'a directory in the middle of the path is the link',
+          allowWrite: ['/real/ws/l/build'],
+          links: { '/real/ws/l': '/data' },
+          extra: { '/data': 'dir', '/data/build': 'dir' },
+          absent: ['/data/build', '/real/ws/l/build'],
+        },
+      ];
+
+      for (const { name, allowWrite, links, extra, absent } of cases) {
+        const exec = execFor(WORKSPACE_REAL, { allowWrite }, links, extra);
+
+        expect(exec.notices?.join('\n'), name).toMatch(/is not bound.*in a writable directory/s);
+        const bound = withFlag(exec.args, '--bind').map(([, at]) => at);
+        for (const path of absent) expect(bound, `${name}: ${path}`).not.toContain(path);
+      }
+    });
+
+    it('pins the directories above a nested entry, as above a denyWrite entry', () => {
+      const bound = (args: string[]): string[] => withFlag(args, '--bind').map(([, at]) => at);
+      const nested = {
+        '/real/ws/a': 'dir',
+        '/real/ws/a/b': 'dir',
+        '/real/ws/a/b/build': 'dir',
+      } as const;
+
+      expect(
+        bound(build(WORKSPACE_REAL, { allowWrite: ['/real/ws/a/b/build'] }, {}, nested)),
+      ).toEqual([WORKSPACE_REAL, '/real/ws/a', '/real/ws/a/b', '/real/ws/a/b/build']);
+      // Under a root above the workspace, whichever spelling reached it.
+      expect(
+        bound(
+          build(
+            WORKSPACE_REAL,
+            { allowWrite: ['/alias', '/alias/x/y'] },
+            { '/alias': '/real' },
+            { '/real/x': 'dir', '/real/x/y': 'dir' },
+          ),
+        ),
+      ).toEqual(['/real', WORKSPACE_REAL, '/real/x', '/real/x/y']);
+      // Directly below its root there is nothing between them.
+      expect(bound(build(WORKSPACE_REAL, { allowWrite: ['/real/ws/a'] }, {}, nested))).toEqual([
+        WORKSPACE_REAL,
+        '/real/ws/a',
+      ]);
+      // Outside every root there is nothing above it to pin.
+      expect(
+        bound(build(WORKSPACE_REAL, { allowWrite: ['/data/x'] }, {}, { '/data/x': 'dir' })),
+      ).toEqual([WORKSPACE_REAL, '/data/x']);
+    });
+
+    it('pins the directories above a nested denyRead entry, too', () => {
+      const bound = (args: string[]): string[] => withFlag(args, '--bind').map(([, at]) => at);
+
+      expect(
+        bound(
+          build(
+            WORKSPACE_REAL,
+            { denyRead: ['/real/ws/a/secrets', '/real/ws/b/key'] },
+            {},
+            {
+              '/real/ws/a/secrets': 'dir',
+              '/real/ws/b/key': 'file',
+              '/real/ws/b': 'dir',
+              '/real/ws/a': 'dir',
+            },
+          ),
+        ),
+      ).toEqual([WORKSPACE_REAL, '/real/ws/a', '/real/ws/b']);
+    });
+
+    it('says one thing once for the same entry listed twice', () => {
+      const exec = execFor(
+        '/opened',
+        { allowWrite: ['/real', '/real'] },
+        { '/opened': WORKSPACE_REAL },
+      );
+
+      expect(exec.notices).toHaveLength(1);
+    });
+
+    describe('git directories outside the workspace', () => {
+      /** /real/wt is a linked worktree of /real/main. */
+      const worktree = (): Record<string, 'dir' | 'file' | 'symlink'> => ({
+        '/real': 'dir',
+        '/real/wt': 'dir',
+        '/real/wt/.git': 'file',
+        '/real/main': 'dir',
+        '/real/main/.git': 'dir',
+        '/real/main/.git/HEAD': 'file',
+        '/real/main/.git/config': 'file',
+        '/real/main/.git/objects': 'dir',
+        '/real/main/.git/refs': 'dir',
+        '/real/main/.git/hooks': 'dir',
+        '/real/main/.git/hooks/pre-commit': 'file',
+        '/real/main/.git/worktrees': 'dir',
+        '/real/main/.git/worktrees/wt': 'dir',
+        '/real/main/.git/worktrees/wt/HEAD': 'file',
+        '/real/main/.git/worktrees/wt/commondir': 'file',
+        '/real/main/.git/worktrees/wt/gitdir': 'file',
+      });
+      const files = {
+        '/real/wt/.git': 'gitdir: /real/main/.git/worktrees/wt\n',
+        '/real/main/.git/worktrees/wt/commondir': '../..\n',
+        '/real/main/.git/worktrees/wt/gitdir': '/real/wt/.git\n',
+      };
+      const argsFor = (
+        filesystem: Partial<ResolvedSettings['sandbox']['filesystem']>,
+        links: Record<string, string> = {},
+      ): string[] => {
+        const settings = sandboxSettings();
+        Object.assign(settings.filesystem, filesystem);
+        const paths = worktree();
+        for (const link of Object.keys(links)) paths[link] = 'symlink';
+        return buildSandboxExecution(
+          '/usr/bin/bwrap',
+          'true',
+          '/real/wt',
+          settings,
+          hostWith(paths, files, links),
+        ).args;
+      };
+
+      it('binds the common git dir read-only under a root that holds it', () => {
+        for (const allowWrite of [['/real'], ['/real/main']]) {
+          const args = argsFor({ allowWrite });
+
+          expect(accessAt(args, '/real/main/.git/hooks/pre-commit'), `${allowWrite}`).toBe(
+            'read-only',
+          );
+          expect(accessAt(args, '/real/main/.git/config'), `${allowWrite}`).toBe('read-only');
+          expect(accessAt(args, '/real/main/other'), `${allowWrite}`).toBe('writable');
+        }
+      });
+
+      it('binds a root spelled through a link at its real path, so there is one view', () => {
+        const args = argsFor({ allowWrite: ['/alias', '/real/main'] }, { '/alias': '/real/main' });
+
+        expect(withFlag(args, '--bind')).toContainEqual(['/real/main', '/real/main']);
+        expect(withFlag(args, '--bind').map(([, at]) => at)).not.toContain('/alias');
+        expect(withFlag(args, '--symlink')).toEqual([['/real/main', '/alias']]);
+        expect(accessAt(args, '/real/main/.git/hooks/pre-commit')).toBe('read-only');
+      });
+
+      it('leaves it out of the namespace when no root holds it', () => {
+        const args = argsFor({});
+
+        expect(args.filter((arg) => arg.startsWith('/real/main'))).toEqual([]);
+      });
+
+      it('keeps its control files read-only when git dirs are writable', () => {
+        const args = argsFor({ allowWrite: ['/real/main'], allowGitWrites: true });
+
+        expect(accessAt(args, '/real/main/.git/objects/x')).toBe('writable');
+        expect(accessAt(args, '/real/main/.git/hooks/pre-commit')).toBe('read-only');
+        expect(accessAt(args, '/real/main/.git/config')).toBe('read-only');
+      });
+
+      it('pins the directories above it, and reopens what an opt-in names', () => {
+        const args = argsFor({ allowWrite: ['/real'] });
+        const optIn = argsFor({ allowWrite: ['/real/main/.git/hooks'] });
+
+        expect(withFlag(args, '--bind')).toContainEqual(['/real/main', '/real/main']);
+        expect(accessAt(optIn, '/real/main/.git/hooks/pre-commit')).toBe('writable');
+      });
+    });
+
+    it('pins the directories between a root and the workspace it holds', () => {
+      const args = build(
+        '/top/mid/ws',
+        { allowWrite: ['/top'] },
+        {},
+        { '/top': 'dir', '/top/mid': 'dir', '/top/mid/ws': 'dir' },
+      );
+
+      expect(withFlag(args, '--bind').map(([, at]) => at)).toEqual([
+        '/top',
+        '/top/mid',
+        '/top/mid/ws',
+      ]);
+    });
+
+    it('binds entries that overlap at one spelling, so a deny entry covers them all', () => {
+      const args = build(
+        WORKSPACE_REAL,
+        {
+          allowWrite: ['/alias', '/data', '/other/sub'],
+          denyRead: ['/data/secret'],
+          denyWrite: ['/alias/locked'],
+        },
+        { '/alias': '/data', '/other/sub': '/data/sub' },
+        {
+          '/data': 'dir',
+          '/data/secret': 'dir',
+          '/data/locked': 'dir',
+          '/data/sub': 'dir',
+          '/other': 'dir',
+        },
+      );
+
+      const bound = withFlag(args, '--bind').map(([, at]) => at);
+      expect(bound).toEqual(expect.arrayContaining(['/data', '/data/sub']));
+      expect(bound).not.toContain('/alias');
+      expect(bound).not.toContain('/other/sub');
+      expect(withFlag(args, '--symlink')).toEqual([
+        ['/data', '/alias'],
+        ['/data/sub', '/other/sub'],
+      ]);
+      expect(accessAt(args, '/data/secret')).toBe('empty');
+      expect(accessAt(args, '/data/locked/x')).toBe('read-only');
+    });
+
+    it('pins nothing twice, nothing missing and nothing in a read-only directory', () => {
+      const bound = (args: string[]): string[] => withFlag(args, '--bind').map(([, at]) => at);
+
+      // A directory in between that is itself an entry is bound once, as an entry.
+      expect(
+        bound(
+          build(
+            WORKSPACE_REAL,
+            { allowWrite: ['/real/ws/a/b/c', '/real/ws/a'] },
+            {},
+            { '/real/ws/a': 'dir', '/real/ws/a/b': 'dir', '/real/ws/a/b/c': 'dir' },
+          ),
+        ),
+      ).toEqual([WORKSPACE_REAL, '/real/ws/a', '/real/ws/a/b', '/real/ws/a/b/c']);
+      // A directory the host does not report as one is no bind source.
+      expect(
+        bound(
+          build(
+            WORKSPACE_REAL,
+            { allowWrite: ['/real/ws/gone/c'] },
+            {},
+            { '/real/ws/gone/c': 'dir' },
+          ),
+        ),
+      ).toEqual([WORKSPACE_REAL, '/real/ws/gone/c']);
+      // Read-only protected directories hold their entries as they are.
+      const optIns = build(
+        WORKSPACE_REAL,
+        { allowWrite: ['/real/ws/.git/hooks/sub/deep', '/real/ws/.book/cache/deep'] },
+        {},
+        {
+          '/real/ws/.git/hooks/sub': 'dir',
+          '/real/ws/.git/hooks/sub/deep': 'dir',
+          '/real/ws/.book/cache': 'dir',
+          '/real/ws/.book/cache/deep': 'dir',
+        },
+      );
+      expect(bound(optIns)).not.toContain('/real/ws/.git/hooks/sub');
+      expect(bound(optIns)).not.toContain('/real/ws/.book/cache');
+    });
+
+    it('binds an ordinary directory nested in a writable root, and says nothing', () => {
+      const exec = execFor(
+        WORKSPACE_REAL,
+        { allowWrite: ['/real/ws/a/build', '/data', '/data/sub'] },
+        {},
+        { '/real/ws/a': 'dir', '/real/ws/a/build': 'dir', '/data': 'dir', '/data/sub': 'dir' },
+      );
+
+      const bound = withFlag(exec.args, '--bind').map(([, at]) => at);
+      expect(bound).toEqual(
+        expect.arrayContaining(['/real/ws/a/build', '/data', '/data/sub', WORKSPACE_REAL]),
+      );
+      expect(exec.notices).toBeUndefined();
+    });
+  });
 });
 
 describe('unbindablePaths', () => {
@@ -2903,7 +3485,11 @@ describe('unbindablePaths', () => {
  * The sandbox is injected so the refusal is exercised on any host, bwrap or not.
  */
 describe('decideSandboxExecution refuses a workspace it cannot protect', () => {
-  const sandboxStub = { wrap: () => null, describe: () => 'stub' };
+  const sandboxStub = {
+    wrap: () => null,
+    unseenNotices: (notices: readonly string[]) => notices,
+    describe: () => 'stub',
+  };
 
   it('refuses a symlinked control path, naming it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'book-sbx-refuse-'));
@@ -2938,7 +3524,11 @@ describe('decideSandboxExecution refuses a workspace it cannot protect', () => {
           workspaceRoot: dir,
           sandbox: sandboxSettings(),
           runtime: {
-            sandbox: () => ({ wrap: () => ({ file: '/bwrap', args: [] }), describe: () => '' }),
+            sandbox: () => ({
+              wrap: () => ({ file: '/bwrap', args: [] }),
+              unseenNotices: (notices: readonly string[]) => notices,
+              describe: () => '',
+            }),
           },
         },
         'echo hi',
@@ -2971,7 +3561,11 @@ describe('decideSandboxExecution refuses a workspace it cannot protect', () => {
             },
           }),
           runtime: {
-            sandbox: () => ({ wrap: wrapSpy, describe: () => '' }),
+            sandbox: () => ({
+              wrap: wrapSpy,
+              unseenNotices: (notices: readonly string[]) => notices,
+              describe: () => '',
+            }),
           },
         },
         'echo hi',
@@ -4649,6 +5243,845 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
         }
       });
 
+      describe('an allowWrite root above the workspace, spelled through a link', () => {
+        /** A repository at `<base>/<...segments>` with a hook and a local settings file to protect. */
+        function repoUnder(base: string, ...segments: string[]): string {
+          const repo = join(base, ...segments);
+          mkdirSync(repo, { recursive: true });
+          execFileSync('git', ['init', '--quiet'], { cwd: repo });
+          mkdirSync(join(repo, '.git', 'hooks'), { recursive: true });
+          writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), HOOK);
+          mkdirSync(join(repo, '.book'));
+          writeFileSync(join(repo, '.book', 'settings.json'), '{}\n');
+          writeFileSync(
+            join(repo, '.book', 'settings.local.json'),
+            JSON.stringify({ provider: { apiKey: 'sk-secret' } }),
+          );
+          return repo;
+        }
+        const HOOK = '#!/bin/sh\nexit 0\n';
+        const freshBase = (): string =>
+          realpathSync(mkdtempSync(join(tmpdir(), 'book-sandbox-above-')));
+
+        const shapes: Array<{
+          name: string;
+          /** The repository's segments below the base, and the directory the root really is. */
+          repo: string[];
+          root: string[];
+          /** The links to make, `[link, target]`, relative to the base unless the target is relative as written. */
+          links: Array<[string[], string[] | string]>;
+          entry: string[];
+          /** The repository as the entry's spelling reaches it. */
+          through: string[];
+        }> = [
+          {
+            name: 'a link to the parent',
+            repo: ['real', 'proj'],
+            root: ['real'],
+            links: [[['alias'], ['real']]],
+            entry: ['alias'],
+            through: ['alias', 'proj'],
+          },
+          {
+            name: 'a chain of two links',
+            repo: ['real', 'proj'],
+            root: ['real'],
+            links: [
+              [['a1'], ['real']],
+              [['a2'], ['a1']],
+            ],
+            entry: ['a2'],
+            through: ['a2', 'proj'],
+          },
+          {
+            name: 'a link to the parent of the parent',
+            repo: ['deep', 'real', 'proj'],
+            root: ['deep'],
+            links: [[['gp'], ['deep']]],
+            entry: ['gp'],
+            through: ['gp', 'real', 'proj'],
+          },
+          {
+            name: 'a plain parent',
+            repo: ['real', 'proj'],
+            root: ['real'],
+            links: [],
+            entry: ['real'],
+            through: ['real', 'proj'],
+          },
+        ];
+
+        for (const { name, repo: repoAt, root, links, entry, through } of shapes) {
+          it(`keeps the hook and the local settings out of reach through ${name}`, async () => {
+            const base = freshBase();
+            const repo = repoUnder(base, ...repoAt);
+            for (const [link, target] of links) {
+              symlinkSync(
+                typeof target === 'string' ? target : join(base, ...target),
+                join(base, ...link),
+              );
+            }
+            const spelled = join(base, ...entry);
+            const reached = join(base, ...through);
+            try {
+              const result = await sandboxedBash(
+                [
+                  `printf evil > '${join(reached, '.git', 'hooks', 'pre-commit')}'`,
+                  `cat '${join(reached, '.book', 'settings.local.json')}'`,
+                  // Positive control: the spelling does reach the workspace.
+                  `cat '${join(reached, '.book', 'settings.json')}'`,
+                  `printf evil > .git/hooks/pre-commit`,
+                  `printf ok > '${join(spelled, 'sibling')}'`,
+                  `printf ok > notes.txt`,
+                  'echo done',
+                ].join('; '),
+                repo,
+                { filesystem: { allowWrite: [spelled] } },
+              );
+
+              expect(result.content).toContain('done');
+              expect(result.content).toContain('{}');
+              expect(result.content).not.toContain('sk-secret');
+              expect(readFileSync(join(repo, '.git', 'hooks', 'pre-commit'), 'utf8')).toBe(HOOK);
+              // The entry still does what it asked, at the spelling it asked for.
+              expect(readFileSync(join(base, ...root, 'sibling'), 'utf8')).toBe('ok');
+              expect(readFileSync(join(repo, 'notes.txt'), 'utf8')).toBe('ok');
+            } finally {
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+        }
+
+        it('keeps the deny entries spelled through the link in force', async () => {
+          const base = freshBase();
+          const repo = repoUnder(base, 'real', 'proj');
+          symlinkSync(join(base, 'real'), join(base, 'alias'));
+          const locked = join(base, 'real', 'locked');
+          const secrets = join(base, 'real', 'secrets');
+          mkdirSync(locked);
+          mkdirSync(secrets);
+          writeFileSync(join(locked, 'policy'), 'original\n');
+          writeFileSync(join(secrets, 'key'), 'hunter2');
+          writeFileSync(join(base, 'real', 'token'), 'hunter3');
+          const alias = join(base, 'alias');
+          try {
+            const result = await sandboxedBash(
+              [
+                `printf changed > '${join(alias, 'locked', 'policy')}'`,
+                `cat '${join(alias, 'secrets', 'key')}' '${join(secrets, 'key')}'`,
+                `cat '${join(alias, 'token')}' '${join(base, 'real', 'token')}'`,
+                'echo done',
+              ].join('; '),
+              repo,
+              {
+                filesystem: {
+                  allowWrite: [alias],
+                  denyWrite: [join(alias, 'locked')],
+                  denyRead: [join(alias, 'secrets'), join(alias, 'token')],
+                },
+              },
+            );
+
+            expect(result.content).toContain('done');
+            expect(result.content).not.toContain('hunter');
+            expect(readFileSync(join(locked, 'policy'), 'utf8')).toBe('original\n');
+          } finally {
+            rmSync(base, { recursive: true, force: true });
+          }
+        });
+
+        it('keeps the deny entries in force when two entries name one directory', async () => {
+          const base = freshBase();
+          const repo = repoUnder(base, 'real', 'proj');
+          const data = join(base, 'data');
+          mkdirSync(join(data, 'secrets'), { recursive: true });
+          writeFileSync(join(data, 'secrets', 'key'), 'hunter2');
+          symlinkSync(data, join(base, 'alias'));
+          const alias = join(base, 'alias');
+          try {
+            const result = await sandboxedBash(
+              [
+                `cat '${join(data, 'secrets', 'key')}' '${join(alias, 'secrets', 'key')}'`,
+                `printf ok > '${join(alias, 'x')}'`,
+                `printf ok > '${join(data, 'y')}'`,
+                'echo done',
+              ].join('; '),
+              repo,
+              {
+                filesystem: {
+                  allowWrite: [alias, data],
+                  denyRead: [join(data, 'secrets')],
+                },
+              },
+            );
+
+            expect(result.content).toContain('done');
+            expect(result.content).not.toContain('hunter');
+            expect(readFileSync(join(data, 'x'), 'utf8')).toBe('ok');
+            expect(readFileSync(join(data, 'y'), 'utf8')).toBe('ok');
+          } finally {
+            rmSync(base, { recursive: true, force: true });
+          }
+        });
+
+        it('keeps an opt-in on .book under such a root to what it names', async () => {
+          const base = freshBase();
+          const repo = repoUnder(base, 'real', 'proj');
+          symlinkSync(join(base, 'real'), join(base, 'alias'));
+          const alias = join(base, 'alias');
+          try {
+            const result = await sandboxedBash(
+              [
+                `printf '{"a":1}\\n' > '${join(alias, 'proj', '.book', 'settings.json')}'`,
+                `cat '${join(alias, 'proj', '.book', 'settings.local.json')}'`,
+                `printf evil > '${join(alias, 'proj', '.git', 'hooks', 'pre-commit')}'`,
+                'echo done',
+              ].join('; '),
+              repo,
+              { filesystem: { allowWrite: [alias, join(alias, 'proj', '.book')] } },
+            );
+
+            expect(result.content).toContain('done');
+            expect(result.content).not.toContain('sk-secret');
+            expect(readFileSync(join(repo, '.book', 'settings.json'), 'utf8')).toBe('{"a":1}\n');
+            expect(readFileSync(join(repo, '.git', 'hooks', 'pre-commit'), 'utf8')).toBe(HOOK);
+          } finally {
+            rmSync(base, { recursive: true, force: true });
+          }
+        });
+
+        it('binds a real parent at the link a workspace is opened through', () => {
+          const base = freshBase();
+          const repo = repoUnder(base, 'real', 'proj');
+          symlinkSync(join(base, 'real'), join(base, 'alias'));
+          symlinkSync(join(base, 'real'), join(base, 'other'));
+          const workspace = join(base, 'alias', 'proj');
+          const real = join(base, 'real');
+          const other = join(base, 'other');
+          try {
+            // Wrapped directly: this is about the workspace's own spelling, and bwrap
+            // starts in the physical cwd, so every path below is spelled in full.
+            const sandbox = createSandbox(
+              sandboxSettings({
+                allowUnsandboxedCommands: false,
+                filesystem: { allowWrite: [real, other] },
+              }),
+            );
+            const exec = sandbox?.wrap(
+              [
+                `printf evil > '${join(real, 'proj', '.git', 'hooks', 'pre-commit')}'`,
+                `printf evil > '${join(other, 'proj', '.git', 'hooks', 'pre-commit')}'`,
+                `printf evil > '${join(workspace, '.git', 'hooks', 'pre-commit')}'`,
+                `cat '${join(real, 'proj', '.book', 'settings.local.json')}'`,
+                `cat '${join(workspace, '.book', 'settings.local.json')}'`,
+                `printf ok > '${join(real, 'sibling')}'`,
+                `printf ok > '${join(other, 'sibling2')}'`,
+                'echo done',
+              ].join('; '),
+              workspace,
+            );
+            expect(exec).toBeTruthy();
+            const run = spawnSync(exec!.file, exec!.args, { cwd: workspace, encoding: 'utf8' });
+
+            expect(run.stdout).toContain('done');
+            expect(run.stdout).not.toContain('sk-secret');
+            expect(readFileSync(join(repo, '.git', 'hooks', 'pre-commit'), 'utf8')).toBe(HOOK);
+            expect(readFileSync(join(real, 'sibling'), 'utf8')).toBe('ok');
+            expect(readFileSync(join(real, 'sibling2'), 'utf8')).toBe('ok');
+          } finally {
+            rmSync(base, { recursive: true, force: true });
+          }
+        });
+
+        it('leaves out a root no spelling lines up with the workspace, and runs the command', async () => {
+          const base = freshBase();
+          repoUnder(base, 'real', 'proj');
+          const opened = join(base, 'opened');
+          symlinkSync(join(base, 'real', 'proj'), opened);
+          const real = join(base, 'real');
+          try {
+            const result = await sandboxedBash(
+              `printf ok > '${join(real, 'sibling')}'; cat '${join(real, 'proj', '.book', 'settings.local.json')}'; echo ran`,
+              opened,
+              { filesystem: { allowWrite: [real] } },
+            );
+
+            expect(result.status).toBe('success');
+            expect(result.content).toContain('ran');
+            expect(result.content).toContain(`entry ${real} is not bound`);
+            expect(result.content).not.toContain('sk-secret');
+            expect(existsSync(join(real, 'sibling'))).toBe(false);
+          } finally {
+            rmSync(base, { recursive: true, force: true });
+          }
+        });
+
+        describe('git directories outside the workspace', () => {
+          const git = (cwd: string, ...args: string[]): void => {
+            execFileSync(
+              'git',
+              ['-c', 'user.name=book', '-c', 'user.email=book@example.test', ...args],
+              { cwd, stdio: 'ignore' },
+            );
+          };
+          /** `<base>/real/wt`, a linked worktree of `<base>/real/main`. */
+          function linkedWorktree(base: string): { main: string; wt: string } {
+            const main = join(base, 'real', 'main');
+            const wt = join(base, 'real', 'wt');
+            mkdirSync(main, { recursive: true });
+            git(main, 'init', '--quiet');
+            git(main, 'commit', '--allow-empty', '--quiet', '-m', 'first');
+            git(main, 'worktree', 'add', '--quiet', wt);
+            mkdirSync(join(main, '.git', 'hooks'), { recursive: true });
+            writeFileSync(join(main, '.git', 'hooks', 'pre-commit'), HOOK);
+            symlinkSync(join(base, 'real'), join(base, 'aliasroot'));
+            symlinkSync(main, join(base, 'alias'));
+            return { main, wt };
+          }
+
+          const shapes: Array<{ name: string; entries: string[][]; through: string[] }> = [
+            { name: 'a root above both', entries: [['real']], through: ['real', 'main'] },
+            {
+              name: 'that root through a link',
+              entries: [['aliasroot']],
+              through: ['aliasroot', 'main'],
+            },
+            { name: 'its own work tree', entries: [['real', 'main']], through: ['real', 'main'] },
+            { name: 'that work tree through a link', entries: [['alias']], through: ['alias'] },
+            {
+              name: 'that work tree under two spellings',
+              entries: [['real', 'main'], ['alias']],
+              through: ['alias'],
+            },
+          ];
+
+          for (const { name, entries, through } of shapes) {
+            for (const allowGitWrites of [false, true]) {
+              it(`stays protected under ${name}, allowGitWrites ${allowGitWrites}`, async () => {
+                const base = freshBase();
+                const { main, wt } = linkedWorktree(base);
+                const spell = (segments: string[]): string => join(base, ...segments);
+                const gitDir = join(spell(through), '.git');
+                try {
+                  const result = await sandboxedBash(
+                    [
+                      `printf x >> '${join(gitDir, 'hooks', 'pre-commit')}'`,
+                      `printf x >> '${join(gitDir, 'config')}'`,
+                      `printf ok > '${join(gitDir, 'objects', 'probe')}'`,
+                      `printf ok > '${join(spell(through), 'sibling')}'`,
+                      'echo ran',
+                    ].join('; '),
+                    wt,
+                    { filesystem: { allowWrite: entries.map(spell), allowGitWrites } },
+                  );
+
+                  expect(result.content).toContain('ran');
+                  expect(readFileSync(join(main, '.git', 'hooks', 'pre-commit'), 'utf8')).toBe(
+                    HOOK,
+                  );
+                  expect(readFileSync(join(main, '.git', 'config'), 'utf8')).not.toMatch(/x$/);
+                  // The rest of the root is what it was, and the git dir follows the setting.
+                  expect(readFileSync(join(main, 'sibling'), 'utf8')).toBe('ok');
+                  expect(existsSync(join(main, '.git', 'objects', 'probe'))).toBe(allowGitWrites);
+                } finally {
+                  rmSync(base, { recursive: true, force: true });
+                }
+              });
+            }
+          }
+
+          it('runs when a common dir out of reach has a symlinked hooks directory', async () => {
+            const base = freshBase();
+            const { main, wt } = linkedWorktree(base);
+            rmSync(join(main, '.git', 'hooks'), { recursive: true });
+            mkdirSync(join(main, '.githooks'));
+            symlinkSync(join('..', '.githooks'), join(main, '.git', 'hooks'));
+            try {
+              const result = await sandboxedBash('echo ran', wt);
+
+              expect(result.status, result.content).toBe('success');
+              expect(result.content).toContain('ran');
+            } finally {
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+
+          it('applies a core.hooksPath from the common config to the worktree', async () => {
+            const base = freshBase();
+            const { main, wt } = linkedWorktree(base);
+            git(main, 'config', 'core.hooksPath', '.githooks');
+            mkdirSync(join(wt, '.githooks'));
+            writeFileSync(join(wt, '.githooks', 'pre-commit'), HOOK);
+            try {
+              const result = await sandboxedBash(
+                `printf x >> '${join(wt, '.githooks', 'pre-commit')}'; echo ran`,
+                wt,
+              );
+
+              expect(result.content).toContain('ran');
+              expect(readFileSync(join(wt, '.githooks', 'pre-commit'), 'utf8')).toBe(HOOK);
+            } finally {
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+
+          it('protects the git dir of a repository the workspace is below', async () => {
+            const base = freshBase();
+            const main = join(base, 'real', 'main');
+            const workspace = join(main, 'sub');
+            mkdirSync(workspace, { recursive: true });
+            git(main, 'init', '--quiet');
+            mkdirSync(join(main, '.git', 'hooks'), { recursive: true });
+            writeFileSync(join(main, '.git', 'hooks', 'pre-commit'), HOOK);
+            try {
+              const result = await sandboxedBash(
+                `printf x >> '${join(main, '.git', 'hooks', 'pre-commit')}'; printf ok > '${join(main, 'sibling')}'; echo ran`,
+                workspace,
+                { filesystem: { allowWrite: [main] } },
+              );
+
+              expect(result.content).toContain('ran');
+              expect(readFileSync(join(main, '.git', 'hooks', 'pre-commit'), 'utf8')).toBe(HOOK);
+              expect(readFileSync(join(main, 'sibling'), 'utf8')).toBe('ok');
+            } finally {
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+        });
+
+        describe('a link whose target climbs through another link', () => {
+          /** `<base>/safe/a` names `<base>/through/p/link/../..`, and that link leads under `<base>/ws`. */
+          function climbingLink(base: string, through: string[]): string {
+            mkdirSync(join(base, ...through, 'p'), { recursive: true });
+            mkdirSync(join(base, 'safe'));
+            const link = join(base, 'safe', 'a');
+            symlinkSync(join(base, 'ws', 'sub', 'inner'), join(base, ...through, 'p', 'link'));
+            symlinkSync(`${join(base, ...through)}/p/link/../..`, link);
+            return link;
+          }
+
+          it('resolves as the kernel resolves it', async () => {
+            const base = freshBase();
+            const repo = repoUnder(base, 'ws');
+            mkdirSync(join(repo, 'sub', 'inner'), { recursive: true });
+            const link = climbingLink(base, ['unrelated']);
+            try {
+              expect(realSandboxHost.realpath(link)).toBe(repo);
+              const result = await sandboxedBash(
+                `printf x >> '${join(link, '.git', 'hooks', 'pre-commit')}'; echo ran`,
+                repo,
+                { filesystem: { allowWrite: [link] } },
+              );
+
+              expect(result.content).toContain('ran');
+              expect(readFileSync(join(repo, '.git', 'hooks', 'pre-commit'), 'utf8')).toBe(HOOK);
+            } finally {
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+
+          it('counts the link it climbs through when that one is in a writable directory', async () => {
+            const base = freshBase();
+            const repo = repoUnder(base, 'ws');
+            mkdirSync(join(repo, 'sub', 'inner'), { recursive: true });
+            const link = climbingLink(base, ['data']);
+            try {
+              const result = await sandboxedBash('echo ran', repo, {
+                filesystem: { allowWrite: [link, join(base, 'data')] },
+              });
+
+              expect(result.content).toContain('ran');
+              expect(result.content).toContain(`entry ${link} is not bound`);
+            } finally {
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+        });
+
+        describe('an entry spelled through a link in a writable directory', () => {
+          const cases: Array<{
+            name: string;
+            /** The link, relative to the base, and what it holds as written. */
+            link: string[];
+            target: (base: string) => string;
+            /** The directory the entry leads to, to look for the file in. */
+            leadsTo: string[];
+          }> = [
+            {
+              name: 'an absolute link inside the directory it names',
+              link: ['real', 'up'],
+              target: (base) => join(base, 'real'),
+              leadsTo: ['real'],
+            },
+            {
+              name: 'a relative link inside the directory it names',
+              link: ['real', 'up'],
+              target: () => '.',
+              leadsTo: ['real'],
+            },
+            {
+              name: 'a link in the workspace to a directory outside it',
+              link: ['real', 'proj', 'cache'],
+              target: (base) => join(base, 'data'),
+              leadsTo: ['data'],
+            },
+            {
+              name: 'a relative link in the workspace to a directory outside it',
+              link: ['real', 'proj', 'cache'],
+              target: () => join('..', '..', 'data'),
+              leadsTo: ['data'],
+            },
+          ];
+
+          for (const { name, link, target, leadsTo } of cases) {
+            it(`is not bound, and the command runs: ${name}`, async () => {
+              const base = freshBase();
+              const repo = repoUnder(base, 'real', 'proj');
+              mkdirSync(join(base, 'data'));
+              const entry = join(base, ...link);
+              symlinkSync(target(base), entry);
+              try {
+                const result = await sandboxedBash(
+                  `printf ok > '${join(entry, 'probe')}'; echo ran`,
+                  repo,
+                  { filesystem: { allowWrite: [entry] } },
+                );
+
+                expect(result.status).toBe('success');
+                expect(result.content).toContain('ran');
+                expect(result.content).toContain(`entry ${entry} is not bound`);
+                expect(existsSync(join(base, ...leadsTo, 'probe'))).toBe(false);
+              } finally {
+                rmSync(base, { recursive: true, force: true });
+              }
+            });
+          }
+
+          it('says so in the output of a failed command and of a background one', async () => {
+            const base = freshBase();
+            const repo = repoUnder(base, 'real', 'proj');
+            const entry = join(base, 'real', 'up');
+            symlinkSync(join(base, 'real'), entry);
+            const { createDefaultRegistry } = await import('./tools/registry.js');
+            const ctx = {
+              workspaceRoot: repo,
+              env: {},
+              sandbox: sandboxSettings({
+                allowUnsandboxedCommands: false,
+                filesystem: { allowWrite: [entry] },
+              }),
+            };
+            const notice = `entry ${entry} is not bound`;
+            try {
+              const registry = createDefaultRegistry();
+              const failed = await registry.execute(
+                { id: 'c1', name: 'Bash', arguments: { command: 'exit 3' } },
+                ctx,
+              );
+              const started = await registry.execute(
+                {
+                  id: 'c2',
+                  name: 'Bash',
+                  arguments: { command: 'true', run_in_background: true },
+                },
+                ctx,
+              );
+
+              expect(failed.status).not.toBe('success');
+              expect(`${failed.content}\n${failed.structuredError?.message ?? ''}`).toContain(
+                notice,
+              );
+              expect(started.content).toContain(notice);
+            } finally {
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+
+          it('does not count a refused entry among the writable ones', () => {
+            const description = createSandbox(
+              sandboxSettings({ filesystem: { allowWrite: ['/a', '/b'] } }),
+            )?.describe(1);
+
+            expect(description).toContain('1 extra writable path(s)');
+            expect(description).toContain('1 allowWrite entries refused');
+          });
+
+          it('tells the user once per sandbox, and on the console with no host to tell', () => {
+            const base = freshBase();
+            const repo = repoUnder(base, 'real', 'proj');
+            const entry = join(base, 'real', 'up');
+            symlinkSync(join(base, 'real'), entry);
+            const settings = sandboxSettings({ filesystem: { allowWrite: [entry] } });
+            const sandbox = createSandbox(settings);
+            const context = {
+              sandbox: settings,
+              workspaceRoot: repo,
+              runtime: { sandbox: () => sandbox },
+            };
+            const onNotice = vi.fn();
+            const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+            try {
+              const first = decideSandboxExecution({ ...context, onNotice }, 'true', repo);
+              const second = decideSandboxExecution({ ...context, onNotice }, 'true', repo);
+
+              expect(first.notices).toHaveLength(1);
+              expect(second.notices).toEqual(first.notices);
+              // What gets spawned, and can be written to a job's spec, stays what it was.
+              expect(first.exec).toEqual({ file: first.exec?.file, args: first.exec?.args });
+              expect(first.unseenNotices).toEqual(first.notices);
+              expect(second.unseenNotices).toEqual([]);
+              expect(onNotice).toHaveBeenCalledTimes(1);
+              expect(onNotice.mock.calls[0][0]).toContain(`entry ${entry} is not bound`);
+              expect(warn).not.toHaveBeenCalled();
+
+              decideSandboxExecution(
+                { ...context, runtime: { sandbox: () => createSandbox(settings) } },
+                'true',
+                repo,
+              );
+              expect(warn).toHaveBeenCalledTimes(1);
+              expect(warn.mock.calls[0][0]).toContain(`entry ${entry} is not bound`);
+            } finally {
+              warn.mockRestore();
+              rmSync(base, { recursive: true, force: true });
+            }
+          });
+        });
+
+        describe('a link at the entry spelling never aborts the command', () => {
+          const cases: Array<{
+            name: string;
+            /** Extra directories, and links as `[link, target]`, relative to the base. */
+            dirs?: string[][];
+            links: Array<[string[], string[]]>;
+            allowWrite: string[][];
+            denyWrite?: string[][];
+            denyRead?: string[][];
+            /** `[path written, where it lands]`, relative to the base. */
+            writes?: Array<[string[], string[]]>;
+          }> = [
+            {
+              name: 'an entry below the spelling',
+              dirs: [['real', 'sub']],
+              links: [[['alias'], ['real']]],
+              allowWrite: [['alias'], ['alias', 'sub']],
+              writes: [
+                [
+                  ['alias', 'x'],
+                  ['real', 'x'],
+                ],
+                [
+                  ['alias', 'sub', 'y'],
+                  ['real', 'sub', 'y'],
+                ],
+              ],
+            },
+            {
+              name: 'the same, listed the other way round',
+              dirs: [['real', 'sub']],
+              links: [[['alias'], ['real']]],
+              allowWrite: [['alias', 'sub'], ['alias']],
+              writes: [
+                [
+                  ['alias', 'x'],
+                  ['real', 'x'],
+                ],
+                [
+                  ['alias', 'sub', 'y'],
+                  ['real', 'sub', 'y'],
+                ],
+              ],
+            },
+            {
+              name: 'a spelling below a link, with the real parent listed',
+              dirs: [['real', 'sub']],
+              links: [[['alias'], ['real']]],
+              allowWrite: [['real'], ['alias', 'sub']],
+              writes: [
+                [
+                  ['real', 'x'],
+                  ['real', 'x'],
+                ],
+                [
+                  ['alias', 'sub', 'y'],
+                  ['real', 'sub', 'y'],
+                ],
+              ],
+            },
+            {
+              name: 'one directory under three spellings',
+              links: [
+                [['alias'], ['real']],
+                [['other'], ['real']],
+              ],
+              allowWrite: [['alias'], ['real'], ['other']],
+              writes: [
+                [
+                  ['alias', 'x'],
+                  ['real', 'x'],
+                ],
+                [
+                  ['other', 'y'],
+                  ['real', 'y'],
+                ],
+              ],
+            },
+            {
+              name: 'a chain with both links listed',
+              links: [
+                [['a1'], ['real']],
+                [['a2'], ['a1']],
+              ],
+              allowWrite: [['a2'], ['a1']],
+              writes: [
+                [
+                  ['a2', 'x'],
+                  ['real', 'x'],
+                ],
+                [
+                  ['a1', 'y'],
+                  ['real', 'y'],
+                ],
+              ],
+            },
+            {
+              name: 'a spelling with parents the namespace has to make',
+              dirs: [['deep', 'er']],
+              links: [[['deep', 'er', 'alias'], ['real']]],
+              allowWrite: [['deep', 'er', 'alias']],
+              writes: [
+                [
+                  ['deep', 'er', 'alias', 'x'],
+                  ['real', 'x'],
+                ],
+              ],
+            },
+            {
+              name: 'a denyRead mask outside every root, below the spelling',
+              dirs: [['elsewhere', 'x']],
+              links: [
+                [['alias'], ['real']],
+                [['real', 'out'], ['elsewhere']],
+              ],
+              allowWrite: [['alias']],
+              denyRead: [['alias', 'out', 'x']],
+              writes: [
+                [
+                  ['real', 'y'],
+                  ['real', 'y'],
+                ],
+              ],
+            },
+            {
+              name: 'a denyWrite entry on the spelling',
+              links: [[['alias'], ['real']]],
+              allowWrite: [['alias']],
+              denyWrite: [['alias']],
+            },
+            {
+              name: 'a nested entry, with directories to pin above it',
+              dirs: [['real', 'proj', 'a', 'b', 'build']],
+              links: [],
+              allowWrite: [['real', 'proj', 'a', 'b', 'build']],
+              writes: [
+                [
+                  ['real', 'proj', 'a', 'b', 'build', 'x'],
+                  ['real', 'proj', 'a', 'b', 'build', 'x'],
+                ],
+                [
+                  ['real', 'proj', 'a', 'y'],
+                  ['real', 'proj', 'a', 'y'],
+                ],
+              ],
+            },
+            {
+              name: 'a nested entry with another entry in between',
+              dirs: [['real', 'proj', 'a', 'b', 'c']],
+              links: [],
+              allowWrite: [
+                ['real', 'proj', 'a', 'b', 'c'],
+                ['real', 'proj', 'a'],
+              ],
+              writes: [
+                [
+                  ['real', 'proj', 'a', 'x'],
+                  ['real', 'proj', 'a', 'x'],
+                ],
+                [
+                  ['real', 'proj', 'a', 'b', 'c', 'y'],
+                  ['real', 'proj', 'a', 'b', 'c', 'y'],
+                ],
+              ],
+            },
+            {
+              name: 'a nested entry under a root spelled through a link',
+              dirs: [['real', 'x', 'y']],
+              links: [[['alias'], ['real']]],
+              allowWrite: [['alias'], ['alias', 'x', 'y']],
+              writes: [
+                [
+                  ['alias', 'x', 'y', 'z'],
+                  ['real', 'x', 'y', 'z'],
+                ],
+              ],
+            },
+            {
+              name: 'a nested entry that is not there',
+              links: [],
+              allowWrite: [['real', 'proj', 'gone', 'build']],
+            },
+            {
+              name: 'a nested entry in the settings directory',
+              dirs: [['real', 'proj', '.book', 'cache', 'deep']],
+              links: [],
+              allowWrite: [['real', 'proj', '.book', 'cache', 'deep']],
+              writes: [
+                [
+                  ['real', 'proj', '.book', 'cache', 'deep', 'x'],
+                  ['real', 'proj', '.book', 'cache', 'deep', 'x'],
+                ],
+              ],
+            },
+          ];
+
+          for (const { name, dirs, links, allowWrite, denyWrite, denyRead, writes } of cases) {
+            it(name, async () => {
+              const base = freshBase();
+              const repo = repoUnder(base, 'real', 'proj');
+              for (const dir of dirs ?? []) mkdirSync(join(base, ...dir), { recursive: true });
+              for (const [link, target] of links)
+                symlinkSync(join(base, ...target), join(base, ...link));
+              const spell = (segments: string[]): string => join(base, ...segments);
+              try {
+                const result = await sandboxedBash(
+                  [
+                    ...(writes ?? []).map(([path]) => `printf ok > '${spell(path)}'`),
+                    'echo ran',
+                  ].join('; '),
+                  repo,
+                  {
+                    filesystem: {
+                      allowWrite: allowWrite.map(spell),
+                      denyWrite: (denyWrite ?? []).map(spell),
+                      denyRead: (denyRead ?? []).map(spell),
+                    },
+                  },
+                );
+
+                expect(result.status, result.content).toBe('success');
+                expect(result.content).toContain('ran');
+                expect(result.content).not.toContain('is not bound');
+                for (const [, landed] of writes ?? []) {
+                  expect(readFileSync(spell(landed), 'utf8')).toBe('ok');
+                }
+              } finally {
+                rmSync(base, { recursive: true, force: true });
+              }
+            });
+          }
+        });
+      });
+
       it('shows no second view of .book through a symlinked spelling (#625)', async () => {
         const repo = freshRepo({ book: true });
         writeFileSync(
@@ -5283,6 +6716,7 @@ describe('decideSandboxExecution when the sandbox cannot build a policy', () => 
               wrap: () => {
                 throw new Error('Seatbelt profile path is not absolute: "x"');
               },
+              unseenNotices: (notices: readonly string[]) => notices,
               describe: () => 'stub',
             }),
           },

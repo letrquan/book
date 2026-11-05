@@ -824,7 +824,7 @@ export async function runDoctorCommand(
   console.log();
 
   // Sandbox.
-  const { createSandbox, describeSandboxBackend, sandboxPolicySummary } =
+  const { createSandbox, describeSandboxBackend, sandboxNoticesFor, sandboxPolicySummary } =
     await import('../sandbox.js');
   const { hasAdjudicationPolicy } = await import('../permissions.js');
   const sandbox = createSandbox(settings.sandbox);
@@ -836,7 +836,9 @@ export async function runDoctorCommand(
   console.log('  Enabled: ' + settings.sandbox.enabled);
   console.log('  Backend: ' + describeSandboxBackend());
   console.log('  Available: ' + (sandbox !== null));
-  if (sandbox) console.log('  Enforcing: ' + sandbox.describe());
+  const sandboxNotices = sandbox ? sandboxNoticesFor(sandbox, config.workspace) : [];
+  if (sandbox) console.log('  Enforcing: ' + sandbox.describe(sandboxNotices.length));
+  for (const notice of sandboxNotices) console.log('  Refused: ' + notice);
   console.log('  Excluded commands: ' + settings.sandbox.excludedCommands.length);
   console.log('  Unsandboxed commands: ' + policy.unsandboxedCommands);
   console.log('  Auto-allow Bash: ' + policy.autoAllowBash);
