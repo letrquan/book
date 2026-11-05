@@ -16,7 +16,7 @@ import {
 import { createServer as createHttpServer, type Server as HttpServer } from 'http';
 import { createServer as createNetServer } from 'net';
 import { homedir, tmpdir } from 'os';
-import { join, posix } from 'path';
+import { dirname, join, posix } from 'path';
 import { fileURLToPath } from 'url';
 import {
   BOOK_TEMP_PREFIXES,
@@ -1304,6 +1304,167 @@ describe.skipIf(process.platform !== 'darwin')('the Seatbelt sandbox on a real M
     expect(read.status).not.toBe('success');
     expect(read.content).not.toContain('secret');
     expect(move.status).not.toBe('success');
+  });
+
+  describe('allowWrite entries, deny entries and git directories outside the workspace', () => {
+    /** A directory in the home directory, where no sandboxed command writes by default. */
+    function homeDirectory(name: string): string {
+      const path = homePath(name);
+      mkdirSync(path);
+      return path;
+    }
+    const HOOK = '#!/bin/sh\nexit 0\n';
+    /** A linked worktree of a repository, both in the home directory. */
+    function linkedWorktree(): { main: string; wt: string } {
+      const main = homeDirectory('main');
+      const wt = homePath('wt');
+      const git = (...args: string[]): void => {
+        execFileSync(
+          'git',
+          ['-c', 'user.name=book', '-c', 'user.email=book@example.test', ...args],
+          { cwd: main, stdio: 'ignore' },
+        );
+      };
+      git('init', '--quiet');
+      git('commit', '--allow-empty', '--quiet', '-m', 'first');
+      git('worktree', 'add', '--quiet', '-b', 'wt', wt);
+      mkdirSync(join(main, '.git', 'hooks'), { recursive: true });
+      writeFileSync(join(main, '.git', 'hooks', 'pre-commit'), HOOK);
+      return { main, wt };
+    }
+
+    it('does not bind an entry spelled through a link in a writable directory', async () => {
+      const outside = homeDirectory('outside');
+      const inWorkspace = join(workspace, 'cache');
+      symlinkSync(outside, inWorkspace);
+      const named = homeDirectory('named');
+      const inItself = join(named, 'up');
+      symlinkSync(named, inItself);
+
+      for (const [entry, leadsTo] of [
+        [inWorkspace, outside],
+        [inItself, named],
+      ]) {
+        const result = await sandboxedBash(`printf ok > '${join(entry, 'probe')}'; echo ran`, {
+          filesystem: { allowWrite: [entry] },
+        });
+
+        expect(result.status, entry).toBe('success');
+        expect(result.content, entry).toContain('ran');
+        expect(result.content, entry).toContain(`entry ${entry} is not bound`);
+        expect(existsSync(join(leadsTo, 'probe')), entry).toBe(false);
+      }
+    });
+
+    it('keeps an entry spelled through a link in no writable directory', async () => {
+      const target = homeDirectory('target');
+      const holder = homeDirectory('holder');
+      const entry = join(holder, 'alias');
+      symlinkSync(target, entry);
+
+      const result = await sandboxedBash(`printf ok > '${join(target, 'probe')}'; echo ran`, {
+        filesystem: { allowWrite: [entry] },
+      });
+
+      expect(result.status).toBe('success');
+      expect(result.content).not.toContain('is not bound');
+      expect(readFileSync(join(target, 'probe'), 'utf8')).toBe('ok');
+    });
+
+    it('keeps a nested entry and the directories above it where they were declared', async () => {
+      const entry = join(workspace, 'a', 'b', 'build');
+      mkdirSync(entry, { recursive: true });
+      const overrides = { filesystem: { allowWrite: [entry] } };
+
+      const write = await sandboxedBash(`printf ok > a/b/build/x; printf ok > a/y`, overrides);
+      const moves = await Promise.all(
+        [
+          ['a', 'a2'],
+          [join('a', 'b'), join('a', 'b2')],
+          [join('a', 'b', 'build'), join('a', 'b', 'build2')],
+        ].map(([from, to]) => sandboxedBash(`mv '${from}' '${to}'`, overrides)),
+      );
+
+      expect(write.status).toBe('success');
+      expect(readFileSync(join(entry, 'x'), 'utf8')).toBe('ok');
+      expect(readFileSync(join(workspace, 'a', 'y'), 'utf8')).toBe('ok');
+      for (const move of moves) expect(move.status, move.content).not.toBe('success');
+      expect(existsSync(entry)).toBe(true);
+      expect(existsSync(join(workspace, 'a2'))).toBe(false);
+    });
+
+    it('keeps the directories above a nested denyRead entry where they were declared', async () => {
+      const key = join(workspace, 'a', 'secrets', 'key');
+      mkdirSync(dirname(key), { recursive: true });
+      writeFileSync(key, 'hunter2');
+      const overrides = { filesystem: { denyRead: [key] } };
+
+      const read = await sandboxedBash(`cat a/secrets/key`, overrides);
+      const moves = await Promise.all(
+        [
+          ['a', 'a2'],
+          [join('a', 'secrets'), join('a', 's2')],
+        ].map(([from, to]) => sandboxedBash(`mv '${from}' '${to}'`, overrides)),
+      );
+
+      expect(read.status).not.toBe('success');
+      expect(read.content).not.toContain('hunter2');
+      for (const move of moves) expect(move.status, move.content).not.toBe('success');
+      expect(readFileSync(key, 'utf8')).toBe('hunter2');
+    });
+
+    it('keeps the directories between an allowWrite root and the workspace where they are', async () => {
+      const root = homeDirectory('root');
+      const repo = join(root, 'org', 'repo');
+      mkdirSync(repo, { recursive: true });
+      execFileSync('git', ['init', '--quiet'], { cwd: repo });
+
+      const moved = await sandboxedBash(
+        `mv '${join(root, 'org')}' '${join(root, 'org2')}'`,
+        { filesystem: { allowWrite: [root] } },
+        repo,
+      );
+
+      expect(moved.status, moved.content).not.toBe('success');
+      expect(existsSync(repo)).toBe(true);
+    });
+
+    for (const allowGitWrites of [false, true]) {
+      it(`protects a linked worktree's common git dir under a root, allowGitWrites ${allowGitWrites}`, async () => {
+        const { main, wt } = linkedWorktree();
+        const gitDir = join(main, '.git');
+
+        const result = await sandboxedBash(
+          [
+            `printf x >> '${join(gitDir, 'hooks', 'pre-commit')}'`,
+            `printf x >> '${join(gitDir, 'config')}'`,
+            `printf ok > '${join(gitDir, 'objects', 'probe')}'`,
+            `printf ok > '${join(main, 'sibling')}'`,
+            'echo ran',
+          ].join('; '),
+          { filesystem: { allowWrite: [main], allowGitWrites } },
+          wt,
+        );
+
+        expect(result.content).toContain('ran');
+        expect(readFileSync(join(gitDir, 'hooks', 'pre-commit'), 'utf8')).toBe(HOOK);
+        expect(readFileSync(join(gitDir, 'config'), 'utf8')).not.toMatch(/x$/);
+        expect(readFileSync(join(main, 'sibling'), 'utf8')).toBe('ok');
+        expect(existsSync(join(gitDir, 'objects', 'probe'))).toBe(allowGitWrites);
+      });
+    }
+
+    it("protects a linked worktree's hooks path from the common config", async () => {
+      const { main, wt } = linkedWorktree();
+      execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: main });
+      mkdirSync(join(wt, '.githooks'));
+      writeFileSync(join(wt, '.githooks', 'pre-commit'), HOOK);
+
+      const result = await sandboxedBash(`printf x >> .githooks/pre-commit; echo ran`, {}, wt);
+
+      expect(result.content).toContain('ran');
+      expect(readFileSync(join(wt, '.githooks', 'pre-commit'), 'utf8')).toBe(HOOK);
+    });
   });
 
   it('shows nothing of the home directory through denyWrite: [~], files or sockets (#625)', async () => {
