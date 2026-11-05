@@ -390,11 +390,15 @@ describe('the two queues when a run ends', () => {
 
   it('puts steers the run never delivered at the front of the queue', async () => {
     const late = [steerItem('steer-late', 'late report', 2)];
-    const send = vi.fn(async () => ({
-      status: 'completed' as const,
-      messages: [],
-      pendingSteers: late,
-    }));
+    // Only the first run hands the steer back; the run that sends it ends clean, so nothing is
+    // queued a third time while the assertions poll.
+    const send = vi
+      .fn(async () => ({
+        status: 'completed' as const,
+        messages: [],
+        pendingSteers: [] as typeof late,
+      }))
+      .mockResolvedValueOnce({ status: 'completed' as const, messages: [], pendingSteers: late });
     const { view, state } = await startApp({ send });
 
     press(view, 'first prompt');

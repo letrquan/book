@@ -39,6 +39,7 @@ vi.mock('../agents/manager.js', () => ({
 }));
 
 import { App } from './app.js';
+import { PEER_APPROVAL_ARM_MS } from './components/PeerMessageApprovalPrompt.js';
 
 const FROM = 'uds:/run/user/1000/book-socks/4242.sock';
 
@@ -244,10 +245,19 @@ describe('the held peer message in the TUI', () => {
 
   it('ignores keys pressed as it appears, so a typed-ahead Enter answers nothing', async () => {
     const { view, messaging } = await heldOnScreen();
-    view.stdin.write('\r');
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(messaging.answers).toEqual([]);
-    expect(words(view.lastFrame())).toContain(SHEET);
+    // Pin the clock to just after the sheet appeared, so a stalled event loop cannot age it past
+    // its arming delay before the Enter lands.
+    const realNow = Date.now.bind(Date);
+    const pinned = realNow() - 10 * PEER_APPROVAL_ARM_MS;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(pinned);
+    try {
+      view.stdin.write('\r');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(messaging.answers).toEqual([]);
+      expect(words(view.lastFrame())).toContain(SHEET);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('does not hold up delivery while it is open', async () => {
