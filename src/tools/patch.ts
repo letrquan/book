@@ -380,7 +380,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
       try {
         for (const entry of entries) {
           throwIfAborted(ctx.signal);
-          const before = await readTextSnapshot(entry.filePath, entry.operation.kind === 'add');
+          const before = await readTextSnapshot(entry.filePath, true);
           if (before.binary)
             return toolFailure(`Binary file is unsupported: ${entry.messagePath}`, {
               code: 'binary_file_unsupported',
