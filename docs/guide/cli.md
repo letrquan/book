@@ -155,6 +155,19 @@ slash command whose shell substitution failed) and `⚠` startup notices to stde
 `query()` runs quiet: no progress or `retry:` lines reach the host's stderr, since every tool call
 reaches it as an event, but `error:` and `warning:` lines still do.
 
+**The `attempt_discarded` record.** When the loop takes an attempt back, `stream-json` writes
+`{"type":"attempt_discarded","reason":"…"}`: a reader that builds the transcript from `assistant`
+and `reasoning` deltas drops everything it took for the turn so far. Usually the same turn is asked
+again; a `malformed_tool_call` record is also written for the second reply, and then the run fails
+with an `error` record instead. `reason` names what made the loop take the attempt back:
+
+| `reason`              | The attempt was                                                         |
+| --------------------- | ----------------------------------------------------------------------- |
+| `empty_response`      | an empty completion, or only reasoning that never closed                |
+| `content_filter`      | a `content_filter` stop on a turn that called no tool (retried once)    |
+| `error_envelope`      | an upstream error written out as the reply's text (retried once)        |
+| `malformed_tool_call` | a tool call the route left as markup in the reply's text (retried once) |
+
 **The `result` record.** The last line of a `stream-json` run carries the terminal outcome at the
 top level, beside `stopReason`, so a supervisor reads it without reaching into the payload:
 

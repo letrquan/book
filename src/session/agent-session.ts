@@ -1572,12 +1572,12 @@ export class AgentSession {
           emit({ type: 'text', content });
         },
         onReasoning: (content: string) => emit({ type: 'reasoning', content }),
-        onAttemptDiscarded: () => {
+        onAttemptDiscarded: (reason) => {
           // Also unwind the partial-output tally: the abandoned text is not
           // output the run produced, and counting it would mislabel a later
           // cancellation as having delivered something.
           streamedAssistantText = '';
-          emit({ type: 'attempt_discarded', reason: 'empty_response' });
+          emit({ type: 'attempt_discarded', reason });
         },
         onToolCall: (toolCall: ToolCall) => emit({ type: 'tool_use', toolCall }),
         onToolResult: (toolResult: ToolResult) => emit({ type: 'tool_result', toolResult }),

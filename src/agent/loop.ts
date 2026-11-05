@@ -601,9 +601,18 @@ export async function runAgentLoop(
   };
 
   // UserPromptSubmit hook — can modify or block the user prompt.
-  const submitted = options?.skipUserPromptHooks
-    ? { outcome: 'passed' as const, prompt: userMessage }
-    : await submitUserPrompt(userMessage);
+  let submitted: Awaited<ReturnType<typeof submitUserPrompt>>;
+  try {
+    submitted = options?.skipUserPromptHooks
+      ? { outcome: 'passed', prompt: userMessage }
+      : await submitUserPrompt(userMessage);
+  } catch (error) {
+    // `runHooks` rejects with the abort reason when the run is cancelled under a hook (#698).
+    // The run goes on as any other cancelled run does, so the prompt still reaches the history
+    // and the first abort check ends it `cancelled`; only a block, a policy decision, drops it.
+    if (!signal?.aborted) throw error;
+    submitted = { outcome: 'passed', prompt: userMessage };
+  }
   if (submitted.outcome === 'blocked') {
     newHistory.push({
       id: crypto.randomUUID(),
@@ -2417,7 +2426,7 @@ export async function runAgentLoop(
           // The attempt's deltas are already with the host; tell it to drop
           // them so the retry's answer does not queue up behind an abandoned
           // reasoning block that no history will ever record.
-          callbacks.onAttemptDiscarded?.();
+          callbacks.onAttemptDiscarded?.('empty_response');
           // The host shows a retry label from this and clears it when the
           // re-sent stream speaks, so a re-issue that skipped it left the run
           // silent. Same delay a transport re-issue waits.
@@ -2464,7 +2473,7 @@ export async function runAgentLoop(
               responseId: responseMetadata?.responseId,
             },
           );
-          callbacks.onAttemptDiscarded?.();
+          callbacks.onAttemptDiscarded?.('content_filter');
           retrySameTurn = true;
           continue;
         }
@@ -2498,7 +2507,7 @@ export async function runAgentLoop(
             promptTokens: turnUsage?.promptTokens,
             completionTokens: turnUsage?.completionTokens,
           });
-          callbacks.onAttemptDiscarded?.();
+          callbacks.onAttemptDiscarded?.('error_envelope');
           retrySameTurn = true;
           continue;
         }
@@ -2533,7 +2542,7 @@ export async function runAgentLoop(
         };
         // Nothing of this attempt is left in the transcript, so the output it produced is not
         // the run's partial output either.
-        callbacks.onAttemptDiscarded?.();
+        callbacks.onAttemptDiscarded?.('malformed_tool_call');
         assistantOutputProduced = outputBeforeAttempt;
         if (toolMarkupRetryTurn !== turn) {
           toolMarkupRetryTurn = turn;
@@ -3254,18 +3263,26 @@ export async function runAgentLoop(
           ? { ...call, arguments: permissionSubject.args }
           : call;
 
-        const preHookResults = await runHooks(
-          config.settings.hooks.PreToolUse,
-          'PreToolUse',
-          {
-            workspace: config.workspace,
-            event: 'PreToolUse',
-            toolName: canonName,
-            toolArgs: call.arguments,
-            ...(permissionSubject ? { toolTargets: permissionSubject.restrict } : {}),
-          },
-          { onHookEvent: callbacks.onHookEvent, signal },
-        );
+        let preHookResults: Awaited<ReturnType<typeof runHooks>>;
+        try {
+          preHookResults = await runHooks(
+            config.settings.hooks.PreToolUse,
+            'PreToolUse',
+            {
+              workspace: config.workspace,
+              event: 'PreToolUse',
+              toolName: canonName,
+              toolArgs: call.arguments,
+              ...(permissionSubject ? { toolTargets: permissionSubject.restrict } : {}),
+            },
+            { onHookEvent: callbacks.onHookEvent, signal },
+          );
+        } catch (error) {
+          // A cancel under the hook rejects with the abort reason (#698); the call never started.
+          if (!signal?.aborted) throw error;
+          toolResults[callIndex] = cancelledBeforeStart(call);
+          return undefined;
+        }
         const blocked = preHookResults.find((result) => result.action === 'block');
         if (blocked) {
           toolResults[callIndex] = toolFailure(
