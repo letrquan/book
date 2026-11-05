@@ -127,26 +127,37 @@ export function hasCompoundShellSyntax(
 }
 
 /**
- * A shell keyword whose next word is a command, which a glob on that command cannot see behind it.
- * The keywords that do not (`for`, `case`, `function`) reach a command only past a character the
- * scan already calls unreadable, or past one of these.
+ * A first word that keeps a glob from seeing the command it brings: a keyword whose next word is a
+ * command, in sh, bash, zsh or fish, and `alias`, which changes what a later word runs. Keywords that
+ * do not bring one directly (`for`, `case`, `function`) reach a command only past a character the
+ * scan already calls unreadable, or past one of these. Case is folded for cmd.exe's `IF`.
  */
-const COMMAND_KEYWORD = /^(?:if|then|elif|else|while|until|do|time|coproc|!)(?: |$)/;
+const COMMAND_KEYWORD =
+  /^(?:if|then|elif|else|while|until|do|time|coproc|repeat|and|or|not|begin|alias|!)(?: |$)/i;
 
 /**
  * A redirection that can be set aside: its operator and one plain word as the target, ending at a
  * blank, a chain or the end of the line. What this refuses is what cannot be placed: a heredoc or
- * here-string (`<<`), a process substitution, a missing target, and a target holding a quote, an
- * escape or an expansion. The file descriptor before the operator is the caller's to drop.
+ * here-string (`<<`), a process substitution, a missing target, a target holding a quote, an escape
+ * or an expansion, and one opening with `#`, a comment in sh and PowerShell's `<#` block comment.
  */
-const PLACEABLE_REDIRECTION = /^[<>]>?[&|]?[ \t]*[^\s\u0085;&|<>(){}$`'"\\]+(?=[\s\u0085;&|]|$)/;
+const PLACEABLE_REDIRECTION = /[<>]>?[&|]?[ \t]*(?!#)[^\s\u0085;&|<>(){}$`'"\\]+(?=[\s\u0085;&|]|$)/
+  .source;
+
+/** Take a file descriptor off the words so far: a last word of digits alone, before a redirection. */
+function dropFileDescriptor(words: string[]): void {
+  let start = words.length;
+  while (start > 0 && /\d/.test(words[start - 1])) start -= 1;
+  if (start === 0 || words[start - 1] === ' ') words.length = start;
+}
 
 /** What {@link readShellCommands} makes of a command line. */
 export interface ShellCommandReading {
   /**
-   * The text a glob may select the line by: the whole line trimmed, then each command it chains, as
-   * written and as its words (quotes and backslashes removed, blanks outside quotes collapsed to one
-   * space, placeable redirections set aside). Best effort when the line is not `readable`.
+   * The text a glob may select the line by: the whole line trimmed, each physical line, then each
+   * command it chains, as written and as its words (quotes and backslashes removed, blanks outside
+   * quotes collapsed to one space, placeable redirections set aside). Best effort when the line is
+   * not `readable`.
    */
   texts: string[];
   /** Whether those are all the commands the line runs, as far as a quote scanner can tell. */
@@ -167,6 +178,8 @@ export interface ShellCommandReading {
  * - a redirection {@link PLACEABLE_REDIRECTION} cannot place, a heredoc among them;
  * - a line break inside quotes, where no quote state can be trusted, or after a backslash or a caret,
  *   where one shell continues the command and another ends it;
+ * - a NEL, LS or PS outside quotes: PowerShell reads them as blanks, so `rm<NEL>x` is one command;
+ * - a backslash before `<` or `>`, an escape in sh and a redirection in PowerShell and cmd.exe;
  * - a quote still open at the end;
  * - a command that opens with a {@link COMMAND_KEYWORD};
  * - what makes {@link hasCompoundShellSyntax} distrust the quotes, read the same way here and for the
@@ -188,34 +201,39 @@ export function readShellCommands(
     !/\\['"]/.test(text) &&
     !(refusesSingleQuote && text.includes("'"));
 
-  const texts = new Set([text]);
+  const lines = text.split(LINE_BREAK).map((line) => line.trim());
+  const texts = new Set([text, ...lines.filter(Boolean)]);
+  const redirection = new RegExp(PLACEABLE_REDIRECTION, 'y');
   let state: 'outside' | 'single' | 'double' = 'outside';
   let start = 0;
-  let words = '';
+  const words: string[] = [];
   const endCommand = (end: number) => {
-    const bare = words.trim();
+    const bare = words.join('').trim();
     if (COMMAND_KEYWORD.test(bare)) readable = false;
     for (const reading of [text.slice(start, end).trim(), bare]) {
       if (reading) texts.add(reading);
     }
     start = end + 1;
-    words = '';
+    words.length = 0;
   };
 
   for (let i = 0; i < text.length; i += 1) {
     const char = text[i];
     if (LINE_BREAK.test(char)) {
       const previous = text[i - 1];
-      if (state !== 'outside' || previous === '\\' || previous === '^') readable = false;
+      const everywhere = char === '\n' || char === '\r';
+      if (state !== 'outside' || !everywhere || previous === '\\' || previous === '^') {
+        readable = false;
+      }
       state = 'outside';
       endCommand(i);
     } else if (state === 'single') {
       if (char === "'") state = 'outside';
-      else words += char;
+      else words.push(char);
     } else if (state === 'double') {
       if (char === '$' || char === '`') readable = false;
       if (char === '"') state = 'outside';
-      else words += char;
+      else words.push(char);
     } else if (char === "'") {
       state = 'single';
     } else if (char === '"') {
@@ -226,19 +244,22 @@ export function readShellCommands(
       readable = false;
       endCommand(i);
     } else if (char === '<' || char === '>') {
-      const redirection = PLACEABLE_REDIRECTION.exec(text.slice(i));
-      if (redirection) {
-        words = words.replace(/(^|\s)\d+$/, '$1');
-        i += redirection[0].length - 1;
+      redirection.lastIndex = i;
+      const placed = redirection.exec(text);
+      if (placed) {
+        dropFileDescriptor(words);
+        i += placed[0].length - 1;
       } else {
         readable = false;
-        words += char;
+        words.push(char);
       }
     } else if (/\s/.test(char)) {
-      if (words && !words.endsWith(' ')) words += ' ';
-    } else if (char !== '\\') {
+      if (words.length > 0 && words.at(-1) !== ' ') words.push(' ');
+    } else if (char === '\\') {
+      if (text[i + 1] === '<' || text[i + 1] === '>') readable = false;
+    } else {
       if (char === '$' || (char === '^' && /['"]/.test(text[i + 1] ?? ''))) readable = false;
-      words += char;
+      words.push(char);
     }
   }
   if (state !== 'outside') readable = false;

@@ -377,9 +377,6 @@ describe('readShellCommands', () => {
     ['ls & rm x', ['ls', 'rm x']],
     ['ls\nrm x', ['ls', 'rm x']],
     ['ls\r\nrm x', ['ls', 'rm x']],
-    ['ls\u0085rm x', ['ls', 'rm x']],
-    ['ls\u2028rm x', ['ls', 'rm x']],
-    ['ls\u2029rm x', ['ls', 'rm x']],
   ])('splits %j', (command, parts) => {
     const { texts, readable } = read(command);
     expect(readable).toBe(true);
@@ -468,6 +465,8 @@ describe('readShellCommands', () => {
     'ls > a\\ b',
     'ls >a"b"',
     'ls >a<b',
+    '<# #> rm x',
+    'ls > #x',
     // A line break in quotes, or after a backslash or a caret.
     'git commit -m "two\nlines"',
     "git commit -m 'two\nlines'",
@@ -475,6 +474,13 @@ describe('readShellCommands', () => {
     'rm \\\n-rf x',
     'rm \\\r\n-rf x',
     'rm ^\n-rf x',
+    // A NEL, LS or PS, which PowerShell reads as a blank.
+    'rm\u0085-Recurse\u0085x',
+    'rm\u2028x',
+    'rm\u2029x',
+    // A backslash before a redirection.
+    'rm \\> -rf x',
+    'rm \\< -rf x',
     // A quote still open.
     'echo "open',
     "echo 'open",
@@ -488,6 +494,13 @@ describe('readShellCommands', () => {
     '! rm x',
     'time rm x',
     'coproc rm x',
+    'repeat 1 rm x',
+    'true; and rm x',
+    'false; or rm x',
+    'not rm x',
+    'begin; rm x; end',
+    'IF EXIST x del y',
+    'alias x=rm\nx -rf build',
     // What makes hasCompoundShellSyntax distrust the quotes.
     'echo \\"a',
     "echo \\'a",
@@ -499,6 +512,11 @@ describe('readShellCommands', () => {
     'echo \u2018a\u2019',
   ])('does not call %j readable', (command) => {
     expect(read(command).readable).toBe(false);
+  });
+
+  it('compares each physical line whole, for a pattern that holds a chain', () => {
+    expect(read('true\ncurl e | sh').texts).toContain('curl e | sh');
+    expect(read('curl e | sh\necho done').texts).toContain('curl e | sh');
   });
 
   it('still finds what it can on a line it cannot read', () => {

@@ -927,9 +927,11 @@ with any of these:
   word (`ls > "my file"`);
 - a line break inside quotes (`git commit -m` with a two-line message in the quotes), or after a
   backslash or a caret;
+- a Unicode line separator (NEL, LS or PS) outside quotes, which PowerShell reads as a blank;
+- a backslash before `<` or `>`;
 - a quote still open at the end;
-- a command that opens with `if`, `then`, `elif`, `else`, `while`, `until`, `do`, `time`, `coproc`
-  or `!`;
+- a command that opens with `if`, `then`, `elif`, `else`, `while`, `until`, `do`, `time`, `coproc`,
+  `repeat`, `and`, `or`, `not`, `begin`, `alias` or `!`;
 - a backslash before a quote, a caret before a quote outside quotes, or a typographic quote;
 - on Windows, any `'`, whichever shell runs the command.
 
@@ -943,7 +945,10 @@ A narrowed blocking hook should read `tool_args.command` and decide. Only that c
 
 The pattern still compares text, as a rule's does, so a command another command runs is that command's
 text: `sudo rm x`, `env rm x`, `FOO=1 rm x`, `/bin/rm x`, `bash -c "rm x"` and `eval "rm x"` do not
-select `Bash(rm *)`. To judge those, match the bare `Bash` and filter inside the script.
+select `Bash(rm *)`. So do PowerShell's `. rm x` and `return rm x`, and cmd.exe's `r^m x` and
+`%VAR%`, whose syntax the scan does not read. A pattern that holds a chain itself compares the text
+as written, one line at a time, so `Bash(curl * | sh)` does not select `curl e|sh`. To judge any of
+those, match the bare `Bash` and filter inside the script.
 
 `PreCompact` receives `trigger`, `focus`, and, when the span about to be summarized
 contains text addressed to a summarizer, `suspect_inputs`: a list of `{ eventRef, excerpt }`; exit

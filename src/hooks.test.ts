@@ -4,7 +4,15 @@ import { isProcessAlive, TERMINATE_GRACE_MS } from './jobs/process-tree.js';
 import { permissionRuleMatchesCall } from './permissions.js';
 import type { HookEntry, HookEvent } from './settings.js';
 import { spawn } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
@@ -614,6 +622,12 @@ describe('runHooks — a narrowed hook sees the whole call (#687)', () => {
     "r''m -rf build",
     '\\rm -rf build',
     'ls && "rm" -rf build',
+    // What a shell other than sh reads differently.
+    '<# #> rm -rf build',
+    'rm\u0085-Recurse\u0085build',
+    'true; and rm -rf build',
+    // A word that stands for another.
+    'alias x=rm\nx -rf build',
   ])('blocks %j with a Bash(rm *) hook', async (command) => {
     expect(await actions('Bash(rm *)', bash(command))).toEqual(['block']);
   });
@@ -642,6 +656,8 @@ describe('runHooks — a narrowed hook sees the whole call (#687)', () => {
 
   it('still compares the whole line, for a pattern that holds a chain', async () => {
     expect(await actions('Bash(npm test | tail*)', bash('npm test | tail -5'))).toEqual(['block']);
+    expect(await actions('Bash(curl * | sh)', bash('curl e | sh\necho done'))).toEqual(['block']);
+    expect(await actions('Bash(curl * | sh)', bash('true\ncurl e | sh'))).toEqual(['block']);
   });
 
   // None of these can be read in full. `rm` appears in none of the first group, and nothing tells
@@ -731,6 +747,22 @@ describe('runHooks — a narrowed hook sees the whole call (#687)', () => {
     const absolute = `Edit(${join(dir, '*').replace(/\\/g, '/')})`;
     const relative = { toolName: 'Edit', toolArgs: { file_path: 'a.ts' } };
     expect(await actions(absolute, relative)).toEqual(['block']);
+  });
+
+  // A link can lead into a root the hook runner has not been told about.
+  it.skipIf(process.platform === 'win32')('follows a link out of the workspace', async () => {
+    const extra = realpathSync(mkdtempSync(join(tmpdir(), 'book-hooks-extra-')));
+    try {
+      symlinkSync(extra, join(dir, 'out'));
+      const matcher = `Write(${join(extra, '.env')})`;
+      const write = { toolName: 'Write', toolArgs: { file_path: 'out/.env' } };
+      expect(await actions(matcher, write)).toEqual(['block']);
+      expect(await actions(`ApplyPatch(${join(extra, '.env')})`, patch('out/.env'))).toEqual([
+        'block',
+      ]);
+    } finally {
+      rmSync(extra, { recursive: true, force: true });
+    }
   });
 
   it('does not stop on a path no file system could hold', async () => {

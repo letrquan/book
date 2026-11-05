@@ -1017,9 +1017,11 @@ function spellingsOfPath(
 }
 
 /**
- * A path as written and the spellings a `deny` or `ask` rule also reads it by, for a reader that
- * knows only the workspace: a hook matcher, so `ApplyPatch(.env)` sees `sub/../.env` and the
- * absolute path (#687). With no approved roots of its own, it has no form relative to one.
+ * A path as written, where its links lead, and the spellings a `deny` or `ask` rule also reads it
+ * by, for a reader that knows only the workspace: a hook matcher, so `ApplyPatch(.env)` sees
+ * `sub/../.env` and the absolute path (#687). With no approved roots of its own, it has no form
+ * relative to one, and without one it asks for the links itself: a link can lead into a root it has
+ * not been told about.
  */
 export function workspacePathSpellings(workspace: string, raw: string): string[] {
   if (!raw) return [raw];
@@ -1029,7 +1031,11 @@ export function workspacePathSpellings(workspace: string, raw: string): string[]
     refuseUnreachableReads: false,
     autoAllowReads: false,
   };
-  return [raw, ...spellingsOfPath(resolvedPathScope(scope), raw, false, true)];
+  return [
+    raw,
+    toPosix(canonicalizePath(resolve(workspace, raw))),
+    ...spellingsOfPath(resolvedPathScope(scope), raw, false, true),
+  ];
 }
 
 /** The other spellings of a path-rule tool's target; see `spellingsOfPath`. */
