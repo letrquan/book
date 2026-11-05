@@ -32,7 +32,7 @@ export function mcpServerFingerprint(config: McpServerConfig): string {
     // one-way and neither the UI nor diagnostics render these values.
     headers: sortedRecord(config.headers),
   });
-  return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 export type McpServerApprovalState = 'approved' | 'rejected' | 'unknown';

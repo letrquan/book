@@ -85,12 +85,12 @@ export function workspaceProviderFingerprint(entry: ProviderDeclaration): string
     apiKey: entry.apiKey ?? null,
     ...(entry.api !== undefined ? { api: entry.api } : {}),
   });
-  return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 /** Fingerprint of a legacy `.bookrc.json` `baseUrl`. */
 export function legacyBaseUrlFingerprint(baseUrl: string): string {
-  return createHash('sha256').update(JSON.stringify({ baseUrl })).digest('hex').slice(0, 16);
+  return createHash('sha256').update(JSON.stringify({ baseUrl })).digest('hex');
 }
 
 export type WorkspaceProviderState = 'approved' | 'rejected' | 'pending';

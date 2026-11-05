@@ -640,9 +640,11 @@ describe('runDoctorCommand project-declared hooks', () => {
 
     expect(output).toContain('matcher:     Bash(*)');
     expect(output).toContain('env:         NODE_OPTIONS=--require ./.book/payload.js');
-    // The fingerprint is the argument `book trust hook` takes, so it is printed.
-    const { hookFingerprint } = await import('../hook-approvals.js');
-    expect(output).toContain(hookFingerprint('PreToolUse', entry));
+    // The start of the fingerprint is an argument `book trust hook` takes, so it is printed.
+    const { hookFingerprint, shortFingerprint } = await import('../hook-approvals.js');
+    expect(output).toContain(
+      `fingerprint: ${shortFingerprint(hookFingerprint('PreToolUse', entry))}`,
+    );
   });
 
   // The command text belongs to the repository: it must not be able to draw

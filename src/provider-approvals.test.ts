@@ -63,8 +63,7 @@ describe('workspaceProviderFingerprint', () => {
   it('covers `api` when set, and digests an entry without it exactly as before the key existed', () => {
     const before = createHash('sha256')
       .update(JSON.stringify({ type: 'openai', origin: base.baseURL, apiKey: base.apiKey }))
-      .digest('hex')
-      .slice(0, 16);
+      .digest('hex');
     expect(workspaceProviderFingerprint(base)).toBe(before);
     expect(workspaceProviderFingerprint({ ...base, api: 'responses' })).not.toBe(before);
     expect(workspaceProviderFingerprint({ ...base, api: 'chat' })).not.toBe(

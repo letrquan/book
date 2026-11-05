@@ -174,6 +174,25 @@ describe('book trust hook', () => {
 
   // A typo would otherwise record a decision matching no hook, leaving the user
   // convinced they approved something that stays withheld.
+  it('takes the start of a fingerprint as a report prints it, and records the whole digest', async () => {
+    writeProject({ hooks: { PreToolUse: [{ command: 'lint-staged.sh' }] } });
+
+    await run('hook', fingerprint().slice(0, 16));
+
+    expect(loadWorkspaceTrust(workspace, storePath()).hookEntries).toEqual({
+      [fingerprint()]: 'approved',
+    });
+  });
+
+  it('takes no start shorter than a report prints', async () => {
+    writeProject({ hooks: { PreToolUse: [{ command: 'lint-staged.sh' }] } });
+
+    const result = await run('hook', fingerprint().slice(0, 15));
+
+    expect(result.exitCode).toBe(1);
+    expect(loadWorkspaceTrust(workspace, storePath()).hookEntries).toEqual({});
+  });
+
   it('refuses an unknown fingerprint and lists what is pending', async () => {
     writeProject({ hooks: { PreToolUse: [{ command: 'lint-staged.sh' }] } });
 
@@ -181,7 +200,8 @@ describe('book trust hook', () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.err).toContain('no project-declared hook');
-    expect(result.err).toContain(fingerprint());
+    expect(result.err).toContain(fingerprint().slice(0, 16));
+    expect(result.err).not.toContain(fingerprint());
     expect(existsSync(storePath())).toBe(false);
   });
 

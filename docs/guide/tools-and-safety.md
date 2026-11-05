@@ -926,6 +926,9 @@ book trust provider --all-pending      # every provider still awaiting a decisio
 book trust provider evil --reject      # refuse it
 ```
 
+`book doctor` prints the first 16 digits of a hook's fingerprint, and `book trust hook` takes those
+or the whole digest; the decision is recorded against the whole digest either way.
+
 All of them take `--workspace <path>`; `book doctor` prints it for you when it is diagnosing a
 directory other than the one you are in. Each invocation records one decision and leaves every
 other decision — in this workspace and in every other — untouched.
