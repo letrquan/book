@@ -1,5 +1,14 @@
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -184,17 +193,23 @@ describe('visitGitIndex', () => {
     const tracked: Record<string, string> = {};
     for (let i = 0; i < 600; i++) tracked[`dir/f${String(i).padStart(4, '0')}`] = String(i);
     repository(dir, tracked);
-    git(dir, ['commit', '-q', '-m', 'base']);
     git(dir, ['update-index', '--split-index']);
-    // Scattered deletes, so the bitmap holds runs of zeros and literal words.
-    for (const i of [0, 1, 63, 64, 65, 200, 201, 599]) {
-      git(dir, ['rm', '-q', '--cached', `dir/f${String(i).padStart(4, '0')}`]);
-    }
+    // Scattered deletes, so the bitmap holds runs of zeros and literal words. Two `git rm` calls and
+    // two `git add` calls rewrite the link extension four times, so its bitmaps are merged across
+    // writes. Each git start is slow on Windows, so no more calls than that, and no commit.
+    const name = (i: number): string => `dir/f${String(i).padStart(4, '0')}`;
+    git(dir, ['rm', '-q', '--cached', '--', ...[0, 1, 63, 64, 65].map(name)]);
+    git(dir, ['rm', '-q', '--cached', '--', ...[200, 201, 599].map(name)]);
     write(dir, 'dir/f0300', 'changed');
-    git(dir, ['add', 'dir/f0300']);
+    git(dir, ['add', '--', 'dir/f0300']);
     write(dir, 'new.txt', 'new');
-    git(dir, ['add', 'new.txt']);
+    git(dir, ['add', '--', 'new.txt']);
 
+    // The index must still be split, or this would be a plain-index test.
+    expect(readdirSync(join(dir, '.git')).some((file) => file.startsWith('sharedindex.'))).toBe(
+      true,
+    );
+    expect(readFileSync(join(dir, '.git', 'index')).includes('link')).toBe(true);
     expect(walked(join(dir, '.git')).map((entry) => entry.path)).toEqual(
       lsFiles(dir).map((entry) => entry.path),
     );
