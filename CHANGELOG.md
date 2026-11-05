@@ -4,6 +4,58 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Add a function size and complexity ratchet to `architecture:check` (#704): a function over 150
+  code lines or complexity 30 needs a baseline entry and may shrink but not grow,
+  `npm run architecture:baseline` records a gain, and on a pull request CI rejects a baseline that
+  gains a key or raises a number.
+
+### Changed
+
+- `acceptEdits` doesn't cover Book's and git's control files: those still ask, as in `default`; a
+  home directory held inside a workspace entry still asks too. An `allow` path rule matches where
+  the path leads, not how it's spelled, so a rule for a folder that is a link has to name where the
+  link leads. A session rule covers an `ApplyPatch` only when it covers every file it names.
+- A `.book/settings.local.json` that git tracks is not read, except for restrictions, which still
+  apply, and Book will not write it: a local file a repository ships isn't local. Approval
+  fingerprints use the whole digest, so each recorded hook, MCP server, command and provider
+  decision is asked once more.
+- Agents: a Task or AgentSpawn child now stays under the allowed-tools of the parent's skill or
+  command, frozen at the spawn; a spawn that would leave its role no tool is refused with
+  `child_tool_surface_empty`, and AgentSend to an agent started outside the list with
+  `child_outside_tool_ceiling`. `ApplyPatch(<glob>)` in allowed-tools covers every file the patch
+  touches (#696).
+- Hook matchers read `Tool(pattern)` with the permission rules' glob, so `?` is one character and a
+  `Bash(ls *)` hook no longer runs on a bare `ls` (#684). A `Bash(pattern)` hook checks every
+  command a line chains and fails closed before the call on a line it cannot read, and hooks on file
+  tools and patches compare every file in every spelling (#687).
+- Sandbox: an allowWrite root above the workspace spelled through a symlink no longer binds a
+  second, unprotected view of the workspace (#682). An allowWrite entry spelled through a link in a
+  writable directory is refused with a notice, since such a link can change. Git directories outside
+  the workspace are protected where a writable root holds them, a linked worktree's hooks path from
+  the common config is protected, and so is the folder above a `_` hooks directory. Directories
+  above nested allowWrite and denyRead entries, and between a root and the workspace, stay in place.
+  Links resolve as the kernel resolves them.
+
+### Fixed
+
+- A run cancelled while a PreToolUse or UserPromptSubmit hook runs ends cancelled instead of
+  rejecting out of the agent loop (#698). The stream-json `attempt_discarded` record names its cause
+  (`empty_response`, `content_filter`, `error_envelope` or `malformed_tool_call`) instead of always
+  saying `empty_response` (#686).
+- A background job's completion row shows before the model's reply to it (#675). A Markdown block's
+  tab stops start from where it sits in the transcript, and each row of a wrapped line gets stops of
+  its own (#700).
+- `Write` recreates a file deleted outside the file tools; `Edit`, `MultiEdit`, `NotebookEdit` and
+  `ApplyPatch` report it as not found (#674).
+- `book doctor`, `book trust` and the startup notices show bidi controls, directional marks and line
+  separators in hook and provider text as visible escapes, a truncated line never ends in half an
+  escape, and a hook entry in `book doctor` says when its text is cut or its command holds a real
+  line break (#697).
+- A tool call in a parallel wave no longer writes the permission mode back; only a serial call can
+  (#705).
+
 ## [0.4.0-beta.2] - 2026-11-05
 
 ### Added
