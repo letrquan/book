@@ -470,6 +470,9 @@ rule is the URL's origin with `/**` appended, and an origin holding a `*` (the U
 one in a host, `http://*.example.com/x`) has no rule either, since `WebFetch(http://*.example.com/**)`
 would admit any http host whose URL contains `.example.com/`. A `?` or `*` in the path or query
 is not part of the origin, so `https://example.com/a?b=1` still saves `WebFetch(https://example.com/**)`.
+An `ApplyPatch` of several files has no rule either, and "Always allow" is not offered for it: an
+allow, a session rule included, covers a patch only when it covers every file the patch names, so a
+rule for one file would not allow it. One `ApplyPatch(<file>)` rule per file does.
 The `--scrollback` prompt (`Allow? [y]es/[n]o/[a]lways`) offers `[a]lways`, and accepts `a`, on
 the same terms.
 
@@ -683,8 +686,8 @@ the unreachable target in both modes, never the ask rule, which could not help.
 these; an `ApplyPatch` with one among many asks for the whole patch and writes nothing until you
 approve it.
 
-- Book's and git's control files. Anything under the workspace or an approved directory, at any
-  depth, in `.book/` (settings, commands, agents, skills), named `.bookrc.json`, or in or named
+- Book's and git's control files. Anything below the root that serves the target, at any depth, in
+  `.book/` (settings, commands, agents, skills), named `.bookrc.json` or `.mcp.json`, or in or named
   `.git`; and any other path the sandbox keeps read-only for a command: a git directory this work
   tree uses (a linked worktree's shared one, where an approved directory reaches it), a file its
   git config includes, and the directory `core.hooksPath` names.
@@ -694,11 +697,12 @@ approve it.
 Targets are compared after following links, with case and the other differences a folding file
 system ignores set aside, so a link in the workspace to `.git/config` asks too, and so does a path
 through a link that dangles, since nothing says where it would land. Nothing here changes who
-decides: an `allow` rule that covers the call, an "Always allow" from this session, and
+decides: an `allow` rule that covers the call, an "Always allow" from this session, `auto` and
 `bypassPermissions` run it without a prompt, a `deny` rule still blocks it, and a memory write still
 needs none. Where nothing can answer (print mode, the SDK, a managed agent with no approver), the
 call is refused and the refusal names the rule that would allow it. A patcher in a worktree edits
-its work tree as before: a root that merely sits below a home is not guarded by it.
+its work tree as before: a root is judged on its own, so one that merely sits below a home, or below
+an approved directory's `.book`, is not guarded by either.
 
 Everything else is an ordinary edit, including `.gitignore`, `.github/`, `.husky/` when no
 `core.hooksPath` names it, and instruction files and other tools' folders such as `CLAUDE.md`,

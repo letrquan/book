@@ -30,8 +30,8 @@ import {
   type PathRoots,
   type ReadablePathDetail,
 } from './tools/path-utils.js';
-import { containsPath, homeGuards, pathHoldsHome, rootHoldsHome } from './additional-roots.js';
-import { isWorkspaceControlPath, sandboxCoverage } from './sandbox.js';
+import { containsPath, pathHoldsHome, rootHoldsHome } from './additional-roots.js';
+import { sandboxCoverage, workspaceControlPathJudge } from './sandbox.js';
 
 /**
  * Parse a permission rule string like "Bash(git *)" or "Read(./.env)" into
@@ -495,6 +495,8 @@ export function permissionRuleForToolCall(call: ToolCall): string | undefined {
   // loop asks with the recipient in its canonical spelling (#653): the bare name, which a rule can
   // keep, while no other live session holds it, and `name [ref]` while one does.
   if (namesSessionByAddress(toolName, call.arguments)) return undefined;
+  // No one rule covers a patch of several files: a rule for its first file would not allow it.
+  if (toolName === 'ApplyPatch' && patchFilePaths(call.arguments).length > 1) return undefined;
   const scope = ruleScopeOf(toolName, toolPrimaryArg(toolName, call.arguments));
   if (!scope || RULE_WILDCARD.test(scope.taken)) return undefined;
   return `${toolName}(${scope.pattern})`;
@@ -515,6 +517,11 @@ export interface MissingRuleReason {
    * is a session whose name another live session also holds.
    */
   sessionAddress?: boolean;
+  /**
+   * An `ApplyPatch` of several files, which no one rule covers: the rule for each file that has
+   * one. Together they allow the patch, since an allow must cover every file it names.
+   */
+  patchRules?: string[];
 }
 
 /**
@@ -536,6 +543,17 @@ export function missingRuleReason(call: ToolCall): MissingRuleReason | undefined
   }
   if (namesSessionByAddress(toolName, call.arguments)) {
     return { lineBreak: false, wildcard: false, sessionAddress: true };
+  }
+  const patchFiles = toolName === 'ApplyPatch' ? patchFilePaths(call.arguments) : [];
+  if (patchFiles.length > 1) {
+    const scopes = patchFiles.map((file) => ruleScopeOf(toolName, file));
+    return {
+      lineBreak: false,
+      wildcard: false,
+      patchRules: scopes.flatMap((one) =>
+        one && !RULE_WILDCARD.test(one.taken) ? [`${toolName}(${one.pattern})`] : [],
+      ),
+    };
   }
   const scope = ruleScopeOf(toolName, toolPrimaryArg(toolName, call.arguments));
   return scope && RULE_WILDCARD.test(scope.taken)
@@ -639,6 +657,13 @@ export function permissionRuleMatchesCall(
       subject.allow.some((spelling) => ruleMatches(judged, toolName, spelling)),
     );
   }
+  // A patch names several files, and an allow covers it only if it covers each of them, as
+  // `evaluatePermissionDetail` has it: the first path is not the call.
+  const patchFiles = toolName === 'ApplyPatch' ? patchOperations(call.arguments) : [];
+  if (patchFiles.length > 0) {
+    const parsed = parseRule(rule);
+    return patchFiles.every((operation) => ruleMatches(parsed, toolName, operation.path));
+  }
   const primaryArg = toolPrimaryArg(toolName, call.arguments);
   if (toolName === 'WebFetch' && primaryArg) {
     try {
@@ -654,6 +679,11 @@ export function permissionRuleMatchesCall(
 function patchOperations(args: Record<string, unknown>): PatchOperation[] {
   const parsed = parsePatch(args.patch);
   return 'operations' in parsed ? parsed.operations : [];
+}
+
+/** The distinct files a patch names, in the order it names them. */
+function patchFilePaths(args: Record<string, unknown>): string[] {
+  return [...new Set(patchOperations(args).map((operation) => operation.path))];
 }
 
 function ruleMatchesPatch(rule: ParsedRule, paths: readonly string[], fold: boolean): boolean {
@@ -1183,6 +1213,13 @@ const MEMORY_WRITE_TOOLS: ReadonlySet<string> = new Set([
   'ApplyPatch',
 ]);
 
+/** The paths a file mutation names: one per `ApplyPatch` operation, or its one path argument. */
+function mutationTargets(tool: string, args: Record<string, unknown>): Array<string | undefined> {
+  return tool === 'ApplyPatch'
+    ? patchOperations(args).map((operation) => operation.path)
+    : [pathArgument(tool, args)];
+}
+
 /**
  * Whether a call is a write whose every target is a memory file the memory write root serves.
  * ApplyPatch can name several files, and one that is not a memory target sends the whole patch
@@ -1199,10 +1236,7 @@ function writesOnlyMemory(
     additionalRoots: scope.additionalRoots,
     memoryWrite: scope.memoryWrite,
   };
-  const targets =
-    tool === 'ApplyPatch'
-      ? patchOperations(args).map((operation) => operation.path)
-      : [pathArgument(tool, args)];
+  const targets = mutationTargets(tool, args);
   return (
     targets.length > 0 &&
     targets.every(
@@ -1215,9 +1249,10 @@ function writesOnlyMemory(
  * Whether `accept-edits` approves this file mutation on its own: every target is an ordinary edit.
  *
  * The mode is about the code a person is working on. It does not cover Book's and git's control
- * files ({@link isWorkspaceControlPath}), nor a home directory a root holds, which a read keeps
- * asking for too (`isGuarded`; everything, in a workspace that holds one). Such a call falls through
- * to the verdict `default` would act on: a prompt, or the allow rule that already covers it.
+ * files ({@link workspaceControlPathJudge}), nor a home directory a root holds, which a read keeps
+ * asking for too (`isGuarded`; everything, where `scope.autoAllowReads` says a workspace holds one).
+ * Such a call falls through to the verdict `default` would act on: a prompt, or the allow rule that
+ * already covers it.
  *
  * A target no root serves, and a call with no target, are the tool's to refuse, as in `default`. A
  * memory file is judged by the memory guard and never prompts; it is tested first because the memory
@@ -1227,30 +1262,21 @@ export function acceptEditsCovers(
   mode: string,
   tool: string,
   call: { arguments: Record<string, unknown> },
-  roots: PathRoots,
+  scope: WorkspaceScope,
 ): boolean {
   if (mode !== 'accept-edits' || !isFileMutatingTool(tool)) return false;
-  const targets =
-    tool === 'ApplyPatch'
-      ? patchOperations(call.arguments).map((operation) => operation.path)
-      : [pathArgument(tool, call.arguments)];
-  const homes = homeGuards();
-  const paths = resolvedPathScope({
-    root: roots.workspaceRoot,
-    additionalRoots: roots.additionalRoots,
-    homeGuards: homes,
-    judgeReads: false,
-    refuseUnreachableReads: false,
-    autoAllowReads: false,
-  });
-  const allRoots = [roots.workspaceRoot, ...(roots.additionalRoots ?? [])];
-  return targets.every((target) => {
+  const paths = resolvedPathScope(scope);
+  const isControlPath = workspaceControlPathJudge([scope.root, ...(scope.additionalRoots ?? [])]);
+  const roots: PathRoots = {
+    workspaceRoot: scope.root,
+    additionalRoots: scope.additionalRoots,
+    memoryWrite: scope.memoryWrite,
+  };
+  return mutationTargets(tool, call.arguments).every((target) => {
     const resolved = target === undefined ? null : resolveMutationPath(roots, target);
     if (!resolved || resolved.memory) return true;
     return (
-      !rootHoldsHome(roots.workspaceRoot, homes) &&
-      !paths.isGuarded(resolved.canonicalPath) &&
-      !isWorkspaceControlPath(resolved, allRoots)
+      scope.autoAllowReads && !paths.isGuarded(resolved.canonicalPath) && !isControlPath(resolved)
     );
   });
 }

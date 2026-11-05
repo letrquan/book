@@ -1136,6 +1136,15 @@ export function protectedWorkspacePaths(
     return host.path.join(rel ? host.path.resolve(root, rel) : root, host.path.basename(resolved));
   };
 
+  // A path a git config states, as git resolves it: `~/` from the home directory,
+  // an absolute path as written, and anything else against `base`.
+  const gitConfigPath = (value: string, base: string): string =>
+    value.startsWith('~/')
+      ? host.path.join(host.homedir(), value.slice(2))
+      : host.path.isAbsolute(value)
+        ? host.path.resolve(value)
+        : host.path.join(base, value);
+
   // Config files already read, so an `include` chain that names one of them ends
   // at the file rather than descending for ever.
   const configsRead = new Set<string>();
@@ -1156,23 +1165,14 @@ export function protectedWorkspacePaths(
       addFile(at);
     }
     for (const hooksPath of readCoreHooksPaths(text)) {
-      const directory = host.path.isAbsolute(hooksPath)
-        ? hooksPath
-        : host.path.join(workTree, hooksPath);
+      const directory = gitConfigPath(hooksPath, workTree);
       if (insideWorkspace(directory, root, host) || heldBy(writableRoots, directory, host)) {
         addDirectory(directory);
       }
     }
     if (depth >= MAX_WALK_DEPTH) return;
     for (const included of readGitConfigIncludes(text)) {
-      // As git resolves it: `~/` from the home directory, an absolute path as
-      // written, and anything else against the including file's directory.
-      const target = included.startsWith('~/')
-        ? host.path.join(host.homedir(), included.slice(2))
-        : host.path.isAbsolute(included)
-          ? host.path.resolve(included)
-          : host.path.join(host.path.dirname(at), included);
-      readConfig(target, workTree, depth + 1, reachable);
+      readConfig(gitConfigPath(included, host.path.dirname(at)), workTree, depth + 1, reachable);
     }
   };
 
@@ -1331,83 +1331,122 @@ function protectedPathsFor(
  *
  * {@link protectedWorkspacePaths} lists what a namespace can mount, so it says nothing about a file
  * that is not there yet (`.bookrc.json`, a first `.git/config`) or a repository it did not walk to
- * (`vendor/lib/.git`). A file tool can create any of those, so {@link isWorkspaceControlPath} needs
- * the names as well as the list.
+ * (`vendor/lib/.git`). A file tool can create any of those, so {@link workspaceControlPathJudge}
+ * needs the names as well as the list. `.mcp.json` is here and not in that list: it names commands
+ * to launch, and for a sandboxed command its own approval is what stands in the way.
  */
-const CONTROL_ENTRY_NAMES: ReadonlySet<string> = new Set(['.book', '.bookrc.json', '.git']);
+const CONTROL_ENTRY_NAMES: ReadonlySet<string> = new Set([
+  '.book',
+  '.bookrc.json',
+  '.git',
+  '.mcp.json',
+]);
 
 /**
  * An entry name as a file system that folds names reads it: case (NTFS, APFS, a case-insensitive
- * mount), the code points HFS+ ignores, an NTFS stream suffix, and the trailing dots and spaces
- * Win32 drops. Folding on every platform only ever turns a silent write into a prompt.
+ * mount), Unicode form, the code points HFS+ ignores, an NTFS stream suffix, and the trailing dots
+ * and spaces Win32 drops. Folding on every platform only ever turns a silent write into a prompt.
  */
 function foldedEntryName(name: string): string {
   return name
+    .normalize('NFC')
     .replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g, '')
     .replace(/:.*$/, '')
     .replace(/[. ]+$/, '')
     .toLowerCase();
 }
 
-/** A whole path in the one form two spellings of it are compared in. */
-function foldedPath(path: string): string {
-  return path.normalize('NFC').toLowerCase();
+/** A whole path in the one form two spellings of it are compared in. The first segment is the
+ * drive, whose `:` is no stream suffix, or empty. */
+function foldedPath(path: string, sep: string): string {
+  return path
+    .split(sep)
+    .map((segment, index) => (index === 0 ? segment.toLowerCase() : foldedEntryName(segment)))
+    .join(sep);
+}
+
+/** A file tool's target: as written, after links, and the root that serves it. */
+export interface ControlPathTarget {
+  filePath: string;
+  canonicalPath: string;
+  root: string;
 }
 
 /**
- * Whether a file tool's target is one of Book's or git's control files, under any of `roots`.
+ * Whether a file tool's target is one of Book's or git's control files, for one call's `roots`.
  *
  * One definition with the sandbox's: every path {@link protectedWorkspacePaths} shields from a
  * sandboxed command, read in its strict shape (`allowGitWrites` is about what a command may do, and
- * nothing in a git dir is an ordinary edit), plus {@link CONTROL_ENTRY_NAMES}. Every root is read
- * with the others as writable roots, so a linked worktree's shared git dir counts wherever an
- * approved directory reaches it. Computed afresh for each call, since a config can name another
- * hooks directory between two of them.
+ * nothing in a git dir is an ordinary edit), plus {@link CONTROL_ENTRY_NAMES}. The list is read once
+ * for the call, at its first target, and never kept past it: a config can name another hooks
+ * directory between two calls. Each root is read with the others as writable roots, so a linked
+ * worktree's shared git dir counts wherever an approved directory reaches it.
+ *
+ * Judged by the root that serves the target, as the home guard is. A name counts below that root
+ * only, and what another root protects does not reach a root it merely holds: an approved `~` does
+ * not make a worktree at `~/.book/worktrees/x` a settings directory.
  *
  * The target comes as written and after links, and each is compared to each spelling of a protected
  * path, so a link in the workspace does not hide what it reaches and a control path that is itself
  * a link does not hide what it stands for. A link that dangles has no destination to compare, and
  * a config too large to read may name any hooks directory: both count as control paths.
  */
-export function isWorkspaceControlPath(
-  target: { filePath: string; canonicalPath: string },
+export function workspaceControlPathJudge(
   roots: readonly string[],
   givenHost: SandboxHost = realSandboxHost,
-): boolean {
+): (target: ControlPathTarget) => boolean {
   const host = memoizedHost(givenHost);
-  const spellings = [target.filePath, target.canonicalPath].map(foldedPath);
-  const covers = (place: string): boolean =>
-    [place, canonicalPath(place, host)]
-      .map(foldedPath)
-      .some((held) => spellings.some((path) => !isOutside(held, path, host.path)));
-  const namesControlEntry = (root: string): boolean =>
-    [host.path.resolve(root), canonicalPath(root, host)].map(foldedPath).some((base) =>
-      spellings.some(
+  const { sep } = host.path;
+  const spellingsOf = (path: string): string[] => [
+    host.path.resolve(path),
+    canonicalPath(path, host),
+  ];
+  const folded = (path: string): string[] => spellingsOf(path).map((one) => foldedPath(one, sep));
+  let lists: Array<{ root: string; paths: ProtectedWorkspacePaths }> | undefined;
+  const protectedLists = (): NonNullable<typeof lists> =>
+    (lists ??= roots.map((root) => ({
+      root,
+      paths: protectedWorkspacePaths(root, host, {
+        allowGitWrites: false,
+        writableRoots: [...roots],
+      }),
+    })));
+  return (target) => {
+    const written = [target.filePath, target.canonicalPath];
+    const paths = written.map((path) => foldedPath(path, sep));
+    const served = folded(target.root);
+    const namesControlEntry = served.some((base) =>
+      paths.some(
         (path) =>
           !isOutside(base, path, host.path) &&
           host.path
             .relative(base, path)
-            .split(host.path.sep)
-            .some((segment) => CONTROL_ENTRY_NAMES.has(foldedEntryName(segment))),
+            .split(sep)
+            .some((segment) => CONTROL_ENTRY_NAMES.has(segment)),
       ),
     );
-  const passesDanglingLink = (root: string): boolean =>
-    workspaceComponents(target.filePath, root, host).some(
-      (component) => host.entryKind(component) === 'symlink' && host.realpath(component) === null,
+    const passesDanglingLink = spellingsOf(target.root).some((base) =>
+      written.some((path) =>
+        workspaceComponents(path, base, host).some(
+          (part) => host.entryKind(part) === 'symlink' && host.realpath(part) === null,
+        ),
+      ),
     );
-  return roots.some((root) => {
-    if (namesControlEntry(root) || passesDanglingLink(root)) return true;
-    const paths = protectedWorkspacePaths(root, host, {
-      allowGitWrites: false,
-      writableRoots: [...roots],
-    });
-    return (
-      paths.refusals.some((refusal) => refusal.reason === 'oversized-git-config') ||
-      [...paths.mounts, ...paths.gitDirControlMounts, ...paths.refusals].some((entry) =>
-        covers(entry.path),
-      )
+    if (namesControlEntry || passesDanglingLink) return true;
+    const reaches = (place: string): boolean =>
+      folded(place).some((held) => paths.some((path) => !isOutside(held, path, host.path)));
+    const holdsServingRoot = (place: string): boolean =>
+      folded(place).some((held) =>
+        served.some((base) => held !== base && !isOutside(held, base, host.path)),
+      );
+    return protectedLists().some(
+      ({ root, paths: list }) =>
+        list.refusals.some((refusal) => refusal.reason === 'oversized-git-config') ||
+        [...list.mounts, ...list.gitDirControlMounts, ...list.refusals].some(
+          (entry) => reaches(entry.path) && (root === target.root || !holdsServingRoot(entry.path)),
+        ),
     );
-  });
+  };
 }
 
 /**

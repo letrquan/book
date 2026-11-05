@@ -3401,28 +3401,29 @@ export async function runAgentLoop(
         // `tools/shell.ts`): the same (platform, shell) pair goes to every gate below, so what
         // the permission check and the capability check call compound agree (#512).
         const scanShell = toolContext.shell ?? config.shell;
+        const workspaceScope = {
+          root: toolContext.workspaceRoot,
+          realRoot: workspaceRealRoot,
+          readOnlyRoots: toolContext.readOnlyRoots,
+          memorySearchRoot: toolContext.memorySearchRoot,
+          additionalRoots,
+          memoryWrite: toolContext.memoryWrite,
+          // A home directory, or anything containing one, keeps the prompt even where it was
+          // honored: that is the whole of what `additionalDirectories` widens, and a home holds
+          // SSH and provider keys and Book's own trust store.
+          homeGuards: homeGuardPaths,
+          judgeReads,
+          autoAllowReads: judgeReads && !workspaceHoldsHome,
+          // Wider than `judgeReads`: `dontAsk` prompts for nothing, so a target no root serves
+          // is refused there anyway, and refusing it as the target it is gives the model the
+          // directory that would serve it instead of a permission no rule can grant.
+          refuseUnreachableReads: WORKSPACE_READ_REFUSAL_MODES.has(effectiveMode),
+        };
         const verdict = evaluatePermissionDetail(canonName, judgedCall.arguments, config.settings, {
           platform: process.platform,
           shell: scanShell,
           ...(permissionSubject ? { subject: permissionSubject } : {}),
-          workspace: {
-            root: toolContext.workspaceRoot,
-            realRoot: workspaceRealRoot,
-            readOnlyRoots: toolContext.readOnlyRoots,
-            memorySearchRoot: toolContext.memorySearchRoot,
-            additionalRoots,
-            memoryWrite: toolContext.memoryWrite,
-            // A home directory, or anything containing one, keeps the prompt even where it was
-            // honored: that is the whole of what `additionalDirectories` widens, and a home holds
-            // SSH and provider keys and Book's own trust store.
-            homeGuards: homeGuardPaths,
-            judgeReads,
-            autoAllowReads: judgeReads && !workspaceHoldsHome,
-            // Wider than `judgeReads`: `dontAsk` prompts for nothing, so a target no root serves
-            // is refused there anyway, and refusing it as the target it is gives the model the
-            // directory that would serve it instead of a permission no rule can grant.
-            refuseUnreachableReads: WORKSPACE_READ_REFUSAL_MODES.has(effectiveMode),
-          },
+          workspace: workspaceScope,
         });
         if (verdict.decision === 'deny') {
           // Consent was requested a few lines up; close it out, or the registry
@@ -3564,8 +3565,7 @@ export async function runAgentLoop(
           (effectiveMode !== 'plan' || planReadOnly)
         ) {
           // `accept-edits` approves ordinary edits; anything else falls through, as in `default`.
-          const autoApproved = acceptEditsCovers(effectiveMode, canonName, call, toolContext);
-          if (!autoApproved || userRuleAsked) {
+          if (!acceptEditsCovers(effectiveMode, canonName, call, workspaceScope) || userRuleAsked) {
             let permission: 'allow' | 'deny' | 'always' | undefined;
             let chosenRule: string | undefined;
             let noApprover = false;

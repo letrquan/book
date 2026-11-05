@@ -1349,6 +1349,30 @@ describe('buildSandboxExecution workspace control files', () => {
       expect(mountsFor(exec.args, '/work/.husky/_').flag).toBe('--ro-bind');
     });
 
+    it('resolves a core.hooksPath that starts with ~/ from the home directory', () => {
+      const host = hostWith(
+        {
+          '/home/book/work': 'dir',
+          '/home/book/work/.book': 'dir',
+          '/home/book/work/.git': 'dir',
+          '/home/book/work/.git/hooks': 'dir',
+          '/home/book/work/.git/config': 'file',
+          '/home/book/work/hk': 'dir',
+        },
+        { '/home/book/work/.git/config': '[core]\n\thooksPath = ~/work/hk\n' },
+      );
+
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        '/home/book/work',
+        sandboxSettings(),
+        host,
+      );
+
+      expect(mountsFor(exec.args, '/home/book/work/hk').flag).toBe('--ro-bind');
+    });
+
     it('protects a hooksPath outside the git dirs in the read-only mode too', () => {
       // In the read-only mode the git dir itself is covered, but the walk still
       // reads its config: a `core.hooksPath` it declares names a directory the

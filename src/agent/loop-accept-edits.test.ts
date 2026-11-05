@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -15,6 +16,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LoadedMemoryContext } from '../memory-store.js';
 import type { Provider } from '../provider/index.js';
+import { realSandboxHost, workspaceControlPathJudge } from '../sandbox.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { isolateBookHome } from '../test/isolated-book-home.js';
 import { createDefaultRegistry } from '../tools/registry.js';
@@ -83,7 +85,7 @@ async function drive(
   mode: PermissionMode,
   turns: ScriptedCall[][],
   options: {
-    answer?: PermissionResult | PermissionDecision;
+    answers?: Array<PermissionResult | PermissionDecision>;
     configure?: (config: AgentConfig) => void;
     root?: string;
   } = {},
@@ -94,8 +96,8 @@ async function drive(
   });
   options.configure?.(config);
   const results: ToolResult[] = [];
-  const answer = options.answer ?? 'deny';
-  const prompt = vi.fn(async () => answer);
+  const answers = [...(options.answers ?? [])];
+  const prompt = vi.fn(async () => answers.shift() ?? 'deny');
   const callbacks: AgentLoopCallbacks = {
     onText: () => {},
     onToolCall: () => {},
@@ -118,6 +120,22 @@ function write(path: string, id = 'w'): ScriptedCall {
 
 function read(path: string, id = 'r'): ScriptedCall {
   return { id, name: 'Read', arguments: { filePath: path } };
+}
+
+function patch(...operations: string[]): ScriptedCall {
+  return {
+    id: 'p',
+    name: 'ApplyPatch',
+    arguments: { patch: ['*** Begin Patch', ...operations, '*** End Patch'].join('\n') },
+  };
+}
+
+function update(path: string, from = 'old', to = 'new'): string {
+  return [`*** Update File: ${path}`, '@@', `-${from}`, `+${to}`].join('\n');
+}
+
+function add(path: string): string {
+  return [`*** Add File: ${path}`, '+new'].join('\n');
 }
 
 function byId(results: ToolResult[], id: string): ToolResult | undefined {
@@ -144,6 +162,7 @@ describe('acceptEdits and control files', () => {
       ['a project agent', '.book/agents/helper.md'],
       ['a project skill', '.book/skills/tidy/SKILL.md'],
       ['the legacy config', '.bookrc.json'],
+      ['the project MCP declaration', '.mcp.json'],
       ['the git config', '.git/config'],
       ['a hook', '.git/hooks/pre-commit'],
       ['a new file in the git dir', '.git/brand-new'],
@@ -185,6 +204,28 @@ describe('acceptEdits and control files', () => {
       await expectAsks(write('tools/hooks/pre-push'), join(workspace, 'tools/hooks/pre-push'));
     });
 
+    it.each([
+      ['a trailing dot', 'tools/hooks./pre-push'],
+      ['a trailing space', 'tools/hooks /pre-push'],
+      ['a stream suffix', 'tools/hooks::$DATA/pre-push'],
+      ['an ignorable code point', 'tools/ho\u200coks/pre-push'],
+      ['another case', 'TOOLS/hooks/pre-push'],
+    ])('the directory core.hooksPath names, with %s', async (_label, target) => {
+      put(join(workspace, '.git', 'config'), '[core]\n\thooksPath = tools/hooks\n');
+      await expectAsks(write(target), join(workspace, target));
+    });
+
+    it('a core.hooksPath that starts from the home directory', async () => {
+      const home = tempDir('book-accept-edits-os-home-');
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('USERPROFILE', home);
+      const root = join(home, 'project');
+      put(join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+      put(join(root, '.git', 'config'), '[core]\n\thooksPath = ~/project/tools/hooks\n');
+      mkdirSync(join(root, '.git', 'objects'));
+      await expectAsks(write('tools/hooks/pre-push'), join(root, 'tools/hooks/pre-push'), { root });
+    });
+
     it('a directory core.hooksPath names in an included file', async () => {
       put(join(workspace, '.git', 'config'), '[include]\n\tpath = extra\n');
       put(join(workspace, '.git', 'extra'), '[core]\n\thooksPath = tools/hooks\n');
@@ -219,6 +260,14 @@ describe('acceptEdits and control files', () => {
     it('that dangles', async () => {
       symlinkSync(join('.git', 'hooks', 'post-commit'), join(workspace, 'plain.txt'));
       await expectAsks(write('plain.txt'), join(workspace, '.git', 'hooks', 'post-commit'));
+    });
+
+    it('that dangles, reached through another spelling of the root', async () => {
+      const other = tempDir('book-accept-edits-alias-');
+      symlinkSync(workspace, join(other, 'alias'));
+      symlinkSync(join('.git', 'hooks', 'post-commit'), join(workspace, 'plain.txt'));
+      await expectAsks(write(join(other, 'alias', 'plain.txt')));
+      expect(lstatSync(join(workspace, 'plain.txt')).isSymbolicLink()).toBe(true);
     });
 
     it('that dangles, partway down', async () => {
@@ -261,15 +310,6 @@ describe('acceptEdits and control files', () => {
       expect(byId(results, 'n')?.structuredError?.code).toBe('permission_denied');
       expect(readFileSync(join(workspace, '.book', 'notes.ipynb'), 'utf8')).toBe(notebook);
     });
-
-    const patch = (...operations: string[]): ScriptedCall => ({
-      id: 'p',
-      name: 'ApplyPatch',
-      arguments: { patch: ['*** Begin Patch', ...operations, '*** End Patch'].join('\n') },
-    });
-    const update = (path: string): string =>
-      [`*** Update File: ${path}`, '@@', '-old', '+new'].join('\n');
-    const add = (path: string): string => [`*** Add File: ${path}`, '+new'].join('\n');
 
     it('ApplyPatch, adding a file', async () => {
       await expectAsks(
@@ -367,7 +407,7 @@ describe('acceptEdits and control files', () => {
       const { results, prompt } = await drive(
         'accept-edits',
         [[read('.git/config')], [write('.git/config')]],
-        { answer: 'allow' },
+        { answers: ['allow'] },
       );
       expect(prompt).toHaveBeenCalledTimes(1);
       expect(byId(results, 'w')?.status).toBe('success');
@@ -416,7 +456,7 @@ describe('acceptEdits and control files', () => {
 
     it('with nobody to answer, the refusal names the rule that would allow it', async () => {
       const { results, prompt } = await drive('accept-edits', [[write('.git/config')]], {
-        answer: { result: 'deny', reason: 'no_approver' },
+        answers: [{ result: 'deny', reason: 'no_approver' }],
       });
       expect(prompt).toHaveBeenCalledTimes(1);
       const result = byId(results, 'w');
@@ -607,5 +647,119 @@ describe('acceptEdits in a linked git worktree', () => {
     });
     expect(prompt).not.toHaveBeenCalled();
     expect(readFileSync(join(repo, 'src', 'new.ts'), 'utf8')).toBe('new\n');
+  });
+});
+
+describe('a session rule and a patch of several files', () => {
+  const again = (...more: string[]): ScriptedCall[][] => [
+    [read('src/x.ts')],
+    [patch(update('src/x.ts'))],
+    [read('src/x.ts')],
+    [patch(update('src/x.ts', 'new', 'newer'), ...more)],
+  ];
+
+  it('a rule for one file does not admit a patch that names another', async () => {
+    const { prompt } = await drive('default', again(add('.git/hooks/pre-commit')), {
+      answers: ['always'],
+    });
+    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(existsSync(join(workspace, '.git', 'hooks', 'pre-commit'))).toBe(false);
+    expect(readFileSync(join(workspace, 'src', 'x.ts'), 'utf8')).toBe('new\n');
+  });
+
+  it('nor one for an ordinary file', async () => {
+    const { prompt } = await drive('default', again(add('src/other.ts')), {
+      answers: ['always'],
+    });
+    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(existsSync(join(workspace, 'src', 'other.ts'))).toBe(false);
+  });
+
+  it('a rule for one file still covers the next patch of that file', async () => {
+    const { results, prompt } = await drive('default', again(), { answers: ['always'] });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(results.at(-1)?.status).toBe('success');
+  });
+
+  it('a chosen rule that covers every file admits the patch', async () => {
+    const { results, prompt } = await drive('default', again(add('src/other.ts')), {
+      answers: [{ result: 'always', rule: 'ApplyPatch(src/**)' }],
+    });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(results.at(-1)?.status).toBe('success');
+    expect(readFileSync(join(workspace, 'src', 'other.ts'), 'utf8')).toBe('new\n');
+  });
+
+  it('"Always allow" on a patch of several files remembers nothing', async () => {
+    const first = patch(update('src/x.ts'), add('.git/one'));
+    const second = patch(update('src/x.ts', 'new', 'newer'), add('.git/two'));
+    const { prompt } = await drive(
+      'accept-edits',
+      [[read('src/x.ts')], [first], [read('src/x.ts')], [second]],
+      { answers: ['always'] },
+    );
+    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(existsSync(join(workspace, '.git', 'one'))).toBe(true);
+    expect(existsSync(join(workspace, '.git', 'two'))).toBe(false);
+  });
+
+  it('with nobody to answer, the refusal names a rule for each file', async () => {
+    const { results } = await drive('accept-edits', [[patch(add('src/new.ts'), add('.git/one'))]], {
+      answers: [{ result: 'deny', reason: 'no_approver' }],
+    });
+    const content = String(byId(results, 'p')?.content);
+    expect(content).toContain('"ApplyPatch(src/new.ts)", "ApplyPatch(.git/one)"');
+    expect(content).toContain('no single rule covers a patch of several files');
+  });
+
+  it('those rules together allow it', async () => {
+    const { results, prompt } = await drive(
+      'accept-edits',
+      [[patch(add('src/new.ts'), add('.git/one'))]],
+      {
+        configure: (config) => {
+          config.settings.permissions.allow = ['ApplyPatch(src/new.ts)', 'ApplyPatch(.git/one)'];
+        },
+      },
+    );
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'p')?.status).toBe('success');
+  });
+});
+
+describe('a root is judged on its own', () => {
+  it('a worktree below the .book of an approved directory edits without a prompt', async () => {
+    const holder = tempDir('book-accept-edits-holder-');
+    const book = join(holder, '.book');
+    vi.stubEnv('BOOK_HOME', book);
+    const root = join(book, 'worktrees', 'hash', 'agent');
+    put(join(root, 'src', 'x.ts'), 'old\n');
+    const configure = (config: AgentConfig): void => {
+      config.settings.additionalDirectories = [holder];
+    };
+    const edit = await drive('accept-edits', [[write('src/new.ts')]], { root, configure });
+    expect(edit.prompt).not.toHaveBeenCalled();
+    expect(byId(edit.results, 'w')?.status).toBe('success');
+    const settings = join(holder, '.book', 'settings.json');
+    await expectAsks(write(settings), settings, { root, configure });
+    const own = join(root, '.book', 'settings.json');
+    await expectAsks(write(own), own, { root, configure });
+  });
+
+  it('reads the protected list once for a call, however many files it names', () => {
+    put(join(workspace, '.git', 'config'), '[core]\n\thooksPath = tools/hooks\n');
+    const readFile = vi.fn(realSandboxHost.readFile);
+    const judge = workspaceControlPathJudge([workspace], { ...realSandboxHost, readFile });
+    const target = (name: string) => ({
+      filePath: join(workspace, 'src', name),
+      canonicalPath: join(workspace, 'src', name),
+      root: workspace,
+    });
+    expect(judge(target('a.ts'))).toBe(false);
+    const reads = readFile.mock.calls.length;
+    expect(reads).toBeGreaterThan(0);
+    expect(judge(target('b.ts'))).toBe(false);
+    expect(judge(target('c.ts'))).toBe(false);
+    expect(readFile.mock.calls.length).toBe(reads);
   });
 });
