@@ -385,6 +385,11 @@ export interface ToolDefinition {
 export interface ToolContext {
   workspaceRoot: string;
   /**
+   * Set for one serial call that `accept-edits` approved on its own: where it found each target
+   * (`PathRoots.judgedEditTargets`).
+   */
+  judgedEditTargets?: ReadonlyMap<string, string>;
+  /**
    * Paths outside the workspace that the Read tool may read: the project memory directory and
    * the files this session clipped a result into.
    */
