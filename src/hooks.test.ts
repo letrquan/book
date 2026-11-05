@@ -138,9 +138,10 @@ describe('runHooks — cancellation', () => {
     setTimeout(() => controller.abort(new Error('hook cancelled')), 25);
 
     await expect(pending).rejects.toThrow('hook cancelled');
-    // Windows waits for taskkill, bounded by TERMINATE_GRACE_MS; the point is that the hook ended
-    // long before its 30 s sleep.
-    expect(Date.now() - startedAt).toBeLessThan(TERMINATE_GRACE_MS + 1000);
+    // Windows waits for taskkill, bounded by TERMINATE_GRACE_MS, plus shell and node startup; the
+    // point is that the hook ended long before its 30 s sleep.
+    const budget = process.platform === 'win32' ? TERMINATE_GRACE_MS + 3000 : 1000;
+    expect(Date.now() - startedAt).toBeLessThan(budget);
   });
 
   it('does not launch hooks for an already-aborted signal', async () => {

@@ -408,6 +408,10 @@ describe('the two queues when a run ends', () => {
     // The run ended without delivering the steer, so it is sent next as its own run.
     await waitUntil(() => expect(state.send).toHaveBeenCalledWith('late report'));
     expect(state.send).toHaveBeenCalledTimes(2);
+    expect((state.send.mock.calls as unknown[][]).map((call) => call[0])).toEqual([
+      'first prompt',
+      'late report',
+    ]);
   });
 
   it('recalls a waiting steer with Up so it can be edited', async () => {

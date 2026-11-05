@@ -245,8 +245,8 @@ describe('the held peer message in the TUI', () => {
 
   it('ignores keys pressed as it appears, so a typed-ahead Enter answers nothing', async () => {
     const { view, messaging } = await heldOnScreen();
-    // Pin the clock to just after the sheet appeared, so a stalled event loop cannot age it past
-    // its arming delay before the Enter lands.
+    // Pin the clock well before the sheet mounted, so elapsed time is never past the arming delay
+    // however long the event loop stalls before the Enter lands.
     const realNow = Date.now.bind(Date);
     const pinned = realNow() - 10 * PEER_APPROVAL_ARM_MS;
     const clock = vi.spyOn(Date, 'now').mockReturnValue(pinned);
