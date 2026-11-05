@@ -937,7 +937,8 @@ with any of these:
 - a command that opens with `if`, `then`, `elif`, `else`, `while`, `until`, `do`, `time`, `coproc`,
   `repeat`, `and`, `or`, `not`, `begin`, `alias` or `!`;
 - a backslash before a quote, a caret before a quote outside quotes, or a typographic quote;
-- on Windows, any `'`, whichever shell runs the command.
+- on Windows, any `'`, unless the session shell reads it as POSIX does (a bash or sh on the MSYS
+  runtime, such as Git Bash), as the permission rules read it.
 
 A hook has no prompt to send such a line to, so a script that is a bare `exit 2` refuses all of them.
 A narrowed blocking hook should read `tool_args.command` and decide. Only that case fails closed:

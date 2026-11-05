@@ -3273,6 +3273,7 @@ export async function runAgentLoop(
               event: 'PreToolUse',
               toolName: canonName,
               toolArgs: call.arguments,
+              shell: toolContext.shell ?? config.shell,
               ...(permissionSubject ? { toolTargets: permissionSubject.restrict } : {}),
             },
             { onHookEvent: callbacks.onHookEvent, signal },
@@ -3984,6 +3985,7 @@ export async function runAgentLoop(
                 event: 'PostToolUse',
                 toolName: canonName,
                 toolArgs: call.arguments,
+                shell: toolContext.shell ?? config.shell,
                 ...(entry.permissionSubject
                   ? { toolTargets: entry.permissionSubject.restrict }
                   : {}),
