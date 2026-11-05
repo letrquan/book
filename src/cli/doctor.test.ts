@@ -492,7 +492,8 @@ describe('runDoctorCommand a local settings file git tracks', () => {
     const tracked = await doctorOutput(workspace);
     expect(tracked).not.toMatch(/\[x\] Local:/);
     expect(tracked.match(/git rm --cached \.book\/settings\.local\.json/g)).toHaveLength(1);
-    expect(tracked).toContain(`[!] Local: ${local} (not read: git tracks it`);
+    expect(tracked).toContain(`[!] Local: ${local} (git tracks it`);
+    expect(tracked).toContain('except for restrictions, which still apply');
     expect(tracked).not.toContain('Ignored from');
   });
 
@@ -504,7 +505,22 @@ describe('runDoctorCommand a local settings file git tracks', () => {
 
     const output = await doctorOutput(workspace);
     expect(output).not.toContain('FAILED TO LOAD');
-    expect(output).toContain('not read: git tracks it');
+    expect(output).toContain('git tracks it');
+  });
+
+  it('counts a restriction in it, and says which file turned the sandbox on', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    const local = join(workspace, '.book', 'settings.local.json');
+    writeFileSync(
+      local,
+      JSON.stringify({ permissions: { deny: ['Bash(rm *)'] }, sandbox: { enabled: true } }),
+    );
+    git('init', '-q');
+    git('add', '-f', '.book/settings.local.json');
+
+    const output = await doctorOutput(workspace);
+    expect(output).toContain('Deny rules:  1');
+    expect(output).toContain(`From ${local}: sandbox.enabled=true`);
   });
 
   it('says nothing of it under --no-settings', async () => {

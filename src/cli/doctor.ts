@@ -176,7 +176,8 @@ const ABSENT_LAYER = '\0absent-settings-layer';
 
 /**
  * The settings files doctor reads, in the order they are layered. A local file git tracks is not
- * one of them, exactly as it is not one of the loader's; the report names it on a line of its own.
+ * one of them, exactly as it is not one of the loader's; the report names it on a line of its own,
+ * and the sandbox section takes its restrictions from the loader.
  */
 async function settingsLayers(workspace: string): Promise<Array<[string, string]>> {
   const { join, resolve } = await import('path');
@@ -543,7 +544,7 @@ export async function runDoctorCommand(
   if (!options.noSettings) {
     const localPath = join(config.workspace, '.book', 'settings.local.json');
     const unread = unreadLocalSettingsReason(localPath);
-    if (unread !== undefined) console.log(`  [!] Local: ${localPath} (not read: ${unread})`);
+    if (unread !== undefined) console.log(`  [!] Local: ${localPath} (${unread})`);
   }
   // Everything below is resolved from defaults in this mode. Saying so once
   // stops the report reading as a description of the user's configuration.
@@ -867,6 +868,7 @@ export async function runDoctorCommand(
     const {
       formatIgnoredWorkspaceSandboxKey,
       ignoredWorkspaceSandboxKeys,
+      loadLocalSettingsFile,
       loadSettingsFile,
       workspaceLayerThatEnabledSandbox,
     } = await import('../settings-loader.js');
@@ -875,6 +877,15 @@ export async function runDoctorCommand(
       path,
       document: label === 'Project' && isUserSettingsFile(path) ? null : loadSettingsFile(path),
     }));
+    // A local file git tracks is not listed above, but a sandbox restriction in it still applies.
+    const trackedLocalPath = join(config.workspace, '.book', 'settings.local.json');
+    if (unreadLocalSettingsReason(trackedLocalPath) !== undefined) {
+      layers.push({
+        label: 'Local',
+        path: trackedLocalPath,
+        document: loadLocalSettingsFile(trackedLocalPath),
+      });
+    }
     // The user-global layer is read here even though nothing about it is
     // reported: it is the baseline for what a workspace layer turned *on*, and
     // a repository repeating `enabled: true` after the user already set it

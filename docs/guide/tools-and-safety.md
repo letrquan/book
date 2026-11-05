@@ -962,8 +962,8 @@ deferred compaction the hook runs when the summarizer starts on the snapshot, an
 judge rejects the checkpoint and Book compacts synchronously instead.
 
 Hooks from your own layers (`~/.book/settings.json`, an untracked `.book/settings.local.json`,
-`--settings`) run as written; a `.book/settings.local.json` that git tracks is not read at all (see
-[Settings files](configuration.md#settings-files)). A hook declared in a repository's checked-in `.book/settings.json` is withheld
+`--settings`) run as written; a `.book/settings.local.json` that git tracks is not read, except for
+restrictions (see [Settings files](configuration.md#settings-files)), so no hook comes from it. A hook declared in a repository's checked-in `.book/settings.json` is withheld
 until you approve it once per workspace: the decision is recorded in `~/.book/trust.json`, outside
 the workspace, keyed by a fingerprint of the event, matcher, command, and env — edit any of those
 and the hook asks again. Nothing the repository ships can write that store, so a clone cannot

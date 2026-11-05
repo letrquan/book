@@ -11,10 +11,13 @@ Settings are loaded in priority order (later wins):
 3. `.book/settings.local.json` (local, should be gitignored)
 4. `--settings <path>` CLI flag
 
-A `.book/settings.local.json` that git tracks is not read: a local file a repository ships isn't
-local. The whole file is skipped, for every key, and one notice names it and the remedy: on stderr
-in print mode and the SDK, among the start-up notices in the TUI, and on the `Local` line of
-`book doctor`. Review the file, then run the `git rm --cached` the notice prints to make it your own.
+A `.book/settings.local.json` that git tracks is not read, except for restrictions, which still
+apply: a local file a repository ships isn't local. The restrictions are `permissions.deny`,
+`permissions.ask`, the sandbox deny lists and the sandbox values that tighten it
+(`sandbox.enabled: true` and the like): what a checked-in `.book/settings.json` may set too. Every
+other key is ignored, and one notice names the file and the remedy: on stderr in print mode and the
+SDK, among the start-up notices in the TUI, and on the `Local` line of `book doctor`. Review the
+file, then run the `git rm --cached` the notice prints to make it your own.
 
 Book answers from the git index, in the nearest repository and any above it. An entry has to name
 this very file: one that reads differently counts only where the file system says it reaches this
@@ -25,8 +28,9 @@ repository's index it counts the file as tracked, and the notice says that inste
 
 Book does not write a tracked local file either: a save to the local layer, `book config set --local`
 among them, is refused with the same message, and "Always allow" then lasts for the session and says
-so. `/permissions` can still take such a rule back. A save to the user file goes through, since
-nothing in the tracked file outranks it. An untracked file works as it always has, gitignored or not.
+so. `/permissions` can still take such a rule back. A save to the user file goes through, and there
+is nothing to clear from the tracked file. An untracked file works as it always has, gitignored or
+not.
 
 In a session started in your home directory with `BOOK_HOME` unset, the workspace's
 `.book/settings.json` is the user file itself: it is read once, as the user layer, and nothing in

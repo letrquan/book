@@ -83,10 +83,11 @@ function refusedWrite(path: string): { ok: false; error: string } | undefined {
 
 /**
  * What a save that supersedes the local layer has to clear, asked before the user file is written.
- * `layer` is the file to clear, when there is one. A local file git tracks is not a layer: nothing
- * in it outranks the save, so there is nothing to clear and no reason to refuse. Nor is one that
- * does not exist, whatever the index says: asking only about a file on disk is what lets a user who
- * removed the file, or who has a broken repository and no local file, save to their own settings.
+ * `layer` is the file to clear, when there is one. A local file git tracks is not a layer: all it
+ * still contributes is restrictions, which none of these saves set, so there is nothing to clear and
+ * no reason to refuse. Nor is one that does not exist, whatever the index says: asking only about a
+ * file on disk is what lets a user who removed the file, or who has a broken repository and no local
+ * file, save to their own settings.
  */
 function localLayerToClear(workspace: string): { ok: false; error: string } | LocalLayerToClear {
   const path = localSettingsPath(workspace);
@@ -583,7 +584,7 @@ export function removePermissionRuleLocal(
   list: 'allow' | 'ask' | 'deny',
   rule: string,
 ): { ok: boolean; error?: string; notLocal?: boolean } {
-  // A local file git tracks is not a layer, so no rule in force came from it.
+  // A local file git tracks is not written, so a rule in force from it cannot be removed here.
   if (unreadLocalSettingsReason(localSettingsPath(workspace)) !== undefined) {
     return { ok: false, notLocal: true };
   }

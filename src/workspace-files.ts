@@ -20,7 +20,7 @@ function safeMessage(error: unknown): string {
  * Such a file is written only while it is a regular file or does not exist yet, in a `.book`
  * folder that is a real directory or does not exist yet ({@link projectFileShapeRefusal}). Nor is a
  * `.book/settings.local.json` that git tracks written, whether or not it is on disk: the loader
- * would not read it, so a save there would look done and never take effect. The answer is the
+ * takes only restrictions from it, so a save there could look done and never take effect. The answer is the
  * reason, without the path or a full stop, for the caller's one-line notice: `<path>: <reason>`.
  *
  * The user-global files (`<BOOK_HOME>/settings.json` and `<BOOK_HOME>/mcp.json`) keep their

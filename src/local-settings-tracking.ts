@@ -9,9 +9,10 @@ import { isUncSpelling, reachesUncPath } from './unc-path.js';
  *
  * The local settings layer is the user's own: gitignored, and written by the user or by Book for
  * them. `.gitignore` says nothing about a file already in the index, and a local file a repository
- * ships isn't local, so a tracked one is no layer at all. Book neither reads nor writes it, for any
- * key, and says so once. An untracked file, ignored or not, is the layer it always was, and the
- * rule must not cost the user that layer unless git really lists that very file. So:
+ * ships isn't local. Book does not read a tracked one, except for restrictions, which still apply
+ * (the whitelist is the loader's: `loadLocalSettingsFile`), does not write it, and says so once. An
+ * untracked file, ignored or not, is the layer it always was, and the rule must not cost the user
+ * that layer unless git really lists that very file. So:
  *
  * - The question goes to the index, read from its files (`git-index.ts`): git is never spawned, so
  *   no program the repository configures runs, and settings resolution, which is synchronous, can
@@ -320,8 +321,8 @@ function describeTracking(tracking: LocalSettingsTracking): string | undefined {
     case 'tracked': {
       const command = removeFromIndexCommand(tracking);
       return (
-        "git tracks it, and a local file a repository ships isn't local, so Book neither reads " +
-        'nor writes it. Review it, then ' +
+        "git tracks it, and a local file a repository ships isn't local, so Book does not read " +
+        'it, except for restrictions, which still apply, and does not write it. Review it, then ' +
         (command === null
           ? `remove it from the index of ${printable(tracking.repository)} with \`git rm --cached\``
           : `run \`${command}\``) +
@@ -330,8 +331,9 @@ function describeTracking(tracking: LocalSettingsTracking): string | undefined {
     }
     case 'unknown':
       return (
-        `Book could not read the git index of ${printable(tracking.repository)}, so it cannot tell whether ` +
-        'git tracks this file, and neither reads nor writes it. `git status` shows what is wrong'
+        `Book could not read the git index of ${printable(tracking.repository)}, so it cannot tell ` +
+        'whether git tracks this file. It does not read it, except for restrictions, which still ' +
+        'apply, and does not write it. `git status` shows what is wrong'
       );
   }
 }
@@ -345,9 +347,9 @@ export function localSettingsRefusal(path: string): string | undefined {
 }
 
 /**
- * Why Book is not reading the local settings file at `path`: the one question whether that file is
- * a layer. Undefined when it is read, and when there is no file to read, so absent means no index
- * is parsed and nothing is refused.
+ * Why Book is not reading the local settings file at `path` as the user's own: the one question
+ * whether that file is a layer. Undefined when it is, and when there is no file to read, so absent
+ * means no index is parsed and nothing is refused.
  */
 export function unreadLocalSettingsReason(path: string): string | undefined {
   const literal = resolve(path);

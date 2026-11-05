@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
@@ -18,10 +19,12 @@ import {
 import { providerKeyTarget, writeProviderKey } from './provider-key.js';
 import {
   loadLocalSettingsFile,
+  localFileRestrictions,
   migrateLegacyPermissions,
   resolveSettings,
   settingsLayerPaths,
 } from './settings-loader.js';
+import { SETTINGS_TOP_LEVEL_KEYS } from './settings-repository.js';
 import { applySettingWrite, readScopeDocument } from './settings-write.js';
 import { DEFAULT_SETTINGS } from './settings.js';
 import {
@@ -86,17 +89,160 @@ describe('a local settings file git tracks', () => {
     expect(settingsLayerPaths(workspace, undefined, { home })).toContain(localPath);
   });
 
-  it('does not read a tracked file, for any key', () => {
+  it('does not read a tracked file, except for restrictions', () => {
     git(workspace, 'add', '-f', '.book/settings.local.json');
     const settings = resolved();
     expect(settings.model).toBeUndefined();
     expect(settings.hooks.SessionStart).toEqual([]);
     expect(settings.permissions.allow).toEqual([]);
-    expect(settings.permissions.deny).toEqual([]);
     expect(settings.additionalDirectories).toEqual([]);
     expect(settings.messaging.inbound).toBeUndefined();
     expect(settings.ui.startupAnimation).toBe(DEFAULT_SETTINGS.ui.startupAnimation);
     expect(settingsLayerPaths(workspace, undefined, { home })).not.toContain(localPath);
+    expect(settings.permissions.deny).toEqual(['Bash(rm *)']);
+  });
+
+  describe('restrictions', () => {
+    const RESTRICTIONS = {
+      permissions: { deny: ['Bash(rm *)'], ask: ['Bash(curl *)'] },
+      sandbox: {
+        enabled: true,
+        failIfUnavailable: true,
+        allowUnsandboxedCommands: false,
+        autoAllowBashIfSandboxed: false,
+        filesystem: { allowGitWrites: false, denyWrite: ['/w'], denyRead: ['/r'] },
+        network: { deniedDomains: ['evil.test'] },
+      },
+    };
+
+    /** Every key the schema knows, with loosening values wherever a value can loosen. */
+    const EVERYTHING_ELSE = {
+      model: 'from-local',
+      defaultMode: 'acceptEdits',
+      disableBypassPermissionsMode: false,
+      hooks: { SessionStart: [{ command: 'echo local' }], PreToolUse: [{ command: 'echo tool' }] },
+      additionalDirectories: ['/local-extra'],
+      messaging: { inbound: 'ignore' },
+      ui: { startupAnimation: false },
+    };
+
+    const trackedWith = (document: unknown): void => {
+      writeFileSync(localPath, JSON.stringify(document));
+      git(workspace, 'add', '-f', '.book/settings.local.json');
+    };
+
+    it('pins the whitelist: exactly these paths, at exactly these values', () => {
+      expect(localFileRestrictions(RESTRICTIONS)).toEqual(RESTRICTIONS);
+      expect(localFileRestrictions({ ...RESTRICTIONS, ...EVERYTHING_ELSE })).toEqual(RESTRICTIONS);
+    });
+
+    it('keeps no key the whitelist does not name, whichever key the schema grows', () => {
+      const document: Record<string, unknown> = {};
+      for (const key of SETTINGS_TOP_LEVEL_KEYS) document[key] = { anything: true };
+      const kept = localFileRestrictions(document);
+      expect(kept).toEqual({});
+      // A nested key the whitelist does not name is left out too.
+      expect(
+        localFileRestrictions({
+          permissions: { allow: ['Bash'], added: ['Bash'] },
+          sandbox: { added: true, filesystem: { added: ['/'] }, network: { added: ['x'] } },
+        }),
+      ).toEqual({});
+    });
+
+    it('takes a sandbox value only in the direction that tightens', () => {
+      expect(
+        localFileRestrictions({
+          sandbox: {
+            enabled: false,
+            failIfUnavailable: false,
+            allowUnsandboxedCommands: true,
+            autoAllowBashIfSandboxed: true,
+            excludedCommands: ['*'],
+            filesystem: { allowGitWrites: true, allowWrite: ['/'] },
+            network: { allowedDomains: ['*'] },
+          },
+        }),
+      ).toEqual({});
+    });
+
+    it('gives a repository nothing `.book/settings.json` does not give it already', () => {
+      trackedWith({ ...RESTRICTIONS, ...EVERYTHING_ELSE });
+      const asTracked = resolved();
+      rmSync(localPath);
+      git(workspace, 'rm', '-q', '--cached', '.book/settings.local.json');
+      writeFileSync(join(workspace, '.book', 'settings.json'), JSON.stringify(RESTRICTIONS));
+      expect(asTracked).toEqual(resolved());
+    });
+
+    it('applies them for a file git cannot be asked about, too', () => {
+      writeFileSync(localPath, JSON.stringify({ ...RESTRICTIONS, ...EVERYTHING_ELSE }));
+      writeFileSync(join(workspace, '.git', 'index'), 'not an index');
+      const settings = resolved();
+      expect(settings.sandbox.enabled).toBe(true);
+      expect(settings.permissions.deny).toEqual(['Bash(rm *)']);
+      expect(settings.permissions.ask).toEqual(['Bash(curl *)']);
+      expect(settings.hooks.SessionStart).toEqual([]);
+      expect(settings.model).toBeUndefined();
+    });
+
+    it('keeps them when a bad .git appears beside the user’s own file', () => {
+      writeFileSync(localPath, JSON.stringify({ ...RESTRICTIONS, ...EVERYTHING_ELSE }));
+      expect(resolved().hooks.SessionStart).toHaveLength(1);
+      rmSync(join(workspace, '.git'), { recursive: true, force: true });
+      writeFileSync(join(workspace, '.git'), 'gitdir: /nonexistent\n');
+      const settings = resolved();
+      expect(settings.sandbox.enabled).toBe(true);
+      expect(settings.permissions.deny).toEqual(['Bash(rm *)']);
+      expect(settings.hooks.SessionStart).toEqual([]);
+    });
+
+    it('turning the sandbox on costs the auto-allow, as from any workspace layer', () => {
+      trackedWith({ sandbox: { enabled: true } });
+      const settings = resolved();
+      expect(settings.sandbox.enabled).toBe(true);
+      expect(settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
+    });
+
+    it('adds to the user’s lists rather than replacing them', () => {
+      mkdirSync(join(home, '.book'), { recursive: true });
+      writeFileSync(
+        join(home, '.book', 'settings.json'),
+        JSON.stringify({ permissions: { deny: ['Bash(user *)'] } }),
+      );
+      trackedWith({ permissions: { deny: ['Bash(rm *)'] } });
+      expect(resolved().permissions.deny).toEqual(['Bash(user *)', 'Bash(rm *)']);
+    });
+
+    for (const [name, body] of [
+      ['does not parse', '{ not json'],
+      ['is not an object', '[1, 2]'],
+      ['holds a restriction of the wrong type', '{"permissions":{"deny":[1]}}'],
+      ['holds a list of the wrong type', '{"sandbox":{"filesystem":{"denyRead":"/"}}}'],
+    ] as const) {
+      it(`contributes nothing, and fails nothing, when it ${name}`, () => {
+        writeFileSync(localPath, body);
+        git(workspace, 'add', '-f', '.book/settings.local.json');
+        expect(resolved().permissions.deny).toEqual([]);
+        expect(resolved().sandbox.enabled).toBe(DEFAULT_SETTINGS.sandbox.enabled);
+      });
+    }
+
+    it('contributes nothing from a file too large to be settings', () => {
+      writeFileSync(
+        localPath,
+        JSON.stringify({ permissions: { deny: ['Bash(rm *)'] }, pad: 'x'.repeat(5 * 1024 * 1024) }),
+      );
+      git(workspace, 'add', '-f', '.book/settings.local.json');
+      expect(resolved().permissions.deny).toEqual([]);
+    });
+
+    it.skipIf(process.platform === 'win32')('does not stall on a device behind a link', () => {
+      rmSync(localPath);
+      symlinkSync('/dev/zero', localPath);
+      git(workspace, 'add', '-f', '.book/settings.local.json');
+      expect(resolved().permissions.deny).toEqual([]);
+    });
   });
 
   it('reads it again once git no longer tracks it', () => {
@@ -210,7 +356,7 @@ describe('what happens around a tracked local settings file', () => {
       expect(collectUnreadLocalSettingsNotices(workspace, false)).toEqual([]);
     });
 
-    it('reports nothing else from the file: it was not read', () => {
+    it('reports no loosening key from the file: those are not read', () => {
       writeFileSync(localPath, JSON.stringify({ sandbox: { enabled: false } }));
       const untracked = collectWithheldProjectNotices({
         workspace,
@@ -283,6 +429,21 @@ describe('what happens around a tracked local settings file', () => {
       track();
       const written = applySettingWrite({ workspace, key: 'model', value: 'x', scope: 'user' });
       expect(written.ok && written.shadowedBy).toEqual([]);
+    });
+
+    it('reports a restriction in it that outranks a write', () => {
+      writeFileSync(localPath, JSON.stringify({ sandbox: { enabled: true } }));
+      track();
+      const written = applySettingWrite({
+        workspace,
+        key: 'sandbox.enabled',
+        value: false,
+        scope: 'user',
+      });
+      expect(written.ok && written.shadowedBy).toEqual([
+        { scope: 'local', path: localPath, unreadable: false },
+      ]);
+      expect(resolveSettings(workspace).sandbox.enabled).toBe(true);
     });
 
     it('lets a save to the user file through: nothing in a tracked file outranks it', () => {
@@ -416,7 +577,7 @@ describe('what happens around a tracked local settings file', () => {
       expect(writeProviderKey(workspace, 'gw', 'sk-new').ok).toBe(false);
     });
 
-    it('takes a rule back from no layer it could come from: not local', () => {
+    it('cannot take a rule back from it: not a file this edits', () => {
       track();
       expect(removePermissionRuleLocal(workspace, 'allow', 'Bash(echo *)')).toEqual({
         ok: false,

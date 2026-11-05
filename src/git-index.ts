@@ -51,7 +51,7 @@ function openRegularFile(path: string): number | undefined {
  * `path` as UTF-8, or `undefined` when it is absent or no regular file. Reads at most one byte past
  * `limit`, and throws `tooLarge` when it got that far: a procfs file reports size 0 and never ends.
  */
-function readBoundedText(
+export function readBoundedText(
   path: string,
   limit: number,
   tooLarge = `${path} is larger than ${limit} bytes`,
