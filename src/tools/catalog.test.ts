@@ -147,6 +147,34 @@ describe('tool surface discovery', () => {
     expect(surface.activeDefinitions().map((tool) => tool.name)).not.toContain('Bash');
   });
 
+  it('reports the rule sets in force as written, for a spawn to freeze (#696)', () => {
+    const surface = createToolSurface({
+      config: config(),
+      context: context(),
+      definitions: [definition('Read'), definition('Bash'), definition('Task')],
+      capabilityRules: [' Bash(git *) ', 'Task'],
+    });
+    expect(surface.capabilityRuleSets?.()).toEqual([['Bash(git *)', 'Task']]);
+
+    const dispose = surface.pushRestriction(['Read', '*']);
+    expect(surface.capabilityRuleSets?.()).toEqual([
+      ['Bash(git *)', 'Task'],
+      ['Read', '*'],
+    ]);
+
+    dispose();
+    expect(surface.capabilityRuleSets?.()).toEqual([['Bash(git *)', 'Task']]);
+  });
+
+  it('reports no rule sets on a surface nothing narrows', () => {
+    const surface = createToolSurface({
+      config: config(),
+      context: context(),
+      definitions: [definition('Read')],
+    });
+    expect(surface.capabilityRuleSets?.()).toEqual([]);
+  });
+
   it('restores the parent surface after a scoped restriction is disposed', () => {
     const surface = createToolSurface({
       config: config(),

@@ -111,6 +111,8 @@ export interface AgentRecord {
   id: string;
   /** The class of the peer turn that spawned it, kept for every run (#620; `AgentSpawnRequest`). */
   peerTurnClass?: PeerPermissionClass;
+  /** Frozen at the spawn and kept for every run; absent means none (`AgentSpawnRequest.toolCeiling`). */
+  toolCeiling?: string[][];
   profile?: string;
   displayName?: string;
   profileDescription?: string;
@@ -362,6 +364,12 @@ export interface AgentSpawnRequest {
    * read as `default` for a bypass-class session mode, whatever that mode is when the agent starts.
    */
   peerTurnClass?: PeerPermissionClass;
+  /**
+   * The capability rule sets in force where the spawn came from: the `allowed-tools` of the
+   * parent's command and active skills, each set as written (#696). The child gets what its role
+   * and every set admit, for as long as it exists, including after those frames end.
+   */
+  toolCeiling?: string[][];
   /**
    * Whether `agents.resumeInterrupted` may re-run this agent after the process
    * died mid-run. Defaults to true. Like `notifyParentOnCompletion`, it covers only the runs the

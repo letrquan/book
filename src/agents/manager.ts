@@ -26,8 +26,12 @@ import { runCompact, usagePressureTokens } from '../agent/compact.js';
 import { runHooks } from '../hooks.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { WorkspaceProviderRefusalError } from '../provider-approvals.js';
-import { createRegistry } from '../tools/registry-core.js';
-import { createCapabilityRegistry, describeCapabilities } from './capabilities.js';
+import { createRegistry, type ToolRegistry } from '../tools/registry-core.js';
+import {
+  createCapabilityRegistry,
+  describeCapabilities,
+  describeToolCeiling,
+} from './capabilities.js';
 import { checkWorktreeCapacity } from './resource-governor.js';
 import {
   applyVerifiedCandidate,
@@ -74,6 +78,7 @@ import type {
   AgentCompletionNotification,
   AgentPermissionRequest,
   AgentPlanRecord,
+  AgentIsolation,
   AgentRecord,
   AgentRuntimeEvent,
   AgentSnapshot,
@@ -165,7 +170,11 @@ const DURABILITY_WARNING =
 export class AgentManagerError extends Error {
   constructor(
     message: string,
-    readonly code: 'agent_store_busy' | 'agent_store_unavailable' | 'agent_owned_by_other_process',
+    readonly code:
+      | 'agent_store_busy'
+      | 'agent_store_unavailable'
+      | 'agent_owned_by_other_process'
+      | 'child_tool_surface_empty',
     readonly retryable: boolean,
     readonly remediation: string,
     readonly details?: Record<string, unknown>,
@@ -1052,6 +1061,22 @@ export class AgentManager {
         `Agent ${definition.name} declares unsupported tools: ${definition.unknownTools.join(', ')}. Import or edit the definition before running it.`,
       );
     }
+    // Frozen here, for every run of this agent, so it keeps this set after the frames end (#696).
+    const toolCeiling = request.toolCeiling?.length ? clone(request.toolCeiling) : undefined;
+    if (
+      toolCeiling &&
+      this.childRegistry(definition, definition.isolation, toolCeiling)
+        .getDefinitions()
+        .every((tool) => tool.name === 'ToolSearch')
+    ) {
+      throw new AgentManagerError(
+        `Agent ${definition.name} would have no tool left: the allowed-tools in force (${toolCeiling.map(describeCapabilities).join('; ')}) leave none of its own (${describeCapabilities(definition.allowedTools)}).`,
+        'child_tool_surface_empty',
+        false,
+        "Do the step directly, use an agent role those allowed-tools cover, or add the tools the role needs to the skill's or command's allowed-tools.",
+        { agent: definition.name, toolCeiling },
+      );
+    }
     if (definition.isolation === 'worktree' && !this.repoRoot) {
       throw new Error(
         `${definition.name} requires Git worktree isolation. ${
@@ -1122,6 +1147,7 @@ export class AgentManager {
     const record: AgentRecord = {
       id: randomUUID(),
       ...(request.peerTurnClass !== undefined ? { peerTurnClass: request.peerTurnClass } : {}),
+      ...(toolCeiling ? { toolCeiling } : {}),
       profile: definition.name,
       displayName,
       profileDescription: definition.description,
@@ -1817,6 +1843,21 @@ export class AgentManager {
     );
   }
 
+  /** The tools a child of this definition gets: its role, under the ceiling its spawn froze. */
+  private childRegistry(
+    definition: ManagedAgentDef,
+    isolation: AgentIsolation,
+    ceiling: string[][] | undefined,
+  ): ToolRegistry {
+    const parent = createRegistry();
+    parent.registerAll(this.parentDefinitions);
+    return createCapabilityRegistry(parent, definition.allowedTools, {
+      isolation,
+      profile: definition.name,
+      ceiling,
+    });
+  }
+
   private systemPrompt(
     record: AgentRecord,
     definition: ManagedAgentDef,
@@ -1844,6 +1885,7 @@ export class AgentManager {
         ? `Snapshot: ${snapshot.id} (${snapshot.manifest.length} changed paths)`
         : 'Snapshot: not used for workspace-readonly isolation',
       `Capabilities: ${describeCapabilities(definition.allowedTools)}`,
+      ...(record.toolCeiling ? [describeToolCeiling(record.toolCeiling)] : []),
       'Delegation is disabled at this depth. Do not attempt to apply work to the parent workspace.',
       '',
       '## Final response contract',
@@ -1996,12 +2038,7 @@ export class AgentManager {
         { onHookEvent: this.hookEventSink, signal: controller.signal },
       );
 
-      const parent = createRegistry();
-      parent.registerAll(this.parentDefinitions);
-      const registry = createCapabilityRegistry(parent, definition.allowedTools, {
-        isolation,
-        profile: definition.name,
-      });
+      const registry = this.childRegistry(definition, isolation, record.toolCeiling);
       if (
         definition.source !== 'builtin' &&
         definition.allowedTools.length > 0 &&

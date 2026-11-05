@@ -65,17 +65,33 @@ function denied(
   );
 }
 
+/** A refusal by the parent's ceiling: the role may run the tool, so isolation is not the reason. */
+function deniedByCeiling(call: ToolCall, shell?: ScanShell): ToolResult {
+  const canonical = canonicalToolName(call.name);
+  const compound = isCompoundShellCommand(call, process.platform, shell)
+    ? ` ${compoundCommandRefusal(call, process.platform, shell)} ${COMPOUND_COMMAND_REMEDIATION}`
+    : '';
+  return toolFailure(
+    `Capability denied: this call to ${canonical} is outside the allowed-tools this agent was started under, those of the parent's skill or command.${compound} Report the blocked step and required capability to the parent.`,
+    { toolCallId: call.id, code: 'capability_denied', status: 'blocked' },
+  );
+}
+
 /**
- * Intersect an agent definition with the active parent registry. The returned
- * definitions are filtered for model visibility and re-check every call's
- * canonical name and primary argument at execution time.
+ * Intersect an agent definition with the active parent registry and, when the spawn froze one, the
+ * parent's ceiling (#696): rule sets of its own, each of which a tool has to fit. A ceiling's `*`
+ * excludes nothing, as on the parent's own surface: it narrows the parent by nothing, so it takes
+ * nothing from the role. The returned definitions are filtered for model visibility and re-check
+ * every call's canonical name and primary argument at execution time. A ceiling it cannot read
+ * throws rather than admitting anything.
  */
 export function createCapabilityRegistry(
   parent: ToolRegistry,
   rawRules: string[],
-  options: { isolation?: AgentIsolation; profile?: string } = {},
+  options: { isolation?: AgentIsolation; profile?: string; ceiling?: string[][] } = {},
 ): ToolRegistry {
   const rules = parseCapabilityRules(rawRules);
+  const ceiling = (options.ceiling ?? []).map(parseCapabilityRules);
   const registry = createRegistry();
 
   for (const definition of parent.getDefinitions()) {
@@ -94,6 +110,11 @@ export function createCapabilityRegistry(
     )
       continue;
     if (CHILD_LIFECYCLE_TOOLS.has(canonical)) continue;
+    if (
+      canonical !== 'ToolSearch' &&
+      !ceiling.every((set) => isToolDefinitionAllowed(set, definition))
+    )
+      continue;
 
     const wrapped: ToolDefinition = {
       ...definition,
@@ -110,6 +131,11 @@ export function createCapabilityRegistry(
           !isToolCallAllowed(rules, call, CHILD_WILDCARD_EXCLUSIONS, process.platform, shell)
         )
           return denied(call, options.profile, options.isolation, shell);
+        if (
+          canonical !== 'ToolSearch' &&
+          !ceiling.every((set) => isToolCallAllowed(set, call, undefined, process.platform, shell))
+        )
+          return deniedByCeiling(call, shell);
         return definition.execute(args, context);
       },
     };
@@ -122,4 +148,10 @@ export function createCapabilityRegistry(
 export function describeCapabilities(rawRules: string[]): string {
   if (rawRules.length === 0) return '(no tools)';
   return rawRules.join(', ');
+}
+
+/** The system-prompt line that tells a child what its parent's ceiling leaves it (#696). */
+export function describeToolCeiling(ceiling: string[][]): string {
+  const sets = ceiling.map((set) => describeCapabilities(set)).join('; and also ');
+  return `Parent's allowed-tools: ${sets}. These hold you too: a capability above that they leave out is not available, and a call they do not cover is refused. If a step needs one, report it to the parent instead.`;
 }

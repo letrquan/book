@@ -105,6 +105,7 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
     const requestedAt = Date.now();
     const spawned = await manager.spawn({
       ...(ctx.peerTurnClass !== undefined ? { peerTurnClass: ctx.peerTurnClass } : {}),
+      toolCeiling: ctx.toolDiscovery?.capabilityRuleSets?.(),
       agent: agentName,
       description: deriveAgentDisplayName(prompt, agentName),
       prompt,

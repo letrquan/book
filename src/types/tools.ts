@@ -581,6 +581,12 @@ export interface ToolDiscoveryContext {
   /** Preview the authorized definitions after an additional scoped intersection. */
   previewRestriction(rules: string[]): ToolDefinition[];
   /**
+   * The capability rule sets in force now, each as written, so `Bash(git *)` keeps its pattern. A
+   * tool has to fit every set. A spawn freezes them as the child's ceiling (#696). Optional so a
+   * discovery object built without it keeps working; it then has no rule sets to carry.
+   */
+  capabilityRuleSets?(): string[][];
+  /**
    * Whether a tool is visible for this turn by name alone, before any
    * argument-scoped rule (`Bash(git *)`) is applied to a call's arguments.
    * Optional so a discovery object built without it keeps working; the

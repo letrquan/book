@@ -87,6 +87,19 @@ options, and it is not a sandbox. `Bash(git *)` still admits `git -c alias.x='!â
 `git -c core.fsmonitor=â€¦ status`, which run other programs; when that matters, narrow the pattern
 (`Bash(git status)`, `Bash(git log *)`).
 
+**A list that names a delegation tool holds the children too.** A child started with `Task` or
+`AgentSpawn` while a command's or skill's `allowed-tools` are in force gets only what its role and
+those lists both admit, rule by rule, so a list with `Bash(git *)` and `Task` gives a child that may
+run Bash only `git` commands. Under `allowed-tools: [Read, Task]` a `patcher` can read and cannot
+write. The set is fixed when the child starts: an agent that outlives the skill keeps it on every
+later run and after a restart, and a new spawn after the skill ends has its role's full tools. A
+spawn whose role would have no tool left is refused with `child_tool_surface_empty`, and nothing is
+started. Lists are read as written, so name what the child needs (`EvidencePublish`,
+`EvidenceReview`, `Check`) or the child goes without; a path rule is matched against the child's own
+path, which in a `patcher`'s worktree is not your checkout's. An agent started before the skill or
+command keeps its own set, and `AgentSend` does not narrow it, so leave `AgentSend` out of a list
+you mean to hold.
+
 Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/queue`, `/exit`,
 `/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent
 controls (`/agents`, `/agent`), config (`/model`, `/providers`,
