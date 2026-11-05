@@ -549,6 +549,9 @@ describe('acceptEdits and a home directory a root holds', () => {
     const home = join(holder, 'home');
     mkdirSync(home);
     vi.stubEnv('BOOK_HOME', home);
+    // The temp directory can sit under the OS home (Windows runners): `beside` must not.
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
     const configure = (config: AgentConfig): void => {
       config.settings.additionalDirectories = [holder];
     };
@@ -595,6 +598,7 @@ describe('acceptEdits in a linked git worktree', () => {
     await run('init', '-q', '-b', 'main');
     await run('config', 'user.email', 'book@example.com');
     await run('config', 'user.name', 'Book');
+    await run('config', 'core.autocrlf', 'false');
     put(join(repo, 'src', 'x.ts'), 'old\n');
     await run('add', '-A');
     await run('commit', '-q', '-m', 'first');
