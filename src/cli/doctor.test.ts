@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   existsSync,
@@ -469,6 +470,50 @@ describe('runDoctorCommand --no-settings', () => {
 
     expect(output).toMatch(/\[-\] Project: .*settings\.json/);
     expect(output).not.toMatch(/\[x\] Project:/);
+  });
+});
+
+describe('runDoctorCommand a local settings file git tracks', () => {
+  const git = (...args: string[]): void => {
+    execFileSync('git', args, { cwd: workspace, stdio: 'ignore' });
+  };
+
+  it('names the file and the remedy on one line, and reports nothing from it', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    const local = join(workspace, '.book', 'settings.local.json');
+    writeFileSync(local, JSON.stringify({ sandbox: { filesystem: { allowWrite: ['/'] } } }));
+    git('init', '-q');
+
+    const untracked = await doctorOutput(workspace);
+    expect(untracked).toMatch(/\[x\] Local: .*settings\.local\.json/);
+    expect(untracked).toContain('Ignored from');
+
+    git('add', '-f', '.book/settings.local.json');
+    const tracked = await doctorOutput(workspace);
+    expect(tracked).not.toMatch(/\[x\] Local:/);
+    expect(tracked.match(/git rm --cached \.book\/settings\.local\.json/g)).toHaveLength(1);
+    expect(tracked).toContain(`[!] Local: ${local} (not read: git tracks it`);
+    expect(tracked).not.toContain('Ignored from');
+  });
+
+  it('does not blame a tracked file that would not load', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(join(workspace, '.book', 'settings.local.json'), JSON.stringify({ maxTurns: 0 }));
+    git('init', '-q');
+    git('add', '-f', '.book/settings.local.json');
+
+    const output = await doctorOutput(workspace);
+    expect(output).not.toContain('FAILED TO LOAD');
+    expect(output).toContain('not read: git tracks it');
+  });
+
+  it('says nothing of it under --no-settings', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(join(workspace, '.book', 'settings.local.json'), '{}');
+    git('init', '-q');
+    git('add', '-f', '.book/settings.local.json');
+
+    expect(await doctorOutput(workspace, { noSettings: true })).not.toContain('git tracks it');
   });
 });
 

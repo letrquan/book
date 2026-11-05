@@ -26,12 +26,14 @@ import {
   type WorkspaceProviderGate,
 } from './provider-approvals.js';
 import { renderUntrustedText } from './hook-approvals.js';
+import { unreadLocalSettingsReason } from './local-settings-tracking.js';
 import { collectSkippedReviewNotices } from './review/config.js';
 import { providerTrustCommand } from './trust-command.js';
 import {
   formatIgnoredWorkspaceSandboxKey,
   ignoredWorkspaceSandboxKeys,
   isUserSettingsFile,
+  loadLocalSettingsFile,
   loadSettingsFile,
   settingsLayerPaths,
   workspaceLayerThatEnabledSandbox,
@@ -208,7 +210,7 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
     );
   }
   const localPath = join(input.workspace, '.book', 'settings.local.json');
-  const localSettings = loadSettingsFile(localPath);
+  const localSettings = loadLocalSettingsFile(localPath);
   const ignoredLocalSandboxKeys = ignoredWorkspaceSandboxKeys(localSettings ?? {});
   if (ignoredLocalSandboxKeys.length > 0) {
     const listed = ignoredLocalSandboxKeys.map(formatIgnoredWorkspaceSandboxKey).join(', ');
@@ -247,6 +249,21 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
   }
 
   return [...notices, ...providerNotices];
+}
+
+/**
+ * The one warning for a `.book/settings.local.json` the loader did not read because git tracks it,
+ * for every host: print mode and the SDK on stderr, the TUI among its startup notices. Empty under
+ * `--no-settings`, where no layer was read in the first place.
+ */
+export function collectUnreadLocalSettingsNotices(
+  workspace: string,
+  settingsEnabled: boolean,
+): string[] {
+  if (!settingsEnabled) return [];
+  const path = join(workspace, '.book', 'settings.local.json');
+  const reason = unreadLocalSettingsReason(path);
+  return reason === undefined ? [] : [`⚠  ${path}: ${reason}.`];
 }
 
 /**

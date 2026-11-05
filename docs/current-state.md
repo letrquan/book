@@ -123,9 +123,8 @@ awareness were checked, by reading `src/` on main at a8ad170d and the merged PRs
   and `book trust hook|rule|command|dir|provider` records the decision), the trust-decision keys ignored
   from both workspace layers and read instead from `~/.book/trust.json`, keyed by workspace path,
   so nothing a repository ships can approve its own MCP servers, allow rules, hook entries,
-  shell-substituting slash commands, additional directories, or workspace providers — a force-added `.book/settings.local.json` reaches a clone the
-  same way a checked-in file does, and `book config set` refuses those paths rather than
-  writing a value nothing reads. Experimental capability opt-ins are
+  shell-substituting slash commands, additional directories, or workspace providers, and `book config set` refuses those paths rather than
+  writing a value nothing reads. A `.book/settings.local.json` that git tracks is not read at all: a local file a repository ships isn't local. Experimental capability opt-ins are
   likewise ignored from both workspace layers and must come from the user-global file, an explicit
   `--settings` document, or the process environment; all three writers (`book config set`, the
   `/config` slash command, and the TUI's local persistence) refuse them through one shared list. Other settings include hooks, the optional sandbox (bubblewrap on Linux, Seatbelt on macOS), themes,

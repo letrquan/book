@@ -12,6 +12,7 @@ import {
 } from './settings.js';
 import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
 import { projectFileWriteRefusal } from './workspace-files.js';
+import { unreadLocalSettingsReason } from './local-settings-tracking.js';
 import { resolveBookHome } from './book-home.js';
 import { collectDeclaredDirectories, partitionProjectDirectories } from './additional-roots.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
@@ -143,7 +144,8 @@ function mergeObject(
  *
  * - `trusted` — the user's own global file, or a path they passed on the CLI.
  * - `local` — `<workspace>/.book/settings.local.json`: gitignored and normally
- *   written by the user, or by Book on their behalf.
+ *   written by the user, or by Book on their behalf. One that git tracks is no
+ *   layer at all (`local-settings-tracking.ts`).
  * - `repository` — `<workspace>/.book/settings.json`: checked in and controlled
  *   by whoever wrote the repository. It may never grant itself trust.
  */
@@ -156,12 +158,12 @@ export type SettingsLayerTrust = 'trusted' | 'local' | 'repository';
  * flags are included because merely opening a clone must not opt the user into
  * unstable runtime behavior.
  *
- * The local layer is no safer than the checked-in one here. `.gitignore` does
- * not stop a *tracked* file from reaching a clone, so a repository that
- * force-adds `.book/settings.local.json` ships its own approvals with it. Both
- * workspace layers are therefore stripped. Trust decisions come from the
- * user-global store; experimental flags come from a trusted user-global or
- * explicit settings document (or from a process environment opt-in).
+ * The local layer is no safer than the checked-in one here: both are files inside
+ * the working tree. A `.book/settings.local.json` that git tracks is not read at
+ * all, and the strip is the rule for one the index does not list. Both workspace
+ * layers are therefore stripped. Trust decisions come from the user-global store;
+ * experimental flags come from a trusted user-global or explicit settings document
+ * (or from a process environment opt-in).
  *
  * An empty `parent` names a key at the document root, which is how the
  * `additionalDirectories` decisions map is expressed: the setting it decides
@@ -587,6 +589,15 @@ function loadSettingsFile(path: string): BookSettings | null {
 }
 
 /**
+ * The local layer's file, the one way any reader of that layer loads it: null when it is absent,
+ * or when git tracks it. A local file a repository ships isn't local, so it is not read, for any
+ * key, and a broken one breaks nothing (`local-settings-tracking.ts`).
+ */
+export function loadLocalSettingsFile(path: string): BookSettings | null {
+  return unreadLocalSettingsReason(path) === undefined ? loadSettingsFile(path) : null;
+}
+
+/**
  * Resolve settings from all scopes: user → project → local.
  * Priority: Local > Project > User.
  *
@@ -607,7 +618,8 @@ export interface SettingsResolutionPaths {
  *
  * Exported so callers that need to inspect the files themselves — `book doctor`
  * reporting removed keys, the credential error checking for a stale `auth`
- * block — resolve the same paths the loader does rather than rebuilding them.
+ * block — resolve the same paths the loader does rather than rebuilding them. A
+ * local file git tracks is not one of them: it is not read.
  */
 export function settingsLayerPaths(
   workspace: string,
@@ -616,10 +628,11 @@ export function settingsLayerPaths(
 ): string[] {
   const userPath = userSettingsPath(paths);
   const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');
+  const localPath = paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json');
   const layers = [
     userPath,
     ...(sameFile(projectPath, userPath) ? [] : [projectPath]),
-    paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json'),
+    ...(unreadLocalSettingsReason(localPath) === undefined ? [localPath] : []),
   ];
   if (overridePath) layers.push(overridePath);
   return layers;
@@ -711,7 +724,7 @@ export function resolveSettingsWithProviderGate(
   // Skipped when it is the user file itself, as it is for a workspace at `$HOME` (#429).
   const project = sameFile(projectPath, userPath) ? null : loadSettingsFile(projectPath);
   const localPath = paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json');
-  const local = withoutStaleAdvisorOff(loadSettingsFile(localPath), project);
+  const local = withoutStaleAdvisorOff(loadLocalSettingsFile(localPath), project);
   const override = overridePath ? loadSettingsFile(overridePath) : null;
 
   const trustedProviderIds = providerIdsOf([

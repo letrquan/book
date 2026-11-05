@@ -9,6 +9,7 @@ import { mcpServersToRecord, partitionMcpServersByApproval } from '../mcp-approv
 import { resolveMcpServerList } from '../mcp-config.js';
 import {
   collectSkippedProjectFileNotices,
+  collectUnreadLocalSettingsNotices,
   collectWithheldProjectNotices,
   collectWithheldProviderNotices,
 } from '../project-approval-notices.js';
@@ -247,8 +248,18 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     // not loaded (#539, #543). Not tied to `--no-settings`: they are read whatever the settings
     // layers are.
     const instructionNotices = collectSkippedProjectFileNotices(config.workspace);
+    // A local settings file git tracks is not read: every launch mode says so, once.
+    const localSettingsNotices = collectUnreadLocalSettingsNotices(
+      config.workspace,
+      options.settings !== false,
+    );
     if (options.scrollback) {
-      for (const notice of [...nodeNotices, ...providerNotices, ...instructionNotices]) {
+      for (const notice of [
+        ...nodeNotices,
+        ...providerNotices,
+        ...localSettingsNotices,
+        ...instructionNotices,
+      ]) {
         console.warn(notice);
       }
     }
@@ -294,6 +305,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           settingsEnabled: options.settings !== false,
           providerGate: config.workspaceProviderGate,
         }),
+        ...localSettingsNotices,
         ...instructionNotices,
       ]) {
         console.warn(notice);
@@ -540,7 +552,12 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
             sessionMentions,
             peerAwareness,
           },
-          startupNotices: [...nodeNotices, ...providerNotices, ...instructionNotices],
+          startupNotices: [
+            ...nodeNotices,
+            ...providerNotices,
+            ...localSettingsNotices,
+            ...instructionNotices,
+          ],
           lateStartupNotices: inboxStart && inboxStartupNotices(inboxStart),
         }),
         {

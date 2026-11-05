@@ -1,10 +1,11 @@
 /**
  * The rule for the files Book itself writes into a workspace. Its own module, with nothing but
- * `fs`, `path` and `BOOK_HOME` behind it, so the debug logger can use it too.
+ * `fs`, `path`, `BOOK_HOME` and the git index reader behind it, so the debug logger can use it too.
  */
 import { lstatSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
 import { resolveBookHome } from './book-home.js';
+import { isLocalSettingsPath, localSettingsRefusal } from './local-settings-tracking.js';
 
 function safeMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -19,8 +20,9 @@ function safeMessage(error: unknown): string {
  * Such a file is written only while it is a regular file or does not exist yet, in a `.book`
  * folder that is a real directory or does not exist yet. Anything else (a link, a FIFO, a device,
  * a directory in the file's place) is left exactly as it is: not read for the write, not written
- * through, and not replaced. The answer is the reason, without the path or a full stop, for the
- * caller's one-line notice: `<path>: <reason>`.
+ * through, and not replaced. Nor is a `.book/settings.local.json` that git tracks, which the loader
+ * does not read either: a save there would look done and never take effect. The answer is the
+ * reason, without the path or a full stop, for the caller's one-line notice: `<path>: <reason>`.
  *
  * The user-global files (`<BOOK_HOME>/settings.json` and `<BOOK_HOME>/mcp.json`) keep their
  * behaviour: they are the user's own, and one kept elsewhere and linked into place is a setup this
@@ -44,7 +46,9 @@ export function projectFileWriteRefusal(path: string): string | undefined {
       }
     }
     const stats = lstatSync(target, { throwIfNoEntry: false });
-    if (!stats || stats.isFile()) return undefined;
+    if (!stats || stats.isFile()) {
+      return isLocalSettingsPath(target) ? localSettingsRefusal(target) : undefined;
+    }
   } catch (error) {
     return `could not be inspected (${safeMessage(error)}), so Book left it unchanged`;
   }

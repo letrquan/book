@@ -3120,6 +3120,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [toggleSetting, config.workspace],
   );
 
+  // Read through a ref: `addLocalMessage` changes with every turn, and the managed-agent manager
+  // is memoized on this callback.
+  const addLocalMessageRef = useRef(addLocalMessage);
+  addLocalMessageRef.current = addLocalMessage;
+
   // Add an allow rule from the "Always allow" approval flow (CC-aligned) and
   // surface it live in settings so the next call is auto-allowed.
   const persistPermissionRule = useCallback(
@@ -3136,7 +3141,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           },
         };
       });
-      persistPermissionRuleLocal(config.workspace, 'allow', rule);
+      // In force for this session either way. A rule the local file will not hold has to say so:
+      // it would otherwise be gone at the next launch with nothing to explain why.
+      const persisted = persistPermissionRuleLocal(config.workspace, 'allow', rule);
+      if (!persisted.ok) {
+        addLocalMessageRef.current(
+          `⚠  Allowed for this session only: ${persisted.error ?? 'the rule was not saved'}.`,
+        );
+      }
     },
     [config.workspace],
   );

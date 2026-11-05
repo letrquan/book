@@ -901,8 +901,9 @@ contains text addressed to a summarizer, `suspect_inputs`: a list of `{ eventRef
 deferred compaction the hook runs when the summarizer starts on the snapshot, and again if the
 judge rejects the checkpoint and Book compacts synchronously instead.
 
-Hooks from your own layers (`~/.book/settings.json`, `.book/settings.local.json`, `--settings`)
-run as written. A hook declared in a repository's checked-in `.book/settings.json` is withheld
+Hooks from your own layers (`~/.book/settings.json`, an untracked `.book/settings.local.json`,
+`--settings`) run as written; a `.book/settings.local.json` that git tracks is not read at all (see
+[Settings files](configuration.md#settings-files)). A hook declared in a repository's checked-in `.book/settings.json` is withheld
 until you approve it once per workspace: the decision is recorded in `~/.book/trust.json`, outside
 the workspace, keyed by a fingerprint of the event, matcher, command, and env — edit any of those
 and the hook asks again. Nothing the repository ships can write that store, so a clone cannot
@@ -1391,8 +1392,8 @@ runs a real `sandbox-exec`.
 
 ### A workspace settings layer may only tighten the sandbox
 
-`.book/settings.json` is repository input, and so is a `settings.local.json` a clone was
-force-fed. Neither can switch the sandbox off, exclude commands, or widen a writable mount; both
+`.book/settings.json` is repository input, and `settings.local.json` is one more file inside the
+working tree. Neither can switch the sandbox off, exclude commands, or widen a writable mount; both
 can turn it on, refuse unsandboxed commands, and add deny entries — and turning it on from a
 workspace file also turns `autoAllowBashIfSandboxed` off, because a repository that could enable the
 sandbox and pre-approve the commands in one file would not be contained by it.

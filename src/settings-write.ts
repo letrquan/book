@@ -16,6 +16,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { getNestedValue, setNestedValue } from './cli/utils.js';
+import { unreadLocalSettingsReason } from './local-settings-tracking.js';
 import { resolveSettings, settingsLayerPaths } from './settings-loader.js';
 import {
   formatSettingsDiagnostics,
@@ -72,7 +73,7 @@ export interface ScopeDocument {
 /**
  * `forWrite`: the read a write starts from, which answers the way the write will
  * (`projectFileWriteRefusal`) before reading anything. A read for display reports the file the way
- * the loader reads it, since that is the layer in force.
+ * the loader reads it, since that is the layer in force: not at all, when git tracks a local file.
  */
 export function readScopeDocument(
   scope: SettingsScope,
@@ -80,7 +81,11 @@ export function readScopeDocument(
   { forWrite = false }: { forWrite?: boolean } = {},
 ): ScopeDocument {
   const path = settingsScopePath(scope, workspace);
-  const refusal = forWrite ? projectFileWriteRefusal(path) : undefined;
+  const refusal = forWrite
+    ? projectFileWriteRefusal(path)
+    : scope === 'local'
+      ? unreadLocalSettingsReason(path)
+      : undefined;
   if (refusal) return { scope, path, status: 'unreadable', error: refusal, document: {} };
   const result = readSettingsDocument(path);
   if (result.status === 'valid') {

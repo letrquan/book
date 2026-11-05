@@ -30,6 +30,7 @@ import {
   type SkillActivation,
   type SkillExecution,
 } from '../settings.js';
+import { unreadLocalSettingsReason } from '../local-settings-tracking.js';
 import { deleteProviderConnectionKeys } from '../provider-key.js';
 import { resolveSettings } from '../settings-loader.js';
 import { deleteNestedValue } from '../cli/utils.js';
@@ -78,6 +79,16 @@ export type RemoveLocalProviderResult =
 function refusedWrite(path: string): { ok: false; error: string } | undefined {
   const reason = projectFileWriteRefusal(path);
   return reason ? { ok: false, error: `${path}: ${reason}` } : undefined;
+}
+
+/**
+ * The refusal for a save that also clears what it supersedes from the local layer, checked before
+ * the user file is written. A local file git tracks is not a layer: nothing in it outranks the
+ * save, so there is nothing to clear and no reason to refuse.
+ */
+function refusedLocalClear(workspace: string): { ok: false; error: string } | undefined {
+  const path = localSettingsPath(workspace);
+  return unreadLocalSettingsReason(path) === undefined ? refusedWrite(path) : undefined;
 }
 
 /** Read a settings document at `path` as a plain object ({} if absent/invalid). */
@@ -182,7 +193,7 @@ export function persistUserSettingClearingLocal(
 ): { ok: boolean; error?: string } {
   // Checked before the user file is written: the clear that follows must happen for the write to
   // take effect, and a refused one would otherwise pass silently.
-  const refused = refusedWrite(localSettingsPath(workspace));
+  const refused = refusedLocalClear(workspace);
   if (refused) return refused;
   const result = persistSettingsGlobal({ [key]: value });
   if (!result.ok) return result;
@@ -195,7 +206,7 @@ export function removeUserSettingClearingLocal(
   workspace: string,
   key: string,
 ): { ok: boolean; error?: string } {
-  const refused = refusedWrite(localSettingsPath(workspace));
+  const refused = refusedLocalClear(workspace);
   if (refused) return refused;
   const result = new SettingsRepository(globalSettingsPath()).remove([key]);
   if (!result.ok) return { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
@@ -317,7 +328,7 @@ export function clearLocalSettings(
   paths: string[],
 ): { ok: boolean; error?: string } {
   const path = localSettingsPath(workspace);
-  if (!existsSync(path)) return { ok: true };
+  if (!existsSync(path) || unreadLocalSettingsReason(path) !== undefined) return { ok: true };
   const result = new SettingsRepository(path).remove(paths);
   return result.ok
     ? { ok: true }
@@ -341,7 +352,7 @@ export function persistProviderSave(
   selection?: string,
 ): { ok: boolean; error?: string } {
   // As in persistUserSettingClearingLocal: the local clear is part of the save.
-  const refused = refusedWrite(localSettingsPath(workspace));
+  const refused = refusedLocalClear(workspace);
   if (refused) return refused;
   const result = persistSettingsGlobal({
     [`provider.${providerId}`]: provider,
@@ -362,7 +373,7 @@ function clearSupersededLocalProviderKeys(
   activated: boolean,
 ): void {
   const path = localSettingsPath(workspace);
-  if (!existsSync(path)) return;
+  if (!existsSync(path) || unreadLocalSettingsReason(path) !== undefined) return;
   new SettingsRepository(path).update((candidate) => {
     const registry = candidate.provider;
     const entry =
