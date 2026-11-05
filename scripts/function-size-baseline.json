@@ -1,8 +1,8 @@
 {
   "agent/compact.ts#runCompact": { "codeLines": 350, "complexity": 52 },
-  "agent/loop.ts#runAgentLoop": { "codeLines": 2575, "complexity": 527 },
+  "agent/loop.ts#runAgentLoop": { "codeLines": 2573, "complexity": 527 },
   "agent/tool-call-lifecycle.ts#finalizeToolCall": { "codeLines": 298, "complexity": 80, "movedFrom": "agent/loop.ts#runAgentLoop>finalizeToolCall" },
-  "agent/tool-call-lifecycle.ts#prepareToolCall": { "codeLines": 455, "complexity": 151, "movedFrom": "agent/loop.ts#runAgentLoop>prepareToolCall" },
+  "agent/tool-call-lifecycle.ts#prepareToolCall": { "codeLines": 451, "complexity": 150, "movedFrom": "agent/loop.ts#runAgentLoop>prepareToolCall" },
   "agents/atomic-json.ts#AtomicJsonWriter>write": { "codeLines": 153, "complexity": 20 },
   "agents/atomic-json.ts#AtomicJsonWriter>writeAsync": { "codeLines": 162, "complexity": 22 },
   "agents/git-isolation.ts#run": { "codeLines": 186, "complexity": 4 },

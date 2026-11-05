@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { systemClock } from '../clock.js';
 import { runHooks } from '../hooks.js';
-import { peerTurnGateMode } from '../messaging/receive-policy.js';
+import type { Provider } from '../provider/index.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { isolateBookHome } from '../test/isolated-book-home.js';
@@ -19,9 +20,12 @@ import type {
   ToolCall,
   ToolContext,
   ToolDefinition,
+  ToolResult,
 } from '../types/tools.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
+import { runAgentLoop } from './loop.js';
 import {
+  finalizeToolCall,
   PEER_TURN_AGENT_REFUSAL,
   PEER_TURN_MODE_REFUSAL,
   prepareToolCall,
@@ -35,6 +39,8 @@ vi.mock('../hooks.js', async (importOriginal) => {
   return { ...original, runHooks: vi.fn(original.runHooks) };
 });
 
+const realHooks = await vi.importActual<typeof import('../hooks.js')>('../hooks.js');
+
 isolateBookHome();
 
 let workspace: string;
@@ -44,7 +50,7 @@ let runtimes: SessionRuntime[] = [];
 beforeEach(() => {
   workspace = realpathSync(mkdtempSync(join(tmpdir(), 'book-gate-')));
   outside = realpathSync(mkdtempSync(join(tmpdir(), 'book-gate-out-')));
-  vi.mocked(runHooks).mockClear();
+  vi.mocked(runHooks).mockReset();
 });
 
 afterEach(() => {
@@ -64,7 +70,7 @@ interface GateOptions {
   tools?: ToolDefinition[];
 }
 
-/** The gate as the loop hands it its run, with the loop's own mode sync copied beside it. */
+/** The gate as the loop hands it its run. */
 function gate(options: GateOptions = {}) {
   const config = defaultConfig({ workspace });
   options.configure?.(config);
@@ -73,10 +79,11 @@ function gate(options: GateOptions = {}) {
   const runtime = new SessionRuntime();
   runtimes.push(runtime);
   const initialMode = options.mode ?? 'default';
+  const readOnlyRoots: string[] = [];
   const toolContext: ToolContext = {
     workspaceRoot: workspace,
     env: {},
-    readOnlyRoots: [],
+    readOnlyRoots,
     additionalRoots: [],
     runtime,
     currentMode: initialMode,
@@ -92,10 +99,12 @@ function gate(options: GateOptions = {}) {
 
   const host = { mode: initialMode };
   let effectiveMode = initialMode;
+  // A stand-in for the loop's `syncHostMode`: here, only when the gate asks matters. The real one,
+  // with its peer-turn pin, is tested through `runAgentLoop` at the end of this file.
   const sync = vi.fn(() => {
     toolContext.hostMode = host.mode;
-    toolContext.currentMode = peerTurnGateMode(host.mode, options.peerTurnClass);
-    effectiveMode = toolContext.currentMode ?? effectiveMode;
+    toolContext.currentMode = host.mode;
+    effectiveMode = host.mode;
   });
   const onPermissionRequired = vi.fn(async () => options.answer ?? 'allow');
   const onPersistPermissionRule = vi.fn();
@@ -121,10 +130,9 @@ function gate(options: GateOptions = {}) {
     skillRegistry: runtime.skills(workspace, config.settings.skills),
     approveAllRules: [],
     runtime,
-    retry: config.retry,
-    clock: { monotonicNowMs: () => 0, wallNowMs: () => 0 } as unknown as ToolCallRun['clock'],
+    clock: systemClock,
     explorationRouting: new ExplorationRoutingTracker(3),
-    readOnlyRoots: [],
+    readOnlyRoots,
     additionalRoots: [],
     homeGuardPaths: [],
     workspaceRealRoot: workspace,
@@ -540,7 +548,8 @@ describe('prepareToolCall: one case per refusal, in the order the gates run', ()
   });
 });
 
-describe('prepareToolCall: skill consent is opened once and always closed', () => {
+// Two paths leave the request open today, plan mode and a prompt that rejects: #729.
+describe('prepareToolCall: skill consent, requested once and closed on each of these paths', () => {
   const invoke = { skill: 'alpha' };
 
   it('granted when the prompt says yes', async () => {
@@ -605,7 +614,8 @@ describe('prepareToolCall: skill consent is opened once and always closed', () =
 });
 
 describe('prepareToolCall: the order of the gates', () => {
-  it('an invalid call never reaches a hook, or the prompt', async () => {
+  // With the mode unchanged. A mode left during the hook is the exception: #730.
+  it('an invalid call never reaches a hook or the prompt, unless the mode refuses the tool itself', async () => {
     const { prepare, onPermissionRequired } = gate();
 
     await prepare('Bash', {});
@@ -712,7 +722,7 @@ describe('prepareToolCall: the order of the gates', () => {
 });
 
 describe('prepareToolCall: the mode', () => {
-  it('reads the host twice per call: first, and again after the hooks', async () => {
+  it('asks for the host to be read twice per call: first, and again after the hooks', async () => {
     const { prepare, sync } = gate({ mode: 'auto' });
     let syncsBeforeHook = -1;
     vi.mocked(runHooks).mockImplementationOnce(async () => {
@@ -726,7 +736,7 @@ describe('prepareToolCall: the mode', () => {
     expect(sync).toHaveBeenCalledTimes(2);
   });
 
-  it('a mode entered during a PreToolUse hook is the mode the later gates see', async () => {
+  it('a mode entered during a PreToolUse hook is the one the plan gate sees', async () => {
     const { prepare, host, run, onPermissionRequired } = gate();
     vi.mocked(runHooks).mockImplementationOnce(async () => {
       host.mode = 'plan';
@@ -741,7 +751,8 @@ describe('prepareToolCall: the mode', () => {
     expect(run.toolContext.currentMode).toBe('plan');
   });
 
-  it('a mode left during a PreToolUse hook is the mode the later gates see', async () => {
+  // Only the gates that read the mode after the hooks: `modeRefusesItself` keeps the first read (#730).
+  it('a mode left during a PreToolUse hook is the one the prompt sees', async () => {
     const { prepare, host, onPermissionRequired } = gate({ mode: 'plan' });
     vi.mocked(runHooks).mockImplementationOnce(async () => {
       host.mode = 'default';
@@ -761,17 +772,6 @@ describe('prepareToolCall: the mode', () => {
     // Invalid arguments, but plan mode refuses the tool itself, so the registry does not speak.
     expect(codeOf(await prepare('Write', {}))).toBe('plan_mode_blocked');
     expect(onPermissionRequired).not.toHaveBeenCalled();
-  });
-
-  it("a prompting-class peer turn's pin holds where the host's mode is bypass", async () => {
-    const { prepare, onPermissionRequired } = gate({
-      mode: 'bypassPermissions',
-      peerTurnClass: 'prompting',
-      answer: 'deny',
-    });
-
-    expect(codeOf(await prepare('Bash', { command: 'ls' }))).toBe('permission_denied');
-    expect(onPermissionRequired).toHaveBeenCalledOnce();
   });
 });
 
@@ -827,5 +827,160 @@ describe('prepareToolCall: a prepared call', () => {
     expect(entry.context.tasks).not.toBe(run.toolContext.tasks);
     expect(entry.context.agentPath).not.toBe(run.toolContext.agentPath);
     expect(run.toolContext.currentToolTraceId).toBeUndefined();
+  });
+});
+
+describe('finalizeToolCall: a clipped output', () => {
+  it('goes into the roots the gate reads, so the next Read of its file is served', async () => {
+    const { prepare, run, onPermissionRequired } = gate();
+    run.toolOutputRoot = outside;
+    const entry = entryOf(await prepare('Glob', { pattern: '*.ts' }, { parallel: true }));
+
+    const result = await finalizeToolCall(run, entry, toolSuccess('x'.repeat(2_000_000)));
+
+    const clipped = result.artifacts?.outputPath;
+    expect(clipped).toBeDefined();
+    expect(run.toolContext.readOnlyRoots).toContain(clipped);
+    expect(run.runtime.clippedOutputPaths.has(clipped!)).toBe(true);
+    entryOf(await prepare('Read', { filePath: clipped }));
+    expect(onPermissionRequired).not.toHaveBeenCalled();
+  });
+});
+
+describe("the loop's mode sync, through runAgentLoop", () => {
+  /** Runs `act` as the PreToolUse hooks run, the window a user's Shift+Tab can land in. */
+  function duringPreToolUse(act: () => void): void {
+    vi.mocked(runHooks).mockImplementation(async (...args) => {
+      if (args[1] === 'PreToolUse') act();
+      return realHooks.runHooks(...args);
+    });
+  }
+
+  /** One call through the real loop. `Observed` reports the modes its context carried. */
+  async function drive(options: {
+    mode: PermissionMode;
+    call: { name: string; arguments: Record<string, unknown> };
+    getMode?: () => PermissionMode;
+    peerTurnClass?: PeerPermissionClass;
+  }) {
+    const seen: Array<Pick<ToolContext, 'currentMode' | 'hostMode'>> = [];
+    const registry = createDefaultRegistry();
+    registry.register({
+      name: 'Observed',
+      description: 'Reports the modes its context carries',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, context) => {
+        seen.push({ currentMode: context.currentMode, hostMode: context.hostMode });
+        return toolSuccess('ran');
+      },
+    });
+    let turn = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        if (turn++ === 0) {
+          yield { type: 'tool_call' as const, toolCall: { id: 'c1', ...options.call } };
+        } else {
+          yield { type: 'text' as const, content: 'done' };
+        }
+        yield { type: 'done' as const };
+      },
+    };
+    const results: ToolResult[] = [];
+    const onPermissionRequired = vi.fn(async () => 'allow' as const);
+    await runAgentLoop(
+      defaultConfig({ workspace, maxTurns: 2 }),
+      registry,
+      'go',
+      [],
+      {
+        onText: () => {},
+        onToolCall: () => {},
+        onToolResult: (result) => results.push(result),
+        onError: () => {},
+        onTurnStart: () => {},
+        onDone: () => {},
+        onPermissionRequired,
+        getMode: options.getMode,
+      },
+      options.mode,
+      { provider, peerTurnClass: options.peerTurnClass },
+    );
+    return { seen, onPermissionRequired, result: results[0] };
+  }
+
+  const observed = { name: 'Observed', arguments: {} };
+
+  it('a mode entered during a PreToolUse hook reaches the gates', async () => {
+    let hostMode: PermissionMode = 'default';
+    duringPreToolUse(() => {
+      hostMode = 'plan';
+    });
+
+    const { result, seen, onPermissionRequired } = await drive({
+      mode: 'default',
+      getMode: () => hostMode,
+      call: observed,
+    });
+
+    expect(result.structuredError?.code).toBe('plan_mode_blocked');
+    expect(seen).toEqual([]);
+    expect(onPermissionRequired).not.toHaveBeenCalled();
+  });
+
+  it('a mode left during a PreToolUse hook reaches the gates and the tool', async () => {
+    let hostMode: PermissionMode = 'plan';
+    duringPreToolUse(() => {
+      hostMode = 'bypassPermissions';
+    });
+
+    const { seen, onPermissionRequired } = await drive({
+      mode: 'plan',
+      getMode: () => hostMode,
+      call: observed,
+    });
+
+    expect(seen).toEqual([{ currentMode: 'bypassPermissions', hostMode: 'bypassPermissions' }]);
+    expect(onPermissionRequired).not.toHaveBeenCalled();
+  });
+
+  it('a host with no getMode leaves the mode the run started in', async () => {
+    const { seen } = await drive({ mode: 'bypassPermissions', call: observed });
+
+    expect(seen).toEqual([{ currentMode: 'bypassPermissions', hostMode: undefined }]);
+  });
+
+  it("a prompting-class peer turn's pin holds when the host goes to bypass, which it reports", async () => {
+    let hostMode: PermissionMode = 'default';
+    duringPreToolUse(() => {
+      hostMode = 'bypassPermissions';
+    });
+
+    const { seen, onPermissionRequired } = await drive({
+      mode: 'default',
+      getMode: () => hostMode,
+      peerTurnClass: 'prompting',
+      call: observed,
+    });
+
+    expect(onPermissionRequired).toHaveBeenCalledOnce();
+    expect(seen).toEqual([{ currentMode: 'default', hostMode: 'bypassPermissions' }]);
+  });
+
+  it('a bypass-class peer turn takes the host at its word', async () => {
+    let hostMode: PermissionMode = 'default';
+    duringPreToolUse(() => {
+      hostMode = 'bypassPermissions';
+    });
+
+    const { seen, onPermissionRequired } = await drive({
+      mode: 'default',
+      getMode: () => hostMode,
+      peerTurnClass: 'bypass',
+      call: observed,
+    });
+
+    expect(onPermissionRequired).not.toHaveBeenCalled();
+    expect(seen).toEqual([{ currentMode: 'bypassPermissions', hostMode: 'bypassPermissions' }]);
   });
 });

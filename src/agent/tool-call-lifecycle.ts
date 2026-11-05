@@ -131,7 +131,7 @@ export interface ToolCallPlanState {
   planStopRequested: { plan: string; message: string } | null;
 }
 
-/** What lasts the run. `approveAllRules` and `readOnlyRoots` are the loop's own arrays, and grow here. */
+/** What lasts the run. `approveAllRules` is the loop's own array, and grows here. */
 export interface ToolCallRun {
   config: AgentConfig;
   registry: ToolRegistry;
@@ -142,9 +142,13 @@ export interface ToolCallRun {
   skillRegistry: SkillRegistry;
   approveAllRules: string[];
   runtime: SessionRuntime;
-  retry: AgentConfig['retry'];
   clock: Clock;
   explorationRouting: ExplorationRoutingTracker;
+  /**
+   * The array behind `toolContext.readOnlyRoots`, which is typed read-only there. It must be that
+   * same array: `finalizeToolCall` adds a clipped output's file here, and the gate and the file
+   * tools read `toolContext.readOnlyRoots`, so a copy would have the next Read of that file refused.
+   */
   readOnlyRoots: string[];
   additionalRoots: string[];
   homeGuardPaths: string[];
@@ -220,9 +224,9 @@ export async function prepareToolCall(
     noteUnattendedRefusal,
     peerTurnClass,
   } = run;
-  const { index: callIndex, turn, call: originalCall, parallel, nestedTraceId } = request;
+  const { index, turn, call, parallel, nestedTraceId } = request;
   if (signal?.aborted) {
-    return { status: 'refused', result: cancelledBeforeStart(originalCall) };
+    return { status: 'refused', result: cancelledBeforeStart(call) };
   }
 
   // A call that can never run however it is approved — an unknown tool, arguments that
@@ -233,8 +237,8 @@ export async function prepareToolCall(
   // arguments, is refused just before the permission prompt instead, once the
   // mode-specific refusals below have named their mode.
   mode.sync();
-  const registeredTool = registry.getTool(originalCall.name);
-  const earlyName = canonicalToolName(registeredTool?.name ?? originalCall.name);
+  const registeredTool = registry.getTool(call.name);
+  const canonName = canonicalToolName(registeredTool?.name ?? call.name);
   // Plan mode hides its mutating tools and dontAsk its question tool, and each refuses them
   // below with a message that names the mode. "Not active; call ToolSearch" would send the
   // model after a tool no search can activate, so those calls are left to the mode — but
@@ -244,12 +248,12 @@ export async function prepareToolCall(
   // this session's permission mode (#620): entering or leaving plan mode is the user's.
   if (
     peerTurnClass !== undefined &&
-    (earlyName === 'EnterPlanMode' || earlyName === 'ExitPlanMode')
+    (canonName === 'EnterPlanMode' || canonName === 'ExitPlanMode')
   ) {
     return {
       status: 'refused',
       result: toolFailure(`SKIPPED: ${PEER_TURN_MODE_REFUSAL}`, {
-        toolCallId: originalCall.id,
+        toolCallId: call.id,
         code: 'peer_turn_mode_change',
         status: 'blocked',
       }),
@@ -257,11 +261,11 @@ export async function prepareToolCall(
   }
   // Nor does a prompting-class one start or steer a managed agent: an agent outlives the
   // turn and runs at the session's own mode, which the pin does not reach (#620).
-  if (peerTurnClass === 'prompting' && PEER_TURN_AGENT_TOOLS.has(earlyName)) {
+  if (peerTurnClass === 'prompting' && PEER_TURN_AGENT_TOOLS.has(canonName)) {
     return {
       status: 'refused',
       result: toolFailure(`SKIPPED: ${PEER_TURN_AGENT_REFUSAL}`, {
-        toolCallId: originalCall.id,
+        toolCallId: call.id,
         code: 'peer_turn_agents',
         status: 'blocked',
       }),
@@ -269,17 +273,12 @@ export async function prepareToolCall(
   }
   const modeRefusesItself =
     registeredTool !== undefined &&
-    ((mode.current() === 'plan' && !READ_ONLY_PLAN_TOOLS.has(earlyName)) ||
-      (mode.current() === 'dontAsk' && earlyName === 'AskUserQuestion'));
-  const unrunnable = modeRefusesItself
-    ? undefined
-    : registry.rejectBeforeGates(originalCall, toolContext);
+    ((mode.current() === 'plan' && !READ_ONLY_PLAN_TOOLS.has(canonName)) ||
+      (mode.current() === 'dontAsk' && canonName === 'AskUserQuestion'));
+  const unrunnable = modeRefusesItself ? undefined : registry.rejectBeforeGates(call, toolContext);
   if (unrunnable) {
     return { status: 'refused', result: unrunnable };
   }
-
-  const call = originalCall;
-  const canonName = canonicalToolName(registry.getTool(call.name)?.name ?? call.name);
 
   // A tool whose primary argument can spell one target several ways is judged by the target
   // the call reaches, not by how it was typed (#653): `SessionSend` by the session its `to`
@@ -761,7 +760,7 @@ export async function prepareToolCall(
   return {
     status: 'prepared',
     entry: {
-      index: callIndex,
+      index,
       call: prepared.call,
       canonName,
       nestedTraceId,
@@ -781,7 +780,7 @@ export async function executeToolCall(
   run: ToolCallRun,
   entry: PreparedLoopCall,
 ): Promise<ToolResult> {
-  const { registry, runtime, retry, clock, signal } = run;
+  const { config, registry, runtime, clock, signal } = run;
   const toolStartMs = clock.monotonicNowMs();
   log.debug('tool start', {
     name: entry.canonName,
@@ -791,7 +790,7 @@ export async function executeToolCall(
   });
   try {
     const execute = () =>
-      registry.executePrepared(entry.prepared, entry.context, retry.toolRetries);
+      registry.executePrepared(entry.prepared, entry.context, config.retry.toolRetries);
     const result = entry.parallel
       ? await runtime.toolExecutionScheduler.run(execute, signal)
       : await execute();

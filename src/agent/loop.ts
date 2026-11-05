@@ -439,7 +439,6 @@ export async function runAgentLoop(
     }
   };
   const hasPartialOutput = (): boolean => assistantOutputProduced;
-  const retry = config.retry;
   const ownsRuntime = !options?.runtime;
   const runtime = options?.runtime ?? new SessionRuntime();
   runtime.toolExecutionScheduler.setLimit(config.settings.toolExecution.maxConcurrent);
@@ -1439,7 +1438,6 @@ export async function runAgentLoop(
       skillRegistry,
       approveAllRules,
       runtime,
-      retry,
       clock,
       explorationRouting,
       readOnlyRoots,
@@ -3867,9 +3865,4 @@ export async function runAgentLoop(
   }
 }
 
-export {
-  needsPermissionCheck,
-  PEER_TURN_AGENT_REFUSAL,
-  PEER_TURN_MODE_REFUSAL,
-  requiresToolPermission,
-} from './tool-call-lifecycle.js';
+export { PEER_TURN_MODE_REFUSAL, requiresToolPermission } from './tool-call-lifecycle.js';
