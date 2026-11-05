@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { throwIfAborted } from '../async.js';
 import { canonicalizePath, foldedPath } from './path-utils.js';
 
@@ -95,6 +95,18 @@ function assertFolderUnmoved(filePath: string): void {
   if (foldedPath(canonicalizePath(folder)) !== foldedPath(folder)) {
     throw new Error(`${folder} changed while it was being written to`);
   }
+}
+
+/**
+ * Where a delete of `filePath` acts: its own name in its folder after links, since removing a link
+ * removes the link. Throws when that no longer leads to `canonicalPath`, where it was resolved.
+ */
+export function deletePathFor(filePath: string, canonicalPath: string): string {
+  const path = join(canonicalizePath(dirname(filePath)), basename(filePath));
+  if (foldedPath(canonicalizePath(path)) !== foldedPath(canonicalPath)) {
+    throw new Error(`${filePath} changed while it was being deleted`);
+  }
+  return path;
 }
 
 export async function writeFileAtomically(

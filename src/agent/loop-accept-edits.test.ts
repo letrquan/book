@@ -20,7 +20,7 @@ import type { Provider } from '../provider/index.js';
 import { realSandboxHost, workspaceControlPathJudge } from '../sandbox.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { isolateBookHome } from '../test/isolated-book-home.js';
-import { removeFileAtomically, writeFileAtomically } from '../tools/mutation.js';
+import { deletePathFor, removeFileAtomically, writeFileAtomically } from '../tools/mutation.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
@@ -878,6 +878,19 @@ describe('a path that changes after it was judged', () => {
     expect(readFileSync(join(workspace, '.git', 'config'), 'utf8')).toBe('[core]\n');
   });
 
+  it.skipIf(onWindows)('nor when no root served it at first', async () => {
+    symlinkSync(tempDir('book-accept-edits-outside-'), join(workspace, 'plain'));
+    const { results, prompt } = await drive('accept-edits', [[write('plain/brand-new')]], {
+      registry: changingBeforeTheTool(() => {
+        rmSync(join(workspace, 'plain'));
+        symlinkSync('.git', join(workspace, 'plain'));
+      }),
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(byId(results, 'w')?.status).not.toBe('success');
+    expect(existsSync(join(workspace, '.git', 'brand-new'))).toBe(false);
+  });
+
   it('a path that stays put is written', async () => {
     const { results, prompt } = await drive('accept-edits', [[write('src/new.ts')]], {
       registry: changingBeforeTheTool(() => {}),
@@ -916,6 +929,18 @@ describe.skipIf(onWindows)('a folder that becomes a link while a file is changed
       'changed while it was being written to',
     );
     expect(existsSync(join(workspace, '.git', 'config'))).toBe(true);
+  });
+
+  it('a delete acts only where it was resolved', () => {
+    put(join(workspace, 'real.txt'), 'kept\n');
+    symlinkSync('real.txt', join(workspace, 'plain.txt'));
+    expect(deletePathFor(join(workspace, 'plain.txt'), join(workspace, 'real.txt'))).toBe(
+      join(workspace, 'plain.txt'),
+    );
+    symlinkSync('.git', join(workspace, 'plain'));
+    expect(() =>
+      deletePathFor(join(workspace, 'plain', 'config'), join(workspace, 'plain', 'config')),
+    ).toThrow('changed while it was being deleted');
   });
 
   it('ApplyPatch deletes a link, not what it leads to', async () => {
@@ -1055,6 +1080,17 @@ describe('an allow rule reads a path as where it leads', () => {
         configure: allowing('Write(src/**)'),
       });
       expect(prompt).not.toHaveBeenCalled();
+    });
+
+    it('a hooks directory named _, spelled where it leads, still counts the folder above', async () => {
+      put(
+        join(workspace, '.git', 'config'),
+        `[core]\n\thooksPath = ${join(workspace, 'tools', 'hk', '_').replaceAll('\\', '/')}\n`,
+      );
+      mkdirSync(join(workspace, 'tools', 'hk', '_'), { recursive: true });
+      await expectAsks(write('tools/hk/pre-commit'), join(workspace, 'tools/hk/pre-commit'), {
+        root: opened,
+      });
     });
 
     it('a climbing spelling still asks', async () => {

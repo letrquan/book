@@ -12,10 +12,8 @@ import {
   messagePathFor,
   mutationDisplayPath,
   mutationOutsideWorkspaceResult,
-  canonicalizePath,
   resolveMutationPath,
 } from './path-utils.js';
-import { basename, dirname, join } from 'node:path';
 import { toolFailure, toolSuccess } from './result.js';
 import { PROVIDER_KEY_MARKER } from '../provider-secrets.js';
 import {
@@ -25,6 +23,7 @@ import {
 } from './redacted-secret-guard.js';
 import {
   readTextSnapshot,
+  deletePathFor,
   removeFileAtomically,
   restoreTextEncoding,
   withMutationLocks,
@@ -449,8 +448,7 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
             staged.push({
               operation: entry.operation,
               absolutePath: entry.filePath,
-              // Removing a link removes the link: a rollback puts a file back where it stood.
-              writePath: join(canonicalizePath(dirname(entry.filePath)), basename(entry.filePath)),
+              writePath: deletePathFor(entry.filePath, entry.canonicalPath),
               messagePath: entry.messagePath,
               memory: entry.memory,
               before,

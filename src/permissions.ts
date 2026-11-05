@@ -1327,9 +1327,11 @@ export function acceptEditsCovers(
   };
   const judged = new Map<string, string>();
   const covered = mutationTargets(tool, call.arguments).every((target) => {
-    const resolved = target === undefined ? null : resolveMutationPath(roots, target);
+    if (target === undefined) return true;
+    const resolved = resolveMutationPath(roots, target);
+    // Pinned even where no root serves it: the tool refuses that now, and must not serve it later.
+    judged.set(target, resolved?.canonicalPath ?? '');
     if (!resolved || resolved.memory) return true;
-    judged.set(target as string, resolved.canonicalPath);
     return (
       scope.autoAllowReads && !paths.isGuarded(resolved.canonicalPath) && !isControlPath(resolved)
     );

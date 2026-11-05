@@ -955,14 +955,17 @@ function gitConfigPath(value: string, base: string, host: SandboxHost): string {
 
 /**
  * The directories one `core.hooksPath` makes control paths. husky v9 sets `.husky/_`, whose stubs
- * only run `.husky/<hook>`, so the folder above a `_` counts too. Below the root only: a `_` at the
- * root must not freeze the workspace.
+ * only run `.husky/<hook>`, so the folder above a `_` counts too. Strictly below a root, compared
+ * after links: a `_` at a root must not freeze it.
  */
-function hookDirectories(directory: string, root: string, host: SandboxHost): string[] {
-  const parent = host.path.dirname(directory);
-  const holdsScripts =
-    host.path.basename(directory) === '_' && workspaceComponents(parent, root, host).length > 0;
-  return holdsScripts ? [directory, parent] : [directory];
+function hookDirectories(directory: string, roots: string[], host: SandboxHost): string[] {
+  if (host.path.basename(directory) !== '_') return [directory];
+  const parent = canonicalPath(host.path.dirname(directory), host);
+  const canonicalRoots = roots.map((root) => canonicalPath(root, host));
+  const belowRoot =
+    !canonicalRoots.includes(parent) &&
+    canonicalRoots.some((root) => !isOutside(root, parent, host.path));
+  return belowRoot ? [directory, host.path.dirname(directory)] : [directory];
 }
 
 /**
@@ -1193,11 +1196,8 @@ export function protectedWorkspacePaths(
     if (text === null) return;
     if (source === at && (reachable || inReach(at))) addFile(at);
     for (const hooksPath of readCoreHooksPaths(text)) {
-      for (const directory of hookDirectories(
-        gitConfigPath(hooksPath, workTree, host),
-        root,
-        host,
-      )) {
+      const hooks = gitConfigPath(hooksPath, workTree, host);
+      for (const directory of hookDirectories(hooks, [root, ...writableRoots], host)) {
         if (inReach(directory)) addDirectory(directory);
       }
     }

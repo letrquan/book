@@ -36,7 +36,7 @@
   "review/orchestration.ts#runDeepReview": { "codeLines": 193, "complexity": 35 },
   "sandbox.ts#buildSandboxExecution": { "codeLines": 175, "complexity": 40 },
   "sandbox.ts#buildSeatbeltPolicy": { "codeLines": 176, "complexity": 36 },
-  "sandbox.ts#protectedWorkspacePaths": { "codeLines": 227, "complexity": 38 },
+  "sandbox.ts#protectedWorkspacePaths": { "codeLines": 224, "complexity": 38 },
   "session/agent-events.ts#reduceAgentSessionSnapshot": { "codeLines": 106, "complexity": 49 },
   "session/agent-session.ts#AgentSession>run": { "codeLines": 288, "complexity": 21 },
   "session/run-ambient.ts#createRunAmbientSnapshot": { "codeLines": 210, "complexity": 39 },
