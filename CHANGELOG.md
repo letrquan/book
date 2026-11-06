@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- The tool gate moved out of `runAgentLoop` into `src/agent/tool-call-lifecycle.ts` with no behaviour
+  change, and its refusals and their order now have direct tests (#705).
+
 ## [0.4.0-beta.3] - 2026-11-06
 
 ### Added
