@@ -30,8 +30,8 @@ export type AgentTerminalReason =
    * A usage or plan limit is spent, or the provider stated a wait longer than the
    * retry layer can sit out (provider codes `usage_limit` and `rate_limit_wait`).
    * Not a rejected key: nothing needs rotating, the run waits for the reset or an
-   * operator picks another model. A 402 and `insufficient_quota` stay
-   * `credentials_rejected`.
+   * operator picks another model. A 402, `insufficient_quota` and a 400
+   * that states spent credits stay `credentials_rejected`.
    */
   | 'quota_exhausted'
   | 'model_unavailable'

@@ -239,6 +239,25 @@ function statesSpentUsageLimit(body: string): boolean {
 }
 
 /**
+ * Wordings of spent credits (#746). Narrow on purpose: each phrase names credits or a credit
+ * balance as spent, never a bare "limit", so a malformed-request 400 never matches.
+ */
+const SPENT_CREDITS_PHRASES =
+  /\b(?:insufficient\s+(?:credits?|credit\s+balance)|purchase\s+(?:more\s+)?credits|credit\s+balance\s+is\s+too\s+low|(?:out\s+of|no\s+(?:more|remaining))\s+credits)\b/i;
+
+/**
+ * True when an error body states that credits are spent: `insufficient_quota` as its code, or
+ * message wording such as "insufficient credits" or "credit balance is too low" (#746). Read
+ * through `errorBodyParts`, the message and OpenRouter's forwarded `raw`. Used for a 400 only.
+ */
+function statesSpentCredits(body: string): boolean {
+  if (!body) return false;
+  if (hasInsufficientQuotaName(body)) return true;
+  const { message, raw } = errorBodyParts(body);
+  return SPENT_CREDITS_PHRASES.test(message) || (raw !== undefined && statesSpentCredits(raw));
+}
+
+/**
  * An absolute reset time stated in an error body (#400):
  * `resets at <ISO>`, `reset at <ISO>`, `resets on <ISO>`, `reset on <ISO>`.
  * The ISO timestamp must have a date, `T`, time, and `Z` or `±hh:mm` offset.
@@ -427,9 +446,9 @@ function statesContextOverflow(body: string): boolean {
  * notice, a `model_not_found` code — which is `model_unavailable`, not `auth`:
  * nothing is wrong with the credential, and an operator must pick another
  * model. A 401 is always `auth` and its body is never read for this; a 403 or
- * 404 without such wording keeps the plain classification. The #383 capacity
- * outage stays out of this path: its quote is suppressed by
- * `quotedUpstreamStatus`, so the 503 classifies as a retryable server error.
+ * 404 without such wording keeps the plain classification. A 400 that states spent credits
+ * (`statesSpentCredits`, #746) is `quota`, like a 402; a 403 is never read for credit wording. The #383
+ * capacity outage stays out of this path: its quote is suppressed by `quotedUpstreamStatus`, so the 503 classifies as a retryable server error.
  */
 export function classifyApiError(
   status: number,
@@ -449,6 +468,9 @@ export function classifyApiError(
     if (hasErrorName(body, PLAN_USAGE_LIMIT_ERROR_NAMES)) return 'usage_limit';
     if (statesSpentUsageLimit(body)) return 'usage_limit';
   }
+  // Some routers and providers refuse an empty account with a 400, not a 402 (#746). A 403 is
+  // left alone: it is a credential or policy refusal.
+  if (effective === 400 && statesSpentCredits(body)) return 'quota';
   const code = classifyHttpStatus(effective).code;
   if ((effective === 403 || effective === 404) && statesModelUnavailable(body, effective)) {
     return 'model_unavailable';
@@ -526,21 +548,61 @@ function isUninformativeDetail(text: string): boolean {
   }
 }
 
+/**
+ * What a router writes before the page it relays: 9router puts `[route] [403]: <!DOCTYPE html>…`
+ * in its JSON `error.message` (#745). Only bracketed tags and a colon, so a message that merely
+ * mentions `<html>` mid-sentence is not taken for a page.
+ */
+const ROUTER_PAGE_PREFIX = /^(?:\[[^\]\n]{1,120}\]\s*)+:?\s*$/;
+
+/** Where an HTML page starts in `text`, or -1: at the start, or right after a router prefix. */
+function htmlPageStart(text: string): number {
+  if (/^<(?:!doctype\s+html|html|head|body)\b/i.test(text)) return 0;
+  const embedded = /<(?:!doctype\s+html|html)\b/i.exec(text);
+  return embedded && ROUTER_PAGE_PREFIX.test(text.slice(0, embedded.index)) ? embedded.index : -1;
+}
+
 function isHtmlDetail(text: string): boolean {
-  return /^<(?:!doctype\s+html|html|head|body)\b/i.test(text);
+  return htmlPageStart(text) >= 0;
+}
+
+/**
+ * The wordings of a WAF or CDN block or challenge page (Cloudflare's "Attention Required" and
+ * "Just a moment", "Sorry, you have been blocked", and Cloudflare's error-template preamble, which a router that clips the page keeps). Such a page says the network
+ * path was refused, which says nothing about the credential (#745).
+ */
+const BLOCK_PAGE_MARKERS =
+  /attention required!?\s*\|\s*cloudflare|just a moment\.\.\.|sorry,\s+you\s+have\s+been\s+blocked|class="no-js\s+ie6\s+oldie"/i;
+
+function isBlockPage(detail: string, body: string): boolean {
+  return (
+    isHtmlDetail(detail.trim()) &&
+    (BLOCK_PAGE_MARKERS.test(detail) || BLOCK_PAGE_MARKERS.test(body))
+  );
 }
 
 /** How long a page title may be before it is cut: it is shown inside an error sentence. */
 const MAX_SHOWN_TITLE_CHARS = 100;
 
 /**
+ * The whole body as a second place to look for a page's title, unless it is JSON: then the
+ * message already holds the page, and a `<title>` elsewhere in the JSON is not the page's.
+ */
+function pageSource(body: string): string {
+  return errorBodyParts(body).parsed ? '' : body;
+}
+
+/**
  * An HTML error page as one phrase: `an HTML page`, plus its `<title>` when it has one. The page
  * is never shown as markup (the first 200 characters of one end mid-tag), and its title is
- * folded to one line since it came from the network. `body` is the whole body, not the 200
- * characters `detail` keeps, because the title often comes after a long `<head>` preamble.
+ * folded to one line since it came from the network. The first source with a title wins:
+ * the page as the detail shows it, then the whole body (`pageSource`), because the title often
+ * comes after a long `<head>` preamble.
  */
-function describeHtmlPage(body: string): string {
-  const title = body.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+function describeHtmlPage(...sources: string[]): string {
+  const title = sources
+    .map((source) => source.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1])
+    .find((found) => found !== undefined);
   const shown = title ? foldControlCharacters(title).replace(/\s+/g, ' ').trim() : '';
   if (!shown) return 'an HTML page';
   const clipped =
@@ -577,7 +639,11 @@ function detailSentence(
     return { sentence: `${origin ? `${origin} ` : ''}(${absent}).`, rewritten: false };
   }
   const uninformative = isUninformativeDetail(text);
-  const shown = isHtmlDetail(text) ? describeHtmlPage(body) : text;
+  const pageAt = htmlPageStart(text);
+  const shown =
+    pageAt < 0
+      ? text
+      : `${text.slice(0, pageAt)}${describeHtmlPage(text.slice(pageAt), pageSource(body))}`;
   const sentence = /[.!?]$/.test(shown) ? shown : `${shown}.`;
   const hinted = uninformative && origin !== '';
   return {
@@ -627,6 +693,10 @@ export function formatApiError(
     case 'timeout':
       return 'Request timed out. Check your network connection and try again.';
     case 'auth':
+      // A block or challenge page refused the network path, not the key (#745).
+      if (isBlockPage(detail, body)) {
+        return `${base} ${said} The upstream refused the request with a block page, which is not a rejected API key. Try another route or model.`;
+      }
       return `${base} ${said} Check BOOK_API_KEY, or provider.<id>.apiKey in settings.`;
     case 'model_unavailable': {
       // Not a credential problem (#387): the key is fine, the model is not

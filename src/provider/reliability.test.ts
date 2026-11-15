@@ -2190,3 +2190,53 @@ describe('a stated wait beyond the retry budget (#409)', () => {
     });
   });
 });
+
+describe('a 400 that states spent credits is quota (#746)', () => {
+  const credits =
+    'You have insufficient credits to make this request. Please purchase more credits to continue using the service.';
+  const wrapped = JSON.stringify({ error: { message: credits } });
+
+  it('classifies the stated-credits wordings as quota, plain or router-wrapped', () => {
+    expect(classifyApiError(400, wrapped)).toBe('quota');
+    expect(classifyApiError(400, `[400]: ${credits}`)).toBe('quota');
+    expect(classifyApiError(503, `[commandcode/x] [400]: ${credits}`)).toBe('quota');
+    expect(
+      classifyApiError(
+        400,
+        JSON.stringify({
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message:
+              'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.',
+          },
+        }),
+      ),
+    ).toBe('quota');
+    expect(
+      classifyApiError(
+        400,
+        '{"error":{"code":"insufficient_quota","message":"Billing hard limit"}}',
+      ),
+    ).toBe('quota');
+  });
+
+  it('ends with the credits remedy', () => {
+    expect(formatApiError(400, wrapped)).toBe(
+      `API Error: 400 ${credits} Check your usage/credits.`,
+    );
+  });
+
+  it('leaves a 400 without credit wording as bad_request', () => {
+    const invalid = JSON.stringify({
+      error: { type: 'invalid_request_error', message: 'messages: field required' },
+    });
+    expect(classifyApiError(400, invalid)).toBe('bad_request');
+    expect(classifyApiError(400, 'The credit card field is malformed')).toBe('bad_request');
+    expect(classifyApiError(400, 'Usage limit reached for this plan')).toBe('bad_request');
+  });
+
+  it('reads credit wording under a 400 only: a 403 keeps its class', () => {
+    expect(classifyApiError(403, wrapped)).toBe('auth');
+  });
+});

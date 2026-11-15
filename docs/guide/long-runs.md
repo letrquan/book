@@ -217,7 +217,15 @@ weekly/daily/monthly/N-hour usage or plan limit was reached, exceeded, or spent 
 `usage_limit`), with a message naming the stated reset time and the remedy; naming a short window
 anywhere in the message keeps it a rate limit. OpenAI's `insufficient_quota` is answered once the
 same way but is about credits, so it stays with a 402: `credentials_rejected`, provider code
-`quota`, and the message keeps the credits advice.
+`quota`, and the message keeps the credits advice. So does a 400 whose body states spent credits
+("insufficient credits", "purchase more credits", "credit balance is too low", or an
+`insufficient_quota` code), which some routers and providers send instead of a 402; any other 400
+stays `bad_request`.
+
+A 401 or 403 that comes back as an HTML block or challenge page (Cloudflare's "Attention Required", a
+router relaying one) is shown as `an HTML page titled "…"`, never as its markup, and its remedy is
+"try another route or model" rather than "Check BOOK_API_KEY": the network path was refused, not
+the key. It still ends `credentials_rejected` with provider code `auth`.
 
 `quota_exhausted` is a park (`terminalRecovery` returns `park`), like `credentials_rejected`:
 nothing is wrong with the work and re-sending reproduces the refusal, so the loop does not
