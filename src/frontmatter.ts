@@ -57,6 +57,45 @@ export function markdownContentStart(lines: readonly string[]): number {
   return close + 1;
 }
 
+/** A scalar as YAML reads it: one pair of surrounding quotes is dropped. */
+function unquote(value: string): string {
+  return value.replace(/^["'](.*)["']$/, '$1');
+}
+
+/**
+ * The `allowed-tools` field of a command or skill, as one list. An array (block or inline) is read
+ * item by item; a string is split on commas and whitespace outside parentheses, so
+ * `Read, Task`, `Read Task` and `Bash(git *), Read` give `["Read", "Task"]` and
+ * `["Bash(git *)", "Read"]`. A parenthesis that never closes keeps the rest of the string in one
+ * item, which names no tool and so narrows the list instead of widening it. An empty string, or
+ * anything that is neither an array nor a string, gives `undefined`, as an absent key does; an
+ * empty array stays empty, and what that means is each caller's rule.
+ */
+export function parseAllowedTools(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    return value
+      .map(String)
+      .map((tool) => tool.trim())
+      .filter(Boolean);
+  }
+  if (typeof value !== 'string') return undefined;
+  const tools: string[] = [];
+  let current = '';
+  let depth = 0;
+  for (const char of value) {
+    if (char === '(') depth++;
+    else if (char === ')' && depth > 0) depth--;
+    if (depth === 0 && (char === ',' || /\s/.test(char))) {
+      if (current) tools.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  if (current) tools.push(current);
+  return tools.length ? tools : undefined;
+}
+
 /**
  * Minimal YAML frontmatter parser shared by commands, skills, and subagents.
  *
@@ -99,7 +138,7 @@ export function parseFrontmatter(raw: string): {
     // Array item: "- value"
     const arrayMatch = trimmed.match(/^-\s+(.+)$/);
     if (arrayMatch && currentKey) {
-      currentArray.push(arrayMatch[1]);
+      currentArray.push(unquote(arrayMatch[1]));
       continue;
     }
 
@@ -123,7 +162,7 @@ export function parseFrontmatter(raw: string): {
         currentArray = [];
       } else {
         // Unquote if quoted.
-        const unquoted = value.replace(/^["'](.*)["']$/, '$1');
+        const unquoted = unquote(value);
         if (
           (key === 'tools' || key === 'allowed-tools') &&
           unquoted.startsWith('[') &&
@@ -132,7 +171,7 @@ export function parseFrontmatter(raw: string): {
           frontmatter[key] = unquoted
             .slice(1, -1)
             .split(',')
-            .map((item) => item.trim().replace(/^["'](.*)["']$/, '$1'))
+            .map((item) => unquote(item.trim()))
             .filter(Boolean);
         } else {
           frontmatter[key] = unquoted;

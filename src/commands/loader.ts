@@ -1,6 +1,6 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, extname } from 'path';
-import { parseFrontmatter } from '../frontmatter.js';
+import { parseAllowedTools, parseFrontmatter } from '../frontmatter.js';
 import type { SlashCommand } from '../types/commands.js';
 import { resolveBookHome } from '../book-home.js';
 import {
@@ -41,9 +41,7 @@ function loadCommandFile(
       : typeof frontmatter.arguments === 'string'
         ? (frontmatter.arguments as string).split(/[,\s]+/).filter(Boolean)
         : undefined,
-    allowedTools: Array.isArray(frontmatter['allowed-tools'])
-      ? (frontmatter['allowed-tools'] as string[])
-      : undefined,
+    allowedTools: parseAllowedTools(frontmatter['allowed-tools']),
     model: frontmatter.model as string | undefined,
     body,
     source,

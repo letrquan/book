@@ -12,7 +12,7 @@ import {
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
-import { parseFrontmatter } from './frontmatter.js';
+import { parseAllowedTools, parseFrontmatter } from './frontmatter.js';
 import { resolveBookHome } from './book-home.js';
 import { isUserHome, tryRealPath } from './repo-containment.js';
 import type { SkillActivation, SkillExecution } from './settings.js';
@@ -348,19 +348,8 @@ function metadataFromHeader(headerText: string): Record<string, string> {
 }
 
 function allowedToolsFrom(frontmatter: Record<string, unknown>): string[] | undefined {
-  const value = frontmatter['allowed-tools'] ?? frontmatter.tools;
-  if (Array.isArray(value)) {
-    const tools = value
-      .map(String)
-      .map((tool) => tool.trim())
-      .filter(Boolean);
-    return tools.length ? tools : undefined;
-  }
-  if (typeof value === 'string') {
-    const tools = value.match(/[^\s]+(?:\([^)]*\))?/g)?.map((tool) => tool.trim()) ?? [];
-    return tools.length ? tools : undefined;
-  }
-  return undefined;
+  const tools = parseAllowedTools(frontmatter['allowed-tools'] ?? frontmatter.tools);
+  return tools?.length ? tools : undefined;
 }
 
 function collectResources(

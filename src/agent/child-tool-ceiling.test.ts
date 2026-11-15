@@ -33,7 +33,13 @@ function tempRoot(prefix: string): string {
   return root;
 }
 
-function writeSkill(workspace: string, name: string, allowedTools: string[]): void {
+/** `allowedTools` as a block list, or as the lines the caller spells itself (a string field, quotes). */
+function writeSkill(
+  workspace: string,
+  name: string,
+  allowedTools: string[],
+  spelled?: string[],
+): void {
   const directory = join(workspace, '.book', 'skills', name);
   mkdirSync(directory, { recursive: true });
   writeFileSync(
@@ -42,8 +48,7 @@ function writeSkill(workspace: string, name: string, allowedTools: string[]): vo
       '---',
       `name: ${name}`,
       `description: Use the ${name} workflow`,
-      'allowed-tools:',
-      ...allowedTools.map((tool) => `- ${tool}`),
+      ...(spelled ?? ['allowed-tools:', ...allowedTools.map((tool) => `- ${tool}`)]),
       '---',
       `Follow the ${name} procedure.`,
     ].join('\n'),
@@ -258,6 +263,26 @@ describe("a child under its parent's allowed-tools (#696)", () => {
       const next = await run.parent([[TASK]]);
       expect(next.get(TASK.id)?.status).toBe('success');
       expectWhole(run.childRuns[1]);
+    } finally {
+      run.dispose();
+    }
+  });
+
+  it.each([
+    ['a quoted block list (#712)', ['allowed-tools:', '- "Read"', "- 'Task'"]],
+    ['a comma string (#717)', ['allowed-tools: Read, Task']],
+    ['a space string (#717)', ['allowed-tools: Read Task']],
+  ])('applies a skill whose allowed-tools is %s', async (_label, spelled) => {
+    const run = harness();
+    try {
+      writeSkill(run.workspace, 'probe', [], spelled);
+
+      const results = await run.parent([[INVOKE, TASK]]);
+
+      // Neither refused at activation for a rule that names no tool, nor left without a list.
+      expect(results.get(INVOKE.id)?.structuredError).toBeUndefined();
+      expect(results.get(TASK.id)?.status).toBe('success');
+      expectNarrowed(run.childRuns[0]);
     } finally {
       run.dispose();
     }
