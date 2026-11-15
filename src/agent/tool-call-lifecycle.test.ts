@@ -309,18 +309,12 @@ describe('prepareToolCall: one case per refusal, in the order the gates run', ()
     expect(runHooks).not.toHaveBeenCalled();
   });
 
-  it('4. canonicalization is asked in every mode, and a mode that refuses the tool still speaks', async () => {
+  it('4. canonicalization is not asked for a call the mode refuses anyway', async () => {
     const canonicalize = vi.fn(async () => undefined);
     const { prepare } = gate({ mode: 'plan', tools: [judgedTool(canonicalize)] });
-    expect(codeOf(await prepare('Judged', { to: 'x' }))).toBe('plan_mode_blocked');
-    expect(canonicalize).toHaveBeenCalledOnce();
 
-    // Nor does a tool that could not judge the call speak over the mode.
-    const failing = judgedTool(async () => {
-      throw new Error('no such session');
-    });
-    const plan = gate({ mode: 'plan', tools: [failing] });
-    expect(codeOf(await plan.prepare('Judged', { to: 'x' }))).toBe('plan_mode_blocked');
+    expect(codeOf(await prepare('Judged', { to: 'x' }))).toBe('plan_mode_blocked');
+    expect(canonicalize).not.toHaveBeenCalled();
   });
 
   it('5. a PreToolUse hook that blocks: hook_blocked, with its message', async () => {
@@ -881,7 +875,7 @@ describe('prepareToolCall: the mode', () => {
     expect(entry.modeAtPreparation).toBe('default');
   });
 
-  // The checks run before the hooks in every mode; a mode left during them lets go of the call (#730).
+  // The first read skipped the checks for a call that can never run; the second runs them (#730).
   describe('plan mode left during a PreToolUse hook', () => {
     const leavePlanDuringHook = (host: { mode: PermissionMode }) =>
       vi.mocked(runHooks).mockImplementationOnce(async () => {
@@ -934,68 +928,42 @@ describe('prepareToolCall: the mode', () => {
       expect(onPermissionRequired).not.toHaveBeenCalled();
     });
 
-    it('a tool that judges its target: judged once, before the hook, and refused before the prompt', async () => {
-      const canonicalize = vi.fn(async () => {
-        throw new Error('no such session');
-      });
+    // SessionSend's case: a hook written for the session a `to` reaches matches every spelling of
+    // it only when it is told the target, which plan mode never worked out for this call.
+    it('a tool that judges its target: refused to retry, since the hooks never saw the target', async () => {
+      const canonicalize = vi.fn(async () => ({
+        args: { to: 'prod' },
+        allow: ['prod'],
+        restrict: ['prod'],
+      }));
       const { prepare, host, onPermissionRequired } = gate({
         mode: 'plan',
         tools: [judgedTool(canonicalize)],
       });
-      leavePlanDuringHook(host);
-
-      expect(codeOf(await prepare('Judged', { to: 'x' }))).toBe('permission_check_failed');
-      expect(canonicalize).toHaveBeenCalledOnce();
-      expect(onPermissionRequired).not.toHaveBeenCalled();
-    });
-
-    // SessionSend's case: a hook written for the session a `to` reaches blocks every spelling of it.
-    it('the hook is asked about the judged target, so a hook on it still blocks', async () => {
-      const subject = { args: { to: 'prod' }, allow: ['prod'], restrict: ['prod'] };
-      const { prepare, host, onPermissionRequired } = gate({
-        mode: 'plan',
-        tools: [judgedTool(async () => subject)],
-      });
       vi.mocked(runHooks).mockImplementationOnce(async (_entries, _event, input) => {
-        host.mode = 'default';
+        host.mode = 'bypassPermissions';
         const targets = (input as { toolTargets?: string[] }).toolTargets ?? [];
         return (targets.includes('prod')
           ? [{ action: 'block', message: 'not prod', entry: { command: 'x', env: {} } }]
           : []) as unknown as Awaited<ReturnType<typeof runHooks>>;
       });
 
+      expect(codeOf(await prepare('Judged', { to: 'prod-alias' }))).toBe(
+        'mode_changed_during_hooks',
+      );
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+      expect(canonicalize).not.toHaveBeenCalled();
+
+      // Called again, it is judged before the hooks, which see the target and block it.
+      vi.mocked(runHooks).mockImplementationOnce(async (_entries, _event, input) =>
+        (input as { toolTargets?: string[] }).toolTargets?.includes('prod')
+          ? ([
+              { action: 'block', message: 'not prod', entry: { command: 'x', env: {} } },
+            ] as unknown as Awaited<ReturnType<typeof runHooks>>)
+          : [],
+      );
       expect(codeOf(await prepare('Judged', { to: 'prod-alias' }))).toBe('hook_blocked');
-      expect(onPermissionRequired).not.toHaveBeenCalled();
-    });
-
-    it('a judged target is what the deny rules see', async () => {
-      const subject = { args: { to: 'canonical' }, allow: ['canonical'], restrict: ['canonical'] };
-      const { prepare, host, onPermissionRequired } = gate({
-        mode: 'plan',
-        tools: [judgedTool(async () => subject)],
-        configure: withRules({ deny: ['Judged(canonical)'] }),
-      });
-      leavePlanDuringHook(host);
-
-      expect(codeOf(await prepare('Judged', { to: 'alias' }))).toBe('permission_denied');
-      expect(onPermissionRequired).not.toHaveBeenCalled();
-    });
-
-    it('a cancel while the tool judges its target: cancelled_before_start', async () => {
-      const controller = new AbortController();
-      const tool = judgedTool(() => {
-        controller.abort();
-        return new Promise(() => {});
-      });
-      const { prepare, host, onPermissionRequired } = gate({
-        mode: 'plan',
-        signal: controller.signal,
-        tools: [tool],
-      });
-      leavePlanDuringHook(host);
-
-      expect(codeOf(await prepare('Judged', { to: 'x' }))).toBe('cancelled_before_start');
-      expect(onPermissionRequired).not.toHaveBeenCalled();
+      expect(canonicalize).toHaveBeenCalledOnce();
     });
   });
 

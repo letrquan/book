@@ -270,6 +270,26 @@ export type SkillConsentDenial =
   | 'call_rejected'
   | 'skill_tool_intersection_empty';
 
+/**
+ * The checks the first read left to the mode, for a call the mode let go of during the hooks
+ * (#730): whether it can ever run, with the tool as this mode shows it, and for a tool that judges
+ * its target, a refusal to retry: the hooks judged the call without the target it reaches.
+ */
+function recheckAfterModeChange(
+  registry: ToolRegistry,
+  tool: ToolDefinition | undefined,
+  call: ToolCall,
+  context: ToolContext,
+  canonName: string,
+): ToolResult | undefined {
+  const unrunnable = registry.rejectBeforeGates(call, context);
+  if (unrunnable || !tool?.canonicalizeForPermission) return unrunnable;
+  return toolFailure(
+    `SKIPPED: The permission mode changed while PreToolUse hooks ran, before the target of this ${canonName} call was checked; call it again.`,
+    { toolCallId: call.id, code: 'mode_changed_during_hooks', status: 'blocked' },
+  );
+}
+
 /** The consent an InvokeSkill call asked for, which every path that ends the call closes (#729). */
 export interface SkillConsent {
   deny(cause: SkillConsentDenial): void;
@@ -390,10 +410,11 @@ export async function prepareToolCall(
   // resolves to now. Hook matchers and deny and ask rules match every spelling of it, allow
   // rules and session approvals the spellings that name it alone, and the prompt and "Always
   // allow" see the canonical one. The tool is handed the subject back when the call runs, so
-  // it acts on the target that was judged, or on nothing. Asked in every mode, so the hooks see
-  // the target even of a call the mode refuses now and may not after them (#730); a failure is
-  // reported only once the tool's own refusals have spoken.
-  const judged = await judgeTarget(registeredTool, call, toolContext, signal);
+  // it acts on the target that was judged, or on nothing. Not asked for a call the mode
+  // refuses anyway, and a failure is reported only once the tool's own refusals have spoken.
+  const judged = modeRefusesItself
+    ? UNJUDGED
+    : await judgeTarget(registeredTool, call, toolContext, signal);
   if (judged.cancelled) return { status: 'refused', result: cancelledBeforeStart(call) };
 
   let preHookResults: Awaited<ReturnType<typeof runHooks>>;
@@ -428,18 +449,17 @@ export async function prepareToolCall(
   }
 
   mode.sync();
-  // A mode that refused the tool at both reads keeps the call, judged as before #730. One left
-  // during the hooks (plan, by Shift+Tab) lets go of it, so the check the first read skipped runs
-  // now, with the tool as this mode shows it, before any gate could ask about the call; and
+  // A mode left during the hooks (plan, by Shift+Tab) lets go of a call it refused at the first
+  // read, so the checks that read skipped run now, before any gate could ask about the call, and
   // `rejectBeforePrompt` below runs too (#730).
   const refusedAtBothReads =
     modeRefusesItself && modeRefusesTool(mode.current(), canonName, registeredTool);
   const unrunnableNow =
-    modeRefusesItself && !refusedAtBothReads && registry.rejectBeforeGates(call, toolContext);
+    modeRefusesItself &&
+    !refusedAtBothReads &&
+    recheckAfterModeChange(registry, registeredTool, call, toolContext, canonName);
   if (unrunnableNow) return { status: 'refused', result: unrunnableNow };
-  const { subject: permissionSubject, failure: permissionSubjectFailure } = refusedAtBothReads
-    ? UNJUDGED
-    : judged;
+  const { subject: permissionSubject, failure: permissionSubjectFailure } = judged;
   const judgedCall = permissionSubject ? { ...call, arguments: permissionSubject.args } : call;
   const planReadOnly = mode.current() === 'plan' && READ_ONLY_PLAN_TOOLS.has(canonName);
   const planAutoApproved = planReadOnly && !PLAN_PERMISSION_REQUIRED_TOOLS.has(canonName);
