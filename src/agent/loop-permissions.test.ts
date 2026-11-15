@@ -16,6 +16,7 @@ import { createDefaultRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { isolateBookHome } from '../test/isolated-book-home.js';
 import { SessionRuntime } from '../session/runtime.js';
+import { SkillRegistry } from '../skill-registry.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { PermissionDecision, ToolResult } from '../types/tools.js';
@@ -436,6 +437,70 @@ describe('runAgentLoop workspace reads (#264)', () => {
     );
     expect(requestText).toContain('was not answered');
     expect(requestText).not.toContain('Explicit skill activation was denied');
+  });
+
+  // The `$skill` path opens consent outside prepareToolCall, and closes it the same way (#729).
+  describe('closes the consent of an explicitly requested skill', () => {
+    afterEach(() => vi.restoreAllMocks());
+    const textOnly: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text' as const, content: 'done' };
+        yield { type: 'done' as const };
+      },
+    };
+    const runTyped = (config: AgentConfig, callbacks: AgentLoopCallbacks, typed: string) =>
+      runAgentLoop(config, createDefaultRegistry(), typed, [], callbacks, 'default', {
+        provider: textOnly,
+        isNewSession: false,
+        typedText: typed,
+      });
+
+    it('when its prompt rejects', async () => {
+      writeLoopSkill(workspace, 'review');
+      const config = defaultConfig({ workspace, maxTurns: 1 });
+      config.settings.skills.execution.review = 'ask';
+      const denied = vi.spyOn(SkillRegistry.prototype, 'denyConsent');
+      const granted = vi.spyOn(SkillRegistry.prototype, 'grantConsent');
+      const failing = noopCallbacks({
+        onPermissionRequired: async () => {
+          throw new Error('host prompt failed');
+        },
+      });
+
+      await runTyped(config, failing, '$review go').catch(() => undefined);
+
+      expect(denied).toHaveBeenCalledWith('review', 'user', 'prompt_failed');
+      expect(granted).not.toHaveBeenCalled();
+    });
+
+    it('when its approved allowed-tools leave no task tool', async () => {
+      const root = join(workspace, '.book', 'skills', 'narrow');
+      mkdirSync(root, { recursive: true });
+      writeFileSync(
+        join(root, 'SKILL.md'),
+        [
+          '---',
+          'name: narrow',
+          'description: Use the narrow workflow',
+          'allowed-tools:',
+          '- ReadSkillResource',
+          '---',
+          'Follow it.',
+        ].join('\n'),
+      );
+      const config = defaultConfig({ workspace, maxTurns: 1 });
+      config.settings.skills.execution.narrow = 'ask';
+      const requested = vi.spyOn(SkillRegistry.prototype, 'requestConsent');
+      const denied = vi.spyOn(SkillRegistry.prototype, 'denyConsent');
+      const granted = vi.spyOn(SkillRegistry.prototype, 'grantConsent');
+
+      await runTyped(config, noopCallbacks(), '$narrow go');
+
+      expect(requested).toHaveBeenCalledWith('narrow', 'user');
+      expect(denied).toHaveBeenCalledWith('narrow', 'user', 'skill_tool_intersection_empty');
+      expect(granted).not.toHaveBeenCalled();
+    });
   });
 
   it('prompts for a workspace read that an ask rule covers, however the path is spelled', async () => {

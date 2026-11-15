@@ -593,6 +593,35 @@ describe('prepareToolCall: skill consent, requested once and closed on each of t
     expect(granted).not.toHaveBeenCalled();
   });
 
+  it('denied as cancelled when the run is cancelled under the prompt', async () => {
+    writeSkill('alpha');
+    const controller = new AbortController();
+    const { prepare, run, onPermissionRequired } = gate({ signal: controller.signal });
+    onPermissionRequired.mockImplementationOnce(async () => {
+      controller.abort();
+      throw controller.signal.reason;
+    });
+    const denied = vi.spyOn(run.skillRegistry, 'denyConsent');
+
+    await expect(prepare('InvokeSkill', invoke)).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(denied).toHaveBeenCalledWith('alpha', 'model', 'cancelled');
+  });
+
+  it('denied, not granted, when the registry rejects the approved call', async () => {
+    writeSkill('alpha');
+    const { prepare, run } = gate();
+    const rejected = toolFailure('no', { code: 'prepare_rejected', status: 'blocked' });
+    vi.spyOn(run.registry, 'prepare').mockReturnValueOnce({ status: 'rejected', result: rejected });
+    const denied = vi.spyOn(run.skillRegistry, 'denyConsent');
+    const granted = vi.spyOn(run.skillRegistry, 'grantConsent');
+
+    expect(codeOf(await prepare('InvokeSkill', invoke))).toBe('prepare_rejected');
+
+    expect(denied).toHaveBeenCalledWith('alpha', 'model', 'call_rejected');
+    expect(granted).not.toHaveBeenCalled();
+  });
+
   type Gate = ReturnType<typeof gate>;
   it.each<[string, GateOptions, ((g: Gate) => void)?]>([
     ['the prompt says yes', {}],
@@ -602,6 +631,15 @@ describe('prepareToolCall: skill consent, requested once and closed on each of t
     ['the tool is not active', { allowedTools: ['Read'] }],
     ['dontAsk', { mode: 'dontAsk' }],
     ['plan mode', { mode: 'plan' }],
+    [
+      'the registry rejects the approved call',
+      {},
+      (g) =>
+        vi.spyOn(g.run.registry, 'prepare').mockReturnValueOnce({
+          status: 'rejected',
+          result: toolFailure('no', { code: 'prepare_rejected', status: 'blocked' }),
+        }),
+    ],
     [
       'plan mode entered during the hook',
       {},
