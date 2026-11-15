@@ -232,6 +232,59 @@ describe('formatApiError names the origin when the body says nothing useful (#42
   });
 });
 
+describe('a router-relayed HTML page is summarised, never shown as markup (#745)', () => {
+  const PREFIX = '[commandcode/deepseek/deepseek-v4.1-flash] [403]: ';
+  const cloudflare = `<!DOCTYPE html>\n<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->\n<html lang="en-US"><head>\n<title>Attention Required! | Cloudflare</title>\n</head><body>${'<div class="cf-wrapper">x</div>'.repeat(80)}\n<h1>Sorry, you have been blocked</h1><h2>You are unable to access commandcode.ai</h2></body></html>`;
+  const wrap = (message: string): string => JSON.stringify({ error: { message } });
+
+  it('keeps the router prefix, shows the page title and does not blame the key', () => {
+    const body = wrap(`${PREFIX}${cloudflare}`);
+    expect(body.length).toBeGreaterThan(2000);
+    const text = formatApiError(503, body);
+    expect(text).toBe(
+      `API Error: 503 ${PREFIX}an HTML page titled "Attention Required! | Cloudflare". The upstream refused the request with a block page, which is not a rejected API key. Try another route or model.`,
+    );
+    expect(text.length).toBeLessThan(300);
+    expect(text).not.toContain('<');
+    expect(text).not.toContain('BOOK_API_KEY');
+  });
+
+  it('gives a block page that is the whole 403 body the same remedy', () => {
+    const text = formatApiError(403, cloudflare);
+    expect(text).toContain('an HTML page titled "Attention Required! | Cloudflare"');
+    expect(text).not.toContain('<');
+    expect(text).not.toContain('BOOK_API_KEY');
+  });
+
+  it('recognises a Cloudflare page the router clipped before its title', () => {
+    const clipped = `${PREFIX}<!DOCTYPE html>\n<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->\n<!--[if IE 8]>    <html cla (reset after 1m 32s)`;
+    const text = formatApiError(503, clipped);
+    expect(text).toBe(
+      `API Error: 503 ${PREFIX}an HTML page. The upstream refused the request with a block page, which is not a rejected API key. Try another route or model.`,
+    );
+  });
+
+  it('still summarises a wrapped page that is not a block page, and keeps the key remedy', () => {
+    const page = '<html><head><title>Forbidden</title></head><body>Nope</body></html>';
+    const text = formatApiError(503, wrap(`${PREFIX}${page}`));
+    expect(text).toBe(
+      `API Error: 503 ${PREFIX}an HTML page titled "Forbidden". Check BOOK_API_KEY, or provider.<id>.apiKey in settings.`,
+    );
+  });
+
+  it('finds the title when the message was cut before it', () => {
+    const page = `<!DOCTYPE html><html><head>${'<meta name="x" content="y">'.repeat(100)}<title>Not Found</title></head></html>`;
+    const text = formatApiError(503, wrap(`${PREFIX}${page}`));
+    expect(text).toContain('an HTML page titled "Not Found"');
+    expect(text).not.toContain('<meta');
+  });
+
+  it('does not rewrite text that merely mentions markup far into a message', () => {
+    const message = `${'The upstream said something long. '.repeat(8)}Saw <html> in it.`;
+    expect(formatApiError(503, wrap(message))).toContain('Saw <html> in it.');
+  });
+});
+
 describe('the origin hint never shows userinfo, path or query (#424)', () => {
   // The Fetch spec refuses credentials in a request URL, so a provider call never reaches
   // `formatApiError` with one; the helper is checked directly instead.

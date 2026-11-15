@@ -239,6 +239,25 @@ function statesSpentUsageLimit(body: string): boolean {
 }
 
 /**
+ * Wordings of spent credits (#746). Narrow on purpose: each phrase names credits or a credit
+ * balance as spent, never a bare "limit", so a malformed-request 400 never matches.
+ */
+const SPENT_CREDITS_PHRASES =
+  /\b(?:insufficient\s+(?:credits?|credit\s+balance)|purchase\s+(?:more\s+)?credits|credit\s+balance\s+is\s+too\s+low|(?:out\s+of|no\s+(?:more|remaining))\s+credits)\b/i;
+
+/**
+ * True when an error body states that credits are spent: `insufficient_quota` as its code, or
+ * message wording such as "insufficient credits" or "credit balance is too low" (#746). Read
+ * through `errorBodyParts`, the message and OpenRouter's forwarded `raw`. Used for a 400 only.
+ */
+function statesSpentCredits(body: string): boolean {
+  if (!body) return false;
+  if (hasInsufficientQuotaName(body)) return true;
+  const { message, raw } = errorBodyParts(body);
+  return SPENT_CREDITS_PHRASES.test(message) || (raw !== undefined && statesSpentCredits(raw));
+}
+
+/**
  * An absolute reset time stated in an error body (#400):
  * `resets at <ISO>`, `reset at <ISO>`, `resets on <ISO>`, `reset on <ISO>`.
  * The ISO timestamp must have a date, `T`, time, and `Z` or `±hh:mm` offset.
@@ -449,6 +468,9 @@ export function classifyApiError(
     if (hasErrorName(body, PLAN_USAGE_LIMIT_ERROR_NAMES)) return 'usage_limit';
     if (statesSpentUsageLimit(body)) return 'usage_limit';
   }
+  // Some routers and providers refuse an empty account with a 400, not a 402 (#746). A 403 is
+  // left alone: it is a credential or policy refusal.
+  if (effective === 400 && statesSpentCredits(body)) return 'quota';
   const code = classifyHttpStatus(effective).code;
   if ((effective === 403 || effective === 404) && statesModelUnavailable(body, effective)) {
     return 'model_unavailable';
@@ -526,8 +548,38 @@ function isUninformativeDetail(text: string): boolean {
   }
 }
 
+/**
+ * How far into a detail an HTML page may begin and still be one a router relayed: 9router writes
+ * `[route] [403]: <!DOCTYPE html>…` inside its JSON `error.message` (#745). A page further in is
+ * ordinary text that mentions markup.
+ */
+const MAX_HTML_PREFIX_CHARS = 200;
+
+/** Where an HTML page starts in `text`, or -1: at the start, or after a short router prefix. */
+function htmlPageStart(text: string): number {
+  if (/^<(?:!doctype\s+html|html|head|body)\b/i.test(text)) return 0;
+  const embedded = /<(?:!doctype\s+html|html)\b/i.exec(text);
+  return embedded && embedded.index <= MAX_HTML_PREFIX_CHARS ? embedded.index : -1;
+}
+
 function isHtmlDetail(text: string): boolean {
-  return /^<(?:!doctype\s+html|html|head|body)\b/i.test(text);
+  return htmlPageStart(text) >= 0;
+}
+
+/**
+ * The wordings of a WAF or CDN block or challenge page (Cloudflare's "Attention Required" and
+ * "Just a moment", "Sorry, you have been blocked", an "Access Denied" title, and Cloudflare's
+ * error-template preamble, which a router that clips the page keeps). Such a page says the network
+ * path was refused, which says nothing about the credential (#745).
+ */
+const BLOCK_PAGE_MARKERS =
+  /attention required!?\s*\|\s*cloudflare|just a moment\.\.\.|sorry,\s+you\s+have\s+been\s+blocked|class="no-js\s+ie6\s+oldie"|<title[^>]*>\s*access denied\b/i;
+
+function isBlockPage(detail: string, body: string): boolean {
+  return (
+    isHtmlDetail(detail.trim()) &&
+    (BLOCK_PAGE_MARKERS.test(detail) || BLOCK_PAGE_MARKERS.test(body))
+  );
 }
 
 /** How long a page title may be before it is cut: it is shown inside an error sentence. */
@@ -539,8 +591,10 @@ const MAX_SHOWN_TITLE_CHARS = 100;
  * folded to one line since it came from the network. `body` is the whole body, not the 200
  * characters `detail` keeps, because the title often comes after a long `<head>` preamble.
  */
-function describeHtmlPage(body: string): string {
-  const title = body.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+function describeHtmlPage(...sources: string[]): string {
+  const title = sources
+    .map((source) => source.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1])
+    .find((found) => found !== undefined);
   const shown = title ? foldControlCharacters(title).replace(/\s+/g, ' ').trim() : '';
   if (!shown) return 'an HTML page';
   const clipped =
@@ -577,7 +631,9 @@ function detailSentence(
     return { sentence: `${origin ? `${origin} ` : ''}(${absent}).`, rewritten: false };
   }
   const uninformative = isUninformativeDetail(text);
-  const shown = isHtmlDetail(text) ? describeHtmlPage(body) : text;
+  const pageAt = htmlPageStart(text);
+  const shown =
+    pageAt < 0 ? text : `${text.slice(0, pageAt)}${describeHtmlPage(text.slice(pageAt), body)}`;
   const sentence = /[.!?]$/.test(shown) ? shown : `${shown}.`;
   const hinted = uninformative && origin !== '';
   return {
@@ -627,6 +683,10 @@ export function formatApiError(
     case 'timeout':
       return 'Request timed out. Check your network connection and try again.';
     case 'auth':
+      // A block or challenge page refused the network path, not the key (#745).
+      if (isBlockPage(detail, body)) {
+        return `${base} ${said} The upstream refused the request with a block page, which is not a rejected API key. Try another route or model.`;
+      }
       return `${base} ${said} Check BOOK_API_KEY, or provider.<id>.apiKey in settings.`;
     case 'model_unavailable': {
       // Not a credential problem (#387): the key is fine, the model is not
