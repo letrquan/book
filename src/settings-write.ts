@@ -17,7 +17,12 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { getNestedValue, setNestedValue } from './cli/utils.js';
 import { unreadLocalSettingsReason } from './local-settings-tracking.js';
-import { loadLocalSettingsFile, resolveSettings, settingsLayerPaths } from './settings-loader.js';
+import {
+  isUserSettingsFile,
+  loadLocalSettingsFile,
+  resolveSettings,
+  settingsLayerPaths,
+} from './settings-loader.js';
 import {
   formatSettingsDiagnostics,
   readSettingsDocument,
@@ -320,15 +325,23 @@ export function guardSettingWrite(
   key: string,
   value: unknown,
   scope: SettingsScope,
+  workspace?: string,
 ): string | undefined {
   const parts = key.split('.').filter(Boolean);
   if (parts.length === 0) {
     return 'Invalid key. Use dot-separated path: e.g. permissions.deny';
   }
 
+  // At `$HOME` the project file is the user file, and the loader reads it as the user layer (#429).
+  const layer =
+    scope === 'project' &&
+    workspace !== undefined &&
+    isUserSettingsFile(settingsScopePath('project', workspace))
+      ? 'user'
+      : scope;
   // Value-aware for the sandbox: `enabled: true` is the one loosening-adjacent
   // value a workspace layer may set, so a path-only refusal would block it (#373).
-  const blocked = blockedConfigWritePath(key, value, scope);
+  const blocked = blockedConfigWritePath(key, value, layer);
   if (blocked) return blocked;
 
   const topKey = parts[0];
@@ -373,7 +386,7 @@ export function guardSettingWrite(
  * lands in.
  */
 export function applySettingWrite(options: SettingWriteOptions): SettingWriteResult {
-  const refusal = guardSettingWrite(options.key, options.value, options.scope);
+  const refusal = guardSettingWrite(options.key, options.value, options.scope, options.workspace);
   if (refusal) return { ok: false, error: refusal };
 
   // Checked before the write, not after: a value that bricks the merge would

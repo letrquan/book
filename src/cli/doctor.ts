@@ -326,22 +326,11 @@ async function describeModelPricing(
   if (priced > 0)
     lines.push(`  Priced in your settings: ${priced} model${priced === 1 ? '' : 's'}`);
   if (noSettings) return lines;
-  const {
-    formatIgnoredWorkspaceSandboxKey,
-    ignoredWorkspaceUserOnlyKeys,
-    isUserSettingsFile,
-    loadSettingsFile,
-  } = await import('../settings-loader.js');
-  for (const [label, path] of await settingsLayers(workspace)) {
-    // The user-global layer is where a price is read from, so one there is never ignored. At
-    // `$HOME` the project file is that same file.
-    if (label === 'User' || isUserSettingsFile(path)) continue;
-    let document: unknown;
-    try {
-      document = loadSettingsFile(path);
-    } catch {
-      continue;
-    }
+  const { formatIgnoredWorkspaceSandboxKey, ignoredWorkspaceUserOnlyKeys } =
+    await import('../settings-loader.js');
+  for (const { label, path, document } of await readSettingsLayers(workspace)) {
+    // The user-global layer is where a price is read from, so one there is never ignored.
+    if (label === 'User') continue;
     for (const entry of ignoredWorkspaceUserOnlyKeys(document).filter((candidate) =>
       candidate.key.startsWith('provider.'),
     )) {
@@ -349,6 +338,63 @@ async function describeModelPricing(
         `  Ignored from ${path}: ${formatIgnoredWorkspaceSandboxKey(entry)} — a price is read only from ~/.book/settings.json or --settings`,
       );
     }
+  }
+  return lines;
+}
+
+/** One settings layer doctor read, with its document: null for a file absent or not loadable. */
+interface ReadSettingsLayer {
+  label: string;
+  path: string;
+  document: unknown;
+}
+
+/**
+ * The layers `settingsLayers` names, each read once. At `$HOME` the project file is the user file,
+ * which the loader reads once, as User (#429), so it is left out.
+ */
+async function readSettingsLayers(workspace: string): Promise<ReadSettingsLayer[]> {
+  const { isUserSettingsFile, loadSettingsFile } = await import('../settings-loader.js');
+  const layers: ReadSettingsLayer[] = [];
+  for (const [label, path] of await settingsLayers(workspace)) {
+    if (label !== 'User' && isUserSettingsFile(path)) continue;
+    let document: unknown = null;
+    try {
+      document = loadSettingsFile(path);
+    } catch {
+      // A file that does not load fails the configuration load, which reports it.
+    }
+    layers.push({ label, path, document });
+  }
+  return layers;
+}
+
+/**
+ * The head of the Permissions section: the rule counts, and each `defaultMode` a workspace layer
+ * set that the loader ignored, because a workspace layer may only make the startup mode stricter.
+ */
+async function describePermissions(
+  { settings, workspace }: AgentConfig,
+  noSettings: boolean | undefined,
+): Promise<string[]> {
+  const lines = [
+    'Permissions:',
+    '  Allow rules: ' + settings.permissions.allow.length,
+    '  Ask rules:   ' + settings.permissions.ask.length,
+    '  Deny rules:  ' + settings.permissions.deny.length,
+  ];
+  if (noSettings) return lines;
+  const { ignoredWorkspaceDefaultModes, WORKSPACE_DEFAULT_MODE_CHOICES } =
+    await import('../settings-loader.js');
+  const layers = (await readSettingsLayers(workspace)).map(({ label, path, document }) => ({
+    path,
+    trust: WORKSPACE_LAYER_TRUST[label] ?? 'local',
+    document,
+  }));
+  for (const entry of ignoredWorkspaceDefaultModes(layers, settings.defaultMode)) {
+    lines.push(
+      `  Ignored from ${entry.path}: defaultMode=${JSON.stringify(entry.value)} — workspace settings may only make the startup mode stricter, to ${WORKSPACE_DEFAULT_MODE_CHOICES}; set it in ~/.book/settings.json or pass --settings`,
+    );
   }
   return lines;
 }
@@ -560,10 +606,7 @@ export async function runDoctorCommand(
 
   // Permissions.
   const perms = settings.permissions;
-  console.log('Permissions:');
-  console.log('  Allow rules: ' + perms.allow.length);
-  console.log('  Ask rules:   ' + perms.ask.length);
-  console.log('  Deny rules:  ' + perms.deny.length);
+  console.log((await describePermissions(config, options.noSettings)).join('\n'));
 
   // Allow rules the repository declared are withheld until the user decides on
   // them, so doctor is where an unexplained "my project rule does nothing" is

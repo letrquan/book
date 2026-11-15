@@ -444,7 +444,7 @@ function configCommandEffect(
   // one value a workspace layer may set, and without the scope it applied a
   // workspace filter to a write aimed at the user-global layer, which is the
   // default here.
-  const refusal = guardSettingWrite(key, value, scope ?? 'user');
+  const refusal = guardSettingWrite(key, value, scope ?? 'user', context.workspace);
   if (refusal) return { type: 'local-message', content: `✕ ${refusal}`, isError: true };
 
   // Naming the layer a setting already uses is the same request as naming none;

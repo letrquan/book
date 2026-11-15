@@ -181,6 +181,29 @@ describe('book config set refuses trust-owned keys', () => {
       expect(existsSync(localSettings())).toBe(false);
     },
   );
+
+  // A workspace layer may start a session only in default, plan or dontAsk, so a looser mode
+  // written there would be ignored; the user scope takes every mode.
+  it.each(['project', 'local'] as const)(
+    'refuses a defaultMode the %s scope would ignore, and writes a kept one',
+    async (scope) => {
+      const path = scope === 'project' ? projectSettings() : localSettings();
+      const refused = await set('defaultMode', '"auto"', scope);
+      expect(refused.exitCode).toBe(1);
+      expect(refused.err).toContain('defaultMode="auto" is ignored when read from any file');
+      expect(existsSync(path)).toBe(false);
+
+      const kept = await set('defaultMode', '"plan"', scope);
+      expect(kept.exitCode).toBeUndefined();
+      expect(readJson(path)).toEqual({ defaultMode: 'plan' });
+    },
+  );
+
+  it('writes any defaultMode to the user scope', async () => {
+    const result = await set('defaultMode', '"auto"', 'user');
+    expect(result.exitCode).toBeUndefined();
+    expect(readJson(userSettings())).toEqual({ defaultMode: 'auto' });
+  });
 });
 
 /**

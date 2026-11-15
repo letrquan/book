@@ -31,12 +31,15 @@ import { collectSkippedReviewNotices } from './review/config.js';
 import { providerTrustCommand } from './trust-command.js';
 import {
   formatIgnoredWorkspaceSandboxKey,
+  ignoredWorkspaceDefaultModes,
   ignoredWorkspaceSandboxKeys,
   isUserSettingsFile,
   loadLocalSettingsFile,
   loadSettingsFile,
   userSettingsPath,
   workspaceLayerThatEnabledSandbox,
+  WORKSPACE_DEFAULT_MODE_CHOICES,
+  type SettingsLayerForSandboxActivation,
 } from './settings-loader.js';
 import { TRUSTED_SETTINGS_LOCATION } from './settings-scope.js';
 import type { ResolvedSettings } from './settings.js';
@@ -51,6 +54,8 @@ export interface WithheldProjectDeclarations {
    * by a host that has no config to read it from, which then reports no provider notices.
    */
   providerGate?: WorkspaceProviderGate;
+  /** The mode the invocation asked for (`--permission-mode`, the SDK's `permissionMode`), if any. */
+  permissionMode?: unknown;
 }
 
 /**
@@ -220,7 +225,6 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
         TRUSTED_SETTINGS_LOCATION,
     );
   }
-
   // `sandbox.enabled` is the one key a workspace layer may set, and the loader
   // pairs it with `autoAllowBashIfSandboxed: false` so a repository cannot
   // pre-approve the commands that follow its own sandbox (#373). That is a
@@ -236,16 +240,30 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
   // the user's own decision. Its path comes from the loader, the one place that
   // knows how that file is resolved.
   const userPath = userSettingsPath();
-  const activation = workspaceLayerThatEnabledSandbox([
+  const layers: SettingsLayerForSandboxActivation[] = [
     { path: userPath, trust: 'trusted', document: loadSettingsFile(userPath) },
     { path: projectPath, trust: 'repository', document: projectSettings },
     { path: localPath, trust: 'local', document: localSettings },
-  ]);
+  ];
+  const activation = workspaceLayerThatEnabledSandbox(layers);
   if (activation) {
     notices.push(
       `⚠  ${activation} declared sandbox.enabled=true, so sandbox.autoAllowBashIfSandboxed is ` +
         `false for this session: no Bash command is auto-approved. ${TRUSTED_SETTINGS_LOCATION}`,
     );
+  }
+
+  // A workspace layer may only make the startup mode stricter, and a `defaultMode` that does not
+  // is dropped as quietly: the session simply starts in another mode. Not said when the invocation
+  // chose the mode itself, or when the session starts in the mode the file asked for anyway.
+  if (input.permissionMode === undefined) {
+    for (const entry of ignoredWorkspaceDefaultModes(layers, input.settings.defaultMode)) {
+      notices.push(
+        `⚠  Ignoring defaultMode=${JSON.stringify(entry.value)} declared by ${entry.path}: a file ` +
+          `inside the workspace may only make the startup mode stricter, to ` +
+          `${WORKSPACE_DEFAULT_MODE_CHOICES}. ${TRUSTED_SETTINGS_LOCATION}`,
+      );
+    }
   }
 
   return [...notices, ...providerNotices];

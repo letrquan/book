@@ -62,6 +62,19 @@ describe('guard order', () => {
     expect(refusal).not.toContain('Unknown top-level key');
   });
 
+  // At `$HOME` the project file is the user file, which the loader reads as the user layer (#429).
+  it('judges a project write at $HOME as the user-layer write it is', () => {
+    expect(guardSettingWrite('defaultMode', 'auto', 'project', workspace)).toContain('is ignored');
+    const previous = process.env.BOOK_HOME;
+    process.env.BOOK_HOME = join(workspace, '.book');
+    try {
+      expect(guardSettingWrite('defaultMode', 'auto', 'project', workspace)).toBeUndefined();
+      expect(guardSettingWrite('defaultMode', 'auto', 'local', workspace)).toContain('is ignored');
+    } finally {
+      process.env.BOOK_HOME = previous;
+    }
+  });
+
   it('reaches a trust-owned key from above and below its own path', () => {
     expect(guardSettingWrite('permissions.projectAllowRules', undefined, 'local')).toContain(
       'book trust rule',

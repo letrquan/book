@@ -304,6 +304,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           settings: config.settings,
           settingsEnabled: options.settings !== false,
           providerGate: config.workspaceProviderGate,
+          permissionMode: options.permissionMode,
         }),
         ...localSettingsNotices,
         ...instructionNotices,
@@ -323,9 +324,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       let result: HeadlessResult | undefined;
       try {
         const registry = createDefaultRegistry({ agents: config.settings.agents.mode !== 'off' });
-        if (mcp.tools.length > 0) {
-          registry.registerAll(mcp.tools);
-        }
+        if (mcp.tools.length > 0) registry.registerAll(mcp.tools);
 
         const mode = resolvePermissionMode(config.settings, options.permissionMode);
 
