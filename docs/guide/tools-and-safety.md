@@ -1298,7 +1298,7 @@ final):`, which is what says the output after it is not finished. A successful r
 
 Under bubblewrap the sandbox gives the command fresh PID/IPC/UTS namespaces, a private `/tmp`, read-only system directories, all capabilities dropped, and a lifetime tied to the spawning process. The macOS backend enforces the same policy with a Seatbelt profile; see [macOS (Seatbelt)](#macos-seatbelt) for how it maps and where it differs. Commands are spawned as a direct argument vector — never as a shell string — so the command text is parsed only by the shell running _inside_ the sandbox. Ordinary shell syntax (pipes, `&&`, redirection, substitution) works normally there.
 
-**The workspace root is the only directory bound writable by default**, and it is bound regardless of the `workdir` argument. A sandboxed `Bash` call whose `workdir` falls outside the workspace is rejected rather than granted a wider mount; use `sandbox.filesystem.allowWrite` to add directories deliberately.
+**The workspace root is the only directory bound writable by default**, and it is bound regardless of the `workdir` argument. A sandboxed `Bash` call whose `workdir` falls outside the workspace is rejected rather than granted a wider mount; use `sandbox.filesystem.allowWrite` to add directories deliberately. The command starts in its `workdir` at the workspace's spelling, so under a workspace opened through a symlink (`book -w <link>`, `BOOK_WORKSPACE`) `pwd` prints the path you opened and a relative path lands in the workspace.
 
 ### Workspace control files are read-only
 
