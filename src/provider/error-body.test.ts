@@ -272,16 +272,33 @@ describe('a router-relayed HTML page is summarised, never shown as markup (#745)
     );
   });
 
-  it('finds the title when the message was cut before it', () => {
-    const page = `<!DOCTYPE html><html><head>${'<meta name="x" content="y">'.repeat(100)}<title>Not Found</title></head></html>`;
-    const text = formatApiError(503, wrap(`${PREFIX}${page}`));
+  it('finds the title past the first 200 characters of a plain-text body', () => {
+    const page = `<!DOCTYPE html><html><head>${'<meta name="x" content="y">'.repeat(12)}<title>Not Found</title></head></html>`;
+    const text = formatApiError(503, `${PREFIX}${page}`);
     expect(text).toContain('an HTML page titled "Not Found"');
     expect(text).not.toContain('<meta');
   });
 
-  it('does not rewrite text that merely mentions markup far into a message', () => {
-    const message = `${'The upstream said something long. '.repeat(8)}Saw <html> in it.`;
-    expect(formatApiError(503, wrap(message))).toContain('Saw <html> in it.');
+  it('does not take a <title> elsewhere in a JSON body for the page title', () => {
+    const body = JSON.stringify({
+      error: {
+        message: `${PREFIX}<!DOCTYPE html><html><head></head></html>`,
+        metadata: { raw: '<title>Unrelated</title>' },
+      },
+    });
+    const text = formatApiError(503, body);
+    expect(text).toContain(`${PREFIX}an HTML page.`);
+    expect(text).not.toContain('Unrelated');
+  });
+
+  it.each([
+    ['a short message', "Invalid value: expected string, got '<html><body>' (see field x)"],
+    ['a long message', `${'The upstream said something long. '.repeat(8)}Saw <html> in it.`],
+    ['a prefix that is not a router tag', 'Do not include <html> tags in tool arguments.'],
+  ])('does not rewrite %s that merely mentions markup', (_name, message) => {
+    const text = formatApiError(400, wrap(message));
+    expect(text).toContain(message);
+    expect(text).not.toContain('an HTML page');
   });
 });
 

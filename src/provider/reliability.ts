@@ -446,9 +446,9 @@ function statesContextOverflow(body: string): boolean {
  * notice, a `model_not_found` code — which is `model_unavailable`, not `auth`:
  * nothing is wrong with the credential, and an operator must pick another
  * model. A 401 is always `auth` and its body is never read for this; a 403 or
- * 404 without such wording keeps the plain classification. The #383 capacity
- * outage stays out of this path: its quote is suppressed by
- * `quotedUpstreamStatus`, so the 503 classifies as a retryable server error.
+ * 404 without such wording keeps the plain classification. A 400 that states spent credits
+ * (`statesSpentCredits`, #746) is `quota`, like a 402; a 403 is never read for credit wording. The #383
+ * capacity outage stays out of this path: its quote is suppressed by `quotedUpstreamStatus`, so the 503 classifies as a retryable server error.
  */
 export function classifyApiError(
   status: number,
@@ -549,17 +549,17 @@ function isUninformativeDetail(text: string): boolean {
 }
 
 /**
- * How far into a detail an HTML page may begin and still be one a router relayed: 9router writes
- * `[route] [403]: <!DOCTYPE html>…` inside its JSON `error.message` (#745). A page further in is
- * ordinary text that mentions markup.
+ * What a router writes before the page it relays: 9router puts `[route] [403]: <!DOCTYPE html>…`
+ * in its JSON `error.message` (#745). Only bracketed tags and a colon, so a message that merely
+ * mentions `<html>` mid-sentence is not taken for a page.
  */
-const MAX_HTML_PREFIX_CHARS = 200;
+const ROUTER_PAGE_PREFIX = /^(?:\[[^\]\n]{1,120}\]\s*)+:?\s*$/;
 
-/** Where an HTML page starts in `text`, or -1: at the start, or after a short router prefix. */
+/** Where an HTML page starts in `text`, or -1: at the start, or right after a router prefix. */
 function htmlPageStart(text: string): number {
   if (/^<(?:!doctype\s+html|html|head|body)\b/i.test(text)) return 0;
   const embedded = /<(?:!doctype\s+html|html)\b/i.exec(text);
-  return embedded && embedded.index <= MAX_HTML_PREFIX_CHARS ? embedded.index : -1;
+  return embedded && ROUTER_PAGE_PREFIX.test(text.slice(0, embedded.index)) ? embedded.index : -1;
 }
 
 function isHtmlDetail(text: string): boolean {
@@ -568,12 +568,11 @@ function isHtmlDetail(text: string): boolean {
 
 /**
  * The wordings of a WAF or CDN block or challenge page (Cloudflare's "Attention Required" and
- * "Just a moment", "Sorry, you have been blocked", an "Access Denied" title, and Cloudflare's
- * error-template preamble, which a router that clips the page keeps). Such a page says the network
+ * "Just a moment", "Sorry, you have been blocked", and Cloudflare's error-template preamble, which a router that clips the page keeps). Such a page says the network
  * path was refused, which says nothing about the credential (#745).
  */
 const BLOCK_PAGE_MARKERS =
-  /attention required!?\s*\|\s*cloudflare|just a moment\.\.\.|sorry,\s+you\s+have\s+been\s+blocked|class="no-js\s+ie6\s+oldie"|<title[^>]*>\s*access denied\b/i;
+  /attention required!?\s*\|\s*cloudflare|just a moment\.\.\.|sorry,\s+you\s+have\s+been\s+blocked|class="no-js\s+ie6\s+oldie"/i;
 
 function isBlockPage(detail: string, body: string): boolean {
   return (
@@ -586,10 +585,19 @@ function isBlockPage(detail: string, body: string): boolean {
 const MAX_SHOWN_TITLE_CHARS = 100;
 
 /**
+ * The whole body as a second place to look for a page's title, unless it is JSON: then the
+ * message already holds the page, and a `<title>` elsewhere in the JSON is not the page's.
+ */
+function pageSource(body: string): string {
+  return errorBodyParts(body).parsed ? '' : body;
+}
+
+/**
  * An HTML error page as one phrase: `an HTML page`, plus its `<title>` when it has one. The page
  * is never shown as markup (the first 200 characters of one end mid-tag), and its title is
- * folded to one line since it came from the network. `body` is the whole body, not the 200
- * characters `detail` keeps, because the title often comes after a long `<head>` preamble.
+ * folded to one line since it came from the network. The first source with a title wins:
+ * the page as the detail shows it, then the whole body (`pageSource`), because the title often
+ * comes after a long `<head>` preamble.
  */
 function describeHtmlPage(...sources: string[]): string {
   const title = sources
@@ -633,7 +641,9 @@ function detailSentence(
   const uninformative = isUninformativeDetail(text);
   const pageAt = htmlPageStart(text);
   const shown =
-    pageAt < 0 ? text : `${text.slice(0, pageAt)}${describeHtmlPage(text.slice(pageAt), body)}`;
+    pageAt < 0
+      ? text
+      : `${text.slice(0, pageAt)}${describeHtmlPage(text.slice(pageAt), pageSource(body))}`;
   const sentence = /[.!?]$/.test(shown) ? shown : `${shown}.`;
   const hinted = uninformative && origin !== '';
   return {

@@ -222,7 +222,7 @@ same way but is about credits, so it stays with a 402: `credentials_rejected`, p
 `insufficient_quota` code), which some routers and providers send instead of a 402; any other 400
 stays `bad_request`.
 
-A 403 that comes back as an HTML block or challenge page (Cloudflare's "Attention Required", a
+A 401 or 403 that comes back as an HTML block or challenge page (Cloudflare's "Attention Required", a
 router relaying one) is shown as `an HTML page titled "…"`, never as its markup, and its remedy is
 "try another route or model" rather than "Check BOOK_API_KEY": the network path was refused, not
 the key. It still ends `credentials_rejected` with provider code `auth`.
