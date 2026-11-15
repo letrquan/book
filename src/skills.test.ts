@@ -190,6 +190,8 @@ describe('discoverSkills', () => {
     ['tools: Read, Task', ['Read', 'Task']],
     ['allowed-tools: []', undefined],
     ['allowed-tools: ""', undefined],
+    // Written but empty is a list that names nothing, not no list.
+    ['allowed-tools:\n- ""', ['""']],
   ])('reads a skill with %j as %j (#712, #717)', (field, expected) => {
     const skillDir = join(dir, '.book', 'skills', 'probe');
     mkdirSync(skillDir, { recursive: true });

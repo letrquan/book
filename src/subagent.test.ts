@@ -22,6 +22,21 @@ describe('discoverAgents', () => {
     expect(discoverAgents(dir)).toEqual([]);
   });
 
+  it.each([
+    ['tools: Read, Grep', ['Read', 'Grep']],
+    ['tools: Read Grep', ['Read', 'Grep']],
+    ['allowed-tools: "Read", "Grep"', ['Read', 'Grep']],
+    ['tools:', []],
+  ])('reads an agent with %j as %j (#717)', (field, expected) => {
+    const agentsDir = join(dir, '.book', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(join(agentsDir, 'probe.md'), `---\nname: probe\n${field}\n---\nBody.`);
+
+    expect(discoverAgents(dir).find((agent) => agent.name === 'probe')?.allowedTools).toEqual(
+      expected,
+    );
+  });
+
   it('discovers agents from .book/agents/<name>.md', () => {
     const agentsDir = join(dir, '.book', 'agents');
     mkdirSync(agentsDir, { recursive: true });

@@ -54,6 +54,32 @@ describe('parseFrontmatter block lists (#712)', () => {
     expect(list('Read', 'Bash(echo "a")')).toEqual(['Read', 'Bash(echo "a")']);
   });
 
+  it('unquotes one whole pair only: a mismatched or inner pair is left as written', () => {
+    expect(list(`"Bash(echo 'x')"`)).toEqual([`Bash(echo 'x')`]);
+    expect(list(`"Read'`, '"foo" and "bar"')).toEqual([`"Read'`, '"foo" and "bar"']);
+  });
+
+  it('keeps an empty quoted item as written, so a list of only those is not an empty list', () => {
+    expect(list('""', "''")).toEqual(['""', "''"]);
+  });
+
+  it('reads an inline tool list with a comma inside a pattern', () => {
+    const raw = '---\nallowed-tools: [Bash(git log, status), "Read"]\n---\nx';
+    expect(parseFrontmatter(raw).frontmatter['allowed-tools']).toEqual([
+      'Bash(git log, status)',
+      'Read',
+    ]);
+  });
+
+  it('leaves a tool string quoted item by item for parseAllowedTools to split', () => {
+    const raw = '---\nallowed-tools: "Read", "Task"\n---\nx';
+    const value = parseFrontmatter(raw).frontmatter['allowed-tools'];
+    expect(value).toBe('"Read", "Task"');
+    expect(parseAllowedTools(value)).toEqual(['Read', 'Task']);
+    const whole = parseFrontmatter('---\nallowed-tools: "Read, Task"\n---\nx');
+    expect(parseAllowedTools(whole.frontmatter['allowed-tools'])).toEqual(['Read', 'Task']);
+  });
+
   it('reads a quoted block list written with CRLF line endings', () => {
     const raw = '---\r\nallowed-tools:\r\n- "Read"\r\n- \'Task\'\r\n---\r\nx';
     expect(parseFrontmatter(raw).frontmatter['allowed-tools']).toEqual(['Read', 'Task']);
@@ -79,7 +105,8 @@ describe('parseAllowedTools (#717)', () => {
     expect(parseAllowedTools('Read) Task')).toEqual(['Read)', 'Task']);
   });
 
-  it('reads an array item by item', () => {
+  it('reads an array item by item, each one literal', () => {
+    expect(parseAllowedTools(['Read, Task'])).toEqual(['Read, Task']);
     expect(parseAllowedTools(['Read', ' Bash(git *) ', ''])).toEqual(['Read', 'Bash(git *)']);
     expect(parseAllowedTools([])).toEqual([]);
   });

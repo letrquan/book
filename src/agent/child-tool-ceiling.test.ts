@@ -288,6 +288,22 @@ describe("a child under its parent's allowed-tools (#696)", () => {
     }
   });
 
+  it.each(['Bash(git *, Read', 'Bash(git *)Read'])(
+    'refuses to run under a skill whose allowed-tools string holds an invalid rule: %s (#717)',
+    async (field) => {
+      const run = harness();
+      try {
+        writeSkill(run.workspace, 'probe', [], [`allowed-tools: ${field}`]);
+
+        // As for an array item written the same way: the list is never dropped, and no child starts.
+        await expect(run.parent([[INVOKE, TASK]])).rejects.toThrow('Invalid capability rule');
+        expect(run.childRuns).toHaveLength(0);
+      } finally {
+        run.dispose();
+      }
+    },
+  );
+
   it("holds a Task child to a skill the user typed, and an AgentSpawn child to a skill's list", async () => {
     const run = harness();
     try {

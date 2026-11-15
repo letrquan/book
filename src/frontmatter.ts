@@ -63,13 +63,45 @@ function unquote(value: string): string {
 }
 
 /**
- * The `allowed-tools` field of a command or skill, as one list. An array (block or inline) is read
- * item by item; a string is split on commas and whitespace outside parentheses, so
- * `Read, Task`, `Read Task` and `Bash(git *), Read` give `["Read", "Task"]` and
- * `["Bash(git *)", "Read"]`. A parenthesis that never closes keeps the rest of the string in one
- * item, which names no tool and so narrows the list instead of widening it. An empty string, or
- * anything that is neither an array nor a string, gives `undefined`, as an absent key does; an
- * empty array stays empty, and what that means is each caller's rule.
+ * One whole quoted item: a matching pair around text that holds no quote of the same kind. `"Read"` and
+ * `'Read'` give `Read`; `"Read", "Task"`, `"Read'` and `"a" and "b"` are left as written, as is a
+ * pair with nothing inside, so a list of only `""` still names a rule that matches no tool instead
+ * of becoming an empty list.
+ */
+function unquoteItem(value: string): string {
+  const match = /^(["'])((?:(?!\1).)+)\1$/.exec(value);
+  return match ? match[2] : value;
+}
+
+/** Splits outside parentheses, so `Bash(git *, x)` stays one piece. An unclosed one swallows the rest. */
+function splitOutsideParens(value: string, isSeparator: (char: string) => boolean): string[] {
+  const pieces: string[] = [];
+  let current = '';
+  let depth = 0;
+  for (const char of value) {
+    if (char === '(') depth++;
+    else if (char === ')' && depth > 0) depth--;
+    if (depth === 0 && isSeparator(char)) {
+      pieces.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  pieces.push(current);
+  return pieces.map((piece) => piece.trim()).filter(Boolean);
+}
+
+/**
+ * The `allowed-tools` field of a command or skill, as one list. Items of an array (block or
+ * inline) are literal rules: `- Read, Task` is one item. A string is split on commas and whitespace
+ * outside parentheses, so `Read, Task`, `Read Task` and `Bash(git *), Read` give `["Read", "Task"]`
+ * and `["Bash(git *)", "Read"]`, and each item that is wholly quoted loses its quotes. A
+ * parenthesis that never closes keeps the rest of the string in one item. That item is not a
+ * valid rule, so whatever reads the list refuses it (`parseCapabilityRule` throws), as it does for
+ * an array item written the same way. An empty string, or anything that is neither an array nor a
+ * string, gives `undefined`, as an absent key does; an empty array stays empty, and what that
+ * means is each caller's rule.
  */
 export function parseAllowedTools(value: unknown): string[] | undefined {
   if (Array.isArray(value)) {
@@ -79,20 +111,9 @@ export function parseAllowedTools(value: unknown): string[] | undefined {
       .filter(Boolean);
   }
   if (typeof value !== 'string') return undefined;
-  const tools: string[] = [];
-  let current = '';
-  let depth = 0;
-  for (const char of value) {
-    if (char === '(') depth++;
-    else if (char === ')' && depth > 0) depth--;
-    if (depth === 0 && (char === ',' || /\s/.test(char))) {
-      if (current) tools.push(current);
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  if (current) tools.push(current);
+  const tools = splitOutsideParens(value, (char) => char === ',' || /\s/.test(char)).map(
+    unquoteItem,
+  );
   return tools.length ? tools : undefined;
 }
 
@@ -138,7 +159,7 @@ export function parseFrontmatter(raw: string): {
     // Array item: "- value"
     const arrayMatch = trimmed.match(/^-\s+(.+)$/);
     if (arrayMatch && currentKey) {
-      currentArray.push(unquote(arrayMatch[1]));
+      currentArray.push(unquoteItem(arrayMatch[1]));
       continue;
     }
 
@@ -161,18 +182,15 @@ export function parseFrontmatter(raw: string): {
         currentKey = key;
         currentArray = [];
       } else {
-        // Unquote if quoted.
-        const unquoted = unquote(value);
-        if (
-          (key === 'tools' || key === 'allowed-tools') &&
-          unquoted.startsWith('[') &&
-          unquoted.endsWith(']')
-        ) {
-          frontmatter[key] = unquoted
-            .slice(1, -1)
-            .split(',')
-            .map((item) => unquote(item.trim()))
-            .filter(Boolean);
+        // Unquote if quoted. A tool list is quoted as a whole or item by item, never both.
+        const isToolList = key === 'tools' || key === 'allowed-tools';
+        const unquoted = isToolList
+          ? value.replace(/^(["'])((?:(?!\1).)*)\1$/, '$2')
+          : unquote(value);
+        if (isToolList && unquoted.startsWith('[') && unquoted.endsWith(']')) {
+          frontmatter[key] = splitOutsideParens(unquoted.slice(1, -1), (char) => char === ',').map(
+            unquoteItem,
+          );
         } else {
           frontmatter[key] = unquoted;
         }

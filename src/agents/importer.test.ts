@@ -34,6 +34,13 @@ describe('agent importer', () => {
     expect(preview.warnings.join('\n')).toContain('mutation tools');
   });
 
+  it('reads a space-separated tools string with the shared parser (#717)', () => {
+    root = mkdtempSync(join(tmpdir(), 'book-import-'));
+    const source = join(root, 'agent.md');
+    writeFileSync(source, ['---', 'name: explorer', 'tools: Read Grep', '---', 'Body'].join('\n'));
+    expect(previewAgentImport(source)[0].tools).toEqual(['Read', 'Grep']);
+  });
+
   it('only writes normalized definitions when explicitly asked', () => {
     root = mkdtempSync(join(tmpdir(), 'book-import-'));
     const source = join(root, 'agent.md');
