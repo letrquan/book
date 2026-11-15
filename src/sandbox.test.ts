@@ -408,6 +408,11 @@ describe('buildSandboxExecution start directory (#722)', () => {
     expect(chdirOf(build('/work', host, '/work/pkg'))).toBe('/work/pkg');
   });
 
+  it('starts a workspace given as ~ at the expanded path it is bound at', () => {
+    // The workspace bind expands `~`; the start directory has to name the same path.
+    expect(chdirOf(build('~/proj', allExistingHost(posix)))).toBe('/home/book/proj');
+  });
+
   it('keeps the bwrap fallback when there is no workspace to bind', () => {
     const gone = (at: string): boolean => at === '/gone' || at.startsWith('/gone/');
     const host: SandboxHost = {
@@ -6471,12 +6476,15 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
             run_in_background: true,
           });
           expect(run.status).toBe('success');
-          for (let attempt = 0; attempt < 200; attempt += 1) {
-            if (existsSync(where) && readFileSync(where, 'utf8').endsWith('\n')) break;
-            await new Promise((resolve) => setTimeout(resolve, 25));
-          }
 
-          expect(readFileSync(where, 'utf8')).toBe(`${workspace}\n`);
+          // Within the suite's 20 s test timeout, for a loaded runner.
+          await vi.waitFor(
+            () => {
+              expect(existsSync(where)).toBe(true);
+              expect(readFileSync(where, 'utf8')).toBe(`${workspace}\n`);
+            },
+            { timeout: 15_000, interval: 25 },
+          );
         } finally {
           rmSync(base, { recursive: true, force: true });
         }

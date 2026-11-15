@@ -1722,16 +1722,17 @@ function spellingInRoots(
  * nothing. A workdir outside the workspace is refused, never bound: the
  * namespace may not show it, and binding a model-supplied path would let the
  * model widen its own sandbox (see {@link Sandbox.wrap}). With no workspace
- * bound there is nowhere to map it to, and bwrap keeps its own fallback.
+ * bound there is nowhere to map it to, and bwrap keeps its own fallback. No
+ * workdir means the workspace as bound, `~` already expanded.
  */
 function startDirectoryArgs(
-  workdir: string,
+  workdir: string | undefined,
   workspace: string,
   canonicalWorkspace: string | null,
   host: SandboxHost,
 ): string[] {
   if (canonicalWorkspace === null) return [];
-  const canonical = canonicalPath(host.path.resolve(workspace, workdir), host);
+  const canonical = canonicalPath(host.path.resolve(workspace, workdir ?? '.'), host);
   const at = spellingInRoots([{ at: workspace, canonical: canonicalWorkspace }], canonical, host);
   if (at === null) throw new Error(`workdir is outside the sandboxed workspace: ${workdir}`);
   return ['--chdir', at];
@@ -2068,7 +2069,7 @@ export function buildSandboxExecution(
   settings: ResolvedSettings['sandbox'],
   givenHost: SandboxHost = realSandboxHost,
   protectedPaths?: ProtectedWorkspacePaths,
-  workdir: string = workspaceRoot,
+  workdir?: string,
 ): SandboxExecution {
   const host = memoizedHost(givenHost);
   const args: string[] = [];
