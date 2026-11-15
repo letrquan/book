@@ -31,12 +31,14 @@ import { collectSkippedReviewNotices } from './review/config.js';
 import { providerTrustCommand } from './trust-command.js';
 import {
   formatIgnoredWorkspaceSandboxKey,
+  ignoredWorkspaceDefaultMode,
   ignoredWorkspaceSandboxKeys,
   isUserSettingsFile,
   loadLocalSettingsFile,
   loadSettingsFile,
   userSettingsPath,
   workspaceLayerThatEnabledSandbox,
+  WORKSPACE_DEFAULT_MODE_CHOICES,
 } from './settings-loader.js';
 import { TRUSTED_SETTINGS_LOCATION } from './settings-scope.js';
 import type { ResolvedSettings } from './settings.js';
@@ -219,6 +221,21 @@ export function collectWithheldProjectNotices(input: WithheldProjectDeclarations
         `A file inside the workspace may turn the sandbox on and add deny entries, but not loosen it. ` +
         TRUSTED_SETTINGS_LOCATION,
     );
+  }
+  // A `defaultMode` that lets more through than `default` is dropped the same way, and is as quiet:
+  // the session simply starts in the mode the trusted layers chose.
+  const layers = [
+    [projectPath, projectSettings],
+    [localPath, localSettings],
+  ] as const;
+  for (const [path, document] of layers) {
+    for (const entry of ignoredWorkspaceDefaultMode(document)) {
+      notices.push(
+        `⚠  Ignoring ${formatIgnoredWorkspaceSandboxKey(entry)} declared by ${path}: a file inside ` +
+          `the workspace may start a session only in ${WORKSPACE_DEFAULT_MODE_CHOICES}. ` +
+          TRUSTED_SETTINGS_LOCATION,
+      );
+    }
   }
 
   // `sandbox.enabled` is the one key a workspace layer may set, and the loader

@@ -2,10 +2,12 @@ import { join } from 'node:path';
 import { resolveBookHome } from './book-home.js';
 import {
   formatIgnoredWorkspaceSandboxKey,
+  ignoredWorkspaceDefaultMode,
   ignoredWorkspaceSandboxKeys,
   ignoredWorkspaceUserOnlyKeys,
   isUserOrFlagOnlySettingPath,
   reachesWildcardUserOnlyKey,
+  WORKSPACE_DEFAULT_MODE_CHOICES,
   type IgnoredWorkspaceSandboxKey,
   type WorkspaceLayerSandboxView,
 } from './settings-loader.js';
@@ -159,10 +161,29 @@ export function blockedWorkspaceSandboxSetting(path: string, value: unknown): st
  * blocks the tightening half of the surface on a guess.
  */
 export function blockedWorkspaceSettingWrite(path: string, value?: unknown): string | undefined {
-  const blocked = blockedWorkspaceSettingPath(path) ?? blockedWorkspaceUserOnlySetting(path, value);
+  const blocked =
+    blockedWorkspaceSettingPath(path) ??
+    blockedWorkspaceUserOnlySetting(path, value) ??
+    blockedWorkspaceDefaultMode(path, value);
   if (blocked) return blocked;
   if (value === undefined) return alwaysRefusedWorkspaceSandboxPath(path);
   return blockedWorkspaceSandboxSetting(path, value);
+}
+
+/**
+ * The guidance for a `defaultMode` write a workspace layer would ignore, or undefined. The value
+ * decides, as for the sandbox: `plan` is written and `auto` refused. With no value in hand nothing
+ * is refused, since removing the key only lets the more trusted layer's mode through.
+ */
+function blockedWorkspaceDefaultMode(path: string, value: unknown): string | undefined {
+  if (path !== 'defaultMode' || value === undefined) return undefined;
+  const [ignored] = ignoredWorkspaceDefaultMode({ defaultMode: value });
+  if (!ignored) return undefined;
+  return (
+    `${formatIgnoredWorkspaceSandboxKey(ignored)} is ignored when read from any file inside the ` +
+    `workspace, which may start a session only in ${WORKSPACE_DEFAULT_MODE_CHOICES}. ` +
+    TRUSTED_SETTINGS_LOCATION
+  );
 }
 
 /**

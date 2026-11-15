@@ -1532,3 +1532,30 @@ describe('runDoctorCommand model pricing (#663)', () => {
     expect(output.indexOf('Ignored from')).toBeLessThan(messaging);
   });
 });
+
+/**
+ * A workspace layer may start a session only in a mode at least as strict as `default`, so doctor
+ * names a dropped `defaultMode` in the Permissions section, with the file and the value.
+ */
+describe('runDoctorCommand ignored workspace defaultMode', () => {
+  it('names a dropped mode with the file it came from, and not a kept one', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    const project = join(workspace, '.book', 'settings.json');
+    const local = join(workspace, '.book', 'settings.local.json');
+    writeFileSync(project, JSON.stringify({ defaultMode: 'auto' }));
+    writeFileSync(local, JSON.stringify({ defaultMode: 'plan' }));
+    writeUserSettings({ defaultMode: 'acceptEdits' });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain(
+      `  Ignored from ${project}: defaultMode="auto" — workspace settings may start a session only in default, plan or dontAsk; set it in ~/.book/settings.json or pass --settings`,
+    );
+    expect(output).not.toContain('defaultMode="plan"');
+    expect(output).not.toContain('defaultMode="acceptEdits"');
+    const permissions = output.indexOf('Permissions:');
+    expect(permissions).toBeGreaterThan(-1);
+    expect(output.indexOf('defaultMode="auto"')).toBeGreaterThan(permissions);
+    expect(output.indexOf('defaultMode="auto"')).toBeLessThan(output.indexOf('Sandbox:'));
+  });
+});

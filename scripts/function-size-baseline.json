@@ -11,7 +11,7 @@
   "agents/manager.ts#AgentManager>spawn": { "codeLines": 144, "complexity": 31 },
   "agents/store.ts#AgentStore>load": { "codeLines": 69, "complexity": 31 },
   "cli/config-cmd.ts#runConfigCommand": { "codeLines": 157, "complexity": 38 },
-  "cli/doctor.ts#runDoctorCommand": { "codeLines": 485, "complexity": 107 },
+  "cli/doctor.ts#runDoctorCommand": { "codeLines": 482, "complexity": 107 },
   "cli/ink-output-cache.ts#createRowCachedGet>get": { "codeLines": 103, "complexity": 31 },
   "cli/ink-render-cull.ts#createInkRenderCull": { "codeLines": 155, "complexity": 1 },
   "cli/ink-render-cull.ts#createInkRenderCull>sharedGetDisplay": { "codeLines": 73, "complexity": 33 },

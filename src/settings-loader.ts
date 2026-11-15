@@ -40,6 +40,8 @@ import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js'
 import { normalizeRemovedSettings } from './settings-removed.js';
 import { parseEnvBoolean } from './env-boolean.js';
 import { resolveInboundSetting } from './messaging/receive-policy.js';
+import { normalizePermissionMode } from './permission-mode.js';
+import type { PermissionMode } from './types/runtime.js';
 
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
 
@@ -419,6 +421,38 @@ export function isUserOrFlagOnlySettingPath(path: string): boolean {
 }
 
 /**
+ * The startup modes a workspace layer may set: each asks, or refuses, wherever `default` would.
+ * `auto` and `acceptEdits` let through calls `default` asks about and `bypassPermissions` skips the
+ * gate, so a workspace layer that sets one is ignored, like a loosening `sandbox.*` key, and the
+ * more trusted layer's value stands. The user layer, `--settings` and an invocation's own mode
+ * keep every mode.
+ */
+const WORKSPACE_DEFAULT_MODES: ReadonlySet<PermissionMode> = new Set([
+  'default',
+  'plan',
+  'dontAsk',
+]);
+
+/** {@link WORKSPACE_DEFAULT_MODES} as a report names them. */
+export const WORKSPACE_DEFAULT_MODE_CHOICES = 'default, plan or dontAsk';
+
+/**
+ * The `defaultMode` a workspace layer declares that the loader will not honour, with the value it
+ * wrote: empty unless it is outside {@link WORKSPACE_DEFAULT_MODES}. Pure, and the one test
+ * `sanitizeLayer` applies, `book doctor` and the startup notice report, and the writers refuse.
+ */
+export function ignoredWorkspaceDefaultMode(settings: unknown): IgnoredWorkspaceSandboxKey[] {
+  if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) return [];
+  if (!Object.hasOwn(settings, 'defaultMode')) return [];
+  const value = (settings as { defaultMode?: unknown }).defaultMode;
+  if (value === undefined) return [];
+  const mode = normalizePermissionMode(value);
+  return mode !== undefined && WORKSPACE_DEFAULT_MODES.has(mode)
+    ? []
+    : [{ key: 'defaultMode', value }];
+}
+
+/**
  * Drop every loosening `sandbox.*` key from a workspace layer. Deleting rather
  * than overwriting is what makes the key harmless: the merge keeps whatever the
  * earlier, more trusted layer said.
@@ -436,8 +470,8 @@ function sanitizeLayer(
 ): Partial<BookSettings> {
   if (trust === 'trusted') return settings;
   const sanitized = structuredClone(settings);
-  // Project/local settings cannot opt a session into the most permissive mode.
-  if (sanitized.defaultMode === 'bypassPermissions') delete sanitized.defaultMode;
+  // A workspace layer may not start the session in a mode that lets more through than `default`.
+  if (ignoredWorkspaceDefaultMode(sanitized).length > 0) delete sanitized.defaultMode;
   // `shell` names the program every Bash command is handed to. A clone that
   // could point it at a binary it ships would run that binary on the first
   // command, so the key is honoured from trusted layers only.

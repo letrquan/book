@@ -740,6 +740,16 @@ describe('built-in command contract', () => {
       expect(shellResult).toEqual(
         expect.objectContaining({ content: expect.stringContaining('cannot be written') }),
       );
+      // A workspace layer may start a session only in default, plan or dontAsk.
+      for (const args of ['--local defaultMode=auto', '--project defaultMode=acceptEdits']) {
+        expect(registry.execute('config', args, commandContext)).toEqual(
+          expect.objectContaining({
+            content: expect.stringMatching(/defaultMode="\w+" is ignored when read from any file/),
+            isError: true,
+          }),
+        );
+      }
+      expect(existsSync(join(workspace, '.book', 'settings.json'))).toBe(false);
 
       // The guards `book config set` had and the TUI did not: a key nothing
       // reads used to report success and change nothing, in either direction.

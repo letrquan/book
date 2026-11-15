@@ -20,6 +20,7 @@ import {
 import { hookFingerprint } from './hook-approvals.js';
 import { blockedConfigWritePath, blockedWorkspaceSettingWrite } from './settings-scope.js';
 import { collectWithheldProjectNotices } from './project-approval-notices.js';
+import { resolvePermissionMode } from './permission-mode.js';
 import { updateWorkspaceTrust } from './workspace-trust.js';
 import {
   persistWorkspaceProviderChoice,
@@ -805,6 +806,133 @@ describe('a workspace layer cannot supply the shell', () => {
 
     writeUser({ shell: 'powershell' });
     expect(load().shell).toBe('powershell');
+  });
+});
+
+/**
+ * A workspace layer may set `defaultMode` only to a mode at least as strict as `default`:
+ * `default`, `plan` or `dontAsk`. `auto` and `acceptEdits` are dropped from both workspace files,
+ * as `bypassPermissions` always was, and the more trusted layer's value stands. The user layer,
+ * `--settings` and an invocation's own mode keep every mode.
+ */
+describe('workspace layers may set defaultMode only as strict as default', () => {
+  function resolveWith(layers: {
+    user?: object;
+    project?: object;
+    local?: object;
+    override?: object;
+  }): ResolvedSettings {
+    const paths = {
+      userSettingsPath: join(userDir, 'user.json'),
+      projectSettingsPath: join(dir, '.book', 'settings.json'),
+      localSettingsPath: join(dir, '.book', 'settings.local.json'),
+      trustStorePath: join(userDir, 'trust.json'),
+    };
+    // Each call states every layer it means: files from an earlier call are removed first.
+    for (const path of [
+      paths.userSettingsPath,
+      paths.projectSettingsPath,
+      paths.localSettingsPath,
+    ]) {
+      rmSync(path, { force: true });
+    }
+    rmSync(join(userDir, 'override.json'), { force: true });
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    if (layers.user) writeFileSync(paths.userSettingsPath, JSON.stringify(layers.user));
+    if (layers.project) writeFileSync(paths.projectSettingsPath, JSON.stringify(layers.project));
+    if (layers.local) writeFileSync(paths.localSettingsPath, JSON.stringify(layers.local));
+    const overridePath = layers.override ? join(userDir, 'override.json') : undefined;
+    if (overridePath) writeFileSync(overridePath, JSON.stringify(layers.override));
+    return resolveSettings(dir, overridePath, paths);
+  }
+  const mode = (defaultMode: string) => ({ defaultMode });
+
+  it.each(['auto', 'acceptEdits', 'bypassPermissions'])(
+    'drops %s from the project and local layers',
+    (dropped) => {
+      expect(resolveWith({ project: mode(dropped) }).defaultMode).toBeUndefined();
+      expect(resolveWith({ local: mode(dropped) }).defaultMode).toBeUndefined();
+      expect(resolvePermissionMode(resolveWith({ project: mode(dropped) }))).toBe('default');
+      // The more trusted layer's value stands.
+      expect(resolveWith({ user: mode('plan'), project: mode(dropped) }).defaultMode).toBe('plan');
+      expect(resolveWith({ user: mode('plan'), local: mode(dropped) }).defaultMode).toBe('plan');
+    },
+  );
+
+  it.each(['default', 'plan', 'dontAsk'])('keeps %s from the project and local layers', (kept) => {
+    expect(resolveWith({ user: mode('auto'), project: mode(kept) }).defaultMode).toBe(kept);
+    expect(resolveWith({ user: mode('auto'), local: mode(kept) }).defaultMode).toBe(kept);
+  });
+
+  it.each(['auto', 'acceptEdits', 'bypassPermissions'])(
+    'keeps %s from the user layer and --settings',
+    (trusted) => {
+      expect(resolveWith({ user: mode(trusted) }).defaultMode).toBe(trusted);
+      expect(resolveWith({ user: mode(trusted), project: mode('auto') }).defaultMode).toBe(trusted);
+      expect(resolveWith({ project: mode('plan'), override: mode(trusted) }).defaultMode).toBe(
+        trusted,
+      );
+    },
+  );
+
+  it('leaves the invocation mode in charge over a workspace default', () => {
+    const settings = resolveWith({ project: mode('plan'), local: mode('dontAsk') });
+    expect(resolvePermissionMode(settings, 'auto')).toBe('auto');
+    expect(resolvePermissionMode(settings)).toBe('dontAsk');
+  });
+
+  it('drops a mode a workspace layer nests under __proto__', () => {
+    resolveWith({});
+    // Written as text: in an object literal `__proto__:` sets the prototype.
+    writeFileSync(
+      join(dir, '.book', 'settings.json'),
+      '{ "__proto__": { "defaultMode": "auto" } }',
+    );
+    const settings = resolveSettings(dir, undefined, {
+      userSettingsPath: join(userDir, 'user.json'),
+      projectSettingsPath: join(dir, '.book', 'settings.json'),
+      localSettingsPath: join(dir, '.book', 'settings.local.json'),
+      trustStorePath: join(userDir, 'trust.json'),
+    });
+    expect(settings.defaultMode).toBeUndefined();
+  });
+
+  it('is refused by the workspace writers for the dropped modes only', () => {
+    for (const dropped of ['auto', 'acceptEdits', 'bypassPermissions']) {
+      expect(blockedWorkspaceSettingWrite('defaultMode', dropped)).toContain(
+        `defaultMode=${JSON.stringify(dropped)} is ignored when read from any file inside the workspace`,
+      );
+      expect(blockedConfigWritePath('defaultMode', dropped, 'local')).toBeDefined();
+      expect(blockedConfigWritePath('defaultMode', dropped, 'project')).toBeDefined();
+      expect(blockedConfigWritePath('defaultMode', dropped, 'user')).toBeUndefined();
+    }
+    for (const kept of ['default', 'plan', 'dontAsk']) {
+      expect(blockedWorkspaceSettingWrite('defaultMode', kept)).toBeUndefined();
+      expect(blockedConfigWritePath('defaultMode', kept, 'local')).toBeUndefined();
+    }
+    // Removing the key only lets the more trusted layer's value through.
+    expect(blockedWorkspaceSettingWrite('defaultMode')).toBeUndefined();
+  });
+
+  it('names a dropped mode in the startup notice, with the file it came from', () => {
+    const settings = resolveWith({ project: mode('auto'), local: mode('acceptEdits') });
+    const notices = collectWithheldProjectNotices({
+      workspace: dir,
+      settings,
+      settingsEnabled: true,
+    }).join('\n');
+    expect(notices).toContain(
+      `Ignoring defaultMode="auto" declared by ${join(dir, '.book', 'settings.json')}`,
+    );
+    expect(notices).toContain(
+      `Ignoring defaultMode="acceptEdits" declared by ${join(dir, '.book', 'settings.local.json')}`,
+    );
+    expect(notices).toContain('default, plan or dontAsk');
+
+    resolveWith({ project: mode('plan'), local: mode('dontAsk') });
+    expect(
+      collectWithheldProjectNotices({ workspace: dir, settings, settingsEnabled: true }).join('\n'),
+    ).not.toContain('defaultMode');
   });
 });
 

@@ -354,6 +354,47 @@ async function describeModelPricing(
 }
 
 /**
+ * The head of the Permissions section: the rule counts, and each `defaultMode` a workspace layer
+ * set that the loader dropped because it lets more through than `default`.
+ */
+async function describePermissions(
+  permissions: AgentConfig['settings']['permissions'],
+  workspace: string,
+  noSettings: boolean | undefined,
+): Promise<string[]> {
+  const lines = [
+    'Permissions:',
+    '  Allow rules: ' + permissions.allow.length,
+    '  Ask rules:   ' + permissions.ask.length,
+    '  Deny rules:  ' + permissions.deny.length,
+  ];
+  if (noSettings) return lines;
+  const {
+    formatIgnoredWorkspaceSandboxKey,
+    ignoredWorkspaceDefaultMode,
+    isUserSettingsFile,
+    loadSettingsFile,
+    WORKSPACE_DEFAULT_MODE_CHOICES,
+  } = await import('../settings-loader.js');
+  for (const [label, path] of await settingsLayers(workspace)) {
+    // The user-global layer may set any mode. At `$HOME` the project file is that same file.
+    if (label === 'User' || isUserSettingsFile(path)) continue;
+    let document: unknown;
+    try {
+      document = loadSettingsFile(path);
+    } catch {
+      continue;
+    }
+    for (const entry of ignoredWorkspaceDefaultMode(document)) {
+      lines.push(
+        `  Ignored from ${path}: ${formatIgnoredWorkspaceSandboxKey(entry)} — workspace settings may start a session only in ${WORKSPACE_DEFAULT_MODE_CHOICES}; set it in ~/.book/settings.json or pass --settings`,
+      );
+    }
+  }
+  return lines;
+}
+
+/**
  * Cross-session messaging (#620): whether it is on, where this machine's inbox would bind and
  * whether that directory passes the checks, and any workspace layer that tried to turn it on.
  * Nothing is created: a directory that does not exist yet is reported as such.
@@ -560,10 +601,7 @@ export async function runDoctorCommand(
 
   // Permissions.
   const perms = settings.permissions;
-  console.log('Permissions:');
-  console.log('  Allow rules: ' + perms.allow.length);
-  console.log('  Ask rules:   ' + perms.ask.length);
-  console.log('  Deny rules:  ' + perms.deny.length);
+  console.log((await describePermissions(perms, config.workspace, options.noSettings)).join('\n'));
 
   // Allow rules the repository declared are withheld until the user decides on
   // them, so doctor is where an unexplained "my project rule does nothing" is

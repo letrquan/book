@@ -97,6 +97,10 @@ than silently writing over the decisions it does not understand.
 The `shell` setting is not writable by `book config` in a workspace scope — it names the program
 every `Bash` command is handed to, so edit the user-global file directly, pass `--settings`, or
 use `BOOK_SHELL`.
+`defaultMode` is written to a workspace scope only as `default`, `plan` or `dontAsk`, the modes a
+workspace layer may start a session in; `auto`, `acceptEdits` and `bypassPermissions` are refused
+there and written to the user scope (see
+[Permission rules and modes](tools-and-safety.md#permission-rules-and-modes)).
 
 ### Model ids and provider prefixes
 

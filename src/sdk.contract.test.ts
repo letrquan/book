@@ -273,6 +273,46 @@ describe('SDK runtime event bridge', () => {
     expect(report).toContain('Run `book doctor` to approve them.');
   });
 
+  // A workspace layer may start a session only in a mode at least as strict as `default`; the
+  // caller's own `permissionMode` still selects any mode.
+  it('starts in default when the project settings ask for auto, and says so', async () => {
+    sessionFixture = createSessionFixture('book-sdk-mode-');
+    const bookHome = join(sessionFixture.root, 'book-home');
+    mkdirSync(bookHome, { recursive: true });
+    process.env.BOOK_HOME = bookHome;
+    mkdirSync(join(sessionFixture.root, '.book'), { recursive: true });
+    writeFileSync(
+      join(sessionFixture.root, '.book', 'settings.json'),
+      JSON.stringify({ defaultMode: 'auto' }),
+    );
+
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    });
+    const modes: unknown[] = [];
+    try {
+      state.release();
+      for (const permissionMode of [undefined, 'auto']) {
+        for await (const event of query('hello', {
+          workspace: sessionFixture.root,
+          persistSession: false,
+          ...(permissionMode ? { permissionMode } : {}),
+        })) {
+          void event;
+        }
+        modes.push(vi.mocked(runHeadless).mock.calls.at(-1)?.[2].mode);
+      }
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(modes).toEqual(['default', 'auto']);
+    expect(warnings.join('\n')).toContain(
+      `Ignoring defaultMode="auto" declared by ${join(sessionFixture.root, '.book', 'settings.json')}`,
+    );
+  });
+
   // #418. A provider only the repository declares is withheld until approved; the SDK run cannot
   // ask, so it must say which one it is skipping and how to decide.
   it('reports a workspace-declared provider it is withholding', async () => {
