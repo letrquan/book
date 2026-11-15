@@ -548,9 +548,82 @@ describe('prepareToolCall: one case per refusal, in the order the gates run', ()
   });
 });
 
-// Two paths leave the request open today, plan mode and a prompt that rejects: #729.
+// Plan mode and a prompt that rejects used to leave the request open (#729).
 describe('prepareToolCall: skill consent, requested once and closed on each of these paths', () => {
   const invoke = { skill: 'alpha' };
+
+  it('denied in plan mode, which refuses InvokeSkill itself', async () => {
+    writeSkill('alpha');
+    const { prepare, run, onPermissionRequired } = gate({ mode: 'plan' });
+    const denied = vi.spyOn(run.skillRegistry, 'denyConsent');
+    const granted = vi.spyOn(run.skillRegistry, 'grantConsent');
+
+    expect(codeOf(await prepare('InvokeSkill', invoke))).toBe('plan_mode_blocked');
+
+    expect(denied).toHaveBeenCalledWith('alpha', 'model', 'plan_mode_blocked');
+    expect(granted).not.toHaveBeenCalled();
+    expect(onPermissionRequired).not.toHaveBeenCalled();
+  });
+
+  it('denied when plan mode is entered during a PreToolUse hook', async () => {
+    writeSkill('alpha');
+    const { prepare, run, host, onPermissionRequired } = gate();
+    const denied = vi.spyOn(run.skillRegistry, 'denyConsent');
+    vi.mocked(runHooks).mockImplementationOnce(async () => {
+      host.mode = 'plan';
+      return [];
+    });
+
+    expect(codeOf(await prepare('InvokeSkill', invoke))).toBe('plan_mode_blocked');
+
+    expect(denied).toHaveBeenCalledWith('alpha', 'model', 'plan_mode_blocked');
+    expect(onPermissionRequired).not.toHaveBeenCalled();
+  });
+
+  it('denied when the prompt rejects, and the rejection still reaches the caller', async () => {
+    writeSkill('alpha');
+    const { prepare, run, onPermissionRequired } = gate();
+    onPermissionRequired.mockRejectedValueOnce(new Error('host prompt failed'));
+    const denied = vi.spyOn(run.skillRegistry, 'denyConsent');
+    const granted = vi.spyOn(run.skillRegistry, 'grantConsent');
+
+    await expect(prepare('InvokeSkill', invoke)).rejects.toThrow('host prompt failed');
+
+    expect(denied).toHaveBeenCalledWith('alpha', 'model', 'prompt_failed');
+    expect(granted).not.toHaveBeenCalled();
+  });
+
+  type Gate = ReturnType<typeof gate>;
+  it.each<[string, GateOptions, ((g: Gate) => void)?]>([
+    ['the prompt says yes', {}],
+    ['the prompt says no', { answer: 'deny' }],
+    ['the prompt rejects', {}, (g) => g.onPermissionRequired.mockRejectedValueOnce(new Error('x'))],
+    ['a deny rule', { configure: withRules({ deny: ['InvokeSkill'] }) }],
+    ['the tool is not active', { allowedTools: ['Read'] }],
+    ['dontAsk', { mode: 'dontAsk' }],
+    ['plan mode', { mode: 'plan' }],
+    [
+      'plan mode entered during the hook',
+      {},
+      (g) =>
+        vi.mocked(runHooks).mockImplementationOnce(async () => {
+          g.host.mode = 'plan';
+          return [];
+        }),
+    ],
+  ])('closed exactly once when %s', async (_path, options, arrange) => {
+    writeSkill('alpha');
+    const g = gate(options);
+    arrange?.(g);
+    const requested = vi.spyOn(g.run.skillRegistry, 'requestConsent');
+    const denied = vi.spyOn(g.run.skillRegistry, 'denyConsent');
+    const granted = vi.spyOn(g.run.skillRegistry, 'grantConsent');
+
+    await g.prepare('InvokeSkill', invoke).catch(() => undefined);
+
+    expect(requested).toHaveBeenCalledOnce();
+    expect(denied.mock.calls.length + granted.mock.calls.length).toBe(1);
+  });
 
   it('granted when the prompt says yes', async () => {
     writeSkill('alpha');
