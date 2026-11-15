@@ -81,10 +81,12 @@ file is checked in and controlled by whoever wrote the repository:
 Set `defaultMode` in user-global `~/.book/settings.json` to choose the permission mode used by
 the TUI, print mode, scrollback, and SDK when no invocation-specific mode is supplied. The
 `--permission-mode` CLI option and SDK `permissionMode` option override that default.
-Project and local settings may set `defaultMode` only to `default`, `plan` or `dontAsk`: an `auto`,
-`acceptEdits` or `bypassPermissions` there is ignored, so the user-global value (or `default`)
-stands. `book doctor` and a print or SDK run name the file it came from, and `book config set` and
-`/config` refuse to write one to a workspace scope. Setting
+Project and local settings may only make the startup mode stricter: their `defaultMode` is honoured
+only as `default`, `plan` or `dontAsk`, and only when it is at least as strict as the mode the layers
+before it chose (between `plan` and `dontAsk`, the earlier one stands). Otherwise it is ignored and
+the user-global value (or `default`) stands. `book doctor` and a print or SDK run name the file,
+unless the session starts in that mode anyway, and `book config set` and `/config` refuse to write
+`auto`, `acceptEdits` or `bypassPermissions` to a workspace scope. Setting
 `disableBypassPermissionsMode` to `true` also blocks explicit bypass requests and removes bypass
 from the TUI mode cycle.
 Writes use an atomic sibling-file replacement, and malformed or non-object

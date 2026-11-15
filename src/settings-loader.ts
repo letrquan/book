@@ -40,7 +40,7 @@ import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js'
 import { normalizeRemovedSettings } from './settings-removed.js';
 import { parseEnvBoolean } from './env-boolean.js';
 import { resolveInboundSetting } from './messaging/receive-policy.js';
-import { normalizePermissionMode } from './permission-mode.js';
+import { DEFAULT_PERMISSION_MODE, normalizePermissionMode } from './permission-mode.js';
 import type { PermissionMode } from './types/runtime.js';
 
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
@@ -421,35 +421,65 @@ export function isUserOrFlagOnlySettingPath(path: string): boolean {
 }
 
 /**
- * The startup modes a workspace layer may set: each asks, or refuses, wherever `default` would.
- * `auto` and `acceptEdits` let through calls `default` asks about and `bypassPermissions` skips the
- * gate, so a workspace layer that sets one is ignored, like a loosening `sandbox.*` key, and the
- * more trusted layer's value stands. The user layer, `--settings` and an invocation's own mode
- * keep every mode.
+ * How strict each startup mode is, for a workspace layer that may only make the mode stricter.
+ * `auto` and `acceptEdits` let through calls `default` asks about, and `bypassPermissions` skips
+ * the gate. `dontAsk` refuses whatever `default` would ask about. `plan` refuses every mutation
+ * until a plan is approved, though a few read-only lookups (`BashOutput`, `TaskList`) run there
+ * unasked. Neither of those two is stricter than the other, so they share a rank.
  */
-const WORKSPACE_DEFAULT_MODES: ReadonlySet<PermissionMode> = new Set([
-  'default',
-  'plan',
-  'dontAsk',
-]);
+const MODE_STRICTNESS: Readonly<Record<PermissionMode, number>> = {
+  bypassPermissions: 0,
+  auto: 1,
+  'accept-edits': 2,
+  default: 3,
+  plan: 4,
+  dontAsk: 4,
+};
 
-/** {@link WORKSPACE_DEFAULT_MODES} as a report names them. */
+/** The modes a workspace layer may start a session in, as a report names them. */
 export const WORKSPACE_DEFAULT_MODE_CHOICES = 'default, plan or dontAsk';
 
 /**
- * The `defaultMode` a workspace layer declares that the loader will not honour, with the value it
- * wrote: empty unless it is outside {@link WORKSPACE_DEFAULT_MODES}. Pure, and the one test
- * `sanitizeLayer` applies, `book doctor` and the startup notice report, and the writers refuse.
+ * Whether the loader honours a workspace layer's `defaultMode` over `baseline`, the mode the layers
+ * before it chose. A workspace layer may only make the startup mode stricter: its value must be at
+ * least as strict as `default` and as `baseline`, and between `plan` and `dontAsk` the earlier one
+ * stands. Otherwise the key is ignored, like a loosening `sandbox.*` key, and the more trusted
+ * layer's value stands. A value that is no mode at all is not honoured either. The user layer,
+ * `--settings` and an invocation's own mode keep every mode.
  */
-export function ignoredWorkspaceDefaultMode(settings: unknown): IgnoredWorkspaceSandboxKey[] {
-  if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) return [];
-  if (!Object.hasOwn(settings, 'defaultMode')) return [];
-  const value = (settings as { defaultMode?: unknown }).defaultMode;
-  if (value === undefined) return [];
+export function workspaceDefaultModeHonoured(value: unknown, baseline?: unknown): boolean {
   const mode = normalizePermissionMode(value);
-  return mode !== undefined && WORKSPACE_DEFAULT_MODES.has(mode)
-    ? []
-    : [{ key: 'defaultMode', value }];
+  if (mode === undefined || MODE_STRICTNESS[mode] < MODE_STRICTNESS.default) return false;
+  const base = normalizePermissionMode(baseline);
+  return base === undefined || base === mode || MODE_STRICTNESS[mode] > MODE_STRICTNESS[base];
+}
+
+/** One workspace layer's `defaultMode` that the loader did not honour, and the value it wrote. */
+export interface IgnoredWorkspaceDefaultMode {
+  path: string;
+  value: unknown;
+}
+
+/**
+ * The workspace layers' `defaultMode` values the loader ignored: the layers in resolution order,
+ * judged by the same {@link workspaceDefaultModeHonoured} the merge applies. A value equal to
+ * `sessionMode`, the mode the session starts in anyway, is left out: dropping it changed nothing,
+ * and saying so on every run is how a notice gets ignored.
+ */
+export function ignoredWorkspaceDefaultModes(
+  layers: ReadonlyArray<{ path: string; trust: SettingsLayerTrust; document: unknown }>,
+  sessionMode: unknown,
+): IgnoredWorkspaceDefaultMode[] {
+  let mode: unknown;
+  const ignored: IgnoredWorkspaceDefaultMode[] = [];
+  for (const { path, trust, document } of layers) {
+    const value = readPath((document ?? {}) as Record<string, unknown>, ['defaultMode']);
+    if (value === undefined) continue;
+    if (trust === 'trusted' || workspaceDefaultModeHonoured(value, mode)) mode = value;
+    else ignored.push({ path, value });
+  }
+  const session = normalizePermissionMode(sessionMode) ?? DEFAULT_PERMISSION_MODE;
+  return ignored.filter((entry) => normalizePermissionMode(entry.value) !== session);
 }
 
 /**
@@ -471,7 +501,9 @@ function sanitizeLayer(
   if (trust === 'trusted') return settings;
   const sanitized = structuredClone(settings);
   // A workspace layer may not start the session in a mode that lets more through than `default`.
-  if (ignoredWorkspaceDefaultMode(sanitized).length > 0) delete sanitized.defaultMode;
+  if (sanitized.defaultMode !== undefined && !workspaceDefaultModeHonoured(sanitized.defaultMode)) {
+    delete sanitized.defaultMode;
+  }
   // `shell` names the program every Bash command is handed to. A clone that
   // could point it at a binary it ships would run that binary on the first
   // command, so the key is honoured from trusted layers only.
@@ -505,6 +537,14 @@ function mergeLayer(
     candidate.disableBypassPermissionsMode === false
   ) {
     candidate.disableBypassPermissionsMode = true;
+  }
+  // Nor may a workspace layer start the session in a mode looser than the layers before it chose.
+  if (
+    trust !== 'trusted' &&
+    candidate.defaultMode !== undefined &&
+    !workspaceDefaultModeHonoured(candidate.defaultMode, resolved.defaultMode)
+  ) {
+    delete candidate.defaultMode;
   }
   if (trust !== 'trusted' && sandboxTurnedOnByWorkspaceLayer(resolved, candidate)) {
     // Written through the partial view the sanitizer uses: `BookSettings`

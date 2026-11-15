@@ -1549,7 +1549,7 @@ describe('runDoctorCommand ignored workspace defaultMode', () => {
     const output = await doctorOutput();
 
     expect(output).toContain(
-      `  Ignored from ${project}: defaultMode="auto" — workspace settings may start a session only in default, plan or dontAsk; set it in ~/.book/settings.json or pass --settings`,
+      `  Ignored from ${project}: defaultMode="auto" — workspace settings may only make the startup mode stricter, to default, plan or dontAsk; set it in ~/.book/settings.json or pass --settings`,
     );
     expect(output).not.toContain('defaultMode="plan"');
     expect(output).not.toContain('defaultMode="acceptEdits"');
@@ -1557,5 +1557,25 @@ describe('runDoctorCommand ignored workspace defaultMode', () => {
     expect(permissions).toBeGreaterThan(-1);
     expect(output.indexOf('defaultMode="auto"')).toBeGreaterThan(permissions);
     expect(output.indexOf('defaultMode="auto"')).toBeLessThan(output.indexOf('Sandbox:'));
+  });
+
+  it('says nothing when the session starts in the mode the file asked for anyway', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ defaultMode: 'auto' }),
+    );
+    writeUserSettings({ defaultMode: 'auto' });
+
+    expect(await doctorOutput()).not.toContain('defaultMode=');
+  });
+
+  it('names a mode looser than the one the user layer chose', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    const project = join(workspace, '.book', 'settings.json');
+    writeFileSync(project, JSON.stringify({ defaultMode: 'default' }));
+    writeUserSettings({ defaultMode: 'plan' });
+
+    expect(await doctorOutput()).toContain(`Ignored from ${project}: defaultMode="default"`);
   });
 });

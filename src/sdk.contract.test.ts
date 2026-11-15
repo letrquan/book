@@ -286,14 +286,14 @@ describe('SDK runtime event bridge', () => {
       JSON.stringify({ defaultMode: 'auto' }),
     );
 
-    const warnings: string[] = [];
-    const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
-      warnings.push(args.map(String).join(' '));
-    });
-    const modes: unknown[] = [];
-    try {
-      state.release();
-      for (const permissionMode of [undefined, 'auto']) {
+    const runs: Array<{ mode: unknown; warnings: string }> = [];
+    state.release();
+    for (const permissionMode of [undefined, 'auto']) {
+      const warnings: string[] = [];
+      const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+        warnings.push(args.map(String).join(' '));
+      });
+      try {
         for await (const event of query('hello', {
           workspace: sessionFixture.root,
           persistSession: false,
@@ -301,16 +301,21 @@ describe('SDK runtime event bridge', () => {
         })) {
           void event;
         }
-        modes.push(vi.mocked(runHeadless).mock.calls.at(-1)?.[2].mode);
+      } finally {
+        warn.mockRestore();
       }
-    } finally {
-      warn.mockRestore();
+      runs.push({
+        mode: vi.mocked(runHeadless).mock.calls.at(-1)?.[2].mode,
+        warnings: warnings.join('\n'),
+      });
     }
 
-    expect(modes).toEqual(['default', 'auto']);
-    expect(warnings.join('\n')).toContain(
+    expect(runs.map((run) => run.mode)).toEqual(['default', 'auto']);
+    expect(runs[0].warnings).toContain(
       `Ignoring defaultMode="auto" declared by ${join(sessionFixture.root, '.book', 'settings.json')}`,
     );
+    // The caller chose the mode itself, so the file's value changed nothing.
+    expect(runs[1].warnings).not.toContain('defaultMode');
   });
 
   // #418. A provider only the repository declares is withheld until approved; the SDK run cannot

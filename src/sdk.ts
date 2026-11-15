@@ -153,6 +153,7 @@ export async function* query(
           settings: config.settings,
           settingsEnabled: !options.noSettings,
           providerGate: config.workspaceProviderGate,
+          permissionMode: options.permissionMode,
         }),
         ...collectUnreadLocalSettingsNotices(config.workspace, !options.noSettings),
         // Instruction files, REVIEW.md and command files that link out of the repository are not

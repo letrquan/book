@@ -532,10 +532,10 @@ Modes differ only in what happens to calls that no `deny` rule matched:
 | `dontAsk`           | Refused except for the tools below that never prompt — the mode never prompts, and a user `allow` rule does not exempt a call                                |
 | `bypassPermissions` | Run without a prompt                                                                                                                                         |
 
-A workspace settings file (`.book/settings.json` or `.book/settings.local.json`) may start a session
-only in `default`, `plan` or `dontAsk`, and its `defaultMode` is ignored otherwise. `auto`,
-`acceptEdits` and `bypassPermissions` come from `~/.book/settings.json`, `--settings`,
-`--permission-mode` or the SDK's `permissionMode`.
+A workspace settings file (`.book/settings.json` or `.book/settings.local.json`) may only make the
+startup mode stricter: its `defaultMode` is honoured as `default`, `plan` or `dontAsk`, and only when
+no looser than the mode your own settings chose. `auto`, `acceptEdits` and `bypassPermissions` come
+from `~/.book/settings.json`, `--settings`, `--permission-mode` or the SDK's `permissionMode`.
 
 Some tools never prompt. `TodoWrite` (the agent's checklist) and `Advisor` (offered
 only once you choose a model with `/advisor`; it sends the conversation to that model) are always
