@@ -222,23 +222,23 @@ function modeRefusesTool(
   );
 }
 
-/** A call that can never run, or what its tool judged it by: the subject, or why it could not. */
-type RunnableCheck = { refusal: ToolResult } | { subject?: PermissionSubject; failure?: string };
+/** What a call's tool judged it by (#653): the subject, why it could not, or a cancel. */
+interface JudgedTarget {
+  subject?: PermissionSubject;
+  failure?: string;
+  cancelled?: boolean;
+}
 
-/**
- * The checks a call gets unless the mode refuses its tool itself: whether it can ever run
- * (`rejectBeforeGates`), then the target its tool judges it by (#653), which a cancel ends.
- */
-async function checkRunnable(
-  registry: ToolRegistry,
+const UNJUDGED: JudgedTarget = {};
+
+/** The target a tool that can spell one several ways judges the call by, which a cancel ends. */
+async function judgeTarget(
   tool: ToolDefinition | undefined,
   call: ToolCall,
   context: ToolContext,
   signal: AbortSignal | undefined,
-): Promise<RunnableCheck> {
-  const unrunnable = registry.rejectBeforeGates(call, context);
-  if (unrunnable) return { refusal: unrunnable };
-  if (!tool?.canonicalizeForPermission) return {};
+): Promise<JudgedTarget> {
+  if (!tool?.canonicalizeForPermission) return UNJUDGED;
   const cancelled = Symbol('cancelled');
   try {
     const judged = await new Promise<PermissionSubject | undefined | typeof cancelled>(
@@ -250,7 +250,7 @@ async function checkRunnable(
           .finally(stopListening);
       },
     );
-    return judged === cancelled ? { refusal: cancelledBeforeStart(call) } : { subject: judged };
+    return judged === cancelled ? { cancelled: true } : { subject: judged };
   } catch (error) {
     return { failure: error instanceof Error ? error.message : String(error) };
   }
@@ -380,17 +380,21 @@ export async function prepareToolCall(
     };
   }
   const modeRefusesItself = modeRefusesTool(mode.current(), canonName, registeredTool);
+  const unrunnable = modeRefusesItself ? undefined : registry.rejectBeforeGates(call, toolContext);
+  if (unrunnable) {
+    return { status: 'refused', result: unrunnable };
+  }
+
   // A tool whose primary argument can spell one target several ways is judged by the target
   // the call reaches, not by how it was typed (#653): `SessionSend` by the session its `to`
   // resolves to now. Hook matchers and deny and ask rules match every spelling of it, allow
   // rules and session approvals the spellings that name it alone, and the prompt and "Always
   // allow" see the canonical one. The tool is handed the subject back when the call runs, so
-  // it acts on the target that was judged, or on nothing. Not asked for a call the mode
-  // refuses anyway, and a failure is reported only once the tool's own refusals have spoken.
-  let checked: RunnableCheck = modeRefusesItself
-    ? {}
-    : await checkRunnable(registry, registeredTool, call, toolContext, signal);
-  if ('refusal' in checked) return { status: 'refused', result: checked.refusal };
+  // it acts on the target that was judged, or on nothing. Asked in every mode, so the hooks see
+  // the target even of a call the mode refuses now and may not after them (#730); a failure is
+  // reported only once the tool's own refusals have spoken.
+  const judged = await judgeTarget(registeredTool, call, toolContext, signal);
+  if (judged.cancelled) return { status: 'refused', result: cancelledBeforeStart(call) };
 
   let preHookResults: Awaited<ReturnType<typeof runHooks>>;
   try {
@@ -403,7 +407,7 @@ export async function prepareToolCall(
         toolName: canonName,
         toolArgs: call.arguments,
         shell: toolContext.shell ?? config.shell,
-        ...(checked.subject ? { toolTargets: checked.subject.restrict } : {}),
+        ...(judged.subject ? { toolTargets: judged.subject.restrict } : {}),
       },
       { onHookEvent: callbacks.onHookEvent, signal },
     );
@@ -424,16 +428,18 @@ export async function prepareToolCall(
   }
 
   mode.sync();
-  // A mode left during the hooks (plan, by Shift+Tab) no longer refuses the tool, so the checks
-  // the first read left to it run now, before any gate that could ask about the call (#730).
-  // `rejectBeforePrompt` below is skipped only for a tool the mode refused at both reads.
+  // A mode that refused the tool at both reads keeps the call, judged as before #730. One left
+  // during the hooks (plan, by Shift+Tab) lets go of it, so the check the first read skipped runs
+  // now, with the tool as this mode shows it, before any gate could ask about the call; and
+  // `rejectBeforePrompt` below runs too (#730).
   const refusedAtBothReads =
     modeRefusesItself && modeRefusesTool(mode.current(), canonName, registeredTool);
-  if (modeRefusesItself && !refusedAtBothReads) {
-    checked = await checkRunnable(registry, registeredTool, call, toolContext, signal);
-    if ('refusal' in checked) return { status: 'refused', result: checked.refusal };
-  }
-  const { subject: permissionSubject, failure: permissionSubjectFailure } = checked;
+  const unrunnableNow =
+    modeRefusesItself && !refusedAtBothReads && registry.rejectBeforeGates(call, toolContext);
+  if (unrunnableNow) return { status: 'refused', result: unrunnableNow };
+  const { subject: permissionSubject, failure: permissionSubjectFailure } = refusedAtBothReads
+    ? UNJUDGED
+    : judged;
   const judgedCall = permissionSubject ? { ...call, arguments: permissionSubject.args } : call;
   const planReadOnly = mode.current() === 'plan' && READ_ONLY_PLAN_TOOLS.has(canonName);
   const planAutoApproved = planReadOnly && !PLAN_PERMISSION_REQUIRED_TOOLS.has(canonName);

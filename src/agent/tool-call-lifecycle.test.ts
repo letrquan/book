@@ -309,12 +309,18 @@ describe('prepareToolCall: one case per refusal, in the order the gates run', ()
     expect(runHooks).not.toHaveBeenCalled();
   });
 
-  it('4. canonicalization is not asked for a call the mode refuses anyway', async () => {
+  it('4. canonicalization is asked in every mode, and a mode that refuses the tool still speaks', async () => {
     const canonicalize = vi.fn(async () => undefined);
     const { prepare } = gate({ mode: 'plan', tools: [judgedTool(canonicalize)] });
-
     expect(codeOf(await prepare('Judged', { to: 'x' }))).toBe('plan_mode_blocked');
-    expect(canonicalize).not.toHaveBeenCalled();
+    expect(canonicalize).toHaveBeenCalledOnce();
+
+    // Nor does a tool that could not judge the call speak over the mode.
+    const failing = judgedTool(async () => {
+      throw new Error('no such session');
+    });
+    const plan = gate({ mode: 'plan', tools: [failing] });
+    expect(codeOf(await plan.prepare('Judged', { to: 'x' }))).toBe('plan_mode_blocked');
   });
 
   it('5. a PreToolUse hook that blocks: hook_blocked, with its message', async () => {
@@ -875,7 +881,7 @@ describe('prepareToolCall: the mode', () => {
     expect(entry.modeAtPreparation).toBe('default');
   });
 
-  // The first read skipped the checks for a call that can never run; the second runs them (#730).
+  // The checks run before the hooks in every mode; a mode left during them lets go of the call (#730).
   describe('plan mode left during a PreToolUse hook', () => {
     const leavePlanDuringHook = (host: { mode: PermissionMode }) =>
       vi.mocked(runHooks).mockImplementationOnce(async () => {
@@ -928,7 +934,7 @@ describe('prepareToolCall: the mode', () => {
       expect(onPermissionRequired).not.toHaveBeenCalled();
     });
 
-    it('a tool that judges its target: judged once, after the hook, and refused before the prompt', async () => {
+    it('a tool that judges its target: judged once, before the hook, and refused before the prompt', async () => {
       const canonicalize = vi.fn(async () => {
         throw new Error('no such session');
       });
@@ -940,6 +946,25 @@ describe('prepareToolCall: the mode', () => {
 
       expect(codeOf(await prepare('Judged', { to: 'x' }))).toBe('permission_check_failed');
       expect(canonicalize).toHaveBeenCalledOnce();
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+    });
+
+    // SessionSend's case: a hook written for the session a `to` reaches blocks every spelling of it.
+    it('the hook is asked about the judged target, so a hook on it still blocks', async () => {
+      const subject = { args: { to: 'prod' }, allow: ['prod'], restrict: ['prod'] };
+      const { prepare, host, onPermissionRequired } = gate({
+        mode: 'plan',
+        tools: [judgedTool(async () => subject)],
+      });
+      vi.mocked(runHooks).mockImplementationOnce(async (_entries, _event, input) => {
+        host.mode = 'default';
+        const targets = (input as { toolTargets?: string[] }).toolTargets ?? [];
+        return (targets.includes('prod')
+          ? [{ action: 'block', message: 'not prod', entry: { command: 'x', env: {} } }]
+          : []) as unknown as Awaited<ReturnType<typeof runHooks>>;
+      });
+
+      expect(codeOf(await prepare('Judged', { to: 'prod-alias' }))).toBe('hook_blocked');
       expect(onPermissionRequired).not.toHaveBeenCalled();
     });
 
