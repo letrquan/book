@@ -687,7 +687,7 @@ describe('prepareToolCall: skill consent, requested once and closed on each of t
 });
 
 describe('prepareToolCall: the order of the gates', () => {
-  // With the mode unchanged. A mode left during the hook is the exception: #730.
+  // With the mode unchanged. A mode left during the hook is refused after it instead (#730).
   it('an invalid call never reaches a hook or the prompt, unless the mode refuses the tool itself', async () => {
     const { prepare, onPermissionRequired } = gate();
 
@@ -824,7 +824,6 @@ describe('prepareToolCall: the mode', () => {
     expect(run.toolContext.currentMode).toBe('plan');
   });
 
-  // Only the gates that read the mode after the hooks: `modeRefusesItself` keeps the first read (#730).
   it('a mode left during a PreToolUse hook is the one the prompt sees', async () => {
     const { prepare, host, onPermissionRequired } = gate({ mode: 'plan' });
     vi.mocked(runHooks).mockImplementationOnce(async () => {
@@ -836,6 +835,105 @@ describe('prepareToolCall: the mode', () => {
 
     expect(onPermissionRequired).toHaveBeenCalledOnce();
     expect(entry.modeAtPreparation).toBe('default');
+  });
+
+  // The first read skipped the checks for a call that can never run; the second runs them (#730).
+  describe('plan mode left during a PreToolUse hook', () => {
+    const leavePlanDuringHook = (host: { mode: PermissionMode }) =>
+      vi.mocked(runHooks).mockImplementationOnce(async () => {
+        host.mode = 'default';
+        return [];
+      });
+
+    it('an invalid call: invalid_arguments, with no prompt', async () => {
+      const { prepare, host, onPermissionRequired } = gate({ mode: 'plan' });
+      leavePlanDuringHook(host);
+
+      expect(codeOf(await prepare('Write', {}))).toBe('invalid_arguments');
+      expect(runHooks).toHaveBeenCalledOnce();
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+    });
+
+    it('an invalid InvokeSkill: no prompt, and no consent asked or granted', async () => {
+      writeSkill('alpha');
+      const { prepare, host, run, onPermissionRequired } = gate({ mode: 'plan' });
+      const requested = vi.spyOn(run.skillRegistry, 'requestConsent');
+      const granted = vi.spyOn(run.skillRegistry, 'grantConsent');
+      leavePlanDuringHook(host);
+
+      expect(codeOf(await prepare('InvokeSkill', { skill: 'alpha', nonsense: 1 }))).toBe(
+        'invalid_arguments',
+      );
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+      expect(requested).not.toHaveBeenCalled();
+      expect(granted).not.toHaveBeenCalled();
+    });
+
+    it('the control, with no mode change: plan_mode_blocked, with no prompt', async () => {
+      writeSkill('alpha');
+      const { prepare, onPermissionRequired } = gate({ mode: 'plan' });
+
+      expect(codeOf(await prepare('InvokeSkill', { skill: 'alpha', nonsense: 1 }))).toBe(
+        'plan_mode_blocked',
+      );
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+    });
+
+    it('a tool this run does not expose: tool_not_active, with no prompt', async () => {
+      const { prepare, host, onPermissionRequired } = gate({
+        mode: 'plan',
+        allowedTools: ['Read'],
+      });
+      leavePlanDuringHook(host);
+
+      expect(codeOf(await prepare('Bash', { command: 'ls' }))).toBe('tool_not_active');
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+    });
+
+    it('a tool that judges its target: judged once, after the hook, and refused before the prompt', async () => {
+      const canonicalize = vi.fn(async () => {
+        throw new Error('no such session');
+      });
+      const { prepare, host, onPermissionRequired } = gate({
+        mode: 'plan',
+        tools: [judgedTool(canonicalize)],
+      });
+      leavePlanDuringHook(host);
+
+      expect(codeOf(await prepare('Judged', { to: 'x' }))).toBe('permission_check_failed');
+      expect(canonicalize).toHaveBeenCalledOnce();
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+    });
+
+    it('a judged target is what the deny rules see', async () => {
+      const subject = { args: { to: 'canonical' }, allow: ['canonical'], restrict: ['canonical'] };
+      const { prepare, host, onPermissionRequired } = gate({
+        mode: 'plan',
+        tools: [judgedTool(async () => subject)],
+        configure: withRules({ deny: ['Judged(canonical)'] }),
+      });
+      leavePlanDuringHook(host);
+
+      expect(codeOf(await prepare('Judged', { to: 'alias' }))).toBe('permission_denied');
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+    });
+
+    it('a cancel while the tool judges its target: cancelled_before_start', async () => {
+      const controller = new AbortController();
+      const tool = judgedTool(() => {
+        controller.abort();
+        return new Promise(() => {});
+      });
+      const { prepare, host, onPermissionRequired } = gate({
+        mode: 'plan',
+        signal: controller.signal,
+        tools: [tool],
+      });
+      leavePlanDuringHook(host);
+
+      expect(codeOf(await prepare('Judged', { to: 'x' }))).toBe('cancelled_before_start');
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+    });
   });
 
   it('a mode changed before the call is the one the first gates see', async () => {
