@@ -82,6 +82,16 @@ that holds such characters (a commit message in double quotes, say). Whitespace 
 command, such as a trailing newline, is ignored. A bare `Bash` rule (no pattern) admits any
 command.
 
+The list is written as a block list, an inline array (`[Read, Task]`) or one string. Items of a
+block or inline list are literal rules (`- Read, Task` is one rule) and may be quoted (`- "Read"`).
+A string is split on commas and whitespace outside parentheses, so `allowed-tools: Read, Task`,
+`Read Task` and `Bash(git *), Read` each give the tools they name, with `Bash(git *)` kept whole,
+and an item that is wholly quoted loses its quotes. A parenthesis that never closes leaves the rest
+of the string in one rule that is not valid, and a run that reads it is refused, as for an array
+item written the same way. An empty string, or no key at all, means no list. An empty array
+(`allowed-tools: []`) differs by kind: a command runs with no tool, a skill with no limit. Commands,
+skills and agent roles (`tools:`) read a string the same way.
+
 A `Bash(<pattern>)` rule constrains the command's text, not what the program does with its
 options, and it is not a sandbox. `Bash(git *)` still admits `git -c alias.x='!…' x` or
 `git -c core.fsmonitor=… status`, which run other programs; when that matters, narrow the pattern

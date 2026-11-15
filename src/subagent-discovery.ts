@@ -1,6 +1,6 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, extname, relative } from 'path';
-import { parseFrontmatter } from './frontmatter.js';
+import { parseAllowedTools, parseFrontmatter } from './frontmatter.js';
 import { canonicalToolName } from './tools/aliases.js';
 import { resolveBookHome } from './book-home.js';
 import { reachesUncPath } from './unc-path.js';
@@ -74,17 +74,7 @@ export function loadAgentFile(filePath: string, source: 'user' | 'project'): Sub
   if (!name) return null;
 
   const toolsValue = frontmatter.tools ?? frontmatter['allowed-tools'];
-  const requestedTools = Array.isArray(toolsValue)
-    ? toolsValue
-        .map(String)
-        .map((tool) => tool.trim())
-        .filter(Boolean)
-    : typeof toolsValue === 'string'
-      ? toolsValue
-          .split(',')
-          .map((tool) => tool.trim())
-          .filter(Boolean)
-      : [];
+  const requestedTools = parseAllowedTools(toolsValue) ?? [];
   const allowedTools = requestedTools.map((tool) => normalizeAgentTool(tool) ?? tool);
   const model = typeof frontmatter.model === 'string' ? frontmatter.model.trim() : undefined;
   const unknownTools = requestedTools.filter((tool) => !normalizeAgentTool(tool));

@@ -33,7 +33,13 @@ function tempRoot(prefix: string): string {
   return root;
 }
 
-function writeSkill(workspace: string, name: string, allowedTools: string[]): void {
+/** `allowedTools` as a block list, or as the lines the caller spells itself (a string field, quotes). */
+function writeSkill(
+  workspace: string,
+  name: string,
+  allowedTools: string[],
+  spelled?: string[],
+): void {
   const directory = join(workspace, '.book', 'skills', name);
   mkdirSync(directory, { recursive: true });
   writeFileSync(
@@ -42,8 +48,7 @@ function writeSkill(workspace: string, name: string, allowedTools: string[]): vo
       '---',
       `name: ${name}`,
       `description: Use the ${name} workflow`,
-      'allowed-tools:',
-      ...allowedTools.map((tool) => `- ${tool}`),
+      ...(spelled ?? ['allowed-tools:', ...allowedTools.map((tool) => `- ${tool}`)]),
       '---',
       `Follow the ${name} procedure.`,
     ].join('\n'),
@@ -262,6 +267,42 @@ describe("a child under its parent's allowed-tools (#696)", () => {
       run.dispose();
     }
   });
+
+  it.each([
+    ['a quoted block list (#712)', ['allowed-tools:', '- "Read"', "- 'Task'"]],
+    ['a comma string (#717)', ['allowed-tools: Read, Task']],
+    ['a space string (#717)', ['allowed-tools: Read Task']],
+  ])('applies a skill whose allowed-tools is %s', async (_label, spelled) => {
+    const run = harness();
+    try {
+      writeSkill(run.workspace, 'probe', [], spelled);
+
+      const results = await run.parent([[INVOKE, TASK]]);
+
+      // Neither refused at activation for a rule that names no tool, nor left without a list.
+      expect(results.get(INVOKE.id)?.structuredError).toBeUndefined();
+      expect(results.get(TASK.id)?.status).toBe('success');
+      expectNarrowed(run.childRuns[0]);
+    } finally {
+      run.dispose();
+    }
+  });
+
+  it.each(['Bash(git *, Read', 'Bash(git *)Read'])(
+    'refuses to run under a skill whose allowed-tools string holds an invalid rule: %s (#717)',
+    async (field) => {
+      const run = harness();
+      try {
+        writeSkill(run.workspace, 'probe', [], [`allowed-tools: ${field}`]);
+
+        // As for an array item written the same way: the list is never dropped, and no child starts.
+        await expect(run.parent([[INVOKE, TASK]])).rejects.toThrow('Invalid capability rule');
+        expect(run.childRuns).toHaveLength(0);
+      } finally {
+        run.dispose();
+      }
+    },
+  );
 
   it("holds a Task child to a skill the user typed, and an AgentSpawn child to a skill's list", async () => {
     const run = harness();

@@ -200,6 +200,25 @@ describe('discoverCommands', () => {
     expect(result.find((c) => c.name === 'commit')?.allowedTools).toEqual(['Bash(git *)']);
   });
 
+  it.each([
+    ['allowed-tools: Read, Task', ['Read', 'Task']],
+    ['allowed-tools: Read Task', ['Read', 'Task']],
+    ['allowed-tools: [Read, Task]', ['Read', 'Task']],
+    ['allowed-tools:\n- "Read"\n- \'Task\'', ['Read', 'Task']],
+    ['allowed-tools: Bash(git *), Read', ['Bash(git *)', 'Read']],
+    ['allowed-tools: Bash(git commit:*) Read', ['Bash(git commit:*)', 'Read']],
+    ['allowed-tools: []', []],
+    ['allowed-tools: ""', undefined],
+    ['allowed-tools:', undefined],
+    ['description: only', undefined],
+  ])('reads a command with %j as %j (#717)', (field, expected) => {
+    const cmdsDir = join(dir, '.book', 'commands');
+    mkdirSync(cmdsDir, { recursive: true });
+    writeFileSync(join(cmdsDir, 'probe.md'), `---\ndescription: probe\n${field}\n---\nBody.`);
+
+    expect(discoverCommands(dir).find((c) => c.name === 'probe')?.allowedTools).toEqual(expected);
+  });
+
   it('ignores non-md files', () => {
     const cmdsDir = join(dir, '.book', 'commands');
     mkdirSync(cmdsDir, { recursive: true });

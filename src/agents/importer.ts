@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
 import { basename, extname, join } from 'path';
-import { parseFrontmatter } from '../frontmatter.js';
+import { parseAllowedTools, parseFrontmatter } from '../frontmatter.js';
 import { normalizeAgentTool } from '../subagent-discovery.js';
 
 const MUTATION_TOOLS = new Set([
@@ -49,24 +49,11 @@ function sourceFiles(path: string): string[] {
   return files.sort();
 }
 
-function rawTools(value: unknown): string[] {
-  if (Array.isArray(value))
-    return value
-      .map(String)
-      .map((tool) => tool.trim())
-      .filter(Boolean);
-  if (typeof value === 'string')
-    return value
-      .split(',')
-      .map((tool) => tool.trim())
-      .filter(Boolean);
-  return [];
-}
-
 export function previewAgentImport(path: string): AgentImportPreview[] {
   return sourceFiles(path).map((sourcePath) => {
     const { body, frontmatter } = parseFrontmatter(readFileSync(sourcePath, 'utf8'));
-    const requestedTools = rawTools(frontmatter.tools ?? frontmatter['allowed-tools']);
+    const requestedTools =
+      parseAllowedTools(frontmatter.tools ?? frontmatter['allowed-tools']) ?? [];
     const tools = requestedTools
       .map(normalizeAgentTool)
       .filter((tool): tool is string => Boolean(tool));

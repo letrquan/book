@@ -180,6 +180,31 @@ describe('parseFrontmatter', () => {
 });
 
 describe('discoverSkills', () => {
+  it.each([
+    ['allowed-tools: Read, Task', ['Read', 'Task']],
+    ['allowed-tools: Read Task', ['Read', 'Task']],
+    ['allowed-tools: [Read, Task]', ['Read', 'Task']],
+    ['allowed-tools:\n- "Read"\n- \'Task\'', ['Read', 'Task']],
+    ['allowed-tools: Bash(git *), Read', ['Bash(git *)', 'Read']],
+    ['allowed-tools: Bash(git commit:*) Read', ['Bash(git commit:*)', 'Read']],
+    ['tools: Read, Task', ['Read', 'Task']],
+    ['allowed-tools: []', undefined],
+    ['allowed-tools: ""', undefined],
+    // Written but empty is a list that names nothing, not no list.
+    ['allowed-tools:\n- ""', ['""']],
+  ])('reads a skill with %j as %j (#712, #717)', (field, expected) => {
+    const skillDir = join(dir, '.book', 'skills', 'probe');
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      join(skillDir, 'SKILL.md'),
+      `---\nname: probe\ndescription: Probe the list\n${field}\n---\nBody.`,
+    );
+
+    expect(discoverSkills(dir).find((skill) => skill.name === 'probe')?.allowedTools).toEqual(
+      expected,
+    );
+  });
+
   it('returns empty array when no skills directory exists', () => {
     const result = discoverSkills(dir);
     expect(result).toEqual([]);

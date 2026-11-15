@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { frontMatterClose, markdownContentStart } from './frontmatter.js';
+import {
+  frontMatterClose,
+  markdownContentStart,
+  parseAllowedTools,
+  parseFrontmatter,
+} from './frontmatter.js';
 
 describe('frontMatterClose', () => {
   it('finds the closing --- or ..., trailing spaces allowed', () => {
@@ -30,5 +35,86 @@ describe('markdownContentStart', () => {
       markdownContentStart(['---', 'Author: Jane', '', '# Introduction', 'Summary: x', '---']),
     ).toBe(0);
     expect(markdownContentStart(['---', '# Release notes', 'Version: 1.2', '---'])).toBe(0);
+  });
+});
+
+describe('parseFrontmatter block lists (#712)', () => {
+  const list = (...items: string[]) =>
+    parseFrontmatter(
+      ['---', 'allowed-tools:', ...items.map((i) => `- ${i}`), '---', 'x'].join('\n'),
+    ).frontmatter['allowed-tools'];
+
+  it('unquotes a quoted block-list item as the scalar and inline forms do', () => {
+    expect(list('"Read"', "'Read'", '"Bash(git *)"')).toEqual(['Read', 'Read', 'Bash(git *)']);
+    const inline = parseFrontmatter('---\nallowed-tools: ["Read", "Bash(git *)"]\n---\nx');
+    expect(inline.frontmatter['allowed-tools']).toEqual(['Read', 'Bash(git *)']);
+  });
+
+  it('leaves an unquoted item and a quote inside an item alone', () => {
+    expect(list('Read', 'Bash(echo "a")')).toEqual(['Read', 'Bash(echo "a")']);
+  });
+
+  it('unquotes one whole pair only: a mismatched or inner pair is left as written', () => {
+    expect(list(`"Bash(echo 'x')"`)).toEqual([`Bash(echo 'x')`]);
+    expect(list(`"Read'`, '"foo" and "bar"')).toEqual([`"Read'`, '"foo" and "bar"']);
+  });
+
+  it('keeps an empty quoted item as written, so a list of only those is not an empty list', () => {
+    expect(list('""', "''")).toEqual(['""', "''"]);
+  });
+
+  it('reads an inline tool list with a comma inside a pattern', () => {
+    const raw = '---\nallowed-tools: [Bash(git log, status), "Read"]\n---\nx';
+    expect(parseFrontmatter(raw).frontmatter['allowed-tools']).toEqual([
+      'Bash(git log, status)',
+      'Read',
+    ]);
+  });
+
+  it('leaves a tool string quoted item by item for parseAllowedTools to split', () => {
+    const raw = '---\nallowed-tools: "Read", "Task"\n---\nx';
+    const value = parseFrontmatter(raw).frontmatter['allowed-tools'];
+    expect(value).toBe('"Read", "Task"');
+    expect(parseAllowedTools(value)).toEqual(['Read', 'Task']);
+    const whole = parseFrontmatter('---\nallowed-tools: "Read, Task"\n---\nx');
+    expect(parseAllowedTools(whole.frontmatter['allowed-tools'])).toEqual(['Read', 'Task']);
+  });
+
+  it('reads a quoted block list written with CRLF line endings', () => {
+    const raw = '---\r\nallowed-tools:\r\n- "Read"\r\n- \'Task\'\r\n---\r\nx';
+    expect(parseFrontmatter(raw).frontmatter['allowed-tools']).toEqual(['Read', 'Task']);
+  });
+});
+
+describe('parseAllowedTools (#717)', () => {
+  it('splits a string on commas and whitespace', () => {
+    expect(parseAllowedTools('Read, Task')).toEqual(['Read', 'Task']);
+    expect(parseAllowedTools('Read Task')).toEqual(['Read', 'Task']);
+    expect(parseAllowedTools('Read,Task')).toEqual(['Read', 'Task']);
+    expect(parseAllowedTools('  Read ,\t Task  ')).toEqual(['Read', 'Task']);
+  });
+
+  it('keeps a parenthesised pattern whole, spaces and commas inside it included', () => {
+    expect(parseAllowedTools('Bash(git *), Read')).toEqual(['Bash(git *)', 'Read']);
+    expect(parseAllowedTools('Bash(git commit:*) Read')).toEqual(['Bash(git commit:*)', 'Read']);
+    expect(parseAllowedTools('Bash(a, b), Read')).toEqual(['Bash(a, b)', 'Read']);
+  });
+
+  it('keeps what an unclosed parenthesis swallows as one item, so it narrows and never widens', () => {
+    expect(parseAllowedTools('Bash(git *, Read')).toEqual(['Bash(git *, Read']);
+    expect(parseAllowedTools('Read) Task')).toEqual(['Read)', 'Task']);
+  });
+
+  it('reads an array item by item, each one literal', () => {
+    expect(parseAllowedTools(['Read, Task'])).toEqual(['Read, Task']);
+    expect(parseAllowedTools(['Read', ' Bash(git *) ', ''])).toEqual(['Read', 'Bash(git *)']);
+    expect(parseAllowedTools([])).toEqual([]);
+  });
+
+  it('gives undefined, as an absent key does, for an empty string or a non-list', () => {
+    expect(parseAllowedTools('')).toBeUndefined();
+    expect(parseAllowedTools('  , ')).toBeUndefined();
+    expect(parseAllowedTools(undefined)).toBeUndefined();
+    expect(parseAllowedTools(3)).toBeUndefined();
   });
 });
