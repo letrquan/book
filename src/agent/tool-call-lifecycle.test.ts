@@ -548,9 +548,120 @@ describe('prepareToolCall: one case per refusal, in the order the gates run', ()
   });
 });
 
-// Two paths leave the request open today, plan mode and a prompt that rejects: #729.
+// Plan mode and a prompt that rejects used to leave the request open (#729).
 describe('prepareToolCall: skill consent, requested once and closed on each of these paths', () => {
   const invoke = { skill: 'alpha' };
+
+  it('denied in plan mode, which refuses InvokeSkill itself', async () => {
+    writeSkill('alpha');
+    const { prepare, run, onPermissionRequired } = gate({ mode: 'plan' });
+    const denied = vi.spyOn(run.skillRegistry, 'denyConsent');
+    const granted = vi.spyOn(run.skillRegistry, 'grantConsent');
+
+    expect(codeOf(await prepare('InvokeSkill', invoke))).toBe('plan_mode_blocked');
+
+    expect(denied).toHaveBeenCalledWith('alpha', 'model', 'plan_mode_blocked');
+    expect(granted).not.toHaveBeenCalled();
+    expect(onPermissionRequired).not.toHaveBeenCalled();
+  });
+
+  it('denied when plan mode is entered during a PreToolUse hook', async () => {
+    writeSkill('alpha');
+    const { prepare, run, host, onPermissionRequired } = gate();
+    const denied = vi.spyOn(run.skillRegistry, 'denyConsent');
+    vi.mocked(runHooks).mockImplementationOnce(async () => {
+      host.mode = 'plan';
+      return [];
+    });
+
+    expect(codeOf(await prepare('InvokeSkill', invoke))).toBe('plan_mode_blocked');
+
+    expect(denied).toHaveBeenCalledWith('alpha', 'model', 'plan_mode_blocked');
+    expect(onPermissionRequired).not.toHaveBeenCalled();
+  });
+
+  it('denied when the prompt rejects, and the rejection still reaches the caller', async () => {
+    writeSkill('alpha');
+    const { prepare, run, onPermissionRequired } = gate();
+    onPermissionRequired.mockRejectedValueOnce(new Error('host prompt failed'));
+    const denied = vi.spyOn(run.skillRegistry, 'denyConsent');
+    const granted = vi.spyOn(run.skillRegistry, 'grantConsent');
+
+    await expect(prepare('InvokeSkill', invoke)).rejects.toThrow('host prompt failed');
+
+    expect(denied).toHaveBeenCalledWith('alpha', 'model', 'prompt_failed');
+    expect(granted).not.toHaveBeenCalled();
+  });
+
+  it('denied as cancelled when the run is cancelled under the prompt', async () => {
+    writeSkill('alpha');
+    const controller = new AbortController();
+    const { prepare, run, onPermissionRequired } = gate({ signal: controller.signal });
+    onPermissionRequired.mockImplementationOnce(async () => {
+      controller.abort();
+      throw controller.signal.reason;
+    });
+    const denied = vi.spyOn(run.skillRegistry, 'denyConsent');
+
+    await expect(prepare('InvokeSkill', invoke)).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(denied).toHaveBeenCalledWith('alpha', 'model', 'cancelled');
+  });
+
+  it('denied, not granted, when the registry rejects the approved call', async () => {
+    writeSkill('alpha');
+    const { prepare, run } = gate();
+    const rejected = toolFailure('no', { code: 'prepare_rejected', status: 'blocked' });
+    vi.spyOn(run.registry, 'prepare').mockReturnValueOnce({ status: 'rejected', result: rejected });
+    const denied = vi.spyOn(run.skillRegistry, 'denyConsent');
+    const granted = vi.spyOn(run.skillRegistry, 'grantConsent');
+
+    expect(codeOf(await prepare('InvokeSkill', invoke))).toBe('prepare_rejected');
+
+    expect(denied).toHaveBeenCalledWith('alpha', 'model', 'call_rejected');
+    expect(granted).not.toHaveBeenCalled();
+  });
+
+  type Gate = ReturnType<typeof gate>;
+  it.each<[string, GateOptions, ((g: Gate) => void)?]>([
+    ['the prompt says yes', {}],
+    ['the prompt says no', { answer: 'deny' }],
+    ['the prompt rejects', {}, (g) => g.onPermissionRequired.mockRejectedValueOnce(new Error('x'))],
+    ['a deny rule', { configure: withRules({ deny: ['InvokeSkill'] }) }],
+    ['the tool is not active', { allowedTools: ['Read'] }],
+    ['dontAsk', { mode: 'dontAsk' }],
+    ['plan mode', { mode: 'plan' }],
+    [
+      'the registry rejects the approved call',
+      {},
+      (g) =>
+        vi.spyOn(g.run.registry, 'prepare').mockReturnValueOnce({
+          status: 'rejected',
+          result: toolFailure('no', { code: 'prepare_rejected', status: 'blocked' }),
+        }),
+    ],
+    [
+      'plan mode entered during the hook',
+      {},
+      (g) =>
+        vi.mocked(runHooks).mockImplementationOnce(async () => {
+          g.host.mode = 'plan';
+          return [];
+        }),
+    ],
+  ])('closed exactly once when %s', async (_path, options, arrange) => {
+    writeSkill('alpha');
+    const g = gate(options);
+    arrange?.(g);
+    const requested = vi.spyOn(g.run.skillRegistry, 'requestConsent');
+    const denied = vi.spyOn(g.run.skillRegistry, 'denyConsent');
+    const granted = vi.spyOn(g.run.skillRegistry, 'grantConsent');
+
+    await g.prepare('InvokeSkill', invoke).catch(() => undefined);
+
+    expect(requested).toHaveBeenCalledOnce();
+    expect(denied.mock.calls.length + granted.mock.calls.length).toBe(1);
+  });
 
   it('granted when the prompt says yes', async () => {
     writeSkill('alpha');
@@ -614,7 +725,7 @@ describe('prepareToolCall: skill consent, requested once and closed on each of t
 });
 
 describe('prepareToolCall: the order of the gates', () => {
-  // With the mode unchanged. A mode left during the hook is the exception: #730.
+  // With the mode unchanged. A mode left during the hook is refused after it instead (#730).
   it('an invalid call never reaches a hook or the prompt, unless the mode refuses the tool itself', async () => {
     const { prepare, onPermissionRequired } = gate();
 
@@ -751,7 +862,6 @@ describe('prepareToolCall: the mode', () => {
     expect(run.toolContext.currentMode).toBe('plan');
   });
 
-  // Only the gates that read the mode after the hooks: `modeRefusesItself` keeps the first read (#730).
   it('a mode left during a PreToolUse hook is the one the prompt sees', async () => {
     const { prepare, host, onPermissionRequired } = gate({ mode: 'plan' });
     vi.mocked(runHooks).mockImplementationOnce(async () => {
@@ -763,6 +873,98 @@ describe('prepareToolCall: the mode', () => {
 
     expect(onPermissionRequired).toHaveBeenCalledOnce();
     expect(entry.modeAtPreparation).toBe('default');
+  });
+
+  // The first read skipped the checks for a call that can never run; the second runs them (#730).
+  describe('plan mode left during a PreToolUse hook', () => {
+    const leavePlanDuringHook = (host: { mode: PermissionMode }) =>
+      vi.mocked(runHooks).mockImplementationOnce(async () => {
+        host.mode = 'default';
+        return [];
+      });
+
+    it('an invalid call: invalid_arguments, with no prompt', async () => {
+      const { prepare, host, onPermissionRequired } = gate({ mode: 'plan' });
+      leavePlanDuringHook(host);
+
+      expect(codeOf(await prepare('Write', {}))).toBe('invalid_arguments');
+      expect(runHooks).toHaveBeenCalledOnce();
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+    });
+
+    it('an invalid InvokeSkill: no prompt, and no consent asked or granted', async () => {
+      writeSkill('alpha');
+      const { prepare, host, run, onPermissionRequired } = gate({ mode: 'plan' });
+      const requested = vi.spyOn(run.skillRegistry, 'requestConsent');
+      const granted = vi.spyOn(run.skillRegistry, 'grantConsent');
+      leavePlanDuringHook(host);
+
+      expect(codeOf(await prepare('InvokeSkill', { skill: 'alpha', nonsense: 1 }))).toBe(
+        'invalid_arguments',
+      );
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+      expect(requested).not.toHaveBeenCalled();
+      expect(granted).not.toHaveBeenCalled();
+    });
+
+    it('the control, with no mode change: plan_mode_blocked, with no prompt', async () => {
+      writeSkill('alpha');
+      const { prepare, onPermissionRequired } = gate({ mode: 'plan' });
+
+      expect(codeOf(await prepare('InvokeSkill', { skill: 'alpha', nonsense: 1 }))).toBe(
+        'plan_mode_blocked',
+      );
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+    });
+
+    it('a tool this run does not expose: tool_not_active, with no prompt', async () => {
+      const { prepare, host, onPermissionRequired } = gate({
+        mode: 'plan',
+        allowedTools: ['Read'],
+      });
+      leavePlanDuringHook(host);
+
+      expect(codeOf(await prepare('Bash', { command: 'ls' }))).toBe('tool_not_active');
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+    });
+
+    // SessionSend's case: a hook written for the session a `to` reaches matches every spelling of
+    // it only when it is told the target, which plan mode never worked out for this call.
+    it('a tool that judges its target: refused to retry, since the hooks never saw the target', async () => {
+      const canonicalize = vi.fn(async () => ({
+        args: { to: 'prod' },
+        allow: ['prod'],
+        restrict: ['prod'],
+      }));
+      const { prepare, host, onPermissionRequired } = gate({
+        mode: 'plan',
+        tools: [judgedTool(canonicalize)],
+      });
+      vi.mocked(runHooks).mockImplementationOnce(async (_entries, _event, input) => {
+        host.mode = 'bypassPermissions';
+        const targets = (input as { toolTargets?: string[] }).toolTargets ?? [];
+        return (targets.includes('prod')
+          ? [{ action: 'block', message: 'not prod', entry: { command: 'x', env: {} } }]
+          : []) as unknown as Awaited<ReturnType<typeof runHooks>>;
+      });
+
+      expect(codeOf(await prepare('Judged', { to: 'prod-alias' }))).toBe(
+        'mode_changed_during_hooks',
+      );
+      expect(onPermissionRequired).not.toHaveBeenCalled();
+      expect(canonicalize).not.toHaveBeenCalled();
+
+      // Called again, it is judged before the hooks, which see the target and block it.
+      vi.mocked(runHooks).mockImplementationOnce(async (_entries, _event, input) =>
+        (input as { toolTargets?: string[] }).toolTargets?.includes('prod')
+          ? ([
+              { action: 'block', message: 'not prod', entry: { command: 'x', env: {} } },
+            ] as unknown as Awaited<ReturnType<typeof runHooks>>)
+          : [],
+      );
+      expect(codeOf(await prepare('Judged', { to: 'prod-alias' }))).toBe('hook_blocked');
+      expect(canonicalize).toHaveBeenCalledOnce();
+    });
   });
 
   it('a mode changed before the call is the one the first gates see', async () => {

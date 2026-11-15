@@ -95,11 +95,13 @@ import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
 import { detectToolCallMarkup } from './tool-markup.js';
 import {
+  askPermission,
   cancelledBeforeStart,
   executeToolCall,
   finalizeToolCall,
   needsPermissionCheck,
   prepareToolCall,
+  requestSkillConsent,
   SKILL_INFRASTRUCTURE_TOOLS,
   type PreparedLoopCall,
   type ToolCallPlanState,
@@ -606,15 +608,20 @@ export async function runAgentLoop(
     let approved = activationPolicy !== 'deny';
     let noApprover = false;
     let dismissed = false;
+    const consent = requestSkillConsent(
+      skillRegistry,
+      skillName,
+      'user',
+      activationPolicy === 'ask',
+    );
     if (activationPolicy === 'ask') {
-      skillRegistry.requestConsent(skillName, 'user');
       const verdict = evaluatePermissionDetail(call.name, call.arguments, config.settings);
       let permission: 'allow' | 'deny' | 'always' | undefined;
       let chosenRule: string | undefined;
       if (verdict.decision === 'allow') permission = 'allow';
       else if (verdict.decision === 'deny') permission = 'deny';
       else if (mode !== 'dontAsk') {
-        const decision = await callbacks.onPermissionRequired(call);
+        const decision = await askPermission(callbacks, call, consent, signal);
         permission = permissionResultOf(decision);
         chosenRule = permissionRuleOf(decision);
         const reason = permissionReasonOf(decision);
@@ -640,13 +647,7 @@ export async function runAgentLoop(
             : dismissed
               ? `Explicit skill activation was not answered before its prompt was dismissed: ${skillName}`
               : `Explicit skill activation was denied: ${skillName}`;
-      if (activationPolicy === 'ask') {
-        skillRegistry.denyConsent(
-          skillName,
-          'user',
-          noApprover ? 'no_approver' : dismissed ? 'dismissed' : 'user_denied',
-        );
-      }
+      consent.deny(noApprover ? 'no_approver' : dismissed ? 'dismissed' : 'user_denied');
       if (noApprover) {
         noteUnattendedRefusal('InvokeSkill', {
           kind: 'allow_rule_only',
@@ -683,12 +684,13 @@ export async function runAgentLoop(
           'skill_tool_intersection_empty',
           message,
         );
+        consent.deny('skill_tool_intersection_empty');
         explicitSkillFailures.push(message);
         continue;
       }
     }
     try {
-      if (activationPolicy === 'ask') skillRegistry.grantConsent(skillName, 'user');
+      consent.grant();
       skillRegistry.activate(skillName, 'user', 0);
       if (candidateRestriction) explicitRestrictionSets.push(candidateRestriction);
     } catch (error) {

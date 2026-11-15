@@ -30,7 +30,7 @@ import {
 } from '../permissions.js';
 import { redactToolResultSecrets } from '../provider-secrets.js';
 import type { SessionRuntime } from '../session/runtime.js';
-import type { SkillRegistry } from '../skill-registry.js';
+import type { SkillActivationReason, SkillRegistry } from '../skill-registry.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import {
   formatUserQuestionAnswers,
@@ -53,6 +53,7 @@ import type {
   PermissionSubject,
   ToolCall,
   ToolContext,
+  ToolDefinition,
   ToolDiscoveryContext,
   ToolResult,
   UserQuestionRequest,
@@ -203,6 +204,132 @@ export function cancelledBeforeStart(call: ToolCall): ToolResult {
   });
 }
 
+/**
+ * Whether the mode refuses a registered tool itself: plan mode its mutating tools, dontAsk its
+ * question tool. Such a call is left to the mode's own refusal, which names the mode: keep this in
+ * step with `user_questions_disabled` and `plan_mode_blocked` in `prepareToolCall`, which a call
+ * this skips `rejectBeforePrompt` for must reach.
+ */
+function modeRefusesTool(
+  mode: PermissionMode,
+  canonName: string,
+  tool: ToolDefinition | undefined,
+): boolean {
+  return (
+    tool !== undefined &&
+    ((mode === 'plan' && !READ_ONLY_PLAN_TOOLS.has(canonName)) ||
+      (mode === 'dontAsk' && canonName === 'AskUserQuestion'))
+  );
+}
+
+/** What a call's tool judged it by (#653): the subject, why it could not, or a cancel. */
+interface JudgedTarget {
+  subject?: PermissionSubject;
+  failure?: string;
+  cancelled?: boolean;
+}
+
+const UNJUDGED: JudgedTarget = {};
+
+/** The target a tool that can spell one several ways judges the call by, which a cancel ends. */
+async function judgeTarget(
+  tool: ToolDefinition | undefined,
+  call: ToolCall,
+  context: ToolContext,
+  signal: AbortSignal | undefined,
+): Promise<JudgedTarget> {
+  if (!tool?.canonicalizeForPermission) return UNJUDGED;
+  const cancelled = Symbol('cancelled');
+  try {
+    const judged = await new Promise<PermissionSubject | undefined | typeof cancelled>(
+      (resolve, reject) => {
+        const stopListening = listenForAbort(signal, () => resolve(cancelled));
+        Promise.resolve()
+          .then(() => tool.canonicalizeForPermission?.(call.arguments, context))
+          .then(resolve, reject)
+          .finally(stopListening);
+      },
+    );
+    return judged === cancelled ? { cancelled: true } : { subject: judged };
+  } catch (error) {
+    return { failure: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Why a skill's consent was denied, as `skill_consent_denied` records it. */
+export type SkillConsentDenial =
+  | 'permission_denied'
+  | 'tool_not_active'
+  | 'dont_ask'
+  | 'no_approver'
+  | 'dismissed'
+  | 'user_denied'
+  | 'plan_mode_blocked'
+  | 'prompt_failed'
+  | 'cancelled'
+  | 'call_rejected'
+  | 'skill_tool_intersection_empty';
+
+/**
+ * The checks the first read left to the mode, for a call the mode let go of during the hooks
+ * (#730): whether it can ever run, with the tool as this mode shows it, and for a tool that judges
+ * its target, a refusal to retry: the hooks judged the call without the target it reaches.
+ */
+function recheckAfterModeChange(
+  registry: ToolRegistry,
+  tool: ToolDefinition | undefined,
+  call: ToolCall,
+  context: ToolContext,
+  canonName: string,
+): ToolResult | undefined {
+  const unrunnable = registry.rejectBeforeGates(call, context);
+  if (unrunnable || !tool?.canonicalizeForPermission) return unrunnable;
+  return toolFailure(
+    `SKIPPED: The permission mode changed while PreToolUse hooks ran, before the target of this ${canonName} call was checked; call it again.`,
+    { toolCallId: call.id, code: 'mode_changed_during_hooks', status: 'blocked' },
+  );
+}
+
+/** The consent an InvokeSkill call asked for, which every path that ends the call closes (#729). */
+export interface SkillConsent {
+  deny(cause: SkillConsentDenial): void;
+  grant(): void;
+}
+
+const NO_SKILL_CONSENT: SkillConsent = { deny: () => {}, grant: () => {} };
+
+export function requestSkillConsent(
+  skillRegistry: SkillRegistry,
+  name: string | undefined,
+  reason: SkillActivationReason | undefined,
+  forced: boolean,
+): SkillConsent {
+  if (!forced || !name || !reason) return NO_SKILL_CONSENT;
+  skillRegistry.requestConsent(name, reason);
+  return {
+    deny: (cause) => skillRegistry.denyConsent(name, reason, cause),
+    grant: () => skillRegistry.grantConsent(name, reason),
+  };
+}
+
+/**
+ * The prompt. One that fails answers nothing: the consent is closed, as cancelled when the run was
+ * cancelled under it, and the error goes on.
+ */
+export async function askPermission(
+  callbacks: AgentLoopCallbacks,
+  call: ToolCall,
+  consent: SkillConsent,
+  signal: AbortSignal | undefined,
+): ReturnType<AgentLoopCallbacks['onPermissionRequired']> {
+  try {
+    return await callbacks.onPermissionRequired(call);
+  } catch (error) {
+    consent.deny(signal?.aborted ? 'cancelled' : 'prompt_failed');
+    throw error;
+  }
+}
+
 export async function prepareToolCall(
   run: ToolCallRun,
   request: ToolCallRequest,
@@ -272,10 +399,7 @@ export async function prepareToolCall(
       }),
     };
   }
-  const modeRefusesItself =
-    registeredTool !== undefined &&
-    ((mode.current() === 'plan' && !READ_ONLY_PLAN_TOOLS.has(canonName)) ||
-      (mode.current() === 'dontAsk' && canonName === 'AskUserQuestion'));
+  const modeRefusesItself = modeRefusesTool(mode.current(), canonName, registeredTool);
   const unrunnable = modeRefusesItself ? undefined : registry.rejectBeforeGates(call, toolContext);
   if (unrunnable) {
     return { status: 'refused', result: unrunnable };
@@ -288,32 +412,10 @@ export async function prepareToolCall(
   // allow" see the canonical one. The tool is handed the subject back when the call runs, so
   // it acts on the target that was judged, or on nothing. Not asked for a call the mode
   // refuses anyway, and a failure is reported only once the tool's own refusals have spoken.
-  let permissionSubject: PermissionSubject | undefined;
-  let permissionSubjectFailure: string | undefined;
-  if (registeredTool?.canonicalizeForPermission && !modeRefusesItself) {
-    const tool = registeredTool;
-    const cancelled = Symbol('cancelled');
-    try {
-      const judged = await new Promise<PermissionSubject | undefined | typeof cancelled>(
-        (resolve, reject) => {
-          const stopListening = listenForAbort(signal, () => resolve(cancelled));
-          Promise.resolve()
-            .then(() => tool.canonicalizeForPermission?.(call.arguments, toolContext))
-            .then(resolve, reject)
-            .finally(stopListening);
-        },
-      );
-      if (judged === cancelled) {
-        return { status: 'refused', result: cancelledBeforeStart(call) };
-      }
-      permissionSubject = judged;
-    } catch (error) {
-      permissionSubjectFailure = error instanceof Error ? error.message : String(error);
-    }
-  }
-  const judgedCall: ToolCall = permissionSubject
-    ? { ...call, arguments: permissionSubject.args }
-    : call;
+  const judged = modeRefusesItself
+    ? UNJUDGED
+    : await judgeTarget(registeredTool, call, toolContext, signal);
+  if (judged.cancelled) return { status: 'refused', result: cancelledBeforeStart(call) };
 
   let preHookResults: Awaited<ReturnType<typeof runHooks>>;
   try {
@@ -326,7 +428,7 @@ export async function prepareToolCall(
         toolName: canonName,
         toolArgs: call.arguments,
         shell: toolContext.shell ?? config.shell,
-        ...(permissionSubject ? { toolTargets: permissionSubject.restrict } : {}),
+        ...(judged.subject ? { toolTargets: judged.subject.restrict } : {}),
       },
       { onHookEvent: callbacks.onHookEvent, signal },
     );
@@ -347,6 +449,18 @@ export async function prepareToolCall(
   }
 
   mode.sync();
+  // A mode left during the hooks (plan, by Shift+Tab) lets go of a call it refused at the first
+  // read, so the checks that read skipped run now, before any gate could ask about the call, and
+  // `rejectBeforePrompt` below runs too (#730).
+  const refusedAtBothReads =
+    modeRefusesItself && modeRefusesTool(mode.current(), canonName, registeredTool);
+  const unrunnableNow =
+    modeRefusesItself &&
+    !refusedAtBothReads &&
+    recheckAfterModeChange(registry, registeredTool, call, toolContext, canonName);
+  if (unrunnableNow) return { status: 'refused', result: unrunnableNow };
+  const { subject: permissionSubject, failure: permissionSubjectFailure } = judged;
+  const judgedCall = permissionSubject ? { ...call, arguments: permissionSubject.args } : call;
   const planReadOnly = mode.current() === 'plan' && READ_ONLY_PLAN_TOOLS.has(canonName);
   const planAutoApproved = planReadOnly && !PLAN_PERMISSION_REQUIRED_TOOLS.has(canonName);
   const isUserQuestion = canonName === 'AskUserQuestion';
@@ -417,9 +531,12 @@ export async function prepareToolCall(
     skillActivationPolicy === 'ask' &&
     !skillRegistry.isActive(invokedSkillName, turn),
   );
-  if (forceSkillPermission && invokedSkillName && skillActivationReason) {
-    skillRegistry.requestConsent(invokedSkillName, skillActivationReason);
-  }
+  const consent = requestSkillConsent(
+    skillRegistry,
+    invokedSkillName,
+    skillActivationReason,
+    forceSkillPermission,
+  );
   const persistentBackgroundShell =
     canonName === 'Bash' &&
     call.arguments.run_in_background === true &&
@@ -484,9 +601,7 @@ export async function prepareToolCall(
     // Consent was requested a few lines up; close it out, or the registry
     // keeps an activation request that never resolves. The later
     // permission-block deny does the same.
-    if (forceSkillPermission && invokedSkillName && skillActivationReason) {
-      skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'permission_denied');
-    }
+    consent.deny('permission_denied');
     return {
       status: 'refused',
       result: toolFailure('SKIPPED: Permission denied', {
@@ -504,9 +619,7 @@ export async function prepareToolCall(
   // written for a call that could never work. The model gets a blocked result naming the
   // remedy instead (#305 item 3).
   if (verdict.decision === 'refuse') {
-    if (forceSkillPermission && invokedSkillName && skillActivationReason) {
-      skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'permission_denied');
-    }
+    consent.deny('permission_denied');
     log.debug('refused a read the tool cannot serve', { tool: canonName });
     // Two refusals, two messages: an unservable path is fixed by adding its directory, and a
     // pattern the matcher cannot read is fixed by writing another pattern — naming a
@@ -528,12 +641,10 @@ export async function prepareToolCall(
   // allowed-tools rules do not cover, can never run, so the user is not asked to approve it
   // (an 'Always' would save a rule for it). Plan mode hides its mutating tools too, and its
   // own refusal below names the mode, which "call ToolSearch" would not.
-  if (!modeRefusesItself) {
+  if (!refusedAtBothReads) {
     const inactive = registry.rejectBeforePrompt(call, toolContext);
     if (inactive) {
-      if (forceSkillPermission && invokedSkillName && skillActivationReason) {
-        skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'tool_not_active');
-      }
+      consent.deny('tool_not_active');
       return { status: 'refused', result: inactive };
     }
   }
@@ -549,9 +660,7 @@ export async function prepareToolCall(
         )
       : permissionSubject?.refusal && { ...permissionSubject.refusal, toolCallId: call.id };
   if (unjudgeable) {
-    if (forceSkillPermission && invokedSkillName && skillActivationReason) {
-      skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'permission_denied');
-    }
+    consent.deny('permission_denied');
     return { status: 'refused', result: unjudgeable };
   }
 
@@ -635,7 +744,7 @@ export async function prepareToolCall(
       if (permission === undefined && mode.current() !== 'dontAsk') {
         // The prompt names the target as the rules judged it, and its "Always allow" saves
         // the rule for that spelling.
-        const decision = await callbacks.onPermissionRequired(judgedCall);
+        const decision = await askPermission(callbacks, judgedCall, consent, signal);
         permission = permissionResultOf(decision);
         chosenRule = permissionRuleOf(decision);
         const reason = permissionReasonOf(decision);
@@ -646,19 +755,15 @@ export async function prepareToolCall(
 
       if (permission === 'deny') {
         log.debug('permission denied', { tool: canonName });
-        if (forceSkillPermission && invokedSkillName && skillActivationReason) {
-          skillRegistry.denyConsent(
-            invokedSkillName,
-            skillActivationReason,
-            mode.current() === 'dontAsk'
-              ? 'dont_ask'
-              : noApprover
-                ? 'no_approver'
-                : dismissed
-                  ? 'dismissed'
-                  : 'user_denied',
-          );
-        }
+        consent.deny(
+          mode.current() === 'dontAsk'
+            ? 'dont_ask'
+            : noApprover
+              ? 'no_approver'
+              : dismissed
+                ? 'dismissed'
+                : 'user_denied',
+        );
         const askRule = verdict.source === 'ask' ? verdict.matchedRule : undefined;
         // The rule the operator is told to add. A bare tool name allows every call of the
         // tool, so it is named only for a call with no argument to scope a rule to. A call
@@ -723,6 +828,7 @@ export async function prepareToolCall(
 
   if (mode.current() === 'plan' && !READ_ONLY_PLAN_TOOLS.has(canonName)) {
     log.debug('plan mode blocked mutating tool', { tool: canonName });
+    consent.deny('plan_mode_blocked');
     return {
       status: 'refused',
       result: toolFailure(
@@ -732,14 +838,13 @@ export async function prepareToolCall(
     };
   }
 
-  if (forceSkillPermission && invokedSkillName && skillActivationReason) {
-    skillRegistry.grantConsent(invokedSkillName, skillActivationReason);
-  }
-
   const preparedResult = registry.prepare(call, toolContext);
   if (preparedResult.status === 'rejected') {
+    consent.deny('call_rejected');
     return { status: 'refused', result: preparedResult.result };
   }
+  // Granted only for a call that will run: `grantConsent` is remembered for later activations.
+  consent.grant();
   const prepared = preparedResult.prepared;
 
   const context = parallel
