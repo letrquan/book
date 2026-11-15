@@ -51,12 +51,18 @@ export interface Sandbox {
    * working directory inside the workspace; extra paths go through
    * `sandbox.filesystem.allowWrite`.
    *
+   * `workdir` (the workspace when omitted) is only where the command starts:
+   * bubblewrap maps it onto the workspace's spelling inside the namespace and
+   * throws for one outside the workspace (#722). Seatbelt does not remount, so
+   * the spawn's own cwd already is that directory there.
+   *
    * Returns null if the sandbox is unavailable.
    */
   wrap(
     command: string,
     workspaceRoot: string,
     protectedPaths?: ProtectedWorkspacePaths,
+    workdir?: string,
   ): SandboxExecution | null;
   /**
    * One-line description of the policy actually enforced, for diagnostics.
@@ -1685,6 +1691,53 @@ interface WritableRoot {
   layer: 'base' | 'opt-in';
 }
 
+/**
+ * Where the namespace shows a canonical path: the spelling of the deepest of
+ * `roots` holding it plus the rest, or null when none holds it.
+ */
+function spellingInRoots(
+  roots: Pick<WritableRoot, 'at' | 'canonical'>[],
+  canonical: string,
+  host: SandboxHost,
+): string | null {
+  const container = roots
+    .filter((candidate) => !isOutside(candidate.canonical, canonical, host.path))
+    .sort((left, right) => right.canonical.length - left.canonical.length)[0];
+  if (!container) return null;
+  const rest = host.path.relative(container.canonical, canonical);
+  return rest ? host.path.resolve(container.at, rest) : container.at;
+}
+
+/**
+ * Where the command starts: `workdir` at the workspace's spelling (#722).
+ *
+ * Without `--chdir`, bwrap starts in the caller's cwd as `getcwd()` reports it,
+ * the physical path. The namespace binds the workspace at its own spelling, so
+ * under a workspace opened through a link that path is not there, bwrap falls
+ * back to `/`, and a relative write lands in a tmpfs and is lost with exit 0.
+ * The workdir is mapped by its canonical path, so the rest below the workspace
+ * has no links in it and names inside the namespace what it names on the host.
+ *
+ * This only picks a directory the workspace bind already shows; it binds
+ * nothing. A workdir outside the workspace is refused, never bound: the
+ * namespace may not show it, and binding a model-supplied path would let the
+ * model widen its own sandbox (see {@link Sandbox.wrap}). With no workspace
+ * bound there is nowhere to map it to, and bwrap keeps its own fallback. No
+ * workdir means the workspace as bound, `~` already expanded.
+ */
+function startDirectoryArgs(
+  workdir: string | undefined,
+  workspace: string,
+  canonicalWorkspace: string | null,
+  host: SandboxHost,
+): string[] {
+  if (canonicalWorkspace === null) return [];
+  const canonical = canonicalPath(host.path.resolve(workspace, workdir ?? '.'), host);
+  const at = spellingInRoots([{ at: workspace, canonical: canonicalWorkspace }], canonical, host);
+  if (at === null) throw new Error(`workdir is outside the sandboxed workspace: ${workdir}`);
+  return ['--chdir', at];
+}
+
 /** Shallowest first, in the given order otherwise (the sort is stable). */
 function shallowestFirst(paths: string[], host: SandboxHost): string[] {
   const depth = (path: string): number => path.split(host.path.sep).filter(Boolean).length;
@@ -2016,6 +2069,7 @@ export function buildSandboxExecution(
   settings: ResolvedSettings['sandbox'],
   givenHost: SandboxHost = realSandboxHost,
   protectedPaths?: ProtectedWorkspacePaths,
+  workdir?: string,
 ): SandboxExecution {
   const host = memoizedHost(givenHost);
   const args: string[] = [];
@@ -2122,16 +2176,8 @@ export function buildSandboxExecution(
     paths,
     host,
   );
-  // Where the namespace shows a canonical path: the spelling of the deepest
-  // writable root holding it plus the rest, or null when no root holds it.
-  const inWritableRoot = (canonical: string): string | null => {
-    const container = writableRoots
-      .filter((candidate) => !isOutside(candidate.canonical, canonical, host.path))
-      .sort((left, right) => right.canonical.length - left.canonical.length)[0];
-    if (!container) return null;
-    const rest = host.path.relative(container.canonical, canonical);
-    return rest ? host.path.resolve(container.at, rest) : container.at;
-  };
+  const inWritableRoot = (canonical: string): string | null =>
+    spellingInRoots(writableRoots, canonical, host);
   // A protected file, or anything protected outside the workspace, is bound only
   // where the command could write it: inside the workspace or a writable root, and
   // at that root's own spelling plus the rest, as `denyWrite` is applied. Anywhere
@@ -2291,6 +2337,7 @@ export function buildSandboxExecution(
   args.push(hasDomainPolicy(settings) ? '--unshare-net' : '--share-net');
 
   args.push('--cap-drop', 'ALL');
+  args.push(...startDirectoryArgs(workdir, workspace, canonicalWorkspace, host));
 
   // The command string is a single argv element: bash inside the sandbox
   // parses it, and nothing outside the sandbox ever does.
@@ -2743,7 +2790,7 @@ export function decideSandboxExecution(
   // returning null, which would read as "no sandbox" and could run it outside.
   let wrapped: SandboxExecution | null | undefined;
   try {
-    wrapped = sandbox?.wrap(command, ctx.workspaceRoot, protectedPaths);
+    wrapped = sandbox?.wrap(command, ctx.workspaceRoot, protectedPaths, workdir);
   } catch (error) {
     return { sandboxed: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -3036,6 +3083,7 @@ export function createSandbox(settings: ResolvedSettings['sandbox']): Sandbox | 
       command: string,
       workspaceRoot: string,
       protectedPaths?: ProtectedWorkspacePaths,
+      workdir?: string,
     ): SandboxExecution {
       return buildSandboxExecution(
         bwrap,
@@ -3044,6 +3092,7 @@ export function createSandbox(settings: ResolvedSettings['sandbox']): Sandbox | 
         settings,
         realSandboxHost,
         protectedPaths,
+        workdir,
       );
     },
     unseenNotices: unseenNoticesFilter(),

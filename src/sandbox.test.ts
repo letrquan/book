@@ -332,6 +332,100 @@ describe('buildSandboxExecution', () => {
 });
 
 /**
+ * Where a sandboxed command starts (#722). bwrap starts in the caller's cwd as
+ * `getcwd()` reports it, the physical path, and the namespace binds the
+ * workspace at the spelling it was opened at. Under a workspace opened through a
+ * link the two differ, and without `--chdir` the command started in `/`.
+ */
+describe('buildSandboxExecution start directory (#722)', () => {
+  /** `/alias` is a link to `/real`, and `/real/proj/out` a link to `/etc`. */
+  function linkedHost(): SandboxHost {
+    return {
+      ...allExistingHost(posix),
+      realpath: (at: string) => {
+        const real = at === '/alias' || at.startsWith('/alias/') ? `/real${at.slice(6)}` : at;
+        return real === '/real/proj/out' || real.startsWith('/real/proj/out/')
+          ? `/etc${real.slice('/real/proj/out'.length)}`
+          : real;
+      },
+    };
+  }
+  function build(workspace: string, host: SandboxHost, workdir?: string): string[] {
+    return buildSandboxExecution(
+      '/usr/bin/bwrap',
+      'pwd',
+      workspace,
+      sandboxSettings(),
+      host,
+      undefined,
+      workdir,
+    ).args;
+  }
+  const chdirOf = (args: string[]): string | undefined => {
+    const at = args.indexOf('--chdir');
+    return at === -1 ? undefined : args[at + 1];
+  };
+
+  it('starts a workspace opened through a link at the spelling the namespace binds', () => {
+    const args = build('/alias/proj', linkedHost());
+
+    expect(chdirOf(args)).toBe('/alias/proj');
+    const bind = args.indexOf('/alias/proj');
+    expect(args.slice(bind - 1, bind + 2)).toEqual(['--bind', '/alias/proj', '/alias/proj']);
+    // An option for bwrap, so before the command.
+    expect(args.indexOf('--chdir')).toBeLessThan(args.indexOf('--'));
+  });
+
+  it('maps a subdirectory workdir onto the workspace spelling, whichever way it is spelled', () => {
+    for (const workdir of ['/alias/proj/sub', '/real/proj/sub', 'sub', '/alias/proj/sub/../sub']) {
+      expect(chdirOf(build('/alias/proj', linkedHost(), workdir))).toBe('/alias/proj/sub');
+    }
+    expect(chdirOf(build('/alias/proj', linkedHost(), '/real/proj'))).toBe('/alias/proj');
+  });
+
+  it('never binds the workdir: only the start directory differs between two workdirs', () => {
+    const atRoot = build('/alias/proj', linkedHost());
+    const atSub = build('/alias/proj', linkedHost(), '/real/proj/sub/deeper');
+
+    expect(chdirOf(atSub)).toBe('/alias/proj/sub/deeper');
+    expect(atSub.map((arg) => (arg === '/alias/proj/sub/deeper' ? '/alias/proj' : arg))).toEqual(
+      atRoot,
+    );
+  });
+
+  it('refuses a workdir outside the workspace rather than binding it or starting in /', () => {
+    for (const workdir of ['/', '/etc', '/real', '/alias/other', '..', '/alias/proj/out']) {
+      expect(() => build('/alias/proj', linkedHost(), workdir)).toThrow(
+        /workdir is outside the sandboxed workspace/,
+      );
+    }
+  });
+
+  it('starts a workspace opened at its real path where it is, as before', () => {
+    const host = allExistingHost(posix);
+
+    expect(chdirOf(build('/work', host))).toBe('/work');
+    expect(chdirOf(build('/work', host, '/work/pkg'))).toBe('/work/pkg');
+  });
+
+  it('starts a workspace given as ~ at the expanded path it is bound at', () => {
+    // The workspace bind expands `~`; the start directory has to name the same path.
+    expect(chdirOf(build('~/proj', allExistingHost(posix)))).toBe('/home/book/proj');
+  });
+
+  it('keeps the bwrap fallback when there is no workspace to bind', () => {
+    const gone = (at: string): boolean => at === '/gone' || at.startsWith('/gone/');
+    const host: SandboxHost = {
+      ...allExistingHost(posix),
+      exists: (at: string) => !gone(at),
+      realpath: (at: string) => (gone(at) ? null : at),
+    };
+
+    expect(chdirOf(build('/gone', host))).toBeUndefined();
+  });
+});
+
+/**
  * The workspace bind is read-write, which made every workspace control file
  * writable from inside the sandbox: a sandboxed command could write
  * `.book/settings.local.json` (honoured on the host from the next session — it
@@ -419,7 +513,9 @@ describe('buildSandboxExecution workspace control files', () => {
   function lastMountFor(args: string[], target: string): { flag: string; index: number } {
     let found = { flag: '', index: -1 };
     args.forEach((arg, index) => {
-      if (arg.startsWith('-') && args[index + 1] === target) found = { flag: arg, index };
+      // `--chdir` names where the command starts (#722), not a mount.
+      const mount = arg.startsWith('-') && arg !== '--chdir';
+      if (mount && args[index + 1] === target) found = { flag: arg, index };
     });
     return found;
   }
@@ -4678,8 +4774,9 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
           // path, and this is about one opened at another spelling (`book -w`
           // through a link, `BOOK_WORKSPACE`).
           const sandbox = createSandbox(sandboxSettings({ allowUnsandboxedCommands: false }));
-          // Through the workspace's own spelling: bwrap starts in the physical cwd,
-          // so a relative path would land at the real one.
+          // Spelled in full through the workspace's own spelling, the path under
+          // test. The command starts there too now (`--chdir`, #722); before, bwrap
+          // tried the physical cwd, found it missing and started in `/`.
           const exec = sandbox?.wrap(
             `printf x >> '${join(workspace, 'conf', 'hooks.gitconfig')}'; printf x > '${join(workspace, '.githooks', 'pre-commit')}'; true`,
             workspace,
@@ -5576,8 +5673,9 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
           const real = join(base, 'real');
           const other = join(base, 'other');
           try {
-            // Wrapped directly: this is about the workspace's own spelling, and bwrap
-            // starts in the physical cwd, so every path below is spelled in full.
+            // Wrapped directly: this is about the workspace's own spelling, so every
+            // path below is spelled in full rather than relative to where the
+            // command starts (the workspace's spelling, #722).
             const sandbox = createSandbox(
               sandboxSettings({
                 allowUnsandboxedCommands: false,
@@ -6307,6 +6405,123 @@ describe.skipIf(process.platform !== 'linux' || !sandboxBackendAvailable())(
         }
       });
     });
+
+    describe('a workspace opened through a link (#722)', () => {
+      /** `<base>/alias` links to `<base>/real`; the workspace is opened at `<base>/alias/proj`. */
+      function linkedWorkspace(): { base: string; real: string; workspace: string } {
+        const base = mkdtempSync(join(tmpdir(), 'book-sandbox-722-'));
+        const real = join(base, 'real', 'proj');
+        mkdirSync(join(real, 'sub'), { recursive: true });
+        execFileSync('git', ['init', '--quiet'], { cwd: real });
+        writeFileSync(join(real, 'file.txt'), 'x\n');
+        symlinkSync(join(base, 'real'), join(base, 'alias'));
+        return { base, real, workspace: join(base, 'alias', 'proj') };
+      }
+
+      /** The Bash tool itself, so the workdir goes through the same decision a model call does. */
+      async function bash(
+        workspace: string,
+        args: Record<string, unknown>,
+      ): Promise<{ status: string; lines: string[] }> {
+        const { createDefaultRegistry } = await import('./tools/registry.js');
+        const result = await createDefaultRegistry().execute(
+          { id: 'c722', name: 'Bash', arguments: args },
+          {
+            workspaceRoot: workspace,
+            env: {},
+            sandbox: sandboxSettings({ allowUnsandboxedCommands: false }),
+          },
+        );
+        // Output starts with the `[sandboxed] ` marker; dropped so `pwd` is a line of its own.
+        const text = `${result.content}\n${result.structuredError?.message ?? ''}`;
+        return { status: result.status, lines: text.replace(/^\[sandboxed\] /, '').split('\n') };
+      }
+
+      it('starts in the workspace at its spelling, and a relative write lands on the host', async () => {
+        const { base, real, workspace } = linkedWorkspace();
+        try {
+          const run = await bash(workspace, { command: 'pwd; ls; printf ok > notes.txt' });
+
+          expect(run.status).toBe('success');
+          expect(run.lines).toContain(workspace);
+          expect(run.lines).toContain('file.txt');
+          expect(readFileSync(join(real, 'notes.txt'), 'utf8')).toBe('ok');
+        } finally {
+          rmSync(base, { recursive: true, force: true });
+        }
+      });
+
+      it('starts a subdirectory workdir at the workspace spelling too', async () => {
+        const { base, real, workspace } = linkedWorkspace();
+        try {
+          const run = await bash(workspace, {
+            command: 'pwd; printf ok > here.txt',
+            workdir: join(workspace, 'sub'),
+          });
+
+          expect(run.status).toBe('success');
+          expect(run.lines).toContain(join(workspace, 'sub'));
+          expect(readFileSync(join(real, 'sub', 'here.txt'), 'utf8')).toBe('ok');
+        } finally {
+          rmSync(base, { recursive: true, force: true });
+        }
+      });
+
+      it('starts a background command there as well', async () => {
+        const { base, real, workspace } = linkedWorkspace();
+        const where = join(real, 'where.txt');
+        try {
+          const run = await bash(workspace, {
+            command: 'pwd > where.txt',
+            run_in_background: true,
+          });
+          expect(run.status).toBe('success');
+
+          // Within the suite's 20 s test timeout, for a loaded runner.
+          await vi.waitFor(
+            () => {
+              expect(existsSync(where)).toBe(true);
+              expect(readFileSync(where, 'utf8')).toBe(`${workspace}\n`);
+            },
+            { timeout: 15_000, interval: 25 },
+          );
+        } finally {
+          rmSync(base, { recursive: true, force: true });
+        }
+      });
+
+      it('refuses a workdir that leaves the workspace through a link inside it', async () => {
+        const { base, real, workspace } = linkedWorkspace();
+        const outside = mkdtempSync(join(tmpdir(), 'book-sandbox-722-out-'));
+        symlinkSync(outside, join(real, 'out'));
+        try {
+          const run = await bash(workspace, {
+            command: 'printf x > escaped.txt',
+            workdir: join(workspace, 'out'),
+          });
+
+          expect(run.status).not.toBe('success');
+          expect(run.lines.join('\n')).toMatch(/workdir is outside the sandboxed workspace/);
+          expect(existsSync(join(outside, 'escaped.txt'))).toBe(false);
+        } finally {
+          rmSync(base, { recursive: true, force: true });
+          rmSync(outside, { recursive: true, force: true });
+        }
+      });
+
+      it('starts a workspace opened at its real path where it is, as before', async () => {
+        const repo = freshRepo();
+        try {
+          const run = await bash(repo, { command: 'pwd; printf ok > notes.txt' });
+
+          expect(run.status).toBe('success');
+          expect(run.lines).toContain(repo);
+          expect(readFileSync(join(repo, 'notes.txt'), 'utf8')).toBe('ok');
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      });
+    });
   },
 );
 
@@ -6857,6 +7072,36 @@ describe('decideSandboxExecution when the sandbox cannot build a policy', () => 
       expect(decision.exec).toBeUndefined();
       expect(decision.reason).toBeUndefined();
       expect(decision.error).toMatch(/not absolute/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('decideSandboxExecution and the start directory (#722)', () => {
+  it('hands the workdir to the sandbox, which is what every Bash path and Check spawn', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-sbx-workdir-'));
+    mkdirSync(join(dir, 'sub'));
+    const workdirs: (string | undefined)[] = [];
+    try {
+      const ctx = {
+        workspaceRoot: dir,
+        sandbox: sandboxSettings(),
+        runtime: {
+          sandbox: () => ({
+            wrap: (_command: string, _root: string, _paths?: unknown, workdir?: string) => {
+              workdirs.push(workdir);
+              return { file: '/usr/bin/bwrap', args: [] };
+            },
+            unseenNotices: (notices: readonly string[]) => notices,
+            describe: () => 'stub',
+          }),
+        },
+      };
+
+      expect(decideSandboxExecution(ctx, 'pwd', join(dir, 'sub')).sandboxed).toBe(true);
+      expect(decideSandboxExecution(ctx, 'pwd', dir).sandboxed).toBe(true);
+      expect(workdirs).toEqual([join(dir, 'sub'), dir]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
